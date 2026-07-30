@@ -548,3 +548,15 @@
   但不放宽 high-risk、迁移或控制面更新在 `apply` 前的精确 `ci-gate` 要求。
 - 效率约束：自动合并消除人工转 Ready 和点击合并，不复用不同 commit 的 G2 证据。开发
   默认从最新 `main` 创建非堆叠分支，避免父 PR squash 后对子 PR 重放而触发重复 G2。
+
+## D057 维护期开发与测试部署解耦
+
+- 决策：`MAINTENANCE.md` 是唯一日常流程入口；`AUTOPILOT.md`、`BOOTSTRAP.md` 与
+  `TASKS.md` 只保留建设期历史并退出日常规格门禁。编码循环运行定向测试，提交前才运行
+  `scripts/dev_check.sh --changed`，普通维护工作不再默认绑定测试服务器。
+- 测试部署：只有需要共享环境验收时，才默认对自动合并后的精确 `origin/main` 执行
+  `scripts/test_update.sh apply --ref origin/main`。`apply` 已验证最终 `state=verified`；
+  `plan` 和独立 `status` 分别降为可选预览与后续诊断。分支部署仅作为明确例外。
+- 门禁边界：受保护变更的精确 `ci-gate`、G2、迁移 checkpoint、失败关闭、应用镜像回退、
+  生产 Release Gate、Trivy/SBOM/镜像身份和所有数据安全规则均不变；只移除重复执行与历史
+  文案耦合。

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/verify_all.sh — G1/G2 唯一权威门禁（AUTOPILOT.md §1/§5）
+# scripts/verify_all.sh — 受保护变更、专项复验与生产候选的完整 G2 门禁
 # 约定：项目根执行；ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1；禁止削弱本脚本（只能修被测对象）。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

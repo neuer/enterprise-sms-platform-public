@@ -31,6 +31,7 @@ def test_acceptance_matrix_maps_milestones_security_and_deferred_boundaries() ->
 
 def test_traceability_points_security_compliance_to_executable_acceptance() -> None:
     traceability = (ROOT / "docs/TRACEABILITY.md").read_text(encoding="utf-8")
+    assert "维护期不再同步历史" in traceability
     security_row = next(
         line for line in traceability.splitlines() if "NFR-03/04" in line
     )
@@ -41,7 +42,6 @@ def test_traceability_points_security_compliance_to_executable_acceptance() -> N
 def test_authoritative_account_contract_covers_local_ad_and_future_iam_boundary() -> None:
     prd = (ROOT / "PRD.md").read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    tasks = (ROOT / "TASKS.md").read_text(encoding="utf-8")
 
     for token in (
         "显式选择认证源",
@@ -67,8 +67,6 @@ def test_authoritative_account_contract_covers_local_ad_and_future_iam_boundary(
     ):
         assert token in agents
 
-    assert "P0 账号体系重构" in tasks
     for retired in ("BOOTSTRAP_ADMIN_USERS", "bootstrap_admin"):
         assert retired not in prd
         assert retired not in agents
-        assert retired not in tasks

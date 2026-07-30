@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 mock Compose 栈串行执行 AUTOPILOT 规定的 20 项 API UAT。"""
+"""在 mock Compose 栈串行执行固定的 20 项 API UAT。"""
 
 from __future__ import annotations
 

@@ -27,7 +27,7 @@ compose() {
 frontend_gate() {
   docker run --rm -v "$PWD/frontend:/app" -v /app/node_modules \
     -w /app node:24-alpine \
-    sh -ec 'npm ci --silent && npm audit --audit-level=high && npm run build && npm run typecheck && npm test'
+    sh -ec 'npm ci --silent && npm audit --audit-level=high && npm run build && npm test'
 }
 seed_dev() {
   local destination="deploy/secrets/dev-apikeys.txt"

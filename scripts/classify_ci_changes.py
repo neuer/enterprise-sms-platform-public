@@ -44,13 +44,17 @@ VENDOR_LIVE: RuleResult = (True, True, True, True, "vendor-live")
 
 ROOT_SPEC_DOCS = {
     "AGENTS.md",
-    "AUTOPILOT.md",
-    "BOOTSTRAP.md",
     "CLAUDE.md",
     "HANDOVER.md",
+    "MAINTENANCE.md",
     "PRD.md",
     "PROGRESS.md",
+    "PUBLICATION.md",
     "RELEASE.md",
+}
+HISTORICAL_ROOT_DOCS = {
+    "AUTOPILOT.md",
+    "BOOTSTRAP.md",
     "TASKS.md",
 }
 BACKEND_RUNTIME_FILES = {
@@ -103,6 +107,8 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
         return VENDOR_LIVE, False
     if protected_category == "backend-critical":
         return BACKEND_CRITICAL, False
+    if path in HISTORICAL_ROOT_DOCS:
+        return NONE, False
     if path.startswith("docs/plans/") or fnmatchcase(path, "docs/TEST-REPORT-*"):
         return NONE, False
     if path in CI_CONTROL_SCRIPTS or path.startswith(".github/"):

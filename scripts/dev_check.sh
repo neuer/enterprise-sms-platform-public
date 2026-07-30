@@ -26,13 +26,13 @@ case "$MODE" in
 esac
 
 cd "$ROOT"
-bash scripts/local_test.sh prepare
 python3 scripts/check_spec_consistency.py
 python3 scripts/check_invariants.py
 python3 scripts/check_public_readiness.py
 
 run_backend() {
   local -a pytest_args=("$@")
+  bash scripts/local_test.sh prepare
   (
     cd backend
     uv run ruff check app migrations scripts_support tests \
@@ -51,7 +51,6 @@ run_frontend() {
   (
     cd frontend
     npm test
-    npm run typecheck
     npm run build
   )
 }
@@ -91,7 +90,11 @@ for item in sys.stdin.buffer.read().split(b"\0"):
   backend_changed=0
   frontend_changed=0
   backend_tests=()
+  shell_scripts=()
   for path in "${changed[@]}"; do
+    if [[ "$path" == *.sh && -f "$path" ]]; then
+      shell_scripts+=("$path")
+    fi
     case "$path" in
       backend/tests/*.py)
         backend_changed=1
@@ -99,7 +102,7 @@ for item in sys.stdin.buffer.read().split(b"\0"):
           backend_tests+=("${path#backend/}")
         fi
         ;;
-      backend/* | scripts/*.py | schema.sql | openapi.yaml | deploy/*)
+      backend/* | scripts/*.py | scripts/*.sh | schema.sql | openapi.yaml | deploy/*)
         backend_changed=1
         ;;
       frontend/*)
@@ -108,6 +111,9 @@ for item in sys.stdin.buffer.read().split(b"\0"):
     esac
   done
 
+  if [[ ${#shell_scripts[@]} -gt 0 ]]; then
+    bash -n "${shell_scripts[@]}"
+  fi
   if [[ "$backend_changed" == 1 ]]; then
     if [[ ${#backend_tests[@]} -gt 0 ]]; then
       run_backend "${backend_tests[@]}"

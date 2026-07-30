@@ -473,7 +473,7 @@ def test_deployment_index_links_all_authoritative_runbooks() -> None:
     ):
         assert target in index
     assert "PRD.md 第 10 章" in index
-    assert "BOOTSTRAP.md 第 8 节" in index
+    assert "HANDOVER.md 第 1 节" in index
 
 
 def test_deployment_index_documents_the_independent_release_gate() -> None:
@@ -494,10 +494,9 @@ def test_deployment_index_documents_the_independent_release_gate() -> None:
 
 
 def test_remote_mac_docs_separate_public_docker_from_authenticated_registry() -> None:
-    bootstrap = (ROOT / "BOOTSTRAP.md").read_text(encoding="utf-8")
     index = read_required("README.md")
     fast_update = (ROOT / "docs/runbooks/test-fast-update.md").read_text(encoding="utf-8")
-    combined = "\n".join((bootstrap, index, fast_update))
+    combined = "\n".join((index, fast_update))
 
     for token in (
         "手机远程 Mac",
@@ -510,7 +509,6 @@ def test_remote_mac_docs_separate_public_docker_from_authenticated_registry() ->
         "不得解锁",
     ):
         assert token in combined
-    assert "scripts/docker_public.sh doctor" in bootstrap
     assert "scripts/docker_public.sh doctor" in fast_update
     assert "SMS_DOCKER_ACCESS=authenticated" in index
     for forbidden_destination in ("聊天", "命令参数", "日志", "发布证据", "仓库"):
@@ -614,7 +612,7 @@ def test_release_bookkeeping_moves_final_head_evidence_to_change_order() -> None
     for name in ("HANDOVER.md", "RELEASE.md"):
         document = documents[name]
         assert "最终不可变证据归档到生产变更单与 release manifest" in document
-    assert "日常开发与交付以 `MAINTENANCE.md` 为权威入口" in documents["PROGRESS.md"]
+    assert "`MAINTENANCE.md` 进入" in documents["PROGRESS.md"]
 
 
 def test_deployment_index_assigns_hsts_to_the_external_tls_terminator() -> None:

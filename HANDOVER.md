@@ -29,7 +29,8 @@
 
 ## 2. 生产切换步骤引用
 
-切换业务顺序以 [PRD.md 第 10 章](PRD.md) 为最高依据，上线前签收项以 [BOOTSTRAP.md 第 8 节](BOOTSTRAP.md) 为准，具体部署顺序见 [deploy/README.md](deploy/README.md)。执行摘要：
+切换业务顺序以 [PRD.md 第 10 章](PRD.md) 为最高依据，上线前签收项以本文件第 1 节为准，
+具体部署顺序见 [deploy/README.md](deploy/README.md)。执行摘要：
 
 1. 冻结 tag/commit、镜像 digest、执行人和回退决策人；发布“停拉通知”，确保 T0 起旧直连系统不再调用 GetReport/GetReply。
 2. 完成 18 件 secrets、厂商主备出口、加密备份隔离恢复、真实 LDAP 四角色和内网 Prometheus 七组指标验收。

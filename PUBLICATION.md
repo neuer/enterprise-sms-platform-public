@@ -23,13 +23,14 @@ cherry-pick 或推送其中的任何 Git 对象。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
 4. owner 分支自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为
    Ready 并请求 squash merge，不使用管理员绕过。
-5. `apply` / `promote` 前确认 `gh auth status --hostname github.com` 有效；只使用系统
-   钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。
-6. required `ci-gate`、会话解决和冲突保护全部满足后由 GitHub 自动 squash merge；
+5. required `ci-gate`、会话解决和冲突保护全部满足后由 GitHub 自动 squash merge；
    `main` 禁止直接推送、强推和删除。
-7. 自动合并不代表测试环境部署成功；默认对合并后的精确 `origin/main` 重新执行
-   `plan` / `apply` / `status`。若分支已提前验证且 tree 相同，才可用
-   `scripts/test_update.sh promote --ref origin/main` 免重建提升。
+6. 只有需要共享环境验收时才更新测试服务器：先确认
+   `gh auth status --hostname github.com` 有效，再对合并后的精确 `origin/main` 执行
+   `scripts/test_update.sh apply --ref origin/main`；`plan` 与 `status` 分别只用于可选预览
+   和后续诊断。只使用系统钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。若分支已
+   提前验证且 tree 相同，才可用 `scripts/test_update.sh promote --ref origin/main`
+   免重建提升。
 
 ## GitHub 设置
 

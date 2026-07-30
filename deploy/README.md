@@ -20,7 +20,8 @@ API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需�
 - [failover.md](failover.md)：T4.9a 冷备同步与 RTO≤30min 切换手册。
 - `seed.example.sql`：真实 LDAP 模式 role_mapping 示例；生产禁止执行 `seed-dev`。
 
-上线切换业务顺序以 **PRD.md 第 10 章**为准，需人工签收事项以 **BOOTSTRAP.md 第 8 节**为准。两者与本目录文档冲突时以 PRD 为准并记录变更单。
+上线切换业务顺序以 **PRD.md 第 10 章**为准，需人工签收事项以
+**HANDOVER.md 第 1 节**为准。两者与本目录文档冲突时以 PRD 为准并记录变更单。
 
 ## 公网端口
 
@@ -283,7 +284,8 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 并单独评审 PostgreSQL/volume 保留、18 件 secrets、三域 Redis、七职责数据库角色、回退与
 证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
 任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
-`scripts/test_update.sh plan/apply/status` 日常流程。
+按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
+只用于可选预览和后续诊断。
 
 ### 手机操作者日常流程
 
@@ -336,15 +338,14 @@ sudo /usr/bin/env \
 
 ### 与快速更新和数据的边界
 
-应用代码先提交、推送并通过唯一入口：
+需要共享测试环境验收的应用代码在合并后通过默认入口：
 
 ```bash
-scripts/test_update.sh plan --ref origin/<branch>
-scripts/test_update.sh apply --ref origin/<branch>
-scripts/test_update.sh status
+scripts/test_update.sh apply --ref origin/main
 ```
 
-只有远端 `state=verified` 和对应表面验收完成才算更新成功。driver 只构建受影响镜像且
+`apply` 内部已经完成分类、verify 与终态解析；`plan --ref origin/main` 和 `status` 分别只
+用于可选预览与后续只读诊断。只有远端 `state=verified` 和对应表面验收完成才算更新成功。driver 只构建受影响镜像且
 不重复运行测试；普通无迁移更新允许 CI 并行运行，high-risk、迁移或控制面更新必须先
 验证目标 commit 的精确 `ci-gate=success`。无迁移更新不创建数据库 checkpoint，切换或验收失败时自动回退上一版应用
 镜像；迁移不自动回退 schema。所有 high-risk 更新的

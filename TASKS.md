@@ -1,6 +1,8 @@
 # TASKS.md — 企业短信管理平台开发任务拆解 v1.6
 
-> 按里程碑顺序执行，每个任务完成后勾选并运行对应验收。
+> **历史建设快照：M4.4 已完成。本文件不再作为维护期任务队列，不得继续追加任务或勾选项；当前工作从 MAINTENANCE.md 与 Issue/PR 开始。**
+>
+> 以下内容记录建设期按里程碑执行的原始任务与验收。
 > 依赖：BOOTSTRAP.md（开工引导）、PRD.md（需求）、openapi.yaml（契约）、schema.sql（模型）、docs/vendor-api.md（厂商报文与 mock 契约）、docs/UAT.md（验收用例）、docs/TRACEABILITY.md（需求追踪）、docs/ui-design.md + sms-ui-prototype.html（UI 唯一基准）、CLAUDE.md（工程约定）。
 > 标注 ★v1.1 ◆v1.2 ▲v1.3 ●v1.4 ✚v1.5 ▶v1.6。
 > **无人值守目标模式：门禁与失败协议以 AUTOPILOT.md 为准；本清单中带 [HANDOVER] 的验收项不在自动门禁内，终局写入 HANDOVER.md。**

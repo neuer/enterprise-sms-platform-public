@@ -1,6 +1,10 @@
 # AGENTS.md — 企业短信管理平台工程约定 v1.6
 
-本文件供 Codex 在本仓库工作时遵循。**无人值守目标模式的执行协议见 AUTOPILOT.md（门禁/失败/续跑）**；开工流程见 BOOTSTRAP.md；需求见 PRD.md，接口契约见 openapi.yaml，数据模型见 schema.sql，**厂商精确报文与 mock 契约见 docs/vendor-api.md**，任务见 TASKS.md。**冲突时以 PRD.md 为准。**
+本文件是 Codex 与 Claude Code 共用的唯一工程约定。日常开发与交付从
+`MAINTENANCE.md` 开始，当前状态看 `PROGRESS.md`；`AUTOPILOT.md`、`BOOTSTRAP.md`
+与 `TASKS.md` 仅保留建设期历史，不再作为维护期任务清单或日常门禁。需求见
+`PRD.md`，接口契约见 `openapi.yaml`，数据模型见 `schema.sql`，厂商精确报文与
+mock 契约见 `docs/vendor-api.md`。**冲突时以 PRD.md 为准。**
 
 ## 技术栈（锁定，勿替换）
 
@@ -78,11 +82,11 @@ deploy/
 32. **告警 log-sink（v1.6）**：告警渠道配置为空 ⇒ 只落 alert_log+日志，不外呼；所有告警测试断言 alert_log 行，任何测试不得请求企微/SMTP
 33. **令牌桶算法（v1.6）**：单桶容量 vendor_qps、每秒整补；取令牌为 Redis Lua 原子操作，入参 lane∈{realtime,bulk}；bulk 仅当 剩余令牌 > reserved_realtime_qps 时可取，realtime 无此限制；唯一实现 core/ratelimit.py
 34. **beat 调度读取时机（v1.6）**：任务间隔在 beat 启动时读 sys_config（缺省用建表默认值），修改间隔需重启 beat 容器生效（界面提示此点）；禁止实现动态热更调度
-35. **迁移基准（v1.6）**：Alembic 首个迁移 = 原样执行 schema.sql（op.execute 整文件）；此后变更 autogenerate 且同步回写 schema.sql 注释版本；scripts_support/check_migration.py 以 sms_owner 分别构建空库，比对两种建法的表/列/索引/约束集合，差异即失败；七个运行角色均不得具备 DDL 权限，未来表不得默认授权
+35. **迁移基准（v1.6）**：Alembic 首个迁移必须以 `schema.sql` 为唯一输入，在同一事务内通过内置解析器按顶层分号无损切分执行，并以逐字重组测试保证原文不变；此后变更 autogenerate 且同步回写 schema.sql 注释版本；scripts_support/check_migration.py 以 sms_owner 分别构建空库，比对两种建法的表/列/索引/约束集合，差异即失败；七个运行角色均不得具备 DDL 权限，未来表不得默认授权
 36. **前端资源自包含（v1.6）**：字体经 npm 包（@fontsource/ibm-plex-mono 等）或系统栈回退，构建产物不得引用任何运行时外部 CDN
 37. **敏感中间产物（v1.6）**：callback_task 只存消息引用与无 PII 元数据，投递时临时构造 body；import 号码逐条落 import_phone 三列；剔除清单只含 phone_mask+原因；decrypted 导出文件仍须 AES-GCM 密文落盘、下载时流式解密
 38. **真实联调控制台与受控 API UAT（v1.6.3）**：单机开发测试环境的正式 Key 安装/轮换、加密测试号码管理、激活/暂停/恢复和页面单号码 UAT 的正常入口只能是 admin 的 `/configs`「真实联调」页。高风险操作按当前 Provider 二次认证并签发 5 分钟单用途单次令牌；普通 API 只转发浏览器密文，经固定 Unix Socket 调用 root 管理的 `vendor-control-agent`，不得获得 root、sudo 或 Docker Socket。测试号码以 PostgreSQL 的 `phone_enc/phone_hmac/phone_mask/key_version` 为唯一事实源；live-test 模式下普通发送 API/Web 必须返回 `VENDOR_TEST_CONSOLE_ONLY`。唯一应用侧真实发送例外是 `POST /api/v1/messages/uat-send`：必须使用有效 `X-Api-Key`，仅通知（`notice`）直接内容、仅一个 active 已登记号码、必填 1–32 位 `biz_id`，禁止模板、定时、验证码、营销和额外字段；必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码，所有保留版本 digest 必须完全匹配，最后只把加密四元组交给既有 pipeline。worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，且 queued/sending 测试批次作为维护租约，终态前禁止停用或删除；API 发现控制状态损坏或过期必须原子写入两个独立 agent-stale critical pause 键，写入未确认即保持 503 且不得继续。页面与 API UAT 共同受每日 100 个计费条、uncertain 占额、critical pause、应用限流和 24h 幂等约束
-39. **开发测试阶段快速更新**：完成功能与必要定向测试后，必须先提交并推送目标 `origin/<branch>`，且本地工作树保持干净；标准入口是 `scripts/test_update.sh plan --ref origin/<branch>`、`scripts/test_update.sh apply --ref origin/<branch>` 与只读 `status`。入口只构建受影响镜像，不得重复执行 CI/G2 或组件测试；普通 `web-only`/`backend-safe` 无迁移更新允许 CI 并行运行，high-risk、迁移或控制面更新则必须在 `apply` 前验证目标 commit 精确且来源为 GitHub Actions 的 `ci-gate=success`。只有远端最终返回 `state=verified` 并完成对应表面验收才算成功。无迁移更新不得创建数据库 checkpoint，切换或验收失败时只允许自动回退到上一版应用镜像并记录 `rolled_back`；不得回退 schema。迁移、受保护状态异常或镜像回退失败时保持 fail closed。普通无迁移更新只拒绝 submitting/retrying；high-risk 或迁移更新还必须拒绝 uncertain。PR squash merge 后，仅当已验证分支与 `origin/main` tree 完全一致且 main 的 `ci-gate` 成功时，才允许 `scripts/test_update.sh promote --ref origin/main` 免重建提升。修复后重新提交、推送并重跑同一入口；始终保留 PostgreSQL 数据库、Docker volume 和运行态目录，任何初始化必须事先取得操作者明确确认。管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中执行
+39. **开发与测试部署解耦**：完成功能与必要定向测试后提交并推送短生命周期分支，日常提交前运行 `scripts/dev_check.sh --changed`；测试服务器只在需要共享环境验收时更新，默认对自动合并后的精确 `origin/main` 执行 `scripts/test_update.sh apply --ref origin/main`，`plan` 仅用于可选预览，`status` 仅用于后续只读诊断。入口只构建受影响镜像，不得重复执行 CI/G2 或组件测试；high-risk、迁移或控制面更新必须在 `apply` 前验证目标 commit 精确且来源为 GitHub Actions 的 `ci-gate=success`。只有远端最终返回 `state=verified` 并完成对应表面验收才算成功。无迁移更新不得创建数据库 checkpoint，切换或验收失败时只允许自动回退到上一版应用镜像并记录 `rolled_back`；不得回退 schema。迁移、受保护状态异常或镜像回退失败时保持 fail closed。普通无迁移更新只拒绝 submitting/retrying；high-risk 或迁移更新还必须拒绝 uncertain。分支部署只作为明确的合并前验收例外；若其 tree 与后续 `origin/main` 完全一致且 main 的 `ci-gate` 成功，可用 `promote --ref origin/main` 免重建提升。始终保留 PostgreSQL 数据库、Docker volume 和运行态目录，任何初始化必须事先取得操作者明确确认。管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中执行
 40. **显式运行时与认证边界**：必须设置 `ENVIRONMENT=development|test|production`，且与 DEBUG/Mock 组合不一致时启动失败；生产关闭 Swagger、ReDoc 与 OpenAPI。API client 与 Web user 路由必须分别声明 API Key/Bearer dependency，禁止以路径前缀或 Header 组合猜测认证类型；新增受保护路由遗漏 dependency 必须由契约测试阻断。QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段约束
 41. **Redis 故障域与 ACL**：Celery broker、认证/会话/step-up、配额/频控/幂等/业务锁必须使用三个不同 Redis 端点和三个独立 ACL 密码；生产只允许托管高可用端点。API 不得获得 broker secret，worker-callback 不得获得 auth secret；default 用户和危险管理命令必须禁用。auth 不可用时 fail closed，broker 失败由 PostgreSQL Outbox 保留事实，control 投影只可从 PostgreSQL 事实重建
 
@@ -152,7 +156,8 @@ alembic revision --autogenerate -m "xxx" && alembic upgrade head
 
 ## 工作方式
 
-- 每完成一个 TASKS.md 任务：跑通验收 → 勾选 → 提交（`feat(M1): T1.7 双队列worker与uncertain机制`）
+- 维护期工作以当前用户请求或 Issue/PR 为单位，先写清目标、风险域和 1–3 条验收；不得继续向历史 `TASKS.md` 追加任务或勾选项
+- 编码循环优先运行相关测试与局部静态检查；`scripts/dev_check.sh --changed` 是提交前检查，不是每次保存后的必跑命令
 - 不确定的产品决策：先查 PRD.md，仍无答案则在 PR 描述列出假设，**不要静默自行决定**
 - 生成代码带类型注解；关键业务函数写中文 docstring
 - 涉及手机号的任何新代码，自查是否违反硬性规则 2 与 4
