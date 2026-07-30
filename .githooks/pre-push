@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+REMOTE_NAME="${1:-origin}"
+REMOTE_URL="${2:-$(git remote get-url "$REMOTE_NAME")}"
+EXPECTED_REPOSITORY="neuer/enterprise-sms-platform-public"
+
+repository_identity="$(
+  python3 -c 'import re,sys,urllib.parse
+raw=sys.argv[1]
+if raw.startswith("git@github.com:"):
+ path=raw.removeprefix("git@github.com:")
+elif raw.startswith(("https://","ssh://")):
+ parsed=urllib.parse.urlsplit(raw)
+ if parsed.hostname != "github.com" or parsed.password is not None:
+  raise SystemExit(1)
+ if parsed.scheme == "https" and parsed.username is not None:
+  raise SystemExit(1)
+ if parsed.scheme == "ssh" and parsed.username != "git":
+  raise SystemExit(1)
+ path=parsed.path
+else:
+ raise SystemExit(1)
+path=path.strip("/")
+if path.endswith(".git"):
+ path=path[:-4]
+if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",path):
+ raise SystemExit(1)
+print(path.lower())' "$REMOTE_URL"
+)" || {
+  echo "pre-push: public remote identity is invalid" >&2
+  exit 1
+}
+
+if [[ "$repository_identity" != "$EXPECTED_REPOSITORY" ]]; then
+  echo "pre-push: this workspace may only push to $EXPECTED_REPOSITORY" >&2
+  exit 1
+fi
+
+zero="0000000000000000000000000000000000000000"
+ranges=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_sha:-}" ]] || continue
+  [[ "$local_sha" != "$zero" ]] || continue
+  if [[ "$remote_sha" != "$zero" ]]; then
+    ranges+=("$remote_sha..$local_sha")
+  else
+    base="$(git merge-base "$local_sha" origin/main 2>/dev/null || true)"
+    if [[ -n "$base" ]]; then
+      ranges+=("$base..$local_sha")
+    else
+      ranges+=("$local_sha")
+    fi
+  fi
+done
+
+args=()
+for range in "${ranges[@]}"; do
+  args+=(--git-range "$range")
+done
+private_patterns="$(git rev-parse --git-common-dir)/public-scan-patterns"
+if [[ -f "$private_patterns" ]]; then
+  args+=(--private-patterns "$private_patterns")
+fi
+
+python3 "$ROOT/scripts/check_public_readiness.py" "${args[@]}"

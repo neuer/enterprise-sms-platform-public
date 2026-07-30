@@ -99,8 +99,9 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 
 ## 6. GitHub CI
 
-`.github/workflows/ci.yml` 在指向 `main` 的 PR、推送到 `main`、人工
-`workflow_dispatch` 和每日定时任务中运行。PR 与 `main` push 按变更文件选择快速检查；
+`.github/workflows/ci.yml` 在仓库分支 push、指向 `main` 的 PR、推送到 `main`、人工
+`workflow_dispatch` 和每日定时任务中运行。分支 push 始终按相对 `main` 的完整差异分类，
+因此由 Actions 自动创建 Draft PR 时不依赖递归 `pull_request` 事件。PR 与 `main` push 按变更文件选择快速检查；
 远端完整 G2 只由高风险 PR、人工/定时事件或失败关闭回退触发。稳定 job 名称及职责为：
 
 - `changes`：始终执行规格一致性、硬规则静态检查和路径分类；
@@ -116,18 +117,25 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 纯后端测试、普通后端业务或契约文档只增加对应快速 job。混合变更取规则并集，未知路径保守
 全跑；Git 差异无法可靠取得或分类器异常时不得伪装成功。可靠且路径已知的 `main` push
 不重复运行 G2，只重跑其快速检查；未知路径、空差异或事件元数据异常仍强制全跑。人工
-`workflow_dispatch` 与每天北京时间 02:17 强制运行 backend、frontend、security 和完整 G2，为分类规则
-长期漂移提供兜底证据。
+`workflow_dispatch` 与每天北京时间 02:17 强制运行 backend、frontend、security 和完整
+G2，为分类规则长期漂移提供兜底证据。
 
-本地 `bash scripts/verify_all.sh` 保留为建设终局和专项全量复验入口。日常
-`scripts/test_update.sh --ref origin/<branch>` 不查询或等待托管 CI，也不在隔离 worktree
-重复执行 G2 或组件测试；远端仍执行镜像、迁移和运行态安全检查。
+PR 的高风险 G2 使用 `scripts/verify_all.sh --mode integration`，复用同一 11 阶段实现，
+但跳过已由快速 job 覆盖的静态阶段；性能和 release-control 只在相应路径变化时加入。
+人工、定时与发布候选继续运行未裁剪的完整模式。可靠 `main` push 若能证明其 tree 与
+已合并 PR head 完全一致，复用该 PR 的精确 `ci-gate` 证据，不重复计算重型 job；任何证据
+缺失或来源不精确都失败关闭为重新运行。
+
+本地 `bash scripts/verify_all.sh` 保留为专项完整复验入口，日常开发使用
+`scripts/dev_check.sh --changed`。
 
 干净 Runner 先执行 `scripts/local_test.sh prepare`，只生成开发 `.env` 和临时 mock secrets；工作流不得读取或配置生产 secrets，也不得上传开发密钥或可能包含手机号的运行产物。
 
-公开主仓库保留 PR 与禁止 force-push/delete 的保护，但不设置 required check；
-`ci-gate` 继续作为异步汇总证据，不阻塞合并或测试发布。私有归档仓库只保留 Issue 与历史，
-不承担托管 CI。不得把 `backend`、`frontend`、`security`、`g2` 或 `ci-gate` 设为 required。
+公开主仓库保留 PR、会话解决、线性历史及禁止 force-push/delete 的保护。`ci-gate` 是
+`main` 唯一 required check，并绑定 GitHub Actions 应用；不得把 `backend`、`frontend`、
+`security` 或 `g2` 单独设为 required。普通无迁移测试更新允许 CI 并行运行；high-risk、
+迁移或控制面更新必须在 `apply` 前验证目标 commit 的精确 `ci-gate=success`。私有归档仓库
+只保留 Issue 与历史，不承担托管 CI。
 
 `.github/workflows/release-gate.yml` 的 `Release Gate` 只允许人工或 `v*` 标签触发；
 最终 SHA 必须重新执行完整质量、安全与 G2 门禁，再构建并扫描四个镜像。成功证据绑定

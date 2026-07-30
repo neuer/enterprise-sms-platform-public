@@ -13,18 +13,24 @@ cherry-pick 或推送其中的任何 Git 对象。
 ## 日常流程
 
 1. 从最新 `main` 创建短生命周期分支。
-2. 正常开发并运行与改动相关的测试。
-3. 提交前运行 `python3 scripts/check_public_readiness.py`。
-4. 推送分支；本地 Hook 只扫描新增提交，安全内容无需人工解锁。
-5. 通过 Pull Request 合并；`main` 禁止直接推送、强推和删除。
+2. 首次克隆执行 `scripts/install_git_hooks.sh`；正常开发后运行
+   `scripts/dev_check.sh --changed`。
+3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
+4. owner 分支自动创建 Draft PR；先在测试服务器验收，再将 PR 改为 Ready。
+5. `ci-gate` 通过且会话已解决后 squash merge；`main` 禁止直接推送、强推和删除。
+6. 已验证分支与 squash 后 `main` tree 相同时用 `scripts/test_update.sh promote
+   --ref origin/main` 免重建提升；不相同则重新执行测试部署。
 
 ## GitHub 设置
 
-1. 默认分支要求 Pull Request、公开仓库门禁与会话解决。
-2. Actions 默认权限为只读仓库内容，fork PR 不取得 secrets 或写权限。
+1. 默认分支要求 Pull Request、会话解决、线性历史和唯一 required `ci-gate`；required
+   check 必须绑定 GitHub Actions 应用，禁止同名外部状态伪造通过。
+2. Actions 默认权限为只读仓库内容；仅自动 Draft PR 工作流取得最小 PR 写权限，且只为
+   仓库 owner 的分支运行。fork PR 不取得 secrets 或写权限。
 3. 启用 secret scanning、push protection、Dependabot alerts 与私密漏洞报告。
 4. CI 执行规格、不变量、公开仓库、SAST、依赖、secret 和配置检查。
 5. Release、artifact、Pages、Packages 与 workflow 日志不得承载凭据、PII 或内部证据。
+6. 只允许 squash/rebase，自动删除已合并分支；`v*` 标签禁止改写或删除。
 
 ## 失败处理
 

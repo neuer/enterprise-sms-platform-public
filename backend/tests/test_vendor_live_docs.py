@@ -144,7 +144,7 @@ def test_fast_update_runbook_documents_safe_and_high_risk_matrix() -> None:
         "web-only",
         "backend-safe",
         "high-risk",
-        "不查询或等待托管 CI",
+        "ci-gate=success",
         "prepare",
         "apply",
         "verify",

@@ -18,13 +18,11 @@ scripts/local_test.sh up
 ## 验证
 
 ```bash
-python3 scripts/check_spec_consistency.py
-python3 scripts/check_public_readiness.py
-cd backend && uv run pytest -q
-cd ../frontend && npm ci && npm test && npm run typecheck && npm run build
+scripts/dev_check.sh --changed
 ```
 
-完整 G2 会创建并销毁专用 Mock 测试栈：
+该命令自动执行公开仓库门禁，并按本次改动选择后端或前端检查。完整 G2 会创建并销毁
+专用 Mock 测试栈：
 
 ```bash
 bash scripts/verify_all.sh
@@ -33,3 +31,5 @@ bash scripts/verify_all.sh
 ## 公开发布边界
 
 本项目采用 source-available、保留全部权利的许可，公开可见不等于开源授权。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。仓库从无私有历史的公开根提交开始；日常开发、Secret 隔离、自动门禁和 PR 发布方式见 [PUBLICATION.md](PUBLICATION.md)。
+
+从开发到测试服务器的最短安全流程见 [MAINTENANCE.md](MAINTENANCE.md)。

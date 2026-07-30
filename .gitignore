@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 deploy/secrets/
+.test-update/
 
 # Python
 __pycache__/

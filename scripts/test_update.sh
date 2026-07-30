@@ -5,12 +5,61 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 if [[ "${SMS_DOCKER_PUBLIC_SESSION:-0}" != "1" ]]; then
   exec "$ROOT/scripts/docker_public.sh" run -- bash "$0" "$@"
 fi
-TARGET="${SMS_TEST_UPDATE_TARGET:-}"
+CONFIG_FILE="$ROOT/.env.test-update"
+CONFIG_TARGET=""
+CONFIG_PORT=""
+if [[ -e "$CONFIG_FILE" ]]; then
+  [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || {
+    echo "test-update: .env.test-update 必须是当前用户拥有的普通文件" >&2
+    exit 2
+  }
+  if mode="$(stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null)"; then
+    :
+  else
+    mode="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || true)"
+  fi
+  [[ "$mode" == 400 || "$mode" == 600 ]] || {
+    echo "test-update: .env.test-update 权限必须是 400 或 600" >&2
+    exit 2
+  }
+  seen_target=0
+  seen_port=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" != *$'\r'* ]] || {
+      echo "test-update: .env.test-update 格式无效" >&2
+      exit 2
+    }
+    case "$line" in
+      "" | \#*) continue ;;
+      SMS_TEST_UPDATE_TARGET=*)
+        [[ "$seen_target" == 0 ]] || {
+          echo "test-update: .env.test-update 存在重复键" >&2
+          exit 2
+        }
+        CONFIG_TARGET="${line#*=}"
+        seen_target=1
+        ;;
+      SMS_TEST_UPDATE_PORT=*)
+        [[ "$seen_port" == 0 ]] || {
+          echo "test-update: .env.test-update 存在重复键" >&2
+          exit 2
+        }
+        CONFIG_PORT="${line#*=}"
+        seen_port=1
+        ;;
+      *)
+        echo "test-update: .env.test-update 只允许 TARGET 与 PORT" >&2
+        exit 2
+        ;;
+    esac
+  done <"$CONFIG_FILE"
+fi
+TARGET="${SMS_TEST_UPDATE_TARGET:-$CONFIG_TARGET}"
 CANONICAL_REMOTE_ROOT="/opt/sms-platform"
 REMOTE_ROOT="${SMS_TEST_UPDATE_ROOT:-$CANONICAL_REMOTE_ROOT}"
-PORT="${SMS_TEST_UPDATE_PORT:-22}"
+PORT="${SMS_TEST_UPDATE_PORT:-${CONFIG_PORT:-22}}"
 REF="origin/main"
-DRY_RUN=0
+COMMAND="apply"
 PUBLIC_SNAPSHOT_CUTOVER=0
 REMOTE_SMS_COMPOSE="/usr/local/sbin/sms-compose"
 BOOTSTRAP_SMS_COMPOSE="/usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap"
@@ -27,6 +76,7 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/test_update_backup.py"
   "deploy/scripts/test_update_contract.py"
   "deploy/scripts/test_update_manager.py"
+  "deploy/scripts/test_update_promote.py"
   "deploy/scripts/test_update_store.py"
   "deploy/scripts/test_update_verify.py"
   "scripts/check_public_readiness.py"
@@ -44,7 +94,7 @@ REMOTE_CONTROL_ENV=(
 )
 
 usage() {
-  echo "usage: scripts/test_update.sh [--dry-run] [--public-snapshot-cutover] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--public-snapshot-cutover] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -76,10 +126,19 @@ remote_sms_compose() {
     "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$REMOTE_SMS_COMPOSE" "$@"
 }
 
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    plan | build | apply | status | promote)
+      COMMAND="$1"
+      shift
+      ;;
+  esac
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
-      DRY_RUN=1
+      [[ "$COMMAND" == apply ]] || { usage; exit 2; }
+      COMMAND="plan"
       shift
       ;;
     --public-snapshot-cutover)
@@ -122,6 +181,45 @@ if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 && "$REF" != origin/main ]]; then
   echo "test-update: public snapshot cutover 只允许 origin/main" >&2
   exit 2
 fi
+if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 &&
+      "$COMMAND" != apply && "$COMMAND" != build && "$COMMAND" != plan ]]; then
+  echo "test-update: public snapshot cutover 不支持该命令" >&2
+  exit 2
+fi
+if [[ "$COMMAND" == promote && "$REF" != origin/main ]]; then
+  echo "test-update: promote 只允许 origin/main" >&2
+  exit 2
+fi
+
+if [[ "$COMMAND" == status ]]; then
+  LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
+  REMOTE_ORIGIN_URL="$(
+    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "$TARGET" git -C "$REMOTE_ROOT" remote get-url origin
+  )"
+  if ! LOCAL_REPOSITORY="$(github_repository_identity "$LOCAL_ORIGIN_URL")" ||
+    ! REMOTE_REPOSITORY="$(github_repository_identity "$REMOTE_ORIGIN_URL")"; then
+    echo "test-update: origin 必须是无凭据的 GitHub 仓库地址" >&2
+    exit 1
+  fi
+  [[ "$LOCAL_REPOSITORY" == "$REMOTE_REPOSITORY" ]] || {
+    echo "test-update: 本地与远端 origin 仓库不一致，拒绝读取状态" >&2
+    exit 1
+  }
+  REMOTE_COMMIT="$(
+    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
+  )"
+  UPDATE_STATUS="$(remote_sms_compose test-update status)"
+  VENDOR_STATUS="$(remote_sms_compose vendor-test status)"
+  python3 -c 'import json,sys
+repo,commit,update_raw,vendor_raw=sys.argv[1:]
+assert len(commit)==40 and all(c in "0123456789abcdef" for c in commit)
+payload={"repository":repo,"commit":commit,"test_update":json.loads(update_raw),"vendor_test":json.loads(vendor_raw)}
+print(json.dumps(payload,separators=(",",":"),sort_keys=True))' \
+    "$LOCAL_REPOSITORY" "$REMOTE_COMMIT" "$UPDATE_STATUS" "$VENDOR_STATUS"
+  exit 0
+fi
 
 if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
   echo "test-update: 本地工作树必须干净" >&2
@@ -158,6 +256,35 @@ if ! git -C "$ROOT" cat-file -e "$REMOTE_COMMIT^{commit}" 2>/dev/null; then
   exit 1
 fi
 echo "test-update: preflight root=$REMOTE_ROOT base=$REMOTE_COMMIT target=$TARGET_COMMIT ref=$REF"
+
+if [[ "$COMMAND" == promote ]]; then
+  BASE_TREE="$(git -C "$ROOT" rev-parse "$REMOTE_COMMIT^{tree}")"
+  TARGET_TREE="$(git -C "$ROOT" rev-parse "$TARGET_COMMIT^{tree}")"
+  [[ "$BASE_TREE" == "$TARGET_TREE" ]] || {
+    echo "test-update: promote 只允许代码树完全相同的提交" >&2
+    exit 1
+  }
+  python3 "$ROOT/scripts/verify_ci_commit.py" \
+    --repository "$LOCAL_REPOSITORY" \
+    --commit "$TARGET_COMMIT"
+  PROMOTE_STATUS="$(
+    remote_sms_compose test-update promote "$REF" "$TARGET_COMMIT"
+  )"
+  FINAL_COMMIT="$(
+    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
+  )"
+  [[ "$FINAL_COMMIT" == "$TARGET_COMMIT" ]] || {
+    echo "test-update: promote 后远端 commit 不匹配" >&2
+    exit 1
+  }
+  echo "$PROMOTE_STATUS"
+  bash "$ROOT/scripts/record_test_deployment.sh" \
+    "$LOCAL_REPOSITORY" "$TARGET_COMMIT" "$REF" "Promoted verified test tree to main"
+  echo "test-update: state=promoted commit=$TARGET_COMMIT"
+  exit 0
+fi
+
 BASELINE_STATUS="$(
   remote_sms_compose vendor-test status
 )"
@@ -179,8 +306,16 @@ DIFF_STATUS=0
 git -C "$ROOT" diff --quiet --no-renames \
   "$REMOTE_COMMIT" "$TARGET_COMMIT" || DIFF_STATUS=$?
 if [[ "$DIFF_STATUS" == 0 ]]; then
-  echo "test-update: 无运行时代码差异"
-  exit 0
+  if [[ "$REMOTE_COMMIT" == "$TARGET_COMMIT" ]]; then
+    echo "test-update: 远端已是目标 commit"
+    exit 0
+  fi
+  if [[ "$COMMAND" == plan ]]; then
+    echo "test-update: action=promote risk=none base=$REMOTE_COMMIT target=$TARGET_COMMIT ref=$REF"
+    exit 0
+  fi
+  echo "test-update: 代码树相同但 commit 不同；请执行 scripts/test_update.sh promote --ref origin/main" >&2
+  exit 1
 fi
 if [[ "$DIFF_STATUS" -gt 1 ]]; then
   echo "test-update: 无法计算远端基线到目标 commit 的差异" >&2
@@ -242,6 +377,14 @@ RISK="$(
   python3 -c 'import json,sys; print(json.loads(sys.argv[1])["risk"])' \
     "$SCOPE_JSON"
 )"
+MIGRATION_CHANGED="$(
+  python3 -c 'import json,sys; print(int(bool(json.loads(sys.argv[1]).get("migration_changed"))))' \
+    "$SCOPE_JSON"
+)"
+HIGH_RISK_PATHS="$(
+  python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("high_risk_paths",[]); assert isinstance(value,list) and all(isinstance(item,str) for item in value); print(",".join(value) if value else "-")' \
+    "$SCOPE_JSON"
+)"
 API_CHANGED="$(
   python3 -c 'import json,sys; print(int("api" in json.loads(sys.argv[1])["components"]))' \
     "$SCOPE_JSON"
@@ -250,7 +393,21 @@ WEB_CHANGED="$(
   python3 -c 'import json,sys; print(int("web" in json.loads(sys.argv[1])["components"]))' \
     "$SCOPE_JSON"
 )"
-if [[ "$RISK" == high-risk ]]; then
+CI_REQUIRED=0
+if [[ "$RISK" == high-risk || "$MIGRATION_CHANGED" == 1 ]]; then
+  CI_REQUIRED=1
+fi
+if [[ "$COMMAND" == plan && "$CI_REQUIRED" == 1 ]]; then
+  python3 "$ROOT/scripts/verify_ci_commit.py" \
+    --repository "$LOCAL_REPOSITORY" \
+    --commit "$TARGET_COMMIT" \
+    --status-only
+elif [[ "$COMMAND" == apply && "$CI_REQUIRED" == 1 ]]; then
+  python3 "$ROOT/scripts/verify_ci_commit.py" \
+    --repository "$LOCAL_REPOSITORY" \
+    --commit "$TARGET_COMMIT"
+fi
+if [[ "$RISK" == high-risk && "$COMMAND" == apply ]]; then
   REMOTE_SMS_COMPOSE="$BOOTSTRAP_SMS_COMPOSE"
   if ! CAPABILITY_JSON="$(remote_sms_compose test-update capability 2>/dev/null)" ||
     ! python3 -c 'import json,sys
@@ -286,11 +443,14 @@ assert all(character in "0123456789abcdef" for character in value["source_commit
   fi
 fi
 if [[ "$API_CHANGED" == 1 ]]; then
-  UPDATE_KIND="backend-safe"
+  UPDATE_KIND="$RISK"
+  if [[ "$RISK" != "high-risk" ]]; then
+    UPDATE_KIND="backend-safe"
+  fi
 elif [[ "$WEB_CHANGED" == 1 ]]; then
   UPDATE_KIND="web-only"
 else
-  echo "test-update: 只有测试或文档差异"
+  echo "test-update: action=none risk=$RISK components=- migration=$MIGRATION_CHANGED high_risk_paths=$HIGH_RISK_PATHS"
   exit 0
 fi
 
@@ -309,7 +469,7 @@ cleanup() {
 trap cleanup EXIT
 git -C "$ROOT" worktree add --detach "$WORKTREE" "$TARGET_COMMIT"
 mkdir -m 0700 "$BUNDLE"
-echo "test-update: 目标 commit 已推送；不等待托管 CI，不重复执行本地测试"
+echo "test-update: 目标 commit 已推送；不重复执行组件测试，已按风险执行托管 CI 策略"
 MIGRATION_TARGET="$(
   python3 -c 'import ast,pathlib,sys; files=list(pathlib.Path(sys.argv[1]).glob("*.py")); pairs=[]
 for path in files:
@@ -327,6 +487,14 @@ if [[ "$MIGRATION_FROM" == "$MIGRATION_TARGET" ]]; then
   MIGRATION_COMPATIBILITY="none"
 else
   MIGRATION_COMPATIBILITY="expand"
+fi
+
+PLANNED_COMPONENTS=()
+[[ "$API_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(api)
+[[ "$WEB_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(web)
+echo "test-update: action=$COMMAND risk=$RISK components=${PLANNED_COMPONENTS[*]} migration=$MIGRATION_CHANGED compatibility=$MIGRATION_COMPATIBILITY ci_required=$CI_REQUIRED high_risk_paths=$HIGH_RISK_PATHS"
+if [[ "$COMMAND" == plan ]]; then
+  exit 0
 fi
 
 COMPONENTS=()
@@ -399,8 +567,8 @@ path=__import__("pathlib").Path(out); path.write_text(json.dumps(payload,separat
   "$WEB_REF_VALUE" "$WEB_ID_VALUE" "$WEB_DIGEST_VALUE"
 chmod 0600 "$BUNDLE/request.json"
 
-if [[ "$DRY_RUN" == 1 ]]; then
-  echo "test-update: dry-run kind=$UPDATE_KIND components=${COMPONENTS[*]}"
+if [[ "$COMMAND" == build ]]; then
+  echo "test-update: state=built risk=$RISK components=${COMPONENTS[*]} commit=$TARGET_COMMIT"
   exit 0
 fi
 
@@ -529,4 +697,6 @@ if ! printf '%s' "$FINAL_STATUS" |
   echo "test-update: 远端终态未达到目标 verified" >&2
   exit 1
 fi
+bash "$ROOT/scripts/record_test_deployment.sh" \
+  "$LOCAL_REPOSITORY" "$TARGET_COMMIT" "$REF" "Verified fast update on test server"
 echo "test-update: state=verified commit=$TARGET_COMMIT"

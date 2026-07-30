@@ -78,10 +78,10 @@ def test_driver_accepts_no_secret_or_phone_arguments_and_uses_fixed_remote_comma
     assert "eval " not in source
 
 
-def test_driver_skips_hosted_ci_and_keeps_high_risk_host_control_binding() -> None:
+def test_driver_requires_exact_ci_for_high_risk_and_keeps_host_control_binding() -> None:
     source = DRIVER.read_text(encoding="utf-8")
     high_risk_control = source.split(
-        'if [[ "$RISK" == high-risk ]]; then',
+        'if [[ "$RISK" == high-risk && "$COMMAND" == apply ]]; then',
         maxsplit=1,
     )[1].split(
         "fi",
@@ -90,8 +90,9 @@ def test_driver_skips_hosted_ci_and_keeps_high_risk_host_control_binding() -> No
 
     assert "deploy/scripts/test_update_contract.py" in source
     assert "classify-nul" in source
-    assert 'if [[ "$RISK" == high-risk ]]' in source
-    assert "scripts/verify_ci_commit.py" not in source
+    assert 'if [[ "$RISK" == high-risk || "$MIGRATION_CHANGED" == 1 ]]' in source
+    assert "scripts/verify_ci_commit.py" in source
+    assert "--commit \"$TARGET_COMMIT\"" in source
     assert "api.github.com" not in source
     assert "scripts/verify_all.sh" not in source
     assert "scripts/verify_vendor_live_test.sh" not in source
@@ -179,7 +180,7 @@ def test_driver_does_not_repeat_backend_or_frontend_ci_commands() -> None:
     assert "npm ci" not in source
     assert "npm test" not in source
     assert "npm run typecheck" not in source
-    assert "不等待托管 CI，不重复执行本地测试" in source
+    assert "不重复执行组件测试，已按风险执行托管 CI 策略" in source
 
 
 def test_driver_uses_nul_safe_no_rename_diff_for_risk_classification() -> None:
@@ -389,6 +390,7 @@ def test_driver_classifier_accepts_g2_api_acceptance_as_non_runtime() -> None:
     assert result.returncode == 0, result.stderr.decode()
     assert json.loads(result.stdout) == {
         "components": [],
+        "high_risk_paths": [],
         "migration_changed": False,
         "risk": "none",
         "runtime_changed": False,

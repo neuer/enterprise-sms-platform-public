@@ -1,0 +1,45 @@
+name: Auto Draft PR
+
+on:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-draft-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  open:
+    name: open-draft-pr
+    if: ${{ github.actor == github.repository_owner }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Open draft PR when the branch has none
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.ref_name }}
+        run: |
+          existing="$(
+            gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --head "$HEAD_BRANCH" \
+              --state open \
+              --json number \
+              --jq 'length'
+          )"
+          if [[ "$existing" == 0 ]]; then
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/pulls" \
+              -f "title=Draft: $HEAD_BRANCH" \
+              -f "head=$HEAD_BRANCH" \
+              -f "base=main" \
+              -f "body=Automated Draft PR. Update this description before marking Ready." \
+              -F "draft=true" \
+              >/dev/null
+          fi

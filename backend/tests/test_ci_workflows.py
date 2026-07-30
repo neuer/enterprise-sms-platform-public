@@ -67,10 +67,14 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
     triggers = workflow_triggers(workflow)
 
     assert triggers["pull_request"]["branches"] == ["main"]
-    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["branches"] == ["**"]
     assert "workflow_dispatch" in triggers
     assert triggers["schedule"] == [{"cron": "17 18 * * *"}]
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {
+        "checks": "read",
+        "contents": "read",
+        "pull-requests": "read",
+    }
     assert workflow["concurrency"]["cancel-in-progress"] is True
 
     jobs = workflow["jobs"]
@@ -90,6 +94,9 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "frontend": "${{ steps.classify.outputs.frontend }}",
         "security": "${{ steps.classify.outputs.security }}",
         "g2": "${{ steps.classify.outputs.g2 }}",
+        "performance": "${{ steps.classify.outputs.performance }}",
+        "release_control": "${{ steps.classify.outputs.release_control }}",
+        "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
     }
     assert changes["steps"][0]["with"]["fetch-depth"] == 0
     changes_commands = job_commands(changes)
@@ -98,10 +105,23 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "scripts/check_invariants.py",
         "scripts/check_public_readiness.py",
         "scripts/release_metadata.py",
+        "scripts/reuse_pr_ci_evidence.py",
         "scripts/classify_ci_changes.py",
         "github.event.pull_request.head.sha || github.sha",
+        'git merge-base origin/main "$GITHUB_SHA"',
+        'event_name=pull_request',
     ):
         assert command in changes_commands
+    expected_concurrency_group = (
+        "ci-${{ github.workflow }}-${{ github.event_name }}-"
+        "${{ github.event.pull_request.head.label || github.ref_name }}"
+    )
+    assert workflow["concurrency"]["group"] == expected_concurrency_group
+    assert "github.event_name != 'pull_request'" in changes["if"]
+    assert (
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in changes["if"]
+    )
 
     backend_commands = job_commands(jobs["backend"])
     for command in (
@@ -159,6 +179,9 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
     g2_commands = job_commands(jobs["g2"])
     assert "scripts/local_test.sh prepare" in g2_commands
     assert "bash scripts/verify_all.sh" in g2_commands
+    assert "--mode integration" in g2_commands
+    assert "needs.changes.outputs.performance" in g2_commands
+    assert "needs.changes.outputs.release_control" in g2_commands
     assert "verify_vendor_live_test.sh" in (ROOT / "scripts/verify_all.sh").read_text(
         encoding="utf-8"
     )
@@ -171,7 +194,15 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
 
     gate = jobs["ci-gate"]
     assert gate["needs"] == ["changes", "backend", "frontend", "security", "g2"]
-    assert gate["if"] == "${{ !cancelled() }}"
+    assert gate["name"].endswith(
+        "&& 'same-repo-pr-ci-skipped' || 'ci-gate' }}"
+    )
+    assert "!cancelled()" in gate["if"]
+    assert "github.event_name != 'pull_request'" in gate["if"]
+    assert (
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in gate["if"]
+    )
     assert "scripts/verify_ci_results.py" in job_commands(gate)
 
     assert_actions_are_immutable(workflow)
@@ -224,7 +255,12 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert summary["env"] == {"G2_TIMING_FILE": "${{ runner.temp }}/g2-timing.jsonl"}
     assert "steps.authoritative-g2.outcome" in summary["run"]
     assert "scripts/g2_timing.py render" in summary["run"]
+    assert "--expected-stages" in summary["run"]
+    assert "steps.authoritative-g2.outputs.expected_stages" in summary["run"]
     assert 'GITHUB_STEP_SUMMARY' in summary["run"]
+    assert 'expected_stages="5,6,7"' in gate["run"]
+    assert 'expected_stages+=",8"' in gate["run"]
+    assert 'expected_stages+=",10"' in gate["run"]
 
 
 def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
@@ -292,7 +328,10 @@ def test_bootstrap_documents_ci_checks_and_public_enforcement() -> None:
         "02:17",
         "workflow_dispatch",
         "本地 `bash scripts/verify_all.sh`",
-        "不设置 required check",
+        "`main` 唯一 required check",
+        "绑定 GitHub Actions 应用",
+        "--mode integration",
+        "tree 与",
     ):
         assert token in documentation
     assert "私有归档仓库" in documentation

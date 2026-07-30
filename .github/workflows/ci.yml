@@ -4,21 +4,26 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch: {}
   schedule:
     - cron: "17 18 * * *"
 
 permissions:
+  checks: read
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.label || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   changes:
     name: changes
+    # 仓库内分支由 push 运行一次 CI；pull_request 仅用于没有仓库 push 事件的 fork。
+    # 这避免同一 SHA 上出现一组 success 和一组 cancelled 的同名检查。
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -27,6 +32,9 @@ jobs:
       frontend: ${{ steps.classify.outputs.frontend }}
       security: ${{ steps.classify.outputs.security }}
       g2: ${{ steps.classify.outputs.g2 }}
+      performance: ${{ steps.classify.outputs.performance }}
+      release_control: ${{ steps.classify.outputs.release_control }}
+      reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -43,14 +51,35 @@ jobs:
           python3 scripts/check_invariants.py
           python3 scripts/check_public_readiness.py
           python3 scripts/release_metadata.py --root "$GITHUB_WORKSPACE"
+      - name: Verify reusable PR evidence for main
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/reuse_pr_ci_evidence.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate "$GITHUB_SHA" \
+            --event-name "${{ github.event_name }}" \
+            --github-output "$GITHUB_OUTPUT"
       - name: Classify changed files and G2 policy
         id: classify
         run: |
+          event_name="${{ github.event_name }}"
+          base_sha="${{ github.event.pull_request.base.sha || '' }}"
+          before_sha="${{ github.event.before || '' }}"
+          head_sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [[ "$event_name" == push && "$GITHUB_REF" != refs/heads/main ]]; then
+            event_name=pull_request
+            base_sha="$(git merge-base origin/main "$GITHUB_SHA")"
+            before_sha=""
+            head_sha="$GITHUB_SHA"
+          fi
           python3 scripts/classify_ci_changes.py \
-            --event-name "${{ github.event_name }}" \
-            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
-            --before-sha "${{ github.event.before || '' }}" \
-            --head-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --event-name "$event_name" \
+            --base-sha "$base_sha" \
+            --before-sha "$before_sha" \
+            --head-sha "$head_sha" \
+            --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
 
   backend:
@@ -222,8 +251,8 @@ jobs:
 
   g2:
     name: g2
-    # 仅高风险 PR、人工/定时事件及失败关闭回退会要求远端完整 G2；
-    # 可靠的已知 main push 不重复已经在 PR 或本地执行的权威门禁。
+    # 后端/前端/security 已完成静态与组件门禁；这里只跑整栈运行态阶段。
+    # 性能和发布控制烟测按路径选择，人工/定时事件仍全跑。
     needs: [changes, backend, frontend, security]
     outputs:
       tested_sha: ${{ steps.bind.outputs.sha }}
@@ -287,6 +316,17 @@ jobs:
           G2_NPM_CACHE_DIR: ${{ runner.temp }}/g2-npm-cache
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
+          g2_args=(--mode integration)
+          expected_stages="5,6,7"
+          if [[ "${{ needs.changes.outputs.performance }}" == true ]]; then
+            g2_args+=(--include-performance)
+            expected_stages+=",8"
+          fi
+          if [[ "${{ needs.changes.outputs.release_control }}" == true ]]; then
+            g2_args+=(--include-release-control)
+            expected_stages+=",10"
+          fi
+          echo "expected_stages=$expected_stages" >> "$GITHUB_OUTPUT"
           sudo env \
             PATH="$PATH" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
@@ -299,7 +339,7 @@ jobs:
             G2_DOCKER_CACHE_DIR="$G2_DOCKER_CACHE_DIR" \
             G2_NPM_CACHE_DIR="$G2_NPM_CACHE_DIR" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
-            bash scripts/verify_all.sh
+            bash scripts/verify_all.sh "${g2_args[@]}"
       - name: Render G2 timing summary
         if: ${{ always() }}
         env:
@@ -308,12 +348,17 @@ jobs:
           python3 scripts/g2_timing.py render \
             --file "$G2_TIMING_FILE" \
             --gate-outcome "${{ steps.authoritative-g2.outcome }}" \
+            --expected-stages "${{ steps.authoritative-g2.outputs.expected_stages }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
   ci-gate:
-    name: ci-gate
+    # 同仓 PR 的占位检查必须使用不同名称，精确提交验证只能采信真正执行的 ci-gate。
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && 'same-repo-pr-ci-skipped' || 'ci-gate' }}
     needs: [changes, backend, frontend, security, g2]
-    if: ${{ !cancelled() }}
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name != github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

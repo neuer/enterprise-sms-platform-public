@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -89,8 +90,33 @@ def _read_records(path: Path) -> list[TimingRecord]:
     return records
 
 
-def _is_valid_prefix(records: list[TimingRecord]) -> bool:
-    if not records or [record.stage for record in records] != list(range(len(records))):
+def _validated_expected_stages(expected_stages: Sequence[int] | None) -> tuple[int, ...]:
+    expected = (
+        tuple(range(len(STAGE_NAMES)))
+        if expected_stages is None
+        else tuple(expected_stages)
+    )
+    if (
+        not expected
+        or list(expected) != sorted(set(expected))
+        or any(
+            type(stage) is not int or not 0 <= stage < len(STAGE_NAMES)
+            for stage in expected
+        )
+    ):
+        raise ValueError("invalid expected G2 timing stages")
+    return expected
+
+
+def _is_valid_prefix(
+    records: list[TimingRecord],
+    expected_stages: Sequence[int],
+) -> bool:
+    if (
+        not records
+        or [record.stage for record in records]
+        != list(expected_stages[: len(records)])
+    ):
         return False
     failure_positions = [
         index for index, record in enumerate(records) if record.status == "failure"
@@ -111,7 +137,11 @@ def _table(records: list[TimingRecord], *, partial: bool) -> str:
             f"{record.duration_ms / 1000:.3f}s |"
         )
     total_ms = sum(record.duration_ms for record in records)
-    total_status = "failure" if any(record.status == "failure" for record in records) else "success"
+    total_status = (
+        "failure"
+        if any(record.status == "failure" for record in records)
+        else "success"
+    )
     lines.append(f"| 合计 |  | {total_status} | {total_ms / 1000:.3f}s |")
     if partial:
         lines.extend(("", "> G2 未成功完成；上表为截至终止点的部分计时。"))
@@ -123,10 +153,16 @@ def _append_summary(path: Path, content: str) -> None:
         handle.write(content)
 
 
-def render_summary(timing_file: Path, gate_outcome: str, summary_file: Path) -> int:
+def render_summary(
+    timing_file: Path,
+    gate_outcome: str,
+    summary_file: Path,
+    expected_stages: Sequence[int] | None = None,
+) -> int:
     """渲染 Actions Summary；成功门禁的计时证据缺失时失败关闭。"""
 
     try:
+        expected = _validated_expected_stages(expected_stages)
         records = _read_records(timing_file)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         if gate_outcome == "success":
@@ -139,7 +175,10 @@ def render_summary(timing_file: Path, gate_outcome: str, summary_file: Path) -> 
         return 0
 
     if gate_outcome == "success":
-        complete = len(records) == len(STAGE_NAMES) and _is_valid_prefix(records)
+        complete = len(records) == len(expected) and _is_valid_prefix(
+            records,
+            expected,
+        )
         if not complete or any(record.status != "success" for record in records):
             _append_summary(
                 summary_file,
@@ -149,7 +188,7 @@ def render_summary(timing_file: Path, gate_outcome: str, summary_file: Path) -> 
         _append_summary(summary_file, _table(records, partial=False))
         return 0
 
-    if not _is_valid_prefix(records):
+    if not _is_valid_prefix(records, expected):
         _append_summary(summary_file, "## G2 阶段耗时\n\n> G2 计时不可用；原始门禁结果保持失败。\n")
         return 0
     _append_summary(summary_file, _table(records, partial=True))
@@ -171,7 +210,20 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--file", type=Path, required=True)
     render.add_argument("--gate-outcome", required=True)
     render.add_argument("--summary-file", type=Path, required=True)
+    render.add_argument(
+        "--expected-stages",
+        default=",".join(str(stage) for stage in range(len(STAGE_NAMES))),
+    )
     return parser
+
+
+def _parse_expected_stages(raw: str) -> tuple[int, ...]:
+    try:
+        return _validated_expected_stages(
+            tuple(int(value) for value in raw.split(","))
+        )
+    except ValueError as error:
+        raise ValueError("invalid expected G2 timing stages") from error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,7 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "record":
             append_record(args.file, args.stage, args.name, args.status, args.duration_ms)
             return 0
-        return render_summary(args.file, args.gate_outcome, args.summary_file)
+        return render_summary(
+            args.file,
+            args.gate_outcome,
+            args.summary_file,
+            _parse_expected_stages(args.expected_stages),
+        )
     except (OSError, UnicodeError, ValueError):
         print("G2 timing operation failed", file=sys.stderr)
         return 1
