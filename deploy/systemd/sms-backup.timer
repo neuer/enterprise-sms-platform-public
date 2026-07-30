@@ -1,0 +1,11 @@
+[Unit]
+Description=Create an encrypted Enterprise SMS Platform backup daily
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=sms-backup.service
+
+[Install]
+WantedBy=timers.target

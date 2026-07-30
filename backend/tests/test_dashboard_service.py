@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
+
+import pytest
+
+from app.core.jobtrack import JobSpec
+from app.services.dashboard import (
+    CategoryTotals,
+    DashboardFacts,
+    DashboardOperationsFacts,
+    DashboardService,
+    JobLatest,
+)
+
+
+class FakeRepository:
+    def __init__(self, facts: DashboardFacts) -> None:
+        self.facts = facts
+        self.calls: list[tuple[str | None, date, bool]] = []
+
+    async def load(
+        self,
+        scope_dept: str | None,
+        today: date,
+        *,
+        include_operations: bool,
+    ) -> DashboardFacts:
+        self.calls.append((scope_dept, today, include_operations))
+        return self.facts
+
+
+@pytest.mark.asyncio
+async def test_dashboard_applies_dept_scope_fills_categories_and_calculates_health() -> None:
+    now = datetime(2026, 7, 12, 4, 0, tzinfo=UTC)
+    facts = DashboardFacts(
+        categories=(CategoryTotals("notice", 10, 12, 8, 2, 0),),
+        pending_approvals=2,
+    )
+    repository = FakeRepository(facts)
+    service = DashboardService(
+        repository,
+        (JobSpec("poll_report", 60), JobSpec("aggregate_stats", 300)),
+        clock=lambda: now,
+    )
+
+    result = await service.get(role="viewer", dept="业务一部")
+
+    assert repository.calls == [("业务一部", date(2026, 7, 12), False)]
+    assert [item.category for item in result.categories] == ["verify", "notice", "market"]
+    assert result.categories[1].success_rate == 0.8
+    assert result.overall_success_rate == 0.8
+    assert result.categories[0].total == 0
+    assert result.operations is None
+
+
+@pytest.mark.asyncio
+async def test_elevated_dashboard_is_global_and_failed_or_late_job_is_red() -> None:
+    now = datetime(2026, 7, 12, 4, 0, tzinfo=UTC)
+    facts = DashboardFacts(
+        categories=(),
+        pending_approvals=0,
+        operations=DashboardOperationsFacts(
+            current_balance=None,
+            balances=(),
+            alerts=(),
+            uncertain=0,
+            unmatched=0,
+            callback_dead=0,
+            jobs=(JobLatest("poll_report", now - timedelta(seconds=130), "failed"),),
+        ),
+    )
+    repository = FakeRepository(facts)
+    service = DashboardService(
+        repository,
+        (JobSpec("poll_report", 60),),
+        clock=lambda: now,
+    )
+
+    result = await service.get(role="admin", dept="审批部")
+
+    assert repository.calls == [(None, date(2026, 7, 12), True)]
+    assert result.operations is not None
+    assert result.operations.jobs[0].stalled is True

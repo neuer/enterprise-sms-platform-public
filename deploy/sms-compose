@@ -1,0 +1,951 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WRAPPER_SOURCE="${BASH_SOURCE[0]}"
+WRAPPER_SYMLINK_HOPS=0
+while [[ -L "$WRAPPER_SOURCE" ]]; do
+  WRAPPER_SYMLINK_HOPS=$((WRAPPER_SYMLINK_HOPS + 1))
+  if ((WRAPPER_SYMLINK_HOPS > 40)); then
+    echo "sms-compose: wrapper symlink chain is too deep" >&2
+    exit 1
+  fi
+  WRAPPER_SOURCE_DIR="$(cd -- "$(dirname -- "$WRAPPER_SOURCE")" && pwd -P)"
+  WRAPPER_LINK_TARGET="$(readlink "$WRAPPER_SOURCE")" || {
+    echo "sms-compose: wrapper symlink target cannot be read" >&2
+    exit 1
+  }
+  if [[ "$WRAPPER_LINK_TARGET" == /* ]]; then
+    WRAPPER_SOURCE="$WRAPPER_LINK_TARGET"
+  else
+    WRAPPER_SOURCE="$WRAPPER_SOURCE_DIR/$WRAPPER_LINK_TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$WRAPPER_SOURCE")" && pwd -P)"
+WRAPPER_PATH="$SCRIPT_DIR/${WRAPPER_SOURCE##*/}"
+if [[ ! -f "$WRAPPER_PATH" ]]; then
+  echo "sms-compose: wrapper target is unavailable" >&2
+  exit 1
+fi
+if [[ -n "${SMS_PLATFORM_ROOT:-}" ]]; then
+  ROOT="$(cd -- "$SMS_PLATFORM_ROOT" && pwd -P)"
+else
+  ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+fi
+
+RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-/run/sms-platform/secrets}"
+SECRETS_MODE="${SMS_SECRETS_MODE:-production}"
+PREPROCESSOR="$ROOT/deploy/scripts/prepare_runtime_secrets.py"
+LOCK_RUNNER="$ROOT/deploy/scripts/run_with_lifecycle_lock.py"
+RELEASE_MANAGER="$ROOT/deploy/scripts/release_manager.py"
+VENDOR_TEST_MANAGER="$ROOT/deploy/scripts/vendor_test_manager.py"
+VENDOR_TEST_BOOTSTRAP="$ROOT/deploy/scripts/vendor_test_bootstrap.py"
+VENDOR_RUNTIME_RESET="$ROOT/deploy/scripts/vendor_runtime_reset.py"
+VENDOR_CONTROL_RELOAD="$ROOT/deploy/scripts/vendor_control_reload.py"
+TEST_UPDATE_MANAGER="$ROOT/deploy/scripts/test_update_manager.py"
+PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
+HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
+TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
+HOST_BOOTSTRAP=0
+if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
+  HOST_BOOTSTRAP=1
+  LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"
+  TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"
+  PUBLIC_CUTOVER_BOOTSTRAP="$HOST_CONTROL_ROOT/public_cutover_bootstrap.py"
+fi
+LOCK_PYTHON=(python3)
+if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
+  LOCK_PYTHON=(
+    /usr/bin/env
+    PYTHONNOUSERSITE=1
+    "PYTHONPATH=$HOST_CONTROL_ROOT"
+    /usr/bin/python3
+  )
+fi
+if [[ "${SMS_SECURE_ACCESS_MANAGER_SMOKE:-0}" == 1 &&
+      "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
+  TEST_SECURE_ACCESS_MANAGER="$ROOT/deploy/scripts/test_secure_access_manager.py"
+fi
+DEFAULT_RELEASE_ROOT="/var/lib/sms-platform/releases"
+RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
+VENDOR_TEST_MARKER="/etc/sms-platform/test-environment"
+VENDOR_TEST_STATE_DIR="/var/lib/sms-platform/vendor-test"
+VENDOR_CREDENTIAL_ROOT="/var/lib/sms-platform/vendor-test/credentials"
+VENDOR_CONTROL_SOCKET_DIR="/run/sms-platform/vendor-control"
+TEST_UPDATE_STATE_ROOT="/var/lib/sms-platform/test-updates"
+TEST_UPDATE_REQUEST="$TEST_UPDATE_STATE_ROOT/incoming/request.json"
+COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/docker-compose.yml")
+ROTATE_WAIT_TIMEOUT=120
+BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-bulk worker-callback outbox-dispatcher beat)
+export SMS_RUNTIME_SECRETS_DIR="$RUNTIME_ROOT/current"
+
+usage() {
+  echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs|exec [args...]" >&2
+  echo "release prepare|activate|status|resume|rollback: use the documented exact arguments" >&2
+  echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
+  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|status|capability; cp [args...]" >&2
+  echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
+  echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
+  echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
+  echo "lifecycle locking: portable Python fcntl runner" >&2
+}
+
+configure_release_root() {
+  local root_present=0 smoke_present=0
+  [[ ${SMS_RELEASE_ROOT+x} ]] && root_present=1
+  [[ ${SMS_RELEASE_SMOKE+x} ]] && smoke_present=1
+
+  RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
+  if [[ "$SECRETS_MODE" == production ]]; then
+    if [[ "$root_present" == 1 || "$smoke_present" == 1 ]]; then
+      echo "sms-compose: production release state override is forbidden" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  if [[ "$root_present" == 0 && "$smoke_present" == 0 ]]; then
+    return 0
+  fi
+  if [[ "$root_present" != 1 || "$smoke_present" != 1 ||
+        "${SMS_RELEASE_SMOKE-}" != 1 || -z "${SMS_RELEASE_ROOT-}" ]]; then
+    echo "sms-compose: development release state override is invalid" >&2
+    return 1
+  fi
+  RELEASE_ROOT="$SMS_RELEASE_ROOT"
+}
+
+trim_non_secret_value() {
+  local value="$1"
+  value="${value%%#*}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+validate_production_launch() {
+  local env_file="$ROOT/.env"
+  local line key raw value shell_value
+  local seen_environment=0 seen_debug=0 seen_auth_mock=0 seen_vendor_mock=0
+  local seen_compose_profiles=0
+  local env_environment='' env_debug='' env_auth_mock='' env_vendor_mock=''
+  local env_compose_profiles=''
+
+  if [[ ! -f "$env_file" ]]; then
+    echo "sms-compose: production requires the root .env file" >&2
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*(SMS_INGRESS_SUBNET|SMS_API_INGRESS_IPV4|SMS_WEB_INGRESS_IPV4)[[:space:]]*= ]]; then
+      echo "sms-compose: production ingress overrides are forbidden" >&2
+      return 1
+    fi
+    if [[ "$line" =~ ^[[:space:]]*(ENVIRONMENT|DEBUG|AUTH_MOCK|VENDOR_MOCK|COMPOSE_PROFILES)[[:space:]]*=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      raw="${BASH_REMATCH[2]}"
+      value="$(trim_non_secret_value "$raw")"
+      case "$key" in
+        ENVIRONMENT)
+          [[ "$seen_environment" == 0 ]] || {
+            echo "sms-compose: duplicate production safety setting in root .env" >&2
+            return 1
+          }
+          seen_environment=1
+          env_environment="$value"
+          ;;
+        DEBUG)
+          [[ "$seen_debug" == 0 ]] || {
+            echo "sms-compose: duplicate production safety setting in root .env" >&2
+            return 1
+          }
+          seen_debug=1
+          env_debug="$value"
+          ;;
+        AUTH_MOCK)
+          [[ "$seen_auth_mock" == 0 ]] || {
+            echo "sms-compose: duplicate production safety setting in root .env" >&2
+            return 1
+          }
+          seen_auth_mock=1
+          env_auth_mock="$value"
+          ;;
+        VENDOR_MOCK)
+          [[ "$seen_vendor_mock" == 0 ]] || {
+            echo "sms-compose: duplicate production safety setting in root .env" >&2
+            return 1
+          }
+          seen_vendor_mock=1
+          env_vendor_mock="$value"
+          ;;
+        COMPOSE_PROFILES)
+          [[ "$seen_compose_profiles" == 0 ]] || {
+            echo "sms-compose: duplicate production safety setting in root .env" >&2
+            return 1
+          }
+          seen_compose_profiles=1
+          env_compose_profiles="$value"
+          ;;
+      esac
+    fi
+  done < "$env_file"
+
+  if [[ "$seen_environment" != 1 || "$env_environment" != production ||
+        "$seen_debug" != 1 || "$env_debug" != 0 ||
+        "$seen_auth_mock" != 1 || "$env_auth_mock" != 0 ||
+        "$seen_vendor_mock" != 1 || "$env_vendor_mock" != 0 ]]; then
+    echo "sms-compose: production requires ENVIRONMENT=production with debug and mocks disabled" >&2
+    return 1
+  fi
+
+  for key in ENVIRONMENT DEBUG AUTH_MOCK VENDOR_MOCK; do
+    shell_value="${!key-__SMS_SETTING_UNSET__}"
+    if [[ "$shell_value" != __SMS_SETTING_UNSET__ ]]; then
+      if [[ "$key" == ENVIRONMENT && "$shell_value" != production ]] ||
+         [[ "$key" != ENVIRONMENT && "$shell_value" != 0 ]]; then
+        echo "sms-compose: shell overrides must preserve production environment and safety flags" >&2
+        return 1
+      fi
+    fi
+  done
+
+  for key in SMS_INGRESS_SUBNET SMS_API_INGRESS_IPV4 SMS_WEB_INGRESS_IPV4; do
+    if [[ ${!key+x} ]]; then
+      echo "sms-compose: production ingress overrides are forbidden" >&2
+      return 1
+    fi
+  done
+
+  if [[ -n "$env_compose_profiles" ]]; then
+    echo "sms-compose: Compose profiles are forbidden in production" >&2
+    return 1
+  fi
+  if [[ -n "${COMPOSE_PROFILES-}" ]]; then
+    echo "sms-compose: shell COMPOSE_PROFILES is forbidden in production" >&2
+    return 1
+  fi
+}
+
+validate_down_args() {
+  local argument
+  for argument in "$@"; do
+    case "$argument" in
+      --remove-orphans | -v | --volumes) ;;
+      *)
+        echo "sms-compose: unsupported down argument" >&2
+        return 2
+        ;;
+    esac
+  done
+}
+
+validate_production_up_args() {
+  local argument
+  for argument in "$@"; do
+    case "$argument" in
+      -d | --detach | --remove-orphans | --no-deps | --force-recreate) ;;
+      postgres | redis | redis-auth | redis-control | migrate | api | worker-realtime | worker-bulk | worker-callback | outbox-dispatcher | beat | web) ;;
+      *)
+        echo "sms-compose: unsupported production up argument" >&2
+        return 2
+        ;;
+    esac
+  done
+}
+
+prepare_runtime_secrets() {
+  local command
+  if [[ "$SECRETS_MODE" == development && ! -f "$VENDOR_CREDENTIAL_ROOT/active" ]]; then
+    command=(
+      python3 "$PREPROCESSOR" revoke-vendor
+      --source-dir "$ROOT/deploy/secrets"
+      --runtime-root "$RUNTIME_ROOT"
+      --mode development
+    )
+  else
+    command=(
+      python3 "$PREPROCESSOR" prepare
+      --source-dir "$ROOT/deploy/secrets"
+      --runtime-root "$RUNTIME_ROOT"
+      --mode "$SECRETS_MODE"
+    )
+    if [[ "$SECRETS_MODE" == development ]]; then
+      command+=(--vendor-credential-root "$VENDOR_CREDENTIAL_ROOT")
+    fi
+  fi
+  "${command[@]}"
+}
+
+cleanup_runtime_secrets() {
+  python3 "$PREPROCESSOR" cleanup \
+    --runtime-root "$RUNTIME_ROOT" \
+    --all
+}
+
+current_runtime_target() {
+  python3 "$PREPROCESSOR" current-target \
+    --runtime-root "$RUNTIME_ROOT"
+}
+
+activate_runtime_target() {
+  python3 "$PREPROCESSOR" activate \
+    --runtime-root "$RUNTIME_ROOT" \
+    --target "$1"
+}
+
+recreate_backend_services() {
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate \
+    --wait --wait-timeout "$ROTATE_WAIT_TIMEOUT" \
+    "${BACKEND_SERVICES[@]}"
+}
+
+recover_backend_rotation() {
+  local old_target="$1"
+  if ! activate_runtime_target "$old_target"; then
+    echo "sms-compose: recovery failed while reactivating the previous generation" >&2
+    return 1
+  fi
+  if ! recreate_backend_services; then
+    echo "sms-compose: recovery failed while restoring backend services" >&2
+    return 1
+  fi
+}
+
+rotate_backend() {
+  local old_target rotate_status
+  old_target="$(current_runtime_target)"
+  if [[ ! "$old_target" =~ ^generations/generation-[0-9a-f]{32}$ ]]; then
+    echo "sms-compose: current generation metadata is invalid" >&2
+    return 1
+  fi
+  prepare_runtime_secrets
+  if "${COMPOSE[@]}" config --quiet; then
+    :
+  else
+    rotate_status=$?
+    recover_backend_rotation "$old_target" || true
+    return "$rotate_status"
+  fi
+  if recreate_backend_services; then
+    return 0
+  else
+    rotate_status=$?
+  fi
+  recover_backend_rotation "$old_target" || true
+  return "$rotate_status"
+}
+
+start_stack() {
+  prepare_runtime_secrets
+  "${COMPOSE[@]}" config --quiet
+  "${COMPOSE[@]}" up "$@"
+}
+
+stop_stack() {
+  local remaining_containers
+  "${COMPOSE[@]}" down "$@"
+  remaining_containers="$("${COMPOSE[@]}" ps --all -q)"
+  if [[ -n "$remaining_containers" ]]; then
+    echo "sms-compose: project containers remain after down; runtime secrets retained" >&2
+    return 1
+  fi
+  cleanup_runtime_secrets
+}
+
+run_migrate() {
+  prepare_runtime_secrets
+  "${COMPOSE[@]}" config --quiet
+  "${COMPOSE[@]}" run --rm migrate
+}
+
+run_partition_maintenance() {
+  prepare_runtime_secrets
+  "${COMPOSE[@]}" config --quiet
+  "${COMPOSE[@]}" run --rm migrate \
+    python -m scripts_support.maintain_partitions \
+    --max-attempts 3 "$@"
+}
+
+INIT_ADMIN_ARGS=()
+
+validate_init_admin_args() {
+  local seen_username=0 seen_display_name=0 seen_show=0
+  INIT_ADMIN_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --username)
+        if [[ "$seen_username" == 1 || $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          echo "sms-compose: invalid init-admin username option" >&2
+          return 2
+        fi
+        seen_username=1
+        INIT_ADMIN_ARGS+=("$1" "$2")
+        shift 2
+        ;;
+      --display-name)
+        if [[ "$seen_display_name" == 1 || $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+          echo "sms-compose: invalid init-admin display-name option" >&2
+          return 2
+        fi
+        seen_display_name=1
+        INIT_ADMIN_ARGS+=("$1" "$2")
+        shift 2
+        ;;
+      --show-temporary-password)
+        if [[ "$seen_show" == 1 ]]; then
+          echo "sms-compose: duplicate init-admin display confirmation" >&2
+          return 2
+        fi
+        seen_show=1
+        INIT_ADMIN_ARGS+=("$1")
+        shift
+        ;;
+      *)
+        echo "sms-compose: unsupported init-admin argument" >&2
+        return 2
+        ;;
+    esac
+  done
+  if [[ "$seen_show" != 1 ]]; then
+    echo "sms-compose: init-admin requires --show-temporary-password" >&2
+    return 2
+  fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "sms-compose: init-admin requires an interactive TTY" >&2
+    return 2
+  fi
+}
+
+run_init_admin() {
+  local running_api
+  if [[ "$SECRETS_MODE" == production ]]; then
+    validate_production_launch
+  fi
+  prepare_runtime_secrets
+  "${COMPOSE[@]}" config --quiet
+  running_api="$("${COMPOSE[@]}" ps --status running -q api)"
+  if [[ -n "$running_api" ]]; then
+    "${COMPOSE[@]}" exec api python -m app.cli init-admin "${INIT_ADMIN_ARGS[@]}"
+  else
+    "${COMPOSE[@]}" run --rm api python -m app.cli init-admin "${INIT_ADMIN_ARGS[@]}"
+  fi
+}
+
+validate_release_id() {
+  local release_id="$1"
+  if [[ ! "$release_id" =~ ^[A-Za-z0-9]([A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$ ||
+        "$release_id" == *..* ]]; then
+    echo "sms-compose: invalid release id" >&2
+    return 2
+  fi
+}
+
+validate_release_manifest_path() {
+  local manifest_path="$1"
+  if [[ ! "$manifest_path" =~ ^/[A-Za-z0-9._/-]+/manifest\.json$ ||
+        "$manifest_path" == *//* || "$manifest_path" == */../* ||
+        "$manifest_path" == */./* ]]; then
+    echo "sms-compose: invalid staged manifest path" >&2
+    return 2
+  fi
+}
+
+run_release_manager() {
+  python3 "$RELEASE_MANAGER" \
+    --root "$ROOT" \
+    --release-root "$RELEASE_ROOT" \
+    --mode "$SECRETS_MODE" \
+    "$@"
+}
+
+exec_release_manager() {
+  exec python3 "$RELEASE_MANAGER" \
+    --root "$ROOT" \
+    --release-root "$RELEASE_ROOT" \
+    --mode "$SECRETS_MODE" \
+    "$@"
+}
+
+run_locked_release() {
+  local subcommand="$1"
+  shift
+  case "$subcommand" in
+    activate | resume | rollback)
+      [[ $# -eq 2 && "$1" == --release-id ]] || return 2
+      validate_release_id "$2" || return $?
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+  if [[ "$SECRETS_MODE" == production ]]; then
+    validate_production_launch || return $?
+  fi
+  prepare_runtime_secrets || return $?
+  exec_release_manager "$subcommand" "$@"
+}
+
+dispatch_release() {
+  local subcommand="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  case "$subcommand" in
+    prepare)
+      [[ $# -eq 2 && "$1" == --manifest ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_launch || return $?
+      fi
+      run_release_manager prepare --manifest "$2"
+      ;;
+    status)
+      [[ $# -eq 2 && "$1" == --release-id ]] || return 2
+      validate_release_id "$2" || return $?
+      run_release_manager status --release-id "$2"
+      ;;
+    activate | resume | rollback)
+      [[ $# -eq 2 && "$1" == --release-id ]] || return 2
+      validate_release_id "$2" || return $?
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_launch || return $?
+      fi
+      run_with_lifecycle_lock release "$subcommand" --release-id "$2"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+run_with_lifecycle_lock() {
+  local operation="$1"
+  shift
+  "${LOCK_PYTHON[@]}" "$LOCK_RUNNER" \
+    --runtime-root "$RUNTIME_ROOT" \
+    --wrapper "$WRAPPER_PATH" \
+    --operation "$operation" \
+    -- "$@"
+}
+
+reject_production_control_plane() {
+  local name="$1"
+  if [[ "$SECRETS_MODE" == production ]]; then
+    echo "sms-compose: $name is forbidden in production mode" >&2
+    return 2
+  fi
+}
+
+run_vendor_test_manager() {
+  local command="$1"
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+  SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
+  SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
+    python3 "$VENDOR_TEST_MANAGER" "$command" \
+      --root "$ROOT" \
+      --runtime-root "$RUNTIME_ROOT" \
+      --state-dir "$VENDOR_TEST_STATE_DIR" \
+      --marker-file "$VENDOR_TEST_MARKER" \
+      --dotenv-file "$ROOT/.env"
+}
+
+run_vendor_test_bootstrap() {
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+    python3 "$VENDOR_TEST_BOOTSTRAP"
+}
+
+run_vendor_runtime_reset() {
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+    python3 "$VENDOR_RUNTIME_RESET" \
+      --root "$ROOT" \
+      --runtime-root "$RUNTIME_ROOT"
+}
+
+run_vendor_control_reload() {
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+    python3 "$VENDOR_CONTROL_RELOAD"
+}
+
+run_test_update_manager() {
+  local command="$1"
+  local python_path="$ROOT/deploy/scripts"
+  local host_source_commit=''
+  if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
+    local asset_status
+    asset_status="$(
+      SMS_SECURE_ACCESS_INTERNAL=1 \
+      SMS_SECRETS_MODE=development \
+        /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" verify-assets
+    )" || return $?
+    host_source_commit="$(
+      /usr/bin/python3 -c 'import json,sys
+value=json.loads(sys.argv[1])
+assert set(value) == {"schema_version","source_commit"}
+assert value["schema_version"] == 1
+print(value["source_commit"])' "$asset_status"
+    )" || return $?
+    [[ "$host_source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+    python_path="$HOST_CONTROL_ROOT"
+    export SMS_HOST_SOURCE_COMMIT="$host_source_commit"
+  else
+    unset SMS_HOST_SOURCE_COMMIT
+  fi
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+  SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
+  SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
+  PYTHONPATH="$python_path" \
+  PYTHONNOUSERSITE=1 \
+    /usr/bin/python3 "$TEST_UPDATE_MANAGER" "$command" \
+      --root "$ROOT" \
+      --runtime-root "$RUNTIME_ROOT" \
+      --state-root "$TEST_UPDATE_STATE_ROOT" \
+      --request "$TEST_UPDATE_REQUEST" \
+      --marker-file "$VENDOR_TEST_MARKER"
+}
+
+run_locked_vendor_test() {
+  local command="${1:-}"
+  shift || true
+  reject_production_control_plane vendor-test || return $?
+  export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
+  export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
+  case "$command" in
+    bootstrap)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_test_bootstrap
+      ;;
+    pause)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_test_manager "$command"
+      ;;
+    rotate)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_test_manager "$command"
+      ;;
+    recover-rotation)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_test_manager "$command"
+      ;;
+    reset-runtime)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_runtime_reset
+      ;;
+    reload-agent)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_control_reload
+      ;;
+    preflight | activate | resume)
+      [[ $# -eq 0 ]] || return 2
+      prepare_runtime_secrets
+      run_vendor_test_manager "$command"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+dispatch_vendor_test() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  reject_production_control_plane vendor-test || return $?
+  case "$command" in
+    status)
+      [[ $# -eq 0 ]] || return 2
+      run_vendor_test_manager status
+      ;;
+    bootstrap | activate | pause | resume | rotate | recover-rotation | reset-runtime | reload-agent)
+      [[ $# -eq 0 ]] || return 2
+      run_with_lifecycle_lock vendor-test "$command"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+run_locked_test_update() {
+  local command="${1:-}"
+  shift || true
+  reject_production_control_plane test-update || return $?
+  [[ $# -eq 0 ]] || return 2
+  if [[ "$command" == bootstrap-public-cutover ]]; then
+    [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
+    [[ "${SMS_PUBLIC_CUTOVER_CONFIRMED:-}" == 1 ]] || {
+      echo "sms-compose: public cutover bootstrap requires explicit confirmation" >&2
+      return 2
+    }
+    SMS_SECURE_ACCESS_INTERNAL=1 \
+    SMS_SECRETS_MODE=development \
+      /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" verify-assets >/dev/null ||
+      return $?
+    /usr/bin/env \
+      PYTHONNOUSERSITE=1 \
+      "PYTHONPATH=$HOST_CONTROL_ROOT" \
+      SMS_PUBLIC_CUTOVER_CONFIRMED=1 \
+      /usr/bin/python3 "$PUBLIC_CUTOVER_BOOTSTRAP"
+    return
+  fi
+  [[ "$command" == prepare || "$command" == apply || "$command" == verify ]] || return 2
+  export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
+  export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
+  if [[ "$HOST_BOOTSTRAP" != 1 ]]; then
+    prepare_runtime_secrets
+  fi
+  run_test_update_manager "$command"
+}
+
+dispatch_test_update() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  reject_production_control_plane test-update || return $?
+  [[ $# -eq 0 ]] || return 2
+  case "$command" in
+    status | capability)
+      run_test_update_manager "$command"
+      ;;
+    bootstrap-public-cutover | prepare | apply | verify)
+      run_with_lifecycle_lock test-update "$command"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+dispatch_secure_access() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  reject_production_control_plane secure-access || return $?
+  [[ $# -eq 0 ]] || return 2
+  case "$command" in
+    start | status | stop)
+      /usr/bin/env \
+        PYTHONNOUSERSITE=1 \
+        "PYTHONPATH=$HOST_CONTROL_ROOT" \
+        /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" "$command"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+run_locked_operation() {
+  local operation="$1"
+  local lock_fd="${SMS_LIFECYCLE_LOCK_FD:-}"
+  shift
+  if [[ "${SMS_LIFECYCLE_LOCKED:-}" != 1 || ! "$lock_fd" =~ ^[0-9]+$ ]]; then
+    echo "sms-compose: private locked action is unavailable" >&2
+    return 2
+  fi
+  if ! "${LOCK_PYTHON[@]}" "$LOCK_RUNNER" verify-held \
+    --runtime-root "$RUNTIME_ROOT" \
+    --lock-fd "$lock_fd"; then
+    echo "sms-compose: private locked action has no verified lock" >&2
+    return 2
+  fi
+  unset SMS_LIFECYCLE_LOCKED
+  unset SMS_LIFECYCLE_LOCK_FD
+  case "$operation" in
+    up)
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_up_args "$@"
+        validate_production_launch
+      fi
+      start_stack "$@"
+      ;;
+    down)
+      validate_down_args "$@"
+      stop_stack "$@"
+      ;;
+    rotate)
+      [[ $# -eq 0 ]] || return 2
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_launch
+      fi
+      rotate_backend
+      ;;
+    migrate)
+      [[ $# -eq 0 ]] || return 2
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_launch
+      fi
+      run_migrate
+      ;;
+    partition-maintenance)
+      [[ $# -eq 0 || ($# -eq 1 && "$1" == --dry-run) ]] || return 2
+      if [[ "$SECRETS_MODE" == production ]]; then
+        validate_production_launch
+      fi
+      run_partition_maintenance "$@"
+      ;;
+    release)
+      run_locked_release "$@"
+      ;;
+    vendor-test)
+      SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
+        run_locked_vendor_test "$@"
+      ;;
+    test-update)
+      SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
+        run_locked_test_update "$@"
+      ;;
+    *)
+      echo "sms-compose: private locked operation is invalid" >&2
+      return 2
+      ;;
+  esac
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 2
+fi
+
+if [[ "$1" == -* ]]; then
+  echo "sms-compose: the action must be the first argument" >&2
+  exit 2
+fi
+
+ACTION="$1"
+shift
+
+if [[ "$HOST_BOOTSTRAP" == 1 &&
+      "$ACTION" != test-update && "$ACTION" != __locked ]]; then
+  echo "sms-compose: bootstrap wrapper only permits test-update" >&2
+  exit 2
+fi
+
+case "$SECRETS_MODE" in
+  production | development) ;;
+  *)
+    echo "sms-compose: invalid secrets mode" >&2
+    exit 2
+    ;;
+esac
+
+case "$ACTION" in
+  up | down | rotate | run | partition-maintenance | release | vendor-test | test-update | __locked)
+    configure_release_root
+    ;;
+esac
+
+if [[ "$ACTION" == __locked ]]; then
+  if [[ $# -lt 1 ]]; then
+    exit 2
+  fi
+  locked_operation="$1"
+  shift
+  run_locked_operation "$locked_operation" "$@"
+  exit
+fi
+
+case "$ACTION" in
+  up)
+    if [[ "$SECRETS_MODE" == production ]]; then
+      validate_production_up_args "$@"
+      validate_production_launch
+    fi
+    run_with_lifecycle_lock up "$@"
+    ;;
+  down)
+    validate_down_args "$@"
+    run_with_lifecycle_lock down "$@"
+    ;;
+  rotate)
+    if [[ $# -ne 1 || "$1" != "backend" ]]; then
+      usage
+      exit 2
+    fi
+    if [[ "$SECRETS_MODE" == production ]]; then
+      validate_production_launch
+    fi
+    run_with_lifecycle_lock rotate
+    ;;
+  run)
+    if [[ $# -ne 2 || "$1" != --rm || "$2" != migrate ]]; then
+      usage
+      exit 2
+    fi
+    if [[ "$SECRETS_MODE" == production ]]; then
+      validate_production_launch
+    fi
+    run_with_lifecycle_lock migrate
+    ;;
+  partition-maintenance)
+    if [[ $# -gt 1 || ($# -eq 1 && "$1" != --dry-run) ]]; then
+      usage
+      exit 2
+    fi
+    if [[ "$SECRETS_MODE" == production ]]; then
+      validate_production_launch
+    fi
+    run_with_lifecycle_lock partition-maintenance "$@"
+    ;;
+  init-admin)
+    validate_init_admin_args "$@"
+    run_init_admin
+    ;;
+  release)
+    if dispatch_release "$@"; then
+      :
+    else
+      release_status=$?
+      usage
+      exit "$release_status"
+    fi
+    ;;
+  vendor-test)
+    if dispatch_vendor_test "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  test-update)
+    if dispatch_test_update "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  secure-access)
+    if dispatch_secure_access "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  config | ps | logs | exec)
+    "${COMPOSE[@]}" "$ACTION" "$@"
+    ;;
+  cp)
+    if [[ "$SECRETS_MODE" == production ]]; then
+      usage
+      exit 2
+    fi
+    "${COMPOSE[@]}" cp "$@"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

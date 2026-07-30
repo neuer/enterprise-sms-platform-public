@@ -1,6 +1,19 @@
-# Security policy
+# 安全策略
 
-Do not publish security reports, credentials, personal data, infrastructure
-details, logs, screenshots, or reproduction data in issues or pull requests.
+## 支持范围
 
-Use GitHub private vulnerability reporting for confidential reports.
+仅当前默认分支和最新发布候选接受安全修复。历史提交、测试证据和未合并分支不构成受支持版本。
+
+## 私下报告
+
+请使用 GitHub 仓库 `Security` 页面中的 **Report a vulnerability** 私密报告功能。不要创建公开 Issue，也不要在 Pull Request、讨论区、截图或日志中包含：
+
+- 真实手机号、消息内容、回调载荷或客户数据；
+- API Key、JWT、厂商凭据、LDAP/数据库密码、私钥或 secret 文件内容；
+- 可直接访问的测试/生产地址、SSH 信息或未修复漏洞的可利用细节。
+
+报告应只包含最小复现步骤、受影响版本、影响判断和已脱敏证据。维护者确认收到后会在私密渠道协调修复与披露时间。
+
+## 仓库防护
+
+公开仓库必须启用 GitHub secret scanning、push protection、私密漏洞报告、默认分支保护和只读 Actions 权限。来自 fork 的工作流不得取得环境 secrets 或写权限。

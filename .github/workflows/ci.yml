@@ -1,0 +1,338 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      candidate_sha: ${{ steps.bind.outputs.sha }}
+      backend: ${{ steps.classify.outputs.backend }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      security: ${{ steps.classify.outputs.security }}
+      g2: ${{ steps.classify.outputs.g2 }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Bind checkout to workflow candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Check specifications and invariants
+        run: |
+          python3 scripts/check_spec_consistency.py
+          python3 scripts/check_invariants.py
+          python3 scripts/check_public_readiness.py
+          python3 scripts/release_metadata.py --root "$GITHUB_WORKSPACE"
+      - name: Classify changed files and G2 policy
+        id: classify
+        run: |
+          python3 scripts/classify_ci_changes.py \
+            --event-name "${{ github.event_name }}" \
+            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
+            --before-sha "${{ github.event.before || '' }}" \
+            --head-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  backend:
+    name: backend
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind backend evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Set up Node.js for vendor console safety gate
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install vendor console test dependencies
+        run: |
+          npm ci --prefix frontend
+          npm audit --prefix frontend --audit-level=high
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
+      - name: Verify controlled vendor-live safety
+        run: bash scripts/verify_vendor_live_test.sh
+      - name: Lint and type-check backend
+        run: |
+          cd backend
+          uv run ruff check app migrations scripts_support tests \
+            ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
+            ../scripts/g2_timing.py \
+            ../scripts/check_public_readiness.py \
+            ../scripts/export_public_snapshot.py \
+            ../scripts/check_coverage_gates.py \
+            ../scripts/release_metadata.py \
+            ../scripts/check_invariants.py \
+            ../scripts/check_contract.py ../scripts/security_acceptance.py \
+            ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py
+          uv run mypy app migrations scripts_support ../scripts/check_contract.py \
+            ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
+            ../scripts/g2_timing.py \
+            ../scripts/check_public_readiness.py \
+            ../scripts/export_public_snapshot.py \
+            ../scripts/check_coverage_gates.py \
+            ../scripts/release_metadata.py \
+            ../scripts/security_acceptance.py ../scripts/e2e_api.py ../scripts/perf_smoke.py
+      - name: Run complete backend tests with independent coverage gates
+        env:
+          ENVIRONMENT: "test"
+          DEBUG: "1"
+          VENDOR_MOCK: "1"
+          AUTH_MOCK: "1"
+        run: |
+          cd backend
+          rm -f .coverage
+          SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh
+          uv run pytest -q --cov=app --cov-append --cov-report=term-missing \
+            --cov-report=json:"${{ runner.temp }}/coverage.json"
+          uv run python ../scripts/check_coverage_gates.py \
+            "${{ runner.temp }}/coverage.json"
+      - name: Run critical property, concurrency, fault, auth and idempotency gates
+        env:
+          ENVIRONMENT: "test"
+          DEBUG: "1"
+          VENDOR_MOCK: "1"
+          AUTH_MOCK: "1"
+        run: |
+          cd backend
+          uv run pytest -q --strict-markers \
+            -m "property or concurrency or fault_injection or authorization or idempotency"
+      - name: Check migrations and OpenAPI contract
+        env:
+          ENVIRONMENT: "test"
+          DEBUG: "1"
+          VENDOR_MOCK: "1"
+          AUTH_MOCK: "1"
+        run: |
+          cd backend
+          uv run python scripts_support/check_migration.py
+          uv run python ../scripts/check_contract.py ../openapi.yaml
+
+  frontend:
+    name: frontend
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind frontend evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Audit dependency lockfile
+        run: npm audit --audit-level=high
+      - name: Build
+        run: npm run build
+      - name: Type-check
+        run: npm run typecheck
+      - name: Run component tests
+        run: npm test
+
+  security:
+    name: security
+    needs: changes
+    if: ${{ needs.changes.outputs.security == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind security evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Run Python SAST
+        run: |
+          cd backend
+          uv sync --frozen
+          uv run bandit -q -r app -lll -iii
+      - name: Audit dependencies, licenses, secrets and configuration
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$RUNNER_TEMP:/evidence" \
+            aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e \
+            fs --scanners vuln,misconfig,secret,license \
+            --severity HIGH,CRITICAL --exit-code 1 --no-progress \
+            --format json --output /evidence/security.json /repo
+
+  g2:
+    name: g2
+    # 仅高风险 PR、人工/定时事件及失败关闭回退会要求远端完整 G2；
+    # 可靠的已知 main push 不重复已经在 PR 或本地执行的权威门禁。
+    needs: [changes, backend, frontend, security]
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    if: >-
+      ${{ !cancelled()
+          && needs.changes.result == 'success'
+          && needs.changes.outputs.g2 == 'true'
+          && (needs.changes.outputs.backend != 'true' || needs.backend.result == 'success')
+          && (needs.changes.outputs.frontend != 'true' || needs.frontend.result == 'success')
+          && (needs.changes.outputs.security != 'true' || needs.security.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: sms-platform-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      API_PORT: "18100"
+      MOCK_VENDOR_PORT: "19128"
+      WEB_PORT: "18180"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind G2 evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Restore G2 BuildKit dependency cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ runner.temp }}/g2-buildkit-cache
+          key: >-
+            g2-buildkit-${{ runner.os }}-${{ hashFiles(
+              'backend/Dockerfile',
+              'backend/uv.lock',
+              'frontend/Dockerfile',
+              'frontend/package-lock.json',
+              'deploy/postgres.Dockerfile',
+              'deploy/redis.Dockerfile'
+            ) }}
+          restore-keys: |
+            g2-buildkit-${{ runner.os }}-
+      - name: Restore G2 npm download cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ runner.temp }}/g2-npm-cache
+          key: g2-npm-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            g2-npm-${{ runner.os }}-
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
+      - name: Run authoritative G2 gate
+        id: authoritative-g2
+        env:
+          G2_DOCKER_CACHE_DIR: ${{ runner.temp }}/g2-buildkit-cache
+          G2_NPM_CACHE_DIR: ${{ runner.temp }}/g2-npm-cache
+          G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
+        run: |
+          sudo env \
+            PATH="$PATH" \
+            UV_CACHE_DIR="$UV_CACHE_DIR" \
+            UV_PYTHON="$UV_PYTHON" \
+            UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" \
+            COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+            API_PORT="$API_PORT" \
+            MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
+            WEB_PORT="$WEB_PORT" \
+            G2_DOCKER_CACHE_DIR="$G2_DOCKER_CACHE_DIR" \
+            G2_NPM_CACHE_DIR="$G2_NPM_CACHE_DIR" \
+            G2_TIMING_FILE="$G2_TIMING_FILE" \
+            bash scripts/verify_all.sh
+      - name: Render G2 timing summary
+        if: ${{ always() }}
+        env:
+          G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
+        run: |
+          python3 scripts/g2_timing.py render \
+            --file "$G2_TIMING_FILE" \
+            --gate-outcome "${{ steps.authoritative-g2.outcome }}" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+  ci-gate:
+    name: ci-gate
+    needs: [changes, backend, frontend, security, g2]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Verify selective CI results
+        run: |
+          python3 scripts/verify_ci_results.py \
+            --changes-result "${{ needs.changes.result }}" \
+            --candidate-sha "${{ needs.changes.outputs.candidate_sha }}" \
+            --backend-expected "${{ needs.changes.outputs.backend }}" \
+            --backend-result "${{ needs.backend.result }}" \
+            --backend-tested-sha "${{ needs.backend.outputs.tested_sha }}" \
+            --frontend-expected "${{ needs.changes.outputs.frontend }}" \
+            --frontend-result "${{ needs.frontend.result }}" \
+            --frontend-tested-sha "${{ needs.frontend.outputs.tested_sha }}" \
+            --security-expected "${{ needs.changes.outputs.security }}" \
+            --security-result "${{ needs.security.result }}" \
+            --security-tested-sha "${{ needs.security.outputs.tested_sha }}" \
+            --g2-expected "${{ needs.changes.outputs.g2 }}" \
+            --g2-result "${{ needs.g2.result }}" \
+            --g2-tested-sha "${{ needs.g2.outputs.tested_sha }}"

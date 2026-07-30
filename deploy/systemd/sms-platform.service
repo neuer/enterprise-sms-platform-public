@@ -1,0 +1,22 @@
+[Unit]
+Description=Enterprise SMS Platform Compose stack
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/sms-platform/compose.env
+UMask=0077
+ExecStart=/usr/local/sbin/sms-compose up -d --remove-orphans
+ExecStop=/usr/local/sbin/sms-compose down --remove-orphans
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=0
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

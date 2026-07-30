@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Enterprise SMS Platform recovery evidence hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=sms-lifecycle-status.service
+
+[Install]
+WantedBy=timers.target

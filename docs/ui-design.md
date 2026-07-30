@@ -1,0 +1,77 @@
+# docs/ui-design.md — 青鸾平台 UI 设计规范 v1.6
+
+> 配套 `sms-ui-prototype.html`（7 屏高保真原型，为视觉唯一基准）。本文把设计令牌翻译成 Element Plus 实现约定，Claude Code 建 UI 时与 CLAUDE.md「前端 UI 约定」一并遵守；冲突以本文为准。
+
+## 1. 设计立场
+
+内部安全运营工具：**信息密度优先、状态可读优先、克制的装饰**。全站唯一的记忆点是顶栏「信道监视条」（双队列深度 + QPS 令牌），发送页「计费分段块」与之呼应——系统的核心机制直接成为界面语言，除此之外一律安静。
+
+## 2. 设计令牌（Design Tokens）
+
+### 2.1 色彩
+
+| Token | 值 | 用途 |
+|---|---|---|
+| --paper | #F6F7F5 | 页面底色（冷调米白） |
+| --card | #FFFFFF | 卡片/表格底 |
+| --ink | #1B2420 | 侧栏底（带绿深墨） |
+| --tx / --tx-2 / --tx-3 | #22302B / #5B6862 / #8A948E | 正文 / 次要 / 弱化 |
+| --line / --line-2 | #E3E6E1 / #D3D8D1 | 分隔线 / 控件边框 |
+| **--verdi** | **#0E7A63**（hover #0A5A49，浅底 #E7F2EE） | **主色**：主按钮、选中态、success、verify 类 |
+| --slate | #35618F（浅底 #EAF0F6） | notice 类 |
+| --amber | #A8650B（浅底 #F7EFE2） | market 类、warning |
+| --verm | #C2452D（浅底 #F8ECE9） | danger、失败 |
+
+Element Plus 映射（`styles/element.scss`）：
+`--el-color-primary:#0E7A63; --el-color-success:#0E7A63; --el-color-warning:#A8650B; --el-color-danger:#C2452D; --el-color-info:#5B6862; --el-border-radius-base:6px; --el-bg-color-page:#F6F7F5; --el-text-color-primary:#22302B; --el-border-color:#D3D8D1;`
+
+**类别三色是硬约定**：verify=verdi、notice=slate、market=amber，出现在类别标签左竖条、统计分段条、图表系列色，任何页面不得混用其他色相表达类别。
+
+### 2.2 字体
+
+| 角色 | 字体栈 | 规则 |
+|---|---|---|
+| 界面/正文 | PingFang SC, HarmonyOS Sans SC, Source Han Sans SC, Microsoft YaHei, system-ui | 基准 13px/1.6；H1 19px/600；表格 12.5px |
+| **数据字** | IBM Plex Mono, JetBrains Mono, Consolas, monospace | 批次号、customId、手机号、金额/条数/百分比、时间戳；一律 `font-variant-numeric: tabular-nums` |
+| 品牌字 | Noto Serif SC, Source Han Serif SC, serif | 仅两处：侧栏「青鸾」logo、登录页大字。其余禁用衬线 |
+
+### 2.3 形状与层次
+
+圆角：卡片 10px / 控件 6px / 标签 5px。边框 1px 实线代替阴影分层；阴影只允许 Drawer 与 Popover。间距 4 基数（卡片 padding 18–20，页 padding 22–26）。禁用渐变按钮与大圆角胶囊主按钮。
+
+## 3. 布局
+
+216px 深墨侧栏（分组：概览/发送/治理/管理/运维，AD 角色控制可见项）+ 52px 顶栏 + 内容区 max 1280px。<960px 时侧栏收起为抽屉（本工具以桌面为主，移动端保可读即可）。
+
+**顶栏固定结构**：面包屑 ｜ 信道监视条 ｜ 余额 ｜ 用户。信道监视条数据来自 Prometheus 指标接口，10s 轮询；余额点击跳余额走势。
+
+## 4. 核心组件规约
+
+| 组件 | 规约 |
+|---|---|
+| `<CategoryTag>` | 左侧 3px 竖色条 + 类别名；三色见 2.1 |
+| `<StatusTag>` | 状态→色：queued/sending/在途=info 灰；delivered/completed=verdi 浅底；failed/rejected=verm 浅底；pending_approval/scheduled=amber 浅底；balance_blocked/uncertain=深底 #3A2A26/#F3D9D2（唯一深色标签，表示"需要人来"） |
+| `<PhoneMask>` | mono 显示 `138****2041` + 眼睛图标；点击→调解密接口→行内替换明文并 toast「已记入审计」；无权限则图标隐藏 |
+| `<SegmentBar>` | 计费分段可视化：满段实心 verdi 块、末段斜纹块（title 显示 n/67 字）、恒显 1 个灰色 ghost 块提示下一段边界；数据只来自 /billing 预估接口 |
+| `<ChannelStrip>` | 顶栏签名组件：实时(verdi)/批量(amber)两条深度条 + 5 枚 QPS 令牌点（占用=verdi 实心） |
+| 统计环 | 批次详情 92px donut：verdi 送达 / verm 失败 / 灰 在途，中心 mono 百分比 |
+| 表格 | 行高 40、th 11px 字距 0.08em 灰、行 hover #F7FAF7；数字列右对齐 mono；行点击开 Drawer（560px），不整页跳转 |
+| 空态 | 两行文案：一行结论粗体 + 一行"这里会出现什么/下一步"，不放插画 |
+
+## 5. 文案基调
+
+按钮写结果：「已充值，恢复队列」「通过并排期」「下载剔除清单」。错误讲原因和出路：「营销发送须先确认用户同意」。危险与留痕如实告知：「勾选行为与操作人将写入审计日志」。全站中文、句号收尾的长提示、不用感叹号。
+
+## 6. 动效与可达性
+
+仅三处过渡：Drawer 滑入 220ms、按钮 hover 120ms、switch 150ms；无入场动画、无环形加载堆叠。`prefers-reduced-motion` 全关。焦点样式 2px verdi 外描边全站保留；表格行可键盘 Enter 开 Drawer。
+
+## 7. 页面基准（与原型逐屏对应）
+
+1. **仪表盘**：4 统计卡（今日消息含三色分段条 / 成功率含口径注释 / 待审批 / 余额消耗预测天数）→ 余额 14 日走势（标 10,000 阈值虚线）+ 今日告警 → uncertain / unmatched / 回调 dead 三张处置卡 →（v1.5）任务健康格：每任务一枚状态点（success=verdi、failed/stalled=verm）+ mono 最近运行时间，点击进 ops 任务健康 tab
+2. **人工发送**：左表单（类别三选卡片、号码粘贴/导入+四类剔除摘要、模板+签名、定时/测试开关、market 同意勾选琥珀框）＋ 右侧 sticky「发送预检」（受理数、SegmentBar、`n×s` 消耗大数字、配额条、审批提示、按钮文案随场景切换 立即发送/提交审批）
+3. **批次列表**：筛选行 + 密表格（类别竖条/进度微条/计费列），行点击 → 详情 Drawer（KV、统计环、失败重发、明细表 PhoneMask）
+3a. **号码时间线（v1.5）**：号码搜索页双视图切换；时间线按日分组、垂直细线串联，下行事件左对齐（类别竖条+摘要+状态 tag），用户回复右缩进 24px 前缀"↩"，页顶号码徽标（黑名单状态 amber/verm tag + 近30日接收量 mono）
+4. **审批中心**：卡片流（内容引用块 + 计费与排期元信息 + 同意标记）；本人单右侧只显示「本人提交 · 审批回避」灰字
+5. **运维中心**：熔断横幅卡（琥珀底 + 「已充值，恢复队列」主按钮）+ 7 tab（uncertain / unmatched / 回调 / 原始报文 / 告警 / 任务健康 / 队列恢复）；uncertain 只允许查看比对记录和升级人工核查，状态仍只能由 reconcile 迁移
+6. **登录**：380px 单卡，品牌衬线字 + AD 提示与审计告知，无背景插画

@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+import app.api.auth as auth_api
+from app.core.auth.accounts import PlatformAccount
+from app.core.auth.runtime import (
+    LoginSuccess,
+    PasswordChangeRequired,
+    get_auth_facade,
+)
+from app.core.errors import ApiError
+from app.main import create_app
+from app.services.auth_provider import ProviderSummary
+
+
+def user() -> PlatformAccount:
+    return PlatformAccount(
+        account_id=8,
+        identity_id=18,
+        provider_code="local",
+        login_name="operator01",
+        normalized_login_name="operator01",
+        display_name="测试用户",
+        dept="研发部",
+        role="operator",
+        security_version=3,
+        account_enabled=True,
+        identity_enabled=True,
+    )
+
+
+class FakeAuthFacade:
+    def __init__(self) -> None:
+        self.login_calls: list[tuple[str, str, str, str]] = []
+        self.initial_changes: list[tuple[str, str, str]] = []
+        self.daily_changes: list[tuple[str, str, str, str]] = []
+        self.logout_tokens: list[str] = []
+        self.force_calls: list[tuple[str, str, str]] = []
+
+    async def list_providers(self) -> tuple[ProviderSummary, ...]:
+        return (
+            ProviderSummary("local", "本地账号", "password"),
+            ProviderSummary("ad", "AD 账号", "password"),
+        )
+
+    def password_policy(self) -> dict[str, int | bool | str]:
+        return {
+            "min_length": 12,
+            "max_length": 128,
+            "required_character_classes": 3,
+            "forbid_username": True,
+            "description": "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名",
+        }
+
+    async def login(
+        self,
+        provider_code: str,
+        username: str,
+        password: str,
+        ip: str,
+    ) -> LoginSuccess | PasswordChangeRequired:
+        self.login_calls.append((provider_code, username, password, ip))
+        if provider_code == "disabled":
+            raise ApiError(403, "AUTH_PROVIDER_DISABLED", "所选认证源未启用", None)
+        if password == "temporary":
+            return PasswordChangeRequired("change.jwt")
+        if password != "correct":
+            raise ApiError(401, "UNAUTHORIZED", "用户名或密码错误", None)
+        return LoginSuccess(
+            "signed.jwt",
+            "refresh.jwt",
+            900,
+            604800,
+            user(),
+        )
+
+    async def refresh(self, refresh_token: str) -> LoginSuccess:
+        if refresh_token != "refresh.jwt":
+            raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None)
+        return LoginSuccess(
+            "rotated.jwt",
+            "rotated-refresh.jwt",
+            900,
+            604800,
+            user(),
+        )
+
+    async def change_initial_password(
+        self,
+        token: str,
+        new_password: str,
+        ip: str,
+    ) -> None:
+        self.initial_changes.append((token, new_password, ip))
+
+    async def change_password(
+        self,
+        token: str,
+        current_password: str,
+        new_password: str,
+        ip: str,
+    ) -> None:
+        self.daily_changes.append((token, current_password, new_password, ip))
+
+    async def logout(self, token: str, ip: str) -> None:
+        self.logout_tokens.append(token)
+
+    async def force_logout(self, token: str, username: str, ip: str) -> None:
+        self.force_calls.append((token, username, ip))
+
+
+def client(facade: FakeAuthFacade) -> TestClient:
+    app = create_app()
+    app.dependency_overrides[get_auth_facade] = lambda: facade
+    return TestClient(app)
+
+
+def test_public_provider_and_password_policy_contracts_are_no_store() -> None:
+    response_client = client(FakeAuthFacade())
+
+    providers = response_client.get("/api/v1/web/auth/providers")
+    policy = response_client.get("/api/v1/web/auth/password-policy")
+
+    assert providers.status_code == 200
+    assert providers.headers["cache-control"] == "no-store"
+    assert providers.json() == [
+        {"code": "local", "name": "本地账号", "auth_flow": "password"},
+        {"code": "ad", "name": "AD 账号", "auth_flow": "password"},
+    ]
+    assert policy.status_code == 200
+    assert policy.headers["cache-control"] == "no-store"
+    assert policy.json()["min_length"] == 12
+    assert policy.json()["required_character_classes"] == 3
+
+
+def test_login_requires_explicit_provider_and_returns_account_identity_fields() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+
+    success = response_client.post(
+        "/api/v1/web/auth/login",
+        json={
+            "provider_code": "local",
+            "username": "operator01",
+            "password": "correct",
+        },
+    )
+
+    assert success.status_code == 200
+    assert success.headers["cache-control"] == "no-store"
+    assert success.json() == {
+        "token": "signed.jwt",
+        "refresh_token": "refresh.jwt",
+        "expires_in": 900,
+        "refresh_expires_in": 604800,
+        "user": {
+            "account_id": 8,
+            "identity_id": 18,
+            "provider_code": "local",
+            "username": "operator01",
+            "display_name": "测试用户",
+            "dept": "研发部",
+            "role": "operator",
+        },
+    }
+    assert facade.login_calls[0][:3] == ("local", "operator01", "correct")
+
+    refreshed = response_client.post(
+        "/api/v1/web/auth/refresh",
+        json={"refresh_token": "refresh.jwt"},
+    )
+    assert refreshed.status_code == 200
+    assert refreshed.headers["cache-control"] == "no-store"
+    assert refreshed.json()["token"] == "rotated.jwt"
+    assert refreshed.json()["refresh_token"] == "rotated-refresh.jwt"
+    assert vars(auth_api.refresh)["__audited_action__"] == "session_refresh"
+
+    missing_source = response_client.post(
+        "/api/v1/web/auth/login",
+        json={"username": "operator01", "password": "correct"},
+    )
+    assert missing_source.status_code == 400
+    assert missing_source.json()["code"] == "INVALID_PARAM"
+
+
+def test_temporary_login_and_both_password_change_endpoints() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+
+    login = response_client.post(
+        "/api/v1/web/auth/login",
+        json={
+            "provider_code": "local",
+            "username": "operator01",
+            "password": "temporary",
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json() == {
+        "change_token": "change.jwt",
+        "expires_in": 600,
+        "next_action": "change_password",
+    }
+    assert "token" not in login.json() and "user" not in login.json()
+
+    initial = response_client.post(
+        "/api/v1/web/auth/password/initial",
+        json={"change_token": "change.jwt", "new_password": "New@Password123"},
+    )
+    daily = response_client.post(
+        "/api/v1/web/auth/password/change",
+        headers={"Authorization": "Bearer current.jwt"},
+        json={
+            "current_password": "Current@Password123",
+            "new_password": "Daily@Password456",
+        },
+    )
+
+    assert initial.status_code == 200 and initial.headers["cache-control"] == "no-store"
+    assert daily.status_code == 200 and daily.headers["cache-control"] == "no-store"
+    assert facade.initial_changes[0][:2] == ("change.jwt", "New@Password123")
+    assert facade.daily_changes[0][:3] == (
+        "current.jwt",
+        "Current@Password123",
+        "Daily@Password456",
+    )
+    assert vars(auth_api.change_initial_password)["__audited_action__"] == ("local_password_change")
+
+
+def test_login_uses_standard_error_envelope_for_credentials_and_provider_state() -> None:
+    response_client = client(FakeAuthFacade())
+
+    failed = response_client.post(
+        "/api/v1/web/auth/login",
+        json={"provider_code": "local", "username": "unknown", "password": "wrong"},
+    )
+    disabled = response_client.post(
+        "/api/v1/web/auth/login",
+        json={
+            "provider_code": "disabled",
+            "username": "unknown",
+            "password": "correct",
+        },
+    )
+
+    assert failed.status_code == 401
+    assert failed.json() == {
+        "code": "UNAUTHORIZED",
+        "message": "用户名或密码错误",
+        "detail": None,
+    }
+    assert disabled.status_code == 403
+    assert disabled.json()["code"] == "AUTH_PROVIDER_DISABLED"
+
+
+def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+
+    assert response_client.post("/api/v1/web/auth/logout").status_code == 401
+    assert (
+        response_client.post(
+            "/api/v1/web/auth/logout",
+            headers={"Authorization": "Bearer current.jwt"},
+        ).status_code
+        == 200
+    )
+    assert facade.logout_tokens == ["current.jwt"]
+
+    response = response_client.post(
+        "/api/v1/web/admin/sessions/viewer01/revoke",
+        headers={"Authorization": "Bearer admin.jwt"},
+    )
+    assert response.status_code == 404
+    assert facade.force_calls == []

@@ -1,0 +1,49 @@
+[Unit]
+Description=SMS Platform test-only temporary HTTPS access
+Requires=sms-platform.service
+Wants=network-online.target
+After=network-online.target sms-platform.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /usr/local/libexec/sms-platform/test-secure-access/test_secure_access_runtime.py
+RuntimeDirectory=sms-platform-test-secure-access
+RuntimeDirectoryMode=0750
+RuntimeMaxSec=15min
+TimeoutStopSec=10s
+KillMode=control-group
+Restart=no
+SuccessExitStatus=SIGTERM 143
+UMask=0027
+Environment=HOME=/nonexistent
+Environment=XDG_CONFIG_HOME=/nonexistent
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+TasksMax=128
+LimitNOFILE=1024
+
+StandardInput=null
+StandardOutput=null
+StandardError=journal

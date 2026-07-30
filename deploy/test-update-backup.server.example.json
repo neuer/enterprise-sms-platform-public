@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "output_root": "/var/lib/sms-platform/test-backups",
+  "key_file": "/etc/sms-platform/test-update-backup-key",
+  "database": "sms"
+}
