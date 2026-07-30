@@ -861,6 +861,24 @@ def test_public_cutover_classifies_only_verified_transition_exceptions() -> None
     )
 
 
+def test_public_cutover_keeps_retired_build_paths_as_deletion_tombstones() -> None:
+    paths = [
+        "AUTOPILOT.md",
+        "BOOTSTRAP.md",
+        "TASKS.md",
+        "scripts/verify_milestone.sh",
+    ]
+
+    change = classify_public_cutover_paths(paths)
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+    for path in paths:
+        with pytest.raises(ContractError, match="fast update forbidden"):
+            classify_changed_paths([path])
+
+
 def test_public_cutover_does_not_weaken_normal_or_unknown_path_rejection() -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_changed_paths(["deploy/scripts/release_manager.py"])

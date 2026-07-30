@@ -1,10 +1,9 @@
 # AGENTS.md — 企业短信管理平台工程约定 v1.6
 
 本文件是 Codex 与 Claude Code 共用的唯一工程约定。日常开发与交付从
-`MAINTENANCE.md` 开始，当前外部阻塞看 `PROGRESS.md`；`AUTOPILOT.md`、`BOOTSTRAP.md`
-与 `TASKS.md` 仅保留建设期历史，不再作为维护期任务清单或日常门禁。需求见
-`PRD.md`，接口契约见 `openapi.yaml`，数据模型见 `schema.sql`，厂商精确报文与
-mock 契约见 `docs/vendor-api.md`。**冲突时以 PRD.md 为准。**
+`MAINTENANCE.md` 开始，当前外部阻塞看 `PROGRESS.md`。需求见 `PRD.md`，接口契约见
+`openapi.yaml`，数据模型见 `schema.sql`，厂商精确报文与 mock 契约见
+`docs/vendor-api.md`。**冲突时以 PRD.md 为准。**
 
 ## 技术栈（锁定，勿替换）
 
@@ -156,7 +155,7 @@ alembic revision --autogenerate -m "xxx" && alembic upgrade head
 
 ## 工作方式
 
-- 维护期工作以当前用户请求或 Issue/PR 为单位，先写清目标、风险域和 1–3 条验收；不得继续向历史 `TASKS.md` 追加任务或勾选项
+- 维护期工作由当前用户请求或 Issue/PR 承载，先写清目标、风险域和 1–3 条验收；不维护仓库内任务清单
 - 编码循环优先运行相关测试与局部静态检查；`scripts/dev_check.sh --changed` 是提交前检查，不是每次保存后的必跑命令
 - 不确定的产品决策：先查 PRD.md，仍无答案则在 PR 描述列出假设，**不要静默自行决定**
 - 生成代码带类型注解；关键业务函数写中文 docstring

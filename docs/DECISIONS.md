@@ -4,6 +4,7 @@
 
 ## D001 分层门禁
 
+- 状态：已由 D057 取代；以下仅保留建设期决策历史。
 - 决策：G1 使用 `verify_milestone.sh Mx`，G2 才使用完整 `verify_all.sh`。
 - 原因：中间里程碑不可能验证尚未实现的 M4 E2E/性能资产。
 - 影响：AUTOPILOT、TASKS、PROGRESS、门禁脚本。
@@ -553,8 +554,8 @@
 
 ## D057 维护期开发与测试部署解耦
 
-- 决策：`MAINTENANCE.md` 是唯一日常流程入口；`AUTOPILOT.md`、`BOOTSTRAP.md` 与
-  `TASKS.md` 只保留建设期历史并退出日常规格门禁。编码循环运行定向测试，提交前才运行
+- 决策：`MAINTENANCE.md` 是唯一日常流程入口；建设期任务清单和分阶段门禁入口退出后
+  已从工作树删除，历史通过 Git 查阅。编码循环运行定向测试，提交前才运行
   `scripts/dev_check.sh --changed`，普通维护工作不再默认绑定测试服务器。
 - 测试部署：只有需要共享环境验收时，才默认对自动合并后的精确 `origin/main` 执行
   `scripts/test_update.sh apply --ref origin/main`。`apply` 已验证最终 `state=verified`；

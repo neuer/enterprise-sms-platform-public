@@ -246,8 +246,6 @@ _BACKEND_CRITICAL_PROTECTED_PREFIXES = (
 _SAFE_OPERATIONAL_DOCS = frozenset(
     {
         "AGENTS.md",
-        "AUTOPILOT.md",
-        "BOOTSTRAP.md",
         "CLAUDE.md",
         "MAINTENANCE.md",
         "PRD.md",
@@ -290,10 +288,13 @@ _INFRA_HIGH_RISK_EXACT = frozenset(
 )
 _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
     {
-        ".github/workflows/ci.yml",
-        ".github/workflows/release-gate.yml",
+        # TEST-BASELINE 跨历史迁移仍需识别这些已删除路径；它们不是活动入口。
         "AUTOPILOT.md",
         "BOOTSTRAP.md",
+        "TASKS.md",
+        "scripts/verify_milestone.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-gate.yml",
         "CONTRIBUTING.md",
         "HANDOVER.md",
         "LICENSE",
@@ -302,7 +303,6 @@ _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
         "PROGRESS.md",
         "README.md",
         "SECURITY.md",
-        "TASKS.md",
         "VERSION",
         "deploy/backup-restore.md",
         "deploy/database-roles.md",
@@ -325,7 +325,6 @@ _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
         "scripts/verify_ci_results.py",
         "scripts/verify_data_images.sh",
         "scripts/verify_database_roles.sh",
-        "scripts/verify_milestone.sh",
         "scripts/verify_public_snapshot_cutover.py",
         "scripts/verify_release_control.sh",
         "scripts/verify_vendor_live_test.sh",
