@@ -95,7 +95,9 @@ for item in sys.stdin.buffer.read().split(b"\0"):
     case "$path" in
       backend/tests/*.py)
         backend_changed=1
-        backend_tests+=("${path#backend/}")
+        if [[ -f "$path" ]]; then
+          backend_tests+=("${path#backend/}")
+        fi
         ;;
       backend/* | scripts/*.py | schema.sql | openapi.yaml | deploy/*)
         backend_changed=1

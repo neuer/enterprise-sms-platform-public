@@ -267,8 +267,19 @@ def test_g2_bundle_command_avoids_duplicate_typecheck_without_weakening_build() 
     scripts = package["scripts"]
 
     assert scripts["build"] == "npm run typecheck && npm run build:g2"
-    assert scripts["build:g2"] == "npm run build:qingluan && npm run build:legacy"
+    assert scripts["build:g2"] == "vite build"
     assert "typecheck" not in scripts["build:g2"]
+
+
+def test_changed_dev_check_does_not_run_deleted_backend_test_paths() -> None:
+    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    changed_test_case = source.split(
+        "backend/tests/*.py)",
+        maxsplit=1,
+    )[1].split(";;", maxsplit=1)[0]
+
+    assert 'if [[ -f "$path" ]]' in changed_test_case
+    assert 'backend_tests+=("${path#backend/}")' in changed_test_case
 
 
 def test_release_control_terms_the_lifecycle_lock_holder_directly() -> None:

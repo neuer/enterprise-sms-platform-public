@@ -111,8 +111,7 @@ def test_web_healthcheck_uses_wget_available_in_the_final_nginx_image() -> None:
     assert web["healthcheck"] == {
         "test": [
             "CMD-SHELL",
-            "wget -q --spider http://127.0.0.1:8080/ && "
-            "wget -q --spider http://127.0.0.1:8080/next/",
+            "wget -q --spider http://127.0.0.1:8080/",
         ],
         "interval": "10s",
         "timeout": "5s",
@@ -347,7 +346,7 @@ def test_nginx_enforces_browser_policies_without_internal_hsts() -> None:
         'add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), '
         'payment=(), usb=()" always;' in headers
     )
-    assert config.count("include /etc/nginx/browser-security-headers.conf;") == 5
+    assert config.count("include /etc/nginx/browser-security-headers.conf;") == 3
     assert "Strict-Transport-Security" not in config
     assert "Strict-Transport-Security" not in headers
 

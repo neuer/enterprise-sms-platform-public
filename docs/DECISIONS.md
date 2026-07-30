@@ -374,12 +374,12 @@
   TLS 1.2+、证书剩余期限、HSTS 和 CSP。CSP 禁止内联脚本、脚本属性与内联 style 块；
   Element Plus/ECharts 动态布局暂时仅保留 style attribute 例外。nonce/hash 对同源静态脚本
   和动态 style 属性不能提供额外有效覆盖；Trusted Types 在无 HTML 字符串注入点的现状下
-  暂不强制，后续须经过双前端 report-only 兼容验证再启用。
+  暂不强制，后续须经过青鸾单一前端 report-only 兼容验证再启用。
 - 原因：高风险令牌没有恢复需求，持久化只会扩大 XSS、扩展和依赖污染后的暴露窗口；
   普通会话保留标签页刷新能力，但由数据库权威安全版本、refresh family 撤销和跨标签页
   清理共同限制生命周期。传输探针将文档性 HTTPS 要求变为可持续机器证据。
-- 影响：双前端登录/首次改密/注销/多标签页测试、会话 store、CSP、部署手册、OpenAPI
-  与生产证书监控。真实浏览器仍须在每次生产发布后验证两套入口无 CSP violation。
+- 影响：前端登录/首次改密/注销/多标签页测试、会话 store、CSP、部署手册、OpenAPI
+  与生产证书监控。真实浏览器仍须在每次生产发布后验证唯一入口无 CSP violation。
 
 ## D049 回调传输与敏感密文使用版本化上下文边界
 
@@ -518,3 +518,18 @@
 - 影响：当前旧测试服务器基线不在公开对象库时，日常 `plan/apply` 按设计失败关闭；完成
   单独基线迁移前不得用 raw Git、Compose、临时 ref 或旧参数绕过。正常同历史更新和
   `promote`、数据库/volume 保留、真实联调控制面均不变。
+
+## D055 青鸾成为根路径唯一前端
+
+- 决策：开发测试阶段结束经典版与青鸾版双 SPA 并存。删除 `frontend/legacy`，将青鸾版
+  从 `/next/` 提升到唯一根路径 `/`；Web 镜像只包含一份 `dist/`，Nginx 对开发阶段退役
+  的 `/next` 入口返回 `410 Gone`，不保留版本切换按钮、隐藏开关或第二份静态产物。
+- 原因：项目尚未上线，不存在需要维护的外部旧入口；两套独立源码、测试和构建已经产生
+  安全能力漂移。青鸾版包含正式凭据 Secure Context 检查、真实联调重置和 correlation
+  展示等较新的运行能力，继续双写只会扩大回归面。
+- 设计基准：本决策同时以深色青鸾 Console 取代原浅色经典视觉基准；`docs/ui-design.md`、
+  `docs/sms-ui-prototype.html`、`frontend/src` 与结构保真测试共同描述唯一设计，不再以
+  `legacy` 实现反向约束产品。
+- 影响：前端构建、Dockerfile、Nginx、Compose 健康检查、部署手册和合同测试收敛为一套。
+  API、OpenAPI、数据库、Alembic 和浏览器会话键不变；失败时只回退整个上一版 Web 镜像，
+  不在新镜像内恢复双前端。

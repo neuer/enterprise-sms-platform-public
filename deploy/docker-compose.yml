@@ -385,13 +385,13 @@ services:
     networks:
       ingress: { ipv4_address: "${SMS_WEB_INGRESS_IPV4:-172.31.250.3}" }
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/ && wget -q --spider http://127.0.0.1:8080/next/"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 10s
     restart: unless-stopped
-    # nginx.conf 约定：/ → 经典版；/next/ → 青鸾版；/api/ → http://api:8000
+    # nginx.conf 约定：/ → 青鸾单一前端；/api/ → http://api:8000
 
 volumes:
   pgdata:

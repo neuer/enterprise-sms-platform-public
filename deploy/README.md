@@ -51,16 +51,17 @@ Compose 的 API 健康检查每 10 秒执行一次 `/readyz`，单次上限 3 �
 Compose 合同测试中逐项登记，不能通过恢复 root、可写根目录或新增 Linux capability
 解决启动问题。
 
-## 两套前端入口与回退
+## 单前端入口与回退
 
-同一个 Web 镜像同时包含两个静态 SPA：
+Web 镜像只包含青鸾单一 SPA：
 
-- 经典版：`/`；
-- 青鸾版：`/next/`。
+- 唯一入口：`/`；
+- 同源 API：`/api/`；
+- 退役入口：`/next` 与 `/next/` 固定返回 `410 Gone`。
 
-两者通过同一 Nginx、同源 `/api/` 和同一浏览器会话工作；`/next` 固定重定向到 `/next/`，两套 history 路由都必须直接刷新可用。Web 健康检查同时探测两个入口，任一入口不可用都会使容器不健康。发布验收须分别覆盖经典版与青鸾版的登录、同路由切换、刷新、角色显示和退出。
+所有 history 业务路由必须可直接刷新。Web 健康检查只探测根入口，发布验收覆盖青鸾版登录、首次改密、业务深路由刷新、角色显示和退出，并确认退役入口不再返回 SPA。
 
-两套前端回退以整个上一版 Web 镜像为最小单位，沿用“四镜像统一发布”的受控状态机执行。不得只替换 Nginx 配置、只复制某一套静态文件或删除 `/next/` 目录，否则镜像、配置与健康检查会失去原子性。若需结束灰度，应另发一个仍同时包含两个入口、但默认入口与切换策略已评审的 Web 镜像。
+单前端回退以整个上一版 Web 镜像为最小单位，沿用“四镜像统一发布”的受控状态机执行。不得只替换 Nginx 配置或手工复制静态文件；源码、构建产物、Nginx 与健康检查必须随同一镜像原子切换。
 
 ## 外部 TLS 与浏览器安全策略
 
@@ -73,9 +74,9 @@ python3 scripts/verify_web_transport.py \
   --min-certificate-days 14
 ```
 
-探针要求 HTTP 第一跳只能重定向到配置的 HTTPS origin，TLS 不低于 1.2，证书剩余时间不少于 14 天，并检查 HSTS、CSP 与基础浏览器安全头；应由外部监控至少每日执行，失败立即告警。还必须分别在经典版 `/` 与青鸾版 `/next/` 用真实浏览器验收登录、首次改密、注销、超时和多标签页强制下线，记录核心页面无 CSP console violation，且 Application 存储中不存在改密或 step-up 令牌。
+探针要求 HTTP 第一跳只能重定向到配置的 HTTPS origin，TLS 不低于 1.2，证书剩余时间不少于 14 天，并检查 HSTS、CSP 与基础浏览器安全头；应由外部监控至少每日执行，失败立即告警。还必须在唯一入口 `/` 用真实浏览器验收登录、首次改密、注销、超时和多标签页强制下线，记录核心页面无 CSP console violation，且 Application 存储中不存在改密或 step-up 令牌。
 
-内部 HTTP Nginx 的 CSP 禁止内联脚本、脚本属性和内联 style 块，仅为 Element Plus/ECharts 动态布局暂时保留 `style-src-attr 'unsafe-inline'`；这不允许 `<style>` 块或脚本执行。当前所有 JavaScript 均为同源静态文件，因此 nonce/hash 不增加有效覆盖；动态 style 属性无法用固定 hash 完整覆盖。代码未使用 `v-html`、`innerHTML`、`eval` 等 HTML 字符串注入点，Trusted Types 已评估但暂不强制，待双前端依赖完成兼容验证后再以 report-only 到 enforcement 的独立变更推进。内部 Nginx 负责返回 CSP、Permissions-Policy、X-Content-Type-Options、X-Frame-Options 和 Referrer-Policy；外部代理不得删除、重复或放宽这些响应头。
+内部 HTTP Nginx 的 CSP 禁止内联脚本、脚本属性和内联 style 块，仅为 Element Plus/ECharts 动态布局暂时保留 `style-src-attr 'unsafe-inline'`；这不允许 `<style>` 块或脚本执行。当前所有 JavaScript 均为同源静态文件，因此 nonce/hash 不增加有效覆盖；动态 style 属性无法用固定 hash 完整覆盖。代码未使用 `v-html`、`innerHTML`、`eval` 等 HTML 字符串注入点，Trusted Types 已评估但暂不强制，后续须先在青鸾单一前端以 report-only 验证，再作为独立变更进入 enforcement。内部 Nginx 负责返回 CSP、Permissions-Policy、X-Content-Type-Options、X-Frame-Options 和 Referrer-Policy；外部代理不得删除、重复或放宽这些响应头。
 
 ## 厂商与告警出站边界
 

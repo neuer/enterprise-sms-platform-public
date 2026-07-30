@@ -150,7 +150,7 @@ body {
 }
 
 .logout-button,
-.version-switch {
+.toolbar-action {
   padding: 4px 0;
   color: var(--tx-2);
   font: inherit;
@@ -161,7 +161,7 @@ body {
 }
 
 .logout-button:hover,
-.version-switch:hover {
+.toolbar-action:hover {
   color: var(--verdi);
 }
 

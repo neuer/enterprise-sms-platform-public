@@ -2,11 +2,11 @@ import { defineConfig } from "vitest/config"
 import vue from "@vitejs/plugin-vue"
 
 export default defineConfig({
-  base: "/next/",
+  base: "/",
   plugins: [vue()],
   test: {
     environment: "jsdom",
     globals: true,
-    exclude: ["legacy/**", "node_modules/**", "dist/**"],
+    exclude: ["node_modules/**", "dist/**"],
   },
 })

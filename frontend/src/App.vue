@@ -133,10 +133,6 @@ function startBalancePolling(): void {
   balanceRefreshTimer = window.setInterval(() => void refreshBalance(), 60_000)
 }
 
-function goToClassic(): void {
-  window.location.assign(route.fullPath)
-}
-
 function syncBalancePolling(): void {
   stopBalancePolling()
   if (!authenticatedShell.value) {
@@ -242,11 +238,10 @@ async function handlePasswordChanged(): Promise<void> {
 
           <div class="operator">
             <span class="balance" :aria-label="balanceLabel">余额 <strong>{{ currentBalance?.toLocaleString() ?? '—' }}</strong></span>
-            <button class="version-switch" type="button" @click="goToClassic">返回经典版</button>
             <span class="operator-name">{{ session.displayName }} <small>{{ session.roleLabel }}</small></span>
             <button
               v-if="session.providerCode === 'local'"
-              class="version-switch"
+              class="toolbar-action"
               data-testid="change-password"
               type="button"
               @click="passwordDialogOpen = true"
