@@ -1,9 +1,14 @@
-# PROGRESS.md — 续跑状态（每任务完成后更新并随 commit 提交；新会话第一动作是读本文件）
+# PROGRESS.md — 当前维护状态
 
-- 当前里程碑：M4.1（DONE）；进入 2026-07 全库审查 Issue 整改与测试环境逐项验收。
-- 当前任务：完成 P0 配额/频控事实账本的公有主仓切换部署；host-control 分类与 API 双进程容量修复已完成本地 G2，准备更新 PR #20。
-- 最后完整 G2 代码 commit：`<redacted-commit>`（PR #19 run `<redacted-run>` 第 2 次 G2 与 `ci-gate` 成功，性能 P95 `0.265071s`）。
-- 本轮最后绿色代码 commit：`<redacted-commit>`（PR #19 merge commit；main CI run `<redacted-run>` 成功；精确同提交 host-control 已安装并保持 inactive）。
-- 活跃 BLOCKED：PR #20 原提交的 Hosted G2 两次仅在 PERF-01 失败（`0.906s`、`0.453s`，要求 `<0.300s`）；双 API worker 后本地完整同负载 P95 为 `0.0214s`。未进入远端 prepare/apply，测试 checkout/数据库仍为 `<redacted-commit>` / `0021_approval_legacy_default`，数据与 volume 未改动。
-- 下一步（一句话）：提交后在干净树完成发布控制烟测并推送 PR #20，通过权威 G2 后安装精确 merge commit 快照，再执行 public cutover 至远端 `state=verified`。
-- 本轮门禁状态：最新本地完整 G2 的阶段 0–9 全绿：真实 PostgreSQL 10 passed、后端 2657 passed / 12 skip、覆盖率 82.82%、迁移双建库、安全/E2E/前端均通过，PERF-01 P95 `0.0214s`；阶段 10 只因发布控制按合同要求干净 Git 树而在提交前 fail closed，提交后立即单独复验。测试随机 UUID 偶发伪装手机号的问题已改为安全分隔 nonce，PII 防线未放宽。历史 v1.6.14 四镜像/数据持久化候选 `<redacted-commit>` 的 Trivy 证据继续保留（API 0、Web 0、PostgreSQL 0、Redis 0 个 HIGH/CRITICAL）；最终不可变证据归档到生产变更单与 release manifest。
+日常开发与交付以 `MAINTENANCE.md` 为权威入口；本文件只记录当前状态和仍需处理的阻塞，
+不再沿用 M0–M4 建设期的续跑任务。
+
+- 建设里程碑：M4.1 `DONE`；当前阶段为维护期，公开仓库安全边界、选择性 CI、测试服务器快速更新和生产发布门禁均已固化。
+- 最近公开基线：`main` 的 PR #2 已 squash merge；对应 CI 与 CodeQL 均通过，公开代码扫描无未关闭告警。
+- 当前任务：对齐日常交付实现与全部活跃文档，禁用公开工作区的跨历史 cutover，补齐 GitHub 鉴权前置检查，并统一测试环境、CI、18 件 secrets 和证据链接口径。
+- 活跃 BLOCKED：测试服务器仍在当前公开仓库对象库不存在的旧 commit。日常
+  `scripts/test_update.sh plan/apply` 会按设计失败关闭；当前公开工作区未导入、也不得导入
+  私有归档 remote、ref、commit 或 Git pack，服务器数据与 volume 未因本轮文档修复变更。
+- 下一步：合并本轮对齐修复；跨历史测试服务器基线迁移另立变更单，在公开工作区之外的
+  隔离临时证据仓库中设计、评审和执行。完成后以公开 commit 建立服务器新基线，再恢复
+  `MAINTENANCE.md` 的 `plan` → `apply` → `status` 日常流程。

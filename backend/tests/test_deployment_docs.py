@@ -577,17 +577,19 @@ def test_public_release_docs_redact_internal_evidence_and_keep_gate_results() ->
     progress = (ROOT / "PROGRESS.md").read_text(encoding="utf-8")
     handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")
 
-    for document in (release, acceptance, progress, handover):
+    for document in (release, acceptance, handover):
         assert "<redacted-" in document
         assert re.search(r"\b[0-9a-f]{40}\b", document) is None
         assert "API 0" in document
         assert "Web 0" in document
         assert "PostgreSQL 0" in document
         assert "Redis 0" in document
+    assert "当前维护状态" in progress
+    assert re.search(r"\b[0-9a-f]{40}\b", progress) is None
     for token in (
         "外部 TLS",
         "真实 AD",
-        "生产八件 secrets",
+        "生产 18 件 secrets",
         "24 小时",
         "RTO",
         "真人 UAT",
@@ -609,7 +611,10 @@ def test_release_bookkeeping_moves_final_head_evidence_to_change_order() -> None
     for name, document in documents.items():
         for phrase in stale_phrases:
             assert phrase not in document, f"{name} 仍包含已完成门禁的旧续跑提示"
+    for name in ("HANDOVER.md", "RELEASE.md"):
+        document = documents[name]
         assert "最终不可变证据归档到生产变更单与 release manifest" in document
+    assert "日常开发与交付以 `MAINTENANCE.md` 为权威入口" in documents["PROGRESS.md"]
 
 
 def test_deployment_index_assigns_hsts_to_the_external_tls_terminator() -> None:

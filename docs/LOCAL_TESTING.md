@@ -66,5 +66,7 @@ docker compose -f deploy/docker-compose.yml logs --since=10m api worker-realtime
 
 - 本地脚本只接受 `DEBUG=1`、`AUTH_MOCK=1`、`VENDOR_MOCK=1` 和 `http://mock-vendor:9028`；检测到其他值会拒绝启动。
 - 测试不会请求真实 LDAP、厂商、企业微信或 SMTP；告警只写 `alert_log` 与结构化日志。
-- `.env`、八件 secrets、开发 API Key、数据库卷均是本机测试资产，已被 Git 忽略；已有安全随机值会复用，旧式固定开发凭据会自动轮换；仍不得上传、复制到聊天或用于生产。
+- `.env`、18 件本地测试 secrets、开发 API Key、数据库卷均是本机测试资产，已被 Git
+  忽略；已有安全随机值会复用，旧式固定开发凭据会自动轮换；仍不得上传、复制到聊天或
+  用于生产。
 - 若要验证真实 LDAP/厂商，请按 `HANDOVER.md` 在隔离预生产执行，不能通过修改本地脚本绕过 mock-only 断言。

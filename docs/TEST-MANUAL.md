@@ -2,10 +2,10 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v1.0 |
-| 编制日期 | 2026-07-14 |
+| 文档版本 | v1.1 |
+| 编制日期 | 2026-07-30 |
 | 系统版本 | 企业短信管理平台 v1.6 |
-| 测试环境 | 公网 Mock 测试基座 |
+| 测试环境 | 动态；执行前必须读取 `scripts/test_update.sh status` |
 | Web 入口 | `${TEST_BASE_URL}/login`（由测试负责人经受控渠道提供） |
 | 测试时区 | Asia/Shanghai（UTC+08:00） |
 | 文档状态 | 可执行基线 |
@@ -16,7 +16,9 @@
 
 本手册用于指导业务测试、接口测试和运维测试人员在已部署的远程测试服务器上完成全量验收。它给出统一环境、角色、数据、执行顺序、28 项核心 UAT、专项检查、证据规则、恢复动作和报告模板。
 
-需求结论以 [PRD.md](../PRD.md) 为准，接口以 [openapi.yaml](../openapi.yaml) 为准，厂商 Mock 以 [vendor-api.md](vendor-api.md) 为准。已有自动验收结果可参考 [UAT-report.md](UAT-report.md)，但历史自动结果不能替代本轮真人执行记录。
+需求结论以 [PRD.md](../PRD.md) 为准，接口以 [openapi.yaml](../openapi.yaml) 为准，厂商
+Mock 以 [vendor-api.md](vendor-api.md) 为准。历史自动验收证据保留在受限归档中，不随公开
+快照发布，也不能替代本轮真人执行记录。
 
 ### 1.2 适用人员
 
@@ -40,20 +42,35 @@
 
 ### 1.4 环境边界与非目标
 
-当前服务器是访问受控的 Mock 测试基座：认证与厂商均使用 Mock，不会发送真实短信，也不请求真实 LDAP、企微或 SMTP。以下项目不在本手册的当前通过范围内：
+环境状态不是静态文档事实。每轮测试前必须在已批准的本地连接配置下执行：
+
+```bash
+scripts/test_update.sh status
+```
+
+本次文档对齐时，配置的测试服务器为 `development-vendor-live` / `controlled`：认证仍为
+开发 `AUTH_MOCK`，厂商侧是受控真实联调，不是 Mock。live-test 下普通 Web/API 发送入口
+必须返回 `VENDOR_TEST_CONSOLE_ONLY`；只有 `/configs`「真实联调」页和
+`POST /api/v1/messages/uat-send` 能在严格授权下向一个 active 已登记测试号码发送，
+共同受每日最多 100 个计费条、uncertain 占额、应用限流和 critical pause 约束。该路径会
+产生真实短信和实际计费，必须由授权人员在独立窗口执行。
+
+CI、G2、故障注入、魔法号、Mock Send 计数和本文其余 Mock 用例仍只允许在隔离的
+`AUTH_MOCK=1` / `VENDOR_MOCK=1` 环境执行，禁止直接套用到 controlled 服务器。以下项目
+仍不在当前远程测试通过范围内：
 
 - 真实 LDAP/AD 组映射、证书链与账号生命周期；
-- 真实短信厂商密钥、出口 IP 白名单、实际计费和真实送达率；
+- 不受控制台/窄化 UAT API 约束的真实短信发送、生产流量和真实送达率；
 - HTTPS/TLS/HSTS、生产域名和 WAF；
 - 24 小时十万条长稳压测、真实主备切换和生产 RTO；
-- 生产八件 secrets、正式告警渠道和发布审批。
+- 生产 18 件 secrets、正式告警渠道和发布审批。
 
-上述项目必须在隔离预生产或生产演练中另行验收，不得用 Mock 结果代替。
+上述项目必须在隔离预生产或生产演练中另行验收，不得用 Mock 或 controlled UAT 结果代替。
 
 ### 1.5 安全红线
 
 - 禁止在截图、缺陷、聊天、工单或本手册中粘贴 API Key、JWT、Docker secrets、SSH 密码或私钥；
-- 测试手机号必须来自经批准的虚拟号段或专用测试号池，不使用员工、客户真实号码；
+- Mock 用例只用批准虚拟号段；真实 UAT 只用控制台内 active 已登记的专用测试号码；
 - 证据中手机号只保留平台 mask；不得导出、复制或上传明文号码列表；
 - 不在浏览器控制台、shell trace、日志命令中打印认证头或 secret 文件；
 - 普通测试员不得执行停服务、重置数据、故障注入、配置缩短或队列恢复；
@@ -70,9 +87,11 @@
 | 就绪检查 | `${TEST_BASE_URL}/readyz` | 按测试窗口受控开放 | 无敏感细节的接流判定 |
 | Web API | `${TEST_BASE_URL}/api/v1` | 经 Nginx 同源代理 | 浏览器与受控接口测试 |
 | API 直连端口 | 不公开 | 仅服务器回环 | 运维脚本与诊断 |
-| 厂商 Mock 端口 | 不公开 | 仅服务器回环 | 授权故障注入与断言 |
+| 厂商 Mock 端口 | 不公开 | 仅隔离 Mock 环境回环 | 授权故障注入与断言 |
 
-测试开始前应确认登录页与健康检查返回 HTTP 200；API 和 Mock 直连端口不可从公网访问，这是正确的安全状态。若可通过公网直连 API 或 Mock，立即按 P0 安全缺陷上报并停止测试。
+测试开始前应确认登录页与健康检查返回 HTTP 200；API 和 Mock 直连端口不可从公网访问，
+这是正确的安全状态。controlled 模式不得暴露厂商端口或绕开
+`vendor-control-agent`。若可通过公网直连 API/Mock/厂商，立即按 P0 安全缺陷上报并停止测试。
 
 ### 2.2 测试账号
 
@@ -122,7 +141,8 @@ curl -fsS http://127.0.0.1:<MOCK回环端口>/_mock/state
 服务器镜像 digest：
 Web 地址：${TEST_BASE_URL}
 执行负责人：
-已知限制：公网 HTTP、Mock 认证、Mock 厂商、告警 log-sink
+环境档位：从 status 原样登记（不得包含主机、凭据或号码）
+已知限制：公网 HTTP、开发认证；厂商档位按 status 选择 Mock 或 controlled UAT；告警 log-sink
 ```
 
 若目标 commit、镜像 digest 或数据库迁移版本无法确认，不执行全量 UAT，只执行健康检查并上报环境阻塞。
@@ -160,6 +180,8 @@ Web 地址：${TEST_BASE_URL}
 ### 3.3 前置检查
 
 - [ ] 登录页、`/livez` 和 `/readyz` 返回 HTTP 200；
+- [ ] 已执行 `scripts/test_update.sh status` 并登记 vendor mode/status；
+- [ ] Mock 专项确认 `VENDOR_MOCK=1`；controlled UAT 确认普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`；
 - [ ] 测试负责人已登记 commit、镜像和执行窗口；
 - [ ] 四账号均处于未锁定状态；
 - [ ] `app-iam`、`app-oa`、`app-mkt` 可见且状态正常；
@@ -202,7 +224,7 @@ Web 地址：${TEST_BASE_URL}
 
 出现以下任一情况立即停止当前测试面：
 
-- 环境指向真实厂商或实际产生真实短信；
+- Mock 档位指向真实厂商，或 controlled 档位在批准入口/号码/预算之外产生真实短信；
 - 日志、数据库、API 或证据出现明文手机号、Key、JWT 或 secret；
 - Send 超时后系统自动重发；
 - 同一 `biz_id` 产生两个实际发送批次；
@@ -1188,10 +1210,11 @@ PostgreSQL、Redis、workers 和 beat 保持健康，数据库与 Docker volume 
 
 ### 执行前
 
-1. 确认远程地址、commit、镜像和 Mock 边界；
+1. 执行 `scripts/test_update.sh status`，确认 commit、`development-vendor-live`/Mock 档位及
+   `controlled`/inactive 状态；不得在证据中记录真实连接值；
 2. 执行环境冒烟；
 3. 分配四账号、测试号池和证据目录；
-4. 保存配置、Mock、队列、任务和账号基线；
+4. 按档位保存配置、Mock 或受控真实联调状态、队列、任务和账号基线；
 5. 高风险用例取得运维窗口批准。
 
 ### 执行后

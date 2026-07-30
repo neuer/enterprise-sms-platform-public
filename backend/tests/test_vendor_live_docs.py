@@ -132,7 +132,8 @@ def test_authoritative_contracts_lock_page_only_vendor_test_security_boundary() 
     ):
         assert phrase in agent_contract
 
-    assert "2026-07-17-vendor-test-web-console-design.md" in decisions
+    assert "完整设计证据保存在受限归档" in decisions
+    assert "](plans/" not in decisions
     configs_row = next(line for line in prd.splitlines() if "| /configs |" in line)
     assert "真实联调" in configs_row
 

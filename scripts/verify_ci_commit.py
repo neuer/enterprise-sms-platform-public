@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -82,6 +83,26 @@ def github_json(url: str, *, token: str | None) -> object:
         raise CiEvidenceError("GitHub CI evidence request failed") from error
 
 
+def github_token(environ: Mapping[str, str] | None = None) -> str | None:
+    source = os.environ if environ is None else environ
+    token = source.get("GITHUB_TOKEN") or source.get("GH_TOKEN")
+    if token:
+        return token.strip() or None
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
@@ -108,7 +129,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = ci_gate_status(
             github_json(
                 url,
-                token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"),
+                token=github_token(),
             ),
             commit=args.commit,
             check_name=args.check_name,

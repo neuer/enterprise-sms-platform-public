@@ -63,7 +63,7 @@ M0 尚未创建 backend/frontend 时，G0 只运行当前任务可执行的断�
 
 ## 6. HANDOVER.md 生成规范（终局自动生成）
 
-固定五节：①需人工完成清单（真实 AD 组映射与 AUTH_MOCK 关闭步骤、生产 secrets 八件套、厂商 IP 主备报备与 QPS 确认、企微/SMTP 配置、冷备同步与 30min 切换实测、全日压测、真人 UAT 28 例）②生产切换步骤引用（PRD 第10章 + BOOTSTRAP §8）③BLOCKED 与降级清单（含 DECISIONS 编号）④运维速查（常用命令、告警含义、恢复动作）⑤首月观察项（计费对账、anomaly 阈值调参、unmatched 归零确认）。
+固定五节：①需人工完成清单（真实 AD 组映射与 AUTH_MOCK 关闭步骤、生产 18 件 secrets、厂商 IP 主备报备与 QPS 确认、企微/SMTP 配置、冷备同步与 30min 切换实测、全日压测、真人 UAT 28 例）②生产切换步骤引用（PRD 第10章 + BOOTSTRAP §8）③BLOCKED 与降级清单（含 DECISIONS 编号）④运维速查（常用命令、告警含义、恢复动作）⑤首月观察项（计费对账、anomaly 阈值调参、unmatched 归零确认）。
 
 ## 7. Kickoff Prompt（目标模式，人类只发这一条）
 

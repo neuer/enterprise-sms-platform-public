@@ -20,18 +20,20 @@ high-risk 命中都会提升整次更新的门禁，不拆分绕过、不静默�
 `deploy/README.md` 安装同目标 commit 的快照。apply 切换 checkout 后，verify/status 仍由
 原快照裁决。不得用 raw Git、手工 Compose 或普通上传绕过。
 
-固定 host-control 资产表同时属于路径分类合同：全部资产在普通更新中均为 high-risk，
-public cutover 仅可剥离明确列出的发布元数据。CI 会逐项比较 shell driver 与 Python 合同
-中的资产集合，新增或删除资产只改一侧都会失败。分类通过后仍必须执行 source commit
-字节比较；“已归为 high-risk”不能替代同目标 commit 的 root-owned 快照安装。
+固定 host-control 资产表同时属于路径分类合同：全部资产在普通更新中均为 high-risk。
+CI 会逐项比较 shell driver 与 Python 合同中的资产集合，新增或删除资产只改一侧都会失败。
+分类通过后仍必须执行 source commit 字节比较；“已归为 high-risk”不能替代同目标 commit
+的 root-owned 快照安装。
 
 ## 本地入口
 
 本地工作树必须干净，目标必须是已推送的 `origin/` ref。首次使用把样例复制为 Git 忽略的
-本地文件；该文件只允许两个非敏感连接键，必须为当前用户拥有的 0400/0600 普通文件：
+本地文件；该文件只允许两个本地连接键，必须为当前用户拥有的 0400/0600 普通文件。键名
+可以公开，真实 target/port 值属于受限运维信息，不得进入 Git、文档、聊天或命令历史：
 
 ```bash
 scripts/docker_public.sh doctor
+gh auth status --hostname github.com
 cp test-update.env.example .env.test-update
 chmod 600 .env.test-update
 # 编辑 SMS_TEST_UPDATE_TARGET 与 SMS_TEST_UPDATE_PORT
@@ -50,6 +52,12 @@ scripts/test_update.sh status
 public Docker 会话并匿名访问公开基础镜像。不得删除或改写全局 Docker 配置，也不得
 把私有仓库凭据传给快速更新入口。`doctor` 未通过时先修复 Docker daemon、Compose、
 Buildx 或公开网络，不得绕过自检继续构建。
+
+GitHub 鉴权与 Docker 鉴权是两个独立边界。`apply` / `promote` 在任何构建或服务器变更
+前执行 `gh auth status --hostname github.com` 与目标仓库只读 API 预检；精确 CI 查询会
+优先使用已有环境 token，否则在内存中读取 GitHub CLI 系统钥匙串 token，绝不回显。
+鉴权失效时运行 `gh auth login --hostname github.com --web` 走官方设备/浏览器登录；
+不得复制 token 到聊天或配置文件，也不得长期 `export GITHUB_TOKEN`/`GH_TOKEN`。
 
 脚本验证本地与远端属于同一 GitHub 仓库后，直接读取远端 status 与 migration head，
 并由 CI 和测试发布共用的 Python 合同按实际差异分类。普通 `web-only`/`backend-safe`
@@ -76,59 +84,17 @@ destructive。滚动窗口需要改名时先采用双列/双写/read-new，旧 w
 fail closed。远端当前 HEAD 也必须已经存在于本地对象库；缺失基线、`git diff` 出错或
 差异存在但路径枚举为空都属于错误，绝不能解释成“无运行时代码差异”。
 
-从旧仓库一次性切换到新的规范仓库不属于日常快速更新：先在本地只读取得测试机精确
-基线对象，确认测试机可读取新仓库及其目标分支，再按变更记录切换
-`/opt/sms-platform` 的 `origin`。切换后立即从干净、已推送的规范分支重跑本入口并取得
-verified 终态；不要通过旧部署根目录、手工 Compose 或直接 checkout 绕过首次差异分类。
+从旧仓库一次性切换到新的规范仓库不属于日常快速更新。如果服务器 HEAD 不在当前公开
+仓库对象库，driver 会在差异分类前失败关闭；这是预期安全状态。禁止在本公开工作区添加
+私有归档 remote、fetch 私有 commit、创建临时 ref、生成 Git pack，或调用已禁用的
+`--public-snapshot-cutover` 参数。
 
-若新规范仓库由 `PUBLIC-SNAPSHOT.json` 声明的无历史公开快照起根，旧基线与
-`origin/main` 必然没有共同祖先。若目标快照同时把旧单 Redis/`sms_app` 拆为三域
-Redis/七职责数据库角色，必须先取得操作者对“初始化 11 个新凭据”的明确确认，按目标
-commit 重装下文 root-owned host-control 快照，再在服务器执行一次固定 bootstrap：
-
-```bash
-sudo /usr/bin/env \
-  SMS_PLATFORM_ROOT=/opt/sms-platform \
-  SMS_SECRETS_MODE=development \
-  SMS_RUNTIME_ROOT=/run/sms-platform/secrets \
-  SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials \
-  SMS_PUBLIC_CUTOVER_CONFIRMED=1 \
-  /usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap \
-  test-update bootstrap-public-cutover
-```
-
-bootstrap 只在服务器本机生成缺失的 11 个独立随机值，不输出值、长度、摘要或派生信息；
-它把旧权威凭据和根 `.env` 复制到 root-only 备份目录，保留旧 runtime generation、
-PostgreSQL 数据、全部 Docker volume 与运行态目录。它先保留旧 broker，新增并验证
-auth/control 两域；任一步失败会停止新域、恢复旧权威凭据、旧 runtime target 和旧
-Redis image 标签，同时保留失败现场。成功返回 `status=ready` 后，才使用同一入口的显式
-一次性模式：
-
-```bash
-SOURCE_COMMIT="$(python3 -c 'import json; print(json.load(open("PUBLIC-SNAPSHOT.json"))["source_commit"])')"
-git fetch <已授权的归档源仓库URL> "$SOURCE_COMMIT"
-git cat-file -e "$SOURCE_COMMIT^{commit}"
-scripts/test_update.sh --public-snapshot-cutover --ref origin/main
-```
-
-归档源 URL 只由已授权操作者在本地提供，不写入仓库、服务器 origin、日志或更新请求。
-该模式固定只接受 `origin/main`，要求测试基线与 manifest 源提交存在唯一共同私有祖先，
-并用 manifest 锁定的公开策略从源提交重新导出无历史快照；只有重新导出的完整文件树与
-公开历史中唯一 publication commit 逐文件、执行位和符号链接完全一致，才会把私有证据
-删除及公开发布元数据从逻辑运行差异中剥离。测试基线与源提交即使在共同祖先后分叉，
-两者之间的全部公开运行文件差异也仍会进入分类。其余应用差异继续走原分类器；运行时
-secrets/release/reset 控制文件一律提升为 high-risk，并要求目标 commit 的 CI 已执行完整
-G2。普通同历史更新传入
-该参数会失败，日常流程不得保留或复用这个参数。
-
-公有仓库不会携带 manifest 指向的私有源 Git 对象。driver 在本地验真后只生成包含该
-source commit 与其**当前文件树对象**的最小 Git pack，不携带私有提交历史；pack 由
-source commit、private merge-base 和 SHA-256 同时绑定，并先于 request 原子发布。远端
-root-owned 控制器只在私有临时 bare repository 中导入，要求 pack 的对象集合精确等于
-source commit 加完整当前树，再借助现有基线/公有对象重建快照和计算逻辑差异。无论验真
-成功或失败，pack 都在 prepare 内删除，不导入 `/opt/sms-platform/.git`，也不把归档源
-URL、私有 ref 或私有历史写入更新请求。证据缺失、摘要不符、包含额外对象或清理失败均
-fail closed。
+跨历史基线迁移必须另立变更单，在**不属于本公开工作区**的隔离临时证据仓库和受控服务端
+维护窗口中完成。方案至少要经过：私有证据访问授权、公开快照逐文件复验、数据/volume
+保留与回退设计、18 件 secrets/三域 Redis/七职责数据库角色迁移评审、清理证明，以及
+服务器最终 HEAD/origin 都绑定公开仓库 commit 的复核。任何私有 URL、ref、commit 或
+Git 对象不得回流到公开工作区。完成新公开基线后，先运行只读 `status`，再从干净且已推送
+的公开分支恢复本手册的 `plan` / `apply` 日常流程；不得用 raw Git/Compose 绕过。
 
 high-risk 首次运行依赖 host-control 安装器准备固定 `/etc/sms-platform/test-update-backup.json`、本机随机生成的 root `0600` 备份密钥和 `/var/lib/sms-platform/test-backups`。安装器在修改任何 checkpoint 权威状态前取得固定 lifecycle lock，冲突时不修改 config、key 或 checkpoint 输出目录；只在 config/key 均不存在且输出目录不存在或为空时生成一次，重装必须保留原密钥。唯一允许恢复的半状态是 key 已安全落盘、config 未提交且输出目录仍为空，此时只补 config。config 原子出现后即已提交；若后续目录落盘或身份复核失败，当次仍 fail closed，下一次必须完整复验并重新 `fsync` 权威目录才可接受。config-only、权限/硬链接漂移、中断或非法 checkpoint、其他半安装一律 fail closed。不得手工删除密钥后重跑、不得把密钥复制进仓库、命令参数、环境变量、日志或聊天。
 
@@ -141,11 +107,12 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
 3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。
-4. 执行 `scripts/test_update.sh plan --ref origin/<branch>` 查看分类和门禁。
-5. 执行 `scripts/test_update.sh apply --ref origin/<branch>`。
-6. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
-7. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。
-8. PR 改为 Ready 并 squash merge；若新 `origin/main` 与已验证分支的 tree 一致，执行
+4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
+5. 执行 `scripts/test_update.sh plan --ref origin/<branch>` 查看分类和门禁。
+6. 执行 `scripts/test_update.sh apply --ref origin/<branch>`。
+7. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
+8. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。
+9. PR 改为 Ready 并 squash merge；若新 `origin/main` 与已验证分支的 tree 一致，执行
    `scripts/test_update.sh promote --ref origin/main`，不重建镜像、不重复迁移。
 
 普通 `web-only` 更新从命令启动到 `verified` 的五连发实测平均约 1 分 20 秒。这个时间只用于操作预期，不是超时或成功判据。脚本会自动进入一次性 public Docker 会话；`scripts/docker_public.sh doctor` 用于首次使用或故障诊断，不要求每次更新前重复运行。`--dry-run` 可用于评审分类，但不是日常更新的强制前置步骤。

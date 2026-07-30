@@ -90,7 +90,7 @@ python3 scripts/security_acceptance.py \
 - T4.11：30 RPS API、verify/bulk 并发时延与 480 秒排空性能门禁；全日 10 万条压测为 `[HANDOVER]`。
 - T4.12：AUTOPILOT 列明的 20 项自动 UAT；真人 28 例在 AUTH_MOCK=0 预生产重复为 `[HANDOVER]`。
 - 冷备真实主备、DNS、厂商主/备出口 IP 切换与生产 `RTO≤30min` 实测为 `[HANDOVER]`。
-- 生产 HTTPS/WAF、日志聚合平台权限、真实 AD 组、生产八件 secrets、真实企微/SMTP 均按 HANDOVER.md 执行，不以 mock 结果冒充。
+- 生产 HTTPS/WAF、日志聚合平台权限、真实 AD 组、生产 18 件 secrets、真实企微/SMTP 均按 HANDOVER.md 执行，不以 mock 结果冒充。
 
 ## 2026-07-13 v1.6.13 生产就绪硬化验收
 
@@ -117,7 +117,7 @@ python3 scripts/security_acceptance.py \
 | 镜像标识 | API `<redacted-id>…`、Web `<redacted-id>…`、PostgreSQL `<redacted-id>…`、Redis `<redacted-id>…`；生产推送后仍须归档受控仓库 RepoDigest | PASS（本地 ID） |
 | 安全镜像完整 G2 | `<redacted-id>` 全新 Alpine Mock 卷：后端 644 项、services 86.01%、迁移、69-operation 契约、SEC-01–07、UAT 20/20、Node 24 前端 53 项；受理 P95 20.25ms、verify P95 121.38ms、排空 61.40s；退出 0 并清理卷 | PASS |
 
-基础镜像代码阻塞、安全镜像完整 G2、最终审查与本地 `main` 集成已闭环。外部 TLS/HSTS、真实 AD/厂商/告警渠道、生产八件 secrets、24 小时十万条压测、主备 RTO 和真人 UAT 仍是生产发布条件。D01、`TASKS.md` 与现有安全 SQL splitter 不变。
+基础镜像代码阻塞、安全镜像完整 G2、最终审查与本地 `main` 集成已闭环。外部 TLS/HSTS、真实 AD/厂商/告警渠道、生产 18 件 secrets、24 小时十万条压测、主备 RTO 和真人 UAT 仍是生产发布条件。D01、`TASKS.md` 与现有安全 SQL splitter 不变。
 
 ## 2026-07-15 v1.6.15 安全与前后端契约对齐验收
 
@@ -132,8 +132,8 @@ python3 scripts/security_acceptance.py \
 | 前端 | Node 24 构建、类型检查与组件测试通过；Vitest 22 个 test files、84 项 tests 全绿 | PASS |
 | 四镜像发布门禁 | 相同代码基线本地运行 `bash scripts/verify_release.sh`，以只读镜像归档交给 digest 固定的 Trivy 0.70.0，API/Web/PostgreSQL/Redis 均为 0 HIGH / 0 CRITICAL，脚本退出 0 | PASS |
 | hosted 候选门禁 | 候选 `<redacted-commit>` 的 CI run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 均成功；本次文档合并后的新 HEAD 仍须重跑 | PASS（基线） |
-| 远端 Mock 发布演练 | 精确修复提交 `<redacted-commit>` 完整通过 Web/API-only、数据镜像、配置失败不变、健康失败补偿与 TERM/resume；恢复后默认容器/卷最终前后快照一致，公网边界和管理员浏览器登录/退出通过。首次误清理 Mock 卷和测试环境重置已在 [演练报告](reports/2026-07-15-remote-mock-release-rehearsal.md) 披露 | PASS（控制面） |
+| 远端 Mock 发布演练 | 精确修复提交 `<redacted-commit>` 完整通过 Web/API-only、数据镜像、配置失败不变、健康失败补偿与 TERM/resume；恢复后默认容器/卷最终前后快照一致，公网边界和管理员浏览器登录/退出通过。首次误清理 Mock 卷和测试环境重置已在受限归档披露，该证据不随公开快照发布 | PASS（控制面） |
 | 候选冻结边界 | 最终文档提交不自引用自身 hash；合并后必须按其精确 `headSha` 重新执行 GitHub CI 与手动 Release Gate，最终以 hosted run 和 release evidence `candidate_commit` 归档 | 外部不可变证据 |
-| 生产人工边界 | TLS/HSTS、真实 LDAP 四角色、生产八件 secrets、厂商/告警连通、受控仓库 RepoDigest、24 小时十万条、主备 RTO、真人 28 例 UAT 与生产变更单仍未完成 | HANDOVER |
+| 生产人工边界 | TLS/HSTS、真实 LDAP 四角色、生产 18 件 secrets、厂商/告警连通、受控仓库 RepoDigest、24 小时十万条、主备 RTO、真人 28 例 UAT 与生产变更单仍未完成 | HANDOVER |
 
 本轮未降低 HIGH/CRITICAL 扫描阈值，未放宽 warning 过滤，未引入运行时外部 CDN，也未把 mock 结果描述为真实生产连通性。正式 `v*` tag 只能在 HANDOVER 人工事项签收并由最终候选 hosted Release Gate 通过后创建。

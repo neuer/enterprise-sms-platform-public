@@ -273,28 +273,16 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 
 同一安装器还负责快速更新密文 checkpoint 的一次性前置条件，并在任何 checkpoint 权威状态修改前非阻塞取得固定 lifecycle lock；锁冲突时不修改 config、key 或 checkpoint 输出目录。配置与密钥均不存在且输出目录不存在或为空时，才在服务器本机用 `os.urandom(32)` 生成 root `0600` 密钥，并把固定配置的原子出现作为最后的 commit marker；后续重装只验证并保留原密钥。唯一崩溃恢复例外是“安全的 key 已落盘、config 尚未提交、输出目录仍为空”，此时只补 config，提交前后都重新绑定同一 key inode。config 提交后的目录 `fsync` 或身份复核若失败，本次仍 fail closed；下一次运行只有在重新验证全部 checkpoint、config/key 内容与 inode，并再次 `fsync` 两个权威文件父目录后才接受该已提交状态。config-only、密钥长度/权限/硬链接异常、中断 checkpoint，或已有 checkpoint 却缺少任一权威文件都立即 fail closed，绝不生成新密钥覆盖历史恢复能力。安装过程和输出不得显示密钥值、长度、摘要或派生信息。
 
-无历史公开快照若跨越单 Redis/单 `sms_app` 到三域 Redis/七职责角色边界，在操作者明确
-确认后，使用已安装目标 commit 的固定 bootstrap 执行一次准备：
+无历史公开快照与旧测试基线没有共同祖先时，不得继续使用日常快速更新，也不得把私有
+归档 remote、commit、ref 或 Git pack 导入当前公开工作区。旧的 public-cutover 服务端
+兼容资产仅用于保留既有运行态的可恢复性，不构成可执行入口；本地 driver 已明确拒绝
+`--public-snapshot-cutover`。
 
-```bash
-sudo /usr/bin/env \
-  SMS_PLATFORM_ROOT=/opt/sms-platform \
-  SMS_SECRETS_MODE=development \
-  SMS_RUNTIME_ROOT=/run/sms-platform/secrets \
-  SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials \
-  SMS_PUBLIC_CUTOVER_CONFIRMED=1 \
-  /usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap \
-  test-update bootstrap-public-cutover
-```
-
-该操作在服务器本机生成 `metrics_scrape_token`、七个职责数据库密码和三域 Redis 密码共
-11 个值；旧权威 secrets 与根 `.env` 备份到
-`/var/lib/sms-platform/public-cutover-bootstrap/backup-*`，旧 secrets 目录、旧 runtime
-generation、PostgreSQL 数据、Docker volumes 和运行态目录均保留。准备阶段不替换旧 broker，
-只新增并健康验证 auth/control；失败时自动恢复旧 secrets、runtime target 和 Redis image
-标签且保留失败现场。成功的 `state=ready` 只授权后续
-`scripts/test_update.sh --public-snapshot-cutover --ref origin/main` 使用；七角色创建、旧
-`sms_app NOLOGIN` 与 broker 切换仍由加密 checkpoint 后的 apply 完成。
+一次性基线迁移必须另立变更单，在不属于公开工作区的隔离临时证据仓库中完成逐文件验真，
+并单独评审 PostgreSQL/volume 保留、18 件 secrets、三域 Redis、七职责数据库角色、回退与
+证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
+任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
+`scripts/test_update.sh plan/apply/status` 日常流程。
 
 ### 手机操作者日常流程
 
@@ -361,10 +349,7 @@ scripts/test_update.sh status
 镜像；迁移不自动回退 schema。所有 high-risk 更新的
 prepare/apply/verify/status 全程使用同一 root-owned 不可变 bootstrap 快照；若快照到目标
 commit 间的 host-control 字节未变可复用既有快照，发生变化则必须先按上文重装目标 commit。
-无历史公开快照 cutover 还会由 driver 传入只含 manifest source commit 与其当前树对象的
-摘要绑定最小 Git pack；固定 controller 仅在 root 私有临时仓库导入、校验对象集合并复验
-快照，随后在 prepare 内删除。pack 不进入 `/opt/sms-platform/.git`，不包含私有提交历史；
-缺失、额外对象、摘要不符或清理失败均停止更新。
+无共同历史的服务器基线必须在本入口前按上文单独迁移；driver 不接收私有 Git 证据。
 不得 raw Git/Compose 绕过；driver 内部只用受控、摘要校验和可续传的 rsync 传输归档。快速
 更新与一次性主机安装相互独立：快速更新不自动启动隧道，
 不安装或轮换正式 Key，不登记测试号码，不激活真实联调，
@@ -665,7 +650,7 @@ Prometheus 仅从 `METRICS_ALLOWED_CIDRS` 指定的监控网段访问 API 内网
 不跟随重定向。连接池、5 秒总预算、单地址连接预算以及响应头/正文上限由代码固定，禁止
 通过部署参数放宽。
 
-标准生产八件套 secret 契约不因默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
+标准生产 18 件 secret 契约不因默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
 变更：只有在安全评审同步扩展凭据清单和 Compose 只读挂载、且私钥仅对
 `worker-callback` 可见后，才可在 `.env` 配置
 `CALLBACK_CA_CERTS_FILE`、`CALLBACK_MTLS_CERT_FILE` 与

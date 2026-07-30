@@ -155,7 +155,7 @@
 
 ## D027 正式运营商受控联调收敛到系统配置页面
 
-- 决策：单机测试环境的正常联调操作统一进入 `/configs`「真实联调」页。正式厂商 Key 只在 admin 页面组件的浏览器易失内存短暂存在，以 WebCrypto 混合加密封装后由普通 API 原样转发给 root `vendor-control-agent`；API 不持有解密能力、root、sudo 或 Docker Socket。测试号码改以 PostgreSQL 加密四元组为唯一事实源，真实 UAT 只能从控制台按 `recipient_id` 单号码发起；live-test 下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`。高风险操作使用当前 Provider 二次认证与 5 分钟单用途令牌。完整设计见 [正式运营商真实联调页面化设计](plans/2026-07-17-vendor-test-web-console-design.md)。
+- 决策：单机测试环境的正常联调操作统一进入 `/configs`「真实联调」页。正式厂商 Key 只在 admin 页面组件的浏览器易失内存短暂存在，以 WebCrypto 混合加密封装后由普通 API 原样转发给 root `vendor-control-agent`；API 不持有解密能力、root、sudo 或 Docker Socket。测试号码改以 PostgreSQL 加密四元组为唯一事实源，真实 UAT 只能从控制台按 `recipient_id` 单号码发起；live-test 下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`。高风险操作使用当前 Provider 二次认证与 5 分钟单用途令牌。完整设计证据保存在受限归档；公开快照以本条决策、PRD 和现行代码契约为准。
 - 原因：TTY 可以守住 secret 文件边界，但无法满足所有日常操作页面化、可恢复进度和最小权限协作；把 root 能力收敛为严格 Unix Socket 协议，同时让浏览器只发送端到端密文，可在不提升 API 权限的前提下完成安全交付。
 - 影响：AGENTS/PRD 安全契约、系统配置页、Provider 二次认证、测试号码 schema、浏览器 WebCrypto、控制 API、systemd agent、worker fail-closed 状态、OpenAPI、Mock-only CI/G2 与远端演练。凭据轮换用 root 私有 previous/new/phase 事务覆盖 active 切换、运行时重建和新旧两次 GetBalance 验证；失败的独立 critical 层不得被既有 manual pause 遮蔽，崩溃恢复成功前禁止 resume。marker 缺失时只有根 `.env` 再次通过严格纯 Mock 验证才可替换首次激活前凭据。测试号码另存不可解密的全版本 HMAC 索引投影，缺版本时 UAT fail-closed，并由管理员在页面重录同一号码刷新。每日 100 个计费条、uncertain 占额和 GetBalance-only 预检继续有效。
 
@@ -502,3 +502,19 @@
   Environment Deployment 记录和本地严格解析的 `.env.test-update`。CI 在高风险 PR 中
   运行 integration 模式，并按路径加入性能/release-control；人工、定时和生产候选仍保留
   完整 11 阶段。管理员初始化、正式 Key、测试号码、数据库与 volume 继续完全独立。
+
+## D054 公开工作区禁止跨历史 Git 对象切换
+
+- 决策：本决策取代 D051 中“通过日常快速更新完成公有快照首次切换”的入口设计。当前公开
+  工作区不得添加私有归档 remote、fetch 私有 commit、创建私有 ref 或生成/上传私有 Git
+  pack；`scripts/test_update.sh` 明确拒绝旧的 `--public-snapshot-cutover` 参数。服务器端
+  已安装的兼容资产只为保留既有运行态恢复能力，不构成新的可执行授权。
+- 迁移边界：无共同历史的测试服务器基线必须另立变更单，在不属于公开工作区的隔离临时
+  证据仓库和受控维护窗口中完成。评审必须覆盖逐文件公开快照验真、PostgreSQL/volume
+  保留与回退、18 件 secrets、三域 Redis、七职责数据库角色和证据清理；最终服务器
+  HEAD/origin 直接绑定公开 commit，任何私有 URL、ref、commit 或对象不得回流公开工作区。
+- 原因：即使最小 pack 不含完整提交历史，把私有来源 commit/tree 对象导入公开工作区仍会
+  扩大误推送、对象残留和后续开发误用风险，也与 `PUBLICATION.md` 的无私有对象边界冲突。
+- 影响：当前旧测试服务器基线不在公开对象库时，日常 `plan/apply` 按设计失败关闭；完成
+  单独基线迁移前不得用 raw Git、Compose、临时 ref 或旧参数绕过。正常同历史更新和
+  `promote`、数据库/volume 保留、真实联调控制面均不变。

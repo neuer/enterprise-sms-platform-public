@@ -326,35 +326,17 @@ def test_driver_never_treats_diff_failure_as_no_change() -> None:
     assert "差异存在但路径枚举为空，拒绝继续" in source
 
 
-def test_driver_keeps_public_snapshot_cutover_explicit_and_main_only() -> None:
+def test_driver_rejects_public_snapshot_cutover_without_private_object_work() -> None:
     source = DRIVER.read_text(encoding="utf-8")
 
     assert "--public-snapshot-cutover" in source
-    assert 'PUBLIC_SNAPSHOT_CUTOVER=0' in source
-    assert '"$PUBLIC_SNAPSHOT_CUTOVER" == 1' in source
-    assert '"$REF" != origin/main' in source
-    assert "scripts/verify_public_snapshot_cutover.py" in source
-    assert "--baseline \"$REMOTE_COMMIT\"" in source
-    assert "--target \"$TARGET_COMMIT\"" in source
-    assert "public snapshot cutover verified" in source
-    assert '"private_merge_base"' in source
-    assert 'CUTOVER_PACK_FILE="cutover-source.pack"' in source
-    assert 'EVIDENCE_REF="refs/test-updates/$UPDATE_ID/private-source"' in source
-    assert "rev-list --objects --no-object-names" in source
-    assert "pack-objects --stdout" in source
-    assert 'payload["public_cutover"]' in source
-    assert 'UPLOAD_ARTIFACTS+=("$BUNDLE/$CUTOVER_PACK_FILE")' in source
-    assert source.index('UPLOAD_ARTIFACTS+=("$BUNDLE/$CUTOVER_PACK_FILE")') < (
-        source.index('UPLOAD_ARTIFACTS+=("$BUNDLE/request.json")')
-    )
+    assert "public snapshot cutover 已禁用" in source
+    assert "PUBLIC_SNAPSHOT_CUTOVER" not in source
+    assert "CUTOVER_PACK_FILE" not in source
+    assert "pack-objects --stdout" not in source
+    assert 'payload["public_cutover"]' not in source
     assert "deploy/scripts/test_update_contract.py" in source
     assert "classify-nul" in source
-    for immutable_path in (
-        "scripts/check_public_readiness.py",
-        "scripts/export_public_snapshot.py",
-        "scripts/verify_public_snapshot_cutover.py",
-    ):
-        assert immutable_path in source
 
     result = subprocess.run(
         [
@@ -376,7 +358,25 @@ def test_driver_keeps_public_snapshot_cutover_explicit_and_main_only() -> None:
         text=True,
     )
     assert result.returncode == 2
-    assert "只允许 origin/main" in result.stderr
+    assert "不得向公开工作区导入私有 Git 对象" in result.stderr
+
+
+def test_driver_preflights_github_auth_before_apply_or_promote_mutation() -> None:
+    source = DRIVER.read_text(encoding="utf-8")
+    preflight = source.split("github_write_preflight() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+
+    assert '"$COMMAND" != apply && "$COMMAND" != promote' in preflight
+    assert "gh auth status --hostname github.com" in preflight
+    assert 'gh api "repos/$LOCAL_REPOSITORY" --jq .full_name' in preflight
+    assert "auth token" not in preflight
+    assert source.index("github_write_preflight\n") < source.index(
+        "remote_sms_compose test-update promote"
+    )
+    assert source.index("github_write_preflight\n") < source.index(
+        "# 固定远端阶段: sms-compose test-update prepare"
+    )
 
 
 def test_driver_classifier_accepts_g2_api_acceptance_as_non_runtime() -> None:
