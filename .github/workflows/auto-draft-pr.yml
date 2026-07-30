@@ -33,10 +33,13 @@ jobs:
               --jq 'length'
           )"
           if [[ "$existing" == 0 ]]; then
-            gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base main \
-              --head "$HEAD_BRANCH" \
-              --draft \
-              --fill
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/pulls" \
+              -f "title=Draft: $HEAD_BRANCH" \
+              -f "head=$HEAD_BRANCH" \
+              -f "base=main" \
+              -f "body=Automated Draft PR. Update this description before marking Ready." \
+              -F "draft=true" \
+              >/dev/null
           fi
