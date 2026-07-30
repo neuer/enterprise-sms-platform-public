@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_spec_consistency_tracks_only_active_contracts() -> None:
     checker = (ROOT / "scripts/check_spec_consistency.py").read_text(encoding="utf-8")
 
-    for active in ("AGENTS.md", "CLAUDE.md", "MAINTENANCE.md", "PRD.md"):
+    for active in ("AGENTS.md", "CLAUDE.md", "MAINTENANCE.md", "PRD.md", "PROGRESS.md"):
         assert f'"{active}"' in checker
     for historical in ("AUTOPILOT.md", "BOOTSTRAP.md", "TASKS.md"):
         assert f'"{historical}"' not in checker
@@ -22,6 +22,8 @@ def test_spec_consistency_tracks_only_active_contracts() -> None:
     assert "tasks.find(" not in checker
     assert "npm run typecheck && npm run build:g2" in checker
     assert "required_uat_cases.issubset" in checker
+    assert "progress_sections" in checker
+    assert "PR 与 CI 事实以 GitHub 为准" in checker
 
 
 def test_local_and_mock_gate_scripts_use_secured_compose_wrapper() -> None:

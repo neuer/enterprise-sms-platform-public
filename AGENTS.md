@@ -1,7 +1,7 @@
 # AGENTS.md — 企业短信管理平台工程约定 v1.6
 
 本文件是 Codex 与 Claude Code 共用的唯一工程约定。日常开发与交付从
-`MAINTENANCE.md` 开始，当前状态看 `PROGRESS.md`；`AUTOPILOT.md`、`BOOTSTRAP.md`
+`MAINTENANCE.md` 开始，当前外部阻塞看 `PROGRESS.md`；`AUTOPILOT.md`、`BOOTSTRAP.md`
 与 `TASKS.md` 仅保留建设期历史，不再作为维护期任务清单或日常门禁。需求见
 `PRD.md`，接口契约见 `openapi.yaml`，数据模型见 `schema.sql`，厂商精确报文与
 mock 契约见 `docs/vendor-api.md`。**冲突时以 PRD.md 为准。**

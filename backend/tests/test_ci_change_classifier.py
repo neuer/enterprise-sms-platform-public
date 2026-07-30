@@ -27,6 +27,7 @@ from classify_ci_changes import (  # noqa: E402
         ("docs/TEST-REPORT-probe.md", (False, False, False)),
         ("AUTOPILOT.md", (False, False, False)),
         ("TASKS.md", (False, False, False)),
+        ("PROGRESS.md", (False, False, False)),
         ("MAINTENANCE.md", (True, False, False)),
         ("PUBLICATION.md", (True, False, False)),
         ("RELEASE.md", (True, False, False)),
@@ -83,6 +84,38 @@ def test_mixed_changes_take_union() -> None:
         categories=frozenset({"frontend", "vendor-live"}),
         full_fallback=False,
         performance=True,
+    )
+
+
+def test_progress_is_an_ordinary_doc_without_reducing_mixed_change_risk() -> None:
+    progress_only = classify_paths(["PROGRESS.md"])
+    mixed = classify_paths(["PROGRESS.md", "backend/app/services/dashboard.py"])
+    protected_mixed = classify_paths(
+        ["PROGRESS.md", "backend/app/services/crypto.py"]
+    )
+
+    assert progress_only == Classification(
+        backend=False,
+        frontend=False,
+        g2=False,
+        security=False,
+        categories=frozenset({"ordinary-doc"}),
+    )
+    assert (mixed.backend, mixed.frontend, mixed.g2, mixed.security) == (
+        True,
+        False,
+        False,
+        False,
+    )
+    assert mixed.categories == frozenset({"ordinary-doc", "backend-check"})
+    assert (
+        protected_mixed.backend,
+        protected_mixed.frontend,
+        protected_mixed.g2,
+        protected_mixed.security,
+    ) == (True, False, True, True)
+    assert protected_mixed.categories == frozenset(
+        {"ordinary-doc", "backend-critical"}
     )
 
 
