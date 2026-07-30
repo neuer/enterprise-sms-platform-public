@@ -68,11 +68,14 @@ def test_runbook_defines_one_canonical_daily_workflow() -> None:
         "完成开发并运行",
         "提交修改",
         "推送目标分支",
-        "scripts/test_update.sh plan --ref origin/<branch>",
-        "scripts/test_update.sh apply --ref origin/<branch>",
+        "自动 Draft PR",
+        "自动 Ready",
+        "squash merge",
+        "最新 `origin/main`",
+        "scripts/test_update.sh plan --ref origin/main",
+        "scripts/test_update.sh apply --ref origin/main",
         "state=verified",
         "针对性验收",
-        "promote --ref origin/main",
     )
     daily = runbook.split("## 日常标准流程", maxsplit=1)[1]
     positions = [daily.index(phrase) for phrase in order]

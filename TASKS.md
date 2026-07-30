@@ -103,6 +103,10 @@
 
 - [x] T4.23 将青鸾版提升为根路径唯一前端，删除经典版源码、双构建、双入口和版本切换；同步 UI 基准、部署合同与单前端测试。29 个前端测试文件/184 项、后端 2920 项、根路径容器与 390px 浏览器验收通过，退役 `/next/` 返回 410。
 
+## M4.4 Owner PR 自动合并
+
+- [x] T4.24 owner 同仓分支的精确 push CI 成功后，自动将唯一匹配 PR 改为 Ready 并请求 squash auto-merge；严格校验 workflow 路径、owner、同仓、非 main、分支与 head SHA，保留 required checks、会话解决和冲突保护，禁止管理员绕过。Actionlint、5 项工作流合同和 `scripts/dev_check.sh --changed` 通过。
+
 ---
 
 ## 测试要求（贯穿）

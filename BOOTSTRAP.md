@@ -103,6 +103,9 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 `workflow_dispatch` 和每日定时任务。仓库 owner 的同仓分支只由 `push` 执行一次 CI，
 其重复 `pull_request` 事件明确跳过；fork 没有同仓 push，才由 `pull_request` 执行。分支
 push 始终按相对 `main` 的完整差异分类，因此 Actions 自动创建 Draft PR 不依赖递归事件。
+owner 同仓分支的精确 push CI 成功后，独立 `workflow_run` 只把 head SHA 完全一致的 PR
+改为 Ready 并请求 auto squash merge；required checks、会话解决和冲突保护仍由 GitHub
+执行，禁止 `--admin` 绕过。
 PR 与 `main` push 按变更文件选择检查；G2 只由高风险变更、人工/定时事件或失败关闭回退
 触发。稳定 job 名称及职责为：
 

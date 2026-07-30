@@ -533,3 +533,18 @@
 - 影响：前端构建、Dockerfile、Nginx、Compose 健康检查、部署手册和合同测试收敛为一套。
   API、OpenAPI、数据库、Alembic 和浏览器会话键不变；失败时只回退整个上一版 Web 镜像，
   不在新镜像内恢复双前端。
+
+## D056 Owner PR 在精确 push CI 成功后自动合并
+
+- 决策：owner 的同仓非 `main` 分支继续自动创建 Draft PR；对应 `.github/workflows/ci.yml`
+  push run 成功后，独立 `workflow_run` 校验 workflow 路径、事件、actor、head repository、
+  branch 和 head SHA，再把唯一匹配的开放 PR 改为 Ready 并请求 squash auto-merge。
+- 安全边界：自动化不使用 `--admin`，不自行伪造 check，也不处理 fork、人工、定时、失败、
+  cancelled、`main` 或 SHA 已漂移的 run。required `ci-gate`、会话解决、分支保护和冲突仍由
+  GitHub 决定是否真正合并；任何匹配歧义或字段不一致均失败关闭。
+- 交付语义：自动合并只表示仓库集成完成，不表示测试服务器 `state=verified`。默认对合并
+  后的精确 `origin/main` 执行 `plan` / `apply` / `status`；若分支已提前验证且 tree 相同，
+  仍可使用 `promote`。本决策取代 D053 中“必须先完成分支环境验收再合并”的默认顺序，
+  但不放宽 high-risk、迁移或控制面更新在 `apply` 前的精确 `ci-gate` 要求。
+- 效率约束：自动合并消除人工转 Ready 和点击合并，不复用不同 commit 的 G2 证据。开发
+  默认从最新 `main` 创建非堆叠分支，避免父 PR squash 后对子 PR 重放而触发重复 G2。
