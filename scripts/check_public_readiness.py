@@ -8,6 +8,7 @@ import fnmatch
 import ipaddress
 import json
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,7 @@ URL_PATTERN: Final = re.compile(
 SAFE_PUBLIC_URL_HOSTS: Final = frozenset(
     {
         "127.0.0.1",
+        "api.github.com",
         "api.resend.com",
         "files.pythonhosted.org",
         "github.com",
@@ -152,6 +154,7 @@ class PublicPolicy:
     excluded_paths: tuple[str, ...]
     required_public_files: tuple[str, ...]
     documentation_phone_allowlist: frozenset[str]
+    private_text_patterns: tuple[re.Pattern[str], ...] = ()
 
 
 def load_policy(path: Path = POLICY_PATH) -> PublicPolicy:
@@ -196,6 +199,42 @@ def is_excluded(relative_path: str, policy: PublicPolicy) -> bool:
     )
 
 
+def with_private_patterns(policy: PublicPolicy, path: Path) -> PublicPolicy:
+    """加载只存在于本机的附加正则；错误与命中均不回显模式内容。"""
+
+    try:
+        metadata = path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) not in {0o400, 0o600}
+        ):
+            raise ValueError("private pattern file permissions are unsafe")
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except ValueError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise ValueError("private pattern file is unavailable or invalid") from error
+
+    patterns: list[re.Pattern[str]] = []
+    for raw in lines:
+        value = raw.strip()
+        if not value or value.startswith("#"):
+            continue
+        if len(value) > 512:
+            raise ValueError("private pattern file is unavailable or invalid")
+        try:
+            patterns.append(re.compile(value))
+        except re.error as error:
+            raise ValueError("private pattern file is unavailable or invalid") from error
+    return PublicPolicy(
+        excluded_paths=policy.excluded_paths,
+        required_public_files=policy.required_public_files,
+        documentation_phone_allowlist=policy.documentation_phone_allowlist,
+        private_text_patterns=tuple(patterns),
+    )
+
+
 def _publishable_files(root: Path, policy: PublicPolicy) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
@@ -216,6 +255,14 @@ def _line_number(text: str, offset: int) -> int:
 
 def _scan_text(relative: str, text: str, policy: PublicPolicy) -> list[str]:
     findings: list[str] = []
+    for pattern in policy.private_text_patterns:
+        match = pattern.search(text)
+        if match is not None:
+            findings.append(
+                f"{relative}:{_line_number(text, match.start())}: "
+                "private local pattern"
+            )
+            break
     for label, pattern in FORBIDDEN_TEXT_PATTERNS:
         match = pattern.search(text)
         if match is not None:
@@ -400,7 +447,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument(
         "--git-range",
+        action="append",
+        default=[],
         help="also scan every commit reachable from this git rev-list expression",
+    )
+    parser.add_argument(
+        "--private-patterns",
+        type=Path,
+        help="optional mode-0600 local regex file; matching values are never printed",
     )
     return parser
 
@@ -410,13 +464,16 @@ def main() -> int:
     root = args.root.resolve()
     try:
         policy = load_policy(args.policy.resolve())
+        if args.private_patterns is not None:
+            policy = with_private_patterns(policy, args.private_patterns.resolve())
     except ValueError as error:
         print(f"FAIL: {error}")
         return 1
     findings = check_repository(root, policy=policy, snapshot=args.snapshot)
-    if args.git_range:
+    seen_commits: set[str] = set()
+    for git_range in args.git_range:
         commits = subprocess.run(
-            ["git", "rev-list", "--reverse", args.git_range],
+            ["git", "rev-list", "--reverse", git_range],
             cwd=root,
             check=False,
             capture_output=True,
@@ -426,6 +483,9 @@ def main() -> int:
             findings.append("unable to resolve --git-range for public scan")
         else:
             for commit in commits.stdout.splitlines():
+                if commit in seen_commits:
+                    continue
+                seen_commits.add(commit)
                 findings.extend(check_git_commit(root, commit=commit, policy=policy))
     if findings:
         for finding in findings:

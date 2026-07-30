@@ -194,6 +194,7 @@ git -C /opt/sms-platform archive "$TARGET_COMMIT" -- \
   deploy/scripts/test_update_backup.py \
   deploy/scripts/test_update_contract.py \
   deploy/scripts/test_update_manager.py \
+  deploy/scripts/test_update_promote.py \
   deploy/scripts/test_update_store.py \
   deploy/scripts/test_update_verify.py \
   scripts/check_public_readiness.py \
@@ -215,6 +216,7 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/test_update_backup.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_contract.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_manager.py" \
+  "$SOURCE_ROOT/deploy/scripts/test_update_promote.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_store.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_verify.py" \
   "$SOURCE_ROOT/scripts/check_public_readiness.py" \
@@ -348,12 +350,14 @@ sudo /usr/bin/env \
 应用代码先提交、推送并通过唯一入口：
 
 ```bash
-scripts/test_update.sh --ref origin/<branch>
+scripts/test_update.sh plan --ref origin/<branch>
+scripts/test_update.sh apply --ref origin/<branch>
+scripts/test_update.sh status
 ```
 
-只有远端 `state=verified` 和对应表面验收完成才算更新成功。driver 不查询或等待托管 CI，
-只构建受影响镜像且不重复运行测试；`ci-gate` 和 G2 作为异步证据继续运行，但不阻塞测试
-发布。无迁移更新不创建数据库 checkpoint，切换或验收失败时自动回退上一版应用
+只有远端 `state=verified` 和对应表面验收完成才算更新成功。driver 只构建受影响镜像且
+不重复运行测试；普通无迁移更新允许 CI 并行运行，high-risk、迁移或控制面更新必须先
+验证目标 commit 的精确 `ci-gate=success`。无迁移更新不创建数据库 checkpoint，切换或验收失败时自动回退上一版应用
 镜像；迁移不自动回退 schema。所有 high-risk 更新的
 prepare/apply/verify/status 全程使用同一 root-owned 不可变 bootstrap 快照；若快照到目标
 commit 间的 host-control 字节未变可复用既有快照，发生变化则必须先按上文重装目标 commit。

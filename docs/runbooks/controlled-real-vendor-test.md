@@ -313,13 +313,13 @@ print(response_body.decode("utf-8", errors="replace"))
 
 settings、厂商适配、发送 worker、计费、credential/recipient/额度、Compose、agent、
 activation 和 update manager 均为 high-risk。共享分类会让这些 commit 在 CI 执行完整
-G2；唯一快速更新入口不查询或等待托管 CI，也不重复测试。远端仍严格暂停并拒绝
+G2；快速更新入口必须先验证目标 commit 的精确 `ci-gate=success`，但不重复测试。远端仍严格暂停并拒绝
 submitting/retrying/uncertain；只有实际迁移才创建密文 checkpoint 并校验 expand-only。
 控制面首次自更新前还必须先安装同 commit 的 root-owned host-control bootstrap。详见
 [测试环境快速更新手册](test-fast-update.md)。
 
 本次临时 HTTPS 应用变更仍先完成提交和推送，再通过
-`scripts/test_update.sh --ref origin/<branch>`；只有服务器返回 `state=verified` 并完成
+`scripts/test_update.sh apply --ref origin/<branch>`；只有服务器返回 `state=verified` 并完成
 HTTP/HTTPS 表面验收才算成功。快速更新与一次性主机安装分开执行，且都不自动启动隧道、
 不安装或轮换正式 Key、不登记测试号码、不激活真实联调、不执行管理员初始化、不初始化
 数据库。全程保留 PostgreSQL 数据库、Docker volume、凭据 generation、号码和运行态数据。

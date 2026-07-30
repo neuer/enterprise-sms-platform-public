@@ -7,10 +7,10 @@
 
 | 分类 | 典型范围 | 处理 |
 |---|---|---|
-| `web-only` | `frontend/` 页面与静态资源 | 不等待托管 CI，构建 amd64 Web 镜像并替换；失败自动回退旧 Web 镜像 |
-| `backend-safe` | 非高风险 `backend/` 应用代码 | 不等待托管 CI；无迁移不做数据库 checkpoint，失败自动回退旧应用镜像 |
-| `high-risk` | 认证/授权/审计、加密/PII、发送/厂商链路、Compose、vendor-test/test-update 控制面 | 托管 CI/G2 异步运行；远端严格暂停并检查 submitting/retrying/uncertain |
-| migration | Alembic/schema 变化 | 托管 CI/G2 异步运行；远端仅接受 expand-only，并只在此时创建密文 checkpoint |
+| `web-only` | `frontend/` 页面与静态资源 | CI 并行运行；构建 amd64 Web 镜像并替换，失败自动回退旧 Web 镜像 |
+| `backend-safe` | 非高风险 `backend/` 应用代码 | CI 并行运行；无迁移不做数据库 checkpoint，失败自动回退旧应用镜像 |
+| `high-risk` | 认证/授权/审计、加密/PII、发送/厂商链路、Compose、vendor-test/test-update 控制面 | `apply` 前要求目标 commit 精确 `ci-gate=success`；远端严格暂停并检查 submitting/retrying/uncertain |
+| migration | Alembic/schema 变化 | `apply` 前要求目标 commit 精确 `ci-gate=success`；远端仅接受 expand-only，并只在此时创建密文 checkpoint |
 | unknown/destructive | 未知路径、收缩/删除/重命名迁移 | fail closed，单独评审 |
 
 `backend-safe` 与 `web-only` 同时出现时按组合更新处理；数据库仍只允许 expand-only。任何
@@ -27,14 +27,17 @@ public cutover 仅可剥离明确列出的发布元数据。CI 会逐项比较 s
 
 ## 本地入口
 
-本地工作树必须干净，目标必须是已推送的 `origin/` ref。只配置非敏感连接信息：
+本地工作树必须干净，目标必须是已推送的 `origin/` ref。首次使用把样例复制为 Git 忽略的
+本地文件；该文件只允许两个非敏感连接键，必须为当前用户拥有的 0400/0600 普通文件：
 
 ```bash
 scripts/docker_public.sh doctor
-export SMS_TEST_UPDATE_TARGET='operator@test-host'
-export SMS_TEST_UPDATE_PORT='22'
-scripts/test_update.sh --dry-run --ref origin/main
-scripts/test_update.sh --ref origin/main
+cp test-update.env.example .env.test-update
+chmod 600 .env.test-update
+# 编辑 SMS_TEST_UPDATE_TARGET 与 SMS_TEST_UPDATE_PORT
+scripts/test_update.sh plan --ref origin/<branch>
+scripts/test_update.sh apply --ref origin/<branch>
+scripts/test_update.sh status
 ```
 
 部署根目录固定为 `/opt/sms-platform`，由脚本内置并在任何 Git 或 SSH 更新动作前校验。
@@ -49,9 +52,12 @@ public Docker 会话并匿名访问公开基础镜像。不得删除或改写全
 Buildx 或公开网络，不得绕过自检继续构建。
 
 脚本验证本地与远端属于同一 GitHub 仓库后，直接读取远端 status 与 migration head，
-并由 CI 和测试发布共用的 Python 合同按实际差异分类；它不查询或等待托管 CI。driver 不重复
-pytest、Ruff/Mypy、前端测试或完整 CI/G2，只构建受影响的 `linux/amd64` 镜像，校验不可变
-image ID 和归档 SHA-256。归档与请求仅放入 root `0700` incoming 目录，文件为 `0600`。
+并由 CI 和测试发布共用的 Python 合同按实际差异分类。普通 `web-only`/`backend-safe`
+无迁移更新允许 CI 并行运行；high-risk、迁移或 host-control 更新必须通过 GitHub 公共 API
+验证目标 commit 上由 GitHub Actions 应用产生的精确 `ci-gate=success`，同名第三方状态
+不能通过。driver 不重复 pytest、Ruff/Mypy、前端测试或完整 CI/G2，只构建受影响的
+`linux/amd64` 镜像，校验不可变 image ID 和归档 SHA-256。归档与请求仅放入 root `0700`
+incoming 目录，文件为 `0600`。
 大归档先写入按目标 commit 隔离的远端 `0700` staging，使用固定文件名的 `.part` 和
 `rsync --partial --inplace` 最多重试三次；连接中断保留同一 `.part` 供本次或
 同目标重跑续传。远端摘要一致后才原子发布，且 `request.json` 最后发布。
@@ -132,14 +138,21 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 开发测试阶段只使用已经完成五次连续真实验证的入口，不增加二次包装命令。标准顺序如下：
 
-1. 完成开发和必要测试。
+1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
-3. 推送目标分支到 `origin`。
-4. 执行 `scripts/test_update.sh --ref origin/<branch>`。
-5. 确认最终 `test-update status` 返回 `state=verified`。
-6. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。
+3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。
+4. 执行 `scripts/test_update.sh plan --ref origin/<branch>` 查看分类和门禁。
+5. 执行 `scripts/test_update.sh apply --ref origin/<branch>`。
+6. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
+7. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。
+8. PR 改为 Ready 并 squash merge；若新 `origin/main` 与已验证分支的 tree 一致，执行
+   `scripts/test_update.sh promote --ref origin/main`，不重建镜像、不重复迁移。
 
 普通 `web-only` 更新从命令启动到 `verified` 的五连发实测平均约 1 分 20 秒。这个时间只用于操作预期，不是超时或成功判据。脚本会自动进入一次性 public Docker 会话；`scripts/docker_public.sh doctor` 用于首次使用或故障诊断，不要求每次更新前重复运行。`--dry-run` 可用于评审分类，但不是日常更新的强制前置步骤。
+
+`plan` 不构建、不上传、不修改服务器；`build` 只完成本地缓存/镜像准备；`status` 只读；
+`apply` 成功后写入 GitHub `test` Environment Deployment。`promote` 只接受 `origin/main`，
+要求 main 的精确 CI 证据与相同 tree；任一不满足都失败关闭并要求重新 `plan` / `apply`。
 
 无迁移更新在镜像替换或 verify 失败时自动恢复上一版 commit 与镜像，恢复健康后释放本次
 暂停并记录 `state=rolled_back`；脚本仍以失败退出，修复代码后重新提交、推送并重跑同一

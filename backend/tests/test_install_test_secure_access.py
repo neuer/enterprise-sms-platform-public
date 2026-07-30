@@ -139,6 +139,7 @@ def fixture(tmp_path: Path):
         "test_update_backup.py",
         "test_update_contract.py",
         "test_update_manager.py",
+        "test_update_promote.py",
         "test_update_store.py",
         "test_update_verify.py",
     ):
@@ -302,6 +303,7 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/test_update_backup.py",
         "deploy/scripts/test_update_contract.py",
         "deploy/scripts/test_update_manager.py",
+        "deploy/scripts/test_update_promote.py",
         "deploy/scripts/test_update_store.py",
         "deploy/scripts/test_update_verify.py",
         "scripts/check_public_readiness.py",

@@ -77,6 +77,7 @@ def test_mixed_changes_take_union() -> None:
         security=True,
         categories=frozenset({"frontend", "vendor-live"}),
         full_fallback=False,
+        performance=True,
     )
 
 
@@ -265,7 +266,9 @@ def test_push_uses_two_dot_diff_for_the_exact_push_range(tmp_path: Path) -> None
     )
 
 
-def test_known_main_push_does_not_repeat_high_risk_g2(tmp_path: Path) -> None:
+def test_main_push_without_verified_pr_evidence_fails_closed_to_g2(
+    tmp_path: Path,
+) -> None:
     repo = init_repo(tmp_path)
     before_sha = commit_file(repo, "docs/plans/base.md", "base")
     head_sha = commit_file(repo, "backend/app/core/audit.py", "audit")
@@ -275,9 +278,37 @@ def test_known_main_push_does_not_repeat_high_risk_g2(tmp_path: Path) -> None:
     assert result == Classification(
         True,
         False,
+        True,
+        True,
+        frozenset({"backend-critical"}),
         False,
         True,
-        frozenset({"backend-critical", "main-push-no-repeat-g2"}),
+        False,
+    )
+
+
+def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "docs/plans/base.md", "base")
+    head_sha = commit_file(repo, "new-top-level/unknown.txt", "unknown")
+
+    result = classify_event(
+        repo=repo,
+        event_name="push",
+        base_sha="",
+        before_sha=before_sha,
+        head_sha=head_sha,
+        trusted_pr_evidence=True,
+    )
+
+    assert result == Classification(
+        False,
+        False,
+        False,
+        False,
+        frozenset({"reused-pr-ci-evidence"}),
+        False,
+        False,
         False,
     )
 
@@ -296,6 +327,8 @@ def test_high_risk_pull_request_still_requires_g2(tmp_path: Path) -> None:
         True,
         True,
         frozenset({"backend-critical"}),
+        False,
+        True,
         False,
     )
 
@@ -393,7 +426,16 @@ def test_unreliable_event_metadata_forces_all(
         head_sha=head_sha,
     )
 
-    assert result == Classification(True, True, True, True, frozenset({reason}), True)
+    assert result == Classification(
+        True,
+        True,
+        True,
+        True,
+        frozenset({reason}),
+        True,
+        True,
+        True,
+    )
 
 
 def test_reliable_but_empty_diff_forces_all(tmp_path: Path) -> None:
@@ -408,6 +450,8 @@ def test_reliable_but_empty_diff_forces_all(tmp_path: Path) -> None:
         True,
         True,
         frozenset({"empty-diff"}),
+        True,
+        True,
         True,
     )
 
@@ -438,6 +482,8 @@ def test_github_outputs_contain_only_boolean_job_flags(tmp_path: Path) -> None:
         "frontend=true",
         "g2=false",
         "security=false",
+        "performance=false",
+        "release_control=false",
     ]
 
 
@@ -464,6 +510,8 @@ def test_cli_writes_forced_outputs_without_echoing_paths(
         "frontend=true",
         "g2=true",
         "security=true",
+        "performance=true",
+        "release_control=true",
     ]
     captured = capsys.readouterr()
     assert "changed_files=0" in captured.out

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-CANONICAL_COMMAND = "scripts/test_update.sh --ref origin/<branch>"
+CANONICAL_COMMAND = "scripts/test_update.sh apply --ref origin/<branch>"
 
 
 def read(path: str) -> str:
@@ -21,8 +21,10 @@ def test_agents_contracts_the_development_test_update_loop() -> None:
             CANONICAL_COMMAND,
             "提交并推送",
             "state=verified",
-            "不得查询或等待托管 CI",
             "不得重复执行 CI/G2",
+            "普通 `web-only`/`backend-safe`",
+            "ci-gate=success",
+            "promote --ref origin/main",
             "无迁移更新不得创建数据库 checkpoint",
             "rolled_back",
             "不得回退 schema",
@@ -63,14 +65,17 @@ def test_runbook_defines_one_canonical_daily_workflow() -> None:
         assert phrase in runbook
 
     order = (
-        "完成开发和必要测试",
+        "完成开发并运行",
         "提交修改",
         "推送目标分支",
-        CANONICAL_COMMAND,
+        "scripts/test_update.sh plan --ref origin/<branch>",
+        "scripts/test_update.sh apply --ref origin/<branch>",
         "state=verified",
         "针对性验收",
+        "promote --ref origin/main",
     )
-    positions = [runbook.index(phrase) for phrase in order]
+    daily = runbook.split("## 日常标准流程", maxsplit=1)[1]
+    positions = [daily.index(phrase) for phrase in order]
     assert positions == sorted(positions)
 
 

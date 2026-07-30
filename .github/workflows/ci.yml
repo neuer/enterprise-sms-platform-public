@@ -10,7 +10,9 @@ on:
     - cron: "17 18 * * *"
 
 permissions:
+  checks: read
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -27,6 +29,9 @@ jobs:
       frontend: ${{ steps.classify.outputs.frontend }}
       security: ${{ steps.classify.outputs.security }}
       g2: ${{ steps.classify.outputs.g2 }}
+      performance: ${{ steps.classify.outputs.performance }}
+      release_control: ${{ steps.classify.outputs.release_control }}
+      reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -43,6 +48,16 @@ jobs:
           python3 scripts/check_invariants.py
           python3 scripts/check_public_readiness.py
           python3 scripts/release_metadata.py --root "$GITHUB_WORKSPACE"
+      - name: Verify reusable PR evidence for main
+        id: reuse
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/reuse_pr_ci_evidence.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --candidate "$GITHUB_SHA" \
+            --event-name "${{ github.event_name }}" \
+            --github-output "$GITHUB_OUTPUT"
       - name: Classify changed files and G2 policy
         id: classify
         run: |
@@ -51,6 +66,7 @@ jobs:
             --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
             --before-sha "${{ github.event.before || '' }}" \
             --head-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
 
   backend:
@@ -222,8 +238,8 @@ jobs:
 
   g2:
     name: g2
-    # 仅高风险 PR、人工/定时事件及失败关闭回退会要求远端完整 G2；
-    # 可靠的已知 main push 不重复已经在 PR 或本地执行的权威门禁。
+    # 后端/前端/security 已完成静态与组件门禁；这里只跑整栈运行态阶段。
+    # 性能和发布控制烟测按路径选择，人工/定时事件仍全跑。
     needs: [changes, backend, frontend, security]
     outputs:
       tested_sha: ${{ steps.bind.outputs.sha }}
@@ -287,6 +303,13 @@ jobs:
           G2_NPM_CACHE_DIR: ${{ runner.temp }}/g2-npm-cache
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
+          g2_args=(--mode integration)
+          if [[ "${{ needs.changes.outputs.performance }}" == true ]]; then
+            g2_args+=(--include-performance)
+          fi
+          if [[ "${{ needs.changes.outputs.release_control }}" == true ]]; then
+            g2_args+=(--include-release-control)
+          fi
           sudo env \
             PATH="$PATH" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
@@ -299,7 +322,7 @@ jobs:
             G2_DOCKER_CACHE_DIR="$G2_DOCKER_CACHE_DIR" \
             G2_NPM_CACHE_DIR="$G2_NPM_CACHE_DIR" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
-            bash scripts/verify_all.sh
+            bash scripts/verify_all.sh "${g2_args[@]}"
       - name: Render G2 timing summary
         if: ${{ always() }}
         env:

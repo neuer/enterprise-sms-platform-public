@@ -678,6 +678,11 @@ def test_nul_cli_is_the_single_driver_classification_source() -> None:
     assert result.returncode == 0, result.stderr.decode()
     assert json.loads(result.stdout) == {
         "components": ["api", "web"],
+        "high_risk_paths": [
+            "deploy/scripts/test_secure_access_manager.py",
+            "deploy/systemd/sms-platform-test-secure-access.service",
+            "frontend/src/components/VendorCredentialDialog.vue",
+        ],
         "migration_changed": False,
         "risk": "high-risk",
         "runtime_changed": True,

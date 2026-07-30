@@ -28,7 +28,8 @@ secret 值、内部地址或拓扑详情。
 测试更新验证 `development`：
 
 1. `scripts/local_test.sh prepare` 生成/校验非敏感配置。
-2. `scripts/test_update.sh --ref origin/<branch>`。
+2. `scripts/test_update.sh plan --ref origin/<branch>` 后执行
+   `scripts/test_update.sh apply --ref origin/<branch>`。
 3. 只有远端状态为 `verified` 且对应表面验收通过才可继续。
 
 正式发布验证 `production`：

@@ -107,6 +107,7 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_update_backup.py",
         "deploy/scripts/test_update_contract.py",
         "deploy/scripts/test_update_manager.py",
+        "deploy/scripts/test_update_promote.py",
         "deploy/scripts/test_update_store.py",
         "deploy/scripts/test_update_verify.py",
         "scripts/check_public_readiness.py",
@@ -738,6 +739,7 @@ def _classify_nul_stream(raw: bytes) -> str:
     return json.dumps(
         {
             "components": sorted(scope.components),
+            "high_risk_paths": list(scope.high_risk_paths),
             "migration_changed": scope.migration_changed,
             "risk": scope.risk,
             "runtime_changed": scope.runtime_changed,

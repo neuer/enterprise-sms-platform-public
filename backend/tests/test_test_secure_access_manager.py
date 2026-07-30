@@ -116,6 +116,7 @@ def fixture(tmp_path: Path):
         "test_update_backup.py",
         "test_update_contract.py",
         "test_update_manager.py",
+        "test_update_promote.py",
         "test_update_store.py",
         "test_update_verify.py",
         "check_public_readiness.py",

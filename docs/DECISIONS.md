@@ -486,3 +486,19 @@
   host-control 快照、fail-closed 状态机和最终 `state=verified` 仍提供部署边界。
 - 影响：本决策取代 D034、D040 中“`ci-gate` 是 required check 且 test_update 必须验证
   绿色结果”的部分；生产 Release Gate、最终 SHA 的完整质量/安全/G2 与四镜像扫描不变。
+
+## D053 风险分级测试门禁与同树提升
+
+- 决策：D052 的“所有测试更新均不验证托管 CI”由本决策取代。普通 `web-only` 和
+  `backend-safe` 无迁移更新仍允许 CI 并行运行；high-risk、迁移或 host-control 更新在
+  `apply` 前必须验证目标 commit 上由 GitHub Actions 应用产生的精确 `ci-gate=success`。
+  `main` 继续以 `ci-gate` 为唯一 required check。PR 分支在测试环境完成 verified 与表面
+  验收后 squash merge；若新 main 与已验证分支 tree 完全一致，则以 `promote` 只替换
+  Git commit 身份，不重建相同镜像、不重跑迁移。
+- 原因：低风险联调需要短反馈环，高风险边界不能把异步证据当作可选；squash 只改变提交
+  身份时重复构建和部署不增加安全事实。精确 commit、GitHub Actions app 身份与 tree
+  等价验证可同时消除同名状态伪造和无效重复工作。
+- 影响：新增统一 `plan` / `build` / `apply` / `status` / `promote` 入口、GitHub `test`
+  Environment Deployment 记录和本地严格解析的 `.env.test-update`。CI 在高风险 PR 中
+  运行 integration 模式，并按路径加入性能/release-control；人工、定时和生产候选仍保留
+  完整 11 阶段。管理员初始化、正式 Key、测试号码、数据库与 volume 继续完全独立。

@@ -26,6 +26,8 @@ class Classification:
     security: bool
     categories: frozenset[str]
     full_fallback: bool = False
+    performance: bool = False
+    release_control: bool = False
 
 
 RuleResult = tuple[bool, bool, bool, bool, str]
@@ -59,7 +61,33 @@ BACKEND_RUNTIME_FILES = {
 }
 CI_CONTROL_SCRIPTS = {
     "scripts/classify_ci_changes.py",
+    "scripts/reuse_pr_ci_evidence.py",
     "scripts/verify_ci_results.py",
+}
+PERFORMANCE_SENSITIVE_EXACT = {
+    "backend/Dockerfile",
+    "backend/pyproject.toml",
+    "backend/uv.lock",
+    "deploy/docker-compose.yml",
+    "scripts/e2e_api.py",
+    "scripts/locustfile.py",
+    "scripts/perf_smoke.py",
+}
+RELEASE_CONTROL_EXACT = {
+    ".github/workflows/release-gate.yml",
+    "backend/Dockerfile",
+    "deploy/docker-compose.yml",
+    "deploy/postgres.Dockerfile",
+    "deploy/redis.Dockerfile",
+    "deploy/sms-compose",
+    "frontend/Dockerfile",
+    "scripts/create_release_manifest.py",
+    "scripts/deploy_release_remote.py",
+    "scripts/release_metadata.py",
+    "scripts/verify_release.sh",
+    "scripts/verify_release_control.sh",
+    "scripts/verify_reproducible_build.sh",
+    "scripts/verify_reproducible_release.py",
 }
 ZERO_SHA = "0" * 40
 FORCE_ALL_EVENTS = {"workflow_dispatch", "schedule"}
@@ -113,9 +141,19 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
 def classify_paths(paths: Iterable[str]) -> Classification:
     path_list = list(paths)
     if not path_list:
-        return Classification(True, True, True, True, frozenset({"empty-diff"}), True)
+        return Classification(
+            True,
+            True,
+            True,
+            True,
+            frozenset({"empty-diff"}),
+            True,
+            True,
+            True,
+        )
 
     backend = frontend = g2 = security = fallback = False
+    performance = release_control = False
     categories: set[str] = set()
     for path in path_list:
         pure_path = PurePosixPath(path)
@@ -130,8 +168,28 @@ def classify_paths(paths: Iterable[str]) -> Classification:
         security |= path_security
         fallback |= path_fallback
         categories.add(category)
+        performance |= (
+            path_fallback
+            or protected_change_category(path) in {"vendor-live", "backend-critical"}
+            or path in PERFORMANCE_SENSITIVE_EXACT
+            or path.startswith(("backend/app/", "backend/migrations/"))
+        )
+        release_control |= (
+            path_fallback
+            or path in RELEASE_CONTROL_EXACT
+            or path.startswith("deploy/scripts/release_")
+        )
 
-    return Classification(backend, frontend, g2, security, frozenset(categories), fallback)
+    return Classification(
+        backend,
+        frontend,
+        g2,
+        security,
+        frozenset(categories),
+        fallback,
+        performance and g2,
+        release_control and g2,
+    )
 
 
 def _git_paths(repo: Path, revision_range: str) -> list[str]:
@@ -148,21 +206,15 @@ def _git_paths(repo: Path, revision_range: str) -> list[str]:
 
 
 def _full(reason: str) -> Classification:
-    return Classification(True, True, True, True, frozenset({reason}), True)
-
-
-def _without_repeated_push_g2(result: Classification) -> Classification:
-    """可靠的已知 main push 不重复 PR/本地 G2；异常分类继续失败关闭。"""
-
-    if not result.g2 or result.full_fallback:
-        return result
     return Classification(
-        backend=result.backend,
-        frontend=result.frontend,
-        g2=False,
-        security=result.security,
-        categories=result.categories | {"main-push-no-repeat-g2"},
-        full_fallback=False,
+        True,
+        True,
+        True,
+        True,
+        frozenset({reason}),
+        True,
+        True,
+        True,
     )
 
 
@@ -173,6 +225,7 @@ def _classify_event_with_count(
     base_sha: str,
     before_sha: str,
     head_sha: str,
+    trusted_pr_evidence: bool = False,
 ) -> tuple[Classification, int]:
     if event_name in FORCE_ALL_EVENTS:
         return _full(f"forced-{event_name}"), 0
@@ -189,8 +242,17 @@ def _classify_event_with_count(
 
     paths = _git_paths(repo, revision_range)
     result = classify_paths(paths)
-    if event_name == "push":
-        result = _without_repeated_push_g2(result)
+    if event_name == "push" and trusted_pr_evidence:
+        result = Classification(
+            False,
+            False,
+            False,
+            False,
+            frozenset({"reused-pr-ci-evidence"}),
+            False,
+            False,
+            False,
+        )
     return result, len(paths)
 
 
@@ -201,6 +263,7 @@ def classify_event(
     base_sha: str,
     before_sha: str,
     head_sha: str,
+    trusted_pr_evidence: bool = False,
 ) -> Classification:
     result, _ = _classify_event_with_count(
         repo=repo,
@@ -208,6 +271,7 @@ def classify_event(
         base_sha=base_sha,
         before_sha=before_sha,
         head_sha=head_sha,
+        trusted_pr_evidence=trusted_pr_evidence,
     )
     return result
 
@@ -218,6 +282,8 @@ def write_github_outputs(path: Path, result: Classification) -> None:
         f"frontend={str(result.frontend).lower()}\n"
         f"g2={str(result.g2).lower()}\n"
         f"security={str(result.security).lower()}\n"
+        f"performance={str(result.performance).lower()}\n"
+        f"release_control={str(result.release_control).lower()}\n"
     )
     with path.open("a", encoding="utf-8") as output:
         output.write(lines)
@@ -229,6 +295,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--base-sha", default="")
     parser.add_argument("--before-sha", default="")
     parser.add_argument("--head-sha", default="")
+    parser.add_argument(
+        "--trusted-pr-evidence",
+        choices=("true", "false"),
+        default="false",
+    )
     parser.add_argument("--github-output", required=True, type=Path)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     return parser.parse_args(argv)
@@ -243,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_sha=args.base_sha,
             before_sha=args.before_sha,
             head_sha=args.head_sha,
+            trusted_pr_evidence=args.trusted_pr_evidence == "true",
         )
         write_github_outputs(args.github_output, result)
     except (ChangeDetectionError, OSError):

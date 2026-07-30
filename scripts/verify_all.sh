@@ -7,6 +7,41 @@ if [[ "${SMS_DOCKER_PUBLIC_SESSION:-0}" != "1" ]]; then
   exec "$ROOT/scripts/docker_public.sh" run -- bash "$0" "$@"
 fi
 cd "$ROOT"
+mode="full"
+include_performance=0
+include_release_control=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)
+      [[ $# -ge 2 ]] || exit 2
+      mode="$2"
+      shift 2
+      ;;
+    --include-performance)
+      include_performance=1
+      shift
+      ;;
+    --include-release-control)
+      include_release_control=1
+      shift
+      ;;
+    *)
+      echo "usage: scripts/verify_all.sh [--mode full|integration] [--include-performance] [--include-release-control]" >&2
+      exit 2
+      ;;
+  esac
+done
+case "$mode" in
+  full)
+    include_performance=1
+    include_release_control=1
+    ;;
+  integration) ;;
+  *)
+    echo "verify_all: --mode must be full or integration" >&2
+    exit 2
+    ;;
+esac
 api_port="${API_PORT:-8000}"
 mock_vendor_port="${MOCK_VENDOR_PORT:-9028}"
 STEP(){ printf '\n\033[1;36m── %s ──\033[0m\n' "$*"; }
@@ -205,19 +240,27 @@ SMS_RELEASE_CONTROL_REDIS_IMAGE=sms-platform-redis:local \
   bash scripts/verify_release_control.sh
 }
 
+if [[ "$mode" == full ]]; then
 run_stage 0 "规格一致性与安全规则" stage_0
 run_stage 1 "后端静态检查" stage_1
 run_stage 2 "单元与集成测试" stage_2
 run_stage 3 "迁移一致性" stage_3
 run_stage 4 "完整契约一致性" stage_4
+fi
 
 cleanup(){ compose down -v; }
 trap cleanup EXIT
 run_stage 5 "干净整栈拉起" stage_5
 run_stage 6 "运行态安全验收" stage_6
 run_stage 7 "API 级 E2E" stage_7
+if [[ "$include_performance" == 1 ]]; then
 run_stage 8 "性能冒烟" stage_8
+fi
+if [[ "$mode" == full ]]; then
 run_stage 9 "前端门禁" stage_9
+fi
+if [[ "$include_release_control" == 1 ]]; then
 run_stage 10 "发布控制恢复烟测" stage_10
+fi
 
-echo -e "\n\033[1;32m✔ verify_all 全绿\033[0m"
+echo -e "\n\033[1;32m✔ verify_all 全绿 mode=$mode performance=$include_performance release_control=$include_release_control\033[0m"

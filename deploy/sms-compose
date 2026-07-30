@@ -43,6 +43,7 @@ VENDOR_TEST_BOOTSTRAP="$ROOT/deploy/scripts/vendor_test_bootstrap.py"
 VENDOR_RUNTIME_RESET="$ROOT/deploy/scripts/vendor_runtime_reset.py"
 VENDOR_CONTROL_RELOAD="$ROOT/deploy/scripts/vendor_control_reload.py"
 TEST_UPDATE_MANAGER="$ROOT/deploy/scripts/test_update_manager.py"
+TEST_UPDATE_PROMOTE="$ROOT/deploy/scripts/test_update_promote.py"
 PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
 HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
 TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
@@ -51,6 +52,7 @@ if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
   HOST_BOOTSTRAP=1
   LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"
   TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"
+  TEST_UPDATE_PROMOTE="$HOST_CONTROL_ROOT/test_update_promote.py"
   PUBLIC_CUTOVER_BOOTSTRAP="$HOST_CONTROL_ROOT/public_cutover_bootstrap.py"
 fi
 LOCK_PYTHON=(python3)
@@ -83,7 +85,7 @@ usage() {
   echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs|exec [args...]" >&2
   echo "release prepare|activate|status|resume|rollback: use the documented exact arguments" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
-  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|status|capability; cp [args...]" >&2
+  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
   echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
@@ -675,6 +677,17 @@ run_locked_test_update() {
   local command="${1:-}"
   shift || true
   reject_production_control_plane test-update || return $?
+  if [[ "$command" == promote ]]; then
+    [[ $# -eq 2 ]] || return 2
+    /usr/bin/env \
+      PYTHONNOUSERSITE=1 \
+      "PYTHONPATH=$HOST_CONTROL_ROOT" \
+      /usr/bin/python3 "$TEST_UPDATE_PROMOTE" \
+      --root "$ROOT" \
+      --source-ref "$1" \
+      --target "$2"
+    return
+  fi
   [[ $# -eq 0 ]] || return 2
   if [[ "$command" == bootstrap-public-cutover ]]; then
     [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
@@ -708,13 +721,18 @@ dispatch_test_update() {
     shift
   fi
   reject_production_control_plane test-update || return $?
-  [[ $# -eq 0 ]] || return 2
   case "$command" in
     status | capability)
+      [[ $# -eq 0 ]] || return 2
       run_test_update_manager "$command"
       ;;
     bootstrap-public-cutover | prepare | apply | verify)
+      [[ $# -eq 0 ]] || return 2
       run_with_lifecycle_lock test-update "$command"
+      ;;
+    promote)
+      [[ $# -eq 2 ]] || return 2
+      run_with_lifecycle_lock test-update "$command" "$@"
       ;;
     *)
       return 2
