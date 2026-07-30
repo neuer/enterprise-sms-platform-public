@@ -39,7 +39,7 @@
 | 组件/风险 | `api` + `web`，固定 `high-risk` |
 | 主机身份 | root UID=`0`；固定服务器 operator UID/GID=`1000:1000` |
 | active root profile | `/opt/sms-platform` 为 `0:1000 2770`；`backend`、`deploy` 为 `1000:1000 2770` |
-| 持久项 | 只把旧 `.env`、`deploy/secrets`、`backend/.venv` rename 到目标根 |
+| 持久项 | 只把旧 `.env`、`deploy/secrets`、`backend/.venv` rename 到目标根；secrets 目录固定 `0:1000 0700`，目录内权威文件固定 `0:0 0600` |
 | 根外事实 | PostgreSQL、Docker volume、Redis、角色、vendor-test 运行态原位保留 |
 
 `prepare/apply/verify/finalize/cleanup` 共用 lifecycle lock；`status` 是无锁只读入口。
@@ -101,7 +101,14 @@ sudo stat -c '%U:%G %a %F %n' \
   /opt/sms-platform/.env \
   /opt/sms-platform/deploy/secrets \
   /opt/sms-platform/backend/.venv
+sudo find /opt/sms-platform/deploy/secrets \
+  -mindepth 1 -maxdepth 1 \
+  -printf '%U:%G %m %y %n %p\n'
 ```
+
+secrets 目录内每项必须是 `0:0 600 f 1` 的非空普通文件；该检查只显示文件名和元数据，
+不得读取或输出值、长度、摘要或哈希。development 测试环境允许额外的
+`dev-apikeys.txt`，但它同样必须满足上述 root-only 元数据合同；production 禁止该文件。
 
 数据库角色权限和三域 Redis ACL 继续使用 `deploy/database-roles.md` 与
 `scripts/verify_redis_domains.sh` 的既有只读验收；不得为本次激活创建新角色、密码或
@@ -382,6 +389,10 @@ ID/archive SHA、无 PII 状态、服务健康、migration head 和上述集合�
 
 - prepare 失败：不得 apply；保留 incoming、标准 store、core journal 和 update pause
   供对账。若 manager 已进入 fail closed，不得手工删 Redis pause。
+- prepare 在切换前因可修复的目标合同失败时，只能把修复合入新的精确 `main`，重新生成
+  全套制品并使用新的 activation ID；不得复用 terminal `blocked` ID。旧 store 与两条
+  pause 必须保留，由新 prepare 内建的 blocked-predecessor 校验和单条 Redis Lua CAS
+  原子接管，禁止手工删除、改写或短暂解暂停。
 - root/unit/image/service 在 apply 失败：manager 依次恢复旧 root、旧
   `vendor-control-agent` unit、旧 API/Web 镜像和服务；恢复验证成功后状态为
   `rolled_back`，命令仍失败退出。

@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -272,6 +273,7 @@ def _fixture(
         expected_uid=os.geteuid(),
         expected_operator_uid=os.geteuid(),
         expected_operator_gid=os.getegid(),
+        expected_system_gid=os.getegid(),
     )
     return request, activator, guard, exchange, public_root
 
@@ -525,6 +527,7 @@ def test_prepare_fails_closed_before_mutation_without_lock_or_exact_base(
         expected_uid=os.geteuid(),
         expected_operator_uid=os.geteuid(),
         expected_operator_gid=os.getegid(),
+        expected_system_gid=os.getegid(),
     )
     with pytest.raises(RuntimeError, match="lock"):
         locked.prepare(request)
@@ -758,6 +761,7 @@ def test_server_operator_identity_and_modes_are_exact(tmp_path: Path) -> None:
         expected_uid=os.geteuid(),
         expected_operator_uid=os.geteuid() + 1,
         expected_operator_gid=os.getegid(),
+        expected_system_gid=os.getegid(),
     )
     with pytest.raises(
         module.PublicBaselineActivationError,
@@ -778,6 +782,7 @@ def test_server_operator_identity_and_modes_are_exact(tmp_path: Path) -> None:
         expected_uid=os.geteuid(),
         expected_operator_uid=os.geteuid(),
         expected_operator_gid=os.getegid() + 1,
+        expected_system_gid=os.getegid(),
     )
     with pytest.raises(
         module.PublicBaselineActivationError,
@@ -785,6 +790,61 @@ def test_server_operator_identity_and_modes_are_exact(tmp_path: Path) -> None:
     ):
         wrong_gid.prepare(request)
 
+
+def test_persistent_secret_files_use_fixed_system_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _request, activator, guard, exchange, _public = _fixture(tmp_path)
+    system_gid = os.getegid() + 1
+    system_owned = module.PublicBaselineActivator(
+        activation_id=ACTIVATION_ID,
+        artifacts_root=activator.artifacts_root,
+        lifecycle_guard=guard,
+        active_root=activator.active_root,
+        workspace_root=activator.workspace_root,
+        directory_exchange=exchange,
+        expected_uid=os.geteuid(),
+        expected_operator_uid=os.geteuid(),
+        expected_operator_gid=os.getegid(),
+        expected_system_gid=system_gid,
+    )
+
+    def secret_entry(gid: int) -> SimpleNamespace:
+        metadata = SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o600,
+            st_uid=os.geteuid(),
+            st_gid=gid,
+            st_nlink=1,
+            st_size=1,
+        )
+        return SimpleNamespace(
+            is_symlink=lambda: False,
+            stat=lambda *, follow_symlinks: metadata,
+        )
+
+    monkeypatch.setattr(module.os, "scandir", lambda _path: [secret_entry(system_gid)])
+    system_owned._validate_secrets(
+        system_owned.active_root / "deploy/secrets"
+    )
+
+    monkeypatch.setattr(
+        module.os,
+        "scandir",
+        lambda _path: [secret_entry(os.getegid())],
+    )
+    with pytest.raises(
+        module.PublicBaselineActivationError,
+        match="secret metadata",
+    ):
+        system_owned._validate_secrets(
+            system_owned.active_root / "deploy/secrets"
+        )
+
+
+def test_active_root_rejects_group_or_other_writable_runtime(
+    tmp_path: Path,
+) -> None:
     request, activator, _guard, _exchange, _public = _fixture(
         tmp_path / "other-write"
     )

@@ -1431,6 +1431,7 @@ def _load_core(
             expected_uid=expected_uid,
             expected_operator_uid=OPERATOR_UID,
             expected_operator_gid=OPERATOR_GID,
+            expected_system_gid=SYSTEM_GID,
         )
     except Exception as exc:
         raise PublicBaselineManagerError(

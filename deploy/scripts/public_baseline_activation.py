@@ -446,6 +446,7 @@ class PublicBaselineActivator:
         expected_uid: int = 0,
         expected_operator_uid: int,
         expected_operator_gid: int,
+        expected_system_gid: int,
         runner: CommandRunner | None = None,
     ) -> None:
         if (
@@ -463,6 +464,10 @@ class PublicBaselineActivator:
         ):
             raise PublicBaselineActivationError(
                 "expected operator identity is invalid"
+            )
+        if type(expected_system_gid) is not int or expected_system_gid < 0:
+            raise PublicBaselineActivationError(
+                "expected system identity is invalid"
             )
         if os.geteuid() != expected_uid:
             raise PublicBaselineActivationError(
@@ -488,6 +493,7 @@ class PublicBaselineActivator:
         self.expected_uid = expected_uid
         self.expected_operator_uid = expected_operator_uid
         self.expected_operator_gid = expected_operator_gid
+        self.expected_system_gid = expected_system_gid
         self.runner = runner or SubprocessRunner()
         suffix = self.activation_id
         stem = f".{self.active_root.name}-public-baseline-{suffix}"
@@ -1796,7 +1802,7 @@ class PublicBaselineActivator:
                 entry.is_symlink()
                 or not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != self.expected_uid
-                or metadata.st_gid != self.expected_operator_gid
+                or metadata.st_gid != self.expected_system_gid
                 or stat.S_IMODE(metadata.st_mode) != 0o600
                 or metadata.st_nlink != 1
                 or metadata.st_size <= 0
