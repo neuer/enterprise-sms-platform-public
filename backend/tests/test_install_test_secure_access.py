@@ -322,6 +322,30 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
     )
 
 
+def test_host_control_source_assets_match_fixed_git_mode_contract() -> None:
+    contract = importlib.import_module("test_secure_access_contract")
+    paths = [path for _name, path in contract.HOST_CONTROL_SOURCE_ASSETS]
+    completed = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--stage", "-z", "--", *paths],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    modes: dict[str, str] = {}
+    for entry in completed.stdout.rstrip("\0").split("\0"):
+        metadata, path = entry.split("\t", maxsplit=1)
+        mode, _object_id, stage = metadata.split(" ", maxsplit=2)
+        assert stage == "0"
+        assert path not in modes
+        modes[path] = mode
+
+    assert set(modes) == set(paths)
+    assert modes["deploy/scripts/test_update_promote.py"] == "100644"
+    for path in paths:
+        expected = "100755" if path == "deploy/sms-compose" else "100644"
+        assert modes[path] == expected
+
+
 def test_installer_atomically_installs_pinned_binary_and_static_unit(
     tmp_path: Path,
 ) -> None:
