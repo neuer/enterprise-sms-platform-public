@@ -318,8 +318,8 @@ submitting/retrying/uncertain；只有实际迁移才创建密文 checkpoint 并
 控制面首次自更新前还必须先安装同 commit 的 root-owned host-control bootstrap。详见
 [测试环境快速更新手册](test-fast-update.md)。
 
-本次临时 HTTPS 应用变更仍先完成提交和推送，再通过
-`scripts/test_update.sh apply --ref origin/<branch>`；只有服务器返回 `state=verified` 并完成
+本次临时 HTTPS 应用变更仍先完成提交、推送与合并，再按需通过
+`scripts/test_update.sh apply --ref origin/main`；只有服务器返回 `state=verified` 并完成
 HTTP/HTTPS 表面验收才算成功。快速更新与一次性主机安装分开执行，且都不自动启动隧道、
 不安装或轮换正式 Key、不登记测试号码、不激活真实联调、不执行管理员初始化、不初始化
 数据库。全程保留 PostgreSQL 数据库、Docker volume、凭据 generation、号码和运行态数据。

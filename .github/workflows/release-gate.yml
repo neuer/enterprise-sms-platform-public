@@ -89,7 +89,6 @@ jobs:
           npm ci --prefix frontend
           npm audit --prefix frontend --audit-level=high
           npm run --prefix frontend build
-          npm run --prefix frontend typecheck
           npm test --prefix frontend
       - name: Run SAST, dependency, license, secret and configuration gates
         run: |

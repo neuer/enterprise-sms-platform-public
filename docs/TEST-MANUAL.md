@@ -1200,7 +1200,7 @@ PostgreSQL、Redis、workers 和 beat 保持健康，数据库与 Docker volume 
 
 ### HTTPS-05：与快速更新隔离
 
-代码只通过 `scripts/test_update.sh apply --ref origin/<branch>` 更新；必须取得
+代码默认只通过 `scripts/test_update.sh apply --ref origin/main` 按需更新；必须取得
 `state=verified`。high-risk、迁移或控制面更新必须先取得目标 commit 的精确
 `ci-gate=success`。
 快速更新和一次性主机安装均不自动启动隧道、不安装或轮换正式 Key、不登记测试号码、不激活

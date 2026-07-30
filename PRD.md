@@ -6,7 +6,7 @@
 | 日期 | 2026-07-06 |
 | 状态 | 已评审定稿 |
 | 上游依赖 | 智慧信息-企信版短信网关（vendor.example.invalid，接口文档 V2.1.2） |
-| 开发方式 | Claude Code 驱动，配套 openapi.yaml / schema.sql / TASKS.md / CLAUDE.md |
+| 开发方式 | 维护期按 MAINTENANCE.md / AGENTS.md 协作，契约由 openapi.yaml / schema.sql 约束 |
 
 ## 变更记录
 

@@ -6,7 +6,7 @@
 ## 1. 阅读顺序（动手前必须读完）
 
 1. `AUTOPILOT.md` + `PROGRESS.md` — 无人值守执行、门禁、失败与续跑
-2. `CLAUDE.md`（Codex 同时遵守 AGENTS.md）— 工程硬性规则
+2. `AGENTS.md`（Claude Code 与 Codex 共用）— 工程硬性规则
 3. `PRD.md` — 需求与验收口径（冲突时以它为准）
 4. `docs/DECISIONS.md` + `docs/TRACEABILITY.md` — 已确认决策与需求追踪
 5. `schema.sql` — 数据模型（已定稿，改动走 Alembic 且需在 PR 说明）
@@ -155,7 +155,7 @@ production manifest。它不作为日常 PR required check。
 ## 7. 决策与阻塞处理
 
 - 产品决策缺口：先查 PRD.md；仍无 → 采取最保守实现，在代码注释 + commit message 写明 `ASSUMPTION:`，**继续推进不停待**
-- 技术选型：CLAUDE.md 已锁定，不引入新框架/替代件
+- 技术选型：AGENTS.md 已锁定，不引入新框架/替代件
 - 发现文档间冲突：以 PRD.md 为准，并在 `docs/DECISIONS.md` 追加一条记录
 
 ## 8. Kickoff Prompt
@@ -165,7 +165,7 @@ production manifest。它不作为日常 PR required check。
 ```
 你在企业短信管理平台仓库工作。先读 BOOTSTRAP.md 并按其第 1 节顺序读完全部文档再动手。
 随后从 TASKS.md 的 M0/T0.1 开始逐任务实施：每完成一个任务→跑验收→勾选复选框→按规范 commit。
-全程遵守 CLAUDE.md 硬性规则（尤其 1/2/4/5/18/21/23/24）；默认 VENDOR_MOCK=1，任何测试不得请求真实厂商。
+全程遵守 AGENTS.md 硬性规则（尤其 1/2/4/5/18/21/23/24）；默认 VENDOR_MOCK=1，任何测试不得请求真实厂商。
 遇到 PRD 未覆盖的决策：按 BOOTSTRAP.md 第 7 节处理（写 ASSUMPTION 并继续，不停待、不静默改需求）。
 现在开始执行 M0。
 ```

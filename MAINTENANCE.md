@@ -1,62 +1,82 @@
 # MAINTENANCE.md — 安全且高效的日常交付
 
-平台已进入维护期。日常开发以本文件为入口；`AUTOPILOT.md`、里程碑 G0/G1/G2 和
-`BOOTSTRAP.md` 的建库步骤只用于历史建设或专项全量复验。
+平台已进入维护期，本文件是唯一日常流程入口。`AUTOPILOT.md`、`BOOTSTRAP.md`、
+`TASKS.md` 与里程碑 G0/G1 只保留建设期历史；完整 G2 仅用于受保护变更、专项复验和
+生产候选，不进入普通编码循环。
 
-## 一条最短主路径
+## 日常开发
+
+首次克隆只安装版本化 Hook：
 
 ```bash
-# 首次克隆只需执行一次
 scripts/install_git_hooks.sh
-cp test-update.env.example .env.test-update
-chmod 600 .env.test-update
-gh auth status --hostname github.com
+```
 
-# 每次开发
+编码过程中直接运行与改动相关的 pytest/Vitest 或局部静态检查。准备提交时再执行一次：
+
+```bash
 scripts/dev_check.sh --changed
 git add <本次文件>
 git commit
 git push -u origin <branch>
-scripts/test_update.sh plan --ref origin/<branch>
-scripts/test_update.sh apply --ref origin/<branch>
-scripts/test_update.sh status
+```
+
+`dev_check --changed` 是提交前组件检查，不要求每次保存后运行，也不触发测试服务器部署。
+推送时，`pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显命中内容。
+owner 分支会自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为 Ready
+并请求 squash merge。required `ci-gate`、会话解决和冲突保护仍由 GitHub 强制，禁止
+管理员绕过。
+
+CI 按风险运行组件门禁；认证/授权/审计、加密与 PII、发送/厂商、迁移、部署和控制面等
+受保护变更进入 G2 integration。人工、定时与生产候选继续执行完整门禁。
+
+## 按需测试部署
+
+测试部署与日常开发解耦。只有需要共享环境、浏览器或真实接口验收的功能才部署；纯文档、
+纯测试和不改变行为的重构无需部署。默认等待 PR 合并后，更新精确的 `origin/main`：
+
+```bash
+git fetch origin
+scripts/test_update.sh apply --ref origin/main
+```
+
+`apply` 已完成差异分类、必要 CI 验证、构建、远端切换、verify 和终态解析；成功退出即表示
+远端返回 `state=verified`。需要在变更前预览分类时可运行
+`scripts/test_update.sh plan --ref origin/main`，需要稍后查看非敏感状态时再运行
+`scripts/test_update.sh status`，二者都不是每次部署的强制重复步骤。
+
+首次使用测试部署时才准备本地连接文件和 GitHub CLI：
+
+```bash
+cp test-update.env.example .env.test-update
+chmod 600 .env.test-update
+gh auth status --hostname github.com
 ```
 
 `.env.test-update` 只允许 `SMS_TEST_UPDATE_TARGET` 与 `SMS_TEST_UPDATE_PORT`，被 Git
 忽略且必须为当前用户拥有的 0400/0600 普通文件。不得在仓库、命令历史或文档中记录真实
-主机地址、账号、密钥或测试数据。
+主机地址、账号、密钥或测试数据。鉴权失效时只用
+`gh auth login --hostname github.com --web`；不得粘贴或长期导出 GitHub token。
 
-`apply` / `promote` 会在构建或服务器变更前验证 GitHub CLI 的系统钥匙串登录和目标仓库
-只读访问；失效时先用 `gh auth login --hostname github.com --web` 走官方设备/浏览器登录。
-不得把 token 粘贴到聊天、命令历史、`.env`，也不得长期 `export GITHUB_TOKEN`/`GH_TOKEN`。
-
-推送时，版本化 `pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显
-命中内容；owner 分支会自动创建 Draft PR，CI 直接绑定该分支 commit 并按其相对 `main`
-的完整差异运行，不依赖 Actions 创建 PR 后的递归事件。精确 SHA 的 push CI 成功后，独立
-工作流只对 owner 的同仓分支把对应 PR 改为 Ready 并请求 auto squash merge；required checks、
-会话解决和冲突保护仍由 GitHub 强制，不使用管理员绕过。`ci-gate` 是 `main` 唯一 required
-check，且绑定 GitHub Actions 应用。按变更范围只运行必要 job；高风险 PR 进入 G2 integration，
-性能与 release-control 仅在相应路径变化时加入。人工、定时与生产候选仍执行完整 11 阶段。
-
-## 测试服务器门禁
+### 测试服务器门禁
 
 | 风险 | 测试部署 | 合并 |
 |---|---|---|
-| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 可直接 `apply` | push CI 成功后自动 Ready + squash |
+| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 按需 `apply` | push CI 成功后自动 Ready + squash |
 | `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | push CI 成功后自动 Ready + squash |
 | 未知/破坏性迁移 | fail closed，拆分并单独评审 | 禁止 |
 
 测试更新只构建受影响镜像，不重复组件测试或 G2；有迁移才创建密文 checkpoint。无迁移
 切换/验收失败自动恢复旧 commit 与应用镜像并记录 `rolled_back`，绝不自动回退 schema。
-`status` 是统一的只读入口，只输出仓库、commit、test-update 与 vendor-test 的非敏感状态。
+`status` 是统一的只读诊断入口，只输出仓库、commit、test-update 与 vendor-test 的非敏感状态。
 如果测试服务器基线不在当前公开仓库对象库，日常入口会失败关闭；不得向公开工作区添加
 私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
 仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
 
 owner PR 的精确 push CI 成功后会自动改为 Ready 并请求 squash merge。此自动化只完成
-仓库集成，不代表测试服务器已验证；日常测试更新改为针对合并后的精确 `origin/main`
-执行 `plan` / `apply` / `status`，服务器基线或保护状态异常时仍失败关闭。若在合并前已经
-人工验证分支，且 squash 生成的新 `main` commit 与已验证分支 commit 的 tree 完全一致，
+仓库集成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
+服务器基线或保护状态异常时仍失败关闭。分支部署只作为明确的合并前验收例外；若分支已经
+通过人工验证，且 squash 生成的新 `main` commit 与已验证分支 commit 的 tree 完全一致，
 仍可运行：
 
 ```bash
@@ -64,8 +84,8 @@ scripts/test_update.sh promote --ref origin/main
 ```
 
 该命令要求 `main` 的精确 `ci-gate=success`，只切换服务器 Git 身份，不重建镜像、不迁移
-数据库；若 tree 不一致则失败关闭，必须重新走 `plan` / `apply`。每次成功的 `apply` 或
-`promote` 都写入 GitHub `test` Environment 的 Deployment 记录。
+数据库；若 tree 不一致则失败关闭，必须重新执行 `apply`，需要预览时可先运行 `plan`。
+每次成功的 `apply` 或 `promote` 都写入 GitHub `test` Environment 的 Deployment 记录。
 
 ## 生产发布
 

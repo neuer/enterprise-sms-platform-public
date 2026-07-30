@@ -5,38 +5,40 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-CANONICAL_COMMAND = "scripts/test_update.sh apply --ref origin/<branch>"
+CANONICAL_COMMAND = "scripts/test_update.sh apply --ref origin/main"
 
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_agents_contracts_the_development_test_update_loop() -> None:
-    for contract_path in ("AGENTS.md", "CLAUDE.md"):
-        agents = read(contract_path)
+def test_agents_is_the_single_engineering_contract() -> None:
+    agents = read("AGENTS.md")
+    claude = read("CLAUDE.md")
 
-        for phrase in (
-            "开发测试阶段快速更新",
-            CANONICAL_COMMAND,
-            "提交并推送",
-            "state=verified",
-            "不得重复执行 CI/G2",
-            "普通 `web-only`/`backend-safe`",
-            "ci-gate=success",
-            "promote --ref origin/main",
-            "无迁移更新不得创建数据库 checkpoint",
-            "rolled_back",
-            "不得回退 schema",
-            "初始化必须事先取得操作者明确确认",
-            "管理员初始化",
-            "正式厂商 Key",
-            "测试号码",
-        ):
-            assert phrase in agents
+    assert "[AGENTS.md](AGENTS.md)" in claude
+    assert len(claude.splitlines()) < 20
+    for phrase in (
+        "开发与测试部署解耦",
+        CANONICAL_COMMAND,
+        "`plan` 仅用于可选预览",
+        "`status` 仅用于后续只读诊断",
+        "state=verified",
+        "不得重复执行 CI/G2",
+        "ci-gate=success",
+        "promote --ref origin/main",
+        "无迁移更新不得创建数据库 checkpoint",
+        "rolled_back",
+        "不得回退 schema",
+        "初始化必须事先取得操作者明确确认",
+        "管理员初始化",
+        "正式厂商 Key",
+        "测试号码",
+    ):
+        assert phrase in agents
 
 
-def test_runbook_defines_one_canonical_daily_workflow() -> None:
+def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
     runbook = read("docs/runbooks/test-fast-update.md")
 
     assert "export SMS_TEST_UPDATE_ROOT" not in runbook
@@ -45,7 +47,7 @@ def test_runbook_defines_one_canonical_daily_workflow() -> None:
     assert "root/base/target/ref" in runbook
 
     for phrase in (
-        "## 日常标准流程",
+        "## 按需标准流程",
         CANONICAL_COMMAND,
         "约 1 分 20 秒",
         "state=verified",
@@ -61,6 +63,7 @@ def test_runbook_defines_one_canonical_daily_workflow() -> None:
         "管理员初始化",
         "正式厂商 Key",
         "真实测试号码",
+        "纯文档、纯测试",
     ):
         assert phrase in runbook
 
@@ -77,8 +80,8 @@ def test_runbook_defines_one_canonical_daily_workflow() -> None:
         "state=verified",
         "针对性验收",
     )
-    daily = runbook.split("## 日常标准流程", maxsplit=1)[1]
-    positions = [daily.index(phrase) for phrase in order]
+    deployment = runbook.split("## 按需标准流程", maxsplit=1)[1]
+    positions = [deployment.index(phrase) for phrase in order]
     assert positions == sorted(positions)
 
 
@@ -177,24 +180,34 @@ def test_github_auth_preflight_is_documented_without_token_export() -> None:
         assert "export GH_TOKEN=" not in document
 
 
-def test_bootstrap_describes_actual_ci_event_and_reuse_policy() -> None:
-    bootstrap = read("BOOTSTRAP.md")
+def test_maintenance_separates_development_from_test_deployment() -> None:
+    maintenance = read("MAINTENANCE.md")
+    publication = read("PUBLICATION.md")
 
-    for phrase in (
-        "同仓分支只由 `push` 执行一次 CI",
-        "fork 没有同仓 push",
-        "`scripts/verify_all.sh --mode integration`",
-        "只运行 `changes` 与 `ci-gate`",
-        "跳过 backend/frontend/security/g2",
-    ):
-        assert phrase in bootstrap
-    assert "执行未裁剪的权威 `scripts/verify_all.sh`" not in bootstrap
+    development = maintenance.split("## 日常开发", maxsplit=1)[1].split(
+        "## 按需测试部署", maxsplit=1
+    )[0]
+    deployment = maintenance.split("## 按需测试部署", maxsplit=1)[1].split(
+        "## 生产发布", maxsplit=1
+    )[0]
+    assert "scripts/dev_check.sh --changed" in development
+    assert "scripts/test_update.sh" not in development
+    assert CANONICAL_COMMAND in deployment
+    assert "scripts/test_update.sh plan --ref origin/main" in deployment
+    assert "预览" in deployment
+    assert "scripts/test_update.sh status" in deployment
+    assert "诊断" in deployment
+    assert "纯文档、" in deployment and "无需部署" in deployment
+    assert "只有需要共享环境验收时" in publication
+    assert CANONICAL_COMMAND in publication
+    assert "`plan` / `apply` / `status`" not in publication
 
 
 def test_active_docs_use_18_secrets_and_do_not_link_private_evidence() -> None:
     active_documents = (
-        "AUTOPILOT.md",
-        "BOOTSTRAP.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "MAINTENANCE.md",
         "HANDOVER.md",
         "RELEASE.md",
         "deploy/README.md",

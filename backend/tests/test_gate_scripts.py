@@ -11,13 +11,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_spec_consistency_tracks_current_schema_header() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+def test_spec_consistency_tracks_only_active_contracts() -> None:
     checker = (ROOT / "scripts/check_spec_consistency.py").read_text(encoding="utf-8")
-    version = re.search(r"^-- (v1\.6\.\d{1,3})  ", schema, re.MULTILINE)
 
-    assert version is not None
-    assert f'"-- {version.group(1)}  " in schema' in checker
+    for active in ("AGENTS.md", "CLAUDE.md", "MAINTENANCE.md", "PRD.md"):
+        assert f'"{active}"' in checker
+    for historical in ("AUTOPILOT.md", "BOOTSTRAP.md", "TASKS.md"):
+        assert f'"{historical}"' not in checker
+    assert "全部 38 条" not in checker
+    assert "tasks.find(" not in checker
+    assert "npm run typecheck && npm run build:g2" in checker
+    assert "required_uat_cases.issubset" in checker
 
 
 def test_local_and_mock_gate_scripts_use_secured_compose_wrapper() -> None:
@@ -248,6 +252,7 @@ def test_milestone_frontend_gate_isolates_container_node_modules_from_host() -> 
     assert "node:24-alpine" in frontend_gate
     assert "-v /app/node_modules" in frontend_gate
     assert "npm ci --silent" in frontend_gate
+    assert "npm run build && npm run typecheck" not in frontend_gate
 
 
 def test_g2_frontend_checks_run_concurrently_after_npm_ci() -> None:
@@ -280,6 +285,22 @@ def test_changed_dev_check_does_not_run_deleted_backend_test_paths() -> None:
 
     assert 'if [[ -f "$path" ]]' in changed_test_case
     assert 'backend_tests+=("${path#backend/}")' in changed_test_case
+
+
+def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() -> None:
+    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    frontend = source.split("run_frontend() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+
+    assert "npm test" in frontend
+    assert "npm run build" in frontend
+    assert "npm run typecheck" not in frontend
+    assert "scripts/*.sh" in source
+    assert 'bash -n "${shell_scripts[@]}"' in source
+    assert "scripts/local_test.sh prepare" not in source.split(
+        "run_backend() {", maxsplit=1
+    )[0]
 
 
 def test_release_control_terms_the_lifecycle_lock_holder_directly() -> None:

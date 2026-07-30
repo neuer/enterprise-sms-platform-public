@@ -63,13 +63,13 @@ M0 尚未创建 backend/frontend 时，G0 只运行当前任务可执行的断�
 
 ## 6. HANDOVER.md 生成规范（终局自动生成）
 
-固定五节：①需人工完成清单（真实 AD 组映射与 AUTH_MOCK 关闭步骤、生产 18 件 secrets、厂商 IP 主备报备与 QPS 确认、企微/SMTP 配置、冷备同步与 30min 切换实测、全日压测、真人 UAT 28 例）②生产切换步骤引用（PRD 第10章 + BOOTSTRAP §8）③BLOCKED 与降级清单（含 DECISIONS 编号）④运维速查（常用命令、告警含义、恢复动作）⑤首月观察项（计费对账、anomaly 阈值调参、unmatched 归零确认）。
+固定五节：①需人工完成清单（真实 AD 组映射与 AUTH_MOCK 关闭步骤、生产 18 件 secrets、厂商 IP 主备报备与 QPS 确认、企微/SMTP 配置、冷备同步与 30min 切换实测、全日压测、真人 UAT 28 例）②生产切换步骤引用（PRD 第10章 + BOOTSTRAP §9）③BLOCKED 与降级清单（含 DECISIONS 编号）④运维速查（常用命令、告警含义、恢复动作）⑤首月观察项（计费对账、anomaly 阈值调参、unmatched 归零确认）。
 
 ## 7. Kickoff Prompt（目标模式，人类只发这一条）
 
 ```
 目标：按本仓库文档无人值守完成企业短信管理平台全部开发，达到 AUTOPILOT.md 第 0 节的 DONE 定义。
 规则：先执行 M-1 预检并读 PROGRESS.md 决定是全新开始还是续跑；随后严格按 AUTOPILOT.md 执行（G0/G1/G2 门禁、3 次失败即 BLOCKED 协议、跨会话续跑协议），
-实现细节遵守 CLAUDE.md 全部 38 条硬性规则，环境替身按 AUTOPILOT.md 第 2 节（VENDOR_MOCK=1、AUTH_MOCK=1、告警 log-sink）。
+实现细节遵守 AGENTS.md 全部 41 条硬性规则，环境替身按 AUTOPILOT.md 第 2 节（VENDOR_MOCK=1、AUTH_MOCK=1、告警 log-sink）。
 不请求人工确认、不停待；产品歧义按最保守实现并记 DECISIONS。终局产出 HANDOVER.md 与 RELEASE.md 后停止。
 ```

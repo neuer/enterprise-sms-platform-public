@@ -11,7 +11,7 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-gate.yml"
 AUTO_DRAFT_WORKFLOW = ROOT / ".github/workflows/auto-draft-pr.yml"
 AUTO_MERGE_WORKFLOW = ROOT / ".github/workflows/auto-merge-owner-pr.yml"
-BOOTSTRAP = ROOT / "BOOTSTRAP.md"
+MAINTENANCE = ROOT / "MAINTENANCE.md"
 ALLOWED_ACTIONS = {
     "actions/attest",
     "actions/cache",
@@ -150,10 +150,10 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "npm ci",
         "npm audit --audit-level=high",
         "npm run build",
-        "npm run typecheck",
         "npm test",
     ):
         assert command in frontend_commands
+    assert "npm run typecheck" not in frontend_commands
     assert jobs["frontend"]["needs"] == "changes"
     assert "needs.changes.outputs.frontend == 'true'" in jobs["frontend"]["if"]
 
@@ -375,6 +375,7 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "--sbom-dir",
     ):
         assert command in release_commands
+    assert "npm run --prefix frontend typecheck" not in release_commands
     assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert_actions_are_immutable(workflow)
@@ -384,38 +385,20 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
 
 
-def test_bootstrap_documents_ci_checks_and_public_enforcement() -> None:
-    documentation = BOOTSTRAP.read_text(encoding="utf-8")
+def test_maintenance_documents_ci_and_release_boundaries() -> None:
+    documentation = MAINTENANCE.read_text(encoding="utf-8")
 
-    for check_name in (
-        "`changes`",
-        "`backend`",
-        "`frontend`",
-        "`security`",
-        "`g2`",
-        "`ci-gate`",
-    ):
-        assert check_name in documentation
     for token in (
-        "按变更文件",
-        "docs/plans/",
-        "未知路径",
-        "高风险 PR",
-        "普通后端业务 PR",
-        "`main` push",
-        "不重复运行 G2",
-        "每天",
-        "02:17",
-        "workflow_dispatch",
-        "本地 `bash scripts/verify_all.sh`",
-        "`main` 唯一 required check",
-        "绑定 GitHub Actions 应用",
-        "--mode integration",
-        "tree 与",
+        "scripts/dev_check.sh --changed",
+        "required `ci-gate`",
+        "受保护变更进入 G2 integration",
+        "origin/main",
+        "完整质量、安全与 G2 门禁",
+        "Trivy",
+        "SBOM",
     ):
         assert token in documentation
-    assert "私有归档仓库" in documentation
-    assert "禁止 force-push/delete" in documentation
-    assert "Release Gate" in documentation
-    assert "不作为日常 PR" in documentation
-    assert "生产 secrets" in documentation
+    development = documentation.split("## 日常开发", maxsplit=1)[1].split(
+        "## 按需测试部署", maxsplit=1
+    )[0]
+    assert "scripts/test_update.sh" not in development

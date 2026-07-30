@@ -27,7 +27,7 @@ CI 会逐项比较 shell driver 与 Python 合同中的资产集合，新增或�
 
 ## 本地入口
 
-本地工作树必须干净，目标必须是已推送的 `origin/` ref。首次使用把样例复制为 Git 忽略的
+本地工作树必须干净，默认目标是已合并的精确 `origin/main`。首次使用把样例复制为 Git 忽略的
 本地文件；该文件只允许两个本地连接键，必须为当前用户拥有的 0400/0600 普通文件。键名
 可以公开，真实 target/port 值属于受限运维信息，不得进入 Git、文档、聊天或命令历史：
 
@@ -37,10 +37,11 @@ gh auth status --hostname github.com
 cp test-update.env.example .env.test-update
 chmod 600 .env.test-update
 # 编辑 SMS_TEST_UPDATE_TARGET 与 SMS_TEST_UPDATE_PORT
-scripts/test_update.sh plan --ref origin/<branch>
-scripts/test_update.sh apply --ref origin/<branch>
-scripts/test_update.sh status
+scripts/test_update.sh apply --ref origin/main
 ```
+
+`apply` 已严格解析最终 `state=verified`；`plan --ref origin/main` 仅用于变更前预览，
+`status` 仅用于后续只读诊断。分支 ref 只用于明确的合并前验收例外，不是默认入口。
 
 部署根目录固定为 `/opt/sms-platform`，由脚本内置并在任何 Git 或 SSH 更新动作前校验。
 日常操作不得设置其他根目录，也不得从历史会话、旧交接记录或个人 shell 配置复制
@@ -93,16 +94,17 @@ fail closed。远端当前 HEAD 也必须已经存在于本地对象库；缺失
 维护窗口中完成。方案至少要经过：私有证据访问授权、公开快照逐文件复验、数据/volume
 保留与回退设计、18 件 secrets/三域 Redis/七职责数据库角色迁移评审、清理证明，以及
 服务器最终 HEAD/origin 都绑定公开仓库 commit 的复核。任何私有 URL、ref、commit 或
-Git 对象不得回流到公开工作区。完成新公开基线后，先运行只读 `status`，再从干净且已推送
-的公开分支恢复本手册的 `plan` / `apply` 日常流程；不得用 raw Git/Compose 绕过。
+Git 对象不得回流到公开工作区。完成新公开基线后，先运行只读 `status`，再从干净且已合并
+的 `origin/main` 恢复本手册的按需 `apply` 流程；不得用 raw Git/Compose 绕过。
 
 high-risk 首次运行依赖 host-control 安装器准备固定 `/etc/sms-platform/test-update-backup.json`、本机随机生成的 root `0600` 备份密钥和 `/var/lib/sms-platform/test-backups`。安装器在修改任何 checkpoint 权威状态前取得固定 lifecycle lock，冲突时不修改 config、key 或 checkpoint 输出目录；只在 config/key 均不存在且输出目录不存在或为空时生成一次，重装必须保留原密钥。唯一允许恢复的半状态是 key 已安全落盘、config 未提交且输出目录仍为空，此时只补 config。config 原子出现后即已提交；若后续目录落盘或身份复核失败，当次仍 fail closed，下一次必须完整复验并重新 `fsync` 权威目录才可接受。config-only、权限/硬链接漂移、中断或非法 checkpoint、其他半安装一律 fail closed。不得手工删除密钥后重跑、不得把密钥复制进仓库、命令参数、环境变量、日志或聊天。
 
 pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整行移除账号 Provider 已废弃的 LDAP/隐藏管理员键（不再解释其旧值），以及去掉语义不变的行尾说明；协调后的固定五项必须仍精确等于纯 Mock 合同才原子替换。它不会把非 Mock 配置改回 Mock，也不会读取、生成或迁移任何正式 Key。未知键的非严格语法、任何重复键或凭据键一律 fail closed。
 
-## 日常标准流程
+## 按需标准流程
 
-开发测试阶段只使用已经完成五次连续真实验证的入口，不增加二次包装命令。标准顺序如下：
+只有需要共享测试环境验收时才执行本节；纯文档、纯测试和不改变行为的重构无需部署。
+标准顺序如下：
 
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
@@ -110,17 +112,19 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
    并请求 squash merge。
 4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
 5. 获取自动合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果。
-6. 执行 `scripts/test_update.sh plan --ref origin/main` 查看分类和门禁。
+6. 如需预览，执行 `scripts/test_update.sh plan --ref origin/main` 查看分类和门禁。
 7. 执行 `scripts/test_update.sh apply --ref origin/main`。
-8. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
-9. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。自动合并仅完成
+8. 命令成功退出已经证明最终 `test-update status` 返回 `state=verified`；随后完成针对性验收：
+   前端功能使用浏览器检查，API 功能使用对应接口检查。自动合并仅完成
    仓库集成，不替代测试环境的 `verified` 判据。
 
 普通 `web-only` 更新从命令启动到 `verified` 的五连发实测平均约 1 分 20 秒。这个时间只用于操作预期，不是超时或成功判据。脚本会自动进入一次性 public Docker 会话；`scripts/docker_public.sh doctor` 用于首次使用或故障诊断，不要求每次更新前重复运行。`--dry-run` 可用于评审分类，但不是日常更新的强制前置步骤。
 
-`plan` 不构建、不上传、不修改服务器；`build` 只完成本地缓存/镜像准备；`status` 只读；
+`plan` 不构建、不上传、不修改服务器；`build` 只完成本地缓存/镜像准备；`status` 只读且
+仅在需要稍后诊断时运行；
 `apply` 成功后写入 GitHub `test` Environment Deployment。`promote` 只接受 `origin/main`，
-要求 main 的精确 CI 证据与相同 tree；任一不满足都失败关闭并要求重新 `plan` / `apply`。
+要求 main 的精确 CI 证据与相同 tree；任一不满足都失败关闭并要求重新执行 `apply`，
+需要预览时可先运行 `plan`。
 
 无迁移更新在镜像替换或 verify 失败时自动恢复上一版 commit 与镜像，恢复健康后释放本次
 暂停并记录 `state=rolled_back`；脚本仍以失败退出，修复代码后重新提交、推送并重跑同一
