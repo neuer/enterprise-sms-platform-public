@@ -6,6 +6,11 @@
 历史私有归档只作为受限恢复副本，不得添加为本仓库 remote，也不得 fetch、merge、
 cherry-pick 或推送其中的任何 Git 对象。
 
+测试服务器若仍停留在与公开根无共同历史的旧基线，`scripts/test_update.sh` 必须失败关闭。
+日常入口不提供跨历史 cutover，也不得通过临时 ref、Git pack 或对象导入绕过。一次性基线
+迁移只能在不属于本公开工作区的隔离临时证据仓库中完成，并经单独变更评审确认不会把
+私有历史、ref、URL 或对象带回公开仓库；迁移完成后服务器应直接以公开 commit 作为新基线。
+
 本地 `.env`、`deploy/secrets/`、运行数据、日志与导出文件保留在工作区供开发使用，
 但必须同时满足 Git ignore、本地提交/推送门禁和 CI 公开仓库门禁。任何门禁只报告
 文件位置与规则，不回显命中值。
@@ -17,8 +22,10 @@ cherry-pick 或推送其中的任何 Git 对象。
    `scripts/dev_check.sh --changed`。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
 4. owner 分支自动创建 Draft PR；先在测试服务器验收，再将 PR 改为 Ready。
-5. `ci-gate` 通过且会话已解决后 squash merge；`main` 禁止直接推送、强推和删除。
-6. 已验证分支与 squash 后 `main` tree 相同时用 `scripts/test_update.sh promote
+5. `apply` / `promote` 前确认 `gh auth status --hostname github.com` 有效；只使用系统
+   钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。
+6. `ci-gate` 通过且会话已解决后 squash merge；`main` 禁止直接推送、强推和删除。
+7. 已验证分支与 squash 后 `main` tree 相同时用 `scripts/test_update.sh promote
    --ref origin/main` 免重建提升；不相同则重新执行测试部署。
 
 ## GitHub 设置

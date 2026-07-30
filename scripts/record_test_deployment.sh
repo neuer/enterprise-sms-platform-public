@@ -14,6 +14,33 @@ description="$4"
 [[ "$source_ref" =~ ^origin/[A-Za-z0-9._/-]+$ && "$source_ref" != *".."* ]] || exit 2
 [[ ${#description} -le 140 ]] || exit 2
 
+command -v gh >/dev/null 2>&1 || {
+  echo "test-deployment: GitHub CLI unavailable" >&2
+  exit 1
+}
+gh auth status --hostname github.com >/dev/null 2>&1 || {
+  echo "test-deployment: GitHub CLI authentication is invalid" >&2
+  exit 1
+}
+authenticated_repository="$(
+  gh api "repos/$repository" --jq .full_name 2>/dev/null
+)" || {
+  echo "test-deployment: GitHub repository authentication preflight failed" >&2
+  exit 1
+}
+authenticated_repository="$(
+  printf '%s' "$authenticated_repository" |
+    tr '[:upper:]' '[:lower:]'
+)"
+repository="$(
+  printf '%s' "$repository" |
+    tr '[:upper:]' '[:lower:]'
+)"
+[[ "$authenticated_repository" == "$repository" ]] || {
+  echo "test-deployment: GitHub authentication context does not match repository" >&2
+  exit 1
+}
+
 deployment="$(
   python3 -c 'import json,sys
 print(json.dumps({

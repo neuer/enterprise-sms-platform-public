@@ -10,6 +10,7 @@
 scripts/install_git_hooks.sh
 cp test-update.env.example .env.test-update
 chmod 600 .env.test-update
+gh auth status --hostname github.com
 
 # 每次开发
 scripts/dev_check.sh --changed
@@ -24,6 +25,10 @@ scripts/test_update.sh status
 `.env.test-update` 只允许 `SMS_TEST_UPDATE_TARGET` 与 `SMS_TEST_UPDATE_PORT`，被 Git
 忽略且必须为当前用户拥有的 0400/0600 普通文件。不得在仓库、命令历史或文档中记录真实
 主机地址、账号、密钥或测试数据。
+
+`apply` / `promote` 会在构建或服务器变更前验证 GitHub CLI 的系统钥匙串登录和目标仓库
+只读访问；失效时先用 `gh auth login --hostname github.com --web` 走官方设备/浏览器登录。
+不得把 token 粘贴到聊天、命令历史、`.env`，也不得长期 `export GITHUB_TOKEN`/`GH_TOKEN`。
 
 推送时，版本化 `pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显
 命中内容；owner 分支会自动创建 Draft PR，CI 直接绑定该分支 commit 并按其相对 `main`
@@ -42,6 +47,9 @@ check，且绑定 GitHub Actions 应用。按变更范围只运行必要 job；�
 测试更新只构建受影响镜像，不重复组件测试或 G2；有迁移才创建密文 checkpoint。无迁移
 切换/验收失败自动恢复旧 commit 与应用镜像并记录 `rolled_back`，绝不自动回退 schema。
 `status` 是统一的只读入口，只输出仓库、commit、test-update 与 vendor-test 的非敏感状态。
+如果测试服务器基线不在当前公开仓库对象库，日常入口会失败关闭；不得向公开工作区添加
+私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
+仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
 
 PR 通过分支环境验收后改为 Ready 并 squash merge。若 squash 生成的新 `main` commit 与
 已验证分支 commit 的 tree 完全一致，运行：

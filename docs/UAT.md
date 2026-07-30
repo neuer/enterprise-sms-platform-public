@@ -1,7 +1,8 @@
 # docs/UAT.md — 上线验收用例集 v1.6
 
 > 自动化执行环境：预生产（VENDOR_MOCK=1、AUTH_MOCK=1、告警渠道为空的 log-sink；mock 契约见 vendor-api.md 第3节）。任何自动化用例不得请求真实 LDAP、厂商、企微或 SMTP。
-> 每例记录：执行人 / 日期 / 结果（P/F）/ 截图或日志编号，汇总入 docs/UAT-report.md。
+> 每例记录：执行人 / 日期 / 结果（P/F）/ 截图或日志编号，汇总到受限测试归档；真实
+> 号码、内部证据与报告不进入公开仓库。
 > 角色账号：admin01 / approver01 / operator01 / viewer01（seed-dev mock 用户，密码从本机 0600 `ldap_bind_password` secret 读取）+ 应用 app-iam(verify)、app-oa(notice)、app-mkt(market)。真人 UAT 在 AUTH_MOCK=0 的预生产环境重复 01–04。
 > 用例临时修改 sys_config 时，必须先保存原值并在 finally 阶段恢复；失败退出也必须恢复，禁止污染后续用例。
 

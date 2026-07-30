@@ -123,3 +123,95 @@ def test_fast_update_docs_keep_temporary_https_host_install_independent() -> Non
         "保留 PostgreSQL 数据库、Docker volume",
     ):
         assert phrase in combined
+
+
+def test_public_workspace_docs_forbid_private_object_cutover() -> None:
+    publication = read("PUBLICATION.md")
+    maintenance = read("MAINTENANCE.md")
+    runbook = read("docs/runbooks/test-fast-update.md")
+    deployment = read("deploy/README.md")
+    decisions = read("docs/DECISIONS.md")
+
+    assert "git fetch <已授权的归档源仓库URL>" not in runbook
+    assert "Git pack" in publication
+    for document in (publication, maintenance, runbook, deployment):
+        assert "隔离临时证据" in document
+        assert "公开工作区" in document
+    assert "public snapshot cutover 已禁用" in read("scripts/test_update.sh")
+    assert "本地 driver 已明确拒绝" in deployment
+    assert "D054 公开工作区禁止跨历史 Git 对象切换" in decisions
+    assert "本决策取代 D051" in decisions
+
+
+def test_test_manual_selects_mock_or_controlled_profile_from_status() -> None:
+    manual = read("docs/TEST-MANUAL.md")
+
+    for phrase in (
+        "scripts/test_update.sh status",
+        "development-vendor-live",
+        "controlled",
+        "VENDOR_TEST_CONSOLE_ONLY",
+        "POST /api/v1/messages/uat-send",
+        "每日最多 100 个计费条",
+        "产生真实短信和实际计费",
+        "VENDOR_MOCK=1",
+    ):
+        assert phrase in manual
+    assert "当前服务器是访问受控的 Mock 测试基座" not in manual
+    assert "不会发送真实短信" not in manual
+
+
+def test_github_auth_preflight_is_documented_without_token_export() -> None:
+    for path in (
+        "MAINTENANCE.md",
+        "PUBLICATION.md",
+        "CONTRIBUTING.md",
+        "docs/runbooks/test-fast-update.md",
+    ):
+        document = read(path)
+        assert "gh auth status --hostname github.com" in document
+        assert "export GITHUB_TOKEN=" not in document
+        assert "export GH_TOKEN=" not in document
+
+
+def test_bootstrap_describes_actual_ci_event_and_reuse_policy() -> None:
+    bootstrap = read("BOOTSTRAP.md")
+
+    for phrase in (
+        "同仓分支只由 `push` 执行一次 CI",
+        "fork 没有同仓 push",
+        "`scripts/verify_all.sh --mode integration`",
+        "只运行 `changes` 与 `ci-gate`",
+        "跳过 backend/frontend/security/g2",
+    ):
+        assert phrase in bootstrap
+    assert "执行未裁剪的权威 `scripts/verify_all.sh`" not in bootstrap
+
+
+def test_active_docs_use_18_secrets_and_do_not_link_private_evidence() -> None:
+    active_documents = (
+        "AUTOPILOT.md",
+        "BOOTSTRAP.md",
+        "HANDOVER.md",
+        "RELEASE.md",
+        "deploy/README.md",
+        "docs/ACCEPTANCE.md",
+        "docs/LOCAL_TESTING.md",
+        "docs/TEST-MANUAL.md",
+    )
+    forbidden_links = (
+        "docs/UAT-report.md",
+        "](UAT-report.md)",
+        "](docs/reports/",
+        "](reports/",
+        "](plans/",
+    )
+
+    for path in active_documents:
+        document = read(path)
+        assert "生产八件" not in document
+        assert "八件 secrets" not in document
+        assert "八件套" not in document
+        for link in forbidden_links:
+            assert link not in document
+    assert "18 件" in read("deploy/secrets.md")

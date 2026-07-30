@@ -99,10 +99,12 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 
 ## 6. GitHub CI
 
-`.github/workflows/ci.yml` 在仓库分支 push、指向 `main` 的 PR、推送到 `main`、人工
-`workflow_dispatch` 和每日定时任务中运行。分支 push 始终按相对 `main` 的完整差异分类，
-因此由 Actions 自动创建 Draft PR 时不依赖递归 `pull_request` 事件。PR 与 `main` push 按变更文件选择快速检查；
-远端完整 G2 只由高风险 PR、人工/定时事件或失败关闭回退触发。稳定 job 名称及职责为：
+`.github/workflows/ci.yml` 接收所有分支 push、指向 `main` 的 PR、人工
+`workflow_dispatch` 和每日定时任务。仓库 owner 的同仓分支只由 `push` 执行一次 CI，
+其重复 `pull_request` 事件明确跳过；fork 没有同仓 push，才由 `pull_request` 执行。分支
+push 始终按相对 `main` 的完整差异分类，因此 Actions 自动创建 Draft PR 不依赖递归事件。
+PR 与 `main` push 按变更文件选择检查；G2 只由高风险变更、人工/定时事件或失败关闭回退
+触发。稳定 job 名称及职责为：
 
 - `changes`：始终执行规格一致性、硬规则静态检查和路径分类；
 - `backend`：按需执行 Ruff、Mypy、后端测试与覆盖率、迁移和 OpenAPI 契约；
@@ -110,13 +112,17 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 - `security`：安全关键路径、依赖锁、镜像或发布控制变更时执行 Bandit，以及 Trivy
   依赖、许可证、secret 与配置扫描；
 - `g2`：迁移/部署、认证/审计、加密与 PII、发送/厂商链路、CI/门禁等高风险 PR
-  执行未裁剪的权威 `scripts/verify_all.sh`；普通后端业务 PR 不进入该阻塞链路；
+  执行权威 `scripts/verify_all.sh --mode integration` 的运行态阶段；普通后端业务 PR
+  不进入该阻塞链路；
 - `ci-gate`：始终汇总本次预期与实际 job 结果，预期 job 缺失、跳过或失败时失败关闭。
 
 普通 `docs/plans/**` 与 `docs/TEST-REPORT-*` 只运行秒级 `changes` 和 `ci-gate`；纯前端、
 纯后端测试、普通后端业务或契约文档只增加对应快速 job。混合变更取规则并集，未知路径保守
-全跑；Git 差异无法可靠取得或分类器异常时不得伪装成功。可靠且路径已知的 `main` push
-不重复运行 G2，只重跑其快速检查；未知路径、空差异或事件元数据异常仍强制全跑。人工
+全跑；Git 差异无法可靠取得或分类器异常时不得伪装成功。可靠 `main` push 若 tree 与已
+合并 PR head 完全一致，会复用该 PR 的精确 `ci-gate`，只运行 `changes` 与 `ci-gate`，
+跳过 backend/frontend/security/g2，不重复运行 G2 或快速组件检查；证据不可复用时按路径
+重新分类执行。未知路径、空差异
+或事件元数据异常仍强制全跑。人工
 `workflow_dispatch` 与每天北京时间 02:17 强制运行 backend、frontend、security 和完整
 G2，为分类规则长期漂移提供兜底证据。
 
@@ -166,8 +172,9 @@ production manifest。它不作为日常 PR required check。
 - [ ] **发布"停拉通知"**：T0 起所有直连系统禁止调用 GetReport/GetReply（拉走即消费，详见 PRD 第10章切换方案）；收口后请厂商重置密钥
 - [ ] 向厂商报备**主、备两个出口 IP**（规避 1010）
 - [ ] 与厂商确认真实 QPS 与单次号码上限 → 调 sys_config.vendor_qps / vendor_batch_size
-- [ ] 生产 secrets 八件套放置到备机同路径；首次向备机同步（vendor 2 + data 2 + JWT + LDAP + DB owner/app 2）
+- [ ] 按 `deploy/secrets.md` 将生产 18 件 secrets 分别落盘到主、备节点：vendor 2、
+  data 2、JWT、LDAP、metrics、DB owner + 七职责密码、三域 Redis ACL 密码
 - [ ] 先执行 `sms-compose init-admin --show-temporary-password` 并完成本地管理员首次改密；再在系统配置页保存、测试、启用 AD，配置 4 个安全组角色映射
 - [ ] 企业微信机器人 webhook 与告警邮箱写入 sys_config
-- [ ] 按 docs/UAT.md 完成 28 例真人验收并归档 UAT-report.md
+- [ ] 按 docs/UAT.md 完成 28 例真人验收，并把报告归档到受限生产变更单（不进入公开仓库）
 - [ ] 上线首月：stat_daily 计费条 与 厂商账单 逐日核对

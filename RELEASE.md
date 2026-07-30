@@ -1,5 +1,8 @@
 # 企业短信管理平台 v1.6 发布说明
 
+> 本文件保留 2026-07 建设期候选的历史发布记录。当前日常流程以 `MAINTENANCE.md`
+> 为准，当前阻塞以 `PROGRESS.md` 为准。
+
 - 发布代码基线：2026-07-15 安全与前后端契约对齐、统一发布控制及远端 Mock 演练已合并并推送 `main`，当前仓库候选为 `<redacted-commit>`；未创建正式发布 tag
 - 最近完整 G2：2026-07-15（Asia/Shanghai），候选 `<redacted-commit>` 的 GitHub Actions run [`<redacted-run>`](https://github.com/example/enterprise-sms-platform/actions/runs/<redacted-run>) 退出 0
 - 最近四镜像发布门禁：相同运行代码基线已保留 API、Web、PostgreSQL、Redis 均为 0 HIGH / 0 CRITICAL 的本地扫描证据；候选 `<redacted-commit>` 的 hosted Release Gate run [`<redacted-run>`](https://github.com/example/enterprise-sms-platform/actions/runs/<redacted-run>) 退出 0。P0 合并后的最终不可变证据归档到生产变更单与 release manifest，不再通过额外文档提交回填 SHA/run ID
@@ -13,9 +16,9 @@
 - 数据库与契约：安全加固迁移兼容已有数据库；模板角色、应用频控覆盖等实现与 `openapi.yaml` 回填一致；迁移与 69 个 OpenAPI operation 零差。
 - GitHub G2（run `<redacted-run>`）：1128 项后端测试、services 86%、SEC-01–07、UAT 20/20、Node 24 前端 22 文件/84 项全部通过；acceptance 1800 次 P95 `90.30ms`，verify 60 次 P95 `605.52ms`，bulk 180 次，排空 `66.27s`。
 - 发布镜像：代码基线 `<redacted-id>` 的本地 fail-closed 门禁扫描四个最终交付镜像，API/Web/PostgreSQL/Redis 均为 0 HIGH / 0 CRITICAL，未降低阈值、未忽略修复延期项、未引入运行时外部 CDN。
-- 远端演练：修复提交 `<redacted-id>` 在隔离主机完整通过 Web/API-only、数据镜像、失败补偿与 TERM/resume；公网边界和管理员登录/退出浏览器冒烟通过。首次执行导致 Mock 卷重置的事件、恢复和防复发措施见 [演练报告](docs/reports/2026-07-15-remote-mock-release-rehearsal.md)。
+- 远端演练：修复提交 `<redacted-id>` 在隔离主机完整通过 Web/API-only、数据镜像、失败补偿与 TERM/resume；公网边界和管理员登录/退出浏览器冒烟通过。首次执行导致 Mock 卷重置的事件、恢复和防复发证据保存在受限归档，不随公开快照发布。
 - 候选冻结：`<redacted-commit>` 的 hosted CI/Release Gate 已成功；P0 只修正交付台账，合并后的最终 `headSha`、workflow run、发布证据 `candidate_commit`、release ID 与四镜像 RepoDigest 统一绑定到生产变更单和后续 release manifest，不再以回填文档的方式改变候选。
-- 生产边界：尚未完成外部 TLS/HSTS、真实 LDAP/厂商/告警渠道、生产八件 secrets、受控仓库 RepoDigest、24 小时十万条压测、主备 RTO、真人 28 例 UAT 与生产变更单，当前不得创建正式 `v*` tag 或上线。
+- 生产边界：尚未完成外部 TLS/HSTS、真实 LDAP/厂商/告警渠道、生产 18 件 secrets、受控仓库 RepoDigest、24 小时十万条压测、主备 RTO、真人 28 例 UAT 与生产变更单，当前不得创建正式 `v*` tag 或上线。
 
 ## v1.6.14 安全基础镜像
 
@@ -23,7 +26,7 @@
 - PostgreSQL 最终镜像以扁平化层移除官方历史中的旧 Go `gosu`，保留官方入口、PostgreSQL 16、数据目录和停止信号；`su-exec` 兼容替代已通过 `sms_app` 初始化、权限和数据卷重启验证。Redis AOF 重启持久化同步通过。
 - 干净候选 `<redacted-commit>` 的 Trivy 0.70.0 结果为 API 0、Web 0、PostgreSQL 0、Redis 0，均为 0 HIGH / 0 CRITICAL，门禁退出 0。镜像 ID：API `<redacted-digest>`、Web `<redacted-digest>`、PostgreSQL `<redacted-digest>`、Redis `<redacted-digest>`。
 - 安全镜像变更后的完整 G2 在 `<redacted-id>` 退出 0：后端 644 项、services 86.01%、迁移与 69-operation 契约、SEC-01–07、UAT 20/20、Node 24 前端 53 项全绿；受理 P95 20.25ms、verify P95 121.38ms、排空 61.40s，测试卷已清理。
-- 生产仍需完成外部 TLS/HSTS、真实 AD/厂商/告警、生产八件 secrets、24 小时十万条压测、主备 RTO 和真人 UAT；仓库门禁全绿不等于批准上线。
+- 生产仍需完成外部 TLS/HSTS、真实 AD/厂商/告警、生产 18 件 secrets、24 小时十万条压测、主备 RTO 和真人 UAT；仓库门禁全绿不等于批准上线。
 
 > M4.1 页面对齐补丁已完成全新 Mock 卷 G2、四角色真实浏览器与 390px 验收；发布时应以包含 M4.1 最终交付提交的候选分支为准，不再使用未含补丁的旧 `m4` 镜像。
 
@@ -93,7 +96,7 @@
 
 - D01：asyncpg 不能单次执行多语句 `schema.sql`；已采用同事务无损切分执行的安全降级，并由重组测试、真实迁移和双空库结构门禁保护。详见 [docs/DECISIONS.md](docs/DECISIONS.md)。D01 不是待重试故障；当前活跃发布 BLOCKED 为基础镜像 HIGH/CRITICAL 扫描失败。
 - 自动化使用 vendor/auth mock 与告警 log-sink，不构成真实 LDAP、厂商、企微/SMTP 的生产连通性证明。
-- 真实 AD UAT 01–04、真人完整 28 例、24 小时 10 万条 Locust、真实主备 RTO≤30min 演练、厂商主备出口/QPS 与生产八件 secrets 均为发布前人工事项。
+- 真实 AD UAT 01–04、真人完整 28 例、24 小时 10 万条 Locust、真实主备 RTO≤30min 演练、厂商主备出口/QPS 与生产 18 件 secrets 均为发布前人工事项。
 - M4.1 已将业务页面和 Element Plus 改为按需加载；候选构建主 JS 416.18kB、主 CSS 203.63kB。ECharts Canvas 494.53kB 仅随图表页面异步加载，继续按首月真实加载指标观察。
 
 ## 部署与回退

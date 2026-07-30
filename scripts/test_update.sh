@@ -60,7 +60,6 @@ REMOTE_ROOT="${SMS_TEST_UPDATE_ROOT:-$CANONICAL_REMOTE_ROOT}"
 PORT="${SMS_TEST_UPDATE_PORT:-${CONFIG_PORT:-22}}"
 REF="origin/main"
 COMMAND="apply"
-PUBLIC_SNAPSHOT_CUTOVER=0
 REMOTE_SMS_COMPOSE="/usr/local/sbin/sms-compose"
 BOOTSTRAP_SMS_COMPOSE="/usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap"
 HOST_CONTROL_PATHS=(
@@ -94,7 +93,7 @@ REMOTE_CONTROL_ENV=(
 )
 
 usage() {
-  echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--public-snapshot-cutover] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -126,6 +125,36 @@ remote_sms_compose() {
     "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$REMOTE_SMS_COMPOSE" "$@"
 }
 
+github_write_preflight() {
+  local authenticated_repository
+  if [[ "$COMMAND" != apply && "$COMMAND" != promote ]]; then
+    return 0
+  fi
+  command -v gh >/dev/null 2>&1 || {
+    echo "test-update: apply/promote 需要 GitHub CLI" >&2
+    return 1
+  }
+  gh auth status --hostname github.com >/dev/null 2>&1 || {
+    echo "test-update: GitHub CLI 登录无效；请先通过官方设备登录恢复认证" >&2
+    return 1
+  }
+  authenticated_repository="$(
+    gh api "repos/$LOCAL_REPOSITORY" --jq .full_name 2>/dev/null
+  )" || {
+    echo "test-update: GitHub 仓库只读鉴权预检失败" >&2
+    return 1
+  }
+  authenticated_repository="$(
+    printf '%s' "$authenticated_repository" |
+      tr '[:upper:]' '[:lower:]'
+  )"
+  [[ "$authenticated_repository" == "$LOCAL_REPOSITORY" ]] || {
+    echo "test-update: GitHub 鉴权上下文与目标仓库不匹配" >&2
+    return 1
+  }
+  echo "test-update: github-auth=verified repository=$LOCAL_REPOSITORY"
+}
+
 if [[ $# -gt 0 ]]; then
   case "$1" in
     plan | build | apply | status | promote)
@@ -142,8 +171,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --public-snapshot-cutover)
-      PUBLIC_SNAPSHOT_CUTOVER=1
-      shift
+      echo "test-update: public snapshot cutover 已禁用；不得向公开工作区导入私有 Git 对象" >&2
+      exit 2
       ;;
     --ref)
       [[ $# -ge 2 ]] || { usage; exit 2; }
@@ -177,15 +206,6 @@ done
   echo "test-update: --ref 必须是安全的 origin 分支" >&2
   exit 2
 }
-if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 && "$REF" != origin/main ]]; then
-  echo "test-update: public snapshot cutover 只允许 origin/main" >&2
-  exit 2
-fi
-if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 &&
-      "$COMMAND" != apply && "$COMMAND" != build && "$COMMAND" != plan ]]; then
-  echo "test-update: public snapshot cutover 不支持该命令" >&2
-  exit 2
-fi
 if [[ "$COMMAND" == promote && "$REF" != origin/main ]]; then
   echo "test-update: promote 只允许 origin/main" >&2
   exit 2
@@ -243,6 +263,7 @@ if [[ "$LOCAL_REPOSITORY" != "$REMOTE_REPOSITORY" ]]; then
   echo "test-update: 本地与远端 origin 仓库不一致，拒绝跨仓库更新" >&2
   exit 1
 fi
+github_write_preflight
 REMOTE_COMMIT="$(
   ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
     "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
@@ -333,46 +354,14 @@ if [[ ${#CHANGED_PATHS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-CUTOVER_SOURCE=""
-CUTOVER_PRIVATE_MERGE_BASE=""
-if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 ]]; then
-  SCOPE_JSON="$(
-    python3 "$ROOT/scripts/verify_public_snapshot_cutover.py" \
-      --repository "$ROOT" \
-      --baseline "$REMOTE_COMMIT" \
-      --target "$TARGET_COMMIT" \
-      --ref "$REF"
-  )" || {
-    echo "test-update: public snapshot cutover 验真失败 root=$REMOTE_ROOT base=${REMOTE_COMMIT:0:12} target=${TARGET_COMMIT:0:12}" >&2
-    exit 1
-  }
-  CUTOVER_SOURCE="$(
-    python3 -c 'import json,sys; print(json.loads(sys.argv[1])["source_commit"])' \
-      "$SCOPE_JSON"
-  )"
-  CUTOVER_PRIVATE_MERGE_BASE="$(
-    python3 -c 'import json,sys; print(json.loads(sys.argv[1])["private_merge_base"])' \
-      "$SCOPE_JSON"
-  )"
-  CUTOVER_PUBLICATION="$(
-    python3 -c 'import json,sys; print(json.loads(sys.argv[1])["publication_commit"])' \
-      "$SCOPE_JSON"
-  )"
-  CUTOVER_CHANGED="$(
-    python3 -c 'import json,sys; print(json.loads(sys.argv[1])["logical_changed"])' \
-      "$SCOPE_JSON"
-  )"
-  echo "test-update: public snapshot cutover verified source=${CUTOVER_SOURCE:0:12} publication=${CUTOVER_PUBLICATION:0:12} logical_changed=$CUTOVER_CHANGED"
-else
-  SCOPE_JSON="$(
-    git -C "$ROOT" diff --name-only --no-renames -z \
-      "$REMOTE_COMMIT" "$TARGET_COMMIT" |
-      python3 "$ROOT/deploy/scripts/test_update_contract.py" classify-nul
-  )" || {
-    echo "test-update: 差异分类失败 root=$REMOTE_ROOT base=${REMOTE_COMMIT:0:12} target=${TARGET_COMMIT:0:12} changed=${#CHANGED_PATHS[@]}" >&2
-    exit 1
-  }
-fi
+SCOPE_JSON="$(
+  git -C "$ROOT" diff --name-only --no-renames -z \
+    "$REMOTE_COMMIT" "$TARGET_COMMIT" |
+    python3 "$ROOT/deploy/scripts/test_update_contract.py" classify-nul
+)" || {
+  echo "test-update: 差异分类失败 root=$REMOTE_ROOT base=${REMOTE_COMMIT:0:12} target=${TARGET_COMMIT:0:12} changed=${#CHANGED_PATHS[@]}" >&2
+  exit 1
+}
 RISK="$(
   python3 -c 'import json,sys; print(json.loads(sys.argv[1])["risk"])' \
     "$SCOPE_JSON"
@@ -457,12 +446,7 @@ fi
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/sms-test-update.XXXXXX")"
 WORKTREE="$WORK_ROOT/source"
 BUNDLE="$WORK_ROOT/bundle"
-EVIDENCE_REF=""
 cleanup() {
-  if [[ -n "$EVIDENCE_REF" ]]; then
-    git -C "$ROOT" update-ref -d "$EVIDENCE_REF" "$CUTOVER_SOURCE" \
-      >/dev/null 2>&1 || true
-  fi
   git -C "$ROOT" worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
   rm -rf -- "$WORK_ROOT"
 }
@@ -519,27 +503,6 @@ fi
 chmod 0600 "$BUNDLE"/*.tar
 
 UPDATE_ID="test-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_COMMIT:0:12}"
-CUTOVER_PACK_FILE=""
-CUTOVER_PACK_DIGEST=""
-if [[ "$PUBLIC_SNAPSHOT_CUTOVER" == 1 ]]; then
-  [[ "$CUTOVER_SOURCE" =~ ^[0-9a-f]{40}$ &&
-      "$CUTOVER_PRIVATE_MERGE_BASE" =~ ^[0-9a-f]{40}$ ]] || exit 1
-  CUTOVER_PACK_FILE="cutover-source.pack"
-  EVIDENCE_REF="refs/test-updates/$UPDATE_ID/private-source"
-  git -C "$ROOT" update-ref "$EVIDENCE_REF" "$CUTOVER_SOURCE" ""
-  (
-    printf '%s\n' "$CUTOVER_SOURCE"
-    git -C "$ROOT" rev-list --objects --no-object-names \
-      "$CUTOVER_SOURCE^{tree}"
-  ) |
-    git -C "$ROOT" pack-objects --stdout >"$BUNDLE/$CUTOVER_PACK_FILE"
-  git -C "$ROOT" update-ref -d "$EVIDENCE_REF" "$CUTOVER_SOURCE"
-  EVIDENCE_REF=""
-  chmod 0600 "$BUNDLE/$CUTOVER_PACK_FILE"
-  CUTOVER_PACK_DIGEST="$(
-    shasum -a 256 "$BUNDLE/$CUTOVER_PACK_FILE" | awk '{print $1}'
-  )"
-fi
 API_REF_VALUE="${API_REF:-}"
 API_ID_VALUE="${API_ID:-}"
 API_DIGEST_VALUE=""
@@ -549,20 +512,16 @@ WEB_DIGEST_VALUE=""
 [[ "$API_CHANGED" == 0 ]] || API_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/api.tar" | awk '{print $1}')"
 [[ "$WEB_CHANGED" == 0 ]] || WEB_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/web.tar" | awk '{print $1}')"
 python3 -c 'import json,sys
-out,update_id,base,commit,ref,environment_mode,source,target,compat,cutover_source,cutover_base,cutover_file,cutover_digest,*values=sys.argv[1:]
+out,update_id,base,commit,ref,environment_mode,source,target,compat,*values=sys.argv[1:]
 images={}; components=[]
 for component,(image_ref,image_id,digest) in zip(("api","web"),(values[:3],values[3:])):
  if image_ref:
   components.append(component); images[component]={"ref":image_ref,"id":image_id,"archive_file":component+".tar","archive_sha256":digest}
 payload={"schema_version":1,"update_id":update_id,"base_commit":base,"commit":commit,"source_ref":ref,"environment_mode":environment_mode,"components":components,"images":images,"migration":{"from":source,"target":target,"compatibility":compat}}
-if cutover_source:
- payload["public_cutover"]={"source_commit":cutover_source,"private_merge_base":cutover_base,"pack_file":cutover_file,"pack_sha256":cutover_digest}
 path=__import__("pathlib").Path(out); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True)+"\n")' \
   "$BUNDLE/request.json" "$UPDATE_ID" "$REMOTE_COMMIT" "$TARGET_COMMIT" "$REF" \
   "$ENVIRONMENT_MODE" \
   "$MIGRATION_FROM" "$MIGRATION_TARGET" "$MIGRATION_COMPATIBILITY" \
-  "$CUTOVER_SOURCE" "$CUTOVER_PRIVATE_MERGE_BASE" \
-  "$CUTOVER_PACK_FILE" "$CUTOVER_PACK_DIGEST" \
   "$API_REF_VALUE" "$API_ID_VALUE" "$API_DIGEST_VALUE" \
   "$WEB_REF_VALUE" "$WEB_ID_VALUE" "$WEB_DIGEST_VALUE"
 chmod 0600 "$BUNDLE/request.json"
@@ -600,8 +559,6 @@ RSYNC_SSH="ssh -p $PORT -o BatchMode=yes -o StrictHostKeyChecking=yes"
 UPLOAD_ARTIFACTS=()
 [[ "$API_CHANGED" == 0 ]] || UPLOAD_ARTIFACTS+=("$BUNDLE/api.tar")
 [[ "$WEB_CHANGED" == 0 ]] || UPLOAD_ARTIFACTS+=("$BUNDLE/web.tar")
-[[ -z "$CUTOVER_PACK_FILE" ]] ||
-  UPLOAD_ARTIFACTS+=("$BUNDLE/$CUTOVER_PACK_FILE")
 # request.json 最后发布，确保固定 incoming 永远不会先暴露不完整请求。
 UPLOAD_ARTIFACTS+=("$BUNDLE/request.json")
 
