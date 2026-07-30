@@ -15,12 +15,15 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.label || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   changes:
     name: changes
+    # 仓库内分支由 push 运行一次 CI；pull_request 仅用于没有仓库 push 事件的 fork。
+    # 这避免同一 SHA 上出现一组 success 和一组 cancelled 的同名检查。
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -349,9 +352,13 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
   ci-gate:
-    name: ci-gate
+    # 同仓 PR 的占位检查必须使用不同名称，精确提交验证只能采信真正执行的 ci-gate。
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && 'same-repo-pr-ci-skipped' || 'ci-gate' }}
     needs: [changes, backend, frontend, security, g2]
-    if: ${{ !cancelled() }}
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name != github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -112,9 +112,15 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         'event_name=pull_request',
     ):
         assert command in changes_commands
+    expected_concurrency_group = (
+        "ci-${{ github.workflow }}-${{ github.event_name }}-"
+        "${{ github.event.pull_request.head.label || github.ref_name }}"
+    )
+    assert workflow["concurrency"]["group"] == expected_concurrency_group
+    assert "github.event_name != 'pull_request'" in changes["if"]
     assert (
-        workflow["concurrency"]["group"]
-        == "ci-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}"
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in changes["if"]
     )
 
     backend_commands = job_commands(jobs["backend"])
@@ -188,7 +194,15 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
 
     gate = jobs["ci-gate"]
     assert gate["needs"] == ["changes", "backend", "frontend", "security", "g2"]
-    assert gate["if"] == "${{ !cancelled() }}"
+    assert gate["name"].endswith(
+        "&& 'same-repo-pr-ci-skipped' || 'ci-gate' }}"
+    )
+    assert "!cancelled()" in gate["if"]
+    assert "github.event_name != 'pull_request'" in gate["if"]
+    assert (
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in gate["if"]
+    )
     assert "scripts/verify_ci_results.py" in job_commands(gate)
 
     assert_actions_are_immutable(workflow)
