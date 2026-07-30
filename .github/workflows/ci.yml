@@ -324,18 +324,15 @@ jobs:
 
   g2:
     name: g2
-    # 后端/前端/security 已完成静态与组件门禁；这里只跑整栈运行态阶段。
-    # 性能和发布控制烟测按路径选择，人工/定时事件仍全跑。
-    needs: [changes, backend, frontend, security]
+    # 与静态/组件门禁并行跑整栈运行态阶段，最终由 ci-gate 汇合精确 SHA 证据。
+    # PR 按路径选择发布控制但不阻塞性能；非 PR 保留原路径与失败关闭策略。
+    needs: [changes]
     outputs:
       tested_sha: ${{ steps.bind.outputs.sha }}
     if: >-
       ${{ !cancelled()
           && needs.changes.result == 'success'
-          && needs.changes.outputs.g2 == 'true'
-          && (needs.changes.outputs.backend != 'true' || needs.backend.result == 'success')
-          && (needs.changes.outputs.frontend != 'true' || needs.frontend.result == 'success')
-          && (needs.changes.outputs.security != 'true' || needs.security.result == 'success') }}
+          && needs.changes.outputs.g2 == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

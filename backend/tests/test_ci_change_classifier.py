@@ -396,7 +396,9 @@ def test_post_merge_reuses_only_trusted_evidence_without_git(
     assert result == expected
 
 
-def test_high_risk_pull_request_still_requires_g2(tmp_path: Path) -> None:
+def test_high_risk_pull_request_requires_g2_but_defers_performance(
+    tmp_path: Path,
+) -> None:
     repo = init_repo(tmp_path)
     base_sha = commit_file(repo, "docs/plans/base.md", "base")
     git(repo, "checkout", "-b", "feature")
@@ -411,8 +413,30 @@ def test_high_risk_pull_request_still_requires_g2(tmp_path: Path) -> None:
         True,
         frozenset({"backend-critical"}),
         False,
-        True,
         False,
+        False,
+    )
+
+
+def test_pull_request_defers_performance_without_dropping_release_control(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    base_sha = commit_file(repo, "docs/plans/base.md", "base")
+    git(repo, "checkout", "-b", "feature")
+    head_sha = commit_file(repo, "backend/Dockerfile", "FROM scratch")
+
+    result = classify_pull_request(repo, base_sha=base_sha, head_sha=head_sha)
+
+    assert result == Classification(
+        True,
+        True,
+        True,
+        True,
+        frozenset({"vendor-live"}),
+        False,
+        False,
+        True,
     )
 
 
@@ -492,21 +516,22 @@ def test_manual_and_scheduled_events_force_all_without_git(
 
 
 @pytest.mark.parametrize(
-    ("event_name", "base_sha", "before_sha", "head_sha", "reason"),
+    ("event_name", "base_sha", "before_sha", "head_sha", "reason", "performance"),
     [
-        ("pull_request", "", "", "head", "missing-pr-sha"),
-        ("push", "", ZERO_SHA, "head", "missing-push-sha"),
-        ("push", "", "before", "", "missing-push-sha"),
-        ("repository_dispatch", "", "", "", "unsupported-event"),
+        ("pull_request", "", "", "head", "missing-pr-sha", False),
+        ("push", "", ZERO_SHA, "head", "missing-push-sha", True),
+        ("push", "", "before", "", "missing-push-sha", True),
+        ("repository_dispatch", "", "", "", "unsupported-event", True),
     ],
 )
-def test_unreliable_event_metadata_forces_all(
+def test_unreliable_event_metadata_fails_closed_while_pr_defers_performance(
     tmp_path: Path,
     event_name: str,
     base_sha: str,
     before_sha: str,
     head_sha: str,
     reason: str,
+    performance: bool,
 ) -> None:
     result = classify_event(
         repo=tmp_path / "missing-repo",
@@ -523,7 +548,7 @@ def test_unreliable_event_metadata_forces_all(
         True,
         frozenset({reason}),
         True,
-        True,
+        performance,
         True,
     )
 
