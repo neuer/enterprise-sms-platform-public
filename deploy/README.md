@@ -192,6 +192,8 @@ git -C /opt/sms-platform archive "$TARGET_COMMIT" -- \
   deploy/scripts/check_test_update_migration.py \
   deploy/scripts/run_with_lifecycle_lock.py \
   deploy/scripts/public_cutover_bootstrap.py \
+  deploy/scripts/public_baseline_activation.py \
+  deploy/scripts/public_baseline_manager.py \
   deploy/scripts/test_update_apply.py \
   deploy/scripts/test_update_backup.py \
   deploy/scripts/test_update_contract.py \
@@ -214,6 +216,8 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/check_test_update_migration.py" \
   "$SOURCE_ROOT/deploy/scripts/run_with_lifecycle_lock.py" \
   "$SOURCE_ROOT/deploy/scripts/public_cutover_bootstrap.py" \
+  "$SOURCE_ROOT/deploy/scripts/public_baseline_activation.py" \
+  "$SOURCE_ROOT/deploy/scripts/public_baseline_manager.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_apply.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_backup.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_contract.py" \
@@ -285,7 +289,18 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
 任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
 按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
-只用于可选预览和后续诊断。
+只用于可选预览和后续诊断。唯一获准的一次性执行步骤见
+`docs/runbooks/public-baseline-activation.md`。
+
+该一次性流程的固定合同是：本地 driver 只执行
+`prepare → build → finalize`，由 build 从 verified bundle 的原始 blob 规范化构建并冻结
+API/Web 镜像，不接受手工 build plan 或 image ID；上传时
+`public-baseline.bundle`、`api.tar`、`web.tar`、`baseline-manifest.json` 就绪后，最后才
+发布 `request.json`。服务器 operator UID/GID 固定为 `1000:1000`，不动态推断；只使用
+host bootstrap 的
+`baseline-prepare/apply/verify/status/finalize/cleanup`。finalize 保留 recovery；
+只有标准状态 verified 且表面验收完成，cleanup 才删除旧 root 与 bundle/API/Web 三个
+大产物，并继续保留 manifest/request、test-update store 和 core journal。
 
 ### 手机操作者日常流程
 

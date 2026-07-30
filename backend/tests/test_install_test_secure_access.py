@@ -134,6 +134,8 @@ def fixture(tmp_path: Path):
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
+        "public_baseline_activation.py",
+        "public_baseline_manager.py",
         "public_cutover_bootstrap.py",
         "test_update_apply.py",
         "test_update_backup.py",
@@ -299,6 +301,8 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
+        "deploy/scripts/public_baseline_activation.py",
+        "deploy/scripts/public_baseline_manager.py",
         "deploy/scripts/test_update_apply.py",
         "deploy/scripts/test_update_backup.py",
         "deploy/scripts/test_update_contract.py",
@@ -368,6 +372,8 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     assert import_root.name.startswith(".python-import-")
     assert "sys.version_info < (3, 11)" in python_runtime_command[3]
     assert "import test_secure_access_manager" in python_runtime_command[3]
+    assert "import public_baseline_activation" in python_runtime_command[3]
+    assert "import public_baseline_manager" in python_runtime_command[3]
     assert "import public_cutover_bootstrap" in python_runtime_command[3]
     assert "import test_update_manager" in python_runtime_command[3]
     assert "import verify_public_snapshot_cutover" in python_runtime_command[3]

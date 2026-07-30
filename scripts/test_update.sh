@@ -69,6 +69,8 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/test_secure_access_manager.py"
   "deploy/scripts/vendor_test_files.py"
   "deploy/scripts/check_test_update_migration.py"
+  "deploy/scripts/public_baseline_activation.py"
+  "deploy/scripts/public_baseline_manager.py"
   "deploy/scripts/public_cutover_bootstrap.py"
   "deploy/scripts/run_with_lifecycle_lock.py"
   "deploy/scripts/test_update_apply.py"
@@ -467,6 +469,11 @@ for path in files:
 parents={parent for _,parent in pairs if isinstance(parent,str)}; heads=sorted(revision for revision,_ in pairs if revision not in parents); assert len(heads)==1; print(heads[0])' \
     "$WORKTREE/backend/migrations/versions"
 )"
+APP_VERSION="$(tr -d '\n' <"$WORKTREE/VERSION")"
+[[ "$APP_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || {
+  echo "test-update: 目标版本号无效" >&2
+  exit 1
+}
 if [[ "$MIGRATION_FROM" == "$MIGRATION_TARGET" ]]; then
   MIGRATION_COMPATIBILITY="none"
 else
@@ -485,6 +492,9 @@ COMPONENTS=()
 if [[ "$API_CHANGED" == 1 ]]; then
   API_REF="sms-platform-test-api:$TARGET_COMMIT"
   docker buildx build --platform linux/amd64 --load \
+    --build-arg "APP_VERSION=$APP_VERSION" \
+    --build-arg "GIT_SHA=$TARGET_COMMIT" \
+    --build-arg "SCHEMA_REVISION=$MIGRATION_TARGET" \
     -f "$WORKTREE/backend/Dockerfile" -t "$API_REF" "$WORKTREE"
   API_ID="$(docker image inspect --format '{{.Id}}' "$API_REF")"
   [[ "$API_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
@@ -494,6 +504,9 @@ fi
 if [[ "$WEB_CHANGED" == 1 ]]; then
   WEB_REF="sms-platform-test-web:$TARGET_COMMIT"
   docker buildx build --platform linux/amd64 --load \
+    --build-arg "APP_VERSION=$APP_VERSION" \
+    --build-arg "GIT_SHA=$TARGET_COMMIT" \
+    --build-arg "SCHEMA_REVISION=$MIGRATION_TARGET" \
     -f "$WORKTREE/frontend/Dockerfile" -t "$WEB_REF" "$WORKTREE"
   WEB_ID="$(docker image inspect --format '{{.Id}}' "$WEB_REF")"
   [[ "$WEB_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1

@@ -34,6 +34,14 @@ HOST_CONTROL_SOURCE_ASSETS = (
         "public_cutover_bootstrap.py",
         "deploy/scripts/public_cutover_bootstrap.py",
     ),
+    (
+        "public_baseline_activation.py",
+        "deploy/scripts/public_baseline_activation.py",
+    ),
+    (
+        "public_baseline_manager.py",
+        "deploy/scripts/public_baseline_manager.py",
+    ),
     ("test_update_apply.py", "deploy/scripts/test_update_apply.py"),
     ("test_update_backup.py", "deploy/scripts/test_update_backup.py"),
     ("test_update_contract.py", "deploy/scripts/test_update_contract.py"),

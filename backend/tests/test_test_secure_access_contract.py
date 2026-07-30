@@ -49,6 +49,8 @@ def test_contract_pins_every_host_runtime_boundary() -> None:
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
+        "public_baseline_activation.py",
+        "public_baseline_manager.py",
         "public_cutover_bootstrap.py",
         "test_update_apply.py",
         "test_update_backup.py",

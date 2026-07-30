@@ -598,3 +598,42 @@
 - 影响：PR 反馈缩短约 4 分钟；性能回归的发现窗口扩大到下一次成功的每日、人工或生产
   候选门禁。`perf_smoke.py`、`docs/PERFORMANCE.md`、NFR-01 追踪、本地按需完整复验和
   Release Gate 均保留。
+
+## D060 无共同历史的测试服务器以一次性 public bundle 建立公开基线
+
+- 决策：D054 所要求的独立跨历史变更采用一次性、目标 commit 绑定的 public bundle
+  激活流程。隔离 checkout 必须只含规范公开仓库 `main` 的完整可达对象，目标 commit
+  必须已有 GitHub Actions 精确 `ci-gate=success`；bundle 只发布
+  `refs/heads/main`，不得含 prerequisite、额外 ref、不可达对象、私有 URL、私有 commit
+  或私有对象。本地 driver 固定为 `prepare → build → finalize`：build 从稳定 bundle
+  的原始 blob 逐路径物化私有规范 context，在每张镜像构建前后复验路径/mode/内容，并
+  以固定 Docker argv 自行 build/inspect/save；finalize 不接收手工 image ID，而从同一
+  冻结身份一次生成 manifest/request。API/Web 必须同时构建 `linux/amd64` 不可变镜像，
+  并逐一绑定 image ID、archive SHA-256、`org.opencontainers.image.version`、
+  `org.opencontainers.image.revision=target` 与
+  `com.sms-platform.schema-revision=0039_manual_job_outbox`。服务器当前迁移头必须与
+  目标相同，本流程不运行 Alembic、不创建 checkpoint，也不允许 expand 或 contract 迁移。
+- 保留与切换：root-owned host-control 先用同一 public bundle 的临时 public ref 安装，
+  随后固定
+  `baseline-prepare/apply/verify/status/finalize/cleanup` 状态机复用 high-risk 暂停、
+  不安全分片检查和既有服务验收。服务器 operator 身份固定为 UID/GID `1000:1000`，
+  不从当前主机动态放宽；active root 固定为 `0:1000 2770`，`backend`/`deploy` 固定为
+  `1000:1000 2770`。核心只把 `/opt/sms-platform` 作为目录交换边界，以 rename 保留并
+  迁移旧 `.env`、`deploy/secrets`、`backend/.venv` 三项 allowlist；
+  PostgreSQL、全部 Docker volume、三域 Redis、七职责数据库角色、运行态目录、正式厂商
+  Key、加密测试号码、当日账本与审计事实均保持原位且不得重建、轮换、清除或摘要化。
+  根目录使用同文件系统原子 exchange；API/Web、`vendor-control-agent` unit 或 verify
+  任一步失败时，按旧 root、旧 unit、旧镜像/服务恢复。回退不跨 schema，不回 Mock，
+  不清库、不删卷；回退不完整则保持两条发送 lane fail closed。
+- 终态与证据：只有目标 root/origin/tree、API/Web 标签与服务、迁移头、账本、Redis/角色/
+  volume 保留及正式联调安全投影逐项通过，test-update 状态才可成为 `verified`；随后
+  `baseline-finalize` 只把不可变 journal 确认为 verified，继续保留旧 recovery root，
+  同时保留旧镜像回退标签，不把“finalize”解释为删除恢复能力。只有随后表面验收全部通过，
+  才运行 `baseline-cleanup`，以可重入 tombstone 删除旧 root，严格删除并复核旧镜像
+  回退标签，并删除 incoming 中本次
+  `public-baseline.bundle`、`api.tar`、`web.tar`；必须保留 manifest/request、标准
+  test-update store 和 core journal。数据库、volume、secrets、正式 Key/号码、审计与
+  当前运行镜像也不得作为 cleanup 对象。临时 public ref 以精确旧值删除，本地隔离构建
+  材料只在确认本次临时目录后清理。完整执行合同见
+  `docs/runbooks/public-baseline-activation.md`；该入口完成一次后退役，日常部署恢复
+  `scripts/test_update.sh apply --ref origin/main`。

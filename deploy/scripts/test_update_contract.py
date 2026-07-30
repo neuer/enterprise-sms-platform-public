@@ -101,6 +101,8 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_secure_access_manager.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
+        "deploy/scripts/public_baseline_activation.py",
+        "deploy/scripts/public_baseline_manager.py",
         "deploy/scripts/public_cutover_bootstrap.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
         "deploy/scripts/test_update_apply.py",

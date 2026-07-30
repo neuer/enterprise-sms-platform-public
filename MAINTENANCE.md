@@ -79,6 +79,14 @@ gh auth status --hostname github.com
 如果测试服务器基线不在当前公开仓库对象库，日常入口会失败关闭；不得向公开工作区添加
 私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
 仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
+获批的一次性步骤只见
+[`docs/runbooks/public-baseline-activation.md`](docs/runbooks/public-baseline-activation.md)；
+它不是日常 `plan/apply/status` 的替代入口。本地只允许
+`prepare → build → finalize`，服务器只允许
+`baseline-prepare/apply/verify/status/finalize/cleanup`；`request.json` 必须最后上传。
+服务器 operator UID/GID 固定为 `1000:1000`。finalize 后仍保留旧 root，只有
+`state=verified` 且表面验收完成才运行 cleanup；cleanup 删除旧 root 与
+bundle/API/Web 三个大产物，但保留 manifest/request、test-update store 和 core journal。
 
 owner PR 的精确 push CI 成功后会自动改为 Ready 并请求 squash merge。此自动化只完成
 仓库集成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
