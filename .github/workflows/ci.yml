@@ -5,7 +5,20 @@ on:
     branches: [main]
   push:
     branches: ["**"]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      post_merge_candidate:
+        description: Internal merge commit binding; leave empty for a full manual run
+        required: false
+        type: string
+      post_merge_head:
+        description: Internal merged PR head binding
+        required: false
+        type: string
+      post_merge_pr:
+        description: Internal merged PR number binding
+        required: false
+        type: string
   schedule:
     - cron: "17 18 * * *"
 
@@ -36,10 +49,49 @@ jobs:
       release_control: ${{ steps.classify.outputs.release_control }}
       reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
     steps:
+      - name: Validate post-merge dispatch binding
+        id: dispatch
+        env:
+          POST_MERGE_CANDIDATE: ${{ inputs.post_merge_candidate || '' }}
+          POST_MERGE_HEAD: ${{ inputs.post_merge_head || '' }}
+          POST_MERGE_PR: ${{ inputs.post_merge_pr || '' }}
+        run: |
+          set -euo pipefail
+          present=0
+          for value in \
+            "$POST_MERGE_CANDIDATE" \
+            "$POST_MERGE_HEAD" \
+            "$POST_MERGE_PR"
+          do
+            if [[ -n "$value" ]]; then
+              present=$((present + 1))
+            fi
+          done
+          if (( present != 0 && present != 3 )); then
+            echo "Post-merge inputs must be all empty or all populated." >&2
+            exit 1
+          fi
+
+          mode=ordinary
+          if (( present == 3 )); then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            [[ "$POST_MERGE_CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$POST_MERGE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$POST_MERGE_PR" =~ ^[1-9][0-9]*$ ]]
+            test "$GITHUB_SHA" = "$POST_MERGE_CANDIDATE"
+            expected_prefix="refs/tags/post-merge-ci-${POST_MERGE_CANDIDATE}-"
+            [[ "$GITHUB_REF" == "$expected_prefix"* ]]
+            suffix="${GITHUB_REF#"$expected_prefix"}"
+            [[ "$suffix" =~ ^[0-9]+-[0-9]+$ ]]
+            mode=post_merge
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "candidate=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Checkout full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          ref: ${{ steps.dispatch.outputs.candidate }}
       - name: Bind checkout to workflow candidate
         id: bind
         run: |
@@ -55,11 +107,23 @@ jobs:
         id: reuse
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          POST_MERGE_HEAD: ${{ inputs.post_merge_head || '' }}
+          POST_MERGE_PR: ${{ inputs.post_merge_pr || '' }}
         run: |
+          event_name="${{ github.event_name }}"
+          post_merge_args=()
+          if [[ "${{ steps.dispatch.outputs.mode }}" == post_merge ]]; then
+            event_name=post_merge
+            post_merge_args=(
+              --expected-head "$POST_MERGE_HEAD"
+              --pr-number "$POST_MERGE_PR"
+            )
+          fi
           python3 scripts/reuse_pr_ci_evidence.py \
             --repository "$GITHUB_REPOSITORY" \
             --candidate "$GITHUB_SHA" \
-            --event-name "${{ github.event_name }}" \
+            --event-name "$event_name" \
+            "${post_merge_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
       - name: Classify changed files and G2 policy
         id: classify
@@ -68,7 +132,12 @@ jobs:
           base_sha="${{ github.event.pull_request.base.sha || '' }}"
           before_sha="${{ github.event.before || '' }}"
           head_sha="${{ github.event.pull_request.head.sha || github.sha }}"
-          if [[ "$event_name" == push && "$GITHUB_REF" != refs/heads/main ]]; then
+          if [[ "${{ steps.dispatch.outputs.mode }}" == post_merge ]]; then
+            event_name=post_merge
+            base_sha=""
+            before_sha=""
+            head_sha="$GITHUB_SHA"
+          elif [[ "$event_name" == push && "$GITHUB_REF" != refs/heads/main ]]; then
             event_name=pull_request
             base_sha="$(git merge-base origin/main "$GITHUB_SHA")"
             before_sha=""
@@ -93,6 +162,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind backend evidence to candidate
         id: bind
         run: |
@@ -189,6 +260,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind frontend evidence to candidate
         id: bind
         run: |
@@ -220,6 +293,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind security evidence to candidate
         id: bind
         run: |
@@ -271,6 +346,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind G2 evidence to candidate
         id: bind
         run: |
@@ -362,6 +439,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Verify selective CI results
         run: |
           python3 scripts/verify_ci_results.py \

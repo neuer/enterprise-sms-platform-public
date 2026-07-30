@@ -25,7 +25,10 @@ git push -u origin <branch>
 推送时，`pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显命中内容。
 owner 分支会自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为 Ready
 并请求 squash merge。required `ci-gate`、会话解决和冲突保护仍由 GitHub 强制，禁止
-管理员绕过。
+管理员绕过。合并完成后，自动化以一次性 tag 把后续 `ci-gate` 精确绑定到 squash merge
+SHA：PR head tree 与原 `ci-gate` 证据完全吻合时直接复用，否则在合并提交上完整重跑。
+普通手工 `workflow_dispatch` 始终完整运行。已合并的远端分支只有在仍指向原 head SHA
+时才以 lease 删除；若分支已被推进则保留并失败关闭。
 
 CI 按风险运行组件门禁；认证/授权/审计、加密与 PII、发送/厂商、迁移、部署和控制面等
 受保护变更进入 G2 integration。人工、定时与生产候选继续执行完整门禁。

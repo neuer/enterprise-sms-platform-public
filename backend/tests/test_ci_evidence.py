@@ -11,6 +11,7 @@ SCRIPTS = ROOT / "scripts"
 
 sys.path.insert(0, str(SCRIPTS))
 
+import reuse_pr_ci_evidence as reuse_module  # noqa: E402
 import verify_ci_commit as verify_module  # noqa: E402
 from reuse_pr_ci_evidence import commit_tree, merged_pr_head, write_outputs  # noqa: E402
 from verify_ci_commit import CiEvidenceError, ci_gate_status, github_token  # noqa: E402
@@ -22,6 +23,7 @@ TREE = "3" * 40
 
 def check_run(
     *,
+    head_sha: str = COMMIT,
     status: str = "completed",
     conclusion: str | None = "success",
     app_id: int = 15368,
@@ -30,7 +32,7 @@ def check_run(
     return {
         "id": 42,
         "name": "ci-gate",
-        "head_sha": COMMIT,
+        "head_sha": head_sha,
         "status": status,
         "conclusion": conclusion,
         "app": {"id": app_id, "slug": app_slug},
@@ -121,17 +123,47 @@ def test_test_deployment_recording_rechecks_native_auth_without_exporting_token(
 
 def test_reuse_requires_unique_merged_main_pr_for_candidate() -> None:
     pull = {
+        "number": 17,
         "state": "closed",
         "merged_at": "2026-07-30T00:00:00Z",
         "merge_commit_sha": COMMIT,
         "base": {"ref": "main"},
-        "head": {"sha": HEAD},
+        "head": {
+            "sha": HEAD,
+            "repo": {"full_name": "example/repository"},
+        },
     }
     assert merged_pr_head([pull], candidate=COMMIT) == HEAD
+    assert (
+        merged_pr_head(
+            pull,
+            candidate=COMMIT,
+            repository="example/repository",
+            expected_number=17,
+            expected_head=HEAD,
+        )
+        == HEAD
+    )
     assert merged_pr_head([], candidate=COMMIT) is None
     assert merged_pr_head([pull, pull], candidate=COMMIT) == HEAD
-    other = {**pull, "head": {"sha": "4" * 40}}
+    other = {
+        **pull,
+        "head": {
+            "sha": "4" * 40,
+            "repo": {"full_name": "example/repository"},
+        },
+    }
     assert merged_pr_head([pull, other], candidate=COMMIT) is None
+    assert (
+        merged_pr_head(
+            pull,
+            candidate=COMMIT,
+            repository="other/repository",
+            expected_number=17,
+            expected_head=HEAD,
+        )
+        is None
+    )
 
 
 def test_reuse_tree_and_outputs_are_strict(tmp_path: Path) -> None:
@@ -144,3 +176,125 @@ def test_reuse_tree_and_outputs_are_strict(tmp_path: Path) -> None:
     assert output.read_text(encoding="utf-8") == (
         f"reuse=true\ntested_sha={HEAD}\n"
     )
+
+
+def test_post_merge_reuse_binds_pr_head_tree_and_ci_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    pull = {
+        "number": 17,
+        "state": "closed",
+        "merged_at": "2026-07-30T00:00:00Z",
+        "merge_commit_sha": COMMIT,
+        "base": {"ref": "main"},
+        "head": {
+            "sha": HEAD,
+            "repo": {"full_name": "example/repository"},
+        },
+    }
+
+    def fake_github_json(url: str, *, token: str | None) -> object:
+        assert token == "workflow-token"
+        calls.append(url)
+        if url.endswith("/pulls/17"):
+            return pull
+        if url.endswith(f"/git/commits/{COMMIT}"):
+            return {"tree": {"sha": TREE}}
+        if url.endswith(f"/git/commits/{HEAD}"):
+            return {"tree": {"sha": TREE}}
+        if url.endswith(f"/commits/{HEAD}/check-runs?filter=latest&per_page=100"):
+            return {"check_runs": [check_run(head_sha=HEAD)]}
+        raise AssertionError(url)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "workflow-token")
+    monkeypatch.setattr(reuse_module, "github_json", fake_github_json)
+    output = tmp_path / "github-output"
+
+    result = reuse_module.main(
+        [
+            "--repository",
+            "example/repository",
+            "--candidate",
+            COMMIT,
+            "--event-name",
+            "post_merge",
+            "--expected-head",
+            HEAD,
+            "--pr-number",
+            "17",
+            "--github-output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert output.read_text(encoding="utf-8") == (
+        f"reuse=true\ntested_sha={HEAD}\n"
+    )
+    assert len(calls) == 4
+
+
+def test_post_merge_evidence_mismatch_falls_back_to_full_ci(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        reuse_module,
+        "github_json",
+        lambda url, *, token: {
+            "number": 17,
+            "state": "closed",
+            "merged_at": "2026-07-30T00:00:00Z",
+            "merge_commit_sha": COMMIT,
+            "base": {"ref": "main"},
+            "head": {
+                "sha": "4" * 40,
+                "repo": {"full_name": "example/repository"},
+            },
+        },
+    )
+    output = tmp_path / "github-output"
+
+    result = reuse_module.main(
+        [
+            "--repository",
+            "example/repository",
+            "--candidate",
+            COMMIT,
+            "--event-name",
+            "post_merge",
+            "--expected-head",
+            HEAD,
+            "--pr-number",
+            "17",
+            "--github-output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    assert output.read_text(encoding="utf-8") == "reuse=false\ntested_sha=\n"
+
+
+def test_post_merge_reuse_rejects_partial_binding(tmp_path: Path) -> None:
+    output = tmp_path / "github-output"
+
+    result = reuse_module.main(
+        [
+            "--repository",
+            "example/repository",
+            "--candidate",
+            COMMIT,
+            "--event-name",
+            "post_merge",
+            "--expected-head",
+            HEAD,
+            "--github-output",
+            str(output),
+        ]
+    )
+
+    assert result == 2
+    assert not output.exists()

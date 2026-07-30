@@ -546,8 +546,10 @@
   后的精确 `origin/main` 执行 `plan` / `apply` / `status`；若分支已提前验证且 tree 相同，
   仍可使用 `promote`。本决策取代 D053 中“必须先完成分支环境验收再合并”的默认顺序，
   但不放宽 high-risk、迁移或控制面更新在 `apply` 前的精确 `ci-gate` 要求。
-- 效率约束：自动合并消除人工转 Ready 和点击合并，不复用不同 commit 的 G2 证据。开发
-  默认从最新 `main` 创建非堆叠分支，避免父 PR squash 后对子 PR 重放而触发重复 G2。
+- 效率约束：自动合并消除人工转 Ready 和点击合并；只有 squash merge tree 与 PR head
+  tree 完全一致，且原 head 的精确 `ci-gate` 仍为 GitHub Actions success 时，才把该证据
+  复用于 merge SHA，避免重复 G2。开发默认从最新 `main` 创建非堆叠分支，避免父 PR
+  squash 后对子 PR 重放。
 
 ## D057 维护期开发与测试部署解耦
 
@@ -560,3 +562,22 @@
 - 门禁边界：受保护变更的精确 `ci-gate`、G2、迁移 checkpoint、失败关闭、应用镜像回退、
   生产 Release Gate、Trivy/SBOM/镜像身份和所有数据安全规则均不变；只移除重复执行与历史
   文案耦合。
+
+## D058 合并提交主动验真并精确清理短期分支
+
+- 问题：使用仓库 `GITHUB_TOKEN` 完成 squash merge 时，GitHub 不会再由该 token 产生的
+  普通 `push` 事件启动新 workflow；仓库的自动删分支设置也未在实测中删除 owner 分支。
+  因而 PR head 已有绿色证据，但 merge SHA 缺少 `ci-gate`，远端短期分支仍需人工清理。
+- 决策：owner PR 合并后先重新校验 PR number、base、head SHA、同仓身份和 merge SHA，
+  再创建只含 merge SHA 与 workflow run ID 的一次性 tag，通过允许由 `GITHUB_TOKEN`
+  触发的 `workflow_dispatch` 启动现有 CI。内部三个输入必须全有或全无，tag、事件
+  `GITHUB_SHA`、merge commit、PR head 和原 head `ci-gate` 逐项绑定；普通人工 dispatch
+  不带内部输入，仍执行完整 CI。
+- 复用与降级：merge tree 与 PR head tree 相同且原精确 `ci-gate` 成功时，只运行稳定规格
+  检查并在 merge SHA 生成新的 `ci-gate`，不重复组件测试或 G2；证据缺失、API 暂时不可用
+  或 tree 不同则在 merge SHA 完整运行，绝不把“无法验证”当作成功。一次性 tag 在 dispatch
+  后以精确 lease 删除。
+- 分支清理：PR 确认已合并并成功派发主干验真后，查询远端 head ref；已由 GitHub 删除视为
+  幂等成功，否则只有该 ref 仍精确等于原 CI head SHA 时才以 `--force-with-lease` 删除。
+  若分支并发前移则删除失败并保留新提交。每个分支的自动化互斥，跨分支合并依靠唯一 PR、
+  head/merge SHA、tree 与临时 tag 独立绑定，不使用 PAT、`--admin` 或无条件 REST DELETE。

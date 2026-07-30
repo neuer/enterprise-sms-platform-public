@@ -235,6 +235,22 @@ def _classify_event_with_count(
 ) -> tuple[Classification, int]:
     if event_name in FORCE_ALL_EVENTS:
         return _full(f"forced-{event_name}"), 0
+    if event_name == "post_merge":
+        if trusted_pr_evidence:
+            return (
+                Classification(
+                    False,
+                    False,
+                    False,
+                    False,
+                    frozenset({"reused-pr-ci-evidence"}),
+                    False,
+                    False,
+                    False,
+                ),
+                0,
+            )
+        return _full("untrusted-post-merge"), 0
     if event_name == "pull_request":
         if not base_sha or not head_sha:
             return _full("missing-pr-sha"), 0

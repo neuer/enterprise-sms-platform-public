@@ -70,7 +70,27 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
 
     assert triggers["pull_request"]["branches"] == ["main"]
     assert triggers["push"]["branches"] == ["**"]
-    assert "workflow_dispatch" in triggers
+    assert triggers["workflow_dispatch"] == {
+        "inputs": {
+            "post_merge_candidate": {
+                "description": (
+                    "Internal merge commit binding; leave empty for a full manual run"
+                ),
+                "required": False,
+                "type": "string",
+            },
+            "post_merge_head": {
+                "description": "Internal merged PR head binding",
+                "required": False,
+                "type": "string",
+            },
+            "post_merge_pr": {
+                "description": "Internal merged PR number binding",
+                "required": False,
+                "type": "string",
+            },
+        }
+    }
     assert triggers["schedule"] == [{"cron": "17 18 * * *"}]
     assert workflow["permissions"] == {
         "checks": "read",
@@ -100,7 +120,29 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "release_control": "${{ steps.classify.outputs.release_control }}",
         "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
     }
-    assert changes["steps"][0]["with"]["fetch-depth"] == 0
+    dispatch = next(step for step in changes["steps"] if step.get("id") == "dispatch")
+    assert dispatch["env"] == {
+        "POST_MERGE_CANDIDATE": "${{ inputs.post_merge_candidate || '' }}",
+        "POST_MERGE_HEAD": "${{ inputs.post_merge_head || '' }}",
+        "POST_MERGE_PR": "${{ inputs.post_merge_pr || '' }}",
+    }
+    for token in (
+        "present != 0 && present != 3",
+        'test "$GITHUB_EVENT_NAME" = workflow_dispatch',
+        'test "$GITHUB_SHA" = "$POST_MERGE_CANDIDATE"',
+        "refs/tags/post-merge-ci-${POST_MERGE_CANDIDATE}-",
+        '[[ "$suffix" =~ ^[0-9]+-[0-9]+$ ]]',
+        "mode=ordinary",
+        "mode=post_merge",
+    ):
+        assert token in dispatch["run"]
+    checkout = next(
+        step for step in changes["steps"] if step["name"] == "Checkout full history"
+    )
+    assert checkout["with"] == {
+        "fetch-depth": 0,
+        "ref": "${{ steps.dispatch.outputs.candidate }}",
+    }
     changes_commands = job_commands(changes)
     for command in (
         "scripts/check_spec_consistency.py",
@@ -112,6 +154,9 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "github.event.pull_request.head.sha || github.sha",
         'git merge-base origin/main "$GITHUB_SHA"',
         'event_name=pull_request',
+        "event_name=post_merge",
+        '--expected-head "$POST_MERGE_HEAD"',
+        '--pr-number "$POST_MERGE_PR"',
     ):
         assert command in changes_commands
     expected_concurrency_group = (
@@ -144,6 +189,15 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         assert command in backend_commands
     assert jobs["backend"]["needs"] == "changes"
     assert "needs.changes.outputs.backend == 'true'" in jobs["backend"]["if"]
+    for job_name in ("backend", "frontend", "security", "g2", "ci-gate"):
+        job_checkout = next(
+            step
+            for step in jobs[job_name]["steps"]
+            if step.get("name") == "Checkout"
+        )
+        assert job_checkout["with"]["ref"] == (
+            "${{ needs.changes.outputs.candidate_sha }}"
+        )
 
     frontend_commands = job_commands(jobs["frontend"])
     for command in (
@@ -290,6 +344,7 @@ def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> N
         }
     }
     assert merge["permissions"] == {
+        "actions": "write",
         "contents": "write",
         "pull-requests": "write",
     }
@@ -302,7 +357,7 @@ def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> N
     assert set(jobs) == {"queue"}
     queue = jobs["queue"]
     assert queue["name"] == "auto-merge-owner-pr"
-    assert queue["timeout-minutes"] == 5
+    assert queue["timeout-minutes"] == 15
     for condition in (
         "workflow_run.conclusion == 'success'",
         "workflow_run.event == 'push'",
@@ -313,20 +368,36 @@ def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> N
     ):
         assert condition in queue["if"]
 
-    step = queue["steps"][0]
+    checkout = queue["steps"][0]
+    assert checkout["uses"] == (
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+    )
+    assert checkout["with"] == {
+        "ref": "main",
+        "fetch-depth": 0,
+        "persist-credentials": True,
+    }
+
+    step = queue["steps"][1]
     assert step["env"] == {
         "GH_TOKEN": "${{ github.token }}",
         "HEAD_BRANCH": "${{ github.event.workflow_run.head_branch }}",
         "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
         "REPOSITORY": "${{ github.repository }}",
+        "SOURCE_RUN_ID": "${{ github.run_id }}",
+        "SOURCE_RUN_ATTEMPT": "${{ github.run_attempt }}",
     }
     commands = step["run"]
     for token in (
         "set -euo pipefail",
+        'test "$HEAD_BRANCH" != main',
+        'git check-ref-format "refs/heads/$HEAD_BRANCH"',
         "gh pr list",
         "--base main",
-        "--state open",
-        "--limit 2",
+        "--state all",
+        "--limit 20",
+        '.headRefOid == $sha',
+        '(.state == "OPEN" or .state == "MERGED")',
         "test \"$count\" == 1",
         "gh pr view",
         "'.headRefOid'",
@@ -337,10 +408,34 @@ def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> N
         "--auto",
         "--squash",
         '--match-head-commit "$HEAD_SHA"',
+        "--json number,state,isDraft,mergedAt,mergeCommit",
+        "gh pr merge \"$number\" --repo \"$REPOSITORY\" --disable-auto",
+        "PR did not merge before timeout",
+        'test "$(jq -r \'.headRefOid\' <<<"$details")" == "$HEAD_SHA"',
+        'merge_sha="$(jq -r \'.mergeCommit.oid // empty\' <<<"$details")"',
+        "refs/heads/main:refs/remotes/origin/main",
+        "git merge-base --is-ancestor",
+        "Exact PR was already merged; resuming post-merge steps.",
+        'tag="post-merge-ci-${merge_sha}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"',
+        '--force-with-lease="${tag_ref}:"',
+        "gh workflow run ci.yml",
+        '--ref "$tag"',
+        '-f "post_merge_candidate=$merge_sha"',
+        '-f "post_merge_head=$HEAD_SHA"',
+        '-f "post_merge_pr=$number"',
+        "cleanup_tag",
+        'branch_state="$(git ls-remote --heads origin "$branch_ref")"',
+        "Merged branch was already deleted.",
+        '--force-with-lease="${branch_ref}:${HEAD_SHA}"',
+        '":$branch_ref"',
+        "Merged branch was deleted concurrently.",
+        "Refusing to delete a merged branch that no longer matches its CI SHA.",
     ):
         assert token in commands
     assert "--admin" not in commands
+    assert "gh api" not in commands
     assert "secrets." not in AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
+    assert_actions_are_immutable(merge)
 
 
 def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:

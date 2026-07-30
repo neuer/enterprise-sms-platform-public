@@ -318,6 +318,54 @@ def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -
     )
 
 
+@pytest.mark.parametrize(
+    ("trusted", "expected"),
+    [
+        (
+            True,
+            Classification(
+                False,
+                False,
+                False,
+                False,
+                frozenset({"reused-pr-ci-evidence"}),
+                False,
+                False,
+                False,
+            ),
+        ),
+        (
+            False,
+            Classification(
+                True,
+                True,
+                True,
+                True,
+                frozenset({"untrusted-post-merge"}),
+                True,
+                True,
+                True,
+            ),
+        ),
+    ],
+)
+def test_post_merge_reuses_only_trusted_evidence_without_git(
+    tmp_path: Path,
+    trusted: bool,
+    expected: Classification,
+) -> None:
+    result = classify_event(
+        repo=tmp_path / "missing-repo",
+        event_name="post_merge",
+        base_sha="",
+        before_sha="",
+        head_sha="",
+        trusted_pr_evidence=trusted,
+    )
+
+    assert result == expected
+
+
 def test_high_risk_pull_request_still_requires_g2(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     base_sha = commit_file(repo, "docs/plans/base.md", "base")
@@ -401,9 +449,16 @@ def test_manual_and_scheduled_events_force_all_without_git(
         head_sha="",
     )
 
-    assert (result.backend, result.frontend, result.g2) == (True, True, True)
-    assert result.full_fallback is True
-    assert result.categories == frozenset({f"forced-{event_name}"})
+    assert result == Classification(
+        True,
+        True,
+        True,
+        True,
+        frozenset({f"forced-{event_name}"}),
+        True,
+        True,
+        True,
+    )
 
 
 @pytest.mark.parametrize(
