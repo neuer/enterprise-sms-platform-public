@@ -261,6 +261,8 @@ def _fixture(
     )
     guard = Guard()
     exchange = PortableExchange()
+    # CI 临时目录可能继承 runner 的 setgid 组；夹具以实际根目录模拟 operator 组。
+    operator_gid = active_root.stat().st_gid
     activator = module.PublicBaselineActivator(
         activation_id=ACTIVATION_ID,
         artifacts_root=artifacts,
@@ -270,7 +272,7 @@ def _fixture(
         directory_exchange=exchange,
         expected_uid=os.geteuid(),
         expected_operator_uid=os.geteuid(),
-        expected_operator_gid=os.getegid(),
+        expected_operator_gid=operator_gid,
     )
     return request, activator, guard, exchange, public_root
 
@@ -521,9 +523,9 @@ def test_prepare_fails_closed_before_mutation_without_lock_or_exact_base(
         active_root=activator.active_root,
         workspace_root=activator.workspace_root,
         directory_exchange=exchange,
-        expected_uid=os.geteuid(),
-        expected_operator_uid=os.geteuid(),
-        expected_operator_gid=os.getegid(),
+        expected_uid=activator.expected_uid,
+        expected_operator_uid=activator.expected_operator_uid,
+        expected_operator_gid=activator.expected_operator_gid,
     )
     with pytest.raises(RuntimeError, match="lock"):
         locked.prepare(request)
@@ -754,9 +756,9 @@ def test_server_operator_identity_and_modes_are_exact(tmp_path: Path) -> None:
         active_root=activator.active_root,
         workspace_root=activator.workspace_root,
         directory_exchange=exchange,
-        expected_uid=os.geteuid(),
-        expected_operator_uid=os.geteuid() + 1,
-        expected_operator_gid=os.getegid(),
+        expected_uid=activator.expected_uid,
+        expected_operator_uid=activator.expected_operator_uid + 1,
+        expected_operator_gid=activator.expected_operator_gid,
     )
     with pytest.raises(
         module.PublicBaselineActivationError,
@@ -774,9 +776,9 @@ def test_server_operator_identity_and_modes_are_exact(tmp_path: Path) -> None:
         active_root=activator.active_root,
         workspace_root=activator.workspace_root,
         directory_exchange=exchange,
-        expected_uid=os.geteuid(),
-        expected_operator_uid=os.geteuid(),
-        expected_operator_gid=os.getegid() + 1,
+        expected_uid=activator.expected_uid,
+        expected_operator_uid=activator.expected_operator_uid,
+        expected_operator_gid=activator.expected_operator_gid + 1,
     )
     with pytest.raises(
         module.PublicBaselineActivationError,
