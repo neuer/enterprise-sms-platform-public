@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch: {}
   schedule:
     - cron: "17 18 * * *"
@@ -15,7 +15,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -61,11 +61,21 @@ jobs:
       - name: Classify changed files and G2 policy
         id: classify
         run: |
+          event_name="${{ github.event_name }}"
+          base_sha="${{ github.event.pull_request.base.sha || '' }}"
+          before_sha="${{ github.event.before || '' }}"
+          head_sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [[ "$event_name" == push && "$GITHUB_REF" != refs/heads/main ]]; then
+            event_name=pull_request
+            base_sha="$(git merge-base origin/main "$GITHUB_SHA")"
+            before_sha=""
+            head_sha="$GITHUB_SHA"
+          fi
           python3 scripts/classify_ci_changes.py \
-            --event-name "${{ github.event_name }}" \
-            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
-            --before-sha "${{ github.event.before || '' }}" \
-            --head-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --event-name "$event_name" \
+            --base-sha "$base_sha" \
+            --before-sha "$before_sha" \
+            --head-sha "$head_sha" \
             --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
 

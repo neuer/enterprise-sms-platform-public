@@ -26,8 +26,9 @@ scripts/test_update.sh status
 主机地址、账号、密钥或测试数据。
 
 推送时，版本化 `pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显
-命中内容；owner 分支会自动创建 Draft PR。`ci-gate` 是 `main` 唯一 required check，
-且绑定 GitHub Actions 应用。按变更范围只运行必要 job；高风险 PR 进入 G2 integration，
+命中内容；owner 分支会自动创建 Draft PR，CI 直接绑定该分支 commit 并按其相对 `main`
+的完整差异运行，不依赖 Actions 创建 PR 后的递归事件。`ci-gate` 是 `main` 唯一 required
+check，且绑定 GitHub Actions 应用。按变更范围只运行必要 job；高风险 PR 进入 G2 integration，
 性能与 release-control 仅在相应路径变化时加入。人工、定时与生产候选仍执行完整 11 阶段。
 
 ## 测试服务器门禁

@@ -99,8 +99,9 @@ docker compose -f deploy/docker-compose.yml exec -T postgres \
 
 ## 6. GitHub CI
 
-`.github/workflows/ci.yml` 在指向 `main` 的 PR、推送到 `main`、人工
-`workflow_dispatch` 和每日定时任务中运行。PR 与 `main` push 按变更文件选择快速检查；
+`.github/workflows/ci.yml` 在仓库分支 push、指向 `main` 的 PR、推送到 `main`、人工
+`workflow_dispatch` 和每日定时任务中运行。分支 push 始终按相对 `main` 的完整差异分类，
+因此由 Actions 自动创建 Draft PR 时不依赖递归 `pull_request` 事件。PR 与 `main` push 按变更文件选择快速检查；
 远端完整 G2 只由高风险 PR、人工/定时事件或失败关闭回退触发。稳定 job 名称及职责为：
 
 - `changes`：始终执行规格一致性、硬规则静态检查和路径分类；

@@ -67,7 +67,7 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
     triggers = workflow_triggers(workflow)
 
     assert triggers["pull_request"]["branches"] == ["main"]
-    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["branches"] == ["**"]
     assert "workflow_dispatch" in triggers
     assert triggers["schedule"] == [{"cron": "17 18 * * *"}]
     assert workflow["permissions"] == {
@@ -108,8 +108,14 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
         "scripts/reuse_pr_ci_evidence.py",
         "scripts/classify_ci_changes.py",
         "github.event.pull_request.head.sha || github.sha",
+        'git merge-base origin/main "$GITHUB_SHA"',
+        'event_name=pull_request',
     ):
         assert command in changes_commands
+    assert (
+        workflow["concurrency"]["group"]
+        == "ci-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}"
+    )
 
     backend_commands = job_commands(jobs["backend"])
     for command in (
