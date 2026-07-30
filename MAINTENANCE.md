@@ -32,16 +32,18 @@ scripts/test_update.sh status
 
 推送时，版本化 `pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显
 命中内容；owner 分支会自动创建 Draft PR，CI 直接绑定该分支 commit 并按其相对 `main`
-的完整差异运行，不依赖 Actions 创建 PR 后的递归事件。`ci-gate` 是 `main` 唯一 required
+的完整差异运行，不依赖 Actions 创建 PR 后的递归事件。精确 SHA 的 push CI 成功后，独立
+工作流只对 owner 的同仓分支把对应 PR 改为 Ready 并请求 auto squash merge；required checks、
+会话解决和冲突保护仍由 GitHub 强制，不使用管理员绕过。`ci-gate` 是 `main` 唯一 required
 check，且绑定 GitHub Actions 应用。按变更范围只运行必要 job；高风险 PR 进入 G2 integration，
 性能与 release-control 仅在相应路径变化时加入。人工、定时与生产候选仍执行完整 11 阶段。
 
 ## 测试服务器门禁
 
-| 风险 | 分支测试部署 | 合并 |
+| 风险 | 测试部署 | 合并 |
 |---|---|---|
-| `web-only` / `backend-safe`、无迁移 | 完成定向本地检查即可直接 `apply`，CI 并行运行 | 等待 required `ci-gate` |
-| `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | 等待 required `ci-gate` |
+| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 可直接 `apply` | push CI 成功后自动 Ready + squash |
+| `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | push CI 成功后自动 Ready + squash |
 | 未知/破坏性迁移 | fail closed，拆分并单独评审 | 禁止 |
 
 测试更新只构建受影响镜像，不重复组件测试或 G2；有迁移才创建密文 checkpoint。无迁移
@@ -51,8 +53,11 @@ check，且绑定 GitHub Actions 应用。按变更范围只运行必要 job；�
 私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
 仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
 
-PR 通过分支环境验收后改为 Ready 并 squash merge。若 squash 生成的新 `main` commit 与
-已验证分支 commit 的 tree 完全一致，运行：
+owner PR 的精确 push CI 成功后会自动改为 Ready 并请求 squash merge。此自动化只完成
+仓库集成，不代表测试服务器已验证；日常测试更新改为针对合并后的精确 `origin/main`
+执行 `plan` / `apply` / `status`，服务器基线或保护状态异常时仍失败关闭。若在合并前已经
+人工验证分支，且 squash 生成的新 `main` commit 与已验证分支 commit 的 tree 完全一致，
+仍可运行：
 
 ```bash
 scripts/test_update.sh promote --ref origin/main

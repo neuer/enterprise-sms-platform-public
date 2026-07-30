@@ -9,6 +9,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release-gate.yml"
+AUTO_DRAFT_WORKFLOW = ROOT / ".github/workflows/auto-draft-pr.yml"
+AUTO_MERGE_WORKFLOW = ROOT / ".github/workflows/auto-merge-owner-pr.yml"
 BOOTSTRAP = ROOT / "BOOTSTRAP.md"
 ALLOWED_ACTIONS = {
     "actions/attest",
@@ -261,6 +263,84 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert 'expected_stages="5,6,7"' in gate["run"]
     assert 'expected_stages+=",8"' in gate["run"]
     assert 'expected_stages+=",10"' in gate["run"]
+
+
+def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> None:
+    draft = load_workflow(AUTO_DRAFT_WORKFLOW)
+    draft_triggers = workflow_triggers(draft)
+    assert draft_triggers == {"push": {"branches-ignore": ["main"]}}
+    assert draft["permissions"] == {
+        "contents": "read",
+        "pull-requests": "write",
+    }
+    draft_job = draft["jobs"]["open"]
+    assert draft_job["if"] == "${{ github.actor == github.repository_owner }}"
+    draft_commands = job_commands(draft_job)
+    assert '"draft=true"' in draft_commands
+    assert "Successful push CI will mark this PR Ready and queue squash merge." in (
+        draft_commands
+    )
+
+    merge = load_workflow(AUTO_MERGE_WORKFLOW)
+    merge_triggers = workflow_triggers(merge)
+    assert merge_triggers == {
+        "workflow_run": {
+            "workflows": ["CI"],
+            "types": ["completed"],
+        }
+    }
+    assert merge["permissions"] == {
+        "contents": "write",
+        "pull-requests": "write",
+    }
+    assert merge["concurrency"] == {
+        "group": "auto-merge-owner-pr-${{ github.event.workflow_run.head_branch }}",
+        "cancel-in-progress": False,
+    }
+
+    jobs = merge["jobs"]
+    assert set(jobs) == {"queue"}
+    queue = jobs["queue"]
+    assert queue["name"] == "auto-merge-owner-pr"
+    assert queue["timeout-minutes"] == 5
+    for condition in (
+        "workflow_run.conclusion == 'success'",
+        "workflow_run.event == 'push'",
+        "workflow_run.path == '.github/workflows/ci.yml'",
+        "workflow_run.head_branch != 'main'",
+        "workflow_run.actor.login == github.repository_owner",
+        "workflow_run.head_repository.full_name == github.repository",
+    ):
+        assert condition in queue["if"]
+
+    step = queue["steps"][0]
+    assert step["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "HEAD_BRANCH": "${{ github.event.workflow_run.head_branch }}",
+        "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
+        "REPOSITORY": "${{ github.repository }}",
+    }
+    commands = step["run"]
+    for token in (
+        "set -euo pipefail",
+        "gh pr list",
+        "--base main",
+        "--state open",
+        "--limit 2",
+        "test \"$count\" == 1",
+        "gh pr view",
+        "'.headRefOid'",
+        '== "$HEAD_SHA"',
+        "'.isCrossRepository'",
+        "gh pr ready",
+        "gh pr merge",
+        "--auto",
+        "--squash",
+        '--match-head-commit "$HEAD_SHA"',
+    ):
+        assert token in commands
+    assert "--admin" not in commands
+    assert "secrets." not in AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:

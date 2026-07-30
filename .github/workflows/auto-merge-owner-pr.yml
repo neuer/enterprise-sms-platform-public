@@ -1,0 +1,81 @@
+name: Auto Merge Owner PR
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-owner-pr-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    name: auto-merge-owner-pr
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.path == '.github/workflows/ci.yml'
+          && github.event.workflow_run.head_branch != 'main'
+          && github.event.workflow_run.actor.login == github.repository_owner
+          && github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Mark the exact owner PR ready and queue squash merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          prs='[]'
+          for _ in 1 2 3 4 5; do
+            prs="$(
+              gh pr list \
+                --repo "$REPOSITORY" \
+                --head "$HEAD_BRANCH" \
+                --base main \
+                --state open \
+                --limit 2 \
+                --json number
+            )"
+            if [[ "$(jq 'length' <<<"$prs")" != 0 ]]; then
+              break
+            fi
+            sleep 3
+          done
+
+          count="$(jq 'length' <<<"$prs")"
+          if [[ "$count" == 0 ]]; then
+            echo "No open PR for owner branch; nothing to merge."
+            exit 0
+          fi
+          test "$count" == 1
+
+          number="$(jq -r '.[0].number' <<<"$prs")"
+          details="$(
+            gh pr view "$number" \
+              --repo "$REPOSITORY" \
+              --json state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository
+          )"
+          test "$(jq -r '.state' <<<"$details")" == OPEN
+          test "$(jq -r '.baseRefName' <<<"$details")" == main
+          test "$(jq -r '.headRefName' <<<"$details")" == "$HEAD_BRANCH"
+          test "$(jq -r '.headRefOid' <<<"$details")" == "$HEAD_SHA"
+          test "$(jq -r '.isCrossRepository' <<<"$details")" == false
+
+          if [[ "$(jq -r '.isDraft' <<<"$details")" == true ]]; then
+            gh pr ready "$number" --repo "$REPOSITORY"
+          fi
+          gh pr merge "$number" \
+            --repo "$REPOSITORY" \
+            --auto \
+            --squash \
+            --match-head-commit "$HEAD_SHA"

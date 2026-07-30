@@ -10,8 +10,9 @@
 scripts/dev_check.sh --changed
 ```
 
-6. 推送短生命周期分支。owner 分支会自动创建 Draft PR；解决会话并等待唯一 required
-   check `ci-gate` 后 squash merge，禁止直接推送 `main`。同仓分支 CI 由 `push` 运行一次，
+6. 推送短生命周期分支。owner 分支会自动创建 Draft PR；精确 push CI 成功后，自动化
+   将同一 SHA 的 PR 改为 Ready 并请求 squash merge。required `ci-gate`、会话解决与冲突
+   保护仍必须满足，禁止直接推送 `main` 或管理员绕过。同仓分支 CI 由 `push` 运行一次，
    重复 PR 事件跳过；fork PR 才使用 `pull_request` 事件。
 7. 测试部署前确认 `gh auth status --hostname github.com` 有效；只用系统钥匙串或官方
    设备登录，不在聊天、`.env` 或 shell profile 中保存 token。

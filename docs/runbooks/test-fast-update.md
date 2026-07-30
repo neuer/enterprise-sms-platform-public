@@ -106,14 +106,15 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
-3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。
+3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建；精确 push CI 成功后会自动 Ready
+   并请求 squash merge。
 4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
-5. 执行 `scripts/test_update.sh plan --ref origin/<branch>` 查看分类和门禁。
-6. 执行 `scripts/test_update.sh apply --ref origin/<branch>`。
-7. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
-8. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。
-9. PR 改为 Ready 并 squash merge；若新 `origin/main` 与已验证分支的 tree 一致，执行
-   `scripts/test_update.sh promote --ref origin/main`，不重建镜像、不重复迁移。
+5. 获取自动合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果。
+6. 执行 `scripts/test_update.sh plan --ref origin/main` 查看分类和门禁。
+7. 执行 `scripts/test_update.sh apply --ref origin/main`。
+8. 执行 `scripts/test_update.sh status`，确认最终 `test-update status` 返回 `state=verified`。
+9. 完成针对性验收：前端功能使用浏览器检查，API 功能使用对应接口检查。自动合并仅完成
+   仓库集成，不替代测试环境的 `verified` 判据。
 
 普通 `web-only` 更新从命令启动到 `verified` 的五连发实测平均约 1 分 20 秒。这个时间只用于操作预期，不是超时或成功判据。脚本会自动进入一次性 public Docker 会话；`scripts/docker_public.sh doctor` 用于首次使用或故障诊断，不要求每次更新前重复运行。`--dry-run` 可用于评审分类，但不是日常更新的强制前置步骤。
 

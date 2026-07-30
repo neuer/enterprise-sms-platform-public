@@ -21,19 +21,23 @@ cherry-pick 或推送其中的任何 Git 对象。
 2. 首次克隆执行 `scripts/install_git_hooks.sh`；正常开发后运行
    `scripts/dev_check.sh --changed`。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
-4. owner 分支自动创建 Draft PR；先在测试服务器验收，再将 PR 改为 Ready。
+4. owner 分支自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为
+   Ready 并请求 squash merge，不使用管理员绕过。
 5. `apply` / `promote` 前确认 `gh auth status --hostname github.com` 有效；只使用系统
    钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。
-6. `ci-gate` 通过且会话已解决后 squash merge；`main` 禁止直接推送、强推和删除。
-7. 已验证分支与 squash 后 `main` tree 相同时用 `scripts/test_update.sh promote
-   --ref origin/main` 免重建提升；不相同则重新执行测试部署。
+6. required `ci-gate`、会话解决和冲突保护全部满足后由 GitHub 自动 squash merge；
+   `main` 禁止直接推送、强推和删除。
+7. 自动合并不代表测试环境部署成功；默认对合并后的精确 `origin/main` 重新执行
+   `plan` / `apply` / `status`。若分支已提前验证且 tree 相同，才可用
+   `scripts/test_update.sh promote --ref origin/main` 免重建提升。
 
 ## GitHub 设置
 
 1. 默认分支要求 Pull Request、会话解决、线性历史和唯一 required `ci-gate`；required
    check 必须绑定 GitHub Actions 应用，禁止同名外部状态伪造通过。
-2. Actions 默认权限为只读仓库内容；仅自动 Draft PR 工作流取得最小 PR 写权限，且只为
-   仓库 owner 的分支运行。fork PR 不取得 secrets 或写权限。
+2. Actions 默认权限为只读仓库内容；自动 Draft PR 工作流仅取得 PR 写权限，自动合并
+   工作流仅在精确 push CI 成功后取得 contents/PR 写权限，并同时校验 owner、同仓分支和
+   head SHA。fork PR 不取得 secrets 或写权限，自动合并禁止 `--admin` 绕过。
 3. 启用 secret scanning、push protection、Dependabot alerts 与私密漏洞报告。
 4. CI 执行规格、不变量、公开仓库、SAST、依赖、secret 和配置检查。
 5. Release、artifact、Pages、Packages 与 workflow 日志不得承载凭据、PII 或内部证据。
