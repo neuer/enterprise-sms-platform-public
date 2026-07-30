@@ -9,7 +9,7 @@
 | 单元/集成 | `pytest` | 服务唯一实现、状态机、仓储 SQL、API 鉴权和 mock 契约 |
 | 运行态安全 | `python3 scripts/security_acceptance.py` | Compose HTTP/DB/log 黑盒安全边界 |
 | 完整契约 | `python scripts/check_contract.py openapi.yaml` | FastAPI 与 69 个 operation 字段、安全和响应零差 |
-| 里程碑/G2 | `scripts/verify_milestone.sh`、`scripts/verify_all.sh` | 静态规则、覆盖率、迁移、干净栈、UAT、性能和前端 |
+| 完整 G2 | `scripts/verify_all.sh` | 静态规则、覆盖率、迁移、干净栈、UAT、性能和前端 |
 
 ## M1 骨架与可靠发送
 
@@ -88,7 +88,7 @@ python3 scripts/security_acceptance.py \
 ## 尚未由 T4.10 宣称完成的边界
 
 - T4.11：30 RPS API、verify/bulk 并发时延与 480 秒排空性能门禁；全日 10 万条压测为 `[HANDOVER]`。
-- T4.12：AUTOPILOT 列明的 20 项自动 UAT；真人 28 例在 AUTH_MOCK=0 预生产重复为 `[HANDOVER]`。
+- T4.12：`docs/UAT.md` 列明的 20 项自动 UAT；真人 28 例在 AUTH_MOCK=0 预生产重复为 `[HANDOVER]`。
 - 冷备真实主备、DNS、厂商主/备出口 IP 切换与生产 `RTO≤30min` 实测为 `[HANDOVER]`。
 - 生产 HTTPS/WAF、日志聚合平台权限、真实 AD 组、生产 18 件 secrets、真实企微/SMTP 均按 HANDOVER.md 执行，不以 mock 结果冒充。
 

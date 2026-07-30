@@ -16,8 +16,6 @@ def test_spec_consistency_tracks_only_active_contracts() -> None:
 
     for active in ("AGENTS.md", "CLAUDE.md", "MAINTENANCE.md", "PRD.md", "PROGRESS.md"):
         assert f'"{active}"' in checker
-    for historical in ("AUTOPILOT.md", "BOOTSTRAP.md", "TASKS.md"):
-        assert f'"{historical}"' not in checker
     assert "全部 38 条" not in checker
     assert "tasks.find(" not in checker
     assert "npm run typecheck && npm run build:g2" in checker
@@ -30,7 +28,6 @@ def test_local_and_mock_gate_scripts_use_secured_compose_wrapper() -> None:
     scripts = (
         (ROOT / "scripts/local_test.sh").read_text(encoding="utf-8"),
         (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8"),
-        (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8"),
     )
 
     for source in scripts:
@@ -46,22 +43,20 @@ def test_local_and_mock_gate_scripts_use_secured_compose_wrapper() -> None:
         assert 'docker compose -f "$COMPOSE_FILE"' not in source
 
 
-def test_gate_scripts_use_locked_runtimes_and_safe_seed_copy() -> None:
-    milestone = (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8")
+def test_g2_gate_uses_locked_runtimes_and_safe_seed_copy() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
-    for script in (milestone, all_gate):
-        assert "uv run pytest" in script
-        assert "uv run ruff" in script
-        assert "uv run mypy" in script
-        assert "node:24-alpine" in script
-        assert "node:20-alpine" not in script
-        assert "--keys-file /tmp/dev-apikeys.txt" in script
-        assert "'exec dd if=\"$1\" status=none'" in script
-        assert '> "$temporary"' in script
-        assert 'mv "$temporary" "$destination"' in script
-        assert 'chmod 600 "$destination"' in script
-        assert "cp api:/tmp/dev-apikeys.txt" not in script
+    assert "uv run pytest" in all_gate
+    assert "uv run ruff" in all_gate
+    assert "uv run mypy" in all_gate
+    assert "node:24-alpine" in all_gate
+    assert "node:20-alpine" not in all_gate
+    assert "--keys-file /tmp/dev-apikeys.txt" in all_gate
+    assert "'exec dd if=\"$1\" status=none'" in all_gate
+    assert '> "$temporary"' in all_gate
+    assert 'mv "$temporary" "$destination"' in all_gate
+    assert 'chmod 600 "$destination"' in all_gate
+    assert "cp api:/tmp/dev-apikeys.txt" not in all_gate
 
 
 def test_g2_unit_tests_enable_debug_with_auth_mock() -> None:
@@ -245,18 +240,6 @@ def test_g2_frontend_gate_isolates_container_node_modules_from_host() -> None:
         assert command in frontend_gate
 
 
-def test_milestone_frontend_gate_isolates_container_node_modules_from_host() -> None:
-    milestone = (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8")
-    frontend_gate = milestone.split("frontend_gate() {", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
-
-    assert "node:24-alpine" in frontend_gate
-    assert "-v /app/node_modules" in frontend_gate
-    assert "npm ci --silent" in frontend_gate
-    assert "npm run build && npm run typecheck" not in frontend_gate
-
-
 def test_g2_frontend_checks_run_concurrently_after_npm_ci() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
     frontend_gate = all_gate.split("frontend_gate(){", maxsplit=1)[1].split(
@@ -315,24 +298,7 @@ def test_release_control_terms_the_lifecycle_lock_holder_directly() -> None:
     assert "release_activate term-resume &" not in control
 
 
-def test_milestone_gate_only_allows_missing_future_routes_before_m4() -> None:
-    milestone = (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8")
-
-    assert 'if [ "$milestone" = "M4" ]' in milestone
-    assert "--allow-missing" in milestone
-
-
-def test_m0_gate_uses_overridable_port_and_only_m0_services() -> None:
-    milestone = (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8")
-
-    assert 'api_port="${API_PORT:-8000}"' in milestone
-    assert "http://localhost:${api_port}/readyz" in milestone
-    assert 'if [ "$milestone" = "M0" ]' in milestone
-    assert "postgres redis migrate api web" in milestone
-
-
-def test_m4_and_g2_gates_scrape_required_prometheus_families() -> None:
-    milestone = (ROOT / "scripts/verify_milestone.sh").read_text(encoding="utf-8")
+def test_g2_gate_scrapes_required_prometheus_families() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
     required = (
@@ -344,11 +310,9 @@ def test_m4_and_g2_gates_scrape_required_prometheus_families() -> None:
         "sms_frequency_filtered_messages",
         "sms_poll_lag_seconds",
     )
-    assert 'if [ "$milestone" = "M4" ]' in milestone
-    for script in (milestone, all_gate):
-        assert "http://localhost:${api_port}/metrics" in script
-        for family in required:
-            assert family in script
+    assert "http://localhost:${api_port}/metrics" in all_gate
+    for family in required:
+        assert family in all_gate
 
 
 def test_g2_runs_security_acceptance_after_seed_and_before_uat() -> None:

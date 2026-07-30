@@ -25,8 +25,6 @@ from classify_ci_changes import (  # noqa: E402
     [
         ("docs/plans/2026-07-16-note.md", (False, False, False)),
         ("docs/TEST-REPORT-probe.md", (False, False, False)),
-        ("AUTOPILOT.md", (False, False, False)),
-        ("TASKS.md", (False, False, False)),
         ("PROGRESS.md", (False, False, False)),
         ("MAINTENANCE.md", (True, False, False)),
         ("PUBLICATION.md", (True, False, False)),
