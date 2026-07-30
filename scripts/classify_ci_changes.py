@@ -48,9 +48,11 @@ ROOT_SPEC_DOCS = {
     "HANDOVER.md",
     "MAINTENANCE.md",
     "PRD.md",
-    "PROGRESS.md",
     "PUBLICATION.md",
     "RELEASE.md",
+}
+ACTIVE_BLOCKER_DOCS = {
+    "PROGRESS.md",
 }
 HISTORICAL_ROOT_DOCS = {
     "AUTOPILOT.md",
@@ -107,7 +109,7 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
         return VENDOR_LIVE, False
     if protected_category == "backend-critical":
         return BACKEND_CRITICAL, False
-    if path in HISTORICAL_ROOT_DOCS:
+    if path in ACTIVE_BLOCKER_DOCS or path in HISTORICAL_ROOT_DOCS:
         return NONE, False
     if path.startswith("docs/plans/") or fnmatchcase(path, "docs/TEST-REPORT-*"):
         return NONE, False

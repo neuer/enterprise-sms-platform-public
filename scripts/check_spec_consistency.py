@@ -31,6 +31,7 @@ required_files = [
     "CLAUDE.md",
     "MAINTENANCE.md",
     "PRD.md",
+    "PROGRESS.md",
     "docs/DECISIONS.md",
     "docs/TRACEABILITY.md",
     "docs/UAT.md",
@@ -55,11 +56,50 @@ for item in required_files:
 schema = read("schema.sql")
 uat = read("docs/UAT.md")
 prototype = read("docs/sms-ui-prototype.html")
+maintenance = read("MAINTENANCE.md")
+progress = read("PROGRESS.md")
 env_example = read("deploy/.env.example")
 compose = read("deploy/docker-compose.yml")
 openapi = read("openapi.yaml")
 frontend_package = json.loads(read("frontend/package.json"))
 frontend_scripts = frontend_package.get("scripts", {})
+
+require(
+    "# PROGRESS.md — 活跃外部阻塞" in progress,
+    "PROGRESS 必须只作为活跃外部阻塞清单",
+)
+progress_sections = re.split(r"(?=^## )", progress, flags=re.MULTILINE)[1:]
+if progress_sections:
+    for index, section in enumerate(progress_sections, start=1):
+        for field in ("影响：", "失败关闭边界：", "解除条件："):
+            require(field in section, f"PROGRESS 第 {index} 个阻塞缺少字段: {field}")
+else:
+    require(
+        re.search(r"^当前无活跃外部阻塞。$", progress, flags=re.MULTILINE) is not None,
+        "PROGRESS 无阻塞时必须保留明确空态",
+    )
+for stale_phrase in ("建设里程碑", "最近公开基线", "当前维护重点", "下一步："):
+    require(stale_phrase not in progress, f"PROGRESS 仍包含状态流水账: {stale_phrase}")
+for dynamic_pattern in (
+    r"\bPR\s*#\d+\b",
+    r"\b[0-9a-f]{7,40}\b",
+    r"github\.com/[^ \n]+/actions/runs/\d+",
+    r"\brun ID\b",
+):
+    require(
+        re.search(dynamic_pattern, progress, flags=re.IGNORECASE) is None,
+        f"PROGRESS 不得保存动态 PR/CI 证据: {dynamic_pattern}",
+    )
+require(
+    "只登记需要仓库外状态变化或操作者协调才能解除的活跃阻塞" in maintenance,
+    "MAINTENANCE 必须声明 PROGRESS 的外部阻塞边界",
+)
+require(
+    "PR、CI 和已完成状态不回填" in maintenance
+    and "PR 与 CI 事实以 GitHub 为准" in maintenance
+    and "发布不可变证据以生产变更单" in maintenance,
+    "MAINTENANCE 必须声明动态交付证据的事实源",
+)
 
 require(
     frontend_scripts.get("build") == "npm run typecheck && npm run build:g2",
