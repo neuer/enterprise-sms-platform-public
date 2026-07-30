@@ -1354,10 +1354,17 @@ class HostTestUpdateOperations:
                 "image",
                 "inspect",
                 "--format",
-                "{{.Id}}|{{.Architecture}}",
+                (
+                    "{{.Id}}|{{.Architecture}}|"
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                ),
                 image.ref,
             )
-            if observed != f"{image.image_id}|amd64":
+            if observed != (
+                f"{image.image_id}|amd64|{self.request.commit}|"
+                f"{self.request.migration_target}"
+            ):
                 raise TestUpdateManagerError("loaded image identity is invalid")
             if component not in _IMAGE_ENV_KEYS:
                 raise TestUpdateManagerError("image component is invalid")
@@ -1387,8 +1394,56 @@ class HostTestUpdateOperations:
             f"{self.request.update_id}"
         )
 
-    def _prepare_rollback_images(self, components: frozenset[str]) -> None:
+    def prepare_rollback_images(self) -> None:
+        """在任何源码、unit 或容器切换前锁定原始镜像身份。"""
+
+        self._prepare_rollback_images(
+            self.request.components,
+            require_current_match=True,
+        )
+
+    def _prepare_rollback_images(
+        self,
+        components: frozenset[str],
+        *,
+        require_current_match: bool = False,
+    ) -> None:
         for component in sorted(components):
+            rollback_ref = self._rollback_ref(component)
+            existing = self._command(
+                "docker",
+                "image",
+                "ls",
+                "--no-trunc",
+                "--quiet",
+                rollback_ref,
+            ).splitlines()
+            if existing:
+                if (
+                    len(existing) != 1
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", existing[0]) is None
+                ):
+                    raise TestUpdateManagerError(
+                        "rollback image identity is invalid"
+                    )
+                if require_current_match:
+                    container_id = self.host._run("ps", "-q", component)
+                    if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
+                        raise TestUpdateManagerError(
+                            "rollback container identity is invalid"
+                        )
+                    current_image = self._command(
+                        "docker",
+                        "inspect",
+                        "--format",
+                        "{{.Image}}",
+                        container_id,
+                    )
+                    if current_image != existing[0]:
+                        raise TestUpdateManagerError(
+                            "rollback image identity drifted"
+                        )
+                continue
             container_id = self.host._run("ps", "-q", component)
             if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
                 raise TestUpdateManagerError("rollback container identity is invalid")
@@ -1401,7 +1456,7 @@ class HostTestUpdateOperations:
             )
             if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
                 raise TestUpdateManagerError("rollback image identity is invalid")
-            self._command("docker", "image", "tag", image_id, self._rollback_ref(component))
+            self._command("docker", "image", "tag", image_id, rollback_ref)
 
     def run_expand_migration(self, source: str, target: str) -> str:
         self._activate_source_and_image("api")
@@ -1455,6 +1510,32 @@ class HostTestUpdateOperations:
         self,
         kind: str,
         update_id: str,
+    ) -> tuple[str, str]:
+        return self._rollback_no_migration(
+            kind,
+            update_id,
+            cleanup_images=True,
+        )
+
+    def rollback_no_migration_preserving_images(
+        self,
+        kind: str,
+        update_id: str,
+    ) -> tuple[str, str]:
+        """完成物理回退但保留旧镜像标签，供外层先耐久记录终态。"""
+
+        return self._rollback_no_migration(
+            kind,
+            update_id,
+            cleanup_images=False,
+        )
+
+    def _rollback_no_migration(
+        self,
+        kind: str,
+        update_id: str,
+        *,
+        cleanup_images: bool,
     ) -> tuple[str, str]:
         if update_id != self.request.update_id or kind not in _UPDATE_KINDS:
             raise TestUpdateManagerError("rollback request is invalid")
@@ -1523,7 +1604,8 @@ class HostTestUpdateOperations:
                 "web",
             )
             self.verify_web()
-        self.cleanup_rollback_images(update_id)
+        if cleanup_images:
+            self.cleanup_rollback_images(update_id)
         return self.request.base_commit, self.request.migration_from
 
     def cleanup_rollback_images(self, update_id: str) -> None:
@@ -1536,6 +1618,44 @@ class HostTestUpdateOperations:
                     "image",
                     "rm",
                     self._rollback_ref(component),
+                )
+
+    def cleanup_rollback_images_verified(self, update_id: str) -> None:
+        """严格删除并复核本次回退标签；用于已验收的基线清理。"""
+
+        if update_id != self.request.update_id:
+            raise TestUpdateManagerError("update ID mismatch")
+        for component in sorted(self.request.components):
+            rollback_ref = self._rollback_ref(component)
+            existing = self._command(
+                "docker",
+                "image",
+                "ls",
+                "--no-trunc",
+                "--quiet",
+                rollback_ref,
+            ).splitlines()
+            if not existing:
+                continue
+            if (
+                len(existing) != 1
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", existing[0]) is None
+            ):
+                raise TestUpdateManagerError(
+                    "rollback image identity is invalid"
+                )
+            self._command("docker", "image", "rm", rollback_ref)
+            remaining = self._command(
+                "docker",
+                "image",
+                "ls",
+                "--no-trunc",
+                "--quiet",
+                rollback_ref,
+            )
+            if remaining:
+                raise TestUpdateManagerError(
+                    "rollback image cleanup did not verify"
                 )
 
     def verify_web(self) -> None:

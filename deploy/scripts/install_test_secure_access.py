@@ -711,6 +711,8 @@ class SecureAccessInstaller:
             "sys.path.insert(0, sys.argv[1]);"
             "from cryptography.hazmat.primitives.ciphers.aead import AESGCM;"
             "import test_secure_access_manager;"
+            "import public_baseline_activation;"
+            "import public_baseline_manager;"
             "import public_cutover_bootstrap;"
             "import test_update_manager;"
             "import verify_public_snapshot_cutover"

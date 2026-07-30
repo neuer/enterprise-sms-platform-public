@@ -45,6 +45,7 @@ VENDOR_CONTROL_RELOAD="$ROOT/deploy/scripts/vendor_control_reload.py"
 TEST_UPDATE_MANAGER="$ROOT/deploy/scripts/test_update_manager.py"
 TEST_UPDATE_PROMOTE="$ROOT/deploy/scripts/test_update_promote.py"
 PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
+PUBLIC_BASELINE_MANAGER=""
 HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
 TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
 HOST_BOOTSTRAP=0
@@ -54,6 +55,7 @@ if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
   TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"
   TEST_UPDATE_PROMOTE="$HOST_CONTROL_ROOT/test_update_promote.py"
   PUBLIC_CUTOVER_BOOTSTRAP="$HOST_CONTROL_ROOT/public_cutover_bootstrap.py"
+  PUBLIC_BASELINE_MANAGER="$HOST_CONTROL_ROOT/public_baseline_manager.py"
 fi
 LOCK_PYTHON=(python3)
 if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
@@ -76,6 +78,9 @@ VENDOR_CREDENTIAL_ROOT="/var/lib/sms-platform/vendor-test/credentials"
 VENDOR_CONTROL_SOCKET_DIR="/run/sms-platform/vendor-control"
 TEST_UPDATE_STATE_ROOT="/var/lib/sms-platform/test-updates"
 TEST_UPDATE_REQUEST="$TEST_UPDATE_STATE_ROOT/incoming/request.json"
+PUBLIC_BASELINE_MANIFEST="$TEST_UPDATE_STATE_ROOT/incoming/baseline-manifest.json"
+PUBLIC_BASELINE_ROOT="/opt/sms-platform"
+PUBLIC_BASELINE_RUNTIME_ROOT="/run/sms-platform/secrets"
 COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/docker-compose.yml")
 ROTATE_WAIT_TIMEOUT=120
 BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-bulk worker-callback outbox-dispatcher beat)
@@ -86,6 +91,7 @@ usage() {
   echo "release prepare|activate|status|resume|rollback: use the documented exact arguments" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
   echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
+  echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
   echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
@@ -610,6 +616,40 @@ print(value["source_commit"])' "$asset_status"
       --marker-file "$VENDOR_TEST_MARKER"
 }
 
+run_public_baseline_manager() {
+  local baseline_command="$1"
+  local asset_status
+  local host_source_commit
+  [[ "$HOST_BOOTSTRAP" == 1 && -n "$PUBLIC_BASELINE_MANAGER" ]] || return 2
+  asset_status="$(
+    SMS_SECURE_ACCESS_INTERNAL=1 \
+    SMS_SECRETS_MODE=development \
+      /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" verify-assets
+  )" || return $?
+  host_source_commit="$(
+    /usr/bin/python3 -c 'import json,sys
+value=json.loads(sys.argv[1])
+assert set(value) == {"schema_version","source_commit"}
+assert value["schema_version"] == 1
+print(value["source_commit"])' "$asset_status"
+  )" || return $?
+  [[ "$host_source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
+  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
+  SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
+  SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
+  SMS_HOST_SOURCE_COMMIT="$host_source_commit" \
+  PYTHONPATH="$HOST_CONTROL_ROOT" \
+  PYTHONNOUSERSITE=1 \
+    /usr/bin/python3 "$PUBLIC_BASELINE_MANAGER" "$baseline_command" \
+      --root "$PUBLIC_BASELINE_ROOT" \
+      --runtime-root "$PUBLIC_BASELINE_RUNTIME_ROOT" \
+      --state-root "$TEST_UPDATE_STATE_ROOT" \
+      --manifest "$PUBLIC_BASELINE_MANIFEST" \
+      --request "$TEST_UPDATE_REQUEST" \
+      --marker-file "$VENDOR_TEST_MARKER"
+}
+
 run_locked_vendor_test() {
   local command="${1:-}"
   shift || true
@@ -689,6 +729,16 @@ run_locked_test_update() {
     return
   fi
   [[ $# -eq 0 ]] || return 2
+  case "$command" in
+    baseline-prepare | baseline-apply | baseline-verify | baseline-finalize | baseline-cleanup)
+      [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
+      run_public_baseline_manager "${command#baseline-}"
+      return
+      ;;
+    baseline-status)
+      return 2
+      ;;
+  esac
   if [[ "$command" == bootstrap-public-cutover ]]; then
     [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
     [[ "${SMS_PUBLIC_CUTOVER_CONFIRMED:-}" == 1 ]] || {
@@ -722,6 +772,14 @@ dispatch_test_update() {
   fi
   reject_production_control_plane test-update || return $?
   case "$command" in
+    baseline-status)
+      [[ $# -eq 0 && "$HOST_BOOTSTRAP" == 1 ]] || return 2
+      run_public_baseline_manager status
+      ;;
+    baseline-prepare | baseline-apply | baseline-verify | baseline-finalize | baseline-cleanup)
+      [[ $# -eq 0 && "$HOST_BOOTSTRAP" == 1 ]] || return 2
+      run_with_lifecycle_lock test-update "$command"
+      ;;
     status | capability)
       [[ $# -eq 0 ]] || return 2
       run_test_update_manager "$command"

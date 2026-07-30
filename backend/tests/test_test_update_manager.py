@@ -183,6 +183,84 @@ def test_high_risk_without_migration_skips_database_checkpoint() -> None:
     assert store.state is State.PREPARED
 
 
+def test_loaded_image_is_bound_to_target_commit_and_migration_labels(
+    tmp_path: Path,
+) -> None:
+    target = "a" * 40
+    image_id = f"sha256:{'b' * 64}"
+    archive = tmp_path / "incoming/api.tar"
+    archive.parent.mkdir()
+    archive.write_bytes(b"image archive")
+    archive.chmod(0o600)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    image = SimpleNamespace(
+        archive_file="api.tar",
+        archive_sha256=digest,
+        ref=f"sms-platform-test-api:{target}",
+        image_id=image_id,
+    )
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.state_root = tmp_path
+    operations.expected_uid = os.geteuid()
+    operations.request = SimpleNamespace(
+        images={"api": image},
+        commit=target,
+        migration_target="0039_manual_job_outbox",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def command(*arguments: str) -> str:
+        calls.append(arguments)
+        if arguments[1:2] == ("load",):
+            return ""
+        return (
+            f"{image_id}|amd64|{target}|0039_manual_job_outbox"
+        )
+
+    operations._command = command  # type: ignore[method-assign]
+
+    operations.load_and_validate_images()
+
+    assert calls[-1][0:3] == ("docker", "image", "inspect")
+    assert "org.opencontainers.image.revision" in calls[-1][-2]
+    assert "com.sms-platform.schema-revision" in calls[-1][-2]
+
+
+def test_loaded_image_rejects_revision_or_schema_label_drift(
+    tmp_path: Path,
+) -> None:
+    target = "a" * 40
+    image_id = f"sha256:{'b' * 64}"
+    archive = tmp_path / "incoming/api.tar"
+    archive.parent.mkdir()
+    archive.write_bytes(b"image archive")
+    archive.chmod(0o600)
+    image = SimpleNamespace(
+        archive_file="api.tar",
+        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        ref=f"sms-platform-test-api:{target}",
+        image_id=image_id,
+    )
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.state_root = tmp_path
+    operations.expected_uid = os.geteuid()
+    operations.request = SimpleNamespace(
+        images={"api": image},
+        commit=target,
+        migration_target="0039_manual_job_outbox",
+    )
+
+    def command(*arguments: str) -> str:
+        if arguments[1:2] == ("load",):
+            return ""
+        return f"{image_id}|amd64|{'c' * 40}|0039_manual_job_outbox"
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="identity"):
+        operations.load_and_validate_images()
+
+
 def test_pre_live_high_risk_without_migration_skips_checkpoint() -> None:
     store = FakeStore()
     operations = FakePrepareOperations(mode="pre-live")
@@ -612,6 +690,36 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
     assert ("stop_senders",) in calls
 
 
+def test_baseline_rollback_variant_preserves_image_tags_until_state_is_durable() -> None:
+    operations = object.__new__(HostTestUpdateOperations)
+    observed: list[tuple[str, str, bool]] = []
+
+    def rollback(
+        kind: str,
+        update_id: str,
+        *,
+        cleanup_images: bool,
+    ) -> tuple[str, str]:
+        observed.append((kind, update_id, cleanup_images))
+        return "a" * 40, "0039_manual_job_outbox"
+
+    operations._rollback_no_migration = rollback  # type: ignore[method-assign]
+
+    result = operations.rollback_no_migration_preserving_images(
+        "backend-safe",
+        "test-20260731T120000Z-aaaaaaaaaaaa",
+    )
+
+    assert result == ("a" * 40, "0039_manual_job_outbox")
+    assert observed == [
+        (
+            "backend-safe",
+            "test-20260731T120000Z-aaaaaaaaaaaa",
+            False,
+        )
+    ]
+
+
 def test_host_rollback_refuses_to_cross_a_migration(tmp_path: Path) -> None:
     class Host:
         def _psql(self, statement: str) -> str:
@@ -881,6 +989,132 @@ def test_backend_public_cutover_activates_redis_before_services() -> None:
             *BACKEND_SERVICES,
         ),
     ]
+
+
+def test_rollback_image_tags_are_idempotent_across_apply_resume() -> None:
+    existing_api = f"sha256:{'1' * 64}"
+    old_web = f"sha256:{'2' * 64}"
+    calls: list[tuple[str, ...]] = []
+
+    class Host:
+        def _run(self, *arguments: str) -> str:
+            calls.append(arguments)
+            assert arguments == ("ps", "-q", "web")
+            return "abcdef123456"
+
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(
+        update_id="test-20260731T120000Z-aaaaaaaaaaaa"
+    )
+    operations.host = Host()  # type: ignore[assignment]
+
+    def command(*arguments: str) -> str:
+        calls.append(arguments)
+        joined = " ".join(arguments)
+        if "image ls" in joined and "rollback-api" in joined:
+            return existing_api
+        if "image ls" in joined and "rollback-web" in joined:
+            return ""
+        if arguments[-2:] == ("{{.Image}}", "abcdef123456"):
+            return old_web
+        return ""
+
+    operations._command = command  # type: ignore[method-assign]
+
+    operations._prepare_rollback_images(frozenset({"api", "web"}))
+
+    assert not any(
+        call[:3] == ("docker", "image", "tag") and call[-1].endswith("rollback-api")
+        for call in calls
+    )
+    assert (
+        "docker",
+        "image",
+        "tag",
+        old_web,
+        "sms-platform-test-rollback-web:"
+        "test-20260731T120000Z-aaaaaaaaaaaa",
+    ) in calls
+
+
+def test_initial_rollback_image_binding_rejects_stale_existing_tag() -> None:
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(
+        update_id="test-20260731T120000Z-aaaaaaaaaaaa",
+        components=frozenset({"api"}),
+    )
+    operations.host = SimpleNamespace(_run=lambda *args: "abcdef123456")
+
+    def command(*arguments: str) -> str:
+        if arguments[1:3] == ("image", "ls"):
+            return f"sha256:{'1' * 64}"
+        if arguments[-2:] == ("{{.Image}}", "abcdef123456"):
+            return f"sha256:{'2' * 64}"
+        raise AssertionError(arguments)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="drifted"):
+        operations.prepare_rollback_images()
+
+
+def test_verified_rollback_image_cleanup_is_idempotent_and_observed() -> None:
+    update_id = "test-20260731T120000Z-aaaaaaaaaaaa"
+    image_id = f"sha256:{'1' * 64}"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        components=frozenset({"api"}),
+    )
+    calls: list[tuple[str, ...]] = []
+    present = True
+
+    def command(*arguments: str) -> str:
+        nonlocal present
+        calls.append(arguments)
+        if arguments[1:3] == ("image", "ls"):
+            return image_id if present else ""
+        if arguments[1:3] == ("image", "rm"):
+            present = False
+            return ""
+        raise AssertionError(arguments)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    operations.cleanup_rollback_images_verified(update_id)
+    operations.cleanup_rollback_images_verified(update_id)
+
+    assert calls.count(
+        (
+            "docker",
+            "image",
+            "rm",
+            f"sms-platform-test-rollback-api:{update_id}",
+        )
+    ) == 1
+    assert present is False
+
+
+def test_verified_rollback_image_cleanup_rejects_residual_tag() -> None:
+    update_id = "test-20260731T120000Z-aaaaaaaaaaaa"
+    image_id = f"sha256:{'1' * 64}"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        components=frozenset({"api"}),
+    )
+
+    def command(*arguments: str) -> str:
+        if arguments[1:3] == ("image", "ls"):
+            return image_id
+        if arguments[1:3] == ("image", "rm"):
+            return ""
+        raise AssertionError(arguments)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="did not verify"):
+        operations.cleanup_rollback_images_verified(update_id)
 
 
 def test_live_update_mode_uses_postgres_recipient_truth_not_host_allowlist(
