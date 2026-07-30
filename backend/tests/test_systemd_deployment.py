@@ -296,7 +296,6 @@ def test_vendor_control_agent_allows_atomic_control_files_but_protects_code() ->
         "/opt/sms-platform/HANDOVER.md",
         "/opt/sms-platform/PRD.md",
         "/opt/sms-platform/PROGRESS.md",
-        "/opt/sms-platform/RELEASE.md",
         "/opt/sms-platform/backend",
         "/opt/sms-platform/deploy",
         "/opt/sms-platform/docs",

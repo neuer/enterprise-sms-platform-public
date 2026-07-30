@@ -569,19 +569,19 @@ def test_account_provider_deployment_is_local_first_and_not_environment_configur
         assert retired not in index
 
 
-def test_public_release_docs_redact_internal_evidence_and_keep_gate_results() -> None:
-    release = (ROOT / "RELEASE.md").read_text(encoding="utf-8")
+def test_public_handover_redacts_evidence_and_acceptance_stays_live() -> None:
     acceptance = (ROOT / "docs/ACCEPTANCE.md").read_text(encoding="utf-8")
     progress = (ROOT / "PROGRESS.md").read_text(encoding="utf-8")
     handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")
 
-    for document in (release, acceptance, handover):
-        assert "<redacted-" in document
-        assert re.search(r"\b[0-9a-f]{40}\b", document) is None
-        assert "API 0" in document
-        assert "Web 0" in document
-        assert "PostgreSQL 0" in document
-        assert "Redis 0" in document
+    assert "<redacted-" in handover
+    assert re.search(r"\b[0-9a-f]{40}\b", handover) is None
+    for token in ("API 0", "Web 0", "PostgreSQL 0", "Redis 0"):
+        assert token in handover
+    assert "<redacted-" not in acceptance
+    assert "## 2026-" not in acceptance
+    assert "CI 事实以 GitHub 为准" in acceptance
+    assert "生产候选" in acceptance and "release manifest" in acceptance
     assert "活跃外部阻塞" in progress
     assert re.search(r"\b[0-9a-f]{40}\b", progress) is None
     for token in (
@@ -595,10 +595,10 @@ def test_public_release_docs_redact_internal_evidence_and_keep_gate_results() ->
         assert token in handover
 
 
-def test_release_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
+def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     documents = {
         name: (ROOT / name).read_text(encoding="utf-8")
-        for name in ("PROGRESS.md", "HANDOVER.md", "RELEASE.md")
+        for name in ("PROGRESS.md", "HANDOVER.md")
     }
     stale_phrases = (
         "本次文档合并后的新 HEAD 仍须",
@@ -609,9 +609,10 @@ def test_release_bookkeeping_moves_final_head_evidence_to_change_order() -> None
     for name, document in documents.items():
         for phrase in stale_phrases:
             assert phrase not in document, f"{name} 仍包含已完成门禁的旧续跑提示"
-    for name in ("HANDOVER.md", "RELEASE.md"):
-        document = documents[name]
-        assert "最终不可变证据归档到生产变更单与 release manifest" in document
+    assert (
+        "最终不可变证据归档到生产变更单与 release manifest"
+        in documents["HANDOVER.md"]
+    )
     assert "`MAINTENANCE.md` 为准" in documents["PROGRESS.md"]
 
 

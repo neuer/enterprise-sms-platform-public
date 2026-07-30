@@ -861,10 +861,11 @@ def test_public_cutover_classifies_only_verified_transition_exceptions() -> None
     )
 
 
-def test_public_cutover_keeps_retired_build_paths_as_deletion_tombstones() -> None:
+def test_public_cutover_keeps_retired_static_paths_as_deletion_tombstones() -> None:
     paths = [
         "AUTOPILOT.md",
         "BOOTSTRAP.md",
+        "RELEASE.md",
         "TASKS.md",
         "scripts/verify_milestone.sh",
     ]

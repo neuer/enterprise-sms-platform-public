@@ -49,7 +49,6 @@ ROOT_SPEC_DOCS = {
     "MAINTENANCE.md",
     "PRD.md",
     "PUBLICATION.md",
-    "RELEASE.md",
 }
 ACTIVE_BLOCKER_DOCS = {
     "PROGRESS.md",
