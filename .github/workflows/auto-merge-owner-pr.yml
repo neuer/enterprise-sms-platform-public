@@ -6,6 +6,7 @@ on:
     types: [completed]
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -24,27 +25,53 @@ jobs:
           && github.event.workflow_run.actor.login == github.repository_owner
           && github.event.workflow_run.head_repository.full_name == github.repository }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Mark the exact owner PR ready and queue squash merge
+      - name: Checkout trusted main for authenticated Git operations
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Merge exact owner PR, dispatch main evidence and clean refs
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          test "$HEAD_BRANCH" != main
+          git check-ref-format "refs/heads/$HEAD_BRANCH"
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
           prs='[]'
           for _ in 1 2 3 4 5; do
-            prs="$(
+            listed_prs="$(
               gh pr list \
                 --repo "$REPOSITORY" \
                 --head "$HEAD_BRANCH" \
                 --base main \
-                --state open \
-                --limit 2 \
-                --json number
+                --state all \
+                --limit 20 \
+                --json number,state,baseRefName,headRefName,headRefOid,isCrossRepository
+            )"
+            prs="$(
+              jq \
+                --arg branch "$HEAD_BRANCH" \
+                --arg sha "$HEAD_SHA" \
+                '[.[] | select(
+                  .baseRefName == "main"
+                  and .headRefName == $branch
+                  and .headRefOid == $sha
+                  and .isCrossRepository == false
+                  and (.state == "OPEN" or .state == "MERGED")
+                )]' \
+                <<<"$listed_prs"
             )"
             if [[ "$(jq 'length' <<<"$prs")" != 0 ]]; then
               break
@@ -54,28 +81,151 @@ jobs:
 
           count="$(jq 'length' <<<"$prs")"
           if [[ "$count" == 0 ]]; then
-            echo "No open PR for owner branch; nothing to merge."
+            echo "No exact open or merged PR for owner branch; nothing to do."
             exit 0
           fi
           test "$count" == 1
 
           number="$(jq -r '.[0].number' <<<"$prs")"
+          [[ "$number" =~ ^[1-9][0-9]*$ ]]
           details="$(
             gh pr view "$number" \
               --repo "$REPOSITORY" \
-              --json state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository
+              --json number,state,isDraft,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,isCrossRepository
           )"
-          test "$(jq -r '.state' <<<"$details")" == OPEN
           test "$(jq -r '.baseRefName' <<<"$details")" == main
           test "$(jq -r '.headRefName' <<<"$details")" == "$HEAD_BRANCH"
           test "$(jq -r '.headRefOid' <<<"$details")" == "$HEAD_SHA"
           test "$(jq -r '.isCrossRepository' <<<"$details")" == false
 
-          if [[ "$(jq -r '.isDraft' <<<"$details")" == true ]]; then
-            gh pr ready "$number" --repo "$REPOSITORY"
+          if [[ "$(jq -r '.state' <<<"$details")" == OPEN ]]; then
+            if [[ "$(jq -r '.isDraft' <<<"$details")" == true ]]; then
+              gh pr ready "$number" --repo "$REPOSITORY"
+            fi
+            gh pr merge "$number" \
+              --repo "$REPOSITORY" \
+              --auto \
+              --squash \
+              --match-head-commit "$HEAD_SHA"
+
+            for _ in {1..240}; do
+              details="$(
+                gh pr view "$number" \
+                  --repo "$REPOSITORY" \
+                  --json number,state,isDraft,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,isCrossRepository
+              )"
+              if [[ "$(jq -r '.state' <<<"$details")" == MERGED ]] \
+                && [[ -n "$(jq -r '.mergeCommit.oid // empty' <<<"$details")" ]]
+              then
+                break
+              fi
+              sleep 3
+            done
+
+            if [[ "$(jq -r '.state' <<<"$details")" != MERGED ]]; then
+              disable_result=0
+              gh pr merge "$number" --repo "$REPOSITORY" --disable-auto \
+                || disable_result=$?
+              details="$(
+                gh pr view "$number" \
+                  --repo "$REPOSITORY" \
+                  --json number,state,isDraft,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,isCrossRepository
+              )"
+              if [[ "$(jq -r '.state' <<<"$details")" != MERGED ]]; then
+                echo "PR did not merge before timeout; auto-merge disabled (status=$disable_result)." >&2
+                exit 1
+              fi
+            fi
+          else
+            test "$(jq -r '.state' <<<"$details")" == MERGED
+            echo "Exact PR was already merged; resuming post-merge steps."
           fi
-          gh pr merge "$number" \
+
+          test "$(jq -r '.number' <<<"$details")" == "$number"
+          test "$(jq -r '.state' <<<"$details")" == MERGED
+          test "$(jq -r '.isDraft' <<<"$details")" == false
+          test -n "$(jq -r '.mergedAt // empty' <<<"$details")"
+          test "$(jq -r '.baseRefName' <<<"$details")" == main
+          test "$(jq -r '.headRefName' <<<"$details")" == "$HEAD_BRANCH"
+          test "$(jq -r '.headRefOid' <<<"$details")" == "$HEAD_SHA"
+          test "$(jq -r '.isCrossRepository' <<<"$details")" == false
+          merge_sha="$(jq -r '.mergeCommit.oid // empty' <<<"$details")"
+          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]]
+
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor \
+            "$merge_sha" \
+            refs/remotes/origin/main
+
+          tag="post-merge-ci-${merge_sha}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+          tag_ref="refs/tags/$tag"
+          git check-ref-format "$tag_ref"
+
+          cleanup_tag() {
+            if [[ -z "${tag_ref:-}" ]]; then
+              return 0
+            fi
+            local tag_state
+            if ! tag_state="$(git ls-remote --refs origin "$tag_ref")"; then
+              echo "Unable to inspect temporary post-merge tag." >&2
+              return 1
+            fi
+            if [[ -z "$tag_state" ]]; then
+              tag_ref=""
+              return 0
+            fi
+            [[ "$tag_state" != *$'\n'* ]]
+            test "${tag_state%%$'\t'*}" = "$merge_sha"
+            test "${tag_state#*$'\t'}" = "$tag_ref"
+            git push \
+              --force-with-lease="${tag_ref}:${merge_sha}" \
+              origin \
+              ":$tag_ref"
+            tag_ref=""
+          }
+          cleanup_on_exit() {
+            local status=$?
+            trap - EXIT
+            if ! cleanup_tag; then
+              exit 1
+            fi
+            exit "$status"
+          }
+          trap cleanup_on_exit EXIT
+
+          git push \
+            --force-with-lease="${tag_ref}:" \
+            origin \
+            "${merge_sha}:${tag_ref}"
+          gh workflow run ci.yml \
             --repo "$REPOSITORY" \
-            --auto \
-            --squash \
-            --match-head-commit "$HEAD_SHA"
+            --ref "$tag" \
+            -f "post_merge_candidate=$merge_sha" \
+            -f "post_merge_head=$HEAD_SHA" \
+            -f "post_merge_pr=$number"
+          cleanup_tag
+          trap - EXIT
+
+          branch_ref="refs/heads/$HEAD_BRANCH"
+          branch_state="$(git ls-remote --heads origin "$branch_ref")"
+          if [[ -z "$branch_state" ]]; then
+            echo "Merged branch was already deleted."
+            exit 0
+          fi
+          [[ "$branch_state" != *$'\n'* ]]
+          test "${branch_state%%$'\t'*}" = "$HEAD_SHA"
+          test "${branch_state#*$'\t'}" = "$branch_ref"
+          if ! git push \
+            --force-with-lease="${branch_ref}:${HEAD_SHA}" \
+            origin \
+            ":$branch_ref"
+          then
+            branch_state="$(git ls-remote --heads origin "$branch_ref")"
+            if [[ -z "$branch_state" ]]; then
+              echo "Merged branch was deleted concurrently."
+              exit 0
+            fi
+            echo "Refusing to delete a merged branch that no longer matches its CI SHA." >&2
+            exit 1
+          fi

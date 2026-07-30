@@ -25,24 +25,45 @@ def commit_tree(document: object) -> str:
     return tree
 
 
-def merged_pr_head(document: object, *, candidate: str) -> str | None:
-    if type(document) is not list:
+def merged_pr_head(
+    document: object,
+    *,
+    candidate: str,
+    repository: str = "",
+    expected_number: int = 0,
+    expected_head: str = "",
+) -> str | None:
+    if type(document) is dict:
+        pulls = [document]
+    elif type(document) is list:
+        pulls = document
+    else:
         raise CiEvidenceError("pull request response is invalid")
     heads: list[str] = []
-    for raw in document:
+    for raw in pulls:
         if type(raw) is not dict:
             raise CiEvidenceError("pull request response is invalid")
         base = raw.get("base")
         head = raw.get("head")
+        head_repo = head.get("repo") if type(head) is dict else None
         if (
             raw.get("state") == "closed"
             and raw.get("merged_at") is not None
             and raw.get("merge_commit_sha") == candidate
+            and (expected_number == 0 or raw.get("number") == expected_number)
             and type(base) is dict
             and base.get("ref") == "main"
             and type(head) is dict
             and type(head.get("sha")) is str
             and SHA_RE.fullmatch(head["sha"]) is not None
+            and (not expected_head or head["sha"] == expected_head)
+            and (
+                not repository
+                or (
+                    type(head_repo) is dict
+                    and head_repo.get("full_name") == repository
+                )
+            )
         ):
             heads.append(head["sha"])
     if len(set(heads)) != 1:
@@ -61,6 +82,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--event-name", required=True)
+    parser.add_argument("--expected-head", default="")
+    parser.add_argument("--pr-number", type=int, default=0)
     parser.add_argument("--github-output", required=True, type=Path)
     return parser.parse_args(argv)
 
@@ -73,7 +96,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         print("reuse-pr-evidence: invalid input", file=sys.stderr)
         return 2
-    if args.event_name != "push":
+    is_post_merge = args.event_name == "post_merge"
+    if is_post_merge:
+        if (
+            SHA_RE.fullmatch(args.expected_head) is None
+            or args.pr_number <= 0
+        ):
+            print("reuse-pr-evidence: invalid post-merge input", file=sys.stderr)
+            return 2
+    elif args.expected_head or args.pr_number != 0:
+        print("reuse-pr-evidence: unexpected post-merge input", file=sys.stderr)
+        return 2
+    if args.event_name not in {"push", "post_merge"}:
         write_outputs(args.github_output, reuse=False)
         print("reuse_pr_ci=false reason=not-main-push")
         return 0
@@ -81,11 +115,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     api = f"https://api.github.com/repos/{args.repository}"
     token = os.environ.get("GITHUB_TOKEN")
     try:
-        pulls = github_json(
-            f"{api}/commits/{args.candidate}/pulls?per_page=100",
-            token=token,
+        if is_post_merge:
+            pulls = github_json(
+                f"{api}/pulls/{args.pr_number}",
+                token=token,
+            )
+        else:
+            pulls = github_json(
+                f"{api}/commits/{args.candidate}/pulls?per_page=100",
+                token=token,
+            )
+        head = merged_pr_head(
+            pulls,
+            candidate=args.candidate,
+            repository=args.repository,
+            expected_number=args.pr_number,
+            expected_head=args.expected_head,
         )
-        head = merged_pr_head(pulls, candidate=args.candidate)
         if head is None:
             raise CiEvidenceError("unique merged PR is unavailable")
         candidate_tree = commit_tree(
