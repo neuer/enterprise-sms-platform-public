@@ -314,12 +314,16 @@ jobs:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
           g2_args=(--mode integration)
+          expected_stages="5,6,7"
           if [[ "${{ needs.changes.outputs.performance }}" == true ]]; then
             g2_args+=(--include-performance)
+            expected_stages+=",8"
           fi
           if [[ "${{ needs.changes.outputs.release_control }}" == true ]]; then
             g2_args+=(--include-release-control)
+            expected_stages+=",10"
           fi
+          echo "expected_stages=$expected_stages" >> "$GITHUB_OUTPUT"
           sudo env \
             PATH="$PATH" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
@@ -341,6 +345,7 @@ jobs:
           python3 scripts/g2_timing.py render \
             --file "$G2_TIMING_FILE" \
             --gate-outcome "${{ steps.authoritative-g2.outcome }}" \
+            --expected-stages "${{ steps.authoritative-g2.outputs.expected_stages }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
   ci-gate:

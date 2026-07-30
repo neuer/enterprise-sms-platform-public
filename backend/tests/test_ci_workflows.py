@@ -241,7 +241,12 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert summary["env"] == {"G2_TIMING_FILE": "${{ runner.temp }}/g2-timing.jsonl"}
     assert "steps.authoritative-g2.outcome" in summary["run"]
     assert "scripts/g2_timing.py render" in summary["run"]
+    assert "--expected-stages" in summary["run"]
+    assert "steps.authoritative-g2.outputs.expected_stages" in summary["run"]
     assert 'GITHUB_STEP_SUMMARY' in summary["run"]
+    assert 'expected_stages="5,6,7"' in gate["run"]
+    assert 'expected_stages+=",8"' in gate["run"]
+    assert 'expected_stages+=",10"' in gate["run"]
 
 
 def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:

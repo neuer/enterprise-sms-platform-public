@@ -32,6 +32,33 @@ def test_success_summary_requires_all_eleven_ordered_stages(tmp_path: Path) -> N
     assert "| 合计 |  | success | 66.000s |" in markdown
 
 
+def test_integration_summary_requires_exact_selected_stages(tmp_path: Path) -> None:
+    timing = tmp_path / "g2.jsonl"
+    summary = tmp_path / "summary.md"
+    expected = (5, 6, 7, 8, 10)
+    for stage in expected:
+        append_record(timing, stage, STAGE_NAMES[stage], "success", 1000)
+
+    assert render_summary(timing, "success", summary, expected) == 0
+    markdown = summary.read_text(encoding="utf-8")
+    assert "| 5 | 干净整栈拉起 | success | 1.000s |" in markdown
+    assert "| 10 | 发布控制恢复烟测 | success | 1.000s |" in markdown
+    assert "| 0 |" not in markdown
+
+
+def test_integration_summary_fails_closed_on_missing_selected_stage(
+    tmp_path: Path,
+) -> None:
+    timing = tmp_path / "g2.jsonl"
+    summary = tmp_path / "summary.md"
+    expected = (5, 6, 7, 8, 10)
+    for stage in (5, 6, 8, 10):
+        append_record(timing, stage, STAGE_NAMES[stage], "success", 1000)
+
+    assert render_summary(timing, "success", summary, expected) == 1
+    assert "G2 计时证据无效" in summary.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("case", ("missing", "duplicate", "out-of-order", "invalid-json"))
 def test_success_summary_fails_closed_on_invalid_timing(tmp_path: Path, case: str) -> None:
     timing = tmp_path / "g2.jsonl"
