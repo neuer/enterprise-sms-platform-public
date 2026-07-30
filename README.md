@@ -1,6 +1,6 @@
 # 企业短信管理平台
 
-企业短信管理平台 v1.6 是一个基于 FastAPI、Vue 3、PostgreSQL、Redis 与 Celery 的短信治理平台。仓库包含 API、双前端、异步任务、数据库迁移、Mock 厂商、Docker Compose 部署合同与自动化验收。
+企业短信管理平台 v1.6 是一个基于 FastAPI、Vue 3、PostgreSQL、Redis 与 Celery 的短信治理平台。仓库包含 API、青鸾单一前端、异步任务、数据库迁移、Mock 厂商、Docker Compose 部署合同与自动化验收。
 
 核心安全边界包括：手机号 AES-GCM/HMAC/mask 三列保护、未知发送结果禁止自动重发、厂商拉取原文先加密落库、审计日志只增、运行凭据只从文件型 secrets 读取，以及真实联调与普通发送链路隔离。
 

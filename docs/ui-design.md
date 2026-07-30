@@ -1,10 +1,10 @@
 # docs/ui-design.md — 青鸾平台 UI 设计规范 v1.6
 
-> 配套 `sms-ui-prototype.html`（7 屏高保真原型，为视觉唯一基准）。本文把设计令牌翻译成 Element Plus 实现约定，Claude Code 建 UI 时与 CLAUDE.md「前端 UI 约定」一并遵守；冲突以本文为准。
+> 配套 `sms-ui-prototype.html`（关键业务屏静态原型）与 `frontend/tests/qingluan-*-contract.test.ts`（结构机判）。本文是视觉唯一基准，`frontend/src` 是唯一运行实现；冲突时先修正规范与实现，不得恢复第二套前端。
 
 ## 1. 设计立场
 
-内部安全运营工具：**信息密度优先、状态可读优先、克制的装饰**。全站唯一的记忆点是顶栏「信道监视条」（双队列深度 + QPS 令牌），发送页「计费分段块」与之呼应——系统的核心机制直接成为界面语言，除此之外一律安静。
+深色内部安全运营监视台：**信息密度优先、状态可读优先、克制的装饰**。深色不是装饰主题切换，而是青鸾唯一界面基准。全站记忆点是信道监视条（双队列深度 + QPS 令牌），发送页计费分段块与之呼应；系统机制直接成为界面语言。
 
 ## 2. 设计令牌（Design Tokens）
 
@@ -12,18 +12,17 @@
 
 | Token | 值 | 用途 |
 |---|---|---|
-| --paper | #F6F7F5 | 页面底色（冷调米白） |
-| --card | #FFFFFF | 卡片/表格底 |
-| --ink | #1B2420 | 侧栏底（带绿深墨） |
-| --tx / --tx-2 / --tx-3 | #22302B / #5B6862 / #8A948E | 正文 / 次要 / 弱化 |
-| --line / --line-2 | #E3E6E1 / #D3D8D1 | 分隔线 / 控件边框 |
-| **--verdi** | **#0E7A63**（hover #0A5A49，浅底 #E7F2EE） | **主色**：主按钮、选中态、success、verify 类 |
-| --slate | #35618F（浅底 #EAF0F6） | notice 类 |
-| --amber | #A8650B（浅底 #F7EFE2） | market 类、warning |
-| --verm | #C2452D（浅底 #F8ECE9） | danger、失败 |
+| --bg | #101814 | 页面底与工作区 |
+| --panel / --panel-2 | #18231E / #141D19 | 卡片、表格与浮层 |
+| --sink | #0C1512 | 输入框、深层容器与侧栏 |
+| --tx / --tx-2 / --tx-3 / --tx-hi | #C9D2CC / #8B978F / #6D7A72 / #EAF1ED | 正文 / 次要 / 弱化 / 高强调 |
+| --hair / --hair-2 | rgba(255,255,255,.08) / rgba(255,255,255,.05) | 控件边框 / 细分隔线 |
+| **--verdi / --verdi-l** | **#0E7A63 / #2FA184** | **主色**：主按钮、选中态、success、verify 类 |
+| --slate | #4574A3 | notice 类 |
+| --amber | #D8A35C | market 类、warning |
+| --verm | #E46A4F | danger、失败 |
 
-Element Plus 映射（`styles/element.scss`）：
-`--el-color-primary:#0E7A63; --el-color-success:#0E7A63; --el-color-warning:#A8650B; --el-color-danger:#C2452D; --el-color-info:#5B6862; --el-border-radius-base:6px; --el-bg-color-page:#F6F7F5; --el-text-color-primary:#22302B; --el-border-color:#D3D8D1;`
+Element Plus 映射以 `frontend/src/styles/theme.css` 为唯一实现：页面、浮层、输入、禁用态、遮罩和文字层级都必须映射到上述深色令牌；禁止组件回退到默认白色背景。根元素固定 `color-scheme: dark`。
 
 **类别三色是硬约定**：verify=verdi、notice=slate、market=amber，出现在类别标签左竖条、统计分段条、图表系列色，任何页面不得混用其他色相表达类别。
 
@@ -37,11 +36,11 @@ Element Plus 映射（`styles/element.scss`）：
 
 ### 2.3 形状与层次
 
-圆角：卡片 10px / 控件 6px / 标签 5px。边框 1px 实线代替阴影分层；阴影只允许 Drawer 与 Popover。间距 4 基数（卡片 padding 18–20，页 padding 22–26）。禁用渐变按钮与大圆角胶囊主按钮。
+圆角：卡片 10px / 控件 7px / 标签 5px。以 `hair` 细边框和 panel 层级代替大面积阴影；阴影只允许 Drawer 与 Popover。间距采用 4 基数。品牌印章允许 verdi 深浅渐变，普通按钮禁用装饰性渐变与大圆角胶囊。
 
 ## 3. 布局
 
-216px 深墨侧栏（分组：概览/发送/治理/管理/运维，AD 角色控制可见项）+ 52px 顶栏 + 内容区 max 1280px。<960px 时侧栏收起为抽屉（本工具以桌面为主，移动端保可读即可）。
+216px 深墨侧栏（分组：概览/发送/治理/管理/运维，角色控制可见项）+ 56px 顶栏 + 内容区 max 1440px。<960px 时侧栏收起为抽屉；390px 必须无页面整体横向滚动。
 
 **顶栏固定结构**：面包屑 ｜ 信道监视条 ｜ 余额 ｜ 用户。信道监视条数据来自 Prometheus 指标接口，10s 轮询；余额点击跳余额走势。
 
@@ -50,12 +49,12 @@ Element Plus 映射（`styles/element.scss`）：
 | 组件 | 规约 |
 |---|---|
 | `<CategoryTag>` | 左侧 3px 竖色条 + 类别名；三色见 2.1 |
-| `<StatusTag>` | 状态→色：queued/sending/在途=info 灰；delivered/completed=verdi 浅底；failed/rejected=verm 浅底；pending_approval/scheduled=amber 浅底；balance_blocked/uncertain=深底 #3A2A26/#F3D9D2（唯一深色标签，表示"需要人来"） |
+| `<StatusTag>` | 状态→色：queued/sending/在途=info 灰；delivered/completed=verdi；failed/rejected=verm；pending_approval/scheduled=amber；balance_blocked/uncertain 使用更高对比的 danger 组合，表示“需要人来” |
 | `<PhoneMask>` | mono 显示 `138****2041` + 眼睛图标；点击→调解密接口→行内替换明文并 toast「已记入审计」；无权限则图标隐藏 |
 | `<SegmentBar>` | 计费分段可视化：满段实心 verdi 块、末段斜纹块（title 显示 n/67 字）、恒显 1 个灰色 ghost 块提示下一段边界；数据只来自 /billing 预估接口 |
 | `<ChannelStrip>` | 顶栏签名组件：实时(verdi)/批量(amber)两条深度条 + 5 枚 QPS 令牌点（占用=verdi 实心） |
 | 统计环 | 批次详情 92px donut：verdi 送达 / verm 失败 / 灰 在途，中心 mono 百分比 |
-| 表格 | 行高 40、th 11px 字距 0.08em 灰、行 hover #F7FAF7；数字列右对齐 mono；行点击开 Drawer（560px），不整页跳转 |
+| 表格 | 行高 40、th 11px 字距 0.08em、panel 背景与 hair 分隔；hover 只提高一层亮度；数字列右对齐 mono；行点击开 Drawer（560px），不整页跳转 |
 | 空态 | 两行文案：一行结论粗体 + 一行"这里会出现什么/下一步"，不放插画 |
 
 ## 5. 文案基调
@@ -74,4 +73,4 @@ Element Plus 映射（`styles/element.scss`）：
 3a. **号码时间线（v1.5）**：号码搜索页双视图切换；时间线按日分组、垂直细线串联，下行事件左对齐（类别竖条+摘要+状态 tag），用户回复右缩进 24px 前缀"↩"，页顶号码徽标（黑名单状态 amber/verm tag + 近30日接收量 mono）
 4. **审批中心**：卡片流（内容引用块 + 计费与排期元信息 + 同意标记）；本人单右侧只显示「本人提交 · 审批回避」灰字
 5. **运维中心**：熔断横幅卡（琥珀底 + 「已充值，恢复队列」主按钮）+ 7 tab（uncertain / unmatched / 回调 / 原始报文 / 告警 / 任务健康 / 队列恢复）；uncertain 只允许查看比对记录和升级人工核查，状态仍只能由 reconcile 迁移
-6. **登录**：380px 单卡，品牌衬线字 + AD 提示与审计告知，无背景插画
+6. **登录**：430px 内深色单卡，品牌印章 + Provider 显式选择 + 审计告知，无背景插画

@@ -18,7 +18,6 @@ htmlcov/
 
 # Frontend
 frontend/node_modules/
-frontend/legacy/node_modules/
 frontend/dist/
 frontend/coverage/
 *.tsbuildinfo

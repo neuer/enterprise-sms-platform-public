@@ -8,17 +8,10 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "dev:legacy": "vite legacy --host 0.0.0.0",
     "build": "npm run typecheck && npm run build:g2",
-    "build:g2": "npm run build:qingluan && npm run build:legacy",
-    "build:qingluan": "vite build --outDir dist/next",
-    "build:legacy": "vite build legacy --outDir ../dist/classic --emptyOutDir false",
-    "typecheck": "npm run typecheck:qingluan && npm run typecheck:legacy",
-    "typecheck:qingluan": "vue-tsc --noEmit",
-    "typecheck:legacy": "vue-tsc -p legacy/tsconfig.json --noEmit",
-    "test": "npm run test:qingluan && npm run test:legacy",
-    "test:qingluan": "vitest run",
-    "test:legacy": "cd legacy && ../node_modules/.bin/vitest run"
+    "build:g2": "vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "5.2.7",

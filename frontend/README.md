@@ -2,13 +2,14 @@
 
 Vue 3 管理端代码目录。业务 API 统一通过 `src/api`，计费与成功率等口径不得在前端重复计算。
 
-## 两套前端并存
+## 青鸾单一前端
 
-同一个 Web 镜像同时交付两套彼此独立构建的 SPA：
+Web 镜像只交付一套青鸾 SPA：
 
-- 经典版：`/`，源码位于 `legacy/`；
-- 青鸾版：`/next/`，源码位于 `src/`。
+- 唯一入口：`/`；
+- 源码：`src/`；
+- 静态产物：`dist/`。
 
-默认入口保持经典版，登录后的顶栏可在同一业务路由间切换版本。两套应用共用同源 `/api/` 和浏览器 `sessionStorage` 会话键，不共享组件、样式或运行时 bundle，也不得改用 `localStorage` 等持久化存储。
+业务 API 继续使用同源 `/api/`。普通 access/refresh 会话只存当前标签页 `sessionStorage`，高风险短期令牌只存在组件局部易失内存，不得改用 `localStorage` 等持久化存储。
 
-根目录只维护一份依赖锁文件。`npm test`、`npm run typecheck`、`npm run build` 会依次覆盖两套应用；产物分别写入 `dist/classic/` 和 `dist/next/`。本地开发使用 `npm run dev` 启动青鸾版，使用 `npm run dev:legacy` 启动经典版。
+`npm test`、`npm run typecheck`、`npm run build` 分别执行唯一前端的测试、类型检查与生产构建；本地开发使用 `npm run dev`。`/next` 是开发阶段退役入口，由 Nginx 返回 `410 Gone`，不得重新承载第二套 SPA。

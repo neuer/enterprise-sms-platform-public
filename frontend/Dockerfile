@@ -22,8 +22,7 @@ LABEL org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       com.sms-platform.schema-revision="${SCHEMA_REVISION}"
 
-COPY --from=build /app/dist/classic /usr/share/nginx/html
-COPY --from=build /app/dist/next /usr/share/nginx/html/next
+COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/nginx-security-headers.conf /etc/nginx/browser-security-headers.conf
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 
