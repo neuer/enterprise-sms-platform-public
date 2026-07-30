@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
@@ -220,6 +220,14 @@ def _full(reason: str) -> Classification:
     )
 
 
+def _apply_event_policy(event_name: str, result: Classification) -> Classification:
+    """PR 不同步阻塞性能证据；其余失败关闭与路径分类保持不变。"""
+
+    if event_name == "pull_request":
+        return replace(result, performance=False)
+    return result
+
+
 def _classify_event_with_count(
     *,
     repo: Path,
@@ -249,7 +257,7 @@ def _classify_event_with_count(
         return _full("untrusted-post-merge"), 0
     if event_name == "pull_request":
         if not base_sha or not head_sha:
-            return _full("missing-pr-sha"), 0
+            return _apply_event_policy(event_name, _full("missing-pr-sha")), 0
         revision_range = f"{base_sha}...{head_sha}"
     elif event_name == "push":
         if not before_sha or before_sha == ZERO_SHA or not head_sha:
@@ -259,7 +267,7 @@ def _classify_event_with_count(
         return _full("unsupported-event"), 0
 
     paths = _git_paths(repo, revision_range)
-    result = classify_paths(paths)
+    result = _apply_event_policy(event_name, classify_paths(paths))
     if event_name == "push" and trusted_pr_evidence:
         result = Classification(
             False,

@@ -22,7 +22,7 @@ scripts/dev_check.sh --changed
 ```
 
 该命令自动执行公开仓库门禁，并按本次改动选择后端或前端检查。完整 G2 会创建并销毁
-专用 Mock 测试栈：
+专用 Mock 测试栈，但不属于日常提交前步骤；仅在专项复验或复现远端失败时按需运行：
 
 ```bash
 bash scripts/verify_all.sh

@@ -64,7 +64,7 @@ def assert_actions_are_immutable(workflow: dict[str, Any]) -> None:
         assert re.fullmatch(r"[0-9a-f]{40}", revision), uses
 
 
-def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
+def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> None:
     workflow = load_workflow(CI_WORKFLOW)
     triggers = workflow_triggers(workflow)
 
@@ -222,16 +222,15 @@ def test_ci_workflow_selects_fast_checks_before_authoritative_g2() -> None:
     assert jobs["security"]["needs"] == "changes"
     assert "needs.changes.outputs.security == 'true'" in jobs["security"]["if"]
 
-    assert jobs["g2"]["needs"] == ["changes", "backend", "frontend", "security"]
+    assert jobs["g2"]["needs"] == ["changes"]
     for token in (
         "!cancelled()",
         "needs.changes.result == 'success'",
         "needs.changes.outputs.g2 == 'true'",
-        "needs.backend.result == 'success'",
-        "needs.frontend.result == 'success'",
-        "needs.security.result == 'success'",
     ):
         assert token in jobs["g2"]["if"]
+    for component in ("backend", "frontend", "security"):
+        assert f"needs.{component}" not in jobs["g2"]["if"]
     g2_commands = job_commands(jobs["g2"])
     assert "scripts/local_test.sh prepare" in g2_commands
     assert "bash scripts/verify_all.sh" in g2_commands
