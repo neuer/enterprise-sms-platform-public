@@ -5,8 +5,8 @@
 
 - 建设里程碑：M4.4 `DONE`；当前阶段为维护期。`AUTOPILOT.md`、`BOOTSTRAP.md` 与
   `TASKS.md` 仅保留历史，日常开发、按需测试部署和生产发布统一从 `MAINTENANCE.md` 进入。
-- 最近公开基线：`main` 的 PR #3、#4、#5 已依次 squash merge；对应精确 CI 与 G2 均通过，
-  青鸾版已成为唯一前端，owner PR 自动合并已启用。
+- 最近公开基线：`main` 的 PR #3–#7 已依次 squash merge；对应分支的精确 CI 均通过，
+  青鸾版已成为唯一前端，维护流程已收敛，owner PR 自动合并及 merge SHA 主干验真已启用。
 - 当前维护重点：开发与测试部署已经解耦；测试部署默认针对合并后的精确 `origin/main`，
   `apply` 负责最终 `state=verified` 校验，`plan` 与独立 `status` 只在需要时使用。
 - 活跃 BLOCKED：测试服务器仍在当前公开仓库对象库不存在的旧 commit。日常
