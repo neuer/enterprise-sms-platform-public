@@ -1,0 +1,316 @@
+import { afterEach, beforeEach, vi } from "vitest"
+
+import { apiRequest } from "../src/api/webMessages"
+import {
+  createLocalUser,
+  listUsers,
+  resetLocalPassword,
+  revokeUserSessions,
+  updateUserRole,
+  updateUserStatus,
+} from "../src/api/users"
+
+function response(body: unknown, status: number) {
+  return new Response(status === 204 ? null : JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
+function invalidJsonResponse(status: number) {
+  return new Response("{", {
+    status,
+    headers: { "Content-Type": "application/json" },
+  })
+}
+
+describe("统一 API 请求", () => {
+  const unauthorizedListeners: EventListener[] = []
+
+  function watchUnauthorized() {
+    const listener = vi.fn()
+    unauthorizedListeners.push(listener)
+    window.addEventListener("sms:unauthorized", listener)
+    return listener
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.unstubAllGlobals()
+  })
+
+  afterEach(() => {
+    for (const listener of unauthorizedListeners) {
+      window.removeEventListener("sms:unauthorized", listener)
+    }
+    unauthorizedListeners.length = 0
+  })
+
+  it("401 时清除持久会话并广播未授权事件", async () => {
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_refresh_token", "stale-refresh")
+    sessionStorage.setItem("sms_user", "{}")
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
+
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+  })
+
+  it("访问令牌失效时单次轮换 refresh token 并重放原请求", async () => {
+    const refreshed = watchUnauthorized()
+    const sessionRefreshed = vi.fn()
+    window.addEventListener("sms:session-refreshed", sessionRefreshed, { once: true })
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_refresh_token", "refresh-1")
+    sessionStorage.setItem("sms_user", "{}")
+    const updatedUser = {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "ad",
+      username: "operator01",
+      display_name: "目录操作员",
+      dept: "调整后部门",
+      role: "approver",
+    }
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(
+        response(
+          {
+            token: "access-2",
+            refresh_token: "refresh-2",
+            expires_in: 900,
+            refresh_expires_in: 604800,
+            user: updatedUser,
+          },
+          200,
+        ),
+      )
+      .mockResolvedValueOnce(response({ total: 7 }, 200))
+    vi.stubGlobal("fetch", fetch)
+
+    await expect(apiRequest<{ total: number }>("/reports/dashboard", { method: "GET" })).resolves
+      .toEqual({ total: 7 })
+
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/auth/refresh")
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
+      refresh_token: "refresh-1",
+    })
+    expect(fetch.mock.calls[2][1].headers).toMatchObject({
+      Authorization: "Bearer access-2",
+    })
+    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh-2")
+    expect(JSON.parse(sessionStorage.getItem("sms_user") || "null")).toEqual(updatedUser)
+    expect(sessionRefreshed).toHaveBeenCalledOnce()
+    expect(refreshed).not.toHaveBeenCalled()
+  })
+
+  it("并发 401 共享一次 refresh，避免重复消费单次令牌", async () => {
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_refresh_token", "refresh-1")
+    sessionStorage.setItem("sms_user", "{}")
+    const user = {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "admin",
+      display_name: "管理员",
+      dept: "平台部",
+      role: "admin",
+    }
+    const fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/web/auth/refresh") {
+        return Promise.resolve(
+          response(
+            {
+              token: "access-2",
+              refresh_token: "refresh-2",
+              expires_in: 900,
+              refresh_expires_in: 604800,
+              user,
+            },
+            200,
+          ),
+        )
+      }
+      const authorization = (init?.headers as Record<string, string>).Authorization
+      return Promise.resolve(
+        authorization === "Bearer expired"
+          ? response({ code: "UNAUTHORIZED" }, 401)
+          : response({ ok: true }, 200),
+      )
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    await Promise.all([
+      apiRequest("/reports/dashboard", { method: "GET" }),
+      apiRequest("/reports/dashboard", { method: "GET" }),
+    ])
+
+    expect(
+      fetch.mock.calls.filter(([url]) => url === "/api/v1/web/auth/refresh"),
+    ).toHaveLength(1)
+  })
+
+  it("refresh 状态服务故障时保留会话并显式返回 503", async () => {
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_refresh_token", "refresh-1")
+    sessionStorage.setItem("sms_user", "{}")
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(
+        response(
+          {
+            code: "AUTH_SESSION_UNAVAILABLE",
+            message: "会话权威状态暂不可用",
+          },
+          503,
+        ),
+      )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
+      "会话权威状态暂不可用",
+    )
+
+    expect(sessionStorage.getItem("sms_token")).toBe("expired")
+    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh-1")
+    expect(unauthorized).not.toHaveBeenCalled()
+  })
+
+  it.each(["STEP_UP_REQUIRED", "STEP_UP_EXPIRED"])("%s 时保留当前会话且不广播未授权事件", async (code) => {
+    sessionStorage.setItem("sms_token", "admin.jwt")
+    sessionStorage.setItem("sms_user", "{}")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code }, 401)))
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow(code)
+
+    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
+    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(unauthorized).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["缺少错误码", response({}, 401)],
+    ["错误响应无法解析", invalidJsonResponse(401)],
+  ])("401 %s 时保留会话且不广播未授权事件", async (_scenario, rejectedResponse) => {
+    sessionStorage.setItem("sms_token", "admin.jwt")
+    sessionStorage.setItem("sms_user", "{}")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(rejectedResponse))
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow()
+
+    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
+    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(unauthorized).not.toHaveBeenCalled()
+  })
+
+  it("401 响应 clone 失败时保留会话且不广播未授权事件", async () => {
+    sessionStorage.setItem("sms_token", "admin.jwt")
+    sessionStorage.setItem("sms_user", "{}")
+    const rejectedResponse = response({ code: "UNAUTHORIZED" }, 401)
+    vi.spyOn(rejectedResponse, "clone").mockImplementation(() => {
+      throw new TypeError("clone failed")
+    })
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(rejectedResponse))
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
+
+    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
+    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(unauthorized).not.toHaveBeenCalled()
+  })
+
+  it("明确 ACCOUNT_LOCKED 时清除会话并广播未授权事件", async () => {
+    sessionStorage.setItem("sms_token", "admin.jwt")
+    sessionStorage.setItem("sms_user", "{}")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "ACCOUNT_LOCKED" }, 423)))
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow(
+      "ACCOUNT_LOCKED",
+    )
+
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+  })
+
+  it("用户管理只使用 account_id 路由并完整传递 Provider 状态过滤", async () => {
+    sessionStorage.setItem("sms_token", "admin.jwt")
+    const managed = {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "operator.local",
+      display_name: "本地操作员",
+      dept: "业务一部",
+      role: "operator",
+      role_override: true,
+      status: 1,
+      identity_status: 1,
+      credential_status: "must_change",
+      source_groups: [],
+      sync_status: "local",
+      last_synced_at: null,
+      last_login_at: null,
+    }
+    const fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/admin/users?")) {
+        return Promise.resolve(response({ items: [managed], total: 1, page: 2, page_size: 20 }, 200))
+      }
+      if (url.endsWith("/sessions/revoke")) return Promise.resolve(response(undefined, 204))
+      return Promise.resolve(response(managed, 200))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const page = await listUsers({
+      keyword: "操作",
+      providerCode: "local",
+      role: "operator",
+      status: 1,
+      page: 2,
+      pageSize: 20,
+    })
+    const created = await createLocalUser({
+      username: "new.user",
+      display_name: "新用户",
+      dept: "业务一部",
+      role: "viewer",
+      temporary_password: "Temporary@123",
+    })
+    await updateUserRole(8, "approver", true)
+    await updateUserStatus(8, 0)
+    await resetLocalPassword(8, "Reset@Password123")
+    await revokeUserSessions(8)
+
+    const calls = fetch.mock.calls
+    expect(calls[0][0]).toContain("provider_code=local")
+    expect(calls[0][0]).toContain("status=1")
+    expect(calls[1][0]).toBe("/api/v1/web/admin/users/local")
+    expect(calls[2][0]).toBe("/api/v1/web/admin/users/8/role")
+    expect(calls[3][0]).toBe("/api/v1/web/admin/users/8/status")
+    expect(calls[4][0]).toBe("/api/v1/web/admin/users/8/password/reset")
+    expect(calls[5][0]).toBe("/api/v1/web/admin/users/8/sessions/revoke")
+    expect(JSON.parse(String(calls[1][1].body)).temporary_password).toBe("Temporary@123")
+    expect(JSON.stringify(created)).not.toContain("temporary_password")
+    expect(page.items[0].account_id).toBe(8)
+  })
+})

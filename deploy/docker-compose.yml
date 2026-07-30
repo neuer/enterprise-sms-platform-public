@@ -1,0 +1,468 @@
+# deploy/docker-compose.yml — 部署契约（v1.3）
+# 服务名/队列名/secrets 名为契约，Claude Code 可完善细节但不得更名。
+name: sms-platform
+
+x-runtime-security: &runtime-security
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+x-backend-environment: &backend-environment
+  TZ: Asia/Shanghai
+  IMAGE_DIGEST: ${SMS_API_IMAGE:-sms-platform-api:local}
+
+x-backend: &backend
+  <<: *runtime-security
+  image: ${SMS_API_IMAGE:-sms-platform-api:local}
+  build:
+    context: ..
+    dockerfile: backend/Dockerfile
+  env_file: ../.env
+  environment: *backend-environment
+  user: "10001:10001"
+  pids_limit: 256
+  mem_limit: 768m
+  cpus: 1.5
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
+  restart: unless-stopped
+
+services:
+  postgres:
+    <<: *runtime-security
+    image: ${SMS_POSTGRES_IMAGE:-sms-platform-postgres:local}
+    build:
+      context: ..
+      dockerfile: deploy/postgres.Dockerfile
+    command:
+      - postgres
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_min_error_statement=panic
+      - -c
+      - log_parameter_max_length_on_error=0
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sms}
+      POSTGRES_USER: sms_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_owner_password
+      TZ: Asia/Shanghai
+    user: "70:70"
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2
+    secrets:
+      - { source: postgres_db_owner_password, target: db_owner_password }
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb/01-create-app-role.sh:/docker-entrypoint-initdb.d/01-create-app-role.sh:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=70,gid=70,mode=0700
+      - /var/run/postgresql:rw,noexec,nosuid,nodev,size=16m,uid=70,gid=70,mode=0750
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sms_owner -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  db-role-provision:
+    <<: *runtime-security
+    image: ${SMS_POSTGRES_IMAGE:-sms-platform-postgres:local}
+    user: "70:70"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-sms}
+      TZ: Asia/Shanghai
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=70,gid=70,mode=0700
+    secrets:
+      - { source: postgres_db_owner_password, target: db_owner_password }
+      - { source: postgres_db_auth_password, target: db_auth_password }
+      - { source: postgres_db_accept_password, target: db_accept_password }
+      - { source: postgres_db_send_password, target: db_send_password }
+      - { source: postgres_db_callback_password, target: db_callback_password }
+      - { source: postgres_db_export_password, target: db_export_password }
+      - { source: postgres_db_scheduler_password, target: db_scheduler_password }
+      - { source: postgres_db_metrics_password, target: db_metrics_password }
+    volumes:
+      - ./provision-db-roles.sh:/provision-db-roles.sh:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    command: ["/bin/sh", "/provision-db-roles.sh"]
+    restart: "no"
+
+  redis:
+    <<: *runtime-security
+    image: ${SMS_REDIS_IMAGE:-sms-platform-redis:local}
+    build:
+      context: ..
+      dockerfile: deploy/redis.Dockerfile
+    command: ["broker"]
+    user: "999:1000"
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    secrets:
+      - { source: redis_broker_server_password, target: redis_broker_password }
+    volumes: [redisdata:/data]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=999,gid=1000,mode=0700
+      - /run/redis:rw,noexec,nosuid,nodev,size=1m,uid=999,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-domain-healthcheck", "broker"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  redis-auth:
+    <<: *runtime-security
+    image: ${SMS_REDIS_IMAGE:-sms-platform-redis:local}
+    build:
+      context: ..
+      dockerfile: deploy/redis.Dockerfile
+    command: ["auth"]
+    user: "999:1000"
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    secrets:
+      - { source: redis_auth_server_password, target: redis_auth_password }
+    volumes: [redisauthdata:/data]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=999,gid=1000,mode=0700
+      - /run/redis:rw,noexec,nosuid,nodev,size=1m,uid=999,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-domain-healthcheck", "auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  redis-control:
+    <<: *runtime-security
+    image: ${SMS_REDIS_IMAGE:-sms-platform-redis:local}
+    build:
+      context: ..
+      dockerfile: deploy/redis.Dockerfile
+    command: ["control"]
+    user: "999:1000"
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    secrets:
+      - { source: redis_control_server_password, target: redis_control_password }
+    volumes: [rediscontroldata:/data]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=999,gid=1000,mode=0700
+      - /run/redis:rw,noexec,nosuid,nodev,size=1m,uid=999,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-domain-healthcheck", "control"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  migrate:
+    <<: *runtime-security
+    image: ${SMS_API_IMAGE:-sms-platform-api:local}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    env_file: ../.env
+    environment:
+      TZ: Asia/Shanghai
+      DB_OWNER_PASSWORD_FILE: /run/secrets/db_owner_password
+    user: "10001:10001"
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    secrets:
+      - { source: db_owner_password, target: db_owner_password }
+    depends_on:
+      db-role-provision: { condition: service_completed_successfully }
+    command: ["sh", "-ec", "alembic upgrade head && python -m scripts_support.maintain_partitions"]
+    restart: "no"
+
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: api
+      DB_RUNTIME_ROLE: accept
+      METRICS_ALLOWED_CIDRS: ${METRICS_ALLOWED_CIDRS:-127.0.0.1/32,172.16.0.0/12}
+    secrets:
+      - { source: vendor_secret_name, target: vendor_secret_name }
+      - { source: vendor_secret_key, target: vendor_secret_key }
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
+      - { source: jwt_secret, target: jwt_secret }
+      - { source: ldap_bind_password, target: ldap_bind_password }
+      - { source: metrics_scrape_token, target: metrics_scrape_token }
+      - { source: db_auth_password, target: db_auth_password }
+      - { source: db_accept_password, target: db_accept_password }
+      - { source: db_callback_password, target: db_callback_password }
+      - { source: db_export_password, target: db_export_password }
+      - { source: db_metrics_password, target: db_metrics_password }
+      - { source: redis_auth_client_password, target: redis_auth_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis-auth: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --no-access-log --proxy-headers --forwarded-allow-ips 172.31.250.3
+    networks:
+      default: {}
+      ingress: { ipv4_address: "${SMS_API_INGRESS_IPV4:-172.31.250.2}" }
+    volumes:
+      - importdata:/var/lib/sms/imports
+      - exportdata:/var/lib/sms/exports
+      # root agent 的 allowlist 与 10 秒心跳投影只读进入后端。
+      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
+      # 只挂载独立 UDS 目录，绝不挂载宿主 runtime secrets 或 Docker Socket。
+      - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+
+  worker-realtime:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: worker
+      DB_RUNTIME_ROLE: send
+    secrets:
+      - { source: vendor_secret_name, target: vendor_secret_name }
+      - { source: vendor_secret_key, target: vendor_secret_key }
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
+      - { source: db_send_password, target: db_send_password }
+      - { source: db_callback_password, target: db_callback_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: celery -A app.tasks worker -Q realtime -c 2 -l info
+    volumes:
+      # 调用厂商前必须重读 control-state.json，不允许容器回写。
+      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
+      # reconcile 需要连接固定 agent UDS；其余 worker 不获得该能力。
+      - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
+
+  worker-bulk:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: worker
+      DB_RUNTIME_ROLE: send
+    secrets:
+      - { source: vendor_secret_name, target: vendor_secret_name }
+      - { source: vendor_secret_key, target: vendor_secret_key }
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
+      - { source: db_send_password, target: db_send_password }
+      - { source: db_export_password, target: db_export_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: celery -A app.tasks worker -Q bulk -c 2 -l info
+    volumes:
+      - exportdata:/var/lib/sms/exports
+      - importdata:/var/lib/sms/imports
+      # 调用厂商前必须重读 control-state.json，不允许容器回写。
+      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
+
+  worker-callback:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: worker
+      DB_RUNTIME_ROLE: callback
+    secrets:
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
+      - { source: db_callback_password, target: db_callback_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: celery -A app.tasks worker -Q callback -c 2 -l info
+
+  beat:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: beat
+      DB_RUNTIME_ROLE: scheduler
+    secrets:
+      - { source: db_scheduler_password, target: db_scheduler_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: python -m app.tasks.beat
+    deploy:
+      replicas: 1
+
+  outbox-dispatcher:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: background
+      DB_RUNTIME_ROLE: scheduler
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    secrets:
+      - { source: db_scheduler_password, target: db_scheduler_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+    command: python -m app.outbox_dispatcher
+    deploy:
+      replicas: 1
+
+  mock-vendor:
+    <<: *runtime-security
+    profiles: [dev]
+    image: ${SMS_API_IMAGE:-sms-platform-api:local}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: uvicorn app.vendor.mock_server:app --host 0.0.0.0 --port 9028
+    environment: { TZ: Asia/Shanghai }
+    user: "10001:10001"
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=0700
+    ports: ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "live", "9028"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    <<: *runtime-security
+    image: ${SMS_WEB_IMAGE:-sms-platform-web:local}
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile  # 多阶段：node:24 构建 → nginx 托管静态资源
+    user: "101:101"
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=0700
+    ports: ["${WEB_PORT:-18080}:8080"] # 公网 HTTP 备用端口；生产 TLS 在宿主 18443 终结
+    depends_on:
+      api: { condition: service_healthy }
+    networks:
+      ingress: { ipv4_address: "${SMS_WEB_INGRESS_IPV4:-172.31.250.3}" }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/ && wget -q --spider http://127.0.0.1:8080/next/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    # nginx.conf 约定：/ → 经典版；/next/ → 青鸾版；/api/ → http://api:8000
+
+volumes:
+  pgdata:
+  redisdata:
+  redisauthdata:
+  rediscontroldata:
+  importdata:
+  exportdata:
+
+networks:
+  default: {}
+  ingress:
+    ipam:
+      config: [{ subnet: "${SMS_INGRESS_SUBNET:-172.31.250.0/24}" }]
+
+secrets:
+  vendor_secret_name:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/vendor_secret_name
+  vendor_secret_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/vendor_secret_key
+  data_aes_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/data_aes_key
+  data_hmac_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/data_hmac_key
+  jwt_secret:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/jwt_secret
+  ldap_bind_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/ldap_bind_password
+  metrics_scrape_token:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/metrics_scrape_token
+  db_owner_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/migrate/db_owner_password
+  db_auth_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_auth_password
+  db_accept_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_accept_password
+  db_send_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_send_password
+  db_callback_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_callback_password
+  db_export_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_export_password
+  db_scheduler_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_scheduler_password
+  db_metrics_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/db_metrics_password
+  postgres_db_owner_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_owner_password
+  postgres_db_auth_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_auth_password
+  postgres_db_accept_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_accept_password
+  postgres_db_send_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_send_password
+  postgres_db_callback_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_callback_password
+  postgres_db_export_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_export_password
+  postgres_db_scheduler_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_scheduler_password
+  postgres_db_metrics_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/postgres/db_metrics_password
+  redis_broker_server_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/redis/redis_broker_password
+  redis_auth_server_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/redis/redis_auth_password
+  redis_control_server_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/redis/redis_control_password
+  redis_broker_client_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/redis_broker_password
+  redis_auth_client_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/redis_auth_password
+  redis_control_client_password:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/redis_control_password

@@ -1,0 +1,36 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+deploy/secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+backend/.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/legacy/node_modules/
+frontend/dist/
+frontend/coverage/
+*.tsbuildinfo
+
+# Runtime artifacts (encrypted at rest, still never commit)
+var/imports/
+var/exports/
+var/backups/
+*.enc
+*.log
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+.worktrees/

@@ -1,0 +1,46 @@
+{
+  "name": "sms-platform-frontend",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "dev:legacy": "vite legacy --host 0.0.0.0",
+    "build": "npm run typecheck && npm run build:g2",
+    "build:g2": "npm run build:qingluan && npm run build:legacy",
+    "build:qingluan": "vite build --outDir dist/next",
+    "build:legacy": "vite build legacy --outDir ../dist/classic --emptyOutDir false",
+    "typecheck": "npm run typecheck:qingluan && npm run typecheck:legacy",
+    "typecheck:qingluan": "vue-tsc --noEmit",
+    "typecheck:legacy": "vue-tsc -p legacy/tsconfig.json --noEmit",
+    "test": "npm run test:qingluan && npm run test:legacy",
+    "test:qingluan": "vitest run",
+    "test:legacy": "cd legacy && ../node_modules/.bin/vitest run"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.2.7",
+    "echarts": "6.1.0",
+    "element-plus": "2.14.3",
+    "pinia": "3.0.4",
+    "vue": "3.5.39",
+    "vue-router": "5.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@vitejs/plugin-vue": "6.0.7",
+    "@vue/test-utils": "2.4.11",
+    "jsdom": "29.1.1",
+    "typescript": "5.9.3",
+    "vite": "8.1.4",
+    "vitest": "4.1.10",
+    "vue-tsc": "3.3.7"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8",
+    "minimatch": "10.2.5",
+    "postcss": "8.5.23"
+  }
+}

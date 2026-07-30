@@ -1,0 +1,34 @@
+服务器安全日报 [$status_label]
+日期：$report_date
+统计窗口：$period
+生成时间：$generated_at
+
+【结论】
+$summary
+
+【待确认】
+$pending_confirmation
+
+【核心指标】
+$metrics
+
+【SSH 与主机安全】
+$ssh_rows
+
+【Web 与 API 边界】
+$web_rows
+
+【管理审计】
+$audit_rows
+
+【运行状态】
+$runtime_rows
+
+【建议处置】
+$action_rows
+
+【证据范围】
+$coverage_rows
+
+本邮件仅包含脱敏安全摘要，不包含手机号、密钥、令牌、请求体或原始日志。
+“未发现证据”不等同于绝对不存在安全事件。

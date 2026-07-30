@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Enterprise SMS Platform partition maintenance daily
+
+[Timer]
+OnCalendar=*-*-* 01:15:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=sms-partition-maintenance.service
+
+[Install]
+WantedBy=timers.target

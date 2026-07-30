@@ -1,0 +1,17 @@
+.git/
+.worktrees/
+.env*
+deploy/secrets/
+deploy/security-report/secrets/
+deploy/security-report/runtime/
+deploy/security-report/config/recipients.txt
+**/node_modules/
+**/.venv/
+**/dist/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/coverage/
+var/
+*.log

@@ -1,0 +1,3352 @@
+openapi: 3.1.0
+info:
+  title: 企业短信管理平台 API
+  version: 1.6.0
+  description: |
+    统一短信发送与管理平台对外接口。
+    - /api/v1/messages/** 供内部系统调用，X-Api-Key 认证（双 Key 轮换宽限期内新旧均有效）
+    - /api/v1/web/** 供 Vue3 前端调用，显式选择本地或 AD 认证源；15 分钟 access JWT 每次按数据库权威安全上下文校验，refresh JWT 七天内单次轮换
+    - 所有时间均为 ISO8601 +08:00
+    - v1.1：消息分类(category)、biz_id 幂等、失败重发、结果回调、双 Key 轮换、登出
+    - v1.2：计费条(est_segments/quota_cost)、模板变量渲染(template_params)、号码级频控(removed_freq_limit)、
+      测试发送(is_test)、营销同意(consent_confirmed)、批次列表/号码搜索/队列恢复/用户管理/回调密钥轮换
+    - v1.3-v1.5：厂商{sN}模板转换、OTP打码、unmatched、异常检测、号码时间线、任务健康
+    - v1.6：AUTH_MOCK、完整CRUD/计费预估/改期/授权解密、密文导出、owner/app角色与确定性Mock验收
+    - v1.6.13：用户角色变更与强制下线使用数据库会话版本即时失效既有 JWT
+    - v1.6.14：本地/AD Provider 显式路由、稳定主体 JWT 与首次强制改密
+    - v1.6.24：统一 security_version 覆盖账号/身份/Provider/部门/角色，短 access JWT 与单次 refresh 轮换
+    - v1.6.12：运行策略事务最终校验、动态过期时间与启动调度心跳一致
+    - v1.6.11：报告回调引用新增无 PII 事件身份，raw 重放不重复投递同一报告
+    - v1.6.28：callback/export 使用可续租 UUID fencing；回调暴露稳定 event_id 与租约状态
+    - v1.6.33：拆分无依赖 livez 与严格依赖 readyz；健康响应不暴露内部组件或失败原因
+    - v1.6.34：生产 callback 强制 HTTPS；签名密钥/协议版本按事件固化；敏感密文与导出帧绑定业务上下文
+
+servers:
+  - url: https://sms.example.com
+
+tags:
+  - name: system
+  - name: auth
+  - name: messages
+  - name: approval
+  - name: templates
+  - name: signs
+  - name: replies
+  - name: admin
+  - name: reports
+
+paths:
+  /livez:
+    get:
+      tags: [system]
+      summary: 进程存活检查
+      description: 只证明 API 事件循环可响应，不访问数据库、Redis、密钥或其他外部依赖。
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: alive }
+
+  /readyz:
+    get:
+      tags: [system]
+      summary: 接流就绪检查
+      description: 以有界并发和总超时检查必要依赖；响应不包含组件名、内部地址、密钥或失败细节。
+      responses:
+        '200':
+          description: 可接收业务流量
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        '503':
+          description: 必要依赖尚未满足接流条件
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: not_ready }
+
+  /healthz:
+    get:
+      deprecated: true
+      tags: [system]
+      summary: 兼容存活检查
+      description: 旧部署兼容别名；新部署必须分别使用 livez 和 readyz。
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus 平台聚合指标
+      description: 仅允许受控网段使用独立 Bearer secret 抓取；返回固定低基数平台指标，并记录快照年龄、事件循环延迟、连接池占用与进程 RSS；不含手机号、正文、密钥或错误原文。
+      security: [{ MetricsBearerAuth: [] }]
+      responses:
+        '200':
+          description: Prometheus 标准文本指标
+          content:
+            text/plain:
+              schema: { type: string }
+        '401':
+          description: 抓取凭据无效
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: 抓取源不在允许网段
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: 依赖不可用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ───────────────────────── 应用侧 API（X-Api-Key） ─────────────────────────
+  /api/v1/messages/send:
+    post:
+      tags: [messages]
+      summary: 发送短信（应用接入，免审批，支持幂等）
+      description: |
+        幂等：同一应用相同 biz_id 24h 内重复提交，返回首次批次号且 idempotent=true，不重复发送。
+        幂等命中时 status 为该历史批次的当前状态，因此可能已经进入 sending、completed、
+        cancelled 或 balance_blocked。
+        类别策略：verify 不查黑名单走 realtime 队列；notice 走 realtime；market 走 bulk 且受发送时间窗约束，
+        窗外提交自动转次日窗口起点定时（响应 status=scheduled，deferred_reason=market_window）。
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, mobiles]
+              oneOf:
+                - required: [content]
+                  not: { required: [template_id] }
+                - required: [template_id, template_params]
+                  not: { required: [content] }
+              properties:
+                category:
+                  type: string
+                  enum: [verify, notice, market]
+                  description: 须在应用 allowed_categories 范围内，否则 403 CATEGORY_NOT_ALLOWED
+                mobiles:
+                  type: array
+                  items: { type: string, pattern: '^1\d{10}$' }
+                  minItems: 1
+                  maxItems: 10000
+                content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID（非厂商ID），配合 template_params }
+                template_params:
+                  anyOf:
+                    - { type: array, items: { type: string } }
+                    - { type: 'null' }
+                  description: 模板 {1}..{n} 占位参数（v1.2，本期全批次同参，平台渲染后下发，个数不符返回 422 TEMPLATE_PARAM_MISMATCH）
+                sign_name: { anyOf: [{ type: string }, { type: 'null' }], description: 缺省用应用默认签名 }
+                scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                biz_id: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 调用方业务ID，幂等键与对账用 }
+      responses:
+        '200':
+          description: 受理成功（含幂等命中）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_no, idempotent, accepted, removed_duplicate, removed_blacklist, removed_freq_limit, est_segments, quota_cost, status, deferred_reason, scheduled_at]
+                properties:
+                  batch_no: { type: string }
+                  idempotent: { type: boolean, description: true=幂等命中，返回的是历史批次 }
+                  accepted: { type: integer }
+                  removed_duplicate: { type: integer }
+                  removed_blacklist: { type: integer }
+                  removed_freq_limit: { type: integer, description: 号码级频控剔除数（v1.2） }
+                  est_segments: { type: integer, description: 单条计费条数（含签名与退订语，v1.2） }
+                  quota_cost: { type: integer, description: 本批次配额消耗 = accepted × est_segments（v1.2） }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: 类别越权（CATEGORY_NOT_ALLOWED）
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '422':
+          description: 敏感词命中 / 全部号码被剔除
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '429':
+          description: 配额或频率超限
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: 配额与频控事实投影不可用（USAGE_PROJECTION_UNAVAILABLE）
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/v1/messages/uat-send:
+    post:
+      tags: [messages]
+      summary: 受控真实联调的应用 API 单号码发送
+      description: |
+        仅在 live-test 已激活且控制代理状态新鲜时开放。普通 `/send` 仍返回
+        `VENDOR_TEST_CONSOLE_ONLY`。本入口只允许一个已登记 active 测试号码、notice
+        直接内容和必填 biz_id。应用限流与 notice 权限先于号码查询；全部 HMAC 版本必须
+        完全匹配，发送 worker 与号码维护共享 advisory xact lock，queued/sending 测试批次
+        会阻止号码维护。复用 24h 幂等、加密持久化、原子 agent-stale critical pause、每日 100 个计费条及
+        uncertain 不重发边界。幂等命中时 status 返回历史批次当前状态，可能已经进入
+        sending、completed、cancelled 或 balance_blocked。
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [category, mobiles, content, biz_id]
+              properties:
+                category: { type: string, const: notice }
+                mobiles:
+                  type: array
+                  items: { type: string, pattern: '^1\d{10}$' }
+                  minItems: 1
+                  maxItems: 1
+                content: { type: string, minLength: 1, maxLength: 500 }
+                sign_name: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
+                biz_id: { type: string, minLength: 1, maxLength: 32 }
+      responses:
+        '200':
+          description: 受理成功（含幂等命中）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_no, idempotent, accepted, removed_duplicate, removed_blacklist, removed_freq_limit, est_segments, quota_cost, status, deferred_reason, scheduled_at]
+                properties:
+                  batch_no: { type: string }
+                  idempotent: { type: boolean }
+                  accepted: { type: integer }
+                  removed_duplicate: { type: integer }
+                  removed_blacklist: { type: integer }
+                  removed_freq_limit: { type: integer }
+                  est_segments: { type: integer }
+                  quota_cost: { type: integer }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: 敏感词命中或号码被剔除
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '429':
+          description: 配额或频率超限
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: 真实联调控制、认证会话或配额频控事实投影不可用
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/v1/messages/batches/{batch_no}:
+    get:
+      tags: [messages]
+      summary: 查询批次状态与统计
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Batch' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/messages/batches/{batch_no}/details:
+    get:
+      tags: [messages]
+      summary: 查询批次内消息明细（分页，手机号始终脱敏）
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other] }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 100, minimum: 1, maximum: 1000 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MessageDetail' }
+
+  /api/v1/messages/batches/{batch_no}/cancel:
+    post:
+      tags: [messages]
+      summary: 取消定时批次（仅 scheduled 状态）
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已取消，预扣配额已回补 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/messages/batches/{batch_no}/reschedule:
+    post:
+      tags: [messages]
+      summary: 修改定时批次发送时间（仅 scheduled；Web批次改期后重新审批）
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scheduled_at]
+              properties:
+                scheduled_at: { type: string, format: date-time }
+      responses:
+        '200': { description: 已改期；需审批的Web批次重新进入 pending_approval }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/messages/batches/{batch_no}/resend-failed:
+    post:
+      tags: [messages]
+      summary: 失败号码一键重发（v1.1）
+      description: 以原批次 failed 号码生成新批次（resend_of 溯源），重新走完整管控流水线（黑名单/配额/时间窗/审批不豁免）。
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 新批次已受理
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_no, resend_of, accepted, status]
+                properties:
+                  batch_no: { type: string, description: 新批次号 }
+                  resend_of: { type: string, description: 原批次号 }
+                  accepted: { type: integer }
+                  status: { type: string, enum: [pending_approval, queued, scheduled] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: 敏感词、全部剔除或模板参数不匹配
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '429':
+          description: 配额或频率超限
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  # ───────────────────────── Web 侧（JWT） ─────────────────────────
+  /api/v1/web/auth/providers:
+    get:
+      tags: [auth]
+      summary: 获取当前可选认证源
+      description: 仅返回已启用认证源的公开元数据，不返回草稿、生效配置或任何凭据。
+      responses:
+        '200':
+          description: 已启用认证源
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/AuthProvider' } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/auth/refresh:
+    post:
+      tags: [auth]
+      summary: 单次轮换刷新令牌
+      description: |
+        refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
+        身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: 已轮换 access/refresh 令牌并返回当前权威用户上下文
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginSuccess' }
+        '401': { description: refresh 令牌无效、过期或已使用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_SESSION_UNAVAILABLE；数据库或 Redis 状态不可用时 fail closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/auth/password-policy:
+    get:
+      tags: [auth]
+      summary: 获取本地账号密码规则
+      description: 前端展示的权威规则；后端仍在每次设置密码时独立校验。
+      responses:
+        '200':
+          description: 密码规则
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasswordPolicy' }
+
+  /api/v1/web/auth/login:
+    post:
+      tags: [auth]
+      summary: 按所选认证源登录
+      description: |
+        必须显式提交 provider_code，服务端只调用该认证源且不回退。
+        账号锁与来源 IP 限流由所有认证源共享；错误提示不区分用户是否存在。
+        本地临时密码验证成功只返回十分钟单用途改密令牌，不签发访问 JWT。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 登录成功或要求首次改密；短期改密令牌只允许保存在当前页面组件易失内存
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - { $ref: '#/components/schemas/LoginSuccess' }
+                  - { $ref: '#/components/schemas/PasswordChangeRequired' }
+        '401': { description: 用户名或密码错误（UNAUTHORIZED统一话术）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: AUTH_PROVIDER_DISABLED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: ACCOUNT_SOURCE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: 账号锁定中（ACCOUNT_LOCKED）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: IP 已被临时封禁（RATE_LIMITED）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/auth/password/initial:
+    post:
+      tags: [auth]
+      summary: 使用单用途令牌完成首次改密
+      description: |
+        服务端只持久化令牌 SHA-256 指纹，并绑定本地账号、身份、用途与签发时安全版本。
+        令牌消费、密码更新、安全版本递增和无敏感审计在同一 PostgreSQL 事务提交；
+        数据库失败时整体回滚，同一未过期令牌可安全重试。
+        浏览器不得把 change_token 写入 Pinia、sessionStorage、localStorage、IndexedDB、URL 或日志。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitialPasswordChangeRequest' }
+      responses:
+        '200':
+          description: 密码已修改，必须重新登录
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+        '401': { description: 改密令牌无效、过期或已使用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '500': { description: 数据库事务未提交，可使用同一未过期令牌重试, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/auth/password/change:
+    post:
+      tags: [auth]
+      summary: 本地账号日常修改密码
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasswordChangeRequest' }
+      responses:
+        '200':
+          description: 密码已修改，全部既有会话失效
+          headers:
+            Cache-Control: { schema: { type: string }, description: 固定为 no-store }
+        '401': { description: 当前密码错误、非本地身份或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出（JWT jti 加入吊销黑名单，v1.1）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: 已登出 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { description: AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/messages/send:
+    post:
+      tags: [messages]
+      summary: Web 人工发送（notice/market；按类别阈值进入审批）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category]
+              oneOf:
+                - required: [content]
+                  not: { required: [template_id] }
+                - required: [template_id, template_params]
+                  not: { required: [content] }
+              properties:
+                category: { type: string, enum: [notice, market], description: verify 仅限 API 渠道 }
+                mobiles: { anyOf: [{ type: array, minItems: 1, maxItems: 50000, items: { type: string, pattern: '^1\d{10}$' } }, { type: 'null' }], description: 与 import_id 二选一 }
+                import_id: { anyOf: [{ type: string, format: uuid }, { type: 'null' }], description: 引用导入任务号码包 }
+                content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_params: { anyOf: [{ type: array, items: { type: string } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
+                sign_name: { anyOf: [{ type: string }, { type: 'null' }] }
+                scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗，v1.2） }
+                consent_confirmed: { type: boolean, default: false, description: market 必须为 true（"已获用户同意"留痕，v1.2），否则 422 CONSENT_REQUIRED }
+                remark: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
+      responses:
+        '200':
+          description: 受理成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_no, idempotent, accepted, removed_duplicate, removed_blacklist, removed_freq_limit, est_segments, quota_cost, status, deferred_reason, scheduled_at]
+                properties:
+                  batch_no: { type: string }
+                  idempotent: { type: boolean }
+                  status: { type: string, enum: [queued, scheduled, pending_approval] }
+                  accepted: { type: integer }
+                  removed_duplicate: { type: integer }
+                  removed_blacklist: { type: integer }
+                  removed_freq_limit: { type: integer }
+                  est_segments: { type: integer }
+                  quota_cost: { type: integer }
+                  deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 业务校验失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: USAGE_PROJECTION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/billing/preview:
+    post:
+      tags: [messages]
+      summary: Web发送预检与计费预估（计费结果唯一来自 services/billing.py）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, accepted_count]
+              oneOf:
+                - required: [content]
+                  not: { required: [template_id] }
+                - required: [template_id, template_params]
+                  not: { required: [content] }
+              properties:
+                category: { type: string, enum: [notice, market] }
+                content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_params: { anyOf: [{ type: array, items: { type: string } }, { type: 'null' }] }
+                sign_name: { anyOf: [{ type: string }, { type: 'null' }] }
+                accepted_count: { type: integer, minimum: 0, maximum: 50000 }
+                consent_confirmed: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 最终内容长度、分段和配额预估
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended]
+                properties:
+                  final_length: { type: integer }
+                  est_segments: { type: integer }
+                  quota_cost: { type: integer }
+                  segment_parts:
+                    type: array
+                    description: 各计费段渲染数据，前端不得自行推导边界
+                    items:
+                      type: object
+                      required: [used, capacity, partial]
+                      properties:
+                        used: { type: integer }
+                        capacity: { type: integer }
+                        partial: { type: boolean }
+                  next_segment_at: { type: integer, description: 再增加多少字符进入下一计费段 }
+                  approval_required: { type: boolean }
+                  unsubscribe_appended: { type: boolean }
+                  deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: TEMPLATE_PARAM_MISMATCH 或 CONSENT_REQUIRED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/messages/import:
+    post:
+      tags: [messages]
+      summary: 上传号码文件（xlsx/csv），登记异步解析任务
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        '202':
+          description: 已登记，客户端通过状态接口等待解析完成
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [import_id, valid, invalid, duplicate, blacklisted, invalid_download_url, expires_at, status, error]
+                properties:
+                  import_id: { type: string, format: uuid }
+                  valid: { type: integer }
+                  invalid: { type: integer }
+                  duplicate: { type: integer }
+                  blacklisted: { type: integer }
+                  invalid_download_url: { anyOf: [{ type: string }, { type: 'null' }], description: "指向 /web/messages/import/{import_id}/invalid-file" }
+                  expires_at: { type: string, format: date-time }
+                  status: { type: string, enum: [pending, processing, ready, failed] }
+                  error: { anyOf: [{ type: string }, { type: 'null' }] }
+        '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: RATE_LIMITED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: IMPORT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/messages/import/{import_id}:
+    get:
+      tags: [messages]
+      summary: 查询本人导入任务解析状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: import_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 当前解析状态与聚合计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [import_id, valid, invalid, duplicate, blacklisted, invalid_download_url, expires_at, status, error]
+                properties:
+                  import_id: { type: string, format: uuid }
+                  valid: { type: integer }
+                  invalid: { type: integer }
+                  duplicate: { type: integer }
+                  blacklisted: { type: integer }
+                  invalid_download_url: { anyOf: [{ type: string }, { type: 'null' }] }
+                  expires_at: { type: string, format: date-time }
+                  status: { type: string, enum: [pending, processing, ready, failed] }
+                  error: { anyOf: [{ type: string }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: NOT_FOUND, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/batches:
+    get:
+      tags: [messages]
+      summary: 批次列表（v1.2，多条件过滤，数据权限按部门）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: category, in: query, required: false, schema: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string }, { type: 'null' }] } }
+        - { name: channel, in: query, required: false, schema: { anyOf: [{ type: string, enum: [api, web] }, { type: 'null' }] } }
+        - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
+        - { name: dept, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] } }
+        - { name: is_test, in: query, required: false, schema: { anyOf: [{ type: boolean }, { type: 'null' }] } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Batch' }
+
+  /api/v1/web/messages:
+    get:
+      tags: [messages]
+      summary: 跨批次号码搜索（v1.2，HMAC 精确匹配，排障用）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^1\d{10}$' } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+      responses:
+        '200':
+          description: 该号码的收发记录（下行明细+关联批次，权限内）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, phone, status, report_desc, report_time, created_at, batch_no, category, content, sender]
+                      properties:
+                        id: { type: integer }
+                        phone: { type: string, description: 始终为 phone_mask }
+                        status: { type: string }
+                        report_desc: { anyOf: [{ type: string }, { type: 'null' }] }
+                        report_time: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                        created_at: { type: string, format: date-time }
+                        batch_no: { type: string }
+                        category: { type: string }
+                        content: { type: string, description: verify 已等长打码的展示内容 }
+                        sender: { anyOf: [{ type: string }, { type: 'null' }] }
+
+  /api/v1/web/messages/timeline:
+    get:
+      tags: [messages]
+      summary: 号码时间线（v1.5，下行消息+上行回复合并事件流，投诉核查用）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^1\d{10}$' } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+      responses:
+        '200':
+          description: 事件流（时间倒序）+ 号码状态徽标
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [badge, events]
+                properties:
+                  badge:
+                    type: object
+                    required: [blacklisted, blacklist_source, recv_30d]
+                    properties:
+                      blacklisted: { type: boolean }
+                      blacklist_source: { anyOf: [{ type: string }, { type: 'null' }] }
+                      recv_30d: { type: integer, description: 近30日接收量 }
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [ts, direction, category, batch_no, content, status, sender]
+                      properties:
+                        ts: { type: string, format: date-time }
+                        direction: { type: string, enum: [out, in], description: out=平台下行 in=用户回复 }
+                        category: { anyOf: [{ type: string }, { type: 'null' }] }
+                        batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
+                        content: { type: string, description: 摘要，verify 已打码 }
+                        status: { anyOf: [{ type: string }, { type: 'null' }] }
+                        sender: { anyOf: [{ type: string }, { type: 'null' }], description: 应用名或Web提交人 }
+
+  /api/v1/web/messages/{id}/phone/decrypt:
+    post:
+      tags: [messages]
+      summary: 按角色解密单条消息手机号（approver/admin，强制审计）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 本次授权查看的明文手机号；不得缓存
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [phone]
+                properties:
+                  phone: { type: string, pattern: '^1\d{10}$' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/messages/import/{import_id}/invalid-file:
+    get:
+      tags: [messages]
+      summary: 下载导入剔除清单（仅phone_mask+原行号+原因，24h内有效）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: import_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: CSV 文件流 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────── 审批 ─────────────────────────
+  /api/v1/web/approvals:
+    get:
+      tags: [approval]
+      summary: 待审批/已审批列表
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending, approved, rejected, expired], default: pending } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Approval' }
+
+  /api/v1/web/approvals/{id}/decision:
+    post:
+      tags: [approval]
+      summary: 审批通过/驳回（approver/admin；禁止审批本人提交）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [approve, reject] }
+                reason: { anyOf: [{ type: string }, { type: 'null' }], description: 驳回时必填 }
+      responses:
+        '200': { description: 处理成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ───────────────────────── 模板 / 签名 ─────────────────────────
+  /api/v1/web/templates:
+    get:
+      tags: [templates]
+      summary: 模板列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Template' }
+    post:
+      tags: [templates]
+      summary: 新建模板并提交厂商审核（BindTemplate）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                content: { type: string, minLength: 1, maxLength: 500, description: "平台占位 {1}..{n}" }
+                var_specs:
+                  type: array
+                  description: "变量声明（v1.3，提交厂商时转 {s<max_len>}；渲染校验长度）"
+                  items:
+                    type: object
+                    required: [pos, max_len]
+                    properties:
+                      pos: { type: integer, minimum: 1 }
+                      max_len: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '200': { description: 已提交，vendor_state=pending, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
+        '422': { description: TEMPLATE_PARAM_MISMATCH, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '502': { description: VENDOR_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/templates/{id}:
+    get:
+      tags: [templates]
+      summary: 模板详情
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [templates]
+      summary: 修改草稿或被拒模板并重新提交审核
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content, var_specs]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                content: { type: string, minLength: 1, maxLength: 500 }
+                var_specs:
+                  type: array
+                  items:
+                    type: object
+                    required: [pos, max_len]
+                    properties:
+                      pos: { type: integer, minimum: 1 }
+                      max_len: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        '200': { description: 已更新并重新提交, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [templates]
+      summary: 删除未通过且未被批次引用的模板
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: 已删除 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/templates/{id}/sync:
+    post:
+      tags: [templates]
+      summary: 手动同步厂商审核状态（GetTemplateState）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已同步 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/signs:
+    get:
+      tags: [signs]
+      summary: 签名列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Sign' }
+    post:
+      tags: [signs]
+      summary: 新建签名并提交厂商审核（BindSign）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        '200': { description: 已提交, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '502': { description: VENDOR_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/signs/{id}:
+    get:
+      tags: [signs]
+      summary: 签名详情
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [signs]
+      summary: 修改被拒签名并重新提交审核（admin）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        '200': { description: 已更新并重新提交, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [signs]
+      summary: 删除未通过且未被应用引用的签名（admin）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: 已删除 }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/signs/{id}/sync:
+    post:
+      tags: [signs]
+      summary: 手动同步厂商签名审核状态（GetSignState）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已同步 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────── 回复 ─────────────────────────
+  /api/v1/web/replies:
+    get:
+      tags: [replies]
+      summary: 上行回复查询（手机号精确查询走 HMAC 索引）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: phone, in: query, required: false, schema: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Reply' }
+        '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/replies/{id}/blacklist:
+    post:
+      tags: [replies]
+      summary: 将上行回复号码以 reply_optout 来源加入黑名单
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已加入或幂等命中现有黑名单 }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ───────────────────────── 管理 ─────────────────────────
+  /api/v1/web/admin/apps:
+    get:
+      tags: [admin]
+      summary: 应用列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/App' } }
+    post:
+      tags: [admin]
+      summary: 创建应用（返回一次性明文 API Key）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, dept]
+              properties:
+                name: { type: string }
+                dept: { type: string }
+                allowed_categories:
+                  type: array
+                  items: { type: string, enum: [verify, notice, market] }
+                  default: [verify, notice, market]
+                default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
+                daily_quota: { type: integer, minimum: 0, maximum: 100000000, default: 0 }
+                rate_limit_per_min: { type: integer, minimum: 1, maximum: 60000, default: 60 }
+                blacklist_check: { type: boolean, default: true, description: notice 类是否查黑名单 }
+                freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }], description: verify/market号码级频控应用覆盖 }
+                callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: 结果回调地址，须在内网 CIDR 白名单内；production 仅允许 HTTPS }
+                callback_report_enabled: { type: boolean, default: false, description: 是否推送明细级报告 }
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, api_key, callback_secret]
+                properties:
+                  id: { type: integer }
+                  api_key: { type: string, description: 仅此一次明文返回 }
+                  callback_secret: { anyOf: [{ type: string }, { type: 'null' }], description: 配置回调时一次性返回 }
+        '422': { description: 字段或 callback URL 无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: callback DNS 校验暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/apps/{id}:
+    get:
+      tags: [admin]
+      summary: 应用详情（不返回任何明文密钥）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/App' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [admin]
+      summary: 更新应用策略、配额、频控和回调配置
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dept, allowed_categories, daily_quota, rate_limit_per_min, blacklist_check]
+              properties:
+                dept: { type: string }
+                allowed_categories: { type: array, items: { type: string, enum: [verify, notice, market] } }
+                default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
+                daily_quota: { type: integer, minimum: 0, maximum: 100000000 }
+                rate_limit_per_min: { type: integer, minimum: 1, maximum: 60000 }
+                blacklist_check: { type: boolean }
+                freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }] }
+                callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: production 仅允许 HTTPS }
+                callback_report_enabled: { type: boolean, default: false }
+                status: { type: integer, enum: [0, 1], default: 1 }
+      responses:
+        '200': { description: 已更新并记审计, content: { application/json: { schema: { $ref: '#/components/schemas/App' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { description: callback URL不在CIDR白名单或字段无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: callback DNS 校验暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [admin]
+      summary: 停用应用并吊销当前/旧 API Key（保留历史数据）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: 已停用 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/apps/{id}/rotate-key:
+    post:
+      tags: [admin]
+      summary: 轮换 API Key（v1.1，双 Key 平滑）
+      description: 生成新 Key（一次性明文返回），旧 Key 进入宽限期（默认72h）内仍有效，到期自动失效。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 轮换成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_key, old_key_expires_at]
+                properties:
+                  api_key: { type: string, description: 新Key，仅此一次明文 }
+                  old_key_expires_at: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/apps/{id}/revoke-old-key:
+    post:
+      tags: [admin]
+      summary: 提前作废宽限期旧 Key（v1.1）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 旧 Key 已立即失效 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/apps/{id}/rotate-callback-secret:
+    post:
+      tags: [admin]
+      summary: 轮换回调签名密钥（v1.2，新密钥一次性明文返回）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 轮换成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [callback_secret]
+                properties:
+                  callback_secret: { type: string, description: 新密钥，仅此一次明文 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/queue/status:
+    get:
+      tags: [admin]
+      summary: 发送队列暂停原因与余额状态
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 队列状态
+          content: { application/json: { schema: { $ref: '#/components/schemas/QueueStatusModel' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/queue/resume:
+    post:
+      tags: [admin]
+      summary: 余额恢复后一键恢复发送队列（v1.2，balance_blocked 批次重新入队）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: force, in: query, required: false, schema: { type: boolean, default: false }, description: 显式break-glass恢复 }
+      responses:
+        '200':
+          description: 已恢复
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueueResumeModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/auth-providers/{provider_code}:
+    get:
+      tags: [admin]
+      summary: 读取认证源非敏感配置与版本状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 认证源配置；凭据与 CA 仅返回是否就绪的布尔值
+          content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/auth-providers/{provider_code}/draft:
+    put:
+      tags: [admin]
+      summary: 保存认证源非敏感草稿并使旧测试资格失效
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthProviderDraftUpdate' }
+      responses:
+        '200': { description: 草稿已保存, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 内置本地认证源不可修改, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: INVALID_PROVIDER_CONFIG, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/auth-providers/{provider_code}/test:
+    post:
+      tags: [admin]
+      summary: 测试当前认证源草稿
+      description: 读取外置 LDAP bind secret 与 CA 文件，执行服务绑定和有界目录查询，仅返回安全结果码。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 测试结果，不包含凭据或连接载荷, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderTestResult' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 内置认证源不可测试或草稿并发改变, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: INVALID_PROVIDER_CONFIG, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/auth-providers/{provider_code}/activate:
+    post:
+      tags: [admin]
+      summary: 激活已通过测试的当前草稿
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已激活, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: PROVIDER_CONFIG_UNTESTED 或内置认证源不可修改, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/auth-providers/{provider_code}/disable:
+    post:
+      tags: [admin]
+      summary: 禁用外部认证源并保留已激活配置
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已禁用, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 内置本地认证源不可禁用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/auth-providers/{provider_code}/role-mappings:
+    get:
+      tags: [admin]
+      summary: 读取外部目录组角色映射
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 角色映射, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderRoleMappings' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 内置本地认证源无外部组映射, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    put:
+      tags: [admin]
+      summary: 原子替换外部目录组角色映射
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: provider_code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthProviderRoleMappings' }
+      responses:
+        '200': { description: 已替换并完成无敏感审计, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderRoleMappings' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 重复映射或内置认证源不可修改, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 映射参数不合法, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/users:
+    get:
+      tags: [admin]
+      summary: 平台账号列表（本地/AD）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: keyword, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] } }
+        - { name: provider_code, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] } }
+        - { name: role, in: query, required: false, schema: { anyOf: [{ type: string, enum: [admin, approver, operator, viewer] }, { type: 'null' }] } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 0, maximum: 1 }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: 账号分页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/users/local:
+    post:
+      tags: [admin]
+      summary: 管理员创建本地账号并设置临时密码
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalUserCreate' }
+      responses:
+        '200': { description: 已创建且首次登录必须改密, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: ACCOUNT_SOURCE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/users/{account_id}/role:
+    put:
+      tags: [admin]
+      summary: 修改角色或恢复外部组映射跟随
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: account_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserRoleUpdate' }
+      responses:
+        '200':
+          description: 已更新并通过 security_version 吊销既有会话
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: LAST_ADMIN_PROTECTED 或映射冲突, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/users/{account_id}/status:
+    put:
+      tags: [admin]
+      summary: 启用或禁用平台主体
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: account_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserStatusUpdate' }
+      responses:
+        '200': { description: 已更新并使既有会话失效, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 禁止管理员禁用自己, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: LAST_ADMIN_PROTECTED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/users/{account_id}/password/reset:
+    post:
+      tags: [admin]
+      summary: 管理员重置本地账号临时密码
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: account_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserPasswordReset' }
+      responses:
+        '200': { description: 已重置，目标账号首次登录必须改密, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 非本地账号不支持密码重置, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/users/{account_id}/sessions/revoke:
+    post:
+      tags: [admin]
+      summary: 按 account_id 强制下线
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: account_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已递增 security_version 并强制下线 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/blacklist:
+    get:
+      tags: [admin]
+      summary: 黑名单列表（展示掩码）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/BlacklistItem' }
+    post:
+      tags: [admin]
+      summary: 添加黑名单（单个或批量）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phones]
+              properties:
+                phones: { type: array, minItems: 1, maxItems: 50000, items: { type: string } }
+                source: { type: string, enum: [manual, reply_optout, import], default: manual }
+                remark: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [added, items]
+                properties:
+                  added: { type: integer }
+                  items: { type: array, items: { $ref: '#/components/schemas/BlacklistItem' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/blacklist/{phone_hmac}:
+    delete:
+      tags: [admin]
+      summary: 按列表返回的HMAC标识移除黑名单
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: phone_hmac, in: path, required: true, schema: { type: string, pattern: '^[0-9a-f]{64}$' } }
+      responses:
+        '204': { description: 已移除 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/sensitive-words:
+    get:
+      tags: [admin]
+      summary: 敏感词列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
+    post:
+      tags: [admin]
+      summary: 添加敏感词（批量）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [words]
+              properties:
+                words: { type: array, minItems: 1, maxItems: 10000, items: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/web/admin/sensitive-words/{id}:
+    delete:
+      tags: [admin]
+      summary: 删除敏感词并原子重建Aho-Corasick自动机
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: 已删除 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/configs:
+    get:
+      tags: [admin]
+      summary: 系统参数列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ConfigModel' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [admin]
+      summary: 修改系统参数（记审计）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigBatchUpdateModel' }
+      responses:
+        '200':
+          description: 已更新并审计
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ConfigModel' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/vendor-test/status:
+    get:
+      tags: [admin]
+      summary: 真实运营商受控联调安全状态
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 仅返回无敏感字段的 root agent 状态投影
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestStatusModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/step-up:
+    post:
+      tags: [admin]
+      summary: 按当前 Provider 执行单用途二次认证
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StepUpRequestModel' }
+      responses:
+        '200':
+          description: 五分钟单用途 step-up token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StepUpResponseModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '423': { description: 当前账号已锁定（ACCOUNT_LOCKED）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/seal-sessions:
+    post:
+      tags: [admin]
+      summary: 创建 root agent 内存单用途密封会话
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SealSessionRequestModel' }
+      responses:
+        '200':
+          description: 只返回临时公钥材料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SealSessionResponseModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/credentials:
+    put:
+      tags: [admin]
+      summary: 提交浏览器端密封的正式厂商凭据 envelope
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialEnvelopeModel' }
+      responses:
+        '200':
+          description: 凭据安装或轮换 operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: CONTROL_OPERATION_IN_PROGRESS, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/recipients:
+    get:
+      tags: [admin]
+      summary: 测试号码掩码列表
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 不含手机号明文、密文或 HMAC
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/RecipientModel' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: 加密登记单个真实联调测试号码
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecipientCreateModel' }
+      responses:
+        '200':
+          description: 已登记的掩码投影
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecipientModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/vendor-test/recipients/{recipient_id}:
+    delete:
+      tags: [admin]
+      summary: 停用测试号码
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: recipient_id, in: path, required: true, schema: { type: integer, exclusiveMinimum: 0 } }
+      responses:
+        '200':
+          description: 已停用的掩码投影
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecipientModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/vendor-test/recipients/{recipient_id}/refresh-index:
+    post:
+      tags: [admin]
+      summary: 重录同一测试号码并刷新全部保留密钥版本的 HMAC 索引
+      description: 请求中的手机号只在内存中计算索引，不解密或回显已登记号码。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: recipient_id, in: path, required: true, schema: { type: integer, exclusiveMinimum: 0 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecipientRefreshModel' }
+      responses:
+        '200':
+          description: 已刷新索引的掩码投影
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecipientModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/vendor-test/activate:
+    post:
+      tags: [admin]
+      summary: 异步激活真实运营商受控联调
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ActivateRequestModel' }
+      responses:
+        '202':
+          description: 已固化 requested operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/pause:
+    post:
+      tags: [admin]
+      summary: 异步设置独立人工暂停
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PauseRequestModel' }
+      responses:
+        '202':
+          description: 已固化 requested operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/resume:
+    post:
+      tags: [admin]
+      summary: 按暂停类型受控恢复
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResumeRequestModel' }
+      responses:
+        '202':
+          description: 已固化 requested operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/reset:
+    post:
+      tags: [admin]
+      summary: 异步清空真实联调设置并恢复待设置状态
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VendorTestResetRequestModel' }
+      responses:
+        '202':
+          description: 已固化 requested 重置 operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/operations/{operation_id}:
+    get:
+      tags: [admin]
+      summary: 查询真实联调控制 operation 安全状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: operation_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 无请求体、凭据、手机号或厂商消息的状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/vendor-test/messages:
+    post:
+      tags: [admin]
+      summary: 从系统配置页创建单号码真实 UAT
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UatMessageRequestModel' }
+      responses:
+        '200':
+          description: 已进入既有发送流水线；accept/attach 结果待对账时仍返回同一 requested/running operation，直到 PostgreSQL 事实源确认终态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { description: 业务校验失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: 配额或频率限制, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE（待对账 operation 无法按同 ID 恢复）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/messages/preview:
+    post:
+      tags: [admin]
+      summary: 按所选应用部门策略预检单号码真实 UAT
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UatPreviewRequestModel' }
+      responses:
+        '200':
+          description: 与实际 UAT 相同模板、签名、合规和计费策略的预览
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended]
+                properties:
+                  final_length: { type: integer }
+                  est_segments: { type: integer }
+                  quota_cost: { type: integer }
+                  segment_parts:
+                    type: array
+                    items:
+                      type: object
+                      required: [used, capacity, partial]
+                      properties:
+                        used: { type: integer }
+                        capacity: { type: integer }
+                        partial: { type: boolean }
+                  next_segment_at: { type: integer }
+                  approval_required: { type: boolean }
+                  unsubscribe_appended: { type: boolean }
+                  deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { description: 业务校验失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: CONTROL_AGENT_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/vendor-test/messages/{operation_id}:
+    get:
+      tags: [admin]
+      summary: 查询单号码真实 UAT 的安全状态
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: operation_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 只含 operation 与 batch 引用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VendorTestOperationModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/callbacks:
+    get:
+      tags: [admin]
+      summary: 回调任务查询（v1.1，支持按状态过滤，dead 可手动重推）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, retrying, done, dead] }, { type: 'null' }] } }
+        - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, event_id, correlation_id, app_id, app_name, event, batch_no, reference_count, status, retry_count, next_retry_at, lease_id, lease_expires_at, takeover_count, stalled, last_http_code, last_error, created_at, finished_at]
+                      properties:
+                        id: { type: integer }
+                        event_id: { type: string, format: uuid, description: 跨重试稳定的接收方幂等事件 ID }
+                        correlation_id: { type: string, format: uuid, description: HTTP、任务、Outbox 与外部回调共用的关联 ID }
+                        app_id: { type: integer }
+                        app_name: { type: string }
+                        event: { type: string, enum: [batch.finished, message.report] }
+                        batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
+                        reference_count: { type: integer }
+                        status: { type: string, enum: [pending, retrying, done, dead] }
+                        retry_count: { type: integer }
+                        next_retry_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                        lease_id: { anyOf: [{ type: string, format: uuid }, { type: 'null' }] }
+                        lease_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                        takeover_count: { type: integer, minimum: 0 }
+                        stalled: { type: boolean }
+                        last_http_code: { anyOf: [{ type: integer }, { type: 'null' }] }
+                        last_error: { anyOf: [{ type: string }, { type: 'null' }] }
+                        created_at: { type: string, format: date-time }
+                        finished_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+  /api/v1/web/admin/callbacks/{id}/retry:
+    post:
+      tags: [admin]
+      summary: 手动重推 dead 回调（v1.1）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已重新入队 }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/jobs:
+    get:
+      tags: [admin]
+      summary: 后台任务健康（v1.5，各任务最近运行/耗时/24h成功率）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/JobModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/jobs/{job_name}/trigger:
+    post:
+      tags: [admin]
+      summary: 手动触发一次任务（v1.5，记审计）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: job_name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202': { description: 已投递执行 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/admin/alerts:
+    get:
+      tags: [admin]
+      summary: 告警记录列表（v1.4，ops页支撑）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: alert_type, in: query, required: false, schema: { anyOf: [{ type: string }, { type: 'null' }] } }
+        - { name: level, in: query, required: false, schema: { anyOf: [{ type: string, enum: [info, warn, crit] }, { type: 'null' }] } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AlertPageModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/outbox:
+    get:
+      tags: [admin]
+      summary: Transactional Outbox 积压、失败与最老事件年龄
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 无 PII Outbox 运行指标
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OutboxStatsModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/outbox/{event_id}/retry:
+    post:
+      tags: [admin]
+      summary: 由稳定管理员主体审计后重推 dead Outbox 事件
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: event_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: 已恢复为 pending，等待 dispatcher }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/raw-logs:
+    get:
+      tags: [admin]
+      summary: 厂商原始报文密文元数据列表（不返回payload_enc或手机号）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: source, in: query, required: false, schema: { anyOf: [{ type: string, enum: [report, reply] }, { type: 'null' }] } }
+        - { name: processed, in: query, required: false, schema: { anyOf: [{ type: boolean }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RawLogPageModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/chunks/uncertain:
+    get:
+      tags: [admin]
+      summary: uncertain 分片列表（v1.4，待人工核查项）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: 含批次号/customId/停留时长, content: { application/json: { schema: { $ref: '#/components/schemas/UncertainPageModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/unmatched-reports:
+    get:
+      tags: [admin]
+      summary: 无主报告查询（v1.4，并行迁移期对账；支持导出）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: phone, in: query, required: false, schema: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }, description: 精确匹配走HMAC }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: 列表(号码mask), content: { application/json: { schema: { $ref: '#/components/schemas/UnmatchedPageModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/unmatched-reports/export:
+    post:
+      tags: [admin]
+      summary: 创建无主报告对账导出任务（密文文件，下载时流式解密）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UnmatchedExportModel' }
+      responses:
+        '202':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/raw-logs/{id}/replay:
+    post:
+      tags: [admin]
+      summary: 重放厂商原始报文（v1.1，解析失败兜底）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 已重放解析
+          content: { application/json: { schema: { $ref: '#/components/schemas/ReplayResultModel' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/admin/audit-logs:
+    get:
+      tags: [admin]
+      summary: 审计日志查询（仅 admin，底层表只增不改）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: actor, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] } }
+        - { name: actor_account_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }, description: 按不可变账号 ID 串联登录名变更前后的审计事件 }
+        - { name: correlation_id, in: query, required: false, schema: { anyOf: [{ type: string, format: uuid }, { type: 'null' }] }, description: 按 request ID 查询同一请求或异步链路的审计事件 }
+        - { name: action, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 48 }, { type: 'null' }] } }
+        - { name: object_type, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditPageModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ───────────────────────── 报表 ─────────────────────────
+  /api/v1/web/reports/dashboard:
+    get:
+      tags: [reports]
+      summary: 仪表盘（今日分类别量/成功率/余额曲线/待审批/告警/uncertain数）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/web/reports/stats:
+    get:
+      tags: [reports]
+      summary: 统计报表（日/周/月 × 应用/部门 × 类别）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: granularity, in: query, required: false, schema: { type: string, enum: [day, week, month], default: day } }
+        - { name: group_by, in: query, required: false, schema: { type: string, enum: [app, dept], default: app } }
+        - { name: category, in: query, required: false, schema: { type: string, enum: [verify, notice, market, all], default: all } }
+        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportingModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/web/reports/export/{public_id}/download:
+    get:
+      tags: [reports]
+      summary: 下载导出文件（UUID、稳定主体与部门授权；明文需单次二次认证）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: public_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Export-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 仅明文导出必填；绑定账号、会话、IP与任务且单次使用 }
+      responses:
+        '200': { description: CSV 文件流 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/reports/export/{public_id}/step-up:
+    post:
+      tags: [reports]
+      summary: 为指定明文导出签发五分钟单用途二次认证令牌
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: public_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportStepUpRequest' }
+      responses:
+        '200':
+          description: 已签发
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExportStepUpResponse' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '423': { description: 当前账号已锁定（ACCOUNT_LOCKED）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/reports/export/{public_id}:
+    get:
+      tags: [reports]
+      summary: 查询导出任务状态（稳定主体和显式角色/部门授权矩阵）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: public_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ExportTask' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/web/reports/export:
+    post:
+      tags: [reports]
+      summary: 明细导出（异步，≤10万行；含明文手机号需权限并记审计）
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filters:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                    end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                    category: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] }
+                    status: { anyOf: [{ type: string, maxLength: 16 }, { type: 'null' }] }
+                    app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
+                    dept: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] }
+                    batch_no: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
+                    phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }], description: 请求后立即转phone_hmac，export_task.filters禁止保存明文 }
+                decrypted: { type: boolean, default: false, description: 是否导出明文手机号（按角色，记审计） }
+      responses:
+        '202':
+          description: 任务已创建
+          content: { application/json: { schema: { $ref: '#/components/schemas/ExportTask' } } }
+
+# ───────────────────────── Webhook（平台 → 应用，v1.1） ─────────────────────────
+webhooks:
+  batchFinished:
+    post:
+      summary: batch.finished — 批次终态推送
+      description: |
+        关联头：X-Sms-Event-Id 是接收方幂等事件 ID；X-Sms-Correlation-Id 与触发该事件的 HTTP/任务/Outbox 关联 ID 一致。
+        签名头：X-Sms-Timestamp（Unix秒）、X-Sms-Signature = HMAC-SHA256(callback_secret, timestamp + "." + rawBody) 的 hex。
+        版本头：X-Sms-Signature-Version 固定为事件创建时的协议版本；X-Sms-Secret-Version 是该事件固化密钥的 key version。密钥轮换不改变既有事件重试。
+        接收方须验签且校验时间戳偏差 ≤ 300s，返回 2xx 视为成功；否则按 60/300/900/3600/3600s 重试共5次。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event_id, event, batch_no, biz_id, category, status, total, delivered, failed, unknown, finished_at]
+              properties:
+                event_id: { type: string, format: uuid }
+                event: { type: string, const: batch.finished }
+                batch_no: { type: string }
+                biz_id: { type: string, nullable: true }
+                category: { type: string }
+                status: { type: string, enum: [completed, cancelled, expired, rejected] }
+                total: { type: integer }
+                delivered: { type: integer }
+                failed: { type: integer }
+                unknown: { type: integer }
+                finished_at: { type: string, format: date-time }
+      responses:
+        '200': { description: 应用侧确认接收 }
+  messageReport:
+    post:
+      summary: message.report — 明细报告聚合推送（应用级开关）
+      description: 按分钟聚合，单次 ≤ 500 条；X-Sms-Event-Id、X-Sms-Correlation-Id、签名与重试策略同 batch.finished。
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event_id, event, batch_no, biz_id, items]
+              properties:
+                event_id: { type: string, format: uuid }
+                event: { type: string, const: message.report }
+                batch_no: { type: string }
+                biz_id: { type: string, nullable: true }
+                items:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    properties:
+                      phone: { type: string, description: 投递时在内存临时解密生成的明文；callback_task/日志不得持久化，接收方自行保护 }
+                      status: { type: string, enum: [delivered, failed, unknown, other] }
+                      report_desc: { type: string }
+                      report_time: { type: string, format: date-time }
+      responses:
+        '200': { description: 应用侧确认接收 }
+
+components:
+  securitySchemes:
+    MetricsBearerAuth:
+      type: http
+      scheme: bearer
+      description: 仅供 Prometheus 抓取使用的独立、可轮换 secret。
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: 参数错误
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: 认证失败
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: 权限不足或审批回避
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: 状态冲突
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: 资源不存在
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    AuthProvider:
+      type: object
+      additionalProperties: false
+      required: [code, name, auth_flow]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        auth_flow: { type: string, enum: [password, redirect] }
+
+    PasswordPolicy:
+      type: object
+      additionalProperties: false
+      required: [min_length, max_length, required_character_classes, forbid_username, description]
+      properties:
+        min_length: { type: integer, const: 12 }
+        max_length: { type: integer, const: 128 }
+        required_character_classes: { type: integer, const: 3 }
+        forbid_username: { type: boolean, const: true }
+        description: { type: string }
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_code, username, password]
+      properties:
+        provider_code: { type: string, minLength: 1, maxLength: 64, description: 必须由用户显式选择，不回退 }
+        username: { type: string, minLength: 1, maxLength: 64 }
+        password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+
+    AuthUser:
+      type: object
+      additionalProperties: false
+      required: [account_id, identity_id, provider_code, username, display_name, dept, role]
+      properties:
+        account_id: { type: integer, minimum: 1 }
+        identity_id: { type: integer, minimum: 1 }
+        provider_code: { type: string }
+        username: { type: string }
+        display_name: { type: string }
+        dept: { type: string }
+        role: { type: string, enum: [admin, approver, operator, viewer] }
+
+    LoginSuccess:
+      type: object
+      additionalProperties: false
+      required: [token, refresh_token, expires_in, refresh_expires_in, user]
+      properties:
+        token: { type: string, description: 15 分钟 Bearer access JWT }
+        refresh_token: { type: string, writeOnly: true, description: 七天内有效且每次使用后原子轮换的 refresh JWT }
+        expires_in: { type: integer, const: 900 }
+        refresh_expires_in: { type: integer, minimum: 1, maximum: 604800, description: refresh family 自首次登录起的实际剩余秒数 }
+        user: { $ref: '#/components/schemas/AuthUser' }
+
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+
+    PasswordChangeRequired:
+      type: object
+      additionalProperties: false
+      required: [change_token, expires_in, next_action]
+      properties:
+        change_token: { type: string, description: 十分钟单用途令牌，不可访问其他 API，浏览器仅可置于当前组件易失内存 }
+        expires_in: { type: integer, const: 600 }
+        next_action: { type: string, const: change_password }
+
+    InitialPasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [change_token, new_password]
+      properties:
+        change_token: { type: string, minLength: 1, writeOnly: true }
+        new_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+        new_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+
+    FrequencyOverride:
+      type: object
+      additionalProperties: false
+      properties:
+        verify_per_minute: { type: integer, minimum: 1, maximum: 100 }
+        verify_per_day: { type: integer, minimum: 1, maximum: 10000 }
+        market_per_day: { type: integer, minimum: 1, maximum: 1000 }
+
+    AuditModel:
+      type: object
+      required: [id, correlation_id, actor, actor_subject_kind, actor_account_id, actor_identity_id, actor_app_id, role, ip, action, object_type, object_id, before_val, after_val, created_at]
+      properties:
+        id: { type: integer }
+        correlation_id: { type: string, format: uuid }
+        actor: { type: string, description: 事件发生时的展示快照，不参与授权或主体关联 }
+        actor_subject_kind: { type: string, enum: [human, api_app, system, legacy_unknown] }
+        actor_account_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
+        actor_identity_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
+        actor_app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
+        role: { anyOf: [{ type: string }, { type: 'null' }] }
+        ip: { anyOf: [{ type: string }, { type: 'null' }] }
+        action: { type: string }
+        object_type: { anyOf: [{ type: string }, { type: 'null' }] }
+        object_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        before_val: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        after_val: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+
+    AuditPageModel:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditModel' } }
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+
+    ConfigModel:
+      type: object
+      required: [key, value, value_type, description, group, sensitive, configured, beat_restart_required, updated_by, updated_at]
+      properties:
+        key: { type: string }
+        value: { anyOf: [{ type: string }, { type: 'null' }] }
+        value_type: { type: string, enum: [str, int, bool, json] }
+        description: { anyOf: [{ type: string }, { type: 'null' }] }
+        group: { type: string }
+        sensitive: { type: boolean }
+        configured: { type: boolean }
+        beat_restart_required: { type: boolean }
+        updated_by: { anyOf: [{ type: string }, { type: 'null' }] }
+        updated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    ConfigUpdateModel:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 64 }
+        value: { anyOf: [{ type: string, maxLength: 512 }, { type: 'null' }] }
+
+    ConfigBatchUpdateModel:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ConfigUpdateModel' }
+
+    VendorTestStatusModel:
+      type: object
+      additionalProperties: false
+      required: [mode, heartbeat_at, credential_configured, active_recipient_count, pause_kind, daily_limit]
+      properties:
+        mode: { type: string, enum: [setup_required, inactive, controlled, blocked] }
+        heartbeat_at: { type: string, format: date-time }
+        credential_configured: { type: boolean }
+        active_recipient_count: { type: integer, minimum: 0 }
+        pause_kind:
+          anyOf:
+            - { type: string, enum: [manual, critical, daily] }
+            - { type: 'null' }
+        daily_limit: { type: integer, const: 100 }
+
+    StepUpRequestModel:
+      type: object
+      additionalProperties: false
+      required: [operation, password]
+      properties:
+        operation: { type: string, enum: [install_credentials, rotate_credentials, activate, resume_critical, reset_configuration] }
+        password: { type: string, minLength: 1, maxLength: 128, format: password, writeOnly: true }
+
+    StepUpResponseModel:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string }
+        expires_in: { type: integer, const: 300, default: 300 }
+
+    SealSessionRequestModel:
+      type: object
+      additionalProperties: false
+      required: [operation]
+      properties:
+        operation: { type: string, enum: [install_credentials, rotate_credentials] }
+
+    SealSessionResponseModel:
+      type: object
+      additionalProperties: false
+      required: [session_id, public_key, expires_at, aad]
+      properties:
+        session_id: { type: string }
+        public_key: { type: string }
+        expires_at: { type: string, format: date-time }
+        aad: { type: string, description: 绑定 session、operation、actor 与 expires_at 的规范 AAD }
+
+    CredentialEnvelopeModel:
+      type: object
+      additionalProperties: false
+      required: [operation, step_up_token, session_id, wrapped_key, nonce, ciphertext, aad, algorithm]
+      properties:
+        operation: { type: string, enum: [install_credentials, rotate_credentials] }
+        step_up_token: { type: string, minLength: 1, maxLength: 256, format: password, writeOnly: true }
+        session_id: { type: string, minLength: 1, maxLength: 128 }
+        wrapped_key: { type: string, minLength: 1, maxLength: 4096 }
+        nonce: { type: string, minLength: 1, maxLength: 128 }
+        ciphertext: { type: string, minLength: 1, maxLength: 4096 }
+        aad: { type: string, minLength: 1, maxLength: 1024 }
+        algorithm: { type: string, const: RSA-OAEP-256+A256GCM }
+
+    VendorTestOperationModel:
+      type: object
+      additionalProperties: false
+      required: [operation_id, operation_type, status, requested_at, completed_at]
+      properties:
+        operation_id: { type: string }
+        operation_type:
+          type: string
+          enum: [install_credentials, rotate_credentials, activate, pause, resume, uat_send, reset_configuration]
+        status: { type: string, enum: [requested, running, succeeded, failed] }
+        safe_code:
+          anyOf:
+            - { type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+            - { type: 'null' }
+        vendor_code:
+          anyOf:
+            - { type: integer, minimum: 1, maximum: 99999 }
+            - { type: 'null' }
+        batch_no: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
+        checkpoint_id: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] }
+        requested_at: { type: string, format: date-time }
+        completed_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    ActivateRequestModel:
+      type: object
+      additionalProperties: false
+      required: [step_up_token]
+      properties:
+        step_up_token: { type: string, minLength: 1, maxLength: 256, format: password, writeOnly: true }
+
+    VendorTestResetRequestModel:
+      type: object
+      additionalProperties: false
+      required: [step_up_token]
+      properties:
+        step_up_token: { type: string, minLength: 1, maxLength: 256, format: password, writeOnly: true }
+
+    PauseRequestModel:
+      type: object
+      additionalProperties: false
+      properties: {}
+
+    ResumeRequestModel:
+      type: object
+      additionalProperties: false
+      properties:
+        step_up_token:
+          anyOf:
+            - { type: string, minLength: 1, maxLength: 256, format: password, writeOnly: true }
+            - { type: 'null' }
+
+    UatMessageRequestModel:
+      type: object
+      additionalProperties: false
+      oneOf:
+        - required: [content]
+          not: { required: [template_id] }
+        - required: [template_id, template_params]
+          not: { required: [content] }
+      required: [recipient_id, app_id, category]
+      properties:
+        recipient_id: { type: integer, exclusiveMinimum: 0 }
+        app_id: { type: integer, exclusiveMinimum: 0 }
+        category: { type: string, enum: [verify, notice, market] }
+        content:
+          anyOf:
+            - { type: string, minLength: 1, maxLength: 500 }
+            - { type: 'null' }
+        template_id:
+          anyOf:
+            - { type: integer, exclusiveMinimum: 0 }
+            - { type: 'null' }
+        template_params:
+          anyOf:
+            - type: array
+              maxItems: 20
+              items: { type: string, maxLength: 500 }
+            - { type: 'null' }
+        sign_name:
+          anyOf:
+            - { type: string, maxLength: 64 }
+            - { type: 'null' }
+        consent_confirmed: { type: boolean, default: false }
+        remark:
+          anyOf:
+            - { type: string, maxLength: 200 }
+            - { type: 'null' }
+
+    UatPreviewRequestModel:
+      type: object
+      additionalProperties: false
+      oneOf:
+        - required: [content]
+          not: { required: [template_id] }
+        - required: [template_id, template_params]
+          not: { required: [content] }
+      required: [app_id, category]
+      properties:
+        app_id: { type: integer, exclusiveMinimum: 0 }
+        category: { type: string, enum: [verify, notice, market] }
+        content:
+          anyOf:
+            - { type: string, minLength: 1, maxLength: 500 }
+            - { type: 'null' }
+        template_id:
+          anyOf:
+            - { type: integer, exclusiveMinimum: 0 }
+            - { type: 'null' }
+        template_params:
+          anyOf:
+            - type: array
+              maxItems: 20
+              items: { type: string, maxLength: 500 }
+            - { type: 'null' }
+        sign_name:
+          anyOf:
+            - { type: string, maxLength: 64 }
+            - { type: 'null' }
+        consent_confirmed: { type: boolean, default: false }
+
+    RecipientCreateModel:
+      type: object
+      additionalProperties: false
+      required: [label, phone]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 64 }
+        phone: { type: string, pattern: '^1\d{10}$', format: password, writeOnly: true }
+
+    RecipientRefreshModel:
+      type: object
+      additionalProperties: false
+      required: [phone]
+      properties:
+        phone: { type: string, pattern: '^1\d{10}$', format: password, writeOnly: true }
+
+    RecipientModel:
+      type: object
+      additionalProperties: false
+      required: [id, label, phone_mask, status, created_at, disabled_at]
+      properties:
+        id: { type: integer, exclusiveMinimum: 0 }
+        label: { type: string }
+        phone_mask: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        disabled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    AlertModel:
+      type: object
+      required: [id, alert_type, level, title, detail, channels, created_at]
+      properties:
+        id: { type: integer }
+        alert_type: { type: string }
+        level: { type: string, enum: [info, warn, crit] }
+        title: { type: string }
+        detail: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        channels: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AlertPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/AlertModel' } }
+
+    RawLogModel:
+      type: object
+      required: [id, source, item_count, custom_id_count, processed, error, fetched_at]
+      properties:
+        id: { type: integer }
+        source: { type: string, enum: [report, reply] }
+        item_count: { type: integer }
+        custom_id_count: { type: integer }
+        processed: { type: boolean }
+        error: { anyOf: [{ type: string }, { type: 'null' }] }
+        fetched_at: { type: string, format: date-time }
+
+    RawLogPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/RawLogModel' } }
+
+    UncertainModel:
+      type: object
+      required: [chunk_id, batch_no, custom_id, phone_count, vendor_code, uncertain_since, age_seconds]
+      properties:
+        chunk_id: { type: integer }
+        batch_no: { type: string }
+        custom_id: { type: string }
+        phone_count: { type: integer }
+        vendor_code: { anyOf: [{ type: integer }, { type: 'null' }] }
+        uncertain_since: { type: string, format: date-time }
+        age_seconds: { type: integer }
+
+    UncertainPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/UncertainModel' } }
+
+    UnmatchedModel:
+      type: object
+      required: [id, vendor_task_id, custom_id, phone_mask, report_status, report_desc, report_time, created_at]
+      properties:
+        id: { type: integer }
+        vendor_task_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        custom_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        phone_mask: { type: string }
+        report_status: { anyOf: [{ type: integer }, { type: 'null' }] }
+        report_desc: { anyOf: [{ type: string }, { type: 'null' }] }
+        report_time: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+
+    UnmatchedPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/UnmatchedModel' } }
+
+    UnmatchedExportModel:
+      type: object
+      properties:
+        phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
+        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        decrypted: { type: boolean, default: false }
+
+    JobModel:
+      type: object
+      required: [job_name, last_run_at, last_status, last_duration_ms, last_items, success_rate_24h, stalled]
+      properties:
+        job_name: { type: string }
+        last_run_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        last_status: { anyOf: [{ type: string, enum: [running, success, failed] }, { type: 'null' }] }
+        last_duration_ms: { anyOf: [{ type: integer }, { type: 'null' }] }
+        last_items: { type: integer }
+        success_rate_24h: { type: number }
+        stalled: { type: boolean }
+
+    OutboxStatsModel:
+      type: object
+      required: [pending, published, processing, dead, failed_attempts, oldest_age_seconds]
+      properties:
+        pending: { type: integer, minimum: 0.0 }
+        published: { type: integer, minimum: 0.0 }
+        processing: { type: integer, minimum: 0.0 }
+        dead: { type: integer, minimum: 0.0 }
+        failed_attempts: { type: integer, minimum: 0.0 }
+        oldest_age_seconds: { type: integer, minimum: 0.0 }
+
+    QueueStatusModel:
+      type: object
+      required: [realtime_code, bulk_code, balance, threshold]
+      properties:
+        realtime_code: { anyOf: [{ type: string }, { type: 'null' }] }
+        bulk_code: { anyOf: [{ type: string }, { type: 'null' }] }
+        balance: { anyOf: [{ type: integer }, { type: 'null' }] }
+        threshold: { type: integer }
+
+    QueueResumeModel:
+      type: object
+      required: [resumed_batches, paused_codes]
+      properties:
+        resumed_batches: { type: integer }
+        paused_codes: { type: array, items: { type: string } }
+
+    ReplayResultModel:
+      type: object
+      required: [processed_items]
+      properties:
+        processed_items: { type: integer }
+
+    User:
+      type: object
+      additionalProperties: false
+      required: [account_id, identity_id, provider_code, username, display_name, dept, role, role_override, status, identity_status, credential_status, source_groups, sync_status, last_synced_at, last_login_at]
+      properties:
+        account_id: { type: integer, minimum: 1 }
+        identity_id: { type: integer, minimum: 1 }
+        provider_code: { type: string }
+        username: { type: string }
+        display_name: { type: string }
+        dept: { type: string }
+        role: { type: string, enum: [admin, approver, operator, viewer] }
+        role_override: { type: boolean }
+        status: { type: integer, enum: [0, 1] }
+        identity_status: { type: integer, enum: [0, 1] }
+        credential_status: { anyOf: [{ type: string, enum: [active, must_change] }, { type: 'null' }] }
+        source_groups:
+          type: array
+          items: { type: string }
+          description: 最近一次成功目录认证的来源组快照
+        sync_status: { type: string, enum: [local, synced, pending, disabled] }
+        last_synced_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        last_login_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    UserPage:
+      type: object
+      additionalProperties: false
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+
+    LocalUserCreate:
+      type: object
+      additionalProperties: false
+      required: [username, display_name, dept, temporary_password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 64 }
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        dept: { type: string, maxLength: 128 }
+        role: { type: string, enum: [admin, approver, operator, viewer], default: viewer }
+        temporary_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+
+    UserRoleUpdate:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role: { type: string, enum: [admin, approver, operator, viewer] }
+        role_override: { type: boolean, default: true }
+
+    UserStatusUpdate:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: integer, enum: [0, 1] }
+
+    UserPasswordReset:
+      type: object
+      additionalProperties: false
+      required: [temporary_password]
+      properties:
+        temporary_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+
+    LdapProviderConfig:
+      type: object
+      additionalProperties: false
+      required: [server, base_dn, bind_dn, user_search_filter, username_attribute, display_name_attribute, dept_attribute, subject_attribute, group_attribute, connect_timeout_s, receive_timeout_s]
+      properties:
+        server: { type: string, minLength: 1, maxLength: 512, description: 仅允许 LDAPS origin，不得包含凭据、路径或参数 }
+        base_dn: { type: string, minLength: 1, maxLength: 512 }
+        bind_dn: { type: string, minLength: 1, maxLength: 512 }
+        user_search_filter: { type: string, minLength: 1, maxLength: 512, description: "必须且只能包含一个 {username} 占位符" }
+        username_attribute: { type: string, minLength: 1, maxLength: 64 }
+        display_name_attribute: { type: string, minLength: 1, maxLength: 64 }
+        dept_attribute: { type: string, minLength: 1, maxLength: 64 }
+        subject_attribute: { type: string, minLength: 1, maxLength: 64 }
+        group_attribute: { type: string, minLength: 1, maxLength: 64 }
+        connect_timeout_s: { type: number, exclusiveMinimum: 0, maximum: 30 }
+        receive_timeout_s: { type: number, exclusiveMinimum: 0, maximum: 30 }
+
+    AuthProviderDraftUpdate:
+      type: object
+      additionalProperties: false
+      required: [config]
+      properties:
+        config: { $ref: '#/components/schemas/LdapProviderConfig' }
+
+    AuthProviderAdmin:
+      type: object
+      additionalProperties: false
+      required: [code, name, kind, enabled, draft_config, active_config, draft_version, tested_version, active_version, last_tested_at, last_test_status, bind_secret_available, ca_available]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        kind: { type: string }
+        enabled: { type: boolean }
+        draft_config: { type: object, additionalProperties: true, description: 仅含非敏感白名单字段 }
+        active_config: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        draft_version: { type: integer, minimum: 1 }
+        tested_version: { anyOf: [{ type: integer }, { type: 'null' }] }
+        active_version: { anyOf: [{ type: integer }, { type: 'null' }] }
+        last_tested_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        last_test_status: { anyOf: [{ type: string }, { type: 'null' }] }
+        bind_secret_available: { type: boolean, description: 仅表示外置 bind secret 是否可读 }
+        ca_available: { type: boolean, description: 仅表示 CA 文件是否可读 }
+
+    AuthProviderTestResult:
+      type: object
+      additionalProperties: false
+      required: [success, result_code]
+      properties:
+        success: { type: boolean }
+        result_code: { type: string, description: 无凭据的稳定结果码 }
+
+    AuthProviderRoleMapping:
+      type: object
+      additionalProperties: false
+      required: [external_group, role]
+      properties:
+        external_group: { type: string, minLength: 1, maxLength: 256 }
+        role: { type: string, enum: [admin, approver, operator, viewer] }
+
+    AuthProviderRoleMappings:
+      type: object
+      additionalProperties: false
+      required: [mappings]
+      properties:
+        mappings:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AuthProviderRoleMapping' }
+
+    DashboardCategoryModel:
+      type: object
+      required: [category, total, total_segments, delivered, failed, unknown, success_rate]
+      properties:
+        category: { type: string, enum: [verify, notice, market] }
+        total: { type: integer }
+        total_segments: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        unknown: { type: integer }
+        success_rate: { type: number }
+
+    DashboardBalancePointModel:
+      type: object
+      required: [stat_date, balance]
+      properties:
+        stat_date: { type: string, format: date }
+        balance: { type: integer }
+
+    DashboardAlertModel:
+      type: object
+      required: [level, title, created_at]
+      properties:
+        level: { type: string, enum: [info, warn, crit] }
+        title: { type: string }
+        created_at: { type: string, format: date-time }
+
+    DashboardDispositionsModel:
+      type: object
+      required: [uncertain, unmatched, callback_dead]
+      properties:
+        uncertain: { type: integer }
+        unmatched: { type: integer }
+        callback_dead: { type: integer }
+
+    DashboardChannelMonitorModel:
+      type: object
+      required: [realtime_queue, bulk_queue, qps_used, qps_rate, reserved_realtime_qps, stale]
+      properties:
+        realtime_queue: { anyOf: [{ type: integer }, { type: 'null' }] }
+        bulk_queue: { anyOf: [{ type: integer }, { type: 'null' }] }
+        qps_used: { anyOf: [{ type: integer }, { type: 'null' }] }
+        qps_rate: { type: integer, minimum: 1 }
+        reserved_realtime_qps: { type: integer, minimum: 0 }
+        stale: { type: boolean }
+
+    DashboardUiPolicyModel:
+      type: object
+      required: [test_send_max]
+      properties:
+        test_send_max: { type: integer, minimum: 1 }
+
+    DashboardJobModel:
+      type: object
+      required: [job_name, last_run_at, last_status, stalled]
+      properties:
+        job_name: { type: string }
+        last_run_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        last_status: { anyOf: [{ type: string, enum: [running, success, failed] }, { type: 'null' }] }
+        stalled: { type: boolean }
+
+    DashboardOperationsModel:
+      type: object
+      required: [current_balance, balances, alerts, dispositions, jobs, channel_monitor, balance_alert_threshold]
+      properties:
+        current_balance: { anyOf: [{ type: integer }, { type: 'null' }] }
+        balances:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardBalancePointModel' }
+        alerts:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardAlertModel' }
+        dispositions: { $ref: '#/components/schemas/DashboardDispositionsModel' }
+        jobs:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardJobModel' }
+        channel_monitor: { $ref: '#/components/schemas/DashboardChannelMonitorModel' }
+        balance_alert_threshold: { type: integer, minimum: 1 }
+
+    DashboardModel:
+      type: object
+      required: [refreshed_at, categories, overall_success_rate, pending_approvals, ui_policy]
+      properties:
+        refreshed_at: { type: string, format: date-time }
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardCategoryModel' }
+        overall_success_rate: { type: number }
+        pending_approvals: { type: integer }
+        ui_policy: { $ref: '#/components/schemas/DashboardUiPolicyModel' }
+        operations:
+          anyOf:
+            - { $ref: '#/components/schemas/DashboardOperationsModel' }
+            - { type: 'null' }
+
+    ReportingRowModel:
+      type: object
+      required: [period_start, dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate]
+      properties:
+        period_start: { type: string, format: date }
+        dim_value: { type: string }
+        dim_label: { type: string }
+        total: { type: integer }
+        total_segments: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        unknown: { type: integer }
+        success_rate: { type: number }
+
+    ReportingModel:
+      type: object
+      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, items]
+      properties:
+        granularity: { type: string, enum: [day, week, month] }
+        group_by: { type: string, enum: [app, dept] }
+        category: { type: string, enum: [verify, notice, market, all] }
+        start: { type: string, format: date }
+        end: { type: string, format: date }
+        can_export_decrypted: { type: boolean }
+        summary: { $ref: '#/components/schemas/ReportingSummaryModel' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ReportingRowModel' }
+
+    ReportingSummaryModel:
+      type: object
+      required: [total, total_segments, delivered, failed, unknown, success_rate]
+      properties:
+        total: { type: integer }
+        total_segments: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        unknown: { type: integer }
+        success_rate: { type: number }
+
+    SensitiveWordItem:
+      type: object
+      required: [id, word]
+      properties:
+        id: { type: integer }
+        word: { type: string }
+
+    BlacklistItem:
+      type: object
+      required: [phone_hmac, phone_mask, source, remark, created_at]
+      properties:
+        phone_hmac: { type: string }
+        phone_mask: { type: string }
+        source: { type: string, enum: [manual, reply_optout, import] }
+        remark: { anyOf: [{ type: string }, { type: 'null' }] }
+        created_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    Error:
+      type: object
+      required: [code, message, detail]
+      properties:
+        code: { type: string, description: 见 CLAUDE.md 平台错误码表 }
+        message: { type: string }
+        detail: { type: object, nullable: true }
+
+    Batch:
+      type: object
+      required: [batch_no, category, channel, app_name, creator, dept, content, status, deferred_reason, resend_of, is_test, segments, quota_cost, total, removed_freq_limit, delivered, failed, unknown, scheduled_at, created_at]
+      properties:
+        batch_no: { type: string }
+        category: { type: string, enum: [verify, notice, market] }
+        channel: { type: string, enum: [api, web] }
+        app_name: { anyOf: [{ type: string }, { type: 'null' }] }
+        creator: { anyOf: [{ type: string }, { type: 'null' }] }
+        dept: { type: string }
+        content: { type: string }
+        status:
+          type: string
+          enum: [pending_approval, rejected, scheduled, queued, sending, completed, cancelled, balance_blocked, expired]
+        deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        resend_of: { anyOf: [{ type: string }, { type: 'null' }], description: 原批次号（失败重发时） }
+        is_test: { type: boolean }
+        segments: { type: integer, description: 单条计费条数 }
+        quota_cost: { type: integer, description: 配额消耗（计费条） }
+        total: { type: integer }
+        removed_freq_limit: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        unknown: { type: integer }
+        scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+
+    MessageDetail:
+      type: object
+      required: [id, phone, status, vendor_task_id, report_desc, report_time]
+      properties:
+        id: { type: integer }
+        phone: { type: string, description: 始终为phone_mask；明文只能单独调用授权解密端点 }
+        status: { type: string, enum: [pending, sent, delivered, failed, unknown, other] }
+        vendor_task_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        report_desc: { anyOf: [{ type: string }, { type: 'null' }] }
+        report_time: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+
+    Approval:
+      type: object
+      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, created_at]
+      properties:
+        id: { type: integer }
+        batch_no: { type: string }
+        category: { type: string }
+        applicant: { type: string }
+        dept: { type: string }
+        total: { type: integer }
+        segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
+        estimated_segments: { type: integer, minimum: 1, description: 本批次预计总计费条数 }
+        scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        trigger_threshold:
+          anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }]
+          description: 审批单创建时固化的号码阈值；旧记录无法重建时为 null
+        trigger_threshold_source: { type: string, enum: [snapshot, legacy_unknown] }
+        content: { type: string }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        approver: { anyOf: [{ type: string }, { type: 'null' }] }
+        reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+
+    Template:
+      type: object
+      required: [id, name, content, var_specs, dept, vendor_template_id, vendor_state, vendor_reject_reason]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        content: { type: string }
+        var_specs:
+          type: array
+          items:
+            type: object
+            required: [pos, max_len]
+            properties:
+              pos: { type: integer, minimum: 1 }
+              max_len: { type: integer, minimum: 1, maximum: 100 }
+        dept: { type: string }
+        vendor_template_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        vendor_state: { type: string, enum: [draft, pending, approved, rejected] }
+        vendor_reject_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+
+    Sign:
+      type: object
+      required: [id, name, vendor_sign_id, vendor_state, vendor_reject_reason]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        vendor_sign_id: { anyOf: [{ type: string }, { type: 'null' }] }
+        vendor_state: { type: string, enum: [pending, approved, rejected] }
+        vendor_reject_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+
+    Reply:
+      type: object
+      required: [id, phone, content, batch_no, reply_time]
+      properties:
+        id: { type: integer }
+        phone: { type: string, description: 掩码展示 }
+        content: { type: string }
+        batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
+        reply_time: { type: string, format: date-time }
+
+    App:
+      type: object
+      required: [id, name, dept, allowed_categories, daily_quota, rate_limit_per_min, blacklist_check, status]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        dept: { type: string }
+        allowed_categories: { type: array, items: { type: string, enum: [verify, notice, market] } }
+        default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
+        daily_quota: { type: integer }
+        rate_limit_per_min: { type: integer }
+        blacklist_check: { type: boolean }
+        freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }] }
+        callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: production 仅允许 HTTPS }
+        callback_report_enabled: { type: boolean, default: false }
+        status: { type: integer, enum: [0, 1] }
+
+    ExportTask:
+      type: object
+      required: [id, status, decrypted, row_count, download_url, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid, description: 不可枚举公开任务ID；内部整数主键永不对外 }
+        status: { type: string, enum: [pending, running, done, failed] }
+        decrypted: { type: boolean }
+        row_count: { anyOf: [{ type: integer }, { type: 'null' }] }
+        download_url: { anyOf: [{ type: string }, { type: 'null' }], description: done且未过期时返回鉴权下载地址 }
+        expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        created_at: { type: string, format: date-time }
+
+    ExportStepUpRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password: { type: string, format: password, minLength: 1, maxLength: 1024, writeOnly: true }
+
+    ExportStepUpResponse:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, description: 仅在浏览器易失内存中保存并单次使用 }
+        expires_in: { type: integer, default: 300 }

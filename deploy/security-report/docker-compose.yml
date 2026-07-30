@@ -1,0 +1,41 @@
+name: sms-security-report
+
+services:
+  security-report-mailer:
+    profiles: [send]
+    image: sms-platform-security-report-mailer:local
+    build:
+      context: ../..
+      dockerfile: deploy/security-report/Dockerfile
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1m
+    secrets:
+      - { source: resend_api_key, target: resend_api_key }
+    volumes:
+      - type: bind
+        source: ./runtime/current.json
+        target: /reports/current.json
+        read_only: true
+      - type: bind
+        source: ./config/recipients.txt
+        target: /run/config/recipients
+        read_only: true
+    command:
+      - --input
+      - /reports/current.json
+      - --api-key-file
+      - /run/secrets/resend_api_key
+      - --recipients-file
+      - /run/config/recipients
+      - --send
+    restart: "no"
+
+secrets:
+  resend_api_key:
+    file: ./secrets/resend_api_key

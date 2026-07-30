@@ -1,0 +1,11 @@
+[Unit]
+Description=Run a random Enterprise SMS Platform restore drill weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=sms-restore-drill.service
+
+[Install]
+WantedBy=timers.target

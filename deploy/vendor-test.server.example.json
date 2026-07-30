@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "mode": "development-vendor-live",
+  "vendor_origin": "https://vendor.example.invalid",
+  "daily_segment_limit": 100,
+  "timezone": "Asia/Shanghai",
+  "allowlist_file": "/var/lib/sms-platform/vendor-test/allowlist.json",
+  "backup_config": "/etc/sms-platform/test-update-backup.json"
+}

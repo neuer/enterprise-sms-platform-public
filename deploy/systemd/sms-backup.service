@@ -1,0 +1,38 @@
+[Unit]
+Description=Enterprise SMS Platform encrypted backup
+Requires=docker.service sms-platform.service
+After=docker.service sms-platform.service
+StartLimitIntervalSec=20min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/sms-platform/lifecycle.env
+ExecStart=/opt/sms-platform/backend/.venv/bin/python /opt/sms-platform/deploy/scripts/lifecycle_manager.py backup
+Restart=on-failure
+RestartSec=5min
+TimeoutStartSec=2h
+UMask=0077
+StateDirectory=sms-platform/backups
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/sms-platform/backups /run/docker.sock
+ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /run/backup-secrets
+StandardOutput=journal
+StandardError=journal
