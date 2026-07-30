@@ -209,7 +209,6 @@ def test_active_docs_use_18_secrets_and_do_not_link_private_evidence() -> None:
         "CLAUDE.md",
         "MAINTENANCE.md",
         "HANDOVER.md",
-        "RELEASE.md",
         "deploy/README.md",
         "docs/ACCEPTANCE.md",
         "docs/LOCAL_TESTING.md",

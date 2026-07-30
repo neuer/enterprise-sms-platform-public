@@ -291,6 +291,7 @@ _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
         # TEST-BASELINE 跨历史迁移仍需识别这些已删除路径；它们不是活动入口。
         "AUTOPILOT.md",
         "BOOTSTRAP.md",
+        "RELEASE.md",
         "TASKS.md",
         "scripts/verify_milestone.sh",
         ".github/workflows/ci.yml",

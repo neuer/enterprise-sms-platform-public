@@ -44,7 +44,6 @@ ReadOnlyPaths=-/opt/sms-platform/CLAUDE.md
 ReadOnlyPaths=-/opt/sms-platform/HANDOVER.md
 ReadOnlyPaths=-/opt/sms-platform/PRD.md
 ReadOnlyPaths=-/opt/sms-platform/PROGRESS.md
-ReadOnlyPaths=-/opt/sms-platform/RELEASE.md
 ReadOnlyPaths=-/opt/sms-platform/backend
 ReadOnlyPaths=-/opt/sms-platform/deploy
 ReadOnlyPaths=-/opt/sms-platform/docs

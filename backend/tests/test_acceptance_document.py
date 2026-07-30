@@ -5,28 +5,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_acceptance_matrix_maps_milestones_security_and_deferred_boundaries() -> None:
+def test_acceptance_matrix_maps_live_capabilities_to_executable_evidence() -> None:
     path = ROOT / "docs/ACCEPTANCE.md"
     assert path.is_file(), "缺少 docs/ACCEPTANCE.md"
     document = path.read_text(encoding="utf-8")
     for token in (
-        "M1",
-        "M2",
-        "M3",
-        "M4",
+        "能力 → 唯一实现 → 自动证据",
+        "可靠发送与基础安全",
+        "管控与 Web 发送",
+        "运营闭环",
+        "报表、审计与交付",
         "FR-05a",
         "NFR-03/04",
         "security_acceptance.py",
+        "scripts/verify_all.sh",
         "VENDOR_MOCK=1",
         "AUTH_MOCK=1",
         "log-sink",
-        "T4.11",
-        "T4.12",
-        "[HANDOVER]",
-        "RTO≤30min",
+        "release manifest",
     ):
         assert token in document
-    assert "真实企微" in document and "禁止" in document
+    assert "真实 LDAP" in document and "企业微信" in document and "禁止" in document
+    for stale in ("<redacted-", "## 2026-", " passed", "| PASS", "| **BLOCKED**"):
+        assert stale not in document
 
 
 def test_traceability_points_security_compliance_to_executable_acceptance() -> None:
