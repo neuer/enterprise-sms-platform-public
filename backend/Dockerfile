@@ -46,6 +46,14 @@ COPY deploy/scripts/vendor_control_protocol.py ./vendor_control_protocol.py
 COPY schema.sql ./schema.sql
 COPY VERSION ./VERSION
 
+# The release build context is materialized with private directory modes.  The
+# runtime user still needs to traverse the application package and migration
+# trees, so normalize only those copied runtime trees before dropping root.
+RUN find /app/app /app/migrations /app/scripts_support \
+      -type d -exec chmod 0755 {} + \
+    && find /app/app /app/migrations /app/scripts_support \
+      -type f -exec chmod 0644 {} +
+
 USER sms
 EXPOSE 8000
 
