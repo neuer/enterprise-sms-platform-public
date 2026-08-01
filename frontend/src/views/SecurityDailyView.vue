@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
 import {
+  generateSecurityDailyReport,
   getSecurityDailyConfiguration,
   getSecurityDailyOverview,
   getSecurityDailyReport,
@@ -79,6 +80,7 @@ const previewOpen = ref(false)
 const configOpen = ref(false)
 const configLoading = ref(false)
 const configSaving = ref(false)
+const generationLoading = ref(false)
 const configErrorMessage = ref("")
 const configEnabled = ref(false)
 const configRecipients = ref("")
@@ -109,7 +111,7 @@ const reportsEmptyHint = computed(() => {
   const nextSchedule = overview.value.next_scheduled_at
     ? displayMoment(overview.value.next_scheduled_at)
     : "下一次调度时间"
-  return `暂无已生成安全日报；${nextSchedule}后生成。生成后可打开详情进行安全预览和手动投递。`
+  return `暂无已生成安全日报；可点击“立即生成”读取上一上海自然日的脱敏证据（不会自动发送）。${nextSchedule}后仍会按计划自动生成；生成后可打开详情进行安全预览和手动投递。`
 })
 
 function statusLabel(value: string): string {
@@ -257,6 +259,30 @@ async function refresh(): Promise<void> {
   await Promise.all([loadOverview(), loadReports()])
 }
 
+async function generateReport(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      "将读取上一上海自然日的脱敏证据并生成日报，不会自动发送邮件。",
+      "立即生成安全日报",
+      { confirmButtonText: "立即生成", cancelButtonText: "取消", type: "info" },
+    )
+    generationLoading.value = true
+    const report = await generateSecurityDailyReport()
+    await refresh()
+    await openReport(report.report_date)
+    if (report.generation_status === "ready") {
+      ElMessage.success("安全日报已生成，可在详情中预览或手动投递")
+    } else {
+      ElMessage.warning(report.last_error ?? "证据源不可用，已记录数据不可用状态")
+    }
+  } catch (error) {
+    if (error === "cancel" || error === "close") return
+    ElMessage.error(apiErrorMessage(error, "安全日报生成失败，请刷新重试"))
+  } finally {
+    generationLoading.value = false
+  }
+}
+
 async function openReport(reportDate: string): Promise<void> {
   detailLoading.value = true
   drawerOpen.value = true
@@ -330,6 +356,7 @@ onMounted(() => void refresh())
       </div>
       <div>
         <el-button plain :loading="configLoading" @click="openConfiguration">配置邮件</el-button>
+        <el-button plain :disabled="!overview?.enabled" :loading="generationLoading" @click="generateReport">立即生成</el-button>
         <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
       </div>
     </header>

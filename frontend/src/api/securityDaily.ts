@@ -166,6 +166,12 @@ export function updateSecurityDailyConfiguration(
   })
 }
 
+export function generateSecurityDailyReport(): Promise<SecurityDailyReport> {
+  return apiRequest<SecurityDailyReport>(`${basePath}/generate`, {
+    method: "POST",
+  })
+}
+
 export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Promise<SecurityDailyPage> {
   const query = new URLSearchParams({
     page: String(filters.page ?? 1),

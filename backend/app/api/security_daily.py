@@ -130,6 +130,7 @@ def get_security_daily_service() -> SecurityDailyService:
             settings.security_daily_control_dir,
             settings.security_daily_config_dir,
         ),
+        control_dir=settings.security_daily_control_dir,
     )
 
 
@@ -248,6 +249,27 @@ async def get_security_daily_config(
     except SecurityDailyConfigurationError as error:
         raise _unavailable(str(error)) from None
     return _configuration_model(configuration)
+
+
+@router.post(
+    "/generate",
+    response_model=SecurityDailyReportModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+)
+@audited("security_daily_generate")
+async def generate_security_daily_report(
+    service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> SecurityDailyReportModel:
+    """管理员立即生成上一上海自然日的日报；该操作不会自动投递邮件。"""
+
+    await _admin(facade, credentials)
+    try:
+        record = await service.generate_latest()
+    except SecurityDailyUnavailable as error:
+        raise _unavailable(str(error)) from None
+    return _report_model(record, service, include_payload=False)
 
 
 @router.put(
