@@ -549,6 +549,28 @@ def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     assert module.down_revision == "0039_manual_job_outbox"
 
 
+def test_security_daily_control_migration_is_current_baseline_safe() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0041_security_daily_control.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "security_daily_report" in schema
+    assert "security_daily_delivery_request" in schema
+    assert "CREATE TABLE IF NOT EXISTS security_daily_report" in source
+    assert "CREATE TABLE IF NOT EXISTS security_daily_delivery_request" in source
+    assert "GRANT SELECT, INSERT, UPDATE ON security_daily_report TO sms_send" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_control_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0041_security_daily_control"
+    assert module.down_revision == "0040_background_task_role_matrix"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

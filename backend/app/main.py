@@ -23,6 +23,7 @@ from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
 from app.api.replies import router as replies_router
 from app.api.reports import router as reports_router
+from app.api.security_daily import router as security_daily_router
 from app.api.sensitive_words import router as sensitive_words_router
 from app.api.signs import router as signs_router
 from app.api.templates import router as templates_router
@@ -142,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(replies_router)
     application.include_router(reports_router)
     application.include_router(sensitive_words_router)
+    application.include_router(security_daily_router)
     application.include_router(signs_router)
     application.include_router(templates_router)
     application.include_router(users_router)

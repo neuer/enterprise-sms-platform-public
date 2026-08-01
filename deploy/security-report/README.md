@@ -7,8 +7,8 @@ beat 或固定八件生产 secrets。
 
 ## 固定安全边界
 
-- 发信域名固定为 `reports.example.com`，发件地址固定为
-  `security-daily@reports.example.com`。
+- 发信域名固定为 `reports.neuer.cn`，发件地址固定为该域名下的安全日报专用地址；
+  具体地址由独立 mailer 的版本化配置确认。
 - Resend Key 只从 Compose 的 `resend_api_key` Docker secret 读取，禁止放入
   `.env`、命令参数、日志、数据库或日报。
 - 收件人从独立只读文件读取，每行一个、最多 3 个；仓库不保存真实收件地址。
@@ -18,6 +18,8 @@ beat 或固定八件生产 secrets。
   不跟随重定向，TLS 最低 1.2。
 - 每个报告日期使用同一个 `Idempotency-Key`。429、5xx 或连接失败最多安全重试
   2 次，永久错误不重试，错误信息不包含 Resend 响应正文。
+- 平台 API 只把已脱敏、已校验的请求写到共享 control 目录；本容器独占读取
+  `requests/`、写入 `results/`，API、worker、beat 永远不读取 Resend Key。
 - CI、G2 和快速更新只允许 Fake/Mock 传输，绝不真实调用 Resend。
 
 2026-07-26 已由信息安全负责人确认：脱敏安全日报正文在 Resend 美国区域保存
@@ -48,12 +50,19 @@ Key 不进入命令参数，安装器使用同目录临时文件原子替换并�
 必须在 Resend 控制台设置为：
 
 - Permission: `Sending access`
-- Domain: `reports.example.com`
+- Domain: `reports.neuer.cn`
 
 不要把 Key 粘贴到终端命令参数、聊天、Issue 或 PR。
 
 日志解析器完成后，必须以原子替换方式生成
-`runtime/current.json`；不能把未脱敏原始日志放进这个目录。
+`runtime/current.json`；不能把未脱敏原始日志放进这个目录。自动日报任务还需要解析器
+把同一份已脱敏、已校验对象按 `YYYY-MM-DD.json` 原子写入 control 目录的
+`incoming/` 子目录；不能把未脱敏原始日志放进 control 目录。正式页面投递还需要
+先创建 API 与 mailer 共享的 control 目录，并将其所有权交给 UID 10001：
+
+```bash
+install -d -o 10001 -g 10001 -m 0700 ../security-report-control
+```
 
 ## 本地校验与单次发送
 
@@ -63,7 +72,7 @@ Key 不进入命令参数，安装器使用同目录临时文件原子替换并�
 docker compose --profile send build security-report-mailer
 ```
 
-默认 service command 会真实发送。要只校验输入且不联网，显式覆盖 command：
+默认 service command 会持续监听 control 目录并按 API 请求投递。要只校验输入且不联网，显式覆盖 command：
 
 ```bash
 docker compose --profile send run --rm security-report-mailer \
@@ -71,11 +80,18 @@ docker compose --profile send run --rm security-report-mailer \
   --recipients-file /run/config/recipients
 ```
 
-确认报告日期、收件人数和 Resend 域名状态后，执行单次真实投递：
+确认报告日期、收件人数和 Resend 域名状态后，启动独立投递器。正式控制面使用持续运行模式：
 
 ```bash
-docker compose --profile send run --rm security-report-mailer
+docker compose --profile send up -d security-report-mailer
 ```
+
+如需仅对一个已生成的 `current.json` 做一次性发送，可在受控运维场景中显式覆写为
+`run --rm ... --once`；生产管理员页面不走这个旁路。
+
+平台管理员页面的“手动投递 / 重试”只会产生脱敏控制请求；mailer 处理后回写
+`results/<request_id>.json`，API 在后续读取时更新投递事实和审计时间线。页面不会读取
+收件地址、Key 或 Resend 响应正文。
 
 成功输出只包含报告日期，不显示收件地址、Key、邮件正文或 Resend 响应正文。
 失败时先修复原因，再用同一报告日期重跑；幂等键会阻止重复投递。
@@ -83,15 +99,17 @@ docker compose --profile send run --rm security-report-mailer
 ## 上线前检查
 
 1. `dig` 能查到 Resend 当前显示的 DKIM、MAIL FROM MX 和 SPF 三条记录，以及
-   `_dmarc.reports.example.com` 的 `v=DMARC1; p=none;` 监控策略。
-2. Resend Domains 页面显示 `reports.example.com` 为 `verified`。
+   `_dmarc.reports.neuer.cn` 的 `v=DMARC1; p=none;` 监控策略。
+2. Resend Domains 页面显示 `reports.neuer.cn` 为 `verified`。
 3. API Key 是 Sending-only 且绑定上述域名。
 4. `secrets/resend_api_key` 与 `config/recipients.txt` 权限均为 `0600`。
 5. `runtime/current.json` 已通过本地只校验命令。
-6. 首封测试邮件必须由操作者明确发起，并核对 HTML、纯文本回退与邮件头认证结果。
+6. control 目录存在且 UID 10001 可读写，requests/results 均为 `0700`，文件为 `0600`。
+7. 首封测试邮件必须由操作者明确发起，并核对 HTML、纯文本回退与邮件头认证结果。
 
-解析器和定时调度尚未接入前，不安装 systemd timer；先保持手工单次发送，避免空
-报告或旧报告被每日重复触发。
+服务器安全日报生成任务由 bulk worker 每分钟检查，在上海时间每日 08:00 之后只消费前一
+上海自然日的脱敏快照；缺少或校验失败时记录 `unavailable`，不会用 0 伪造指标。Beat
+修改其他任务间隔仍需重启 beat；日报固定检查频率不代替报告日界线。
 
 DMARC 初始使用 `p=none`，只监控、不改变失败邮件处置。确认所有合法发信来源持续
 通过 DMARC 后，再单独评审是否升级为 `quarantine` 或 `reject`；不要在首次投递时

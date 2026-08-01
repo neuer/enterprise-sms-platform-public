@@ -56,6 +56,7 @@ TASK_MODULES = (
     "app.tasks.housekeeping",
     "app.tasks.usage_projection",
     "app.tasks.imports",
+    "app.tasks.security_daily",
 )
 broker_url = (
     settings.redis_broker_url

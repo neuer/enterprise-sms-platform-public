@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     metrics_snapshot_ttl_seconds: float = 15.0
     import_storage_dir: Path = Path("/var/lib/sms/imports")
     export_storage_dir: Path = Path("/var/lib/sms/exports")
+    security_daily_control_dir: Path = Path("/run/security-report")
 
     vendor_secret_name_file: Path = Path("/run/secrets/vendor_secret_name")
     vendor_secret_key_file: Path = Path("/run/secrets/vendor_secret_key")
