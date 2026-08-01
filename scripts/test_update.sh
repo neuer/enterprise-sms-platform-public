@@ -159,6 +159,26 @@ remote_git_preflight() {
   printf '%s\n' "$output"
 }
 
+verify_operator_git_after_switch() {
+  local phase="$1"
+  local origin repository commit
+  origin="$(remote_git_preflight remote get-url origin)"
+  if ! repository="$(github_repository_identity "$origin")" ||
+    [[ "$repository" != "$LOCAL_REPOSITORY" ]]; then
+    echo "test-update: ${phase} 后 operator Git origin 与本地仓库不一致" >&2
+    return 1
+  fi
+  commit="$(remote_git_preflight rev-parse HEAD)"
+  if [[ "$commit" != "$TARGET_COMMIT" ]]; then
+    echo "test-update: ${phase} 后 operator Git HEAD 与目标 commit 不一致" >&2
+    return 1
+  fi
+  if ! remote_git_preflight status --porcelain=v1 --untracked-files=all >/dev/null; then
+    echo "test-update: ${phase} 后 operator Git 工作树不可读；拒绝记录成功" >&2
+    return 1
+  fi
+}
+
 github_write_preflight() {
   local authenticated_repository
   if [[ "$COMMAND" != apply && "$COMMAND" != promote ]]; then
@@ -315,11 +335,7 @@ if [[ "$COMMAND" == promote ]]; then
   PROMOTE_STATUS="$(
     remote_sms_compose test-update promote "$REF" "$TARGET_COMMIT"
   )"
-  FINAL_COMMIT="$(remote_git_preflight rev-parse HEAD)"
-  [[ "$FINAL_COMMIT" == "$TARGET_COMMIT" ]] || {
-    echo "test-update: promote 后远端 commit 不匹配" >&2
-    exit 1
-  }
+  verify_operator_git_after_switch promote
   echo "$PROMOTE_STATUS"
   bash "$ROOT/scripts/record_test_deployment.sh" \
     "$LOCAL_REPOSITORY" "$TARGET_COMMIT" "$REF" "Promoted verified test tree to main"
@@ -679,21 +695,7 @@ remote_sms_compose test-update apply
 # 固定远端阶段: sms-compose test-update verify
 remote_sms_compose test-update verify
 # verify 后再次以日常更新用户核对 origin、HEAD 和工作树读路径；root 控制面通过不代表 operator 可用。
-POST_APPLY_REMOTE_ORIGIN="$(remote_git_preflight remote get-url origin)"
-if ! POST_APPLY_REMOTE_REPOSITORY="$(github_repository_identity "$POST_APPLY_REMOTE_ORIGIN")" ||
-  [[ "$POST_APPLY_REMOTE_REPOSITORY" != "$LOCAL_REPOSITORY" ]]; then
-  echo "test-update: apply 后 operator Git origin 与本地仓库不一致" >&2
-  exit 1
-fi
-POST_APPLY_REMOTE_COMMIT="$(remote_git_preflight rev-parse HEAD)"
-[[ "$POST_APPLY_REMOTE_COMMIT" == "$TARGET_COMMIT" ]] || {
-  echo "test-update: apply 后 operator Git HEAD 与目标 commit 不一致" >&2
-  exit 1
-}
-if ! remote_git_preflight status --porcelain=v1 --untracked-files=all >/dev/null; then
-  echo "test-update: apply 后 operator Git 工作树不可读；拒绝记录成功" >&2
-  exit 1
-fi
+verify_operator_git_after_switch apply
 # 固定远端阶段: sms-compose test-update status
 FINAL_STATUS="$(remote_sms_compose test-update status)"
 if ! printf '%s' "$FINAL_STATUS" |

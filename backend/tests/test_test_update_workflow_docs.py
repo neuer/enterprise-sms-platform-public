@@ -91,7 +91,7 @@ def test_apply_rechecks_operator_git_after_verify_before_recording_success() -> 
     script = read("scripts/test_update.sh")
 
     verify = script.index("remote_sms_compose test-update verify")
-    post_apply_origin = script.index("POST_APPLY_REMOTE_ORIGIN")
+    post_apply_origin = script.index("verify_operator_git_after_switch apply")
     final_status = script.index("FINAL_STATUS=")
     deployment_record = script.rindex("record_test_deployment.sh")
 
@@ -103,6 +103,12 @@ def test_apply_rechecks_operator_git_after_verify_before_recording_success() -> 
         "拒绝记录成功",
     ):
         assert phrase in script
+
+    promote = script.index("verify_operator_git_after_switch promote")
+    promote_record = script.index(
+        '"Promoted verified test tree to main"',
+    )
+    assert promote < promote_record
 
 
 def test_rehearsal_report_records_five_consecutive_verified_updates() -> None:
