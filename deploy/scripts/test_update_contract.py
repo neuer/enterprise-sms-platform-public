@@ -266,6 +266,8 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
 _SAFE_NON_RUNTIME_GATES = frozenset(
     {
         "deploy/database-roles.md",
+        # 仅用于把安全日报 control 运行态目录保留在 Git 中；不进入镜像或服务配置。
+        "deploy/security-report-control/.gitignore",
         "docs/runbooks/public-baseline-activation.md",
         "scripts/e2e_api.py",
         "scripts/canonicalize_sbom.py",
