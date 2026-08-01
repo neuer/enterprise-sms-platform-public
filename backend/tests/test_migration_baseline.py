@@ -571,6 +571,29 @@ def test_security_daily_control_migration_is_current_baseline_safe() -> None:
     assert module.down_revision == "0040_background_task_role_matrix"
 
 
+def test_security_daily_runtime_config_migration_backfills_incremental_databases() -> None:
+    revision = BACKEND / "migrations/versions/0042_security_daily_runtime_config.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for key in (
+        "security_daily_enabled",
+        "security_daily_recipient_count",
+        "security_daily_resend_configured",
+    ):
+        assert key in source
+    assert "ON CONFLICT(key) DO NOTHING" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_runtime_config_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0042_security_daily_runtime_config"
+    assert module.down_revision == "0041_security_daily_control"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"
