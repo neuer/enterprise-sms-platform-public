@@ -572,7 +572,7 @@ def test_security_daily_control_migration_is_current_baseline_safe() -> None:
 
 
 def test_security_daily_runtime_config_migration_backfills_incremental_databases() -> None:
-    revision = BACKEND / "migrations/versions/0042_security_daily_runtime_config.py"
+    revision = BACKEND / "migrations/versions/0042_security_daily_config.py"
     source = revision.read_text(encoding="utf-8")
 
     for key in (
@@ -590,7 +590,7 @@ def test_security_daily_runtime_config_migration_backfills_incremental_databases
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "0042_security_daily_runtime_config"
+    assert module.revision == "0042_security_daily_config"
     assert module.down_revision == "0041_security_daily_control"
 
 
