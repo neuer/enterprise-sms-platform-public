@@ -82,6 +82,7 @@ describe("仪表盘", () => {
     expect(wrapper.text()).toContain("余额较低")
     expect(wrapper.text()).toContain("uncertain")
     expect(wrapper.text()).toContain("aggregate_stats")
+    expect(wrapper.text()).toContain("聚合最近三日的消息统计并写入每日统计数据")
     expect(wrapper.findAll(".job-dot.danger")).toHaveLength(1)
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/reports/dashboard",

@@ -64,6 +64,7 @@ describe("统一运维中心", () => {
     await tab(wrapper, "任务健康").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("poll_report")
+    expect(wrapper.text()).toContain("轮询厂商状态报告，保存原始报文后解析并更新发送结果")
     await wrapper.findAll("button").find((item) => item.text().includes("手动触发"))!.trigger("click")
     await flushPromises()
     expect(fetch.mock.calls.some(([url, init]) => String(url).includes("/jobs/poll_report/trigger") && init?.method === "POST")).toBe(true)
