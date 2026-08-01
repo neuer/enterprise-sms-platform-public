@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import yaml
@@ -133,7 +134,7 @@ def test_delivery_uses_exact_endpoint_safe_headers_and_rendered_variants() -> No
         "User-Agent": "sms-platform-security-daily/1.0",
     }
     payload = json.loads(encoded)
-    assert payload["from"] == "短信平台安全日报 <security-daily@reports.example.com>"
+    assert payload["from"] == "短信平台安全日报 <security-daily@reports.neuer.cn>"
     assert payload["to"] == ["lin.tong@example.com"]
     assert payload["subject"] == "[短信平台安全日报][关注] 2026-07-15"
     assert "服务器安全日报" in payload["html"]
@@ -284,6 +285,53 @@ def test_default_https_transport_is_fixed_to_resend_without_proxy_or_redirect(
     assert headers == {"Authorization": "Bearer re_test"}
     assert captured["read_size"] == module.MAX_RESPONSE_BYTES + 1
     assert captured["closed"] is True
+
+
+def test_control_loop_sends_redacted_request_and_writes_only_safe_result(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    request_dir.mkdir(parents=True)
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    request_path = request_dir / f"{request_id}.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "request_id": str(request_id),
+                "report_date": payload["report_date"],
+                "action": "send",
+                "payload": payload,
+            }
+        ),
+        encoding="utf-8",
+    )
+    key_file = tmp_path / "key"
+    key_file.write_text("re_test_value\n", encoding="utf-8")
+    recipients_file = tmp_path / "recipients"
+    recipients_file.write_text("security-owner@example.com\n", encoding="utf-8")
+
+    result = module.serve_control(
+        control_dir,
+        api_key_file=key_file,
+        recipients_file=recipients_file,
+        once=True,
+        transport=FakeTransport([(200, b'{"id":"email-123"}')]),
+        sleep=lambda _delay: None,
+    )
+
+    assert result == 0
+    assert not request_path.exists()
+    result_payload = json.loads(
+        (control_dir / "results" / f"{request_id}.json").read_text(encoding="utf-8")
+    )
+    assert result_payload["state"] == "sent"
+    encoded = json.dumps(result_payload, ensure_ascii=False)
+    assert "re_test_value" not in encoded
+    assert "security-owner@example.com" not in encoded
+    assert "服务器安全日报" not in encoded
 
 
 def test_companion_container_uses_only_dedicated_files_and_docker_secret() -> None:

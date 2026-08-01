@@ -65,6 +65,7 @@ const navigation: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { label: "回调任务", path: "/callbacks", marker: "调", roles: ["admin"] },
       { label: "运维中心", path: "/ops", marker: "运", roles: ["admin"] },
+      { label: "安全日报", path: "/security-daily", marker: "安", roles: ["admin"] },
       { label: "审计日志", path: "/audit", marker: "录", roles: ["admin"] },
     ],
   },

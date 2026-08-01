@@ -4,14 +4,17 @@
 import argparse
 import http.client
 import json
+import os
 import re
 import ssl
 import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
+from uuid import UUID
 
 import render_security_daily_report as renderer
 
@@ -24,10 +27,13 @@ MAX_HTML_BYTES = 256 * 1024
 MAX_TEXT_BYTES = 128 * 1024
 MAX_RECIPIENTS = 3
 MAX_ATTEMPTS = 3
+MAX_CONTROL_REQUEST_BYTES = 384 * 1024
+MAX_CONTROL_ERROR_LENGTH = 256
 RETRY_DELAYS_S = (1.0, 2.0)
 TRANSIENT_STATUSES = frozenset({408, 429, *range(500, 600)})
-DEFAULT_SENDER = "短信平台安全日报 <security-daily@reports.example.com>"
+DEFAULT_SENDER = "短信平台安全日报 <security-daily@reports.neuer.cn>"
 USER_AGENT = "sms-platform-security-daily/1.0"
+SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
 EMAIL_PATTERN = re.compile(
     r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
@@ -56,6 +62,16 @@ class DeliveryReceipt:
 
     email_id: str
     report_date: str
+
+
+@dataclass(frozen=True, slots=True)
+class ControlRequest:
+    """已校验的 API 脱敏投递请求；不包含 Resend Key 或收件人。"""
+
+    request_id: UUID
+    report_date: str
+    action: str
+    report: renderer.SecurityDailyReport
 
 
 class ResendHttpsTransport:
@@ -229,11 +245,175 @@ class ResendClient:
         raise AssertionError("unreachable Resend retry state")
 
 
+def _control_request(path: Path) -> ControlRequest:
+    """严格读取 API 写入的单文件请求，并再次执行 mailer 侧契约校验。"""
+
+    try:
+        if path.stat().st_size > MAX_CONTROL_REQUEST_BYTES:
+            raise ResendConfigurationError("control request is too large")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or set(value) != {
+            "request_id",
+            "report_date",
+            "action",
+            "payload",
+        }:
+            raise ResendConfigurationError("control request has invalid fields")
+        request_id = UUID(str(value["request_id"]))
+        report_date = str(value["report_date"])
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+            raise ResendConfigurationError("control request date is invalid")
+        action = str(value["action"])
+        if action not in {"send", "retry"}:
+            raise ResendConfigurationError("control request action is invalid")
+        report = renderer.parse_report(value["payload"])
+    except ResendConfigurationError:
+        raise
+    except (OSError, UnicodeError, ValueError, TypeError, renderer.ReportValidationError):
+        raise ResendConfigurationError("control request is invalid") from None
+    if report.report_date != report_date:
+        raise ResendConfigurationError("control request date does not match report")
+    return ControlRequest(request_id, report_date, action, report)
+
+
+def _write_control_result(
+    control_dir: Path,
+    request_id: UUID,
+    report_date: str,
+    state: str,
+    error: str | None = None,
+) -> None:
+    """原子写回不含凭据、地址和正文的投递结果。"""
+
+    if state not in {"sent", "failed"}:
+        raise ResendConfigurationError("control result state is invalid")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+        raise ResendConfigurationError("control result date is invalid")
+    safe_error = error[:MAX_CONTROL_ERROR_LENGTH] if error else None
+    result_dir = control_dir / "results"
+    result_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination = result_dir / f"{request_id}.json"
+    temporary = result_dir / f".{request_id}.tmp"
+    body = {
+        "request_id": str(request_id),
+        "report_date": report_date,
+        "state": state,
+        "completed_at": datetime.now(SHANGHAI_TZ).isoformat(),
+        "error": safe_error,
+    }
+    try:
+        temporary.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(destination)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ResendConfigurationError("control result cannot be written") from exc
+
+
+def process_control_request(
+    path: Path,
+    *,
+    control_dir: Path,
+    api_key_file: Path,
+    recipients_file: Path,
+    transport: ResendTransport | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> str:
+    """处理一个 API 请求；失败也写回可重试的失败结果。"""
+
+    request = _control_request(path)
+    try:
+        api_key = read_api_key(api_key_file)
+        recipients = read_recipients(recipients_file)
+        receipt = ResendClient(
+            api_key=api_key,
+            transport=transport,
+            sleep=sleep,
+        ).send(request.report, recipients=recipients)
+    except (ResendConfigurationError, ResendDeliveryError) as exc:
+        _write_control_result(
+            control_dir,
+            request.request_id,
+            request.report_date,
+            "failed",
+            str(exc),
+        )
+        return "failed"
+    if receipt.report_date != request.report_date:
+        raise ResendDeliveryError("Resend receipt date mismatch")
+    _write_control_result(
+        control_dir,
+        request.request_id,
+        request.report_date,
+        "sent",
+    )
+    return "sent"
+
+
+def serve_control(
+    control_dir: Path,
+    *,
+    api_key_file: Path,
+    recipients_file: Path,
+    poll_seconds: float = 1.0,
+    once: bool = False,
+    transport: ResendTransport | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> int:
+    """轮询受控请求目录；只由此进程加载 Resend secret 并访问外网。"""
+
+    if poll_seconds <= 0 or poll_seconds > 60:
+        raise ResendConfigurationError("control polling interval is invalid")
+    request_dir = control_dir / "requests"
+    request_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (control_dir / "results").mkdir(mode=0o700, parents=True, exist_ok=True)
+    wait = sleep or time.sleep
+    while True:
+        processed = False
+        try:
+            candidates = sorted(request_dir.glob("*.json"))
+        except OSError as exc:
+            raise ResendConfigurationError("control request directory is unavailable") from exc
+        for path in candidates:
+            claim = path.with_name(f".{path.stem}.{os.getpid()}.processing")
+            try:
+                path.replace(claim)
+            except OSError:
+                continue
+            processed = True
+            try:
+                state = process_control_request(
+                    claim,
+                    control_dir=control_dir,
+                    api_key_file=api_key_file,
+                    recipients_file=recipients_file,
+                    transport=transport,
+                    sleep=sleep,
+                )
+                print(f"security report control result state={state}")
+            except (ResendConfigurationError, ResendDeliveryError) as exc:
+                # malformed requests cannot be safely associated with a date;
+                # remove them and leave a generic operator-visible error.
+                print(f"security report control request rejected: {exc}", file=sys.stderr)
+            finally:
+                try:
+                    claim.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if once:
+            return 0
+        if not processed:
+            wait(poll_seconds)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate or send a redacted security daily report through Resend"
     )
-    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--input", type=Path)
     parser.add_argument(
         "--api-key-file",
         type=Path,
@@ -249,11 +429,39 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="perform the external delivery; default only validates inputs",
     )
+    parser.add_argument(
+        "--control-dir",
+        type=Path,
+        default=Path("/run/control"),
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="serve API control requests; only this process reads the Resend secret",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="process one control directory sweep and exit",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.serve or args.once:
+        try:
+            return serve_control(
+                args.control_dir,
+                api_key_file=args.api_key_file,
+                recipients_file=args.recipients_file,
+                once=True if args.once else False,
+            )
+        except (ResendConfigurationError, ResendDeliveryError) as exc:
+            print(f"security report control failed: {exc}", file=sys.stderr)
+            return 2
+    if args.input is None:
+        _parser().error("--input is required unless --serve or --once is used")
     try:
         report = renderer.load_report(args.input)
         recipients = read_recipients(args.recipients_file)

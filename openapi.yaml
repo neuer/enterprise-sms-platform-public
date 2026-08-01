@@ -20,6 +20,7 @@ info:
     - v1.6.28：callback/export 使用可续租 UUID fencing；回调暴露稳定 event_id 与租约状态
     - v1.6.33：拆分无依赖 livez 与严格依赖 readyz；健康响应不暴露内部组件或失败原因
     - v1.6.34：生产 callback 强制 HTTPS；签名密钥/协议版本按事件固化；敏感密文与导出帧绑定业务上下文
+    - v1.6.39：服务器安全日报脱敏事实、预览与独立 mailer 受控投递
 
 servers:
   - url: https://sms.example.com
@@ -34,6 +35,7 @@ tags:
   - name: replies
   - name: admin
   - name: reports
+  - name: security-daily
 
 paths:
   /livez:
@@ -2182,6 +2184,107 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /api/v1/web/admin/security-daily/overview:
+    get:
+      tags: [security-daily]
+      summary: 查询安全日报配置与最近投递概览
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyOverviewModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/web/admin/security-daily/reports:
+    get:
+      tags: [security-daily]
+      summary: 分页查询安全日报记录
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: date_from, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+        - { name: date_to, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [normal, attention, high] }, { type: 'null' }] } }
+        - { name: generation_status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, ready, failed, unavailable] }, { type: 'null' }] } }
+        - { name: delivery_status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [not_sent, pending, sending, sent, failed] }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyPageModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/web/admin/security-daily/reports/{report_date}:
+    get:
+      tags: [security-daily]
+      summary: 查询单日安全日报详情
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyReportModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/web/admin/security-daily/reports/{report_date}/preview:
+    get:
+      tags: [security-daily]
+      summary: 预览安全日报且不触发投递
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: "预览结果；数据不可用时明确返回 available=false", content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyPreviewModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/web/admin/security-daily/reports/{report_date}/send:
+    post:
+      tags: [security-daily]
+      summary: 经管理员确认提交一次安全日报投递请求
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityDailyDeliveryActionModel' }
+      responses:
+        '202': { description: "已写入独立 mailer 控制目录", content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyDeliveryResponseModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/web/admin/security-daily/reports/{report_date}/retry:
+    post:
+      tags: [security-daily]
+      summary: 经管理员确认重试失败的安全日报投递
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityDailyDeliveryActionModel' }
+      responses:
+        '202': { description: "已写入独立 mailer 控制目录", content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyDeliveryResponseModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/web/admin/audit-logs:
     get:
       tags: [admin]
@@ -2403,11 +2506,97 @@ components:
     Conflict:
       description: 状态冲突
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ServiceUnavailable:
+      description: 安全日报独立投递控制面或数据源不可用
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     NotFound:
       description: 资源不存在
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   schemas:
+    SecurityDailyOverviewModel:
+      type: object
+      additionalProperties: false
+      required: [enabled, schedule_time, timezone, period_description, last_generated_at, last_delivered_at, next_scheduled_at, latest_failure, delivery_status, recipient_count, resend_configured, sender_domain, sender_address, beat_restart_required]
+      properties:
+        enabled: { type: boolean }
+        schedule_time: { type: string }
+        timezone: { type: string }
+        period_description: { type: string }
+        last_generated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        last_delivered_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        next_scheduled_at: { type: string, format: date-time }
+        latest_failure: { anyOf: [{ type: string }, { type: 'null' }] }
+        delivery_status: { anyOf: [{ type: string, enum: [not_sent, pending, sending, sent, failed] }, { type: 'null' }] }
+        recipient_count: { type: integer, minimum: 0, maximum: 3 }
+        resend_configured: { type: boolean }
+        sender_domain: { type: string }
+        sender_address: { type: string }
+        beat_restart_required: { type: boolean }
+
+    SecurityDailyReportModel:
+      type: object
+      additionalProperties: false
+      required: [id, report_date, period_start, period_end, status, generation_status, delivery_status, generated_at, delivered_at, recipient_count, retry_count, last_error, last_error_at, updated_at]
+      properties:
+        id: { type: integer, minimum: 1 }
+        report_date: { type: string, format: date }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        status: { type: string, enum: [normal, attention, high] }
+        generation_status: { type: string, enum: [pending, ready, failed, unavailable] }
+        delivery_status: { type: string, enum: [not_sent, pending, sending, sent, failed] }
+        generated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        delivered_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        recipient_count: { type: integer, minimum: 0, maximum: 3 }
+        retry_count: { type: integer, minimum: 0 }
+        last_error: { anyOf: [{ type: string }, { type: 'null' }] }
+        last_error_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        updated_at: { type: string, format: date-time }
+        payload: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        timeline: { type: array, items: { type: object, additionalProperties: true } }
+
+    SecurityDailyPageModel:
+      type: object
+      additionalProperties: false
+      required: [items, total, page, page_size]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecurityDailyReportModel' } }
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+
+    SecurityDailyPreviewModel:
+      type: object
+      additionalProperties: false
+      required: [report_date, status, available, message, html, text, payload]
+      properties:
+        report_date: { type: string, format: date }
+        status: { type: string, enum: [normal, attention, high] }
+        available: { type: boolean }
+        message: { anyOf: [{ type: string }, { type: 'null' }] }
+        html: { type: string }
+        text: { type: string }
+        payload: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+
+    SecurityDailyDeliveryActionModel:
+      type: object
+      additionalProperties: false
+      required: [confirm]
+      properties:
+        confirm: { type: boolean, const: true }
+
+    SecurityDailyDeliveryResponseModel:
+      type: object
+      additionalProperties: false
+      required: [request_id, report_date, action, state, idempotent]
+      properties:
+        request_id: { type: string, format: uuid }
+        report_date: { type: string, format: date }
+        action: { type: string, enum: [send, retry] }
+        state: { type: string, enum: [pending, sent, failed] }
+        idempotent: { type: boolean }
+
     AuthProvider:
       type: object
       additionalProperties: false

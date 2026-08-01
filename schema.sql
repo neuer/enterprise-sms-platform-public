@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.39  2026-08-01
+-- v1.6.39：安全日报脱敏事实、独立 mailer 投递控制与管理员查询页面
 -- v1.6.38  2026-07-29
 -- v1.6.38：API 手动任务触发经 PostgreSQL Outbox 跨越 broker 隔离边界
 -- v1.6.37  2026-07-29
@@ -1367,6 +1369,64 @@ CREATE TABLE stat_daily (
     PRIMARY KEY (stat_date, dim_type, dim_value, category)
 );
 
+-- ─────────────── 服务器安全日报 ───────────────
+-- payload 只允许 render_security_daily_report.py 契约定义的脱敏 JSON；
+-- Resend Key、收件地址、原始日志和短信号码永不进入平台数据库。
+CREATE TABLE security_daily_report (
+    id                BIGSERIAL PRIMARY KEY,
+    report_date       DATE NOT NULL UNIQUE,
+    period_start      TIMESTAMPTZ NOT NULL,
+    period_end        TIMESTAMPTZ NOT NULL,
+    status             VARCHAR(16) NOT NULL
+                      CHECK (status IN ('normal','attention','high')),
+    generation_status  VARCHAR(16) NOT NULL DEFAULT 'unavailable'
+                      CHECK (generation_status IN ('pending','ready','failed','unavailable')),
+    delivery_status    VARCHAR(16) NOT NULL DEFAULT 'not_sent'
+                      CHECK (delivery_status IN ('not_sent','pending','sending','sent','failed')),
+    payload            JSONB,
+    generated_at       TIMESTAMPTZ,
+    delivered_at       TIMESTAMPTZ,
+    recipient_count    SMALLINT NOT NULL DEFAULT 0
+                      CHECK (recipient_count BETWEEN 0 AND 3),
+    retry_count        SMALLINT NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    last_error         VARCHAR(256),
+    last_error_at      TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_security_daily_period CHECK (period_start < period_end),
+    CONSTRAINT ck_security_daily_payload_ready CHECK (
+      generation_status <> 'ready' OR payload IS NOT NULL
+    )
+);
+CREATE INDEX idx_security_daily_report_status
+    ON security_daily_report(status,report_date DESC);
+CREATE INDEX idx_security_daily_report_delivery
+    ON security_daily_report(delivery_status,report_date DESC);
+
+CREATE TABLE security_daily_delivery_request (
+    request_id       UUID PRIMARY KEY,
+    report_id        BIGINT NOT NULL
+                     REFERENCES security_daily_report(id) ON DELETE RESTRICT,
+    report_date      DATE NOT NULL,
+    action           VARCHAR(8) NOT NULL CHECK (action IN ('send','retry')),
+    state            VARCHAR(8) NOT NULL DEFAULT 'pending'
+                     CHECK (state IN ('pending','sent','failed')),
+    dedup_key        VARCHAR(192) NOT NULL UNIQUE,
+    requested_by     VARCHAR(64) NOT NULL,
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at     TIMESTAMPTZ,
+    error            VARCHAR(256),
+    CONSTRAINT ck_security_daily_request_completion CHECK (
+      (state='pending' AND completed_at IS NULL)
+      OR (state IN ('sent','failed') AND completed_at IS NOT NULL)
+    )
+);
+CREATE INDEX idx_security_daily_request_pending
+    ON security_daily_delivery_request(state,requested_at)
+    WHERE state='pending';
+CREATE INDEX idx_security_daily_request_report
+    ON security_daily_delivery_request(report_id,requested_at DESC);
+
 -- ─────────────── 系统配置 / 审计 ───────────────
 CREATE TABLE sys_config (
     key         VARCHAR(64) PRIMARY KEY,
@@ -1433,7 +1493,11 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('job_history_days',          '30',    'int',  'job_run 任务运行记录保留天数'),
 -- v1.6.27 新增
 ('usage_projection_reconcile_seconds','300','int','配额/频控投影漂移巡检间隔(重启beat生效)'),
-('usage_ledger_retention_days','90',   'int',  '已过期配额/频控事实账本保留天数');
+('usage_ledger_retention_days','90',   'int',  '已过期配额/频控事实账本保留天数'),
+-- v1.6.39 新增
+('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
+('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
+('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态');
 
 CREATE TABLE audit_log (
     id          BIGSERIAL PRIMARY KEY,
@@ -1565,6 +1629,7 @@ GRANT SELECT ON
     usage_reservation, usage_frequency_subject, usage_frequency_alias,
     usage_quota_entry, usage_frequency_entry, usage_projection,
     usage_projection_drift, stat_daily, sys_config, audit_log, export_task,
+    security_daily_report, security_daily_delivery_request,
     vendor_test_daily_usage, vendor_test_send_attempt, vendor_test_recipient,
     vendor_test_recipient_hmac_alias, vendor_test_operation, alembic_version
 TO sms_accept;
@@ -1575,6 +1640,8 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
 TO sms_accept;
+GRANT INSERT, UPDATE ON
+    security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT INSERT ON callback_task, alert_log TO sms_accept;
 GRANT INSERT, DELETE ON vendor_test_recipient_hmac_alias TO sms_accept;
 GRANT INSERT, UPDATE ON
@@ -1589,7 +1656,7 @@ GRANT USAGE, SELECT ON SEQUENCE
     sensitive_word_id_seq, audit_log_id_seq,
     vendor_test_send_attempt_id_seq, vendor_test_recipient_id_seq,
     callback_task_id_seq, alert_log_id_seq,
-    usage_projection_version_seq
+    usage_projection_version_seq, security_daily_report_id_seq
 TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
@@ -1601,7 +1668,7 @@ GRANT SELECT ON
     balance_snapshot, alert_log, outbox_event, usage_reservation,
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
     usage_frequency_entry, usage_projection, usage_projection_drift, stat_daily,
-    sys_config, vendor_test_daily_usage, vendor_test_send_attempt,
+    sys_config, security_daily_report, vendor_test_daily_usage, vendor_test_send_attempt,
     vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation
 TO sms_send;
 GRANT INSERT, UPDATE, DELETE ON
@@ -1611,6 +1678,7 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, stat_daily
 TO sms_send;
+GRANT INSERT, UPDATE ON security_daily_report TO sms_send;
 GRANT UPDATE, DELETE ON import_task TO sms_send;
 GRANT INSERT, DELETE ON import_phone TO sms_send;
 GRANT INSERT ON
@@ -1628,7 +1696,7 @@ GRANT USAGE, SELECT ON SEQUENCE
     approval_id_seq, balance_snapshot_id_seq, alert_log_id_seq,
     worker_lease_event_id_seq, vendor_test_send_attempt_id_seq,
     audit_log_id_seq, callback_task_id_seq, import_phone_id_seq,
-    usage_projection_version_seq
+    usage_projection_version_seq, security_daily_report_id_seq
 TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。

@@ -128,6 +128,12 @@ const router = createRouter({
       meta: { title: "运维中心", group: "运维", roles: ["admin"] },
     },
     {
+      path: "/security-daily",
+      name: "security-daily",
+      component: () => import("../views/SecurityDailyView.vue"),
+      meta: { title: "安全日报", group: "运维", roles: ["admin"] },
+    },
+    {
       path: "/templates",
       name: "templates",
       component: () => import("../views/TemplateView.vue"),

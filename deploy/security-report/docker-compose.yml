@@ -26,15 +26,19 @@ services:
         source: ./config/recipients.txt
         target: /run/config/recipients
         read_only: true
+      - type: bind
+        source: ${SMS_SECURITY_REPORT_CONTROL_DIR:-../security-report-control}
+        target: /run/control
+        read_only: false
     command:
-      - --input
-      - /reports/current.json
+      - --control-dir
+      - /run/control
       - --api-key-file
       - /run/secrets/resend_api_key
       - --recipients-file
       - /run/config/recipients
-      - --send
-    restart: "no"
+      - --serve
+    restart: unless-stopped
 
 secrets:
   resend_api_key:

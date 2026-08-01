@@ -133,6 +133,11 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
             "schedule": usage_projection_seconds,
             "options": {"queue": "realtime"},
         },
+        "security-daily-generate": {
+            "task": "app.tasks.security_daily_generate",
+            "schedule": 60,
+            "options": {"queue": "bulk"},
+        },
     }
 
 

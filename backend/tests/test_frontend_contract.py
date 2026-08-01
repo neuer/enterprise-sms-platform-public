@@ -49,6 +49,7 @@ def test_qingluan_is_the_only_root_spa() -> None:
         "/messages",
         "/callbacks",
         "/ops",
+        "/security-daily",
         "/templates",
         "/signs",
         "/apps",

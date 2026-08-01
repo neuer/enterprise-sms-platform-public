@@ -228,6 +228,8 @@ services:
     volumes:
       - importdata:/var/lib/sms/imports
       - exportdata:/var/lib/sms/exports
+      # API 只写入脱敏安全日报控制请求；Resend Key 仅存在独立 mailer。
+      - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
       # root agent 的 allowlist 与 10 秒心跳投影只读进入后端。
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
       # 只挂载独立 UDS 目录，绝不挂载宿主 runtime secrets 或 Docker Socket。
@@ -291,6 +293,8 @@ services:
       - importdata:/var/lib/sms/imports
       # 调用厂商前必须重读 control-state.json，不允许容器回写。
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
+      # 只读消费外部已脱敏的日报快照；不获得 Resend secret 或 API 控制写目录。
+      - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:ro
 
   worker-callback:
     <<: *backend

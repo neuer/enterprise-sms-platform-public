@@ -65,6 +65,9 @@ DEFAULTS: dict[str, str] = {
     "job_history_days": "30",
     "usage_projection_reconcile_seconds": "300",
     "usage_ledger_retention_days": "90",
+    "security_daily_enabled": "false",
+    "security_daily_recipient_count": "0",
+    "security_daily_resend_configured": "false",
 }
 
 BEAT_STARTUP_ONLY_KEYS = frozenset(
@@ -120,9 +123,18 @@ INT_CONFIG_KEYS = frozenset(
         "job_history_days",
         "usage_projection_reconcile_seconds",
         "usage_ledger_retention_days",
+        "security_daily_recipient_count",
     }
 )
-BOOL_CONFIG_KEYS = frozenset({"unsubscribe_auto_append", "verify_otp_mask", "anomaly_enabled"})
+BOOL_CONFIG_KEYS = frozenset(
+    {
+        "unsubscribe_auto_append",
+        "verify_otp_mask",
+        "anomaly_enabled",
+        "security_daily_enabled",
+        "security_daily_resend_configured",
+    }
+)
 APPROVED_IPV4_CALLBACK_NETWORKS = (
     IPv4Network("10.0.0.0/8"),
     IPv4Network("172.16.0.0/12"),
@@ -222,7 +234,11 @@ class RuntimePolicy:
     def from_mapping(cls, supplied: Mapping[str, Any]) -> RuntimePolicy:
         values = DEFAULTS | {key: str(value) for key, value in supplied.items()}
         for key in INT_CONFIG_KEYS:
-            _positive(values, key, allow_zero=key == "reserved_realtime_qps")
+            _positive(
+                values,
+                key,
+                allow_zero=key in {"reserved_realtime_qps", "security_daily_recipient_count"},
+            )
         for key in BOOL_CONFIG_KEYS:
             _boolean(values, key)
         window = values["market_send_window"].strip()
@@ -253,6 +269,12 @@ class RuntimePolicy:
         fail_rate = _positive(values, "fail_rate_threshold")
         if fail_rate > 100:
             raise InvalidRuntimePolicy("fail_rate_threshold 必须在 1-100 范围")
+        _bounded(
+            values,
+            "security_daily_recipient_count",
+            maximum=3,
+            allow_zero=True,
+        )
         if values["sensitive_hit_action"] not in {"block", "audit"}:
             raise InvalidRuntimePolicy("sensitive_hit_action 只允许 block/audit")
         try:

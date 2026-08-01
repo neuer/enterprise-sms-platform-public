@@ -3671,6 +3671,56 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .managed-key small { grid-column: 1 / -1; }
 .managed-app-card footer { display: flex; gap: 0 7px; margin-top: 10px; flex-wrap: wrap; }
 .managed-app-card footer .el-button { margin-left: 0; }
+
+.security-daily-overview { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 2fr); gap: 1px; margin-bottom: 16px; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
+.security-daily-state-card { display: grid; gap: 8px; align-content: center; padding: 20px; background: linear-gradient(145deg, #162b23, #13221c); }
+.security-daily-state-card strong { color: var(--tx-hi); font-size: 18px; }
+.security-daily-state-card p { margin: 0; color: var(--tx-2); font-size: 12px; line-height: 1.6; }
+.security-daily-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--hair); }
+.security-daily-facts > div { min-width: 0; padding: 13px 15px; background: var(--panel); }
+.security-daily-facts dt { color: var(--tx-3); font-size: 10px; }
+.security-daily-facts dd { margin: 5px 0 0; overflow: hidden; color: var(--tx); font: 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.security-daily-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.security-daily-filters .el-select { width: 130px; }
+.security-daily-pagination { justify-content: flex-end; margin-top: 16px; }
+.security-detail-heading, .security-detail-heading > div, .security-detail-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.security-detail-heading { justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--hair); }
+.security-detail-heading h2 { margin: 5px 0 0; color: var(--tx-hi); font-size: 18px; }
+.security-detail-summary { padding: 16px; margin: 16px 0; background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; }
+.security-detail-summary p { margin: 8px 0 0; color: var(--tx); line-height: 1.7; }
+.security-detail-summary .security-pending { color: var(--amber); }
+.security-detail-section { padding-top: 18px; }
+.security-metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin-top: 10px; background: var(--hair); }
+.security-metric { display: grid; gap: 5px; min-width: 0; padding: 12px; background: var(--panel); }
+.security-metric span, .security-metric small { color: var(--tx-2); font-size: 10px; }
+.security-metric strong { color: var(--tx-hi); font: 600 18px var(--mono); overflow-wrap: anywhere; }
+.security-metric.good { border-top: 2px solid var(--verdi); }
+.security-metric.warn { border-top: 2px solid var(--amber); }
+.security-metric.danger { border-top: 2px solid #d66b6b; }
+.security-evidence-list { display: grid; gap: 1px; margin-top: 10px; background: var(--hair); }
+.security-evidence-list > div { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 12px; background: var(--panel); }
+.security-evidence-list strong { color: var(--tx-hi); font-size: 12px; }
+.security-evidence-list span { color: var(--tx); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.security-action-list { display: grid; gap: 8px; margin-top: 10px; }
+.security-action-list article { display: flex; gap: 10px; align-items: flex-start; padding: 12px; background: var(--panel); border: 1px solid var(--hair); border-radius: 8px; }
+.security-action-list strong { color: var(--tx-hi); font-size: 12px; }
+.security-action-list p { margin: 4px 0 0; color: var(--tx-2); font-size: 12px; line-height: 1.6; }
+.security-timeline { display: grid; gap: 1px; padding: 0; margin: 10px 0 0; list-style: none; background: var(--hair); }
+.security-timeline li { display: grid; grid-template-columns: 160px 100px minmax(0, 1fr); gap: 10px; padding: 10px 12px; background: var(--panel); font-size: 12px; }
+.security-timeline time { color: var(--tx-2); font-family: var(--mono); }
+.security-timeline strong { color: var(--tx-hi); }
+.security-timeline span { color: var(--tx-2); overflow-wrap: anywhere; }
+.security-preview-text { max-height: 60vh; padding: 14px; margin: 0; overflow: auto; color: var(--tx); font: 12px/1.65 var(--mono); white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--hair); }
+
+@media (max-width: 900px) {
+  .security-daily-overview { grid-template-columns: 1fr; }
+  .security-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .security-daily-facts { grid-template-columns: 1fr; }
+  .security-evidence-list > div, .security-timeline li { grid-template-columns: 1fr; gap: 5px; }
+}
 /* 交接令牌保留原值；小号正文和文字操作改用可达 WCAG AA 的前景层。 */
 .brand small,
 .nav-section h2,

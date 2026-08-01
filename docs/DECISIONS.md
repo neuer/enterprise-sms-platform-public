@@ -174,9 +174,9 @@
 
 ## D030 安全日报通过独立 Resend 伴生容器投递
 
-- 决策：安全日报发送不复用业务告警 SMTP，也不把 Resend Key 加入短信平台 API、worker、beat 或固定八件生产 secrets。独立非 root 伴生容器只读取严格脱敏的日报 JSON、一个专用 Docker secret 和只读收件人文件，通过固定 `api.resend.com:443/emails` REST 端点投递；发信域名固定为 `reports.example.com`，Key 必须是绑定该域名的 Sending-only 权限。CI、G2 和快速更新只使用 Fake/Mock，永不真实外发。日志解析器交付并原子生成当日日报前不启用定时器。
+- 决策：安全日报发送不复用业务告警 SMTP，也不把 Resend Key 加入短信平台 API、worker、beat 或固定八件生产 secrets。平台 API 只把已校验的报告日期、动作和脱敏结构化 payload 原子写入 `/run/security-report/requests`，独立非 root 伴生容器只读取这个控制目录、一个专用 Docker secret 和只读收件人文件，通过固定 `api.resend.com:443/emails` REST 端点投递，再把不含正文、地址或凭据的 sent/failed 结果写入 `results`。发信域名固定为 `reports.neuer.cn`，Key 必须是绑定该域名的 Sending-only 权限。CI、G2 和快速更新只使用 Fake/Mock，永不真实外发。生成任务在 08:00 后消费解析器按日期原子交付的脱敏快照；快照缺失或校验失败时落 `unavailable`，不伪造指标或触发投递。
 - 原因：日报正文与既有告警事件的数据模型、认证方式和重试语义不同，复用 SMTP 会扩大出站与凭据边界，也会破坏告警测试的 log-sink 契约。伴生容器能保持平台八件 secrets 和服务名契约不变，并用日报日期幂等键约束重试。2026-07-26 信息安全负责人已确认：脱敏安全日报正文在 Resend 美国区域保存 30 天符合公司信息安全要求。
-- 影响：`deploy/security-report`、Resend REST 发送脚本、安全测试、`reports.example.com` 的 DKIM/MAIL FROM DNS、子域专用 `p=none` DMARC 监控策略和后续解析器定时交接；真实首封测试与 Key 安装仍是独立、显式授权的运维动作。DMARC 只有在合法来源持续通过后才单独评审升级为 `quarantine` 或 `reject`。
+- 影响：`deploy/security-report`、`security_daily_report`/`security_daily_delivery_request` 事实表、管理员 API/页面、Resend REST 发送脚本、安全测试、`reports.neuer.cn` 的 DKIM/MAIL FROM DNS、子域专用 `p=none` DMARC 监控策略和后续解析器定时交接；真实首封测试与 Key 安装仍是独立、显式授权的运维动作。DMARC 只有在合法来源持续通过后才单独评审升级为 `quarantine` 或 `reject`。
 
 ## D031 导出任务使用稳定主体、固化范围和不可枚举公开 ID
 

@@ -53,6 +53,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0038_raw_replay_processing_lease",
         "0039_manual_job_outbox",
         "0040_background_task_role_matrix",
+        "0041_security_daily_control",
     ]
 
 
