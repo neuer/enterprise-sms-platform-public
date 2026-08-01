@@ -8,6 +8,7 @@ fi
 CONFIG_FILE="$ROOT/.env.test-update"
 CONFIG_TARGET=""
 CONFIG_PORT=""
+CONFIG_VENDOR_ORIGIN=""
 if [[ -e "$CONFIG_FILE" ]]; then
   [[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || {
     echo "test-update: .env.test-update 必须是当前用户拥有的普通文件" >&2
@@ -24,6 +25,7 @@ if [[ -e "$CONFIG_FILE" ]]; then
   }
   seen_target=0
   seen_port=0
+  seen_vendor_origin=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" != *$'\r'* ]] || {
       echo "test-update: .env.test-update 格式无效" >&2
@@ -47,8 +49,16 @@ if [[ -e "$CONFIG_FILE" ]]; then
         CONFIG_PORT="${line#*=}"
         seen_port=1
         ;;
+      SMS_VENDOR_LIVE_TEST_ORIGIN=*)
+        [[ "$seen_vendor_origin" == 0 ]] || {
+          echo "test-update: .env.test-update 存在重复键" >&2
+          exit 2
+        }
+        CONFIG_VENDOR_ORIGIN="${line#*=}"
+        seen_vendor_origin=1
+        ;;
       *)
-        echo "test-update: .env.test-update 只允许 TARGET 与 PORT" >&2
+        echo "test-update: .env.test-update 只允许 TARGET、PORT 与 VENDOR_LIVE_TEST_ORIGIN" >&2
         exit 2
         ;;
     esac
@@ -58,6 +68,7 @@ TARGET="${SMS_TEST_UPDATE_TARGET:-$CONFIG_TARGET}"
 CANONICAL_REMOTE_ROOT="/opt/sms-platform"
 REMOTE_ROOT="${SMS_TEST_UPDATE_ROOT:-$CANONICAL_REMOTE_ROOT}"
 PORT="${SMS_TEST_UPDATE_PORT:-${CONFIG_PORT:-22}}"
+VENDOR_ORIGIN="${SMS_VENDOR_LIVE_TEST_ORIGIN:-$CONFIG_VENDOR_ORIGIN}"
 REF="origin/main"
 COMMAND="apply"
 REMOTE_SMS_COMPOSE="/usr/local/sbin/sms-compose"
@@ -93,6 +104,13 @@ REMOTE_CONTROL_ENV=(
   "SMS_RUNTIME_ROOT=/run/sms-platform/secrets"
   "SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials"
 )
+if [[ -n "$VENDOR_ORIGIN" ]]; then
+  [[ "$VENDOR_ORIGIN" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || {
+    echo "test-update: SMS_VENDOR_LIVE_TEST_ORIGIN 格式无效" >&2
+    exit 2
+  }
+  REMOTE_CONTROL_ENV+=("SMS_VENDOR_LIVE_TEST_ORIGIN=$VENDOR_ORIGIN")
+fi
 
 usage() {
   echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--ref origin/BRANCH]" >&2

@@ -429,6 +429,8 @@ def test_driver_explicitly_propagates_fixed_host_control_environment_to_sudo() -
         '"SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials"'
         in source
     )
+    assert 'REMOTE_CONTROL_ENV+=("SMS_VENDOR_LIVE_TEST_ORIGIN=$VENDOR_ORIGIN")' in source
+    assert "SMS_VENDOR_LIVE_TEST_ORIGIN 格式无效" in source
     assert (
         'REMOTE_SMS_COMPOSE="/usr/local/sbin/sms-compose"'
         in source
@@ -439,6 +441,33 @@ def test_driver_explicitly_propagates_fixed_host_control_environment_to_sudo() -
     )
     assert "sudo /usr/local/sbin/sms-compose vendor-test status" not in source
     assert "sudo /usr/local/sbin/sms-compose test-update prepare" not in source
+
+
+def test_driver_rejects_invalid_vendor_origin_before_network() -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(DRIVER),
+            "--dry-run",
+            "--ref",
+            "origin/main",
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "SMS_DOCKER_PUBLIC_SESSION": "1",
+            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
+            "SMS_TEST_UPDATE_PORT": "22",
+            "SMS_VENDOR_LIVE_TEST_ORIGIN": "https://vendor.example.invalid/path",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.strip() == "test-update: SMS_VENDOR_LIVE_TEST_ORIGIN 格式无效"
 
 
 def test_driver_upload_uses_private_staging_and_fixed_resumable_partial() -> None:

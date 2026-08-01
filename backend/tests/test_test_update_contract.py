@@ -583,6 +583,20 @@ def test_g2_api_acceptance_script_is_explicitly_non_runtime() -> None:
     assert change.risk == "none"
 
 
+def test_database_role_gate_inputs_are_safe_non_runtime_changes() -> None:
+    change = classify_changed_paths(
+        [
+            "deploy/database-roles.md",
+            "docs/runbooks/public-baseline-activation.md",
+            "scripts/verify_database_roles.sh",
+        ]
+    )
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
 def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
     change = classify_changed_paths(
         [
