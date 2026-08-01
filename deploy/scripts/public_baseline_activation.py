@@ -1442,41 +1442,122 @@ class PublicBaselineActivator:
                 )
 
     def _apply_active_root_profile(self, root: Path) -> None:
-        if self._has_active_root_profile(root):
-            return
-        self._validate_staging_root_profile(root)
+        if not self._has_active_root_profile(root):
+            self._validate_staging_root_profile(root)
+            try:
+                os.chown(
+                    root,
+                    self.expected_uid,
+                    self.expected_operator_gid,
+                    follow_symlinks=False,
+                )
+                os.chmod(
+                    root,
+                    _ACTIVE_ROOT_MODE,
+                    follow_symlinks=False,
+                )
+                for name in ("backend", "deploy"):
+                    directory = root / name
+                    os.chown(
+                        directory,
+                        self.expected_operator_uid,
+                        self.expected_operator_gid,
+                        follow_symlinks=False,
+                    )
+                    os.chmod(
+                        directory,
+                        _OPERATOR_DIRECTORY_MODE,
+                        follow_symlinks=False,
+                    )
+                    _fsync_directory(directory)
+                _fsync_directory(root)
+            except OSError as exc:
+                raise PublicBaselineActivationError(
+                    "public target ownership transition failed"
+                ) from exc
+        self._normalize_git_metadata_permissions(root)
+        self._validate_active_root_profile(root)
+
+    def _normalize_git_metadata_permissions(self, root: Path) -> None:
+        """让日常 operator 只读 Git，同时保留 root 的写权限。"""
+
+        git_root = root / ".git"
         try:
-            os.chown(
-                root,
-                self.expected_uid,
-                self.expected_operator_gid,
-                follow_symlinks=False,
+            metadata = git_root.lstat()
+        except OSError as exc:
+            raise PublicBaselineActivationError(
+                "public target Git metadata is unavailable"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise PublicBaselineActivationError(
+                "public target Git metadata must be a real directory"
             )
-            os.chmod(
-                root,
-                _ACTIVE_ROOT_MODE,
-                follow_symlinks=False,
-            )
-            for name in ("backend", "deploy"):
-                directory = root / name
+
+        pending = [git_root]
+        while pending:
+            directory = pending.pop()
+            try:
+                directory_metadata = directory.lstat()
+                if (
+                    stat.S_ISLNK(directory_metadata.st_mode)
+                    or not stat.S_ISDIR(directory_metadata.st_mode)
+                ):
+                    raise PublicBaselineActivationError(
+                        "public target Git metadata directory is unsafe"
+                    )
                 os.chown(
                     directory,
-                    self.expected_operator_uid,
+                    self.expected_uid,
                     self.expected_operator_gid,
                     follow_symlinks=False,
                 )
                 os.chmod(
                     directory,
-                    _OPERATOR_DIRECTORY_MODE,
+                    (stat.S_IMODE(directory_metadata.st_mode) & 0o700) | 0o050,
                     follow_symlinks=False,
                 )
-                _fsync_directory(directory)
-            _fsync_directory(root)
-        except OSError as exc:
-            raise PublicBaselineActivationError(
-                "public target ownership transition failed"
-            ) from exc
-        self._validate_active_root_profile(root)
+                with os.scandir(directory) as entries:
+                    children = list(entries)
+            except PublicBaselineActivationError:
+                raise
+            except OSError as exc:
+                raise PublicBaselineActivationError(
+                    "public target Git metadata cannot be normalized"
+                ) from exc
+
+            for entry in children:
+                path = Path(entry.path)
+                try:
+                    child = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(child.st_mode):
+                        raise PublicBaselineActivationError(
+                            "public target Git metadata contains a symlink"
+                        )
+                    if stat.S_ISDIR(child.st_mode):
+                        pending.append(path)
+                        continue
+                    if not stat.S_ISREG(child.st_mode):
+                        raise PublicBaselineActivationError(
+                            "public target Git metadata contains an unsafe entry"
+                        )
+                    os.chown(
+                        path,
+                        self.expected_uid,
+                        self.expected_operator_gid,
+                        follow_symlinks=False,
+                    )
+                    os.chmod(
+                        path,
+                        (stat.S_IMODE(child.st_mode) & 0o700) | 0o040,
+                        follow_symlinks=False,
+                    )
+                except PublicBaselineActivationError:
+                    raise
+                except OSError as exc:
+                    raise PublicBaselineActivationError(
+                        "public target Git metadata cannot be normalized"
+                    ) from exc
+            _fsync_directory(directory)
 
     def _validate_base_identity(
         self,

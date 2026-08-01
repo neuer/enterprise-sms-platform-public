@@ -75,6 +75,8 @@ def test_driver_accepts_no_secret_or_phone_arguments_and_uses_fixed_remote_comma
     assert "sms-compose test-update apply" in source
     assert "sms-compose test-update verify" in source
     assert "sms-compose test-update status" in source
+    assert "remote_git_preflight" in source
+    assert "远端 Git 基线不可由更新用户读取" in source
     assert "eval " not in source
 
 
@@ -220,7 +222,7 @@ def test_driver_fails_closed_for_repository_or_missing_baseline_mismatch() -> No
 
     assert "github_repository_identity" in source
     assert 'git -C "$ROOT" remote get-url origin' in source
-    assert 'git -C "$REMOTE_ROOT" remote get-url origin' in source
+    assert 'git -C "$REMOTE_ROOT" "$@"' in source
     assert '"$LOCAL_REPOSITORY" != "$REMOTE_REPOSITORY"' in source
     assert "本地与远端 origin 仓库不一致，拒绝跨仓库更新" in source
     assert 'cat-file -e "$REMOTE_COMMIT^{commit}"' in source
@@ -237,7 +239,7 @@ def test_driver_rejects_cross_repository_update_before_reading_remote_head(
         fake_bin / "git",
         f"""#!/usr/bin/env bash
 case "$*" in
-  *"status --porcelain") exit 0 ;;
+  *"status --porcelain"*) exit 0 ;;
   *"fetch --prune origin") exit 0 ;;
   *"rev-parse --verify origin/main^{{commit}}") echo "{target}" ;;
   *"remote get-url origin") echo "https://github.com/acme/canonical.git" ;;
@@ -286,7 +288,7 @@ def test_driver_rejects_missing_baseline_instead_of_reporting_no_change(
         fake_bin / "git",
         f"""#!/usr/bin/env bash
 case "$*" in
-  *"status --porcelain") exit 0 ;;
+  *"status --porcelain"*) exit 0 ;;
   *"fetch --prune origin") exit 0 ;;
   *"rev-parse --verify origin/main^{{commit}}") echo "{target}" ;;
   *"remote get-url origin") echo "https://github.com/acme/canonical.git" ;;
@@ -301,6 +303,7 @@ esac
 case "$*" in
   *"remote get-url origin") echo "git@github.com:acme/canonical.git" ;;
   *"rev-parse HEAD") echo "{baseline}" ;;
+  *"status --porcelain"*) exit 0 ;;
   *) echo "unexpected ssh command: $*" >&2; exit 91 ;;
 esac
 """,

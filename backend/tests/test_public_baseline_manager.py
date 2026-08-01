@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,7 @@ from public_baseline_manager import (  # noqa: E402
     _unlink_verified_artifact,
     parse_baseline_manifest,
     validate_request_binding,
+    verify_operator_git_access,
 )
 from test_update_apply import BACKEND_SERVICES  # noqa: E402
 from test_update_contract import (  # noqa: E402
@@ -195,6 +197,36 @@ def test_standard_request_must_bind_every_mutable_identity() -> None:
             request,
             host_source_commit=BASE_COMMIT,
         )
+
+
+def test_operator_git_probe_uses_fixed_operator_identity_and_safe_git_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def fake_run(command: object, **kwargs: object) -> SimpleNamespace:
+        argv = tuple(command)  # type: ignore[arg-type]
+        calls.append((argv, kwargs))
+        output = PUBLIC_ORIGIN_URL if len(calls) == 1 else ""
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(baseline_module.subprocess, "run", fake_run)
+
+    verify_operator_git_access(
+        Path("/opt/sms-platform"),
+        operator_uid=1234,
+        operator_gid=2345,
+    )
+
+    assert [call[0][3:] for call in calls] == [
+        ("remote", "get-url", "origin"),
+        ("rev-parse", "--verify", "HEAD^{commit}"),
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    ]
+    assert all(call[1]["user"] == 1234 for call in calls)
+    assert all(call[1]["group"] == 2345 for call in calls)
+    assert all(call[1]["extra_groups"] == () for call in calls)
+    assert all(call[1]["env"]["GIT_CONFIG_NOSYSTEM"] == "1" for call in calls)  # type: ignore[index]
 
 
 class FakeStore:
@@ -461,6 +493,7 @@ def _manager(
     source: FakeSourceInspector | None = None,
     images: FakeImageInspector | None = None,
     unit: FakeUnitManager | None = None,
+    operator_git_probe: Callable[[Path], None] | None = None,
 ) -> tuple[
     PublicBaselineManager,
     FakeStore,
@@ -489,6 +522,7 @@ def _manager(
         image_inspector=actual_images,
         unit_manager=actual_unit,
         host_source_commit=TARGET_COMMIT,
+        operator_git_probe=operator_git_probe or (lambda _root: None),
     )
     return (
         manager,
@@ -595,6 +629,29 @@ def test_apply_service_failure_restores_root_unit_and_old_images() -> None:
         "backend-safe",
         ACTIVATION_ID,
     ) in operations.events
+    assert store.state is UpdateState.ROLLED_BACK
+
+
+def test_apply_rolls_back_when_operator_cannot_read_git_baseline() -> None:
+    def fail_operator_git(_root: Path) -> None:
+        raise PublicBaselineManagerError("operator Git preflight failed")
+
+    manager, store, core, operations, _source, _images, unit = _manager(
+        operator_git_probe=fail_operator_git,
+    )
+
+    with pytest.raises(
+        PublicBaselineManagerError,
+        match="rolled back before service replacement",
+    ):
+        manager.apply()
+
+    assert core.events == ["core_activate", "core_rollback"]
+    assert unit.events == ["unit_restore"]
+    assert not any(
+        isinstance(event, tuple) and event[0] == "replace_backend"
+        for event in operations.events
+    )
     assert store.state is UpdateState.ROLLED_BACK
 
 
@@ -920,6 +977,25 @@ def test_status_is_read_only_and_contains_only_safe_identity_fields() -> None:
         "actual_migration_head": SCHEMA_REVISION,
         "target_commit": TARGET_COMMIT,
         "target_tree": TARGET_TREE,
+        "operator_git_access": True,
     }
+    assert core.events == []
+    assert operations.events == ["migration_head"]
+
+
+def test_status_reports_operator_git_access_failure_without_mutating_state() -> None:
+    def fail_operator_git(_root: Path) -> None:
+        raise PublicBaselineManagerError("operator Git preflight failed")
+
+    store = FakeStore(UpdateState.VERIFIED)
+    manager, _store, core, operations, *_ = _manager(
+        store=store,
+        operator_git_probe=fail_operator_git,
+    )
+
+    status = manager.status()
+
+    assert status["operator_git_access"] is False
+    assert store.state is UpdateState.VERIFIED
     assert core.events == []
     assert operations.events == ["migration_head"]

@@ -127,6 +127,20 @@ remote_sms_compose() {
     "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$REMOTE_SMS_COMPOSE" "$@"
 }
 
+remote_git_read() {
+  ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    "$TARGET" git -C "$REMOTE_ROOT" "$@"
+}
+
+remote_git_preflight() {
+  local output
+  if ! output="$(remote_git_read "$@" 2>/dev/null)"; then
+    echo "test-update: 远端 Git 基线不可由更新用户读取；请检查 /opt/sms-platform/.git 对 operator 的读/遍历权限" >&2
+    return 1
+  fi
+  printf '%s\n' "$output"
+}
+
 github_write_preflight() {
   local authenticated_repository
   if [[ "$COMMAND" != apply && "$COMMAND" != promote ]]; then
@@ -215,10 +229,7 @@ fi
 
 if [[ "$COMMAND" == status ]]; then
   LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
-  REMOTE_ORIGIN_URL="$(
-    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-      "$TARGET" git -C "$REMOTE_ROOT" remote get-url origin
-  )"
+  REMOTE_ORIGIN_URL="$(remote_git_preflight remote get-url origin)"
   if ! LOCAL_REPOSITORY="$(github_repository_identity "$LOCAL_ORIGIN_URL")" ||
     ! REMOTE_REPOSITORY="$(github_repository_identity "$REMOTE_ORIGIN_URL")"; then
     echo "test-update: origin 必须是无凭据的 GitHub 仓库地址" >&2
@@ -228,10 +239,8 @@ if [[ "$COMMAND" == status ]]; then
     echo "test-update: 本地与远端 origin 仓库不一致，拒绝读取状态" >&2
     exit 1
   }
-  REMOTE_COMMIT="$(
-    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-      "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
-  )"
+  REMOTE_COMMIT="$(remote_git_preflight rev-parse HEAD)"
+  remote_git_preflight status --porcelain=v1 --untracked-files=all >/dev/null
   UPDATE_STATUS="$(remote_sms_compose test-update status)"
   VENDOR_STATUS="$(remote_sms_compose vendor-test status)"
   python3 -c 'import json,sys
@@ -252,10 +261,7 @@ git -C "$ROOT" fetch --prune origin
 TARGET_COMMIT="$(git -C "$ROOT" rev-parse --verify "$REF^{commit}")"
 [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
 LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
-REMOTE_ORIGIN_URL="$(
-  ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-    "$TARGET" git -C "$REMOTE_ROOT" remote get-url origin
-)"
+REMOTE_ORIGIN_URL="$(remote_git_preflight remote get-url origin)"
 if ! LOCAL_REPOSITORY="$(github_repository_identity "$LOCAL_ORIGIN_URL")" ||
   ! REMOTE_REPOSITORY="$(github_repository_identity "$REMOTE_ORIGIN_URL")"; then
   echo "test-update: origin 必须是无凭据的 GitHub 仓库地址" >&2
@@ -266,10 +272,8 @@ if [[ "$LOCAL_REPOSITORY" != "$REMOTE_REPOSITORY" ]]; then
   exit 1
 fi
 github_write_preflight
-REMOTE_COMMIT="$(
-  ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-    "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
-)"
+REMOTE_COMMIT="$(remote_git_preflight rev-parse HEAD)"
+remote_git_preflight status --porcelain=v1 --untracked-files=all >/dev/null
 [[ "$REMOTE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
   echo "test-update: 远端 commit 无效" >&2
   exit 1
@@ -293,10 +297,7 @@ if [[ "$COMMAND" == promote ]]; then
   PROMOTE_STATUS="$(
     remote_sms_compose test-update promote "$REF" "$TARGET_COMMIT"
   )"
-  FINAL_COMMIT="$(
-    ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-      "$TARGET" git -C "$REMOTE_ROOT" rev-parse HEAD
-  )"
+  FINAL_COMMIT="$(remote_git_preflight rev-parse HEAD)"
   [[ "$FINAL_COMMIT" == "$TARGET_COMMIT" ]] || {
     echo "test-update: promote 后远端 commit 不匹配" >&2
     exit 1

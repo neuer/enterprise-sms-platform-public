@@ -60,7 +60,10 @@ GitHub 鉴权与 Docker 鉴权是两个独立边界。`apply` / `promote` 在任
 鉴权失效时运行 `gh auth login --hostname github.com --web` 走官方设备/浏览器登录；
 不得复制 token 到聊天或配置文件，也不得长期 `export GITHUB_TOKEN`/`GH_TOKEN`。
 
-脚本验证本地与远端属于同一 GitHub 仓库后，直接读取远端 status 与 migration head，
+脚本验证本地与远端属于同一 GitHub 仓库后，先以 SSH 更新用户执行远端 Git 读路径预检
+（`remote get-url origin`、`rev-parse HEAD`、`status --porcelain`），再读取 migration head；
+远端 `.git` 不可由该用户读/遍历时立即 fail closed，并提示修复 operator Git 权限，
+不得改用 root Git 结果冒充日常更新用户可用，
 并由 CI 和测试发布共用的 Python 合同按实际差异分类。普通 `web-only`/`backend-safe`
 无迁移更新允许 CI 并行运行；high-risk、迁移或 host-control 更新必须通过 GitHub 公共 API
 验证目标 commit 上由 GitHub Actions 应用产生的精确 `ci-gate=success`，同名第三方状态

@@ -396,6 +396,13 @@ def test_prepare_preserves_git_modes_with_restrictive_umask(tmp_path: Path) -> N
     unit = prepared.staged_root / "deploy/systemd/vendor-control-agent.service"
     assert stat.S_IMODE(unit.stat().st_mode) == 0o644
 
+    git_root = prepared.staged_root / ".git"
+    assert git_root.stat().st_uid == os.geteuid()
+    assert git_root.stat().st_gid == os.getegid()
+    assert stat.S_IMODE(git_root.stat().st_mode) & 0o050 == 0o050
+    head = git_root / "HEAD"
+    assert stat.S_IMODE(head.stat().st_mode) & 0o040 == 0o040
+
 
 def test_activate_finalize_and_rollback_preserve_only_allowlisted_state(
     tmp_path: Path,
@@ -432,6 +439,11 @@ def test_activate_finalize_and_rollback_preserve_only_allowlisted_state(
         stat.S_IMODE((activator.active_root / "deploy").stat().st_mode)
         == 0o2770
     )
+    git_root = activator.active_root / ".git"
+    assert git_root.stat().st_uid == os.geteuid()
+    assert git_root.stat().st_gid == os.getegid()
+    assert stat.S_IMODE(git_root.stat().st_mode) & 0o050 == 0o050
+    assert stat.S_IMODE((git_root / "HEAD").stat().st_mode) & 0o040 == 0o040
     assert (
         stat.S_IMODE(
             (activator.active_root / "backend/.venv").stat().st_mode

@@ -39,6 +39,7 @@
 | 组件/风险 | `api` + `web`，固定 `high-risk` |
 | 主机身份 | root UID=`0`；固定服务器 operator UID/GID=`1000:1000` |
 | active root profile | `/opt/sms-platform` 为 `0:1000 2770`；`backend`、`deploy` 为 `1000:1000 2770` |
+| Git metadata profile | `/opt/sms-platform/.git` 及其递归内容由 root 拥有、group=`1000`；目录至少对 group 可读/遍历，文件至少对 group 可读；operator 必须能完成 `remote get-url`、`rev-parse`、`status` |
 | 持久项 | 只把旧 `.env`、`deploy/secrets`、`backend/.venv` rename 到目标根；secrets 目录固定 `0:1000 0700`，目录内权威文件固定 `0:0 0600` |
 | 根外事实 | PostgreSQL、Docker volume、Redis、角色、vendor-test 运行态原位保留 |
 
@@ -346,7 +347,8 @@ BASELINE_COMPOSE=(
 - `baseline-verify`：复用既有环境模式、账本守恒、pause 所有权、live GetBalance、服务与
   migration head 验收；通过后 test-update 状态成为 `verified` 并释放本次 update pause。
 - `baseline-status`：无锁只读，只返回 activation/state、实际和目标 commit/tree、
-  migration head；不得包含 secret、号码、HMAC 或正文。
+  migration head 以及 `operator_git_access`；不得包含 secret、号码、HMAC 或正文。该字段
+  必须为 `true`，否则不得 finalize/cleanup。
 - `baseline-finalize`：只接受已 verified 的标准 store；再次验证 source/unit/images/
   服务后把 core journal 确认为 verified，保留旧 recovery root 与旧镜像回退标签。
 - `baseline-cleanup`：只接受已 verified/finalized 且已完成表面验收的本次 activation；
@@ -360,8 +362,10 @@ BASELINE_COMPOSE=(
 
 ## 9. verified 后逐项验收
 
-`baseline-status` 必须同时显示 `state=verified`、actual=target commit/tree、
-`actual_migration_head=0039_manual_job_outbox`。然后逐项确认：
+`baseline-status` 必须同时显示 `state=verified`、`operator_git_access=true`、
+actual=target commit/tree、`actual_migration_head=0039_manual_job_outbox`。随后以日常
+operator 身份执行一次 `scripts/test_update.sh status`；它必须能读取同一 `/opt/sms-platform`
+的 `origin`、HEAD 和工作树状态。任一步失败都停止，不得 finalize/cleanup。然后逐项确认：
 
 1. `/opt/sms-platform` 干净，HEAD、tree、`origin` 与 `origin/main` 精确绑定规范公开
    仓库 target；

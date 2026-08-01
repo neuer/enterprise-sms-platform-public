@@ -16,9 +16,10 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -86,6 +87,56 @@ _IMAGE_FIELDS = frozenset(
 _MIGRATION_FIELDS = frozenset({"from", "target", "compatibility"})
 class PublicBaselineManagerError(RuntimeError):
     """公开基线不满足激活或回退安全契约。"""
+
+
+def verify_operator_git_access(
+    root: Path,
+    *,
+    operator_uid: int = OPERATOR_UID,
+    operator_gid: int = OPERATOR_GID,
+) -> None:
+    """以日常 operator 身份验证 Git 读路径，而不是只用 root 验证。"""
+
+    environment = {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    commands = (
+        ("remote", "get-url", "origin"),
+        ("rev-parse", "--verify", "HEAD^{commit}"),
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    )
+    origin = ""
+    for index, arguments in enumerate(commands):
+        try:
+            result = subprocess.run(
+                ("/usr/bin/git", "-C", str(root), *arguments),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+                user=operator_uid,
+                group=operator_gid,
+                extra_groups=(),
+            )
+        except (OSError, ValueError) as exc:
+            raise PublicBaselineManagerError(
+                "operator Git preflight is unavailable"
+            ) from exc
+        if result.returncode != 0:
+            raise PublicBaselineManagerError(
+                "operator Git preflight failed"
+            )
+        if index == 0:
+            origin = result.stdout.strip()
+    if origin != PUBLIC_ORIGIN_URL:
+        raise PublicBaselineManagerError(
+            "operator Git origin is not the public repository"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -905,6 +956,7 @@ class BaselineUpdateOperations:
         source_inspector: SourceInspector,
         image_inspector: ImageInspector,
         manifest: BaselineManifest,
+        operator_git_probe: Callable[[Path], None],
     ) -> None:
         self.delegate = delegate
         self.core = core
@@ -912,6 +964,7 @@ class BaselineUpdateOperations:
         self.source_inspector = source_inspector
         self.image_inspector = image_inspector
         self.manifest = manifest
+        self.operator_git_probe = operator_git_probe
 
     def require_lifecycle_lock(self) -> None:
         self.delegate.require_lifecycle_lock()
@@ -933,6 +986,7 @@ class BaselineUpdateOperations:
         )
         self.unit_manager.verify(ACTIVE_ROOT)
         self.image_inspector.verify(self.manifest)
+        self.operator_git_probe(ACTIVE_ROOT)
         self.delegate.replace_backend_services(services)
 
     def replace_web(self) -> None:
@@ -959,6 +1013,7 @@ class BaselineUpdateOperations:
         )
         self.unit_manager.verify(ACTIVE_ROOT)
         self.image_inspector.verify(self.manifest)
+        self.operator_git_probe(ACTIVE_ROOT)
 
     def restore_owned_update_pauses(self, update_id: str) -> None:
         if update_id != self.manifest.activation_id:
@@ -1061,6 +1116,7 @@ class PublicBaselineManager:
         image_inspector: ImageInspector,
         unit_manager: UnitManager,
         host_source_commit: str,
+        operator_git_probe: Callable[[Path], None] | None = None,
     ) -> None:
         validate_request_binding(
             manifest,
@@ -1077,6 +1133,7 @@ class PublicBaselineManager:
         self.source_inspector = source_inspector
         self.image_inspector = image_inspector
         self.unit_manager = unit_manager
+        self.operator_git_probe = operator_git_probe or verify_operator_git_access
 
     def _operations(self) -> HostTestUpdateOperations:
         return self.operations_factory(ACTIVE_ROOT, self.request)
@@ -1089,7 +1146,11 @@ class PublicBaselineManager:
             source_inspector=self.source_inspector,
             image_inspector=self.image_inspector,
             manifest=self.manifest,
+            operator_git_probe=self.operator_git_probe,
         )
+
+    def _require_operator_git_access(self) -> None:
+        self.operator_git_probe(ACTIVE_ROOT)
 
     def prepare(self) -> None:
         operations = self._operations()
@@ -1197,6 +1258,7 @@ class PublicBaselineManager:
                 identity=self.manifest.target,
                 origin_url=self.manifest.origin_url,
             )
+            self._require_operator_git_access()
             self.unit_manager.verify(ACTIVE_ROOT)
             self.image_inspector.verify(self.manifest)
             operations.verify_backend_services()
@@ -1234,6 +1296,7 @@ class PublicBaselineManager:
                 identity=self.manifest.target,
                 origin_url=self.manifest.origin_url,
             )
+            self._require_operator_git_access()
             self.unit_manager.activate(outcome)
             self.image_inspector.verify(self.manifest)
         except Exception:
@@ -1252,6 +1315,7 @@ class PublicBaselineManager:
             source_inspector=self.source_inspector,
             image_inspector=self.image_inspector,
             manifest=self.manifest,
+            operator_git_probe=self.operator_git_probe,
         )
         TestUpdateApply(self.store, wrapped).apply(
             "backend-safe",
@@ -1271,6 +1335,7 @@ class PublicBaselineManager:
                 identity=self.manifest.target,
                 origin_url=self.manifest.origin_url,
             )
+            self._require_operator_git_access()
             self.unit_manager.verify(ACTIVE_ROOT)
             self.image_inspector.verify(self.manifest)
             operations.verify_backend_services()
@@ -1297,6 +1362,11 @@ class PublicBaselineManager:
         )
         observed = self.source_inspector.observe(ACTIVE_ROOT)
         operations = self._operations()
+        operator_git_access = True
+        try:
+            self._require_operator_git_access()
+        except PublicBaselineManagerError:
+            operator_git_access = False
         return {
             "activation_id": self.manifest.activation_id,
             "state": state["state"],
@@ -1305,6 +1375,7 @@ class PublicBaselineManager:
             "actual_migration_head": operations.current_migration_head(),
             "target_commit": self.manifest.target.commit,
             "target_tree": self.manifest.target.tree,
+            "operator_git_access": operator_git_access,
         }
 
     def finalize(self) -> None:
@@ -1320,6 +1391,7 @@ class PublicBaselineManager:
             identity=self.manifest.target,
             origin_url=self.manifest.origin_url,
         )
+        self._require_operator_git_access()
         self.unit_manager.verify(ACTIVE_ROOT)
         self.image_inspector.verify(self.manifest)
         operations.verify_backend_services()
@@ -1342,6 +1414,7 @@ class PublicBaselineManager:
             identity=self.manifest.target,
             origin_url=self.manifest.origin_url,
         )
+        self._require_operator_git_access()
         self.unit_manager.verify(ACTIVE_ROOT)
         self.image_inspector.verify(self.manifest)
         operations.verify_backend_services()
