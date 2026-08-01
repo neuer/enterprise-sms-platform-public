@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
-from app.services.security_daily import SecurityDailyValidationError
+from app.services.security_daily import generate_security_daily_for_date
 from app.services.security_daily_repository import SqlSecurityDailyRepository
 from app.settings import get_settings
 from app.tasks import background_task_options, celery_app
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
-MAX_INPUT_BYTES = 384 * 1024
-
-
 async def generate_security_daily_once(
     repository: SqlSecurityDailyRepository,
     control_dir: Path,
@@ -33,35 +27,14 @@ async def generate_security_daily_once(
     if not enabled or local_now.time() < time(8, 0):
         return 0
     report_date = local_now.date() - timedelta(days=1)
-    period_start = datetime.combine(report_date, time.min, tzinfo=SHANGHAI_TZ)
-    period_end = datetime.combine(report_date, time(23, 59, 59), tzinfo=SHANGHAI_TZ)
-    source = control_dir / "incoming" / f"{report_date.isoformat()}.json"
-    try:
-        if not source.is_file() or source.stat().st_size > MAX_INPUT_BYTES:
-            return int(
-                await repository.mark_unavailable(
-                    report_date,
-                    period_start=period_start,
-                    period_end=period_end,
-                    reason="安全日报证据源不可用",
-                )
-            )
-        raw = await asyncio.to_thread(source.read_text, encoding="utf-8")
-        value: Any = json.loads(raw)
-        if not isinstance(value, dict):
-            raise SecurityDailyValidationError("security report input must be an object")
-        return int(
-            await repository.ingest_payload(value, recipient_count=recipient_count)
+    return int(
+        await generate_security_daily_for_date(
+            repository,
+            control_dir,
+            report_date=report_date,
+            recipient_count=recipient_count,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, SecurityDailyValidationError):
-        return int(
-            await repository.mark_unavailable(
-                report_date,
-                period_start=period_start,
-                period_end=period_end,
-                reason="安全日报证据源校验失败",
-            )
-        )
+    )
 
 
 async def _generate() -> int:

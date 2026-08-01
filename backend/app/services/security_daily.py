@@ -37,6 +37,7 @@ RESEND_EMAIL_PATTERN = re.compile(
 )
 MAX_RESEND_API_KEY_LENGTH = 512
 MAX_RESEND_RECIPIENTS = 3
+MAX_SECURITY_DAILY_INPUT_BYTES = 384 * 1024
 FORBIDDEN_KEYS = frozenset(
     {
         "credential",
@@ -345,6 +346,22 @@ class SecurityDailyPreview:
 class SecurityDailyRepository(Protocol):
     async def configuration(self) -> SecurityDailyConfiguration: ...
 
+    async def ingest_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        recipient_count: int,
+    ) -> bool: ...
+
+    async def mark_unavailable(
+        self,
+        report_date: date,
+        *,
+        period_start: datetime,
+        period_end: datetime,
+        reason: str,
+    ) -> bool: ...
+
     async def update_configuration(
         self,
         update: SecurityDailyConfigurationUpdate,
@@ -373,6 +390,55 @@ class SecurityDailyRepository(Protocol):
     async def apply_control_result(self, result: SecurityDailyControlResult) -> None: ...
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None: ...
+
+
+async def generate_security_daily_for_date(
+    repository: SecurityDailyRepository,
+    control_dir: Path,
+    *,
+    report_date: date,
+    recipient_count: int,
+) -> bool:
+    """读取指定上海自然日的脱敏快照并写入日报事实表。
+
+    定时任务和管理员手动生成共用此入口，确保两条路径使用完全相同的
+    文件大小、JSON 结构和 unavailable 语义；该函数只处理已脱敏结构化证据，
+    不会触发邮件投递。
+    """
+
+    period_start = datetime.combine(report_date, datetime.min.time(), tzinfo=SHANGHAI_TZ)
+    period_end = datetime.combine(
+        report_date,
+        datetime.max.time().replace(microsecond=0),
+        tzinfo=SHANGHAI_TZ,
+    )
+    source = control_dir / "incoming" / f"{report_date.isoformat()}.json"
+    try:
+        if not source.is_file() or source.stat().st_size > MAX_SECURITY_DAILY_INPUT_BYTES:
+            return await repository.mark_unavailable(
+                report_date,
+                period_start=period_start,
+                period_end=period_end,
+                reason="安全日报证据源不可用",
+            )
+        raw = await asyncio.to_thread(source.read_text, encoding="utf-8")
+        value: Any = json.loads(raw)
+        if not isinstance(value, dict):
+            raise SecurityDailyValidationError("security report input must be an object")
+        return await repository.ingest_payload(value, recipient_count=recipient_count)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ValueError,
+        SecurityDailyValidationError,
+    ):
+        return await repository.mark_unavailable(
+            report_date,
+            period_start=period_start,
+            period_end=period_end,
+            reason="安全日报证据源校验失败",
+        )
 
 
 class SecurityDailyControl(Protocol):
@@ -571,10 +637,12 @@ class SecurityDailyService:
         repository: SecurityDailyRepository,
         control: SecurityDailyControl,
         *,
+        control_dir: Path | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(SHANGHAI_TZ),
     ) -> None:
         self.repository = repository
         self.control = control
+        self.control_dir = control_dir
         self.clock = clock
 
     async def configuration(self) -> SecurityDailyConfiguration:
@@ -611,6 +679,27 @@ class SecurityDailyService:
         record = await self.repository.get_report(report_date)
         if record is None:
             raise SecurityDailyNotFound(report_date.isoformat())
+        return record
+
+    async def generate_latest(self) -> SecurityDailyReportRecord:
+        """手动生成上一上海自然日的日报，但不提交邮件投递请求。"""
+
+        configuration = await self.repository.configuration()
+        if not configuration.enabled:
+            raise SecurityDailyUnavailable("安全日报尚未启用")
+        if self.control_dir is None:
+            raise SecurityDailyUnavailable("安全日报生成控制目录不可用")
+
+        report_date = self.clock().astimezone(SHANGHAI_TZ).date() - timedelta(days=1)
+        await generate_security_daily_for_date(
+            self.repository,
+            self.control_dir,
+            report_date=report_date,
+            recipient_count=len(configuration.recipients),
+        )
+        record = await self.repository.get_report(report_date)
+        if record is None:
+            raise SecurityDailyUnavailable("安全日报生成未产出记录")
         return record
 
     async def preview(self, report_date: date) -> SecurityDailyPreview:

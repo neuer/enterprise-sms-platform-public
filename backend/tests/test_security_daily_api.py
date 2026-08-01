@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -17,6 +17,8 @@ from app.services.security_daily import (
     SecurityDailyOverview,
     SecurityDailyPage,
     SecurityDailyQuery,
+    SecurityDailyReportRecord,
+    SecurityDailyUnavailable,
 )
 
 NOW = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
@@ -38,6 +40,24 @@ class FakeService:
             recipients=("owner@example.com",),
         )
         self.configuration_update: SecurityDailyConfigurationUpdate | None = None
+        self.generated = SecurityDailyReportRecord(
+            id=42,
+            report_date=date(2026, 7, 31),
+            period_start=datetime(2026, 7, 31, 0, tzinfo=UTC),
+            period_end=datetime(2026, 7, 31, 23, 59, 59, tzinfo=UTC),
+            status="normal",
+            generation_status="ready",
+            delivery_status="not_sent",
+            generated_at=datetime(2026, 8, 1, 8, tzinfo=UTC),
+            delivered_at=None,
+            recipient_count=1,
+            retry_count=0,
+            last_error=None,
+            last_error_at=None,
+            updated_at=datetime(2026, 8, 1, 8, tzinfo=UTC),
+            payload=None,
+        )
+        self.generate_error: Exception | None = None
 
     async def configuration(self) -> SecurityDailyConfiguration:
         return self.configuration_value
@@ -65,6 +85,11 @@ class FakeService:
         if self.list_error is not None:
             raise self.list_error
         return SecurityDailyPage((), 0, query.page, query.page_size)
+
+    async def generate_latest(self) -> SecurityDailyReportRecord:
+        if self.generate_error is not None:
+            raise self.generate_error
+        return self.generated
 
 
 def overview(
@@ -202,6 +227,51 @@ def test_configuration_endpoint_returns_status_without_echoing_resend_key() -> N
     assert service.configuration_update is not None
     assert service.configuration_update.api_key == "re_new_value"
     assert "re_new_value" not in write.text
+
+
+def test_manual_generation_returns_report_without_triggering_delivery() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+
+    response = client(service).post(
+        "/api/v1/web/admin/security-daily/generate",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["report_date"] == "2026-07-31"
+    assert response.json()["generation_status"] == "ready"
+    assert response.json()["payload"] is None
+
+
+def test_manual_generation_reuses_unavailable_error_contract() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="disabled",
+            enabled=False,
+            resend_configured=False,
+            recipient_count=0,
+        )
+    )
+    service.generate_error = SecurityDailyUnavailable("安全日报尚未启用")
+
+    response = client(service).post(
+        "/api/v1/web/admin/security-daily/generate",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "code": "SECURITY_DAILY_UNAVAILABLE",
+        "message": "安全日报尚未启用",
+        "detail": None,
+    }
 
 
 def test_unexpected_list_failure_keeps_unified_500_error_without_partial_response() -> None:

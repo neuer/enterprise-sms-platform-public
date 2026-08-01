@@ -4,6 +4,7 @@ import { createPinia } from "pinia"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const api = vi.hoisted(() => ({
+  generateSecurityDailyReport: vi.fn(),
   getSecurityDailyConfiguration: vi.fn(),
   getSecurityDailyOverview: vi.fn(),
   listSecurityDailyReports: vi.fn(),
@@ -90,6 +91,7 @@ const overview = {
 describe("安全日报页面", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.generateSecurityDailyReport.mockResolvedValue(reports[2])
     api.getSecurityDailyOverview.mockResolvedValue(overview)
     api.getSecurityDailyConfiguration.mockResolvedValue({
       enabled: true,
@@ -176,6 +178,21 @@ describe("安全日报页面", () => {
     vi.restoreAllMocks()
   })
 
+  it("允许管理员立即生成上一日报并在生成后打开详情", async () => {
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.findAll("button").find((button) => button.text().includes("立即生成"))!.trigger("click")
+    await flushPromises()
+
+    expect(api.generateSecurityDailyReport).toHaveBeenCalledOnce()
+    expect(api.getSecurityDailyReport).toHaveBeenCalledWith("2026-07-15")
+    expect(wrapper.text()).toContain("安全预览")
+    wrapper.unmount()
+    vi.restoreAllMocks()
+  })
+
   it("未启用时显示配置引导且不伪造下一次运行时间", async () => {
     api.getSecurityDailyOverview.mockResolvedValue({
       ...overview,
@@ -213,6 +230,7 @@ describe("安全日报页面", () => {
 
     expect(wrapper.text()).toContain("尚未生成")
     expect(wrapper.text()).toContain("暂无已生成安全日报")
+    expect(wrapper.text()).toContain("立即生成")
     expect(wrapper.text()).toContain("安全预览和手动投递")
     wrapper.unmount()
   })
