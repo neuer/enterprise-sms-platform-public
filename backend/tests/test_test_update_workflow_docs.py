@@ -24,6 +24,7 @@ def test_agents_is_the_single_engineering_contract() -> None:
         "`plan` 仅用于可选预览",
         "`status` 仅用于后续只读诊断",
         "state=verified",
+        "apply 后 operator 再次通过 origin/HEAD/status 读路径预检",
         "不得重复执行 CI/G2",
         "ci-gate=success",
         "promote --ref origin/main",
@@ -51,6 +52,7 @@ def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
         CANONICAL_COMMAND,
         "约 1 分 20 秒",
         "state=verified",
+        "operator Git",
         "浏览器",
         "接口",
         "不重复",
@@ -83,6 +85,24 @@ def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
     deployment = runbook.split("## 按需标准流程", maxsplit=1)[1]
     positions = [deployment.index(phrase) for phrase in order]
     assert positions == sorted(positions)
+
+
+def test_apply_rechecks_operator_git_after_verify_before_recording_success() -> None:
+    script = read("scripts/test_update.sh")
+
+    verify = script.index("remote_sms_compose test-update verify")
+    post_apply_origin = script.index("POST_APPLY_REMOTE_ORIGIN")
+    final_status = script.index("FINAL_STATUS=")
+    deployment_record = script.rindex("record_test_deployment.sh")
+
+    assert verify < post_apply_origin < final_status < deployment_record
+    for phrase in (
+        "remote_git_preflight remote get-url origin",
+        "remote_git_preflight rev-parse HEAD",
+        "remote_git_preflight status --porcelain=v1 --untracked-files=all",
+        "拒绝记录成功",
+    ):
+        assert phrase in script
 
 
 def test_rehearsal_report_records_five_consecutive_verified_updates() -> None:

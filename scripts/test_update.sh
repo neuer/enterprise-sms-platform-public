@@ -678,6 +678,22 @@ remote_sms_compose test-update prepare
 remote_sms_compose test-update apply
 # 固定远端阶段: sms-compose test-update verify
 remote_sms_compose test-update verify
+# verify 后再次以日常更新用户核对 origin、HEAD 和工作树读路径；root 控制面通过不代表 operator 可用。
+POST_APPLY_REMOTE_ORIGIN="$(remote_git_preflight remote get-url origin)"
+if ! POST_APPLY_REMOTE_REPOSITORY="$(github_repository_identity "$POST_APPLY_REMOTE_ORIGIN")" ||
+  [[ "$POST_APPLY_REMOTE_REPOSITORY" != "$LOCAL_REPOSITORY" ]]; then
+  echo "test-update: apply 后 operator Git origin 与本地仓库不一致" >&2
+  exit 1
+fi
+POST_APPLY_REMOTE_COMMIT="$(remote_git_preflight rev-parse HEAD)"
+[[ "$POST_APPLY_REMOTE_COMMIT" == "$TARGET_COMMIT" ]] || {
+  echo "test-update: apply 后 operator Git HEAD 与目标 commit 不一致" >&2
+  exit 1
+}
+if ! remote_git_preflight status --porcelain=v1 --untracked-files=all >/dev/null; then
+  echo "test-update: apply 后 operator Git 工作树不可读；拒绝记录成功" >&2
+  exit 1
+fi
 # 固定远端阶段: sms-compose test-update status
 FINAL_STATUS="$(remote_sms_compose test-update status)"
 if ! printf '%s' "$FINAL_STATUS" |

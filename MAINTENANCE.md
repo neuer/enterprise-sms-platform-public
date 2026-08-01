@@ -47,8 +47,9 @@ git fetch origin
 scripts/test_update.sh apply --ref origin/main
 ```
 
-`apply` 已完成差异分类、必要 CI 验证、构建、远端切换、verify 和终态解析；成功退出即表示
-远端返回 `state=verified`。需要在变更前预览分类时可运行
+`apply` 已完成差异分类、必要 CI 验证、构建、远端切换、verify、operator Git 读路径复核和终态解析；
+只有远端返回 `state=verified` 且切换后 operator 再次通过 origin、HEAD、工作树检查才算成功。
+任一读路径检查失败都会拒绝记录部署成功。需要在变更前预览分类时可运行
 `scripts/test_update.sh plan --ref origin/main`，需要稍后查看非敏感状态时再运行
 `scripts/test_update.sh status`，二者都不是每次部署的强制重复步骤。
 
