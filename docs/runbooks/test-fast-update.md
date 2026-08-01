@@ -79,7 +79,8 @@ incoming 目录，文件为 `0600`。
 `rsync --partial --inplace` 最多重试三次；连接中断保留同一 `.part` 供本次或
 同目标重跑续传。远端摘要一致后才原子发布，且 `request.json` 最后发布。
 完整 G2 只由 CI 的共享风险分类触发；verify 后 driver 还必须以日常更新用户重新检查
-远端 operator 的 origin、HEAD 和工作树读路径，任一检查失败都拒绝记录成功。driver 最后
+远端 operator 的 origin、HEAD、tracked 工作树与暂存区读路径，任一检查失败都拒绝记录成功；
+控制面切换后只修复 tracked 文件的 group 读权限，不触碰 ignored secrets/data。driver 最后
 严格解析 status，只有 update id、`verified` 状态、目标 commit 和 migration head 四项同时
 匹配才以 0 退出。
 

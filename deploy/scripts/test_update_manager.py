@@ -124,12 +124,87 @@ def _decode_output(payload: bytes) -> str:
         raise TestUpdateManagerError("controlled command output is invalid") from exc
 
 
+def _tracked_worktree_paths(root: Path) -> list[Path]:
+    """读取 Git index 中的 tracked 路径，拒绝越界或不可解析的路径。"""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise TestUpdateManagerError(
+            "tracked worktree paths could not be enumerated"
+        ) from exc
+    if result.returncode != 0:
+        raise TestUpdateManagerError("tracked worktree paths could not be enumerated")
+
+    paths: set[Path] = set()
+    try:
+        for raw_name in result.stdout.split(b"\0"):
+            if not raw_name:
+                continue
+            relative = Path(os.fsdecode(raw_name))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("tracked path escapes checkout")
+            path = root / relative
+            paths.add(path)
+            paths.update(
+                parent
+                for parent in path.parents
+                if parent != root and root in parent.parents
+            )
+    except (UnicodeError, ValueError) as exc:
+        raise TestUpdateManagerError("tracked worktree paths are invalid") from exc
+    return sorted(paths, key=lambda path: (len(path.parts), str(path)))
+
+
+def _restore_operator_worktree_read_access(
+    root: Path,
+    operator_gid: int,
+    *,
+    tracked_paths: Sequence[Path] | None = None,
+) -> None:
+    """让 operator 可读 tracked 工作树，同时不触碰 ignored secrets/data。"""
+
+    paths = (
+        list(tracked_paths)
+        if tracked_paths is not None
+        else _tracked_worktree_paths(root)
+    )
+    try:
+        for path in sorted(paths, key=lambda item: (len(item.parts), str(item))):
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                raise OSError("tracked worktree symlink")
+            mode = stat.S_IMODE(metadata.st_mode)
+            if stat.S_ISDIR(metadata.st_mode):
+                if metadata.st_gid != operator_gid:
+                    os.chown(path, -1, operator_gid, follow_symlinks=False)
+                os.chmod(
+                    path,
+                    mode | stat.S_IRGRP | stat.S_IXGRP,
+                    follow_symlinks=False,
+                )
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_gid != operator_gid:
+                    os.chown(path, -1, operator_gid, follow_symlinks=False)
+                os.chmod(path, mode | stat.S_IRGRP, follow_symlinks=False)
+            else:
+                raise OSError("unsafe tracked worktree entry")
+    except OSError as exc:
+        raise TestUpdateManagerError(
+            "operator tracked worktree access could not be restored"
+        ) from exc
+
+
 def _restore_operator_git_read_access(root: Path) -> None:
-    """恢复 root checkout 后更新用户读取完整 Git 元数据所需的权限。
+    """恢复 root checkout 后更新用户读取完整 Git 读路径所需的权限。
 
     root 可能在切换时创建新的 loose object；只修复 ``HEAD`` 和 ``index``
     会让 operator 能读取提交指针，却无法读取工作树。先完整检查元数据树，
-    再统一修复目录遍历和文件读取权限，避免部分修复留下不可读的对象。
+    再修复 tracked 工作树的 group 读权限，避免 ignored secrets/data 被触碰。
     """
 
     git_dir = root / ".git"
@@ -184,6 +259,7 @@ def _restore_operator_git_read_access(root: Path) -> None:
                 (stat.S_IMODE(metadata.st_mode) & 0o700) | 0o040,
                 follow_symlinks=False,
             )
+        _restore_operator_worktree_read_access(root, operator_gid)
     except OSError as exc:
         raise TestUpdateManagerError(
             "operator Git metadata access could not be restored"

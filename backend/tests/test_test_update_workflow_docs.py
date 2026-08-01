@@ -100,6 +100,8 @@ def test_apply_rechecks_operator_git_after_verify_before_recording_success() -> 
         "remote_git_preflight remote get-url origin",
         "remote_git_preflight rev-parse HEAD",
         "remote_git_preflight status --porcelain=v1 --untracked-files=all",
+        "remote_git_read diff --quiet --no-ext-diff",
+        "remote_git_read diff --cached --quiet --no-ext-diff",
         "拒绝记录成功",
     ):
         assert phrase in script
