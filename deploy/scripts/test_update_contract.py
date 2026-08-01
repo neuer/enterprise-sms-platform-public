@@ -265,11 +265,14 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
 )
 _SAFE_NON_RUNTIME_GATES = frozenset(
     {
+        "deploy/database-roles.md",
+        "docs/runbooks/public-baseline-activation.md",
         "scripts/e2e_api.py",
         "scripts/canonicalize_sbom.py",
         "scripts/create_release_manifest.py",
         "scripts/render_release_evidence.py",
         "scripts/verify_release.sh",
+        "scripts/verify_database_roles.sh",
         "scripts/verify_reproducible_build.sh",
         "scripts/verify_reproducible_release.py",
         "scripts/verify_redis_domains.sh",
