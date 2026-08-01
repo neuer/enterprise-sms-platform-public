@@ -7,6 +7,7 @@ import { getDashboard, type DashboardCategory, type DashboardSnapshot } from "..
 import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { jobDescription } from "../lib/jobDescriptions"
 
 const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
@@ -162,7 +163,7 @@ onBeforeUnmount(() => {
       <template #header><div class="panel-title"><div><strong>后台任务健康</strong><small>超过预期间隔 ×2 或最近失败显示红点</small></div><span>{{ operations.jobs.filter(item => !item.stalled).length }} / {{ operations.jobs.length }} 健康</span></div></template>
       <div class="job-grid">
         <article v-for="job in operations.jobs" :key="job.job_name" :class="['job-item', job.stalled && 'stalled']">
-          <i :class="['job-dot', job.stalled ? 'danger' : 'healthy']"></i><div><code>{{ job.job_name }}</code><time>{{ formatTime(job.last_run_at) }}</time></div>
+          <i :class="['job-dot', job.stalled ? 'danger' : 'healthy']"></i><div><code>{{ job.job_name }}</code><p class="job-description">{{ jobDescription(job.job_name) }}</p><time>{{ formatTime(job.last_run_at) }}</time></div>
         </article>
       </div>
     </el-card>

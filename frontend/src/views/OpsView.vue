@@ -22,6 +22,7 @@ import {
   type UncertainItem,
   type UnmatchedItem,
 } from "../api/ops"
+import { jobDescription } from "../lib/jobDescriptions"
 import {
   downloadExport,
   getExportTask,
@@ -326,8 +327,8 @@ onBeforeUnmount(stopExportPolling)
 
     <section v-else-if="activeTab === 'jobs'" v-loading="loading" class="ops-panel">
       <header class="ops-panel-title"><div><strong>后台任务心跳</strong><small>预期间隔由 beat 与 API 启动时读取，修改后需重启两个容器</small></div><span>{{ jobs.length }} 项</span></header>
-      <el-table :data="jobs" class="ops-table"><el-table-column prop="job_name" label="任务" min-width="180" /><el-table-column label="健康" width="100"><template #default="{ row }"><span class="job-health" :class="{ danger: row.stalled || row.last_status === 'failed' }"><i></i>{{ row.stalled ? 'stalled' : row.last_status || '无记录' }}</span></template></el-table-column><el-table-column prop="last_duration_ms" label="耗时 ms" width="100" /><el-table-column prop="last_items" label="处理量" width="90" /><el-table-column label="24h 成功率" width="120"><template #default="{ row }">{{ (row.success_rate_24h * 100).toFixed(1) }}%</template></el-table-column><el-table-column label="最近运行" width="180"><template #default="{ row }">{{ time(row.last_run_at) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row }"><el-button link type="primary" @click="trigger(row)">手动触发</el-button></template></el-table-column></el-table>
-      <div class="ops-mobile-list"><article v-for="item in jobs" :key="item.job_name"><header><strong>{{ item.job_name }}</strong><span class="job-health" :class="{ danger: item.stalled }"><i></i>{{ item.stalled ? 'stalled' : item.last_status || '无记录' }}</span></header><p>{{ item.last_items }} 项 · {{ item.last_duration_ms ?? 0 }}ms · {{ (item.success_rate_24h * 100).toFixed(1) }}%</p><el-button link type="primary" @click="trigger(item)">手动触发</el-button></article></div>
+      <el-table :data="jobs" class="ops-table"><el-table-column prop="job_name" label="任务" min-width="180" /><el-table-column label="中文用途" min-width="270"><template #default="{ row }"><span class="job-description">{{ jobDescription(row.job_name) }}</span></template></el-table-column><el-table-column label="健康" width="100"><template #default="{ row }"><span class="job-health" :class="{ danger: row.stalled || row.last_status === 'failed' }"><i></i>{{ row.stalled ? 'stalled' : row.last_status || '无记录' }}</span></template></el-table-column><el-table-column prop="last_duration_ms" label="耗时 ms" width="100" /><el-table-column prop="last_items" label="处理量" width="90" /><el-table-column label="24h 成功率" width="120"><template #default="{ row }">{{ (row.success_rate_24h * 100).toFixed(1) }}%</template></el-table-column><el-table-column label="最近运行" width="180"><template #default="{ row }">{{ time(row.last_run_at) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row }"><el-button link type="primary" @click="trigger(row)">手动触发</el-button></template></el-table-column></el-table>
+      <div class="ops-mobile-list"><article v-for="item in jobs" :key="item.job_name"><header><strong>{{ item.job_name }}</strong><span class="job-health" :class="{ danger: item.stalled }"><i></i>{{ item.stalled ? 'stalled' : item.last_status || '无记录' }}</span></header><p class="job-description">{{ jobDescription(item.job_name) }}</p><p>{{ item.last_items }} 项 · {{ item.last_duration_ms ?? 0 }}ms · {{ (item.success_rate_24h * 100).toFixed(1) }}%</p><el-button link type="primary" @click="trigger(item)">手动触发</el-button></article></div>
     </section>
 
     <section v-else-if="activeTab === 'queue'" v-loading="loading" class="ops-panel queue-recovery">
