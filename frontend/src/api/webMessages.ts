@@ -55,6 +55,21 @@ export interface SendResult {
 interface ApiErrorBody {
   code?: string
   message?: string
+  detail?: unknown
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly code: string
+  readonly detail: unknown
+
+  constructor(status: number, code: string, message: string, detail: unknown = null) {
+    super(message)
+    this.name = "ApiRequestError"
+    this.status = status
+    this.code = code
+    this.detail = detail
+  }
 }
 
 const TOKEN_KEY = "sms_token"
@@ -167,7 +182,12 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
   const response = await authorizedFetch(`/api/v1/web${path}`, init)
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody
-    throw new Error(body.message || body.code || `请求失败（${response.status}）`)
+    throw new ApiRequestError(
+      response.status,
+      body.code || `HTTP_${response.status}`,
+      body.message || body.code || `请求失败（${response.status}）`,
+      body.detail,
+    )
   }
   if (response.status === 204 || response.headers.get("content-length") === "0") {
     return undefined as T

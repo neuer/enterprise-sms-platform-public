@@ -18,6 +18,7 @@ from app.services.security_daily import (
     SecurityDailyReportRecord,
     SecurityDailyService,
     SecurityDailyValidationError,
+    resolve_configuration_state,
     validate_security_daily_payload,
 )
 
@@ -111,6 +112,7 @@ class FakeRepository:
     async def overview(self, *, now: datetime) -> SecurityDailyOverview:
         return SecurityDailyOverview(
             enabled=True,
+            configuration_state="ready",
             schedule_time="08:00",
             timezone="Asia/Shanghai",
             period_description="汇总前一上海自然日",
@@ -213,3 +215,28 @@ async def test_service_submits_redacted_report_without_mail_credentials() -> Non
     encoded = json.dumps(control.submitted[0][1], ensure_ascii=False)
     assert "secret" not in encoded.casefold()
     assert "recipient" not in encoded.casefold()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "resend_configured", "recipient_count", "expected"),
+    [
+        (False, False, 0, "disabled"),
+        (True, False, 0, "dispatcher_missing"),
+        (True, True, 0, "recipients_empty"),
+        (True, True, 1, "ready"),
+    ],
+)
+def test_configuration_state_explains_current_security_daily_readiness(
+    enabled: bool,
+    resend_configured: bool,
+    recipient_count: int,
+    expected: str,
+) -> None:
+    assert (
+        resolve_configuration_state(
+            enabled=enabled,
+            resend_configured=resend_configured,
+            recipient_count=recipient_count,
+        )
+        == expected
+    )

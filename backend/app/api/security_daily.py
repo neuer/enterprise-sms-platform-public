@@ -15,8 +15,10 @@ from app.core.audit import audited
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
 from app.services.security_daily import (
+    ConfigurationState,
     DeliveryAction,
     FileSecurityDailyControl,
+    SecurityDailyConfigurationError,
     SecurityDailyControlError,
     SecurityDailyDeliveryRequest,
     SecurityDailyNotFound,
@@ -40,12 +42,13 @@ class StrictModel(BaseModel):
 
 class SecurityDailyOverviewModel(StrictModel):
     enabled: bool
+    configuration_state: ConfigurationState
     schedule_time: str
     timezone: str
     period_description: str
     last_generated_at: datetime | None
     last_delivered_at: datetime | None
-    next_scheduled_at: datetime
+    next_scheduled_at: datetime | None
     latest_failure: str | None
     delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed"] | None
     recipient_count: int = Field(ge=0, le=3)
@@ -193,6 +196,8 @@ async def security_daily_overview(
         overview = await service.overview()
     except SecurityDailyControlError:
         raise _unavailable("安全日报独立投递控制面不可用") from None
+    except SecurityDailyConfigurationError as error:
+        raise _unavailable(str(error)) from None
     return SecurityDailyOverviewModel.model_validate(overview, from_attributes=True)
 
 
@@ -230,6 +235,8 @@ async def list_security_daily_reports(
         )
     except SecurityDailyControlError:
         raise _unavailable("安全日报独立投递控制面不可用") from None
+    except SecurityDailyConfigurationError as error:
+        raise _unavailable(str(error)) from None
     return _page_model(page_result, service)
 
 

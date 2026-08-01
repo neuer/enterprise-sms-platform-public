@@ -69,6 +69,7 @@ const reports = [
 
 const overview = {
   enabled: true,
+  configuration_state: "ready",
   schedule_time: "08:00",
   timezone: "Asia/Shanghai",
   period_description: "汇总前一上海自然日",
@@ -136,5 +137,78 @@ describe("安全日报页面", () => {
     expect(api.sendSecurityDailyReport.mock.calls[0]).toHaveLength(1)
     wrapper.unmount()
     vi.restoreAllMocks()
+  })
+
+  it("未启用时显示配置引导且不伪造下一次运行时间", async () => {
+    api.getSecurityDailyOverview.mockResolvedValue({
+      ...overview,
+      enabled: false,
+      configuration_state: "disabled",
+      next_scheduled_at: null,
+      resend_configured: false,
+      recipient_count: 0,
+    })
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("日报未启用")
+    expect(wrapper.text()).toContain("不会创建下一次运行计划")
+    expect(wrapper.text()).not.toContain("下次")
+    expect(wrapper.text()).not.toContain("D030")
+    wrapper.unmount()
+  })
+
+  it("配置不完整时不开放手动投递并区分投递器与收件人状态", async () => {
+    api.getSecurityDailyOverview.mockResolvedValue({
+      ...overview,
+      enabled: true,
+      configuration_state: "dispatcher_missing",
+      resend_configured: false,
+      recipient_count: 0,
+    })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("投递器未配置")
+    expect(wrapper.text()).toContain("当前不会正常投递")
+    expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("后端 503 显示错误码并清空失败列表，避免拼接部分旧状态", async () => {
+    api.getSecurityDailyOverview.mockResolvedValue(overview)
+    api.listSecurityDailyReports.mockRejectedValue(
+      Object.assign(new Error("安全日报独立投递控制面不可用"), {
+        code: "SECURITY_DAILY_UNAVAILABLE",
+        status: 503,
+      }),
+    )
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("安全日报独立投递控制面不可用")
+    expect(wrapper.text()).toContain("安全日报记录暂不可用，请刷新重试")
+    expect(wrapper.text()).not.toContain("正常")
+    wrapper.unmount()
+  })
+
+  it("概览字段不完整时显示不可用而不拼装默认计划", async () => {
+    api.getSecurityDailyOverview.mockResolvedValue({
+      ...overview,
+      configuration_state: undefined,
+      next_scheduled_at: undefined,
+    })
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("配置状态不可用")
+    expect(wrapper.text()).not.toContain("下次")
+    wrapper.unmount()
   })
 })

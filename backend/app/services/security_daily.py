@@ -22,6 +22,7 @@ from app.core.auth.accounts import SecurityPrincipal
 SecurityStatus = Literal["normal", "attention", "high"]
 GenerationStatus = Literal["pending", "ready", "failed", "unavailable"]
 DeliveryStatus = Literal["not_sent", "pending", "sending", "sent", "failed"]
+ConfigurationState = Literal["disabled", "dispatcher_missing", "recipients_empty", "ready"]
 DeliveryAction = Literal["send", "retry"]
 DeliveryRequestState = Literal["pending", "sent", "failed"]
 
@@ -65,6 +66,10 @@ class SecurityDailyNotFound(LookupError):
 
 class SecurityDailyUnavailable(RuntimeError):
     """报告数据或独立投递控制面暂不可用。"""
+
+
+class SecurityDailyConfigurationError(SecurityDailyUnavailable):
+    """安全日报运行配置损坏或无法安全解释。"""
 
 
 class SecurityDailyStateConflict(RuntimeError):
@@ -218,12 +223,13 @@ class SecurityDailyReportRecord:
 @dataclass(frozen=True, slots=True)
 class SecurityDailyOverview:
     enabled: bool
+    configuration_state: ConfigurationState
     schedule_time: str
     timezone: str
     period_description: str
     last_generated_at: datetime | None
     last_delivered_at: datetime | None
-    next_scheduled_at: datetime
+    next_scheduled_at: datetime | None
     latest_failure: str | None
     delivery_status: DeliveryStatus | None
     recipient_count: int
@@ -389,6 +395,20 @@ def _next_schedule(now: datetime) -> datetime:
     if target <= local:
         target += timedelta(days=1)
     return target
+
+
+def resolve_configuration_state(
+    *, enabled: bool, resend_configured: bool, recipient_count: int
+) -> ConfigurationState:
+    """把当前安全日报配置归一为可解释的状态，不用默认值伪造可用性。"""
+
+    if not enabled:
+        return "disabled"
+    if not resend_configured:
+        return "dispatcher_missing"
+    if recipient_count == 0:
+        return "recipients_empty"
+    return "ready"
 
 
 def _timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:

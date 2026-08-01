@@ -3,15 +3,17 @@ import { apiRequest } from "./webMessages"
 export type SecurityStatus = "normal" | "attention" | "high"
 export type GenerationStatus = "pending" | "ready" | "failed" | "unavailable"
 export type DeliveryStatus = "not_sent" | "pending" | "sending" | "sent" | "failed"
+export type SecurityDailyConfigurationState = "disabled" | "dispatcher_missing" | "recipients_empty" | "ready"
 
 export interface SecurityDailyOverview {
   enabled: boolean
+  configuration_state: SecurityDailyConfigurationState
   schedule_time: string
   timezone: string
   period_description: string
   last_generated_at: string | null
   last_delivered_at: string | null
-  next_scheduled_at: string
+  next_scheduled_at: string | null
   latest_failure: string | null
   delivery_status: DeliveryStatus | null
   recipient_count: number
