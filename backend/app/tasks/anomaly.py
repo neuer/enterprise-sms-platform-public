@@ -12,7 +12,7 @@ from app.services.alert_repository import SqlAlertService
 from app.services.anomaly import AnomalyService
 from app.services.anomaly_repository import SqlAnomalyRepository
 from app.settings import get_settings
-from app.tasks import celery_app
+from app.tasks import background_task_options, celery_app
 
 
 async def _scan() -> int:
@@ -27,7 +27,10 @@ async def _scan() -> int:
         await redis.aclose()
 
 
-@celery_app.task(name="app.tasks.anomaly_scan")  # type: ignore[untyped-decorator]
+@celery_app.task(
+    name="app.tasks.anomaly_scan",
+    **background_task_options(soft_time_limit=120, time_limit=150),
+)  # type: ignore[untyped-decorator]
 @tracked_job("anomaly_scan", expect_interval_s=3600)
 def anomaly_scan() -> int:
     """Celery 同步入口不携带任何应用数据或 PII。"""

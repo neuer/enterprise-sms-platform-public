@@ -7,7 +7,7 @@ from app.core.worker_runtime import run_worker_async
 from app.services.housekeeping import HousekeepingService, ImportFileStore
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.settings import get_settings
-from app.tasks import celery_app
+from app.tasks import background_task_options, celery_app
 
 
 async def _run() -> int:
@@ -19,7 +19,10 @@ async def _run() -> int:
     return result.total
 
 
-@celery_app.task(name="app.tasks.housekeeping")  # type: ignore[untyped-decorator]
+@celery_app.task(
+    name="app.tasks.housekeeping",
+    **background_task_options(soft_time_limit=900, time_limit=960),
+)  # type: ignore[untyped-decorator]
 @tracked_job("housekeeping", expect_interval_s=86400)
 def housekeeping() -> int:
     return run_worker_async(_run())

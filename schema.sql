@@ -1594,9 +1594,9 @@ TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
 GRANT SELECT ON
-    app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
+    user_account, app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
-    unmatched_report, job_run, approval, sms_template, sms_sign, blacklist,
+    unmatched_report, job_run, import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     sensitive_word, callback_report_event, callback_task, worker_lease_event,
     balance_snapshot, alert_log, outbox_event, usage_reservation,
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
@@ -1611,10 +1611,13 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, stat_daily
 TO sms_send;
+GRANT UPDATE, DELETE ON import_task TO sms_send;
+GRANT INSERT, DELETE ON import_phone TO sms_send;
 GRANT INSERT ON
-    report_event, reply_event, callback_report_event, worker_lease_event, audit_log
+    report_event, reply_event, worker_lease_event, audit_log
 TO sms_send;
-GRANT INSERT, UPDATE ON callback_task TO sms_send;
+GRANT INSERT, DELETE ON callback_report_event TO sms_send;
+GRANT INSERT, UPDATE, DELETE ON callback_task TO sms_send;
 GRANT INSERT, UPDATE ON
     report_event_projection, vendor_test_daily_usage,
     vendor_test_send_attempt, vendor_test_operation
@@ -1624,7 +1627,8 @@ GRANT USAGE, SELECT ON SEQUENCE
     raw_vendor_log_id_seq, unmatched_report_id_seq, job_run_id_seq,
     approval_id_seq, balance_snapshot_id_seq, alert_log_id_seq,
     worker_lease_event_id_seq, vendor_test_send_attempt_id_seq,
-    audit_log_id_seq, callback_task_id_seq, usage_projection_version_seq
+    audit_log_id_seq, callback_task_id_seq, import_phone_id_seq,
+    usage_projection_version_seq
 TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。

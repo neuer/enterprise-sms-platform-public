@@ -29,7 +29,7 @@ from app.services.imports import (
 )
 from app.services.runtime_policy import SqlRuntimePolicyLoader
 from app.settings import get_settings
-from app.tasks import celery_app
+from app.tasks import background_task_options, celery_app
 
 
 class _Blacklist:
@@ -223,16 +223,16 @@ async def dispatch_imports_once(
 
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="app.tasks.process_import",
-    acks_late=True,
-    reject_on_worker_lost=True,
-    soft_time_limit=120,
-    time_limit=150,
+    **background_task_options(soft_time_limit=120, time_limit=150),
 )
 def process_import(import_id: str) -> int:
     return run_worker_async(process_import_once(import_id))
 
 
-@celery_app.task(name="app.tasks.dispatch_imports")  # type: ignore[untyped-decorator]
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.tasks.dispatch_imports",
+    **background_task_options(soft_time_limit=120, time_limit=150),
+)
 @tracked_job("dispatch_imports", expect_interval_s=30)
 def dispatch_imports() -> int:
     return run_worker_async(dispatch_imports_once(SqlImportRepository(), ImportSender()))
