@@ -93,6 +93,24 @@ const coverageGaps = computed(() =>
   ) ?? [],
 )
 const overviewStatus = computed(() => overview.value?.delivery_status ?? null)
+const overviewDeliveryStatusLabel = computed(() => {
+  if (!overview.value) return "数据不可用"
+  return overviewStatus.value ? deliveryLabel(overviewStatus.value) : "尚未生成"
+})
+const reportsEmptyText = computed(() => {
+  if (reportsErrorMessage.value) return "安全日报记录暂不可用，请刷新重试"
+  if (overview.value?.configuration_state === "ready") return "暂无已生成安全日报"
+  return "暂无安全日报记录"
+})
+const reportsEmptyHint = computed(() => {
+  if (loading.value || reportsErrorMessage.value || total.value > 0 || !overview.value) return ""
+  if (!overview.value.enabled) return "安全日报尚未启用，启用后才会按固定时间生成日报。"
+  if (overview.value.configuration_state !== "ready") return "请先完成安全日报配置，系统才会按固定时间生成日报。"
+  const nextSchedule = overview.value.next_scheduled_at
+    ? displayMoment(overview.value.next_scheduled_at)
+    : "下一次调度时间"
+  return `暂无已生成安全日报；${nextSchedule}后生成。生成后可打开详情进行安全预览和手动投递。`
+})
 
 function statusLabel(value: string): string {
   return statusLabels[value as SecurityStatus] ?? "未知状态"
@@ -335,7 +353,7 @@ onMounted(() => void refresh())
         <div><dt>调度</dt><dd>{{ overview.schedule_time }} · {{ overview.timezone }}</dd></div>
         <div><dt>收件人数</dt><dd>{{ overview.recipient_count }} 人（只展示数量）</dd></div>
         <div><dt>发件域名</dt><dd>{{ overview.sender_domain }} / {{ overview.sender_address }}</dd></div>
-        <div><dt>最近日报状态</dt><dd>{{ overviewStatus ? deliveryLabel(overviewStatus) : "数据不可用" }}</dd></div>
+        <div><dt>最近日报状态</dt><dd>{{ overviewDeliveryStatusLabel }}</dd></div>
         <div><dt>最近成功生成</dt><dd>{{ displayMoment(overview.last_generated_at) }}</dd></div>
         <div><dt>最近成功投递</dt><dd>{{ displayMoment(overview.last_delivered_at) }}</dd></div>
         <div><dt>最近失败</dt><dd>{{ overview.latest_failure ?? "—" }}</dd></div>
@@ -362,7 +380,8 @@ onMounted(() => void refresh())
           </div>
         </div>
       </template>
-      <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsErrorMessage ? '安全日报记录暂不可用，请刷新重试' : '暂无安全日报记录'" @row-click="openRow">
+      <el-alert v-if="reportsEmptyHint" :title="reportsEmptyHint" type="info" show-icon :closable="false" />
+      <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsEmptyText" @row-click="openRow">
         <el-table-column prop="report_date" label="报告日期" width="130" />
         <el-table-column label="安全状态" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="生成" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.generation_status)" size="small">{{ generationLabel(scope.row.generation_status) }}</el-tag></template></el-table-column>

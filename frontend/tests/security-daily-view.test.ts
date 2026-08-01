@@ -197,6 +197,26 @@ describe("安全日报页面", () => {
     wrapper.unmount()
   })
 
+  it("尚未生成日报时区分空状态并说明首次预览时机", async () => {
+    api.getSecurityDailyOverview.mockResolvedValue({
+      ...overview,
+      last_generated_at: null,
+      last_delivered_at: null,
+      latest_failure: null,
+      delivery_status: null,
+      next_scheduled_at: "2026-07-19T08:00:00+08:00",
+    })
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("尚未生成")
+    expect(wrapper.text()).toContain("暂无已生成安全日报")
+    expect(wrapper.text()).toContain("安全预览和手动投递")
+    wrapper.unmount()
+  })
+
   it("配置不完整时不开放手动投递并区分投递器与收件人状态", async () => {
     api.getSecurityDailyOverview.mockResolvedValue({
       ...overview,
