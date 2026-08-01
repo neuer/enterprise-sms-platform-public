@@ -28,11 +28,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _remaining_tokens(value: object, capacity: int) -> int:
-    """校验令牌桶快照，缺失或非整数值必须保持未知。"""
+    """校验令牌桶快照；空闲时不存在的桶按满容量解释。"""
 
     if value is None:
-        raise ValueError("token snapshot is missing")
-    remaining_float = float(str(value))
+        # TokenBucket 在取令牌时才创建 hash，并在约 3 秒无活动后过期。
+        # 因此 key/field 缺失表示没有活跃租约；下一次 acquire 会按 Lua
+        # 实现从满桶开始，仪表盘可确定当前已用令牌为 0。
+        return capacity
+    try:
+        remaining_float = float(str(value))
+    except (TypeError, ValueError):
+        raise ValueError("token snapshot is invalid") from None
     if not math.isfinite(remaining_float) or not remaining_float.is_integer():
         raise ValueError("token snapshot is invalid")
     remaining = int(remaining_float)

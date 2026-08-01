@@ -7,7 +7,13 @@ from typing import Any
 
 import pytest
 
-from app.services.dashboard_repository import SqlDashboardRepository
+from app.services.dashboard_repository import SqlDashboardRepository, _remaining_tokens
+
+
+def test_remaining_tokens_rejects_corrupt_snapshot_but_accepts_idle_bucket() -> None:
+    assert _remaining_tokens(None, 8) == 8
+    with pytest.raises(ValueError, match="token snapshot is invalid"):
+        _remaining_tokens("not-a-number", 8)
 
 
 class FakeResult:
@@ -201,7 +207,7 @@ async def test_repository_marks_channel_stale_when_redis_snapshot_times_out() ->
 
 
 @pytest.mark.asyncio
-async def test_repository_keeps_queue_facts_but_marks_missing_token_snapshot_incomplete() -> None:
+async def test_repository_treats_absent_token_snapshot_as_idle_full_bucket() -> None:
     connection = FakeConnection(
         [
             FakeResult(rows=[]),
@@ -230,9 +236,9 @@ async def test_repository_keeps_queue_facts_but_marks_missing_token_snapshot_inc
 
     assert facts.operations is not None
     assert (facts.operations.realtime_queue, facts.operations.bulk_queue) == (4, 9)
-    assert facts.operations.qps_used is None
-    assert facts.operations.channel_stale is True
-    assert facts.operations.degraded_reason == "snapshot_incomplete"
+    assert facts.operations.qps_used == 0
+    assert facts.operations.channel_stale is False
+    assert facts.operations.degraded_reason is None
 
 
 @pytest.mark.asyncio
