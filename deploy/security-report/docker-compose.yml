@@ -15,16 +15,10 @@ services:
     mem_limit: 128m
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=1m
-    secrets:
-      - { source: resend_api_key, target: resend_api_key }
     volumes:
       - type: bind
-        source: ./runtime/current.json
-        target: /reports/current.json
-        read_only: true
-      - type: bind
-        source: ./config/recipients.txt
-        target: /run/config/recipients
+        source: ${SMS_SECURITY_REPORT_CONFIG_DIR:-../security-report-config}
+        target: /run/config
         read_only: true
       - type: bind
         source: ${SMS_SECURITY_REPORT_CONTROL_DIR:-../security-report-control}
@@ -33,13 +27,7 @@ services:
     command:
       - --control-dir
       - /run/control
-      - --api-key-file
-      - /run/secrets/resend_api_key
-      - --recipients-file
-      - /run/config/recipients
+      - --config-file
+      - /run/config/resend.json
       - --serve
     restart: unless-stopped
-
-secrets:
-  resend_api_key:
-    file: ./secrets/resend_api_key

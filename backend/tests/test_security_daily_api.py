@@ -11,6 +11,8 @@ from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler, internal_error_handler
 from app.services.security_daily import (
+    SecurityDailyConfiguration,
+    SecurityDailyConfigurationUpdate,
     SecurityDailyControlError,
     SecurityDailyOverview,
     SecurityDailyPage,
@@ -30,6 +32,31 @@ class FakeService:
     def __init__(self, overview: SecurityDailyOverview) -> None:
         self.overview_value = overview
         self.list_error: Exception | None = None
+        self.configuration_value = SecurityDailyConfiguration(
+            enabled=True,
+            api_key="re_test_value",
+            recipients=("owner@example.com",),
+        )
+        self.configuration_update: SecurityDailyConfigurationUpdate | None = None
+
+    async def configuration(self) -> SecurityDailyConfiguration:
+        return self.configuration_value
+
+    async def configure(
+        self,
+        update: SecurityDailyConfigurationUpdate,
+        *,
+        principal: object,
+        ip: str,
+    ) -> SecurityDailyConfiguration:
+        del principal, ip
+        self.configuration_update = update
+        self.configuration_value = SecurityDailyConfiguration(
+            enabled=update.enabled,
+            api_key=update.api_key or self.configuration_value.api_key,
+            recipients=update.recipients,
+        )
+        return self.configuration_value
 
     async def overview(self) -> SecurityDailyOverview:
         return self.overview_value
@@ -141,6 +168,40 @@ def test_list_control_failure_is_a_unified_503_error() -> None:
         "message": "安全日报独立投递控制面不可用",
         "detail": None,
     }
+
+
+def test_configuration_endpoint_returns_status_without_echoing_resend_key() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    http = client(service)
+
+    read = http.get(
+        "/api/v1/web/admin/security-daily/config",
+        headers={"Authorization": "Bearer jwt"},
+    )
+    assert read.status_code == 200
+    assert read.json()["resend_api_key_configured"] is True
+    assert "re_test_value" not in read.text
+
+    write = http.put(
+        "/api/v1/web/admin/security-daily/config",
+        headers={"Authorization": "Bearer jwt"},
+        json={
+            "enabled": True,
+            "recipients": ["ops@example.com"],
+            "resend_api_key": "re_new_value",
+        },
+    )
+    assert write.status_code == 200
+    assert service.configuration_update is not None
+    assert service.configuration_update.api_key == "re_new_value"
+    assert "re_new_value" not in write.text
 
 
 def test_unexpected_list_failure_keeps_unified_500_error_without_partial_response() -> None:

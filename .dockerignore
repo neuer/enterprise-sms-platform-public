@@ -6,6 +6,7 @@ deploy/security-report/secrets/
 deploy/security-report/runtime/
 deploy/security-report/config/recipients.txt
 deploy/security-report-control/
+deploy/security-report-config/
 **/node_modules/
 **/.venv/
 **/dist/

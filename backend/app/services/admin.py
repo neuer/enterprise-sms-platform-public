@@ -99,7 +99,15 @@ class AdminRepository(Protocol):
     ) -> tuple[tuple[AuditRecord, ...], int]: ...
 
 
-SENSITIVE_CONFIG_KEYS = frozenset({"alert_wecom_webhook"})
+SENSITIVE_CONFIG_KEYS = frozenset({"alert_wecom_webhook", "security_daily_resend_api_key"})
+UI_ONLY_CONFIG_KEYS = frozenset(
+    {
+        "security_daily_enabled",
+        "security_daily_recipient_count",
+        "security_daily_resend_configured",
+        "security_daily_resend_api_key",
+    }
+)
 BEAT_CONFIG_KEYS = BEAT_STARTUP_ONLY_KEYS
 
 
@@ -152,7 +160,11 @@ class AdminService:
         )
 
     async def list_configs(self) -> tuple[ConfigItem, ...]:
-        return tuple(self._item(row) for row in await self.repository.list_configs())
+        return tuple(
+            self._item(row)
+            for row in await self.repository.list_configs()
+            if row.key not in UI_ONLY_CONFIG_KEYS
+        )
 
     @staticmethod
     def _validate_value(row: ConfigRow, value: str) -> str:
@@ -197,6 +209,8 @@ class AdminService:
             row = known.get(item.key)
             if row is None:
                 raise InvalidAdminQuery(f"未知配置: {item.key}")
+            if item.key in UI_ONLY_CONFIG_KEYS:
+                raise InvalidAdminQuery("安全日报 Resend Key 只能在安全日报配置页维护")
             if item.value is None:
                 if item.key not in SENSITIVE_CONFIG_KEYS:
                     raise InvalidAdminQuery(f"配置 {item.key} 缺少值")

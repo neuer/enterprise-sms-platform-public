@@ -228,8 +228,9 @@ services:
     volumes:
       - importdata:/var/lib/sms/imports
       - exportdata:/var/lib/sms/exports
-      # API 只写入脱敏安全日报控制请求；Resend Key 仅存在独立 mailer。
+      # API 写入脱敏日报控制请求，并同步管理员在 UI 配置的 mailer 配置。
       - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
+      - ${SMS_SECURITY_REPORT_CONFIG_DIR:-./security-report-config}:/run/security-report-config:rw
       # root agent 的 allowlist 与 10 秒心跳投影只读进入后端。
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
       # 只挂载独立 UDS 目录，绝不挂载宿主 runtime secrets 或 Docker Socket。

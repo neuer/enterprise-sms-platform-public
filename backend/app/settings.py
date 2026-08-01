@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     import_storage_dir: Path = Path("/var/lib/sms/imports")
     export_storage_dir: Path = Path("/var/lib/sms/exports")
     security_daily_control_dir: Path = Path("/run/security-report")
+    security_daily_config_dir: Path = Path("/run/security-report-config")
 
     vendor_secret_name_file: Path = Path("/run/secrets/vendor_secret_name")
     vendor_secret_key_file: Path = Path("/run/secrets/vendor_secret_key")

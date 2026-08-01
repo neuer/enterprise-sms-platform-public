@@ -594,6 +594,27 @@ def test_security_daily_runtime_config_migration_backfills_incremental_databases
     assert module.down_revision == "0041_security_daily_control"
 
 
+def test_security_daily_ui_config_migration_adds_resend_key_and_recipients() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0043_security_daily_ui_config.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "security_daily_resend_api_key" in schema
+    assert "security_daily_recipient" in schema
+    assert "CREATE TABLE IF NOT EXISTS security_daily_recipient" in source
+    assert "GRANT SELECT ON security_daily_recipient TO sms_send" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_ui_config_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0043_security_daily_ui_config"
+    assert module.down_revision == "0042_security_daily_config"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

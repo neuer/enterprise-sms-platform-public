@@ -172,11 +172,11 @@
 - 原因：开发测试需要验证真实的 `X-Api-Key → API → pipeline → queue → carrier` 应用接入链路，但直接放开普通发送会扩大类别、批量、定时和模板表面。独立窄入口可以复用生产链路，同时把真实影响固定在已登记号码和单条通知。
 - 影响：AGENTS/PRD/OpenAPI、messages API、测试号码 HMAC 查询、审计覆盖、真实联调手册和 high-risk 快速更新门禁。创建入口和发布本身不发送短信；每次真实 API UAT 仍须操作者明确确认。
 
-## D030 安全日报通过独立 Resend 伴生容器投递
+## D030 安全日报通过 UI 配置并由独立 Resend 伴生容器投递
 
-- 决策：安全日报发送不复用业务告警 SMTP，也不把 Resend Key 加入短信平台 API、worker、beat 或固定八件生产 secrets。平台 API 只把已校验的报告日期、动作和脱敏结构化 payload 原子写入 `/run/security-report/requests`，独立非 root 伴生容器只读取这个控制目录、一个专用 Docker secret 和只读收件人文件，通过固定 `api.resend.com:443/emails` REST 端点投递，再把不含正文、地址或凭据的 sent/failed 结果写入 `results`。发信域名固定为 `reports.neuer.cn`，Key 必须是绑定该域名的 Sending-only 权限。CI、G2 和快速更新只使用 Fake/Mock，永不真实外发。生成任务在 08:00 后消费解析器按日期原子交付的脱敏快照；快照缺失或校验失败时落 `unavailable`，不伪造指标或触发投递。
-- 原因：日报正文与既有告警事件的数据模型、认证方式和重试语义不同，复用 SMTP 会扩大出站与凭据边界，也会破坏告警测试的 log-sink 契约。伴生容器能保持平台八件 secrets 和服务名契约不变，并用日报日期幂等键约束重试。2026-07-26 信息安全负责人已确认：脱敏安全日报正文在 Resend 美国区域保存 30 天符合公司信息安全要求。
-- 影响：`deploy/security-report`、`security_daily_report`/`security_daily_delivery_request` 事实表、管理员 API/页面、Resend REST 发送脚本、安全测试、`reports.neuer.cn` 的 DKIM/MAIL FROM DNS、子域专用 `p=none` DMARC 监控策略和后续解析器定时交接；真实首封测试与 Key 安装仍是独立、显式授权的运维动作。DMARC 只有在合法来源持续通过后才单独评审升级为 `quarantine` 或 `reject`。
+- 决策：安全日报不复用业务告警 SMTP。管理员在 `/security-daily` 页面维护启用开关、Resend Key 和最多 3 个收件人；Key 写入专用 `sys_config`，收件人写入 `security_daily_recipient`，API 再以原子 JSON 同步到独立 mailer 的配置目录。Key 不进入平台 worker、beat、短信厂商凭据、日报正文、审计载荷或 API 响应；审计只记录是否配置和收件人数。独立非 root mailer 只读取 `resend.json` 与脱敏控制请求，通过固定 `api.resend.com:443/emails` 投递，再把不含正文、地址或凭据的 sent/failed 结果写入 `results`。
+- 原因：用户明确授权安全日报采用 Resend Key 的 UI 配置流程，降低部署和日常运维复杂度；保留独立 mailer、固定发信域名、脱敏报告和控制目录，避免把邮件发送实现散落到短信 API/worker。2026-07-26 信息安全负责人已确认：脱敏安全日报正文在 Resend 美国区域保存 30 天符合公司信息安全要求。
+- 影响：新增 `security_daily_recipient` 与 Resend Key 配置键、管理员配置 API/页面、API 到 mailer 的配置同步、`deploy/security-report-config` 目录和 0043 迁移。CI、G2 和快速更新仍只使用 Fake/Mock，永不真实外发；`reports.neuer.cn` 的 DKIM/MAIL FROM DNS、子域专用 `p=none` DMARC 监控策略和日报生成/重试语义保持不变。
 
 ## D031 导出任务使用稳定主体、固化范围和不可枚举公开 ID
 

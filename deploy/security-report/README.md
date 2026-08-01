@@ -1,116 +1,47 @@
 # Resend 安全日报投递伴生容器
 
-这个目录只负责把已经通过
-`render_security_daily_report.py` 严格校验和脱敏的 JSON 日报发送到固定
-Resend HTTPS 端点。它不采集或解析服务器日志，也不加入短信平台 API、worker、
-beat 或固定八件生产 secrets。
+这个目录负责把已经通过 `render_security_daily_report.py` 校验的脱敏 JSON 日报发送到固定 Resend HTTPS 端点。日常配置全部在平台管理员的 `/security-daily` 页面完成，不需要手工维护 Resend secret 或收件人文件。
 
-## 固定安全边界
+## 页面配置
 
-- 发信域名固定为 `reports.neuer.cn`，发件地址固定为该域名下的安全日报专用地址；
-  具体地址由独立 mailer 的版本化配置确认。
-- Resend Key 只从 Compose 的 `resend_api_key` Docker secret 读取，禁止放入
-  `.env`、命令参数、日志、数据库或日报。
-- 收件人从独立只读文件读取，每行一个、最多 3 个；仓库不保存真实收件地址。
-- 容器以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabilities、
-  无入站端口。
-- HTTPS 连接固定到 `api.resend.com:443` 的 `POST /emails`，不继承宿主代理、
-  不跟随重定向，TLS 最低 1.2。
-- 每个报告日期使用同一个 `Idempotency-Key`。429、5xx 或连接失败最多安全重试
-  2 次，永久错误不重试，错误信息不包含 Resend 响应正文。
-- 平台 API 只把已脱敏、已校验的请求写到共享 control 目录；本容器独占读取
-  `requests/`、写入 `results/`，API、worker、beat 永远不读取 Resend Key。
-- CI、G2 和快速更新只允许 Fake/Mock 传输，绝不真实调用 Resend。
+先启动主 Compose 并完成数据库迁移。管理员进入“安全日报 → 配置邮件”：
 
-2026-07-26 已由信息安全负责人确认：脱敏安全日报正文在 Resend 美国区域保存
-30 天符合公司信息安全要求。
+1. 打开“启用安全日报”。
+2. 粘贴 Resend API Key；首次保存必须填写，后续留空表示保持当前 Key。
+3. 填写 1–3 个收件人，每行一个或用逗号分隔。
+4. 点击保存，页面显示配置状态和收件人数，不回显 Key。
 
-## 首次配置
+页面保存会更新 `security_daily_resend_api_key` 与 `security_daily_recipient`，并将 `resend.json` 原子同步到 `deploy/security-report-config`。该目录已加入 Git 和 Docker build context 忽略规则。
 
-在这个目录执行。先准备不入 Git 的收件人文件：
+首次部署只需准备两个共享目录（不写入 Key）：
 
 ```bash
-cp config/recipients.example.txt config/recipients.txt
-chmod 0600 config/recipients.txt
+sudo install -d -o 10001 -g 10001 -m 0700 deploy/security-report-config deploy/security-report-control
 ```
 
-把示例地址改为经过批准的真实收件地址。然后从当前终端的标准输入原子安装
-Docker secret 源文件。关闭 shell tracing，粘贴一次 Key 后按回车：
+Resend Key 应具备发送权限并绑定 `reports.neuer.cn`。发件域名和地址固定为：
+
+- 域名：`reports.neuer.cn`
+- 地址：由独立 mailer 固定配置（不在公开文档中回显）
+
+## 启动 mailer
+
+在仓库根目录执行：
 
 ```bash
-set +x
-read -rsp 'Resend API Key: ' RESEND_API_KEY
-printf '%s\n' "$RESEND_API_KEY" | \
-  python3 ../scripts/install_resend_api_key.py \
-  --output secrets/resend_api_key
-unset RESEND_API_KEY
+docker compose -f deploy/security-report/docker-compose.yml --profile send build security-report-mailer
+docker compose -f deploy/security-report/docker-compose.yml --profile send up -d security-report-mailer
 ```
 
-Key 不进入命令参数，安装器使用同目录临时文件原子替换并固定为 `0600`。Key
-必须在 Resend 控制台设置为：
+mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabilities、无入站端口。它只读取 UI 同步的 `/run/config/resend.json` 和脱敏 control 请求，通过 `api.resend.com:443/emails` 投递，再把不含正文、地址或 Key 的结果写回 control 目录。
 
-- Permission: `Sending access`
-- Domain: `reports.neuer.cn`
+主 Compose API 需要挂载 `./security-report-config` 和 `./security-report-control`；独立 mailer 只读前者、读写后者。日报生成任务仍由 bulk worker 每分钟检查，在上海时间 08:00 后消费前一自然日的脱敏快照；缺少快照时记录 `unavailable`，不会用 0 伪造指标。
 
-不要把 Key 粘贴到终端命令参数、聊天、Issue 或 PR。
+## 页面验收
 
-日志解析器完成后，必须以原子替换方式生成
-`runtime/current.json`；不能把未脱敏原始日志放进这个目录。自动日报任务还需要解析器
-把同一份已脱敏、已校验对象按 `YYYY-MM-DD.json` 原子写入 control 目录的
-`incoming/` 子目录；不能把未脱敏原始日志放进 control 目录。正式页面投递还需要
-先创建 API 与 mailer 共享的 control 目录，并将其所有权交给 UID 10001：
+1. `/security-daily` 概览显示“配置完整”、收件人数和固定发件地址。
+2. 打开一条已生成日报，先使用“安全预览”确认内容，再点击“手动投递”。
+3. mailer 处理后，页面投递状态更新为“已投递”或“投递失败”；失败可使用“重试投递”。
+4. 检查 mailer 日志只包含报告日期和状态，不包含 Resend Key、收件地址、正文或 Resend 响应正文。
 
-```bash
-install -d -o 10001 -g 10001 -m 0700 ../security-report-control
-```
-
-## 本地校验与单次发送
-
-先构建镜像：
-
-```bash
-docker compose --profile send build security-report-mailer
-```
-
-默认 service command 会持续监听 control 目录并按 API 请求投递。要只校验输入且不联网，显式覆盖 command：
-
-```bash
-docker compose --profile send run --rm security-report-mailer \
-  --input /reports/current.json \
-  --recipients-file /run/config/recipients
-```
-
-确认报告日期、收件人数和 Resend 域名状态后，启动独立投递器。正式控制面使用持续运行模式：
-
-```bash
-docker compose --profile send up -d security-report-mailer
-```
-
-如需仅对一个已生成的 `current.json` 做一次性发送，可在受控运维场景中显式覆写为
-`run --rm ... --once`；生产管理员页面不走这个旁路。
-
-平台管理员页面的“手动投递 / 重试”只会产生脱敏控制请求；mailer 处理后回写
-`results/<request_id>.json`，API 在后续读取时更新投递事实和审计时间线。页面不会读取
-收件地址、Key 或 Resend 响应正文。
-
-成功输出只包含报告日期，不显示收件地址、Key、邮件正文或 Resend 响应正文。
-失败时先修复原因，再用同一报告日期重跑；幂等键会阻止重复投递。
-
-## 上线前检查
-
-1. `dig` 能查到 Resend 当前显示的 DKIM、MAIL FROM MX 和 SPF 三条记录，以及
-   `_dmarc.reports.neuer.cn` 的 `v=DMARC1; p=none;` 监控策略。
-2. Resend Domains 页面显示 `reports.neuer.cn` 为 `verified`。
-3. API Key 是 Sending-only 且绑定上述域名。
-4. `secrets/resend_api_key` 与 `config/recipients.txt` 权限均为 `0600`。
-5. `runtime/current.json` 已通过本地只校验命令。
-6. control 目录存在且 UID 10001 可读写，requests/results 均为 `0700`，文件为 `0600`。
-7. 首封测试邮件必须由操作者明确发起，并核对 HTML、纯文本回退与邮件头认证结果。
-
-服务器安全日报生成任务由 bulk worker 每分钟检查，在上海时间每日 08:00 之后只消费前一
-上海自然日的脱敏快照；缺少或校验失败时记录 `unavailable`，不会用 0 伪造指标。Beat
-修改其他任务间隔仍需重启 beat；日报固定检查频率不代替报告日界线。
-
-DMARC 初始使用 `p=none`，只监控、不改变失败邮件处置。确认所有合法发信来源持续
-通过 DMARC 后，再单独评审是否升级为 `quarantine` 或 `reject`；不要在首次投递时
-直接收紧策略。
+CI、G2 和快速更新使用 Fake/Mock 传输，不真实外发。真实首封测试必须由管理员在页面明确发起。

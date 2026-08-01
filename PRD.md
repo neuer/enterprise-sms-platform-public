@@ -23,6 +23,7 @@
 | v1.6.4 | **事务性可靠发布**：业务状态与无 PII `outbox_event` 在同一 PostgreSQL 事务提交；独立 dispatcher 以租约/fencing 发布，Celery task ID 固定为 event ID，消费者按事件 ID 幂等；broker 首次失败不改变 HTTP 已受理语义，恢复扫描仅作兜底 |
 | v1.6.5 | **可恢复用量事实**：配额和号码频控改由 PostgreSQL 事实账本串行判定，Redis 仅保存版本化绝对投影；终态释放经事务性 Outbox 幂等补偿，支持 HMAC 轮换归并、漂移告警、无 PII 解释和安全重建 |
 | v1.6.6 | **Redis 故障域硬化**：Celery broker、认证会话、业务控制面拆为三个独立高可用端点和 ACL 身份；密码只经 Docker secrets，认证故障 fail closed，broker/control 分别由 Outbox 与 PostgreSQL 事实恢复 |
+| v1.6.40 | **安全日报配置 UI 化**：管理员页面配置 Resend Key、收件人和启停状态，API 同步独立 mailer 配置文件；不再要求手工维护 Docker secret 与收件人文件 |
 
 ---
 
@@ -265,6 +266,10 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 测试号码按 `phone_enc/phone_hmac/phone_mask/key_version` 存 PostgreSQL；页面只展示备注与掩码。live-test 模式下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`，控制台 UAT 每次只选择一个 active recipient
 - 应用侧唯一真实联调例外为 `POST /api/v1/messages/uat-send`：有效 `X-Api-Key`、仅通知、单个 active 已登记号码、直接内容与必填 1–32 位 `biz_id`；禁止模板、定时、验证码、营销及额外字段。API 必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码且要求所有保留版本 digest 与当次输入完全匹配，只把既有加密四元组交给同一 pipeline；worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，queued/sending 测试批次作为维护租约，终态前禁止停用或删除。控制状态损坏或过期必须以 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则保持 503 且不继续；复用 24h 幂等、每日 100 个计费条和 uncertain 占额
 - 继续执行上海自然日 100 个计费条硬上限、uncertain 持续占额、1010/鉴权/余额等 critical pause 和 GetBalance-only 激活预检；CI/G2 始终使用 Mock/FakeCarrier
+#### FR-19b 安全日报配置与投递（v1.6.40）
+- admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
+- 配置写入 `sys_config.security_daily_resend_api_key` 与 `security_daily_recipient`，配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
+- 独立 mailer 仍固定使用 `reports.neuer.cn` 发件域名和 `api.resend.com`，平台 API/worker/beat 不直接访问 Resend；日报正文只允许已脱敏结构化 payload，发送、重试、预览和 `unavailable` 语义保持不变
 #### FR-20 审计日志
 - 覆盖全部写操作与敏感读（解密查看/导出/报文重放/回调重推/队列恢复/角色覆盖）
 - **防 PII（v1.2）**：审计记录只存号码数量与批次引用，**禁止存手机号列表明文**
@@ -372,6 +377,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 | 13 | /apps | 应用管理 | CRUD、Key 轮换/作废、回调配置与密钥轮换、频控覆盖 | admin |
 | 14 | /users | 用户与角色 | 本地账号创建/重置/启停、Provider/凭据/同步状态、AD 角色跟随或覆盖、强制下线 | admin |
 | 15 | /configs | 系统配置 | 页签：运行参数、认证源、真实联调；含 AD 草稿/测试/启停、sys_config 分组编辑及受控正式 Key、测试号码、激活和单号码 UAT | admin |
+| 15a | /security-daily | 安全日报 | 查看生成/投递状态、配置 Resend Key 与收件人、预览、手动投递与失败重试 | admin |
 | 16 | /audit | 审计日志 | 多条件检索（只读） | admin |
 | 17 | /reports | 统计报表 | 日/周/月 × 应用/部门 × 类别，消息数+计费条，导出 | viewer+ |
 | 18 | /ops | 运维中心 | Tab：告警记录 / 回调任务（重推）/ 原始报文（重放）/ uncertain 分片 / unmatched 报告 / **任务健康（v1.5）** / 队列恢复 | admin |

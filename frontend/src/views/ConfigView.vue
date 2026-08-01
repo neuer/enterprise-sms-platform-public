@@ -317,7 +317,7 @@ onMounted(() => {
     <div>
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>
       <h1>系统参数</h1>
-      <p>运行参数、认证源与真实联调统一在此受控；正式凭据密封交付后仍只由 Docker secrets 文件提供给运行时。</p>
+      <p>运行参数、认证源与真实联调统一在此受控；安全日报邮件配置请进入独立的“安全日报”页面。</p>
     </div>
     <div class="config-heading-note"><strong>{{ configs.length }}</strong><span>项受控运行参数</span></div>
   </section>
