@@ -59,6 +59,22 @@ const snapshot = {
   },
 }
 
+const incompleteSnapshot = {
+  ...snapshot,
+  refreshed_at: "2026-07-12T08:01:00+08:00",
+  operations: {
+    ...snapshot.operations,
+    channel_monitor: {
+      ...snapshot.operations.channel_monitor,
+      realtime_queue: null,
+      bulk_queue: null,
+      qps_used: null,
+      stale: true,
+      degraded_reason: "snapshot_incomplete" as const,
+    },
+  },
+}
+
 describe("仪表盘", () => {
   it("展示服务端统计、处置计数和任务健康", async () => {
     const fetch = vi.fn().mockResolvedValue(response(snapshot))
@@ -118,6 +134,44 @@ describe("仪表盘", () => {
     expect(wrapper.text()).toContain("数据暂不可用")
     expect(wrapper.text()).toContain("4")
     expect(wrapper.text()).toContain("Redis 快照超时")
+    expect(wrapper.text()).toContain("最近成功")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("服务端快照字段缺失时显示降级原因和最近成功时间", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(snapshot))
+      .mockResolvedValueOnce(response(incompleteSnapshot))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get(".dashboard-refresh .el-button").trigger("click")
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='channel-monitor']").classes()).toContain("monitor-stale")
+    expect(wrapper.text()).toContain("Redis 运行快照字段不完整")
+    expect(wrapper.text()).toContain("最近成功")
+    expect(wrapper.text()).toContain("重新加载")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("快照恢复后轮询重新显示 LIVE", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(incompleteSnapshot))
+      .mockResolvedValueOnce(response(snapshot))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("Redis 运行快照字段不完整")
+    await wrapper.get(".dashboard-refresh .el-button").trigger("click")
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='channel-monitor']").classes()).not.toContain("monitor-stale")
+    expect(wrapper.text()).toContain("LIVE")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })

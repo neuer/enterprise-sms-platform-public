@@ -70,44 +70,20 @@ class FakeEngine:
         self.disposed = True
 
 
-class FakeRedisPipeline:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str | None]] = []
-
-    def llen(self, key: str) -> FakeRedisPipeline:
-        self.calls.append(("llen", key, None))
-        return self
-
-    def hget(self, key: str, field: str) -> FakeRedisPipeline:
-        self.calls.append(("hget", key, field))
-        return self
-
-    async def execute(self) -> list[object]:
-        return [4, 9, "3"]
-
-
 class FakeRedis:
-    def __init__(self) -> None:
-        self.pipe = FakeRedisPipeline()
+    def __init__(self, tokens: str | None = "3") -> None:
+        self.tokens = tokens
+        self.calls: list[tuple[str, str]] = []
 
-    def pipeline(self, *, transaction: bool) -> FakeRedisPipeline:
-        assert transaction is False
-        return self.pipe
-
-
-class NeverRedisPipeline(FakeRedisPipeline):
-    async def execute(self) -> list[object]:
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
+    async def hget(self, key: str, field: str) -> str | None:
+        self.calls.append((key, field))
+        return self.tokens
 
 
 class NeverRedis:
-    def __init__(self) -> None:
-        self.pipe = NeverRedisPipeline()
-
-    def pipeline(self, *, transaction: bool) -> NeverRedisPipeline:
-        assert transaction is False
-        return self.pipe
+    async def hget(self, _key: str, _field: str) -> str:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 @pytest.mark.asyncio
@@ -124,6 +100,10 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
             FakeResult(scalar=2),
             FakeResult(rows=[{"level": "warn", "title": "余额较低", "created_at": now}]),
             FakeResult(rows=[{"uncertain": 1, "unmatched": 3, "callback_dead": 4}]),
+            FakeResult(rows=[
+                {"queue": "realtime", "count": 4},
+                {"queue": "bulk", "count": 9},
+            ]),
             FakeResult(
                 rows=[
                     {
@@ -176,11 +156,7 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
     count_sql = connection.calls[5][0]
     assert "unmatched_report" in count_sql and "callback_task" in count_sql
     assert "sms_chunk" in count_sql and "app.dept" in count_sql
-    assert repository.redis.pipe.calls == [  # type: ignore[attr-defined]
-        ("llen", "realtime", None),
-        ("llen", "bulk", None),
-        ("hget", "ratelimit:vendor", "tokens"),
-    ]
+    assert repository.redis.calls == [("ratelimit:vendor", "tokens")]  # type: ignore[attr-defined]
     assert engine.disposed
 
 
@@ -195,6 +171,10 @@ async def test_repository_marks_channel_stale_when_redis_snapshot_times_out() ->
             FakeResult(scalar=0),
             FakeResult(rows=[]),
             FakeResult(rows=[{"uncertain": 0, "unmatched": 0, "callback_dead": 0}]),
+            FakeResult(rows=[
+                {"queue": "realtime", "count": 0},
+                {"queue": "bulk", "count": 0},
+            ]),
             FakeResult(rows=[]),
             FakeResult(rows=[
                 {"key": "vendor_qps", "value": "8"},
@@ -213,10 +193,81 @@ async def test_repository_marks_channel_stale_when_redis_snapshot_times_out() ->
     )
 
     assert facts.operations is not None and facts.operations.channel_stale is True
-    assert facts.operations.realtime_queue is None
-    assert facts.operations.bulk_queue is None
     assert facts.operations.qps_used is None
+    assert facts.operations.degraded_reason == "redis_unavailable"
+    assert facts.operations.realtime_queue == 0
+    assert facts.operations.bulk_queue == 0
     assert engine.disposed
+
+
+@pytest.mark.asyncio
+async def test_repository_keeps_queue_facts_but_marks_missing_token_snapshot_incomplete() -> None:
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[]),
+            FakeResult(scalar=None),
+            FakeResult(rows=[]),
+            FakeResult(scalar=0),
+            FakeResult(rows=[]),
+            FakeResult(rows=[{"uncertain": 0, "unmatched": 0, "callback_dead": 0}]),
+            FakeResult(rows=[
+                {"queue": "realtime", "count": 4},
+                {"queue": "bulk", "count": 9},
+            ]),
+            FakeResult(rows=[]),
+            FakeResult(rows=[
+                {"key": "vendor_qps", "value": "8"},
+                {"key": "reserved_realtime_qps", "value": "3"},
+            ]),
+        ]
+    )
+    engine = FakeEngine(connection)
+    repository = SqlDashboardRepository()
+    repository._engine = lambda: engine  # type: ignore[method-assign]
+    repository.redis = FakeRedis(tokens=None)  # type: ignore[attr-defined]
+
+    facts = await repository.load("业务一部", date(2026, 7, 12), include_operations=True)
+
+    assert facts.operations is not None
+    assert (facts.operations.realtime_queue, facts.operations.bulk_queue) == (4, 9)
+    assert facts.operations.qps_used is None
+    assert facts.operations.channel_stale is True
+    assert facts.operations.degraded_reason == "snapshot_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_repository_treats_zero_queue_and_qps_usage_as_real_zero() -> None:
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[]),
+            FakeResult(scalar=None),
+            FakeResult(rows=[]),
+            FakeResult(scalar=0),
+            FakeResult(rows=[]),
+            FakeResult(rows=[{"uncertain": 0, "unmatched": 0, "callback_dead": 0}]),
+            FakeResult(rows=[
+                {"queue": "realtime", "count": 0},
+                {"queue": "bulk", "count": 0},
+            ]),
+            FakeResult(rows=[]),
+            FakeResult(rows=[
+                {"key": "vendor_qps", "value": "8"},
+                {"key": "reserved_realtime_qps", "value": "3"},
+            ]),
+        ]
+    )
+    engine = FakeEngine(connection)
+    repository = SqlDashboardRepository()
+    repository._engine = lambda: engine  # type: ignore[method-assign]
+    repository.redis = FakeRedis(tokens="8")  # type: ignore[attr-defined]
+
+    facts = await repository.load("业务一部", date(2026, 7, 12), include_operations=True)
+
+    assert facts.operations is not None
+    assert (facts.operations.realtime_queue, facts.operations.bulk_queue) == (0, 0)
+    assert facts.operations.qps_used == 0
+    assert facts.operations.channel_stale is False
+    assert facts.operations.degraded_reason is None
 
 
 @pytest.mark.asyncio
@@ -250,4 +301,3 @@ async def test_non_admin_repository_skips_all_global_operational_queries() -> No
         "callback_task",
     ):
         assert global_table not in sql
-    assert repository.redis.pipe.calls == []  # type: ignore[attr-defined]

@@ -130,6 +130,7 @@ class DashboardChannelMonitorModel(BaseModel):
     qps_rate: int = Field(ge=1)
     reserved_realtime_qps: int = Field(ge=0)
     stale: bool
+    degraded_reason: Literal["redis_unavailable", "snapshot_incomplete"] | None = None
 
 
 class DashboardUiPolicyModel(BaseModel):
@@ -299,6 +300,7 @@ def _dashboard_response(snapshot: DashboardSnapshot) -> DashboardModel:
                     qps_rate=operations.qps_rate,
                     reserved_realtime_qps=operations.reserved_realtime_qps,
                     stale=operations.channel_stale,
+                    degraded_reason=operations.degraded_reason,
                 ),
                 balance_alert_threshold=operations.balance_alert_threshold,
             )

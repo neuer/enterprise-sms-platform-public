@@ -116,6 +116,7 @@ def test_admin_dashboard_includes_operational_snapshot() -> None:
         "callback_dead": 4,
     }
     assert operations["channel_monitor"]["stale"] is True
+    assert operations["channel_monitor"].get("degraded_reason") is None
     assert service.calls == [("admin", "平台部")]
 
 
