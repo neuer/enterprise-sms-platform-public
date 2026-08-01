@@ -2517,15 +2517,16 @@ components:
     SecurityDailyOverviewModel:
       type: object
       additionalProperties: false
-      required: [enabled, schedule_time, timezone, period_description, last_generated_at, last_delivered_at, next_scheduled_at, latest_failure, delivery_status, recipient_count, resend_configured, sender_domain, sender_address, beat_restart_required]
+      required: [enabled, configuration_state, schedule_time, timezone, period_description, last_generated_at, last_delivered_at, next_scheduled_at, latest_failure, delivery_status, recipient_count, resend_configured, sender_domain, sender_address, beat_restart_required]
       properties:
         enabled: { type: boolean }
+        configuration_state: { type: string, enum: [disabled, dispatcher_missing, recipients_empty, ready] }
         schedule_time: { type: string }
         timezone: { type: string }
         period_description: { type: string }
         last_generated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         last_delivered_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-        next_scheduled_at: { type: string, format: date-time }
+        next_scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         latest_failure: { anyOf: [{ type: string }, { type: 'null' }] }
         delivery_status: { anyOf: [{ type: string, enum: [not_sent, pending, sending, sent, failed] }, { type: 'null' }] }
         recipient_count: { type: integer, minimum: 0, maximum: 3 }

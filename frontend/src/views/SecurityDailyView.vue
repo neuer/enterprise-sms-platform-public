@@ -11,11 +11,13 @@ import {
   sendSecurityDailyReport,
   type DeliveryStatus,
   type GenerationStatus,
+  type SecurityDailyConfigurationState,
   type SecurityDailyOverview,
   type SecurityDailyPayload,
   type SecurityDailyReport,
   type SecurityStatus,
 } from "../api/securityDaily"
+import { ApiRequestError } from "../api/webMessages"
 
 const statusLabels: Record<SecurityStatus, string> = {
   normal: "正常",
@@ -35,6 +37,24 @@ const deliveryLabels: Record<DeliveryStatus, string> = {
   sent: "已投递",
   failed: "投递失败",
 }
+const configurationLabels: Record<SecurityDailyConfigurationState, string> = {
+  disabled: "日报未启用",
+  dispatcher_missing: "已启用，投递器未配置",
+  recipients_empty: "已启用，收件人未配置",
+  ready: "日报已启用",
+}
+const configurationTagLabels: Record<SecurityDailyConfigurationState, string> = {
+  disabled: "未启用",
+  dispatcher_missing: "待配置",
+  recipients_empty: "待配置",
+  ready: "配置完整",
+}
+const configurationMessages: Record<SecurityDailyConfigurationState, string> = {
+  disabled: "当前未启用，不会创建下一次运行计划。",
+  dispatcher_missing: "日报已启用，但独立投递器尚未配置，当前不会正常投递。",
+  recipients_empty: "日报已启用，但没有收件人配置，当前不会投递。",
+  ready: "当前配置完整，按固定时间生成并交由独立投递器发送。",
+}
 
 const overview = ref<SecurityDailyOverview | null>(null)
 const reports = ref<SecurityDailyReport[]>([])
@@ -47,7 +67,8 @@ const generationStatus = ref<GenerationStatus | "">("")
 const deliveryStatus = ref<DeliveryStatus | "">("")
 const loading = ref(false)
 const detailLoading = ref(false)
-const errorMessage = ref("")
+const overviewErrorMessage = ref("")
+const reportsErrorMessage = ref("")
 const selected = ref<SecurityDailyReport | null>(null)
 const drawerOpen = ref(false)
 const previewText = ref("")
@@ -73,6 +94,37 @@ function deliveryLabel(value: string): string {
   return deliveryLabels[value as DeliveryStatus] ?? "数据不可用"
 }
 
+function configurationLabel(value: string): string {
+  return configurationLabels[value as SecurityDailyConfigurationState] ?? "配置状态不可用"
+}
+
+function configurationTagLabel(value: string): string {
+  return configurationTagLabels[value as SecurityDailyConfigurationState] ?? "不可用"
+}
+
+function configurationMessage(value: string): string {
+  return configurationMessages[value as SecurityDailyConfigurationState] ?? "配置状态不可用，请刷新重试。"
+}
+
+function configurationTagType(value: string): "success" | "warning" | "info" {
+  if (value === "ready") return "success"
+  if (value === "dispatcher_missing" || value === "recipients_empty") return "warning"
+  return "info"
+}
+
+function apiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiRequestError) {
+    const retry = error.status >= 500 ? "，请刷新重试" : ""
+    return `${error.message}（错误码 ${error.code}）${retry}`
+  }
+  if (error instanceof Error && "code" in error && typeof error.code === "string") {
+    const status = "status" in error && typeof error.status === "number" ? error.status : 0
+    const retry = status >= 500 ? "，请刷新重试" : ""
+    return `${error.message}（错误码 ${error.code}）${retry}`
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
 function tagType(value: string): "success" | "warning" | "danger" | "info" {
   if (value === "normal" || value === "ready" || value === "sent") return "success"
   if (value === "attention" || value === "pending" || value === "sending") return "warning"
@@ -88,7 +140,9 @@ function displayMoment(value: string | null | undefined): string {
 
 async function loadReports(): Promise<void> {
   loading.value = true
-  errorMessage.value = ""
+  reportsErrorMessage.value = ""
+  reports.value = []
+  total.value = 0
   try {
     const result = await listSecurityDailyReports({
       dateFrom: dateFrom.value || undefined,
@@ -102,17 +156,22 @@ async function loadReports(): Promise<void> {
     reports.value = result.items
     total.value = result.total
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "安全日报列表暂不可用"
+    reports.value = []
+    total.value = 0
+    reportsErrorMessage.value = apiErrorMessage(error, "安全日报列表暂不可用，请刷新重试")
   } finally {
     loading.value = false
   }
 }
 
 async function loadOverview(): Promise<void> {
+  overviewErrorMessage.value = ""
+  overview.value = null
   try {
     overview.value = await getSecurityDailyOverview()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "安全日报概览暂不可用"
+    overview.value = null
+    overviewErrorMessage.value = apiErrorMessage(error, "安全日报概览暂不可用，请刷新重试")
   }
 }
 
@@ -127,7 +186,7 @@ async function openReport(reportDate: string): Promise<void> {
   try {
     selected.value = await getSecurityDailyReport(reportDate)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "日报详情暂不可用")
+    ElMessage.error(apiErrorMessage(error, "日报详情暂不可用，请刷新重试"))
     drawerOpen.value = false
   } finally {
     detailLoading.value = false
@@ -141,7 +200,7 @@ async function openPreview(): Promise<void> {
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "预览暂不可用")
+    ElMessage.error(apiErrorMessage(error, "预览暂不可用，请刷新重试"))
   }
 }
 
@@ -164,16 +223,16 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     await openReport(selected.value.report_date)
   } catch (error) {
     if (error === "cancel" || error === "close") return
-    ElMessage.error(error instanceof Error ? error.message : "投递请求失败")
+    ElMessage.error(apiErrorMessage(error, "投递请求失败，请刷新重试"))
   }
 }
 
 function canSend(report: SecurityDailyReport): boolean {
-  return Boolean(overview.value?.enabled && report.generation_status === "ready" && report.payload)
+  return Boolean(overview.value?.configuration_state === "ready" && report.generation_status === "ready" && report.payload)
 }
 
 function canRetry(report: SecurityDailyReport): boolean {
-  return Boolean(overview.value?.enabled && report.generation_status === "ready" && report.payload && report.delivery_status === "failed")
+  return Boolean(overview.value?.configuration_state === "ready" && report.generation_status === "ready" && report.payload && report.delivery_status === "failed")
 }
 
 function openRow(row: SecurityDailyReport): void {
@@ -194,23 +253,28 @@ onMounted(() => void refresh())
       <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
     </header>
 
-    <el-alert v-if="errorMessage" :title="errorMessage" type="warning" show-icon :closable="false" />
+    <el-alert v-if="overviewErrorMessage" :title="overviewErrorMessage" type="error" show-icon :closable="false" />
+    <el-alert v-if="reportsErrorMessage" :title="reportsErrorMessage" type="error" show-icon :closable="false" />
 
     <section v-if="overview" class="security-daily-overview" aria-label="安全日报概览">
       <article class="security-daily-state-card">
-        <span class="section-index">D030</span>
-        <strong>{{ overview.enabled ? "日报已启用" : "日报未启用" }}</strong>
-        <el-tag :type="overview.resend_configured ? 'success' : 'warning'" size="small">
-          {{ overview.resend_configured ? "投递器已配置" : "投递器未配置" }}
+        <span class="section-index">安全日报运行状态</span>
+        <strong>{{ configurationLabel(overview.configuration_state) }}</strong>
+        <el-tag :type="configurationTagType(overview.configuration_state)" size="small">
+          {{ configurationTagLabel(overview.configuration_state) }}
         </el-tag>
-        <p>{{ overview.period_description }} · 下次 {{ displayMoment(overview.next_scheduled_at) }}</p>
+        <p>
+          {{ overview.period_description }} · {{ configurationMessage(overview.configuration_state) }}
+          <template v-if="overview.next_scheduled_at">下次 {{ displayMoment(overview.next_scheduled_at) }}</template>
+        </p>
       </article>
       <dl class="security-daily-facts">
         <div><dt>调度</dt><dd>{{ overview.schedule_time }} · {{ overview.timezone }}</dd></div>
         <div><dt>收件人数</dt><dd>{{ overview.recipient_count }} 人（只展示数量）</dd></div>
         <div><dt>发件域名</dt><dd>{{ overview.sender_domain }} / {{ overview.sender_address }}</dd></div>
-        <div><dt>最近投递</dt><dd>{{ overviewStatus ? deliveryLabel(overviewStatus) : "数据不可用" }}</dd></div>
-        <div><dt>最近生成</dt><dd>{{ displayMoment(overview.last_generated_at) }}</dd></div>
+        <div><dt>最近日报状态</dt><dd>{{ overviewStatus ? deliveryLabel(overviewStatus) : "数据不可用" }}</dd></div>
+        <div><dt>最近成功生成</dt><dd>{{ displayMoment(overview.last_generated_at) }}</dd></div>
+        <div><dt>最近成功投递</dt><dd>{{ displayMoment(overview.last_delivered_at) }}</dd></div>
         <div><dt>最近失败</dt><dd>{{ overview.latest_failure ?? "—" }}</dd></div>
         <div><dt>Beat 配置</dt><dd>{{ overview.beat_restart_required ? "修改后需重启 beat" : "无需重启" }}</dd></div>
       </dl>
@@ -235,7 +299,7 @@ onMounted(() => void refresh())
           </div>
         </div>
       </template>
-      <el-table v-loading="loading" :data="reports" row-key="id" empty-text="暂无安全日报记录" @row-click="openRow">
+      <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsErrorMessage ? '安全日报记录暂不可用，请刷新重试' : '暂无安全日报记录'" @row-click="openRow">
         <el-table-column prop="report_date" label="报告日期" width="130" />
         <el-table-column label="安全状态" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="生成" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.generation_status)" size="small">{{ generationLabel(scope.row.generation_status) }}</el-tag></template></el-table-column>

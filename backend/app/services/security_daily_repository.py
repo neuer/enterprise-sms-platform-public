@@ -17,6 +17,7 @@ from app.services.security_daily import (
     DeliveryRequestState,
     DeliveryStatus,
     GenerationStatus,
+    SecurityDailyConfigurationError,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
     SecurityDailyOverview,
@@ -28,6 +29,7 @@ from app.services.security_daily import (
     SecurityDailyValidationError,
     SecurityStatus,
     _next_schedule,
+    resolve_configuration_state,
     validate_security_daily_payload,
 )
 from app.settings import Settings, get_settings
@@ -39,7 +41,26 @@ SENDER_ADDRESS = "security-daily@reports.neuer.cn"
 def _bool_config(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
-    return value.casefold() in {"1", "true", "yes", "on"}
+    normalized = value.casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise SecurityDailyConfigurationError("安全日报布尔配置无效")
+
+
+def _recipient_count(value: str | None) -> int:
+    """严格读取收件人数；配置损坏时失败关闭而不是回退为 0。"""
+
+    if value is None:
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise SecurityDailyConfigurationError("安全日报收件人配置无效") from error
+    if not 0 <= parsed <= 3:
+        raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
+    return parsed
 
 
 def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
@@ -95,7 +116,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
                 return (
                     _bool_config(values.get("security_daily_enabled")),
-                    min(3, max(0, int(values.get("security_daily_recipient_count", "0")))),
+                    _recipient_count(values.get("security_daily_recipient_count")),
                 )
         finally:
             await engine.dispose()
@@ -283,14 +304,22 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
         finally:
             await engine.dispose()
+        enabled = _bool_config(config.get("security_daily_enabled"))
+        resend_configured = _bool_config(config.get("security_daily_resend_configured"))
+        recipient_count = _recipient_count(config.get("security_daily_recipient_count"))
         return SecurityDailyOverview(
-            enabled=_bool_config(config.get("security_daily_enabled")),
+            enabled=enabled,
+            configuration_state=resolve_configuration_state(
+                enabled=enabled,
+                resend_configured=resend_configured,
+                recipient_count=recipient_count,
+            ),
             schedule_time="08:00",
             timezone="Asia/Shanghai",
             period_description="汇总前一上海自然日",
             last_generated_at=generated_result.scalar_one_or_none(),
             last_delivered_at=delivered_result.scalar_one_or_none(),
-            next_scheduled_at=_next_schedule(now),
+            next_scheduled_at=_next_schedule(now) if enabled else None,
             latest_failure=(
                 str(latest["last_error"])
                 if latest is not None and latest["last_error"] is not None
@@ -299,35 +328,35 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             delivery_status=(
                 cast(DeliveryStatus, str(latest["delivery_status"])) if latest is not None else None
             ),
-            recipient_count=min(
-                3,
-                max(0, int(config.get("security_daily_recipient_count", "0"))),
-            ),
-            resend_configured=_bool_config(config.get("security_daily_resend_configured")),
+            recipient_count=recipient_count,
+            resend_configured=resend_configured,
             sender_domain=SENDER_DOMAIN,
             sender_address=SENDER_ADDRESS,
             beat_restart_required=True,
         )
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
-        where = """
-          (:date_from IS NULL OR report_date>=:date_from)
-          AND (:date_to IS NULL OR report_date<=:date_to)
-          AND (CAST(:status AS varchar(16)) IS NULL OR status=:status)
-          AND (CAST(:generation_status AS varchar(16)) IS NULL
-               OR generation_status=:generation_status)
-          AND (CAST(:delivery_status AS varchar(16)) IS NULL
-               OR delivery_status=:delivery_status)
-        """
-        params = {
-            "date_from": query.report_date_from,
-            "date_to": query.report_date_to,
-            "status": query.status,
-            "generation_status": query.generation_status,
-            "delivery_status": query.delivery_status,
+        predicates: list[str] = []
+        params: dict[str, Any] = {
             "limit": query.page_size,
             "offset": (query.page - 1) * query.page_size,
         }
+        if query.report_date_from is not None:
+            predicates.append("report_date>=:date_from")
+            params["date_from"] = query.report_date_from
+        if query.report_date_to is not None:
+            predicates.append("report_date<=:date_to")
+            params["date_to"] = query.report_date_to
+        if query.status is not None:
+            predicates.append("status=:status")
+            params["status"] = query.status
+        if query.generation_status is not None:
+            predicates.append("generation_status=:generation_status")
+            params["generation_status"] = query.generation_status
+        if query.delivery_status is not None:
+            predicates.append("delivery_status=:delivery_status")
+            params["delivery_status"] = query.delivery_status
+        where = " AND ".join(predicates) or "TRUE"
         columns = (
             "id,report_date,period_start,period_end,status,generation_status,"
             "delivery_status,generated_at,delivered_at,recipient_count,retry_count,"
