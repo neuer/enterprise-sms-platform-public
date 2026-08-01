@@ -11,6 +11,7 @@ from app.core.jobtrack import JobSpec
 from app.services.stats import SHANGHAI, success_rate
 
 Category = Literal["verify", "notice", "market"]
+ChannelMonitorDegradedReason = Literal["redis_unavailable", "snapshot_incomplete"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,7 @@ class ChannelMonitor:
     qps_rate: int
     reserved_realtime_qps: int
     stale: bool
+    degraded_reason: ChannelMonitorDegradedReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,7 @@ class DashboardOperationsFacts:
     qps_rate: int = 5
     reserved_realtime_qps: int = 2
     channel_stale: bool = True
+    degraded_reason: ChannelMonitorDegradedReason | None = None
     balance_alert_threshold: int = 10000
 
 
@@ -104,6 +107,7 @@ class DashboardOperations:
     qps_rate: int = 5
     reserved_realtime_qps: int = 2
     channel_stale: bool = True
+    degraded_reason: ChannelMonitorDegradedReason | None = None
     balance_alert_threshold: int = 10000
 
 
@@ -212,6 +216,7 @@ class DashboardService:
                 operation_facts.qps_rate,
                 operation_facts.reserved_realtime_qps,
                 operation_facts.channel_stale,
+                operation_facts.degraded_reason,
                 operation_facts.balance_alert_threshold,
             )
         return DashboardSnapshot(

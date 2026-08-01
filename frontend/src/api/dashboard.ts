@@ -37,6 +37,7 @@ export interface DashboardChannelMonitor {
   qps_rate: number | null
   reserved_realtime_qps: number | null
   stale: boolean
+  degraded_reason?: "redis_unavailable" | "snapshot_incomplete" | null
 }
 
 export interface DashboardUiPolicy {

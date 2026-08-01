@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, timedelta
 from typing import Any, cast
 
@@ -15,6 +16,7 @@ from app.services.dashboard import (
     BalancePoint,
     Category,
     CategoryTotals,
+    ChannelMonitorDegradedReason,
     DashboardFacts,
     DashboardOperationsFacts,
     JobLatest,
@@ -23,6 +25,20 @@ from app.services.runtime_policy import RuntimePolicy
 from app.settings import Settings, get_settings
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _remaining_tokens(value: object, capacity: int) -> int:
+    """校验令牌桶快照，缺失或非整数值必须保持未知。"""
+
+    if value is None:
+        raise ValueError("token snapshot is missing")
+    remaining_float = float(str(value))
+    if not math.isfinite(remaining_float) or not remaining_float.is_integer():
+        raise ValueError("token snapshot is invalid")
+    remaining = int(remaining_float)
+    if not 0 <= remaining <= capacity:
+        raise ValueError("token snapshot is out of range")
+    return remaining
 
 
 class SqlDashboardRepository:
@@ -175,6 +191,23 @@ class SqlDashboardRepository:
                     {"scope_dept": scope_dept},
                 )
                 counts = counts_result.mappings().one()
+                queue_result = await connection.execute(
+                    text(
+                        """
+                        SELECT lanes.queue,count(event.id) count
+                        FROM (VALUES ('realtime'),('bulk')) AS lanes(queue)
+                        LEFT JOIN outbox_event event
+                          ON event.queue=lanes.queue
+                         AND event.state IN ('pending','leased','published','processing')
+                        GROUP BY lanes.queue
+                        ORDER BY lanes.queue
+                        """
+                    )
+                )
+                queue_depths = {
+                    str(row["queue"]): max(0, int(row["count"]))
+                    for row in queue_result.mappings()
+                }
                 jobs_result = await connection.execute(
                     text(
                         """
@@ -206,28 +239,25 @@ class SqlDashboardRepository:
                 policy = RuntimePolicy.from_mapping(
                     {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
                 )
-                realtime_queue: int | None = None
-                bulk_queue: int | None = None
                 qps_used: int | None = None
                 channel_stale = True
+                degraded_reason: ChannelMonitorDegradedReason | None = "redis_unavailable"
                 try:
-                    pipeline = self.redis.pipeline(transaction=False)
-                    pipeline.llen("realtime")
-                    pipeline.llen("bulk")
-                    pipeline.hget("ratelimit:vendor", "tokens")
                     async with asyncio.timeout(self.channel_timeout_s):
-                        realtime_raw, bulk_raw, tokens_raw = await pipeline.execute()
-                    realtime_queue = int(realtime_raw)
-                    bulk_queue = int(bulk_raw)
-                    remaining = (
-                        policy.vendor_qps if tokens_raw is None else int(float(str(tokens_raw)))
-                    )
+                        tokens_raw = await self.redis.hget("ratelimit:vendor", "tokens")
+                    remaining = _remaining_tokens(tokens_raw, policy.vendor_qps)
                     qps_used = max(0, min(policy.vendor_qps, policy.vendor_qps - remaining))
                     channel_stale = False
+                    degraded_reason = None
+                except ValueError:
+                    degraded_reason = "snapshot_incomplete"
                 except Exception as error:
                     LOGGER.warning(
                         "dashboard channel monitor unavailable",
-                        extra={"error_type": type(error).__name__},
+                        extra={
+                            "error_type": type(error).__name__,
+                            "reason": degraded_reason,
+                        },
                     )
                 return DashboardFacts(
                     categories=categories,
@@ -241,12 +271,13 @@ class SqlDashboardRepository:
                         int(counts["unmatched"]),
                         int(counts["callback_dead"]),
                         jobs,
-                        realtime_queue,
-                        bulk_queue,
+                        queue_depths.get("realtime", 0),
+                        queue_depths.get("bulk", 0),
                         qps_used,
                         policy.vendor_qps,
                         policy.reserved_realtime_qps,
                         channel_stale,
+                        degraded_reason,
                         policy.balance_alert_threshold,
                     ),
                 )

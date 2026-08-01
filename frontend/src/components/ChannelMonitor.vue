@@ -8,6 +8,8 @@ const props = withDefaults(defineProps<{
   qpsRate?: number | null
   reservedRealtimeQps?: number | null
   refreshedAt?: string | null
+  lastSuccessfulAt?: string | null
+  degradedReason?: "redis_unavailable" | "snapshot_incomplete" | null
   stale?: boolean
 }>(), {
   realtimeQueue: null,
@@ -16,6 +18,8 @@ const props = withDefaults(defineProps<{
   qpsRate: null,
   reservedRealtimeQps: null,
   refreshedAt: null,
+  lastSuccessfulAt: null,
+  degradedReason: null,
   stale: true,
 })
 
@@ -30,6 +34,11 @@ const usedTokens = computed(() => {
   const roundedUp = Math.trunc(scaled) + (Number.isInteger(scaled) ? 0 : 1)
   return Math.min(5, roundedUp)
 })
+const degradedMessage = computed(() => {
+  if (props.degradedReason === "snapshot_incomplete") return "Redis 运行快照字段不完整"
+  if (props.degradedReason === "redis_unavailable") return "Redis 运行快照读取失败（控制快照不可用）"
+  return "Redis 运行快照暂不可用"
+})
 
 function displayNumber(value: number | null): string {
   return value === null ? "—" : value.toLocaleString()
@@ -43,6 +52,20 @@ function updateClock(): void {
     second: "2-digit",
     hour12: false,
   }).format(new Date())
+}
+
+function formatTimestamp(value: string | null): string {
+  if (!value) return "尚无成功快照"
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value)).replaceAll("/", "-")
 }
 
 onMounted(() => {
@@ -70,13 +93,13 @@ onBeforeUnmount(() => {
       <article class="monitor-lane realtime">
         <div><span>REALTIME / 实时通道</span><strong class="num">{{ displayNumber(realtimeQueue) }}</strong></div>
         <div class="monitor-track" aria-hidden="true"><i :style="{ width: realtimeLoad }"></i></div>
-        <small>{{ stale ? '队列深度暂不可用' : '验证码与通知优先通道' }}</small>
+        <small>{{ realtimeQueue === null ? '队列深度暂不可用' : stale ? '上一成功快照' : '验证码与通知优先通道' }}</small>
       </article>
 
       <article class="monitor-lane bulk">
         <div><span>BULK / 批量通道</span><strong class="num">{{ displayNumber(bulkQueue) }}</strong></div>
         <div class="monitor-track" aria-hidden="true"><i :style="{ width: bulkLoad }"></i></div>
-        <small>{{ stale ? '轮询失败时保留灰态监视面' : '营销批量通道' }}</small>
+        <small>{{ bulkQueue === null ? '队列深度暂不可用' : stale ? '上一成功快照' : '营销批量通道' }}</small>
       </article>
 
       <article class="monitor-qps">
@@ -84,14 +107,15 @@ onBeforeUnmount(() => {
         <div class="token-grid" aria-label="QPS 令牌占用">
           <i v-for="index in 5" :key="index" :class="{ used: !stale && index <= usedTokens }"></i>
         </div>
-        <small>{{ stale ? '令牌容量暂不可用' : `实时通道预留 ${reservedRealtimeQps ?? 0} QPS` }}</small>
+        <small>{{ qpsUsed === null ? '令牌占用暂不可用' : stale ? '上一成功快照' : `实时通道预留 ${reservedRealtimeQps ?? 0} QPS` }}</small>
       </article>
     </div>
 
     <p v-if="stale" class="monitor-degraded">
-      Redis 运行快照读取失败；界面保留灰态并隐藏未知值，不伪造运行指标。
+      {{ degradedMessage }}；界面保留灰态并隐藏未知值，不伪造运行指标。
+      <span>最近成功：{{ formatTimestamp(lastSuccessfulAt) }}；可点击顶部“刷新”重试。</span>
     </p>
-    <span v-else-if="refreshedAt" class="monitor-refreshed num">{{ refreshedAt }}</span>
+    <span v-else-if="refreshedAt" class="monitor-refreshed num">最近更新 {{ formatTimestamp(refreshedAt) }}</span>
   </section>
 </template>
 

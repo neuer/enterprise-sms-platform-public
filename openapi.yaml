@@ -3281,6 +3281,10 @@ components:
         qps_rate: { type: integer, minimum: 1 }
         reserved_realtime_qps: { type: integer, minimum: 0 }
         stale: { type: boolean }
+        degraded_reason:
+          anyOf:
+            - { type: string, enum: [redis_unavailable, snapshot_incomplete] }
+            - { type: 'null' }
 
     DashboardUiPolicyModel:
       type: object

@@ -3,7 +3,12 @@ import "../styles/workspace.css"
 
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
-import { getDashboard, type DashboardCategory, type DashboardSnapshot } from "../api/dashboard"
+import {
+  getDashboard,
+  type DashboardCategory,
+  type DashboardChannelMonitor,
+  type DashboardSnapshot,
+} from "../api/dashboard"
 import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
@@ -12,6 +17,7 @@ import { jobDescription } from "../lib/jobDescriptions"
 const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
+const lastChannelSuccessAt = ref<string | null>(null)
 let refreshTimer: number | undefined
 
 const categoryLabels: Record<DashboardCategory, string> = {
@@ -36,12 +42,23 @@ function formatTime(value: string | null): string {
   }).format(new Date(value)).replaceAll("/", "-")
 }
 
+function channelMonitorError(reason: DashboardChannelMonitor["degraded_reason"]): string {
+  if (reason === "snapshot_incomplete") return "Redis 运行快照字段不完整，信道指标暂不可用"
+  return "Redis 控制快照暂不可用，信道指标已降级"
+}
+
 async function load(): Promise<void> {
   if (loading.value) return
   loading.value = true
   errorMessage.value = ""
   try {
     const result = await getDashboard()
+    const channelMonitor = result.operations?.channel_monitor
+    if (channelMonitor && !channelMonitor.stale) {
+      lastChannelSuccessAt.value = result.refreshed_at
+    } else if (channelMonitor?.stale) {
+      errorMessage.value = channelMonitorError(channelMonitor.degraded_reason)
+    }
     snapshot.value = result
     if (result.operations) {
       window.dispatchEvent(new CustomEvent("sms:dashboard-balance", {
@@ -54,7 +71,11 @@ async function load(): Promise<void> {
         ...snapshot.value,
         operations: {
           ...snapshot.value.operations,
-          channel_monitor: { ...snapshot.value.operations.channel_monitor, stale: true },
+          channel_monitor: {
+            ...snapshot.value.operations.channel_monitor,
+            stale: true,
+            degraded_reason: "redis_unavailable",
+          },
         },
       }
     }
@@ -100,7 +121,9 @@ onBeforeUnmount(() => {
       :qps-rate="operations.channel_monitor.qps_rate"
       :reserved-realtime-qps="operations.channel_monitor.reserved_realtime_qps"
       :stale="operations.channel_monitor.stale"
+      :degraded-reason="operations.channel_monitor.degraded_reason"
       :refreshed-at="snapshot.refreshed_at"
+      :last-successful-at="lastChannelSuccessAt"
     />
     <section class="dashboard-metrics" aria-label="今日关键指标">
       <el-card shadow="never" class="metric-card primary">
