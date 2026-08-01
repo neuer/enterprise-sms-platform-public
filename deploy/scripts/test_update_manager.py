@@ -124,6 +124,38 @@ def _decode_output(payload: bytes) -> str:
         raise TestUpdateManagerError("controlled command output is invalid") from exc
 
 
+def _restore_operator_git_read_access(root: Path) -> None:
+    """恢复 root checkout 后更新用户读取 Git 基线所需的最小权限。"""
+
+    git_dir = root / ".git"
+    try:
+        git_metadata = git_dir.lstat()
+        if (
+            not stat.S_ISDIR(git_metadata.st_mode)
+            or stat.S_ISLNK(git_metadata.st_mode)
+            or git_metadata.st_gid == 0
+        ):
+            raise OSError("unsafe git metadata directory")
+        directory_mode = stat.S_IMODE(git_metadata.st_mode)
+        required_directory_mode = directory_mode | stat.S_IRGRP | stat.S_IXGRP
+        if required_directory_mode != directory_mode:
+            os.chmod(git_dir, required_directory_mode)
+        for name in ("HEAD", "index"):
+            path = git_dir / name
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise OSError("unsafe git metadata file")
+            if metadata.st_gid != git_metadata.st_gid:
+                os.chown(path, -1, git_metadata.st_gid)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if not mode & stat.S_IRGRP:
+                os.chmod(path, mode | stat.S_IRGRP)
+    except OSError as exc:
+        raise TestUpdateManagerError(
+            "operator Git metadata access could not be restored"
+        ) from exc
+
+
 def _reject_backup_duplicates(
     pairs: list[tuple[str, object]],
 ) -> dict[str, object]:
@@ -1379,6 +1411,7 @@ class HostTestUpdateOperations:
             "--detach",
             self.request.commit,
         )
+        _restore_operator_git_read_access(self.root)
         _atomic_update_image_env(
             self.root / ".env",
             _IMAGE_ENV_KEYS[component],
@@ -1556,6 +1589,7 @@ class HostTestUpdateOperations:
             "--detach",
             self.request.base_commit,
         )
+        _restore_operator_git_read_access(self.root)
         for component in sorted(components):
             image_id = self._command(
                 "docker",
