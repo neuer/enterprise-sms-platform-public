@@ -20,6 +20,7 @@ from app.services.reply_ingest import ReplyIngestService
 from app.services.reply_repository import SqlReplyRepository
 from app.services.report_ingest import ProtectedReport, ReportApplyResult
 from app.services.report_repository import SqlReportRepository
+from scripts_support.maintain_partitions import maintain
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -79,6 +80,12 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
     app_id: int | None = None
     base_time = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
     protected = _crypto().protect_phone("13800138000")
+
+    # The isolated CI database is created from the static migration snapshot;
+    # keep this integration test deterministic across month rollovers by using
+    # the same owner-scoped partition maintenance entrypoint as production.
+    async with engine.begin() as connection:
+        await maintain(connection, future_months=3)
 
     async def create_message(index: int) -> tuple[int, str, datetime]:
         custom_id = f"{nonce[:24]}{index:08d}"
