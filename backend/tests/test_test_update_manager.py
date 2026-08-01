@@ -52,6 +52,12 @@ def test_restore_operator_git_read_access_repairs_checkout_metadata(
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
     git_dir.chmod(0o750)
+    objects_dir = git_dir / "objects" / "a0"
+    objects_dir.mkdir(parents=True)
+    objects_dir.chmod(0o700)
+    object_file = objects_dir / ("b" * 38)
+    object_file.write_bytes(b"object")
+    object_file.chmod(0o600)
     for name in ("HEAD", "index"):
         path = git_dir / name
         path.write_text("metadata", encoding="utf-8")
@@ -61,8 +67,23 @@ def test_restore_operator_git_read_access_repairs_checkout_metadata(
 
     assert stat.S_IMODE(git_dir.stat().st_mode) & stat.S_IRGRP
     assert stat.S_IMODE(git_dir.stat().st_mode) & stat.S_IXGRP
+    assert stat.S_IMODE(objects_dir.stat().st_mode) & stat.S_IRGRP
+    assert stat.S_IMODE(objects_dir.stat().st_mode) & stat.S_IXGRP
+    assert stat.S_IMODE(object_file.stat().st_mode) & stat.S_IRGRP
     for name in ("HEAD", "index"):
         assert stat.S_IMODE((git_dir / name).stat().st_mode) & stat.S_IRGRP
+
+
+def test_restore_operator_git_read_access_rejects_nested_symlink(
+    tmp_path: Path,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "objects").mkdir()
+    (git_dir / "objects" / "escape").symlink_to(tmp_path)
+
+    with pytest.raises(ManagerError, match="metadata"):
+        _restore_operator_git_read_access(tmp_path)
 
 
 class FakePrepareOperations:

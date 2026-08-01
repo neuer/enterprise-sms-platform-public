@@ -78,8 +78,10 @@ incoming 目录，文件为 `0600`。
 大归档先写入按目标 commit 隔离的远端 `0700` staging，使用固定文件名的 `.part` 和
 `rsync --partial --inplace` 最多重试三次；连接中断保留同一 `.part` 供本次或
 同目标重跑续传。远端摘要一致后才原子发布，且 `request.json` 最后发布。
-完整 G2 只由 CI 的共享风险分类触发；driver 最后严格解析 status，只有 update id、
-`verified` 状态、目标 commit 和 migration head 四项同时匹配才以 0 退出。
+完整 G2 只由 CI 的共享风险分类触发；verify 后 driver 还必须以日常更新用户重新检查
+远端 operator 的 origin、HEAD 和工作树读路径，任一检查失败都拒绝记录成功。driver 最后
+严格解析 status，只有 update id、`verified` 状态、目标 commit 和 migration head 四项同时
+匹配才以 0 退出。
 
 迁移 PR 不只验证“本次新增 revision”。CI 从受控测试环境兼容基线
 `0021_approval_legacy_default` 一直检查到仓库唯一 head；因此新增 head 会自动进入完整
