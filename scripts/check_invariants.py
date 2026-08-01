@@ -828,8 +828,9 @@ def check_vendor_event_invariants() -> None:
         "CREATE TABLE report_event (",
         "CREATE TABLE report_event_projection (",
         "CREATE TABLE reply_event (",
-        "report_event, reply_event, callback_report_event, worker_lease_event, audit_log",
-        "GRANT INSERT, UPDATE ON callback_task TO sms_send",
+        "report_event, reply_event, worker_lease_event, audit_log",
+        "GRANT INSERT, DELETE ON callback_report_event TO sms_send",
+        "GRANT INSERT, UPDATE, DELETE ON callback_task TO sms_send",
     )
     require_fragments(
         APP / "services/report_repository.py",

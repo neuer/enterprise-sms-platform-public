@@ -12,7 +12,7 @@ from app.services.crypto import CryptoService
 from app.services.export_file import ExportFileCodec
 from app.services.export_repository import ExpiredExport, SqlExportRepository
 from app.settings import get_settings
-from app.tasks import celery_app
+from app.tasks import background_task_options, celery_app
 from app.tasks.export_worker import build_export
 
 
@@ -81,13 +81,19 @@ async def _cleanup() -> int:
     )
 
 
-@celery_app.task(name="app.tasks.dispatch_exports")  # type: ignore[untyped-decorator]
+@celery_app.task(
+    name="app.tasks.dispatch_exports",
+    **background_task_options(soft_time_limit=120, time_limit=150),
+)  # type: ignore[untyped-decorator]
 @tracked_job("dispatch_exports", expect_interval_s=60)
 def dispatch_exports() -> int:
     return run_worker_async(_dispatch())
 
 
-@celery_app.task(name="app.tasks.cleanup_exports")  # type: ignore[untyped-decorator]
+@celery_app.task(
+    name="app.tasks.cleanup_exports",
+    **background_task_options(soft_time_limit=300, time_limit=360),
+)  # type: ignore[untyped-decorator]
 @tracked_job("cleanup_exports", expect_interval_s=3600)
 def cleanup_exports() -> int:
     return run_worker_async(_cleanup())

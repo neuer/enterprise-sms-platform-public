@@ -519,6 +519,36 @@ def test_manual_job_outbox_is_in_schema_and_followup_migration() -> None:
     assert "DROP CONSTRAINT IF EXISTS ck_outbox_task_name" in source
 
 
+def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "GRANT SELECT ON user_account, import_task, import_phone TO sms_send",
+        "GRANT UPDATE, DELETE ON import_task TO sms_send",
+        "GRANT INSERT, DELETE ON import_phone TO sms_send",
+        "GRANT DELETE ON idempotency_record, callback_task, callback_report_event TO sms_send",
+        "GRANT USAGE, SELECT ON SEQUENCE import_phone_id_seq TO sms_send",
+    ):
+        assert fragment in source
+    assert "user_account, app, dept_quota" in schema
+    assert "import_task, import_phone, approval" in schema
+    assert "GRANT UPDATE, DELETE ON import_task TO sms_send" in schema
+    assert "GRANT INSERT, DELETE ON import_phone TO sms_send" in schema
+    assert "GRANT INSERT, UPDATE, DELETE ON callback_task TO sms_send" in schema
+
+    spec = importlib.util.spec_from_file_location(
+        "background_task_role_matrix_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0040_background_task_role_matrix"
+    assert module.down_revision == "0039_manual_job_outbox"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

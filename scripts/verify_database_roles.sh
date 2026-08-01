@@ -49,6 +49,19 @@ result="$(
        AND has_table_privilege('sms_send','callback_task','UPDATE')
        AND has_table_privilege('sms_send','callback_report_event','INSERT')
        AND has_sequence_privilege('sms_send','callback_task_id_seq','USAGE')),
+      (has_table_privilege('sms_send','user_account','SELECT')
+       AND has_table_privilege('sms_send','import_task','SELECT')
+       AND has_table_privilege('sms_send','import_task','UPDATE')
+       AND has_table_privilege('sms_send','import_task','DELETE')
+       AND NOT has_table_privilege('sms_send','import_task','INSERT')
+       AND has_table_privilege('sms_send','import_phone','SELECT')
+       AND has_table_privilege('sms_send','import_phone','INSERT')
+       AND has_table_privilege('sms_send','import_phone','DELETE')
+       AND NOT has_table_privilege('sms_send','import_phone','UPDATE')
+       AND has_table_privilege('sms_send','idempotency_record','DELETE')
+       AND has_table_privilege('sms_send','callback_task','DELETE')
+       AND has_table_privilege('sms_send','callback_report_event','DELETE')
+       AND has_sequence_privilege('sms_send','import_phone_id_seq','USAGE')),
       (has_column_privilege('sms_metrics','sms_batch','category','SELECT')
        AND has_column_privilege('sms_metrics','sms_chunk','status','SELECT')
        AND has_column_privilege('sms_metrics','outbox_event','queue','SELECT')
@@ -85,7 +98,7 @@ result="$(
       ));
   "
 )"
-[ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
+  [ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
   echo "数据库运行角色矩阵异常: $result" >&2
   exit 1
 }

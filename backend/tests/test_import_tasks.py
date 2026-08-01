@@ -12,7 +12,7 @@ import pytest
 import app.tasks.imports as imports_module
 from app.services.import_repository import SqlImportRepository
 from app.services.imports import RemovedPhone
-from app.tasks import celery_app
+from app.tasks import TRANSIENT_TASK_ERRORS, celery_app, register_task_modules
 from app.tasks.imports import ImportSender, dispatch_imports_once, process_import_once
 from app.tasks.scheduler import build_beat_schedule
 
@@ -57,6 +57,32 @@ def test_import_tasks_have_crash_recovery_and_bounded_worker_settings() -> None:
         "schedule": 30,
         "options": {"queue": "bulk"},
     }
+
+
+def test_background_tasks_retry_only_transient_failures_with_hard_bounds() -> None:
+    register_task_modules()
+
+    expected_limits = {
+        "app.tasks.process_import": (120, 150),
+        "app.tasks.dispatch_imports": (120, 150),
+        "app.tasks.anomaly_scan": (120, 150),
+        "app.tasks.dispatch_exports": (120, 150),
+        "app.tasks.cleanup_exports": (300, 360),
+        "app.tasks.housekeeping": (900, 960),
+    }
+    for name, (soft_limit, hard_limit) in expected_limits.items():
+        task = celery_app.tasks[name]
+        assert task.autoretry_for == TRANSIENT_TASK_ERRORS
+        assert task.retry_backoff is True
+        assert task.retry_backoff_max == 300
+        assert task.retry_jitter is True
+        assert task.max_retries == 3
+        assert task.soft_time_limit == soft_limit
+        assert task.time_limit == hard_limit
+
+    from sqlalchemy.exc import ProgrammingError
+
+    assert ProgrammingError not in TRANSIENT_TASK_ERRORS
 
 
 @pytest.mark.asyncio

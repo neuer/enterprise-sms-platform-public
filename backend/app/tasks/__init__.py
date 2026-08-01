@@ -13,6 +13,11 @@ from celery.signals import (
     worker_process_init,
     worker_process_shutdown,
 )
+from kombu.exceptions import (  # type: ignore[import-untyped]
+    OperationalError as BrokerOperationalError,
+)
+from redis.exceptions import RedisError
+from sqlalchemy.exc import OperationalError as DatabaseOperationalError
 
 from app.core.bounded_executor import close_bounded_executor
 from app.core.correlation import (
@@ -75,6 +80,34 @@ app.conf.update(
     task_time_limit=600,
     broker_transport_options={"visibility_timeout": 3600},
 )
+
+# 只重试可合理恢复的连接/超时故障；ProgrammingError、权限错误和业务错误必须
+# 立即失败并进入 job_run/告警，避免把配置缺陷伪装成“自愈”。
+TRANSIENT_TASK_ERRORS = (
+    DatabaseOperationalError,
+    BrokerOperationalError,
+    RedisError,
+    TimeoutError,
+)
+
+
+def background_task_options(*, soft_time_limit: int, time_limit: int) -> dict[str, Any]:
+    """返回后台任务的有限重试与超时策略。"""
+
+    if soft_time_limit <= 0 or time_limit <= soft_time_limit:
+        raise ValueError("time limits must be positive and hard limit must exceed soft limit")
+    return {
+        "acks_late": True,
+        "reject_on_worker_lost": True,
+        "autoretry_for": TRANSIENT_TASK_ERRORS,
+        "retry_backoff": True,
+        "retry_backoff_max": 300,
+        "retry_jitter": True,
+        "max_retries": 3,
+        "soft_time_limit": soft_time_limit,
+        "time_limit": time_limit,
+    }
+
 
 celery_app = app
 _task_correlation_tokens: dict[str, Any] = {}
