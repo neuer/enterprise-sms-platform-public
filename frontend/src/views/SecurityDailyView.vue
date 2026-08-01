@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
 import {
+  getSecurityDailyConfiguration,
   getSecurityDailyOverview,
   getSecurityDailyReport,
   listSecurityDailyReports,
@@ -10,12 +11,14 @@ import {
   retrySecurityDailyReport,
   sendSecurityDailyReport,
   type DeliveryStatus,
+  type SecurityDailyConfiguration,
   type GenerationStatus,
   type SecurityDailyConfigurationState,
   type SecurityDailyOverview,
   type SecurityDailyPayload,
   type SecurityDailyReport,
   type SecurityStatus,
+  updateSecurityDailyConfiguration,
 } from "../api/securityDaily"
 import { ApiRequestError } from "../api/webMessages"
 
@@ -73,6 +76,15 @@ const selected = ref<SecurityDailyReport | null>(null)
 const drawerOpen = ref(false)
 const previewText = ref("")
 const previewOpen = ref(false)
+const configOpen = ref(false)
+const configLoading = ref(false)
+const configSaving = ref(false)
+const configErrorMessage = ref("")
+const configEnabled = ref(false)
+const configRecipients = ref("")
+const configApiKey = ref("")
+const clearConfigApiKey = ref(false)
+const currentConfiguration = ref<SecurityDailyConfiguration | null>(null)
 
 const selectedPayload = computed<SecurityDailyPayload | null>(() => selected.value?.payload ?? null)
 const coverageGaps = computed(() =>
@@ -175,6 +187,54 @@ async function loadOverview(): Promise<void> {
   }
 }
 
+async function openConfiguration(): Promise<void> {
+  configOpen.value = true
+  configLoading.value = true
+  configErrorMessage.value = ""
+  configApiKey.value = ""
+  clearConfigApiKey.value = false
+  try {
+    const configuration = await getSecurityDailyConfiguration()
+    currentConfiguration.value = configuration
+    configEnabled.value = configuration.enabled
+    configRecipients.value = configuration.recipients.join("\n")
+  } catch (error) {
+    configErrorMessage.value = apiErrorMessage(error, "安全日报配置暂不可用，请刷新重试")
+  } finally {
+    configLoading.value = false
+  }
+}
+
+function parseRecipients(): string[] {
+  return configRecipients.value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+async function saveConfiguration(): Promise<void> {
+  configSaving.value = true
+  configErrorMessage.value = ""
+  try {
+    const recipients = parseRecipients()
+    if (recipients.length > 3) {
+      throw new Error("收件人最多 3 个")
+    }
+    currentConfiguration.value = await updateSecurityDailyConfiguration({
+      enabled: configEnabled.value,
+      recipients,
+      resend_api_key: clearConfigApiKey.value ? "" : (configApiKey.value.trim() || null),
+    })
+    configOpen.value = false
+    ElMessage.success("安全日报配置已保存")
+    await refresh()
+  } catch (error) {
+    configErrorMessage.value = apiErrorMessage(error, "安全日报配置保存失败，请检查输入")
+  } finally {
+    configSaving.value = false
+  }
+}
+
 async function refresh(): Promise<void> {
   await Promise.all([loadOverview(), loadReports()])
 }
@@ -250,7 +310,10 @@ onMounted(() => void refresh())
         <h1>服务器安全日报</h1>
         <p>固定 08:00（Asia/Shanghai）汇总前一上海自然日；页面只展示脱敏结构化证据。</p>
       </div>
-      <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
+      <div>
+        <el-button plain :loading="configLoading" @click="openConfiguration">配置邮件</el-button>
+        <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
+      </div>
     </header>
 
     <el-alert v-if="overviewErrorMessage" :title="overviewErrorMessage" type="error" show-icon :closable="false" />
@@ -339,5 +402,27 @@ onMounted(() => void refresh())
     </el-drawer>
 
     <el-dialog v-model="previewOpen" title="安全日报纯文本预览" width="720px"><pre class="security-preview-text">{{ previewText }}</pre></el-dialog>
+
+    <el-dialog v-model="configOpen" title="安全日报邮件配置" width="560px" destroy-on-close>
+      <el-skeleton v-if="configLoading" :rows="5" animated />
+      <el-form v-else label-position="top" @submit.prevent="saveConfiguration">
+        <el-form-item label="启用安全日报">
+          <el-switch v-model="configEnabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+        <el-form-item label="Resend API Key">
+          <el-input v-model="configApiKey" type="password" show-password autocomplete="off" placeholder="留空保持当前 Key" />
+          <div class="form-tip">当前状态：{{ currentConfiguration?.resend_api_key_configured ? "已配置" : "未配置" }}；Key 不会回显。</div>
+          <el-checkbox v-model="clearConfigApiKey">清空当前 Key</el-checkbox>
+        </el-form-item>
+        <el-form-item label="收件人（每行一个，也可用逗号分隔，最多 3 个）">
+          <el-input v-model="configRecipients" type="textarea" :rows="4" placeholder="security@example.com" />
+        </el-form-item>
+        <el-alert v-if="configErrorMessage" :title="configErrorMessage" type="error" show-icon :closable="false" />
+      </el-form>
+      <template #footer>
+        <el-button @click="configOpen = false">取消</el-button>
+        <el-button type="primary" :loading="configSaving" @click="saveConfiguration">保存</el-button>
+      </template>
+    </el-dialog>
   </main>
 </template>

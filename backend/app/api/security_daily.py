@@ -18,7 +18,9 @@ from app.services.security_daily import (
     ConfigurationState,
     DeliveryAction,
     FileSecurityDailyControl,
+    SecurityDailyConfiguration,
     SecurityDailyConfigurationError,
+    SecurityDailyConfigurationUpdate,
     SecurityDailyControlError,
     SecurityDailyDeliveryRequest,
     SecurityDailyNotFound,
@@ -56,6 +58,20 @@ class SecurityDailyOverviewModel(StrictModel):
     sender_domain: str
     sender_address: str
     beat_restart_required: bool
+
+
+class SecurityDailyConfigurationModel(StrictModel):
+    enabled: bool
+    recipients: list[str] = Field(max_length=3)
+    resend_api_key_configured: bool
+    sender_domain: str
+    sender_address: str
+
+
+class SecurityDailyConfigurationUpdateModel(StrictModel):
+    enabled: bool
+    recipients: list[str] = Field(max_length=3)
+    resend_api_key: str | None = Field(default=None, max_length=512)
 
 
 class SecurityDailyReportModel(StrictModel):
@@ -110,7 +126,10 @@ def get_security_daily_service() -> SecurityDailyService:
     settings = get_settings()
     return SecurityDailyService(
         SqlSecurityDailyRepository(settings),
-        FileSecurityDailyControl(settings.security_daily_control_dir),
+        FileSecurityDailyControl(
+            settings.security_daily_control_dir,
+            settings.security_daily_config_dir,
+        ),
     )
 
 
@@ -181,6 +200,18 @@ def _unavailable(message: str) -> ApiError:
     return ApiError(503, "SECURITY_DAILY_UNAVAILABLE", message, None)
 
 
+def _configuration_model(
+    configuration: SecurityDailyConfiguration,
+) -> SecurityDailyConfigurationModel:
+    return SecurityDailyConfigurationModel(
+        enabled=configuration.enabled,
+        recipients=list(configuration.recipients),
+        resend_api_key_configured=bool(configuration.api_key),
+        sender_domain="reports.neuer.cn",
+        sender_address="security-daily@reports.neuer.cn",
+    )
+
+
 @router.get(
     "/overview",
     response_model=SecurityDailyOverviewModel,
@@ -199,6 +230,55 @@ async def security_daily_overview(
     except SecurityDailyConfigurationError as error:
         raise _unavailable(str(error)) from None
     return SecurityDailyOverviewModel.model_validate(overview, from_attributes=True)
+
+
+@router.get(
+    "/config",
+    response_model=SecurityDailyConfigurationModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+)
+async def get_security_daily_config(
+    service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> SecurityDailyConfigurationModel:
+    await _admin(facade, credentials)
+    try:
+        configuration = await service.configuration()
+    except SecurityDailyConfigurationError as error:
+        raise _unavailable(str(error)) from None
+    return _configuration_model(configuration)
+
+
+@router.put(
+    "/config",
+    response_model=SecurityDailyConfigurationModel,
+    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+)
+@audited("security_daily_config_update")
+async def update_security_daily_config(
+    payload: SecurityDailyConfigurationUpdateModel,
+    request: Request,
+    service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> SecurityDailyConfigurationModel:
+    claims = await _admin(facade, credentials)
+    try:
+        configuration = await service.configure(
+            SecurityDailyConfigurationUpdate(
+                enabled=payload.enabled,
+                recipients=tuple(payload.recipients),
+                api_key=payload.resend_api_key,
+            ),
+            principal=claims.principal,
+            ip=_ip(request),
+        )
+    except SecurityDailyConfigurationError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    except SecurityDailyControlError:
+        raise _unavailable("安全日报配置同步失败") from None
+    return _configuration_model(configuration)
 
 
 @router.get(

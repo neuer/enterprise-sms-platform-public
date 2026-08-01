@@ -21,6 +21,7 @@ info:
     - v1.6.33：拆分无依赖 livez 与严格依赖 readyz；健康响应不暴露内部组件或失败原因
     - v1.6.34：生产 callback 强制 HTTPS；签名密钥/协议版本按事件固化；敏感密文与导出帧绑定业务上下文
     - v1.6.39：服务器安全日报脱敏事实、预览与独立 mailer 受控投递
+    - v1.6.40：安全日报管理员页面配置 Resend Key、收件人与启停状态，API 同步独立 mailer 配置
 
 servers:
   - url: https://sms.example.com
@@ -2195,6 +2196,32 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /api/v1/web/admin/security-daily/config:
+    get:
+      tags: [security-daily]
+      summary: 查询安全日报邮件配置
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyConfigurationModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [security-daily]
+      summary: 保存安全日报邮件配置
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityDailyConfigurationUpdateModel' }
+      responses:
+        '200': { description: 已保存并同步独立 mailer 配置, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyConfigurationModel' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/web/admin/security-daily/reports:
     get:
       tags: [security-daily]
@@ -2534,6 +2561,26 @@ components:
         sender_domain: { type: string }
         sender_address: { type: string }
         beat_restart_required: { type: boolean }
+
+    SecurityDailyConfigurationModel:
+      type: object
+      additionalProperties: false
+      required: [enabled, recipients, resend_api_key_configured, sender_domain, sender_address]
+      properties:
+        enabled: { type: boolean }
+        recipients: { type: array, maxItems: 3, items: { type: string } }
+        resend_api_key_configured: { type: boolean }
+        sender_domain: { type: string }
+        sender_address: { type: string }
+
+    SecurityDailyConfigurationUpdateModel:
+      type: object
+      additionalProperties: false
+      required: [enabled, recipients]
+      properties:
+        enabled: { type: boolean }
+        recipients: { type: array, maxItems: 3, items: { type: string } }
+        resend_api_key: { anyOf: [{ type: string, maxLength: 512 }, { type: 'null' }], description: 留空或 null 保持当前 Key，空字符串清空 Key }
 
     SecurityDailyReportModel:
       type: object

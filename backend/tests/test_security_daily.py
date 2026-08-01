@@ -10,6 +10,7 @@ import pytest
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.security_daily import (
     FileSecurityDailyControl,
+    SecurityDailyConfiguration,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
     SecurityDailyOverview,
@@ -68,6 +69,7 @@ def test_security_daily_payload_rejects_unknown_fields_and_sensitive_text() -> N
 async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_path: Path) -> None:
     control_dir = tmp_path / "control"
     control_dir.mkdir(mode=0o700)
+    config_dir = tmp_path / "config"
     request = SecurityDailyDeliveryRequest(
         request_id=uuid4(),
         report_date=date(2026, 7, 15),
@@ -76,7 +78,20 @@ async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_pa
         requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
         idempotent=False,
     )
-    control = FileSecurityDailyControl(control_dir)
+    control = FileSecurityDailyControl(control_dir, config_dir)
+
+    await control.sync_configuration(
+        SecurityDailyConfiguration(
+            enabled=True,
+            api_key="re_test_value",
+            recipients=("security-owner@example.com",),
+        )
+    )
+    config_path = config_dir / "resend.json"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "api_key": "re_test_value",
+        "recipients": ["security-owner@example.com"],
+    }
 
     await control.submit(request, payload())
     request_path = control_dir / "requests" / f"{request.request_id}.json"
@@ -108,6 +123,22 @@ class FakeRepository:
         self.record = record
         self.failed: list[tuple[UUID, str]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
+
+    async def configuration(self) -> SecurityDailyConfiguration:
+        return SecurityDailyConfiguration(
+            enabled=True,
+            api_key="re_test_value",
+            recipients=("security-owner@example.com",),
+        )
+
+    async def update_configuration(
+        self,
+        update: object,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> SecurityDailyConfiguration:
+        raise NotImplementedError
 
     async def overview(self, *, now: datetime) -> SecurityDailyOverview:
         return SecurityDailyOverview(
@@ -166,6 +197,10 @@ class FakeRepository:
 class FakeControl:
     def __init__(self) -> None:
         self.submitted: list[tuple[SecurityDailyDeliveryRequest, dict[str, object]]] = []
+        self.synced: list[SecurityDailyConfiguration] = []
+
+    async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None:
+        self.synced.append(configuration)
 
     async def submit(
         self, request: SecurityDailyDeliveryRequest, report: dict[str, object]
@@ -212,6 +247,7 @@ async def test_service_submits_redacted_report_without_mail_credentials() -> Non
 
     assert request.state == "pending"
     assert len(control.submitted) == 1
+    assert control.synced[0].api_key == "re_test_value"
     encoded = json.dumps(control.submitted[0][1], ensure_ascii=False)
     assert "secret" not in encoded.casefold()
     assert "recipient" not in encoded.casefold()

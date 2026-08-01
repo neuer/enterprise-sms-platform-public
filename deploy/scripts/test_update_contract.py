@@ -268,6 +268,8 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "deploy/database-roles.md",
         # 仅用于把安全日报 control 运行态目录保留在 Git 中；不进入镜像或服务配置。
         "deploy/security-report-control/.gitignore",
+        # 仅用于把 UI 同步的安全日报配置目录保留在 Git 中；实际配置不入库。
+        "deploy/security-report-config/.gitignore",
         "docs/runbooks/public-baseline-activation.md",
         "scripts/e2e_api.py",
         "scripts/canonicalize_sbom.py",

@@ -287,7 +287,7 @@ def test_default_https_transport_is_fixed_to_resend_without_proxy_or_redirect(
     assert captured["closed"] is True
 
 
-def test_control_loop_sends_redacted_request_and_writes_only_safe_result(
+def test_mailer_config_reader_and_control_loop_use_ui_synced_config(
     tmp_path: Path,
 ) -> None:
     module = _module()
@@ -308,15 +308,20 @@ def test_control_loop_sends_redacted_request_and_writes_only_safe_result(
         ),
         encoding="utf-8",
     )
-    key_file = tmp_path / "key"
-    key_file.write_text("re_test_value\n", encoding="utf-8")
-    recipients_file = tmp_path / "recipients"
-    recipients_file.write_text("security-owner@example.com\n", encoding="utf-8")
+    config_file = tmp_path / "resend.json"
+    config_file.write_text(
+        json.dumps(
+            {"api_key": "re_test_value", "recipients": ["security-owner@example.com"]}
+        ),
+        encoding="utf-8",
+    )
+    assert module.read_mailer_configuration(config_file).recipients == (
+        "security-owner@example.com",
+    )
 
     result = module.serve_control(
         control_dir,
-        api_key_file=key_file,
-        recipients_file=recipients_file,
+        config_file=config_file,
         once=True,
         transport=FakeTransport([(200, b'{"id":"email-123"}')]),
         sleep=lambda _delay: None,
@@ -334,7 +339,7 @@ def test_control_loop_sends_redacted_request_and_writes_only_safe_result(
     assert "服务器安全日报" not in encoded
 
 
-def test_companion_container_uses_only_dedicated_files_and_docker_secret() -> None:
+def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
     compose = yaml.safe_load(COMPANION_COMPOSE.read_text(encoding="utf-8"))
     service = compose["services"]["security-report-mailer"]
 
@@ -343,10 +348,10 @@ def test_companion_container_uses_only_dedicated_files_and_docker_secret() -> No
     assert service["user"] == "10001:10001"
     assert service["cap_drop"] == ["ALL"]
     assert service["security_opt"] == ["no-new-privileges:true"]
-    assert service["secrets"] == [
-        {"source": "resend_api_key", "target": "resend_api_key"}
-    ]
-    assert compose["secrets"]["resend_api_key"]["file"] == "./secrets/resend_api_key"
+    serialized = json.dumps(compose, ensure_ascii=False)
+    assert "resend.json" in serialized
+    assert "security-report-config" in serialized
+    assert "secrets" not in service
     serialized = json.dumps(compose, ensure_ascii=False)
     assert "RESEND_API_KEY" not in serialized
     assert "security.owner@example.com" not in serialized
@@ -370,6 +375,7 @@ def test_docker_build_context_excludes_report_secrets_and_runtime_data() -> None
     assert "deploy/security-report/secrets/" in patterns
     assert "deploy/security-report/runtime/" in patterns
     assert "deploy/security-report/config/recipients.txt" in patterns
+    assert "deploy/security-report-config/" in patterns
     assert "recipients.txt" in config_ignore
 
 

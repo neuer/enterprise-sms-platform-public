@@ -55,6 +55,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0040_background_task_role_matrix",
         "0041_security_daily_control",
         "0042_security_daily_config",
+        "0043_security_daily_ui_config",
     ]
 
 

@@ -7,7 +7,7 @@ import html
 import json
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -30,6 +30,13 @@ SHANGHAI_OFFSET = timedelta(hours=8)
 SHANGHAI_TZ = timezone(SHANGHAI_OFFSET, name="Asia/Shanghai")
 PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 BEARER_IN_TEXT = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+", re.IGNORECASE)
+RESEND_EMAIL_PATTERN = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}"
+)
+MAX_RESEND_API_KEY_LENGTH = 512
+MAX_RESEND_RECIPIENTS = 3
 FORBIDDEN_KEYS = frozenset(
     {
         "credential",
@@ -78,6 +85,37 @@ class SecurityDailyStateConflict(RuntimeError):
 
 class SecurityDailyControlError(RuntimeError):
     """独立安全日报 mailer 控制面不可用。"""
+
+
+def validate_resend_api_key(value: str, *, allow_empty: bool = True) -> str:
+    """校验管理员 UI 提交的 Resend Key；空值用于停用或清空配置。"""
+
+    normalized = value.strip()
+    if not normalized and allow_empty:
+        return normalized
+    if not normalized or len(normalized) > MAX_RESEND_API_KEY_LENGTH:
+        raise SecurityDailyConfigurationError("Resend Key 不能为空且长度不能超过 512")
+    if any(character.isspace() for character in normalized):
+        raise SecurityDailyConfigurationError("Resend Key 不能包含空白字符")
+    return normalized
+
+
+def validate_resend_recipients(values: Sequence[str]) -> tuple[str, ...]:
+    """校验安全日报收件人；允许暂时为空以便先保存未完成配置。"""
+
+    normalized = tuple(value.strip() for value in values)
+    if len(normalized) > MAX_RESEND_RECIPIENTS:
+        raise SecurityDailyConfigurationError("安全日报收件人最多 3 个")
+    if any(
+        len(value) > 254
+        or RESEND_EMAIL_PATTERN.fullmatch(value) is None
+        or len(value.partition("@")[0]) > 64
+        for value in normalized
+    ):
+        raise SecurityDailyConfigurationError("安全日报收件人地址无效")
+    if len({value.casefold() for value in normalized}) != len(normalized):
+        raise SecurityDailyConfigurationError("安全日报收件人不能重复")
+    return normalized
 
 
 class _StrictModel(BaseModel):
@@ -240,6 +278,24 @@ class SecurityDailyOverview:
 
 
 @dataclass(frozen=True, slots=True)
+class SecurityDailyConfiguration:
+    """安全日报 UI 配置；api_key 只在后端与独立 mailer 文件边界流转。"""
+
+    enabled: bool
+    api_key: str
+    recipients: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityDailyConfigurationUpdate:
+    """管理员配置变更；api_key=None 表示保留当前 Key。"""
+
+    enabled: bool
+    recipients: tuple[str, ...]
+    api_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SecurityDailyQuery:
     report_date_from: date | None
     report_date_to: date | None
@@ -287,6 +343,16 @@ class SecurityDailyPreview:
 
 
 class SecurityDailyRepository(Protocol):
+    async def configuration(self) -> SecurityDailyConfiguration: ...
+
+    async def update_configuration(
+        self,
+        update: SecurityDailyConfigurationUpdate,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> SecurityDailyConfiguration: ...
+
     async def overview(self, *, now: datetime) -> SecurityDailyOverview: ...
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage: ...
@@ -310,6 +376,8 @@ class SecurityDailyRepository(Protocol):
 
 
 class SecurityDailyControl(Protocol):
+    async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None: ...
+
     async def submit(
         self,
         request: SecurityDailyDeliveryRequest,
@@ -320,12 +388,43 @@ class SecurityDailyControl(Protocol):
 
 
 class FileSecurityDailyControl:
-    """通过共享只读脱敏文件和独立 mailer 交换投递请求，不接触 Resend Key。"""
+    """通过请求目录和独立配置目录与 mailer 交换日报配置和投递请求。"""
 
-    def __init__(self, control_dir: Path) -> None:
+    def __init__(self, control_dir: Path, config_dir: Path) -> None:
         self.control_dir = control_dir
+        self.config_dir = config_dir
         self.request_dir = control_dir / "requests"
         self.result_dir = control_dir / "results"
+        self.config_path = config_dir / "resend.json"
+
+    async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None:
+        await asyncio.to_thread(self._write_configuration, configuration)
+
+    def _write_configuration(self, configuration: SecurityDailyConfiguration) -> None:
+        """原子同步 UI 配置；文件仅挂载给独立 mailer 读取。"""
+
+        temporary = self.config_dir / ".resend.json.tmp"
+        try:
+            self.config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "api_key": validate_resend_api_key(configuration.api_key),
+                        "recipients": list(
+                            validate_resend_recipients(configuration.recipients)
+                        ),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.config_path)
+        except (OSError, SecurityDailyConfigurationError) as error:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+            raise SecurityDailyControlError("安全日报配置同步失败") from error
 
     async def submit(
         self,
@@ -465,7 +564,7 @@ def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
 
 
 class SecurityDailyService:
-    """编排日报查询、脱敏预览和不持有邮件凭据的投递请求。"""
+    """编排日报查询、UI 配置和独立 mailer 投递请求。"""
 
     def __init__(
         self,
@@ -477,6 +576,26 @@ class SecurityDailyService:
         self.repository = repository
         self.control = control
         self.clock = clock
+
+    async def configuration(self) -> SecurityDailyConfiguration:
+        return await self.repository.configuration()
+
+    async def configure(
+        self,
+        update: SecurityDailyConfigurationUpdate,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> SecurityDailyConfiguration:
+        """保存管理员配置并同步独立 mailer；Key 不进入日报投递请求。"""
+
+        configuration = await self.repository.update_configuration(
+            update,
+            principal=principal,
+            ip=ip,
+        )
+        await self.control.sync_configuration(configuration)
+        return configuration
 
     async def overview(self) -> SecurityDailyOverview:
         await self._synchronize_control_results()
@@ -532,6 +651,7 @@ class SecurityDailyService:
         if request.idempotent:
             return request
         try:
+            await self.control.sync_configuration(await self.repository.configuration())
             await self.control.submit(request, record.payload)
         except SecurityDailyControlError:
             await self.repository.mark_request_failed(request.request_id, "独立投递器不可用")

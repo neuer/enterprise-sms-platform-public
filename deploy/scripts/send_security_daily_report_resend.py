@@ -10,6 +10,7 @@ import ssl
 import sys
 import time
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,6 +75,14 @@ class ControlRequest:
     report: renderer.SecurityDailyReport
 
 
+@dataclass(frozen=True, slots=True)
+class MailerConfiguration:
+    """由安全日报 UI 同步的 Resend Key 和收件人配置。"""
+
+    api_key: str
+    recipients: tuple[str, ...]
+
+
 class ResendHttpsTransport:
     """固定连接 api.resend.com，不继承代理且不跟随重定向。"""
 
@@ -100,19 +109,24 @@ class ResendHttpsTransport:
         return response.status, response_body
 
 
+def _validate_api_key(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ResendConfigurationError("Resend API key is empty")
+    if len(normalized) > 512 or any(character.isspace() for character in normalized):
+        raise ResendConfigurationError("Resend API key has an invalid value")
+    return normalized
+
+
 def read_api_key(path: str | Path) -> str:
-    """从 Docker secret 文件读取 Key，仅移除行尾换行。"""
+    """兼容旧的一次性 CLI；正式 mailer 配置使用 JSON 文件。"""
 
     secret_path = Path(path)
     try:
         value = secret_path.read_text(encoding="utf-8").rstrip("\r\n")
     except (OSError, UnicodeError) as exc:
         raise ResendConfigurationError("Resend API key file is unavailable") from exc
-    if not value:
-        raise ResendConfigurationError("Resend API key file is empty")
-    if len(value) > 512 or any(character.isspace() for character in value):
-        raise ResendConfigurationError("Resend API key file has an invalid value")
-    return value
+    return _validate_api_key(value)
 
 
 def _validate_recipients(recipients: Sequence[str]) -> tuple[str, ...]:
@@ -147,6 +161,28 @@ def read_recipients(path: str | Path) -> tuple[str, ...]:
         if line.strip() and not line.lstrip().startswith("#")
     ]
     return _validate_recipients(recipients)
+
+
+def read_mailer_configuration(path: str | Path) -> MailerConfiguration:
+    """读取安全日报配置页同步的 JSON 配置。"""
+
+    config_path = Path(path)
+    try:
+        value = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ResendConfigurationError("mailer configuration is unavailable") from exc
+    if not isinstance(value, dict) or set(value) != {"api_key", "recipients"}:
+        raise ResendConfigurationError("mailer configuration has invalid fields")
+    api_key = value.get("api_key")
+    recipients = value.get("recipients")
+    if not isinstance(api_key, str) or not isinstance(recipients, list) or not all(
+        isinstance(item, str) for item in recipients
+    ):
+        raise ResendConfigurationError("mailer configuration has invalid values")
+    return MailerConfiguration(
+        api_key=_validate_api_key(api_key),
+        recipients=_validate_recipients(recipients),
+    )
 
 
 def _render_payload(
@@ -306,10 +342,8 @@ def _write_control_result(
         temporary.chmod(0o600)
         temporary.replace(destination)
     except OSError as exc:
-        try:
+        with suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise ResendConfigurationError("control result cannot be written") from exc
 
 
@@ -317,8 +351,7 @@ def process_control_request(
     path: Path,
     *,
     control_dir: Path,
-    api_key_file: Path,
-    recipients_file: Path,
+    config_file: Path,
     transport: ResendTransport | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> str:
@@ -326,13 +359,12 @@ def process_control_request(
 
     request = _control_request(path)
     try:
-        api_key = read_api_key(api_key_file)
-        recipients = read_recipients(recipients_file)
+        configuration = read_mailer_configuration(config_file)
         receipt = ResendClient(
-            api_key=api_key,
+            api_key=configuration.api_key,
             transport=transport,
             sleep=sleep,
-        ).send(request.report, recipients=recipients)
+        ).send(request.report, recipients=configuration.recipients)
     except (ResendConfigurationError, ResendDeliveryError) as exc:
         _write_control_result(
             control_dir,
@@ -356,14 +388,13 @@ def process_control_request(
 def serve_control(
     control_dir: Path,
     *,
-    api_key_file: Path,
-    recipients_file: Path,
+    config_file: Path,
     poll_seconds: float = 1.0,
     once: bool = False,
     transport: ResendTransport | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> int:
-    """轮询受控请求目录；只由此进程加载 Resend secret 并访问外网。"""
+    """轮询受控请求目录；只由此进程读取 UI 同步的 mailer 配置并访问外网。"""
 
     if poll_seconds <= 0 or poll_seconds > 60:
         raise ResendConfigurationError("control polling interval is invalid")
@@ -388,8 +419,7 @@ def serve_control(
                 state = process_control_request(
                     claim,
                     control_dir=control_dir,
-                    api_key_file=api_key_file,
-                    recipients_file=recipients_file,
+                    config_file=config_file,
                     transport=transport,
                     sleep=sleep,
                 )
@@ -399,10 +429,8 @@ def serve_control(
                 # remove them and leave a generic operator-visible error.
                 print(f"security report control request rejected: {exc}", file=sys.stderr)
             finally:
-                try:
+                with suppress(OSError):
                     claim.unlink(missing_ok=True)
-                except OSError:
-                    pass
         if once:
             return 0
         if not processed:
@@ -415,14 +443,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", type=Path)
     parser.add_argument(
-        "--api-key-file",
+        "--config-file",
         type=Path,
-        default=Path("/run/secrets/resend_api_key"),
-    )
-    parser.add_argument(
-        "--recipients-file",
-        type=Path,
-        default=Path("/run/config/recipients"),
+        default=Path("/run/config/resend.json"),
     )
     parser.add_argument(
         "--send",
@@ -437,7 +460,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="serve API control requests; only this process reads the Resend secret",
+        help="serve API control requests using the UI-synchronized configuration",
     )
     parser.add_argument(
         "--once",
@@ -453,9 +476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return serve_control(
                 args.control_dir,
-                api_key_file=args.api_key_file,
-                recipients_file=args.recipients_file,
-                once=True if args.once else False,
+                config_file=args.config_file,
+                once=bool(args.once),
             )
         except (ResendConfigurationError, ResendDeliveryError) as exc:
             print(f"security report control failed: {exc}", file=sys.stderr)
@@ -464,17 +486,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         _parser().error("--input is required unless --serve or --once is used")
     try:
         report = renderer.load_report(args.input)
-        recipients = read_recipients(args.recipients_file)
+        configuration = read_mailer_configuration(args.config_file)
         if not args.send:
             print(
                 "security report validated "
-                f"report_date={report.report_date} recipients={len(recipients)}"
+                f"report_date={report.report_date} recipients={len(configuration.recipients)}"
             )
             return 0
-        api_key = read_api_key(args.api_key_file)
-        receipt = ResendClient(api_key=api_key).send(
+        receipt = ResendClient(api_key=configuration.api_key).send(
             report,
-            recipients=recipients,
+            recipients=configuration.recipients,
         )
     except (
         renderer.ReportValidationError,

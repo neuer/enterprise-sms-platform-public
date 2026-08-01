@@ -19,7 +19,7 @@
 backend/
   app/
     main.py
-    settings.py        # 可变参数读 sys_config；密钥一律从 Docker secrets 文件读取
+    settings.py        # 可变参数读 sys_config；运行凭据默认 Docker secrets，安全日报 Resend Key 走专用 UI 配置例外
     api/               # messages.py web_messages.py approvals.py templates.py
                        # signs.py replies.py admin.py reports.py auth.py
     services/          # pipeline.py(发送流水线) category.py(类别策略矩阵)
@@ -44,7 +44,7 @@ deploy/
 
 ## 硬性规则
 
-1. **所有运行凭据只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入库、入环境变量明文、入日志或入 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。唯一窄例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
+1. **所有运行凭据默认只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入环境变量明文、入日志或入普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。安全日报是明确的产品例外：管理员可在 `/security-daily` 页面配置 Resend Key 和最多 3 个收件人，Key 允许以明文存入专用 `sys_config` 配置并由 API 同步到独立 mailer 的 `resend.json`；不得用于其他平台凭据，审计只记录 configured 状态和数量。另一个例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
 2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`(AES-256-GCM) / `phone_hmac`(HMAC-SHA256 hex) / `phone_mask` / `key_version`；精确查询一律走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许"详情按角色查看"与"授权导出"；内部仅 raw 解析/重放与 callback 投递可在内存中受控解密，严禁把明文再次写入任何持久层
 3. 所有厂商调用必须经 `vendor/zhihui.py`；业务代码不得直接 httpx 调厂商；统一超时 10s、连接池、结构化日志
 4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发**；由 reconcile 任务通过 raw_vendor_log.custom_ids 索引定位并受控解密确认后修复；这是防重复下发的生命线

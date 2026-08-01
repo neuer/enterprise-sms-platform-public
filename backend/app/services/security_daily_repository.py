@@ -12,12 +12,15 @@ from sqlalchemy import text
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.security_daily import (
+    MAX_RESEND_RECIPIENTS,
     SHANGHAI_TZ,
     DeliveryAction,
     DeliveryRequestState,
     DeliveryStatus,
     GenerationStatus,
+    SecurityDailyConfiguration,
     SecurityDailyConfigurationError,
+    SecurityDailyConfigurationUpdate,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
     SecurityDailyOverview,
@@ -30,6 +33,8 @@ from app.services.security_daily import (
     SecurityStatus,
     _next_schedule,
     resolve_configuration_state,
+    validate_resend_api_key,
+    validate_resend_recipients,
     validate_security_daily_payload,
 )
 from app.settings import Settings, get_settings
@@ -47,20 +52,6 @@ def _bool_config(value: str | None, default: bool = False) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise SecurityDailyConfigurationError("安全日报布尔配置无效")
-
-
-def _recipient_count(value: str | None) -> int:
-    """严格读取收件人数；配置损坏时失败关闭而不是回退为 0。"""
-
-    if value is None:
-        return 0
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as error:
-        raise SecurityDailyConfigurationError("安全日报收件人配置无效") from error
-    if not 0 <= parsed <= 3:
-        raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
-    return parsed
 
 
 def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
@@ -102,22 +93,134 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         return database_engine(self.settings.database_url)
 
     async def generation_config(self) -> tuple[bool, int]:
-        """读取日报生成开关与仅数量化的收件人配置。"""
+        """读取日报生成开关与 UI 配置的收件人数。"""
 
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                result = await connection.execute(
+                enabled_result = await connection.execute(
                     text(
-                        "SELECT key,value FROM sys_config WHERE key IN "
-                        "('security_daily_enabled','security_daily_recipient_count')"
+                        "SELECT value FROM sys_config WHERE key='security_daily_enabled'"
                     )
                 )
-                values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-                return (
-                    _bool_config(values.get("security_daily_enabled")),
-                    _recipient_count(values.get("security_daily_recipient_count")),
+                enabled_row = enabled_result.mappings().one_or_none()
+                count_result = await connection.execute(
+                    text("SELECT count(*) FROM security_daily_recipient")
                 )
+                count = int(count_result.scalar_one())
+                if count > MAX_RESEND_RECIPIENTS:
+                    raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
+                return _bool_config(str(enabled_row["value"]) if enabled_row else None), count
+        finally:
+            await engine.dispose()
+
+    async def configuration(self) -> SecurityDailyConfiguration:
+        """读取安全日报 UI 配置；缺少新 Key 时按未配置处理。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                config_result = await connection.execute(
+                    text(
+                        "SELECT key,value FROM sys_config WHERE key IN "
+                        "('security_daily_enabled','security_daily_resend_api_key')"
+                    )
+                )
+                config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
+                recipients_result = await connection.execute(
+                    text(
+                        "SELECT position,address FROM security_daily_recipient "
+                        "ORDER BY position"
+                    )
+                )
+                recipients = tuple(str(row["address"]) for row in recipients_result.mappings())
+        finally:
+            await engine.dispose()
+        return SecurityDailyConfiguration(
+            enabled=_bool_config(config.get("security_daily_enabled")),
+            api_key=validate_resend_api_key(config.get("security_daily_resend_api_key", "")),
+            recipients=validate_resend_recipients(recipients),
+        )
+
+    async def update_configuration(
+        self,
+        update: SecurityDailyConfigurationUpdate,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> SecurityDailyConfiguration:
+        """事务性保存安全日报开关、Resend Key 和收件人，并写入审计。"""
+
+        recipients = validate_resend_recipients(update.recipients)
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("SELECT pg_advisory_xact_lock(83174621)"))
+                current_result = await connection.execute(
+                    text(
+                        "SELECT value FROM sys_config "
+                        "WHERE key='security_daily_resend_api_key'"
+                    )
+                )
+                current_row = current_result.mappings().one_or_none()
+                current_key = str(current_row["value"]) if current_row is not None else ""
+                api_key = (
+                    validate_resend_api_key(update.api_key)
+                    if update.api_key is not None
+                    else validate_resend_api_key(current_key)
+                )
+                values = {
+                    "security_daily_enabled": "true" if update.enabled else "false",
+                    "security_daily_resend_api_key": api_key,
+                    "security_daily_recipient_count": str(len(recipients)),
+                    "security_daily_resend_configured": "true" if api_key else "false",
+                }
+                for key, value in values.items():
+                    await connection.execute(
+                        text(
+                            "UPDATE sys_config SET value=:value,updated_by=:actor,"
+                            "updated_at=now() WHERE key=:key"
+                        ),
+                        {"key": key, "value": value, "actor": principal.login_name},
+                    )
+                await connection.execute(text("DELETE FROM security_daily_recipient"))
+                for position, address in enumerate(recipients, start=1):
+                    await connection.execute(
+                        text(
+                            "INSERT INTO security_daily_recipient(position,address) "
+                            "VALUES(:position,:address)"
+                        ),
+                        {"position": position, "address": address},
+                    )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_account_id,actor_identity_id,
+                          role,ip,action,object_type,object_id,after_val
+                        ) VALUES(
+                          :actor,'human',:actor_account_id,:actor_identity_id,
+                          'admin',CAST(:ip AS inet),'security_daily_config_update',
+                          'security_daily_config','default',CAST(:after AS jsonb)
+                        )
+                        """
+                    ),
+                    {
+                        "actor": principal.login_name,
+                        "actor_account_id": principal.account_id,
+                        "actor_identity_id": principal.identity_id,
+                        "ip": ip,
+                        "after": json.dumps(
+                            {
+                                "enabled": update.enabled,
+                                "resend_configured": bool(api_key),
+                                "recipient_count": len(recipients),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                )
+                return SecurityDailyConfiguration(update.enabled, api_key, recipients)
         finally:
             await engine.dispose()
 
@@ -266,17 +369,10 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             await engine.dispose()
 
     async def overview(self, *, now: datetime) -> SecurityDailyOverview:
+        configuration = await self.configuration()
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                config_result = await connection.execute(
-                    text(
-                        "SELECT key,value FROM sys_config WHERE key IN "
-                        "('security_daily_enabled','security_daily_recipient_count',"
-                        "'security_daily_resend_configured')"
-                    )
-                )
-                config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
                 latest_result = await connection.execute(
                     text(
                         """
@@ -304,9 +400,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
         finally:
             await engine.dispose()
-        enabled = _bool_config(config.get("security_daily_enabled"))
-        resend_configured = _bool_config(config.get("security_daily_resend_configured"))
-        recipient_count = _recipient_count(config.get("security_daily_recipient_count"))
+        enabled = configuration.enabled
+        resend_configured = bool(configuration.api_key)
+        recipient_count = len(configuration.recipients)
         return SecurityDailyOverview(
             enabled=enabled,
             configuration_state=resolve_configuration_state(

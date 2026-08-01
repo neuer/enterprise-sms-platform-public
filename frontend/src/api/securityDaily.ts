@@ -23,6 +23,20 @@ export interface SecurityDailyOverview {
   beat_restart_required: boolean
 }
 
+export interface SecurityDailyConfiguration {
+  enabled: boolean
+  recipients: string[]
+  resend_api_key_configured: boolean
+  sender_domain: string
+  sender_address: string
+}
+
+export interface SecurityDailyConfigurationUpdate {
+  enabled: boolean
+  recipients: string[]
+  resend_api_key?: string | null
+}
+
 export interface SecurityMetric {
   label: string
   value: string
@@ -136,6 +150,20 @@ const basePath = "/admin/security-daily"
 
 export function getSecurityDailyOverview(): Promise<SecurityDailyOverview> {
   return apiRequest<SecurityDailyOverview>(`${basePath}/overview`, { method: "GET" })
+}
+
+export function getSecurityDailyConfiguration(): Promise<SecurityDailyConfiguration> {
+  return apiRequest<SecurityDailyConfiguration>(`${basePath}/config`, { method: "GET" })
+}
+
+export function updateSecurityDailyConfiguration(
+  configuration: SecurityDailyConfigurationUpdate,
+): Promise<SecurityDailyConfiguration> {
+  return apiRequest<SecurityDailyConfiguration>(`${basePath}/config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(configuration),
+  })
 }
 
 export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Promise<SecurityDailyPage> {

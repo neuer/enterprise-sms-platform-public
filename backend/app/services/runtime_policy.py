@@ -67,6 +67,7 @@ DEFAULTS: dict[str, str] = {
     "usage_ledger_retention_days": "90",
     "security_daily_enabled": "false",
     "security_daily_recipient_count": "0",
+    "security_daily_resend_api_key": "",
     "security_daily_resend_configured": "false",
 }
 

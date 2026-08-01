@@ -1371,7 +1371,7 @@ CREATE TABLE stat_daily (
 
 -- ─────────────── 服务器安全日报 ───────────────
 -- payload 只允许 render_security_daily_report.py 契约定义的脱敏 JSON；
--- Resend Key、收件地址、原始日志和短信号码永不进入平台数据库。
+-- Resend Key 与收件地址由安全日报管理员页面维护，独立 mailer 只读取同步配置。
 CREATE TABLE security_daily_report (
     id                BIGSERIAL PRIMARY KEY,
     report_date       DATE NOT NULL UNIQUE,
@@ -1426,6 +1426,15 @@ CREATE INDEX idx_security_daily_request_pending
     WHERE state='pending';
 CREATE INDEX idx_security_daily_request_report
     ON security_daily_delivery_request(report_id,requested_at DESC);
+
+CREATE TABLE security_daily_recipient (
+    position    SMALLINT PRIMARY KEY CHECK (position BETWEEN 1 AND 3),
+    address     VARCHAR(254) NOT NULL CHECK (address <> ''),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX uq_security_daily_recipient_address
+    ON security_daily_recipient (lower(address));
 
 -- ─────────────── 系统配置 / 审计 ───────────────
 CREATE TABLE sys_config (
@@ -1497,7 +1506,9 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 -- v1.6.39 新增
 ('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
-('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态');
+('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态'),
+-- v1.6.40 新增：安全日报配置页允许管理员维护 Resend Key。
+('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）');
 
 CREATE TABLE audit_log (
     id          BIGSERIAL PRIMARY KEY,
@@ -1630,6 +1641,7 @@ GRANT SELECT ON
     usage_quota_entry, usage_frequency_entry, usage_projection,
     usage_projection_drift, stat_daily, sys_config, audit_log, export_task,
     security_daily_report, security_daily_delivery_request,
+    security_daily_recipient,
     vendor_test_daily_usage, vendor_test_send_attempt, vendor_test_recipient,
     vendor_test_recipient_hmac_alias, vendor_test_operation, alembic_version
 TO sms_accept;
@@ -1642,6 +1654,7 @@ GRANT INSERT, UPDATE, DELETE ON
 TO sms_accept;
 GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
+GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
 GRANT INSERT ON callback_task, alert_log TO sms_accept;
 GRANT INSERT, DELETE ON vendor_test_recipient_hmac_alias TO sms_accept;
 GRANT INSERT, UPDATE ON
@@ -1669,6 +1682,7 @@ GRANT SELECT ON
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
     usage_frequency_entry, usage_projection, usage_projection_drift, stat_daily,
     sys_config, security_daily_report, vendor_test_daily_usage, vendor_test_send_attempt,
+    security_daily_recipient,
     vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation
 TO sms_send;
 GRANT INSERT, UPDATE, DELETE ON

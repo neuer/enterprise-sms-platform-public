@@ -4,12 +4,14 @@ import { createPinia } from "pinia"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const api = vi.hoisted(() => ({
+  getSecurityDailyConfiguration: vi.fn(),
   getSecurityDailyOverview: vi.fn(),
   listSecurityDailyReports: vi.fn(),
   getSecurityDailyReport: vi.fn(),
   previewSecurityDailyReport: vi.fn(),
   sendSecurityDailyReport: vi.fn(),
   retrySecurityDailyReport: vi.fn(),
+  updateSecurityDailyConfiguration: vi.fn(),
 }))
 
 vi.mock("../src/api/securityDaily", () => api)
@@ -89,11 +91,25 @@ describe("安全日报页面", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     api.getSecurityDailyOverview.mockResolvedValue(overview)
+    api.getSecurityDailyConfiguration.mockResolvedValue({
+      enabled: true,
+      recipients: ["security-owner@example.com"],
+      resend_api_key_configured: true,
+      sender_domain: "reports.neuer.cn",
+      sender_address: "security-daily@reports.neuer.cn",
+    })
     api.listSecurityDailyReports.mockResolvedValue({ items: reports, total: reports.length, page: 1, page_size: 20 })
     api.getSecurityDailyReport.mockImplementation((reportDate: string) => Promise.resolve(reports.find((item) => item.report_date === reportDate)))
     api.previewSecurityDailyReport.mockResolvedValue({ report_date: "2026-07-15", status: "attention", available: true, message: null, html: "", text: "安全日报预览", payload })
     api.sendSecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000001", report_date: "2026-07-13", action: "send", state: "pending", idempotent: false })
     api.retrySecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000002", report_date: "2026-07-15", action: "retry", state: "pending", idempotent: false })
+    api.updateSecurityDailyConfiguration.mockResolvedValue({
+      enabled: true,
+      recipients: ["security-owner@example.com"],
+      resend_api_key_configured: true,
+      sender_domain: "reports.neuer.cn",
+      sender_address: "security-daily@reports.neuer.cn",
+    })
   })
 
   it("展示 normal、attention、high 及生成/投递失败和数据不可用状态", async () => {
@@ -121,6 +137,27 @@ describe("安全日报页面", () => {
 
     expect(wrapper.text()).toContain("当前没有可展示的脱敏结构化报告")
     expect(wrapper.text()).not.toContain("攻击尝试 0")
+    wrapper.unmount()
+  })
+
+  it("通过配置邮件入口读取并保存启停、Key 和收件人", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await flushPromises()
+
+    expect(api.getSecurityDailyConfiguration).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain("当前状态：已配置")
+    await wrapper.find("input[type='password']").setValue("re_ui_test")
+    await wrapper.find("textarea").setValue("ops@example.com\nsecurity@example.com")
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await flushPromises()
+
+    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
+      enabled: true,
+      recipients: ["ops@example.com", "security@example.com"],
+      resend_api_key: "re_ui_test",
+    })
     wrapper.unmount()
   })
 
