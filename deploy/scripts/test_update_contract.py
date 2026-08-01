@@ -278,6 +278,7 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/verify_redis_domains.sh",
         "scripts/verify_vendor_live_test.sh",
         "scripts/verify_web_transport.py",
+        "test-update.env.example",
     }
 )
 _WEB_HIGH_RISK_EXACT = frozenset(
