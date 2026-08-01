@@ -13,11 +13,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
+import test_update_manager as update_manager_module  # noqa: E402
 from test_update_apply import BACKEND_SERVICES  # noqa: E402
 from test_update_contract import ChangedScope  # noqa: E402
 from test_update_manager import (  # noqa: E402
     HostTestUpdateOperations,
     _restore_operator_git_read_access,
+    _restore_operator_worktree_read_access,
 )
 from test_update_manager import (  # noqa: E402
     TestUpdateManager as UpdateManager,
@@ -48,6 +50,7 @@ class FakeStore:
 
 def test_restore_operator_git_read_access_repairs_checkout_metadata(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
@@ -63,6 +66,7 @@ def test_restore_operator_git_read_access_repairs_checkout_metadata(
         path.write_text("metadata", encoding="utf-8")
         path.chmod(0o600)
 
+    monkeypatch.setattr(update_manager_module, "_tracked_worktree_paths", lambda _: [])
     _restore_operator_git_read_access(tmp_path)
 
     assert stat.S_IMODE(git_dir.stat().st_mode) & stat.S_IRGRP
@@ -72,6 +76,43 @@ def test_restore_operator_git_read_access_repairs_checkout_metadata(
     assert stat.S_IMODE(object_file.stat().st_mode) & stat.S_IRGRP
     for name in ("HEAD", "index"):
         assert stat.S_IMODE((git_dir / name).stat().st_mode) & stat.S_IRGRP
+
+
+def test_restore_operator_worktree_read_access_repairs_tracked_paths(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "deploy"
+    directory.mkdir()
+    directory.chmod(0o700)
+    script = directory / "sms-compose"
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o600)
+
+    _restore_operator_worktree_read_access(
+        tmp_path,
+        os.getgid(),
+        tracked_paths=[directory, script],
+    )
+
+    assert stat.S_IMODE(directory.stat().st_mode) & stat.S_IRGRP
+    assert stat.S_IMODE(directory.stat().st_mode) & stat.S_IXGRP
+    assert stat.S_IMODE(script.stat().st_mode) & stat.S_IRGRP
+
+
+def test_restore_operator_worktree_read_access_rejects_symlink(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.write_text("target", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+
+    with pytest.raises(ManagerError, match="tracked worktree"):
+        _restore_operator_worktree_read_access(
+            tmp_path,
+            os.getgid(),
+            tracked_paths=[link],
+        )
 
 
 def test_restore_operator_git_read_access_rejects_nested_symlink(
@@ -650,6 +691,7 @@ def test_host_budget_verification_queries_the_canonical_vendor_ledger() -> None:
 
 def test_host_no_migration_rollback_restores_old_images_without_data_commands(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
     redis_calls: list[tuple[str, ...]] = []
@@ -705,6 +747,7 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
         metadata = git_dir / name
         metadata.write_text("metadata", encoding="utf-8")
         metadata.chmod(0o600)
+    monkeypatch.setattr(update_manager_module, "_tracked_worktree_paths", lambda _: [])
     dotenv = tmp_path / ".env"
     dotenv.write_text(
         "SMS_API_IMAGE=sha256:" + "1" * 64 + "\n"

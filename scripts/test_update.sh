@@ -177,6 +177,14 @@ verify_operator_git_after_switch() {
     echo "test-update: ${phase} 后 operator Git 工作树不可读；拒绝记录成功" >&2
     return 1
   fi
+  if ! remote_git_read diff --quiet --no-ext-diff >/dev/null 2>&1; then
+    echo "test-update: ${phase} 后 operator Git tracked 工作树不可读或不干净；拒绝记录成功" >&2
+    return 1
+  fi
+  if ! remote_git_read diff --cached --quiet --no-ext-diff >/dev/null 2>&1; then
+    echo "test-update: ${phase} 后 operator Git 暂存区不可读或不干净；拒绝记录成功" >&2
+    return 1
+  fi
 }
 
 github_write_preflight() {
