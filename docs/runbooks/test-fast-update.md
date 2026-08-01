@@ -28,17 +28,22 @@ CI 会逐项比较 shell driver 与 Python 合同中的资产集合，新增或�
 ## 本地入口
 
 本地工作树必须干净，默认目标是已合并的精确 `origin/main`。首次使用把样例复制为 Git 忽略的
-本地文件；该文件只允许两个本地连接键，必须为当前用户拥有的 0400/0600 普通文件。键名
-可以公开，真实 target/port 值属于受限运维信息，不得进入 Git、文档、聊天或命令历史：
+本地文件；该文件只允许两个连接键和一个非敏感厂商 origin，必须为当前用户拥有的 0400/0600
+普通文件。键名可以公开，真实 target/port 值属于受限运维信息，不得进入 Git、文档、聊天或
+命令历史；`SMS_VENDOR_LIVE_TEST_ORIGIN` 不包含凭据，但必须填写与测试环境联调标记一致的
+HTTPS origin：
 
 ```bash
 scripts/docker_public.sh doctor
 gh auth status --hostname github.com
 cp test-update.env.example .env.test-update
 chmod 600 .env.test-update
-# 编辑 SMS_TEST_UPDATE_TARGET 与 SMS_TEST_UPDATE_PORT
+# 编辑 SMS_TEST_UPDATE_TARGET、SMS_TEST_UPDATE_PORT 与 SMS_VENDOR_LIVE_TEST_ORIGIN
 scripts/test_update.sh apply --ref origin/main
 ```
+
+driver 会把该 origin 作为固定环境参数传给远端 `sudo` 控制入口，避免管理器用占位地址校验
+已激活的测试环境标记；不需要手工 SSH 或修改服务器文件。
 
 `apply` 已严格解析最终 `state=verified`；`plan --ref origin/main` 仅用于变更前预览，
 `status` 仅用于后续只读诊断。分支 ref 只用于明确的合并前验收例外，不是默认入口。

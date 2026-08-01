@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from test_update_apply import BACKEND_SERVICES  # noqa: E402
 from test_update_contract import ChangedScope  # noqa: E402
 from test_update_manager import (  # noqa: E402
     HostTestUpdateOperations,
+    _restore_operator_git_read_access,
 )
 from test_update_manager import (  # noqa: E402
     TestUpdateManager as UpdateManager,
@@ -42,6 +44,25 @@ class FakeStore:
         assert self.state is expected
         self.events.append((expected, State.BLOCKED, step))
         self.state = State.BLOCKED
+
+
+def test_restore_operator_git_read_access_repairs_checkout_metadata(
+    tmp_path: Path,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    git_dir.chmod(0o750)
+    for name in ("HEAD", "index"):
+        path = git_dir / name
+        path.write_text("metadata", encoding="utf-8")
+        path.chmod(0o600)
+
+    _restore_operator_git_read_access(tmp_path)
+
+    assert stat.S_IMODE(git_dir.stat().st_mode) & stat.S_IRGRP
+    assert stat.S_IMODE(git_dir.stat().st_mode) & stat.S_IXGRP
+    for name in ("HEAD", "index"):
+        assert stat.S_IMODE((git_dir / name).stat().st_mode) & stat.S_IRGRP
 
 
 class FakePrepareOperations:
@@ -656,6 +677,13 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
     )
     operations.pause_value = f"test-update:{update_id}"
     operations.host = Host()  # type: ignore[assignment]
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    git_dir.chmod(0o750)
+    for name in ("HEAD", "index"):
+        metadata = git_dir / name
+        metadata.write_text("metadata", encoding="utf-8")
+        metadata.chmod(0o600)
     dotenv = tmp_path / ".env"
     dotenv.write_text(
         "SMS_API_IMAGE=sha256:" + "1" * 64 + "\n"

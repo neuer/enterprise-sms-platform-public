@@ -1279,6 +1279,14 @@ main {
   font-size: 8px;
 }
 
+.job-description {
+  margin: 3px 0 4px;
+  color: var(--tx-2);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .dashboard-loading {
   min-height: 480px;
 }
@@ -3011,6 +3019,7 @@ main {
 .job-health { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font: 11px/1 var(--mono); }
 .job-health i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .job-health.danger { color: var(--red); }
+.ops-table .job-description { margin: 0; font-size: 12px; }
 .queue-status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; border: 1px solid var(--line); background: var(--line); }
 .queue-status-grid article { display: grid; gap: 10px; min-height: 120px; padding: 18px; background: var(--surface-soft); }
 .queue-status-grid span { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; }
