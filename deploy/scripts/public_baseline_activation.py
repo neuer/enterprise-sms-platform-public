@@ -1521,13 +1521,24 @@ class PublicBaselineActivator:
             str(bundle_path),
             f"+{PUBLIC_BUNDLE_REF}:{PUBLIC_REMOTE_REF}",
         )
-        self._git(
-            self.building_root,
-            "checkout",
-            "--quiet",
-            "--detach",
-            request.target.commit,
-        )
+        # Git applies the process umask when it materializes tracked files.
+        # The test host intentionally uses a restrictive 0027 umask, but the
+        # public tree's recorded 100644/100755 modes are part of the source
+        # contract (the vendor-control unit preflight depends on this).  Use
+        # the standard non-writable 0022 mask for checkout only so the
+        # resulting worktree preserves those modes without widening any
+        # persistent runtime paths.
+        previous_umask = os.umask(0o022)
+        try:
+            self._git(
+                self.building_root,
+                "checkout",
+                "--quiet",
+                "--detach",
+                request.target.commit,
+            )
+        finally:
+            os.umask(previous_umask)
         self._validate_artifact(
             request.bundle.file,
             request.bundle.sha256,

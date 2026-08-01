@@ -75,6 +75,11 @@ def _repository(path: Path, marker: str) -> tuple[str, str]:
         f"deploy-{marker}\n",
         encoding="ascii",
     )
+    (path / "deploy/systemd").mkdir(parents=True, exist_ok=True)
+    (path / "deploy/systemd/vendor-control-agent.service").write_text(
+        f"[Unit]\nDescription={marker}\n",
+        encoding="ascii",
+    )
     (path / "scripts/source.txt").write_text(
         f"scripts-{marker}\n",
         encoding="ascii",
@@ -377,6 +382,19 @@ def test_prepare_builds_standalone_public_detached_root(tmp_path: Path) -> None:
     again = activator.prepare(request)
     assert again == prepared
     assert guard.calls == 2
+
+
+def test_prepare_preserves_git_modes_with_restrictive_umask(tmp_path: Path) -> None:
+    request, activator, _guard, _exchange, _public = _fixture(tmp_path)
+
+    previous_umask = os.umask(0o027)
+    try:
+        prepared = activator.prepare(request)
+    finally:
+        os.umask(previous_umask)
+
+    unit = prepared.staged_root / "deploy/systemd/vendor-control-agent.service"
+    assert stat.S_IMODE(unit.stat().st_mode) == 0o644
 
 
 def test_activate_finalize_and_rollback_preserve_only_allowlisted_state(
