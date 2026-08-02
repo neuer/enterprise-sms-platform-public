@@ -246,13 +246,19 @@ class ResendClient:
         report: renderer.SecurityDailyReport,
         *,
         recipients: Sequence[str],
+        request_id: UUID | None = None,
     ) -> DeliveryReceipt:
         normalized_recipients = _validate_recipients(recipients)
         body = _render_payload(report, normalized_recipients)
+        idempotency_key = f"security-daily-{report.report_date}"
+        if request_id is not None:
+            # 同一日期重新生成/重发会携带新请求 ID，避免与历史请求的
+            # Resend 幂等键冲突（相同键+不同载荷会被 Resend 以 409 拒绝）。
+            idempotency_key = f"{idempotency_key}-{request_id}"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
-            "Idempotency-Key": f"security-daily-{report.report_date}",
+            "Idempotency-Key": idempotency_key,
             "User-Agent": USER_AGENT,
         }
         for attempt in range(MAX_ATTEMPTS):
@@ -364,7 +370,11 @@ def process_control_request(
             api_key=configuration.api_key,
             transport=transport,
             sleep=sleep,
-        ).send(request.report, recipients=configuration.recipients)
+        ).send(
+            request.report,
+            recipients=configuration.recipients,
+            request_id=request.request_id,
+        )
     except (ResendConfigurationError, ResendDeliveryError) as exc:
         _write_control_result(
             control_dir,
