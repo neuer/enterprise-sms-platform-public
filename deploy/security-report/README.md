@@ -49,6 +49,8 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 由授权运维在主机上安装一次：
 
 ```bash
+sudo install -d -o root -g root -m 0750 \
+  /opt/sms-platform/deploy/security-report-control/incoming
 sudo install -m 0644 deploy/systemd/security-report-collector.service /etc/systemd/system/
 sudo install -m 0644 deploy/systemd/security-report-collector.timer /etc/systemd/system/
 sudo systemctl daemon-reload
