@@ -75,7 +75,7 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 - 运行态探针：读取 `/var/lib/docker/containers/*/config.v2.json` 聚合平台容器
   运行中/异常计数（一次性初始化容器不计入），不依赖 Docker CLI 或 socket。
 
-管理审计由平台生成任务在入库前单独注入：`sms_send` 只读
+管理审计由平台生成任务在入库前单独注入：`sms_send` 与 `sms_accept` 只读
 `security_daily_audit_evidence` 视图（不含 before/after 载荷列；生成代码读取
 时将 `ip` 列别名化为 `source_ip`），日报展示最近 10 条审计事件与总数，不读取
 审计 JSON 明细。任一证据源缺失时，报告保持

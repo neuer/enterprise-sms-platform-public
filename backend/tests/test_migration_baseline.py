@@ -623,6 +623,7 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
     assert "-- v1.6.41：" in schema
     assert "CREATE VIEW security_daily_audit_evidence" in schema
     assert "GRANT SELECT ON security_daily_audit_evidence TO sms_send" in schema
+    assert "GRANT SELECT ON security_daily_audit_evidence TO sms_accept" in schema
     view = schema.split("CREATE VIEW security_daily_audit_evidence", maxsplit=1)[1].split(
         ";",
         maxsplit=1,
@@ -642,6 +643,24 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
     spec.loader.exec_module(module)
     assert module.revision == "0044_security_daily_audit_view"
     assert module.down_revision == "0043_security_daily_ui_config"
+
+
+def test_security_daily_audit_view_grants_accept_role() -> None:
+    revision = BACKEND / "migrations/versions/0048_security_daily_audit_accept.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "GRANT SELECT ON security_daily_audit_evidence TO sms_accept" in source
+    assert "REVOKE SELECT ON security_daily_audit_evidence FROM sms_accept" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_audit_accept_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0048_security_daily_audit_accept"
+    assert module.down_revision == "0047_widen_alembic_version"
 
 
 def test_security_daily_generation_source_migration_is_expand_only() -> None:
