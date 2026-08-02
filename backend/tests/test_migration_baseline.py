@@ -698,6 +698,22 @@ def test_security_daily_records_append_and_auto_daily_stays_singleton() -> None:
     assert module.down_revision == "0045_security_daily_source"
 
 
+def test_all_migration_revision_ids_fit_alembic_version_column() -> None:
+    revisions = sorted((BACKEND / "migrations/versions").glob("00*.py"))
+    assert revisions
+    for path in revisions:
+        if path.name == "__init__.py":
+            continue
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert isinstance(module.revision, str) and module.revision
+        assert len(module.revision) <= 64, (
+            f"{path.name}: revision id 超过 alembic_version VARCHAR(64) 上限"
+        )
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

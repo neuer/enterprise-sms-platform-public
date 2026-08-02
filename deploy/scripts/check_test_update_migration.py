@@ -65,6 +65,11 @@ _CREATE_UNIQUE_INDEX_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s+ON\s+([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+_WIDEN_ALEMBIC_VERSION_RE = re.compile(
+    r"ALTER\s+TABLE\s+alembic_version\s+ALTER\s+COLUMN\s+version_num\s+"
+    r"TYPE\s+VARCHAR\(64\)",
+    re.IGNORECASE,
+)
 
 
 def _literal_assignment(tree: ast.Module, name: str, path: Path) -> str | None:
@@ -232,6 +237,9 @@ def _check_raw_sql(
             )
         return
     if re.fullmatch(r"ALTER ROLE [A-Z_][A-Z0-9_]* NOLOGIN", normalized):
+        return
+    if _WIDEN_ALEMBIC_VERSION_RE.fullmatch(sql.strip()):
+        # Alembic 自建单行控制表加宽版本号列：只扩大容量，允许随迁移一同执行。
         return
     if _DESTRUCTIVE_SQL.search(sql):
         if re.search(r"\bDROP\s+TABLE\b", sql, re.IGNORECASE):

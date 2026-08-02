@@ -59,6 +59,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0044_security_daily_audit_view",
         "0045_security_daily_source",
         "0046_security_daily_append",
+        "0047_widen_alembic_version",
     ]
 
 
@@ -228,6 +229,31 @@ def test_accepts_constraint_drop_replaced_by_same_named_unique_index(
     checked = check_expand_only(tmp_path, "0001_base", "0002_replacement")
 
     assert [item.revision for item in checked] == ["0002_replacement"]
+
+
+def test_accepts_alembic_version_widening_raw_sql(tmp_path: Path) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\n"
+        "down_revision=None\n"
+        "def upgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_widen.py").write_text(
+        "from alembic import op\n"
+        "revision='0002_widen'\n"
+        "down_revision='0001_base'\n"
+        "def upgrade():\n"
+        "    op.execute('ALTER TABLE alembic_version '\n"
+        "               'ALTER COLUMN version_num TYPE VARCHAR(64)')\n"
+        "def downgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    checked = check_expand_only(tmp_path, "0001_base", "0002_widen")
+
+    assert [item.revision for item in checked] == ["0002_widen"]
 
 
 def test_rejects_downgrade_direction() -> None:
