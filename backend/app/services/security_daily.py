@@ -1012,6 +1012,21 @@ class SecurityDailyService:
                 "安全日报发信配置不完整（缺少 Resend Key 或收件人）",
             )
             return None
+        if (
+            record.generation_status == "ready"
+            and record.payload is not None
+            and record.generated_at is not None
+            and self.control_dir is not None
+        ):
+            snapshot = self.control_dir / "incoming" / f"{report_date.isoformat()}.json"
+            try:
+                snapshot_mtime = snapshot.stat().st_mtime
+            except OSError:
+                snapshot_mtime = None
+            if snapshot_mtime is not None and snapshot_mtime > record.generated_at.timestamp():
+                # 快照比已入库 payload 更新：直接发送会外发过期数据，
+                # 跳过自动投递，等待管理员手动“立即生成”后发送。
+                return None
         payload_override: dict[str, Any] | None = None
         if record.generation_status != "ready" or record.payload is None:
             payload_override = _problem_payload(
