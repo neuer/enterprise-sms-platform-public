@@ -75,7 +75,7 @@ const overview = {
   configuration_state: "ready",
   schedule_time: "08:00",
   timezone: "Asia/Shanghai",
-  period_description: "汇总前一上海自然日",
+  period_description: "汇总前一自然日（北京时间）",
   last_generated_at: "2026-07-16T08:00:00+08:00",
   last_delivered_at: "2026-07-15T08:02:00+08:00",
   next_scheduled_at: "2026-07-19T08:00:00+08:00",

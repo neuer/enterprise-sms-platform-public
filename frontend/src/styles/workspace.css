@@ -3674,10 +3674,10 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .security-daily-heading-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .security-daily-overview { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 2fr); gap: 1px; margin-bottom: 16px; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
-.security-daily-state-card { display: grid; gap: 8px; align-content: center; padding: 20px; background: linear-gradient(145deg, #162b23, #13221c); }
+.security-daily-state-card { display: grid; gap: 8px; align-content: center; justify-items: start; padding: 20px; background: linear-gradient(145deg, #162b23, #13221c); }
 .security-daily-state-card strong { color: var(--tx-hi); font-size: 18px; }
 .security-daily-state-card p { margin: 0; color: var(--tx-2); font-size: 12px; line-height: 1.6; }
-.security-daily-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--hair); }
+.security-daily-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--hair); }
 .security-daily-facts > div { min-width: 0; padding: 13px 15px; background: var(--panel); }
 .security-daily-facts dt { color: var(--tx-3); font-size: 10px; }
 .security-daily-facts dd { margin: 5px 0 0; overflow: hidden; color: var(--tx); font: 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
@@ -3689,6 +3689,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .card-heading strong { color: var(--tx-hi); font-size: 14px; }
 .section-heading { display: flex; gap: 10px; align-items: center; }
 .section-heading strong { color: var(--tx-2); font-size: 11px; font-weight: 500; }
+.security-section-label { color: var(--tx-3); font: 10px var(--mono); letter-spacing: 0.08em; }
 .form-tip { margin: 6px 0; color: var(--tx-2); font-size: 12px; line-height: 1.6; }
 .security-detail-period { margin: 6px 0 0; color: var(--tx-2); font-size: 12px; }
 .security-detail-heading, .security-detail-heading > div, .security-detail-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -3716,6 +3717,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .security-metric.danger { border-top: 2px solid #d66b6b; }
 .security-evidence-list { display: grid; gap: 1px; margin-top: 10px; background: var(--hair); }
 .security-evidence-list > div { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 12px; background: var(--panel); }
+.security-evidence-list .el-tag { justify-self: start; }
 .security-evidence-list > div.security-audit-row { grid-template-columns: minmax(170px, max-content) minmax(0, 1fr) auto; }
 .security-evidence-list strong { color: var(--tx-hi); font-size: 12px; }
 .security-evidence-list span { color: var(--tx); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
@@ -3732,7 +3734,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 @media (max-width: 900px) {
   .security-daily-overview { grid-template-columns: 1fr; }
-  .security-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
