@@ -206,6 +206,45 @@ def _docker_log_content(line: str) -> str:
         return line
 
 
+def _line_date(line: str, reference_year: int) -> date | None:
+    """从日志行提取归属日期；无法解析返回 None。"""
+
+    iso = ISO_PREFIX.match(line)
+    if iso is not None:
+        return date.fromisoformat(iso.group("date"))
+    space = SPACE_ISO_PREFIX.match(line)
+    if space is not None:
+        return date.fromisoformat(space.group("date"))
+    syslog = SYSLOG_PREFIX.match(line)
+    if syslog is not None:
+        month = MONTHS.get(syslog.group("month"))
+        if month is not None:
+            return date(reference_year, month, int(syslog.group("day")))
+    bracket = NGINX_BRACKET_DATE.search(line)
+    if bracket is not None:
+        month = MONTHS.get(bracket.group("month"))
+        if month is not None:
+            return date(
+                int(bracket.group("year")),
+                month,
+                int(bracket.group("day")),
+            )
+    return None
+
+
+def _docker_log_line_date_obj(line: str) -> date | None:
+    """提取 docker json 日志 time 字段对应的上海自然日。"""
+
+    try:
+        stamp = str(json.loads(line).get("time") or "")
+        if not stamp:
+            return None
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        return parsed.astimezone(SHANGHAI_TZ).date()
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
 def _scan_web(
     web_log: Path,
     docker_root: Path,
@@ -217,12 +256,20 @@ def _scan_web(
     docker_logs = _web_container_logs(docker_root) if not files else []
     if not files and not docker_logs:
         return WebCounts(False)
+    earliest: date | None = None
+
+    def observe(line_date: date | None) -> None:
+        nonlocal earliest
+        if line_date is not None and (earliest is None or line_date < earliest):
+            earliest = line_date
+
     total = 0
     status_count = 0
     count_4xx = 0
     count_5xx = 0
     sensitive = 0
     for line in _iter_lines(files):
+        observe(_line_date(line, report_date.year))
         if not _line_matches_date(line, report_date):
             continue
         total += 1
@@ -235,6 +282,7 @@ def _scan_web(
         sensitive += int(SENSITIVE_PATH.search(line) is not None)
     for candidate in docker_logs:
         for line in _iter_lines([candidate]):
+            observe(_docker_log_line_date_obj(line))
             if not _docker_log_line_date(line, report_date):
                 continue
             content = _docker_log_content(line)
@@ -246,6 +294,10 @@ def _scan_web(
                 count_4xx += int(400 <= status < 500)
                 count_5xx += int(500 <= status < 600)
             sensitive += int(SENSITIVE_PATH.search(content) is not None)
+    if earliest is None or earliest > report_date:
+        # 源存在但未覆盖报告窗口（例如容器/日志轮换后新起文件），
+        # 视为缺失而不是用 0 冒充完整覆盖。
+        return WebCounts(False)
     return WebCounts(True, total, status_count, count_4xx, count_5xx, sensitive)
 
 

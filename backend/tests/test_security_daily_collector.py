@@ -206,3 +206,42 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
     assert runtime_values["异常容器"] == "0 个"
     assert runtime_values["健康检查通过"] == "1/1 个"
     assert payload["status"] == "attention"  # Fail2ban 缺口保留
+
+
+def test_collector_marks_web_unavailable_when_log_does_not_cover_window(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
+    docker_root = tmp_path / "docker"
+    container_dir = docker_root / "containers" / "web01"
+    container_dir.mkdir(parents=True)
+    container_dir.joinpath("config.v2.json").write_text(
+        json.dumps(
+            {
+                "Name": "/sms-platform-web-1",
+                "State": {"Status": "running", "Health": {"Status": "healthy"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    container_dir.joinpath("web01-json.log").write_text(
+        json.dumps({"log": "203.0.113.9 / 200 3\n", "time": "2026-08-02T04:00:00Z"}) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=tmp_path / "missing-web.log",
+        docker_root=docker_root,
+    )
+
+    assert payload["metrics"][3]["value"] == "不可用"
+    assert {item["source"] for item in payload["coverage"] if item["tone"] == "warn"} == {
+        "Fail2ban",
+        "Web/API access log",
+        "管理审计",
+    }
