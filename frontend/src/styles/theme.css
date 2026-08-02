@@ -1175,6 +1175,59 @@ main {
   }
 }
 
+/* el-tag / el-alert 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
+   在深色界面里是刺眼的亮块且前景被冲淡；这里改成深底浅色文字，保留原有色调语义。
+   标签变量定义在 .el-tag.el-tag--* 双类选择器上，覆写必须保持同等优先级。 */
+.el-tag.el-tag--primary,
+.el-tag.el-tag--success {
+  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 18%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--verdi) 42%, var(--panel));
+  --el-tag-text-color: #71c4ad;
+}
+
+.el-tag.el-tag--warning {
+  --el-tag-bg-color: color-mix(in srgb, var(--amber) 16%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--amber) 40%, var(--panel));
+  --el-tag-text-color: var(--amber);
+}
+
+.el-tag.el-tag--danger,
+.el-tag.el-tag--error {
+  --el-tag-bg-color: color-mix(in srgb, var(--verm) 16%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--verm) 40%, var(--panel));
+  --el-tag-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+}
+
+.el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 12%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 26%, var(--panel));
+  --el-tag-text-color: var(--tx-2);
+}
+
+.el-alert--primary,
+.el-alert--success {
+  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 12%, var(--panel));
+}
+
+.el-alert--warning {
+  --el-alert-bg-color: color-mix(in srgb, var(--amber) 12%, var(--panel));
+}
+
+.el-alert--error {
+  --el-alert-bg-color: color-mix(in srgb, var(--verm) 12%, var(--panel));
+}
+
+.el-alert--info {
+  --el-alert-bg-color: var(--panel-2);
+}
+
+.el-alert--primary.is-light,
+.el-alert--primary.is-light .el-alert__description,
+.el-alert--success.is-light,
+.el-alert--success.is-light .el-alert__description {
+  color: #71c4ad;
+}
+
 /* Console 深色身份门：登录页不依赖业务工作区样式。 */
 .public-shell {
   background: #0d1511;
