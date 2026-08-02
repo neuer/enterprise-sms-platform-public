@@ -652,8 +652,11 @@ def test_security_daily_generation_source_migration_is_expand_only() -> None:
     assert "-- v1.6.42：" in schema
     assert "generation_source  VARCHAR(8)" in schema
     assert "generation_source IN ('auto','manual')" in schema
-    assert "ADD COLUMN generation_source VARCHAR(8) NOT NULL DEFAULT 'auto'" in source
-    assert "ADD CONSTRAINT ck_security_daily_generation_source" in source
+    assert (
+        "ADD COLUMN IF NOT EXISTS generation_source VARCHAR(8) NOT NULL DEFAULT 'auto'"
+        in source
+    )
+    assert "CHECK (generation_source IN ('auto','manual'))" in source
 
     spec = importlib.util.spec_from_file_location(
         "security_daily_generation_source_revision",

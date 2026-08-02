@@ -16,13 +16,7 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE security_daily_report
-        ADD COLUMN generation_source VARCHAR(8) NOT NULL DEFAULT 'auto'
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE security_daily_report
-        ADD CONSTRAINT ck_security_daily_generation_source
+        ADD COLUMN IF NOT EXISTS generation_source VARCHAR(8) NOT NULL DEFAULT 'auto'
         CHECK (generation_source IN ('auto','manual'))
         """
     )
@@ -34,7 +28,9 @@ def downgrade() -> None:
     op.execute(
         """
         ALTER TABLE security_daily_report
-        DROP CONSTRAINT ck_security_daily_generation_source
+        DROP CONSTRAINT IF EXISTS ck_security_daily_generation_source
         """
     )
-    op.execute("ALTER TABLE security_daily_report DROP COLUMN generation_source")
+    op.execute(
+        "ALTER TABLE security_daily_report DROP COLUMN IF EXISTS generation_source"
+    )
