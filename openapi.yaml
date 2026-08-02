@@ -2225,8 +2225,8 @@ paths:
   /api/v1/web/admin/security-daily/generate:
     post:
       tags: [security-daily]
-      summary: 管理员立即生成上一上海自然日报告
-      description: 读取已脱敏的上一上海自然日证据快照并写入日报记录；不会自动发送邮件。证据缺失时返回 generation_status=unavailable 的记录。
+      summary: 管理员立即生成前一自然日（北京时间）报告
+      description: 读取已脱敏的前一自然日（北京时间）证据快照并写入日报记录；不会自动发送邮件。证据缺失时返回 generation_status=unavailable 的记录。
       security: [{ BearerAuth: [] }]
       responses:
         '200': { description: 已生成或已记录数据不可用状态, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyReportModel' } } } }

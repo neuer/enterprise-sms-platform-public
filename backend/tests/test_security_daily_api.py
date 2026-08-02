@@ -104,7 +104,7 @@ def overview(
         configuration_state=configuration_state,  # type: ignore[arg-type]
         schedule_time="08:00",
         timezone="Asia/Shanghai",
-        period_description="汇总前一上海自然日",
+        period_description="汇总前一自然日（北京时间）",
         last_generated_at=None,
         last_delivered_at=None,
         next_scheduled_at=NOW if enabled else None,
