@@ -158,6 +158,58 @@ describe("安全日报页面", () => {
     wrapper.unmount()
   })
 
+  it("详情展示状态信息、中文优先级与同日省略的统计窗口", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(1)!.trigger("click")
+    await flushPromises()
+    const drawer = wrapper.find(".el-drawer")
+
+    expect(drawer.text()).toContain("2026-07-14 00:00:00 — 23:59:59")
+    expect(drawer.text()).toContain("已生成")
+    expect(drawer.text()).toContain("已投递")
+    expect(drawer.text()).toContain("2026-07-15 08:00:00")
+    expect(drawer.text()).toContain("2026-07-15 08:02:00")
+    expect(drawer.text()).toContain("1 人")
+    expect(drawer.text()).toContain("0 次")
+    expect(drawer.text()).toContain("确认管理操作来源")
+    expect(drawer.text()).not.toContain("medium")
+    wrapper.unmount()
+  })
+
+  it("生成失败报告详情直接显示错误原因与状态信息", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(3)!.trigger("click")
+    await flushPromises()
+    const drawer = wrapper.find(".el-drawer")
+
+    expect(drawer.text()).toContain("生成失败")
+    expect(drawer.text()).toContain("最新错误")
+    expect(drawer.text()).toContain("数据源不可用")
+    expect(drawer.text()).toContain("当前没有可展示的脱敏结构化报告")
+    wrapper.unmount()
+  })
+
+  it("证据面为空时显示空态而不是只剩小节标题", async () => {
+    api.getSecurityDailyReport.mockResolvedValue({
+      ...reports[0],
+      payload: { ...payload, ssh: [], web: [], audit: [], runtime: [], actions: [], coverage: [] },
+    })
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").filter((button) => button.text().includes("查看详情")).at(0)!.trigger("click")
+    await flushPromises()
+    const drawer = wrapper.find(".el-drawer")
+
+    expect(drawer.text()).toContain("SSH 与主机安全")
+    expect(drawer.text()).toContain("该证据面无记录")
+    expect(drawer.text()).toContain("无需处置事项")
+    wrapper.unmount()
+  })
+
   it("筛选生效时空态提示匹配筛选条件且不显示生成引导", async () => {
     api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
