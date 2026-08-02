@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { computed, nextTick, onMounted, ref } from "vue"
 
 import {
   generateSecurityDailyReport,
@@ -351,6 +351,10 @@ async function openReport(reportId: number): Promise<void> {
   detailLoading.value = true
   drawerOpen.value = true
   previewOpen.value = false
+  // el-drawer 关闭后保留 DOM 与滚动位置，重新打开时先回到顶部，避免详情从中间开始显示
+  void nextTick(() => {
+    document.querySelector<HTMLElement>(".el-drawer__body")?.scrollTo({ top: 0 })
+  })
   try {
     selected.value = await getSecurityDailyReport(reportId)
   } catch (error) {
