@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -53,6 +54,7 @@ def test_collector_writes_only_aggregated_redacted_evidence(tmp_path: Path) -> N
         auth_log=auth,
         fail2ban_log=fail2ban,
         web_log=web,
+        docker_root=tmp_path,
     )
 
     assert payload["status"] == "high"
@@ -80,6 +82,7 @@ def test_collector_keeps_missing_sources_as_explicit_coverage_gaps(tmp_path: Pat
         auth_log=auth,
         fail2ban_log=tmp_path / "missing-fail2ban.log",
         web_log=tmp_path / "missing-web.log",
+        docker_root=tmp_path,
     )
 
     assert payload["status"] == "attention"
@@ -100,4 +103,106 @@ def test_collector_refuses_to_write_when_no_source_is_available(tmp_path: Path) 
             auth_log=tmp_path / "missing-auth.log",
             fail2ban_log=tmp_path / "missing-fail2ban.log",
             web_log=tmp_path / "missing-web.log",
+            docker_root=tmp_path,
         )
+
+
+def test_collector_reads_rotated_and_gzipped_logs_with_real_formats(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "2026-08-02T00:05:00+08:00 host sshd[1]: Accepted key ED25519 SHA256:abc\n",
+        encoding="utf-8",
+    )
+    rotated_auth = tmp_path / "auth.log.1"
+    rotated_auth.write_text(
+        "2026-08-01T01:00:00+08:00 host sshd[2]: Failed password for invalid user\n"
+        "2026-08-01T02:00:00+08:00 host sshd[3]: Accepted key ED25519 SHA256:abc\n"
+        "2026-08-01T03:00:00+08:00 host sshd[4]: Connection closed by invalid user root\n",
+        encoding="utf-8",
+    )
+    fail2ban = tmp_path / "fail2ban.log"
+    fail2ban.write_text("2026-08-02 00:00:06,264 fail2ban.server: rollover\n", encoding="utf-8")
+    with gzip.open(tmp_path / "fail2ban.log.1.gz", "wt", encoding="utf-8") as source:
+        source.write("2026-08-01 07:50:01,123 fail2ban.actions: Ban 192.0.2.8\n")
+    web = tmp_path / "access.log"
+    web.write_text(
+        "127.0.0.1 - - [01/Aug/2026:04:00:01 +0800] \"GET /api/health HTTP/1.1\" 200 12\n"
+        "127.0.0.1 - - [01/Aug/2026:04:01:01 +0800] \"GET /.env HTTP/1.1\" 404 4\n"
+        "127.0.0.1 - - [01/Aug/2026:04:02:01 +0800] \"GET /readyz HTTP/1.1\" 500 5\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=fail2ban,
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    assert payload["metrics"][0]["value"] == "2"  # Failed password + invalid user
+    assert payload["metrics"][1]["value"] == "1"  # Accepted key
+    assert payload["metrics"][2]["value"] == "1"  # Fail2ban ban from .1.gz
+    assert payload["metrics"][3]["value"] == "1"  # Web 5xx from bracket format
+    assert payload["web"][1]["value"] == "1 条"  # 4xx
+    assert payload["web"][3]["value"] == "1 次命中"  # sensitive /.env
+    assert payload["status"] == "high"
+
+
+def test_collector_falls_back_to_web_container_log_and_runtime_probe(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
+    docker_root = tmp_path / "docker"
+    container_dir = docker_root / "containers" / "web01"
+    container_dir.mkdir(parents=True)
+    container_dir.joinpath("config.v2.json").write_text(
+        json.dumps(
+            {
+                "Name": "/sms-platform-web-1",
+                "State": {
+                    "Status": "running",
+                    "Health": {"Status": "healthy"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    container_dir.joinpath("web01-json.log").write_text(
+        json.dumps({"log": "203.0.113.9 /api/v1/reports 500 23\n", "time": "2026-08-01T04:00:00Z"})
+        + "\n"
+        + json.dumps(
+            {"log": "203.0.113.9 /api/v1/reports 200 23\n", "time": "2026-08-01T04:01:00Z"}
+        )
+        + "\n"
+        + json.dumps({"log": "203.0.113.9 / 200 3\n", "time": "2026-08-02T04:00:00Z"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=tmp_path / "missing-web.log",
+        docker_root=docker_root,
+    )
+
+    assert payload["metrics"][3]["value"] == "1"
+    assert payload["web"][0]["value"] == "2 条"
+    assert payload["web"][1]["value"] == "0 条"
+    assert {item["source"] for item in payload["coverage"] if item["tone"] == "warn"} == {
+        "Fail2ban",
+        "管理审计",
+    }
+    runtime_values = {item["label"]: item["value"] for item in payload["runtime"]}
+    assert runtime_values["平台容器总数"] == "1 个"
+    assert runtime_values["运行中容器"] == "1 个"
+    assert runtime_values["异常容器"] == "0 个"
+    assert runtime_values["健康检查通过"] == "1/1 个"
+    assert payload["status"] == "attention"  # Fail2ban 缺口保留

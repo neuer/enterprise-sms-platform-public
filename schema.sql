@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.41  2026-08-02
+-- v1.6.41：安全日报管理审计证据只读视图（sms_send 最小 SELECT，不含载荷列）
 -- v1.6.39  2026-08-01
 -- v1.6.39：安全日报脱敏事实、独立 mailer 投递控制与管理员查询页面
 -- v1.6.38  2026-07-29
@@ -1565,6 +1567,13 @@ CREATE INDEX idx_audit_actor_account ON audit_log(actor_account_id, created_at D
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id, created_at DESC);
 CREATE INDEX idx_audit_action ON audit_log(action, created_at);
 CREATE INDEX idx_audit_time   ON audit_log(created_at);
+
+-- v1.6.41：日报采集器不获得审计主表访问权；只读视图只暴露非载荷列，
+-- 且仅对生成日报的 sms_send 角色授 SELECT。
+CREATE VIEW security_daily_audit_evidence AS
+SELECT created_at, actor, actor_subject_kind, role, ip, action, object_type, object_id
+FROM audit_log;
+GRANT SELECT ON security_daily_audit_evidence TO sms_send;
 
 -- ─────────────── 导出任务 ───────────────
 CREATE TABLE export_task (

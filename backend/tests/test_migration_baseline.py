@@ -615,6 +615,35 @@ def test_security_daily_ui_config_migration_adds_resend_key_and_recipients() -> 
     assert module.down_revision == "0042_security_daily_config"
 
 
+def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0044_security_daily_audit_evidence.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.41：" in schema
+    assert "CREATE VIEW security_daily_audit_evidence" in schema
+    assert "GRANT SELECT ON security_daily_audit_evidence TO sms_send" in schema
+    view = schema.split("CREATE VIEW security_daily_audit_evidence", maxsplit=1)[1].split(
+        ";",
+        maxsplit=1,
+    )[0]
+    assert "before_val" not in view
+    assert "after_val" not in view
+    assert "CREATE VIEW security_daily_audit_evidence" in source
+    assert "GRANT SELECT ON security_daily_audit_evidence TO sms_send" in source
+    assert "DROP VIEW security_daily_audit_evidence" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_audit_evidence_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0044_security_daily_audit_evidence"
+    assert module.down_revision == "0043_security_daily_ui_config"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

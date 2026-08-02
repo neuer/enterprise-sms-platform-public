@@ -19,6 +19,12 @@
 sudo install -d -o 10001 -g 10001 -m 0700 deploy/security-report-config deploy/security-report-control
 ```
 
+Web 容器访问日志落盘目录由 nginx（UID 101）写入，采集器以 root 只读聚合：
+
+```bash
+sudo install -d -o 101 -g 101 -m 0750 deploy/security-report-nginx
+```
+
 Resend Key 应具备发送权限并绑定 `reports.neuer.cn`。发件域名和地址固定为：
 
 - 域名：`reports.neuer.cn`
@@ -43,8 +49,22 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 `security-report-collector.service` 和 `.timer`；采集器只读取固定主机日志，写入
 `security-report-control/incoming/YYYY-MM-DD.json`，只保留聚合计数与覆盖状态，不写入
 日志原文、IP、账号、请求路径或平台凭据。它默认在 07:50（Asia/Shanghai）运行，供
-08:00 的日报任务消费；Web/API、管理审计或运行态探针未接入时，报告会保持 `attention`
-并在“证据范围”显示缺口，不会用零值冒充完整覆盖。
+08:00 的日报任务消费。
+
+采集器当前覆盖的证据源：
+
+- SSH journal：`/var/log/auth.log` 及昨日轮转文件（`.1`、`.1.gz`），同时匹配
+  journald ISO、系统 syslog 与“Accepted key”等实际措辞；
+- Fail2ban：`/var/log/fail2ban.log` 及轮转文件；
+- Web/API access log：默认读取 `deploy/security-report-nginx/access.log`
+  （nginx 以 UID 101 落盘），文件缺失时回退读取平台 web 容器的 Docker stdout 日志；
+- 运行态探针：读取 `/var/lib/docker/containers/*/config.v2.json` 聚合平台容器
+  运行中/异常/健康检查计数，不依赖 Docker CLI 或 socket。
+
+管理审计由平台生成任务在入库前单独注入：`sms_send` 只读
+`security_daily_audit_evidence` 视图（不含 before/after 载荷列），日报展示最近
+10 条审计事件与总数，不读取审计 JSON 明细。任一证据源缺失时，报告保持
+`attention` 并在“证据范围”显示缺口，不会用零值冒充完整覆盖。
 
 由授权运维在主机上安装一次：
 

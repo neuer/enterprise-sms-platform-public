@@ -335,6 +335,24 @@ class SecurityDailyControlResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SecurityDailyAuditEvent:
+    """日报展示的审计事件快照；只含非载荷列，不含审计 JSON 明细。"""
+
+    time: str
+    actor: str
+    source_ip: str
+    action: str
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityDailyAuditEvidence:
+    """管理审计证据汇总；events 按时间倒序取最近事件。"""
+
+    total: int
+    events: tuple[SecurityDailyAuditEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SecurityDailyPreview:
     report_date: date
     status: SecurityStatus
@@ -345,6 +363,10 @@ class SecurityDailyPreview:
 
 class SecurityDailyRepository(Protocol):
     async def configuration(self) -> SecurityDailyConfiguration: ...
+
+    async def audit_evidence(
+        self, period_start: datetime, period_end: datetime
+    ) -> SecurityDailyAuditEvidence | None: ...
 
     async def ingest_payload(
         self,
@@ -425,6 +447,10 @@ async def generate_security_daily_for_date(
         value: Any = json.loads(raw)
         if not isinstance(value, dict):
             raise SecurityDailyValidationError("security report input must be an object")
+        evidence = await repository.audit_evidence(period_start, period_end)
+        if evidence is not None:
+            value = _enrich_audit_evidence(value, evidence)
+        value = _finalize_security_daily_payload(value)
         return await repository.ingest_payload(value, recipient_count=recipient_count)
     except (
         OSError,
@@ -439,6 +465,137 @@ async def generate_security_daily_for_date(
             period_end=period_end,
             reason="安全日报证据源校验失败",
         )
+
+
+AUDIT_ASSESSMENT_BY_ACTION: dict[str, str] = {
+    "login": "认证事件",
+    "session_refresh": "认证事件",
+    "logout": "认证事件",
+    "local_password_change": "密码安全操作",
+    "local_password_reset": "密码安全操作",
+    "role_override": "账号与角色管理",
+    "account_status_change": "账号与角色管理",
+    "force_logout": "账号与角色管理",
+    "config_update": "系统配置变更",
+    "security_daily_config_update": "系统配置变更",
+    "auth_provider_save_draft": "认证源配置变更",
+    "auth_provider_test": "认证源配置变更",
+    "auth_provider_activate": "认证源配置变更",
+    "auth_provider_disable": "认证源配置变更",
+    "auth_provider_role_mappings_replace": "认证源配置变更",
+    "app_create": "应用密钥管理",
+    "app_update": "应用密钥管理",
+    "app_disable": "应用密钥管理",
+    "app_rotate_key": "应用密钥管理",
+    "app_revoke_old_key": "应用密钥管理",
+    "app_rotate_callback_secret": "应用密钥管理",
+    "approval_decision": "审批操作",
+    "message_send": "发送操作",
+    "batch_cancel": "发送操作",
+    "batch_reschedule": "发送操作",
+    "batch_resend_failed": "发送操作",
+    "blacklist_add": "管控操作",
+    "blacklist_delete": "管控操作",
+    "sensitive_word_add": "管控操作",
+    "sensitive_word_delete": "管控操作",
+    "reply_optout": "退订操作",
+}
+
+AUDIT_TONE_BY_ACTION: dict[str, str] = {
+    "login": "good",
+    "session_refresh": "good",
+    "logout": "good",
+    "local_password_change": "warn",
+    "local_password_reset": "warn",
+    "role_override": "warn",
+    "account_status_change": "warn",
+    "force_logout": "warn",
+    "config_update": "warn",
+    "security_daily_config_update": "warn",
+    "auth_provider_save_draft": "warn",
+    "auth_provider_activate": "warn",
+    "auth_provider_disable": "warn",
+    "auth_provider_role_mappings_replace": "warn",
+    "app_rotate_key": "warn",
+    "app_revoke_old_key": "warn",
+    "app_rotate_callback_secret": "warn",
+}
+
+
+def _enrich_audit_evidence(
+    payload: dict[str, Any], evidence: SecurityDailyAuditEvidence
+) -> dict[str, Any]:
+    """把平台审计摘要注入日报，并翻转管理审计覆盖状态。"""
+
+    payload["audit"] = [
+        {
+            "time": event.time,
+            "actor": event.actor,
+            "source_ip": event.source_ip,
+            "action": event.action,
+            "assessment": AUDIT_ASSESSMENT_BY_ACTION.get(event.action, "管理操作"),
+            "tone": AUDIT_TONE_BY_ACTION.get(event.action, "neutral"),
+        }
+        for event in evidence.events[:10]
+    ]
+    for item in payload["coverage"]:
+        if item["source"] == "管理审计":
+            item["status"] = "完整"
+            item["note"] = "按平台审计事实表聚合，不读取载荷明细"
+            item["tone"] = "good"
+    return payload
+
+
+def _count_from_value(value: str) -> int:
+    """解析指标值文本（如 '3'、'3 次命中'）为整数；不可解析视为 0。"""
+
+    try:
+        return int(str(value).strip().split()[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """在平台侧重算状态/待确认/建议，覆盖采集快照与审计注入后的口径漂移。"""
+
+    gaps = [str(item["source"]) for item in payload["coverage"] if item.get("status") != "完整"]
+    web_sensitive = _count_from_value(str(payload["web"][3]["value"])) if payload["web"] else 0
+    ssh_failed = _count_from_value(str(payload["metrics"][0]["value"]))
+    status = "high" if web_sensitive else ("attention" if gaps or ssh_failed else "normal")
+    pending = (
+        f"待接入证据源：{'、'.join(gaps)}。"
+        if gaps
+        else ("存在 SSH 失败认证，需要确认是否属于授权运维。" if ssh_failed else "无待确认事项。")
+    )
+    actions: list[dict[str, str]] = []
+    if web_sensitive:
+        actions.append(
+            {
+                "priority": "high",
+                "title": "核查敏感路径命中",
+                "detail": "访问日志发现敏感路径命中；日报不保留原始路径，请到受控日志平台核对。",
+            }
+        )
+    if gaps:
+        actions.append(
+            {
+                "priority": "medium",
+                "title": "补齐日报证据源",
+                "detail": f"接入{'、'.join(gaps)}后，下一日报才可覆盖完整安全面。",
+            }
+        )
+    if not actions:
+        actions.append(
+            {
+                "priority": "low",
+                "title": "保持现有采集计划",
+                "detail": "继续按日报周期生成脱敏结构化快照。",
+            }
+        )
+    payload["status"] = status
+    payload["pending_confirmation"] = pending
+    payload["actions"] = actions
+    return payload
 
 
 class SecurityDailyControl(Protocol):

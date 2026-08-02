@@ -8,6 +8,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
@@ -18,6 +19,8 @@ from app.services.security_daily import (
     DeliveryRequestState,
     DeliveryStatus,
     GenerationStatus,
+    SecurityDailyAuditEvent,
+    SecurityDailyAuditEvidence,
     SecurityDailyConfiguration,
     SecurityDailyConfigurationError,
     SecurityDailyConfigurationUpdate,
@@ -141,6 +144,54 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             api_key=validate_resend_api_key(config.get("security_daily_resend_api_key", "")),
             recipients=validate_resend_recipients(recipients),
         )
+
+    async def audit_evidence(
+        self, period_start: datetime, period_end: datetime
+    ) -> SecurityDailyAuditEvidence | None:
+        """读取只读审计证据视图，返回最近事件与总数；视图不可用时返回 None。
+
+        只查询视图暴露的非载荷列，绝不读取 before/after 审计明细。
+        """
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                events_result = await connection.execute(
+                    text(
+                        """
+                        SELECT created_at, actor, source_ip, action
+                        FROM security_daily_audit_evidence
+                        WHERE created_at >= :start AND created_at < :end
+                          AND action NOT LIKE 'security_daily_%'
+                        ORDER BY created_at DESC
+                        LIMIT 10
+                        """
+                    ),
+                    {"start": period_start, "end": period_end},
+                )
+                count_result = await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM security_daily_audit_evidence
+                        WHERE created_at >= :start AND created_at < :end
+                        """
+                    ),
+                    {"start": period_start, "end": period_end},
+                )
+        except SQLAlchemyError:
+            return None
+        finally:
+            await engine.dispose()
+        events = tuple(
+            SecurityDailyAuditEvent(
+                time=row["created_at"].astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                actor=str(row["actor"]),
+                source_ip=str(row["source_ip"]),
+                action=str(row["action"]),
+            )
+            for row in events_result.mappings()
+        )
+        return SecurityDailyAuditEvidence(total=int(count_result.scalar_one()), events=events)
 
     async def update_configuration(
         self,
@@ -412,7 +463,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             ),
             schedule_time="08:00",
             timezone="Asia/Shanghai",
-            period_description="汇总前一上海自然日",
+            period_description="汇总前一自然日（北京时间）",
             last_generated_at=generated_result.scalar_one_or_none(),
             last_delivered_at=delivered_result.scalar_one_or_none(),
             next_scheduled_at=_next_schedule(now) if enabled else None,

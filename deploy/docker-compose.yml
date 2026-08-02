@@ -384,6 +384,9 @@ services:
     cpus: 1
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=0700
+    volumes:
+      # 脱敏访问日志持久化：nginx(101) 写入独立目录，主机采集器(host root)只读聚合。
+      - ${SMS_SECURITY_REPORT_NGINX_DIR:-./security-report-nginx}:/var/log/nginx:rw
     ports: ["${WEB_PORT:-18080}:8080"] # 公网 HTTP 备用端口；生产 TLS 在宿主 18443 终结
     depends_on:
       api: { condition: service_healthy }
