@@ -265,6 +265,8 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
 )
 _SAFE_NON_RUNTIME_GATES = frozenset(
     {
+        # 仓库级忽略规则；不进入镜像、服务配置或运行态。
+        ".gitignore",
         "deploy/database-roles.md",
         # 仅用于把安全日报 control 运行态目录保留在 Git 中；不进入镜像或服务配置。
         "deploy/security-report-control/.gitignore",
@@ -272,6 +274,8 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "deploy/security-report-config/.gitignore",
         "docs/runbooks/public-baseline-activation.md",
         "scripts/e2e_api.py",
+        # 仅用于本地/隔离测试栈的目录与凭据准备；不进入服务镜像或运行态。
+        "scripts/local_test.sh",
         "scripts/canonicalize_sbom.py",
         "scripts/create_release_manifest.py",
         "scripts/render_release_evidence.py",

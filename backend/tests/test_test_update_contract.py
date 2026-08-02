@@ -606,6 +606,24 @@ def test_security_report_control_placeholder_is_safe_non_runtime_input() -> None
     assert change.risk == "none"
 
 
+def test_root_gitignore_is_safe_non_runtime_input() -> None:
+    change = classify_changed_paths([".gitignore"])
+
+    assert change.components == frozenset()
+    assert change.migration_changed is False
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
+def test_local_test_script_is_safe_non_runtime_input() -> None:
+    change = classify_changed_paths(["scripts/local_test.sh"])
+
+    assert change.components == frozenset()
+    assert change.migration_changed is False
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
 def test_security_report_ui_config_placeholder_is_safe_non_runtime_input() -> None:
     change = classify_changed_paths(["deploy/security-report-config/.gitignore"])
 
