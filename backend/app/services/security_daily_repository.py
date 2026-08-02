@@ -658,14 +658,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 next_retry = retry_count + (
                     1 if action == "retry" or delivery_status == "failed" else 0
                 )
-                generation_stamp = (
-                    report.generated_at.strftime("%Y%m%dT%H%M%S%f")
-                    if report.generated_at is not None
-                    else "none"
-                )
+                # 每次投递请求使用独立 request_id，避免同一报告/快照重复生成时
+                # 复用同一 dedup_key（唯一约束冲突会让“立即生成”变成 500）。
                 dedup_key = (
-                    f"security-daily:{action}:{report.report_date}:{next_retry}:"
-                    f"{generation_stamp}"
+                    f"security-daily:{action}:{report.report_date}:"
+                    f"{next_retry}:{request_id}"
                 )
                 await connection.execute(
                     text(
