@@ -646,7 +646,7 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
 
 def test_security_daily_generation_source_migration_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    revision = BACKEND / "migrations/versions/0045_security_daily_generation_source.py"
+    revision = BACKEND / "migrations/versions/0045_security_daily_source.py"
     source = revision.read_text(encoding="utf-8")
 
     assert "-- v1.6.42：" in schema
@@ -665,7 +665,7 @@ def test_security_daily_generation_source_migration_is_expand_only() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "0045_security_daily_generation_source"
+    assert module.revision == "0045_security_daily_source"
     assert module.down_revision == "0044_security_daily_audit_view"
 
 
