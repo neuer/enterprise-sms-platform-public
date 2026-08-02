@@ -1583,6 +1583,7 @@ CREATE VIEW security_daily_audit_evidence AS
 SELECT created_at, actor, actor_subject_kind, role, ip, action, object_type, object_id
 FROM audit_log;
 GRANT SELECT ON security_daily_audit_evidence TO sms_send;
+GRANT SELECT ON security_daily_audit_evidence TO sms_accept;
 
 -- ─────────────── 导出任务 ───────────────
 CREATE TABLE export_task (
