@@ -27,9 +27,21 @@ class FakeRepository:
         return self.audit
 
     async def ingest_payload(
-        self, payload: dict[str, Any], *, recipient_count: int
+        self,
+        payload: dict[str, Any],
+        *,
+        recipient_count: int,
+        force: bool = False,
+        generation_source: str = "auto",
     ) -> bool:
-        self.ingested.append({"payload": payload, "recipient_count": recipient_count})
+        self.ingested.append(
+            {
+                "payload": payload,
+                "recipient_count": recipient_count,
+                "force": force,
+                "generation_source": generation_source,
+            }
+        )
         return True
 
     async def mark_unavailable(
@@ -39,10 +51,14 @@ class FakeRepository:
         period_start: Any,
         period_end: Any,
         reason: str,
+        generation_source: str = "auto",
     ) -> bool:
         if (report_date.isoformat(), reason) in self.unavailable:
             return False
         self.unavailable.append((report_date.isoformat(), reason))
+        return True
+
+    async def mark_delivery_failed(self, report_date: Any, message: str) -> bool:
         return True
 
 

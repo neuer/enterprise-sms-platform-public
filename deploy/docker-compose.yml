@@ -294,8 +294,8 @@ services:
       - importdata:/var/lib/sms/imports
       # 调用厂商前必须重读 control-state.json，不允许容器回写。
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
-      # 只读消费外部已脱敏的日报快照；不获得 Resend secret 或 API 控制写目录。
-      - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:ro
+      # 消费脱敏日报快照，并在自动生成成功后写入投递请求；仍不挂载 Resend 配置目录。
+      - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
 
   worker-callback:
     <<: *backend

@@ -19,7 +19,9 @@ from app.services.security_daily import (
     SecurityDailyQuery,
     SecurityDailyReportRecord,
     SecurityDailyService,
+    SecurityDailyUnavailable,
     SecurityDailyValidationError,
+    _problem_payload,
     _timeline,
     resolve_configuration_state,
     validate_security_daily_payload,
@@ -125,16 +127,58 @@ class FakeRepository:
         self.record = record
         self.failed: list[tuple[UUID, str]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
+        self.delivery_failed: list[tuple[date, str]] = []
+        self.ingested: list[dict[str, object]] = []
+        self.config = SecurityDailyConfiguration(
+            enabled=True,
+            api_key="re_test_value",
+            recipients=("security-owner@example.com",),
+        )
+
+    async def ingest_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        recipient_count: int,
+        force: bool = False,
+        generation_source: str = "auto",
+    ) -> bool:
+        self.ingested.append(
+            {
+                "payload": payload,
+                "recipient_count": recipient_count,
+                "force": force,
+                "generation_source": generation_source,
+            }
+        )
+        self.record = replace(
+            self.record,
+            generation_status="ready",
+            generation_source=generation_source,  # type: ignore[arg-type]
+            delivery_status="not_sent",
+            payload=dict(payload),
+            generated_at=datetime.now(SHANGHAI),
+            last_error=None,
+            last_error_at=None,
+        )
+        return True
+
+    async def mark_unavailable(
+        self,
+        report_date: object,
+        *,
+        period_start: object,
+        period_end: object,
+        reason: str,
+        generation_source: str = "auto",
+    ) -> bool:
+        return True
 
     async def audit_evidence(self, period_start: object, period_end: object) -> None:
         return None
 
     async def configuration(self) -> SecurityDailyConfiguration:
-        return SecurityDailyConfiguration(
-            enabled=True,
-            api_key="re_test_value",
-            recipients=("security-owner@example.com",),
-        )
+        return self.config
 
     async def update_configuration(
         self,
@@ -175,8 +219,9 @@ class FakeRepository:
         record: SecurityDailyReportRecord,
         action: str,
         *,
-        principal: SecurityPrincipal,
-        ip: str,
+        principal: SecurityPrincipal | None = None,
+        ip: str | None = None,
+        system: bool = False,
     ) -> SecurityDailyDeliveryRequest:
         request = SecurityDailyDeliveryRequest(
             request_id=uuid4(),
@@ -187,6 +232,7 @@ class FakeRepository:
             idempotent=False,
         )
         self.requests.append(request)
+        self.record = replace(self.record, delivery_status="pending")
         return request
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]:
@@ -197,6 +243,10 @@ class FakeRepository:
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None:
         self.failed.append((request_id, message))
+
+    async def mark_delivery_failed(self, report_date: date, message: str) -> bool:
+        self.delivery_failed.append((report_date, message))
+        return True
 
 
 class FakeControl:
@@ -223,6 +273,7 @@ def record() -> SecurityDailyReportRecord:
         period_start=datetime(2026, 7, 15, 0, tzinfo=SHANGHAI),
         period_end=datetime(2026, 7, 15, 23, 59, 59, tzinfo=SHANGHAI),
         status="attention",
+        generation_source="auto",
         generation_status="ready",
         delivery_status="not_sent",
         generated_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
@@ -296,3 +347,130 @@ def test_configuration_state_explains_current_security_daily_readiness(
         )
         == expected
     )
+
+
+def test_problem_payload_is_validated_and_never_fabricates_numbers() -> None:
+    value = _problem_payload(
+        date(2026, 7, 15),
+        period_start=datetime(2026, 7, 15, 0, tzinfo=SHANGHAI),
+        period_end=datetime(2026, 7, 15, 23, 59, 59, tzinfo=SHANGHAI),
+        generated_at=datetime(2026, 7, 16, 8, 0, tzinfo=SHANGHAI),
+        reason="采集器未产出快照",
+    )
+
+    validated = validate_security_daily_payload(value)
+
+    assert "采集器未产出快照" in validated["summary"]
+    assert all(item["value"] == "不可用" for item in validated["metrics"][:4])
+    assert all(item["status"] == "缺失" for item in validated["coverage"])
+
+
+@pytest.mark.asyncio
+async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Path) -> None:
+    repository = FakeRepository(record())
+    control = FakeControl()
+    service = SecurityDailyService(
+        repository,
+        control,
+        control_dir=tmp_path,
+        clock=lambda: datetime(2026, 7, 16, 9, tzinfo=SHANGHAI),
+    )
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    incoming.joinpath("2026-07-15.json").write_text(
+        json.dumps(payload()), encoding="utf-8"
+    )
+    principal = SecurityPrincipal(1, 2, "admin", "security", "admin")
+
+    result = await service.generate_latest(principal=principal, ip="127.0.0.1")
+
+    assert result.generation_source == "manual"
+    assert repository.ingested[-1]["force"] is True
+    assert repository.ingested[-1]["generation_source"] == "manual"
+    assert len(control.submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_latest_refuses_when_mail_config_incomplete(tmp_path: Path) -> None:
+    repository = FakeRepository(record())
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="",
+        recipients=(),
+    )
+    service = SecurityDailyService(
+        repository,
+        FakeControl(),
+        control_dir=tmp_path,
+        clock=lambda: datetime(2026, 7, 16, 9, tzinfo=SHANGHAI),
+    )
+
+    with pytest.raises(SecurityDailyUnavailable, match="发信配置不完整"):
+        await service.generate_latest(
+            principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+            ip="127.0.0.1",
+        )
+
+    assert repository.ingested == []
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_sends_once_and_skips_pending() -> None:
+    repository = FakeRepository(record())
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    first = await service.submit_auto_delivery(date(2026, 7, 15))
+    second = await service.submit_auto_delivery(date(2026, 7, 15))
+
+    assert first is not None
+    assert second is None
+    assert len(control.submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_sends_problem_email_when_evidence_unavailable() -> None:
+    unavailable = replace(
+        record(),
+        generation_status="unavailable",
+        payload=None,
+        last_error="安全日报证据源不可用",
+    )
+    repository = FakeRepository(unavailable)
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    await service.submit_auto_delivery(date(2026, 7, 15))
+
+    assert len(control.submitted) == 1
+    body = control.submitted[0][1]
+    validated = validate_security_daily_payload(body)
+    assert "证据不可用" in validated["summary"]
+    assert all(item["value"] == "不可用" for item in validated["metrics"][:4])
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_marks_config_incomplete_instead_of_silent_skip() -> None:
+    repository = FakeRepository(record())
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="",
+        recipients=(),
+    )
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    await service.submit_auto_delivery(date(2026, 7, 15))
+
+    assert repository.delivery_failed == [
+        (date(2026, 7, 15), "安全日报发信配置不完整（缺少 Resend Key 或收件人）")
+    ]
+    assert control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_skips_already_sent_report() -> None:
+    repository = FakeRepository(replace(record(), delivery_status="sent"))
+    service = SecurityDailyService(repository, FakeControl())
+
+    assert await service.submit_auto_delivery(date(2026, 7, 15)) is None

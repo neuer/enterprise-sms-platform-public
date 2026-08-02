@@ -1,6 +1,7 @@
 import { apiRequest } from "./webMessages"
 
 export type SecurityStatus = "normal" | "attention" | "high"
+export type GenerationSource = "auto" | "manual"
 export type GenerationStatus = "pending" | "ready" | "failed" | "unavailable"
 export type DeliveryStatus = "not_sent" | "pending" | "sending" | "sent" | "failed"
 export type SecurityDailyConfigurationState = "disabled" | "dispatcher_missing" | "recipients_empty" | "ready"
@@ -98,6 +99,7 @@ export interface SecurityDailyReport {
   period_start: string
   period_end: string
   status: SecurityStatus
+  generation_source: GenerationSource
   generation_status: GenerationStatus
   delivery_status: DeliveryStatus
   generated_at: string | null

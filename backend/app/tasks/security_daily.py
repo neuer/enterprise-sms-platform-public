@@ -7,7 +7,11 @@ from pathlib import Path
 
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
-from app.services.security_daily import generate_security_daily_for_date
+from app.services.security_daily import (
+    FileSecurityDailyControl,
+    SecurityDailyService,
+    generate_security_daily_for_date,
+)
 from app.services.security_daily_repository import SqlSecurityDailyRepository
 from app.settings import get_settings
 from app.tasks import background_task_options, celery_app
@@ -41,13 +45,27 @@ async def _generate() -> int:
     settings = get_settings()
     repository = SqlSecurityDailyRepository(settings)
     enabled, recipient_count = await repository.generation_config()
-    return await generate_security_daily_once(
+    now = datetime.now(SHANGHAI_TZ)
+    changed = await generate_security_daily_once(
         repository,
         settings.security_daily_control_dir,
-        now=datetime.now(SHANGHAI_TZ),
+        now=now,
         enabled=enabled,
         recipient_count=recipient_count,
     )
+    if enabled and now.time() >= time(8, 0):
+        # 自动投递：正常报告与问题通报都提交；幂等保证每天最多一次。
+        service = SecurityDailyService(
+            repository,
+            FileSecurityDailyControl(
+                settings.security_daily_control_dir,
+                settings.security_daily_config_dir,
+            ),
+            control_dir=settings.security_daily_control_dir,
+        )
+        report_date = now.astimezone(SHANGHAI_TZ).date() - timedelta(days=1)
+        await service.submit_auto_delivery(report_date)
+    return changed
 
 
 @celery_app.task(

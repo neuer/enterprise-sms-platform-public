@@ -326,18 +326,18 @@ async function refresh(): Promise<void> {
 async function generateReport(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      "将读取前一自然日（北京时间）的脱敏证据并生成日报，不会自动发送邮件。",
+      "将无条件重新生成前一自然日（北京时间）的日报并立即发送邮件（覆盖该日现有记录）。",
       "立即生成安全日报",
-      { confirmButtonText: "立即生成", cancelButtonText: "取消", type: "info" },
+      { confirmButtonText: "立即生成并发送", cancelButtonText: "取消", type: "info" },
     )
     generationLoading.value = true
     const report = await generateSecurityDailyReport()
     await refresh()
     await openReport(report.report_date)
     if (report.generation_status === "ready") {
-      ElMessage.success("安全日报已生成，可在详情中预览或手动投递")
+      ElMessage.success("安全日报已重新生成并提交邮件发送")
     } else {
-      ElMessage.warning(report.last_error ?? "证据源不可用，已记录数据不可用状态")
+      ElMessage.warning(report.last_error ?? "证据源不可用，未生成新日报，未发送邮件")
     }
   } catch (error) {
     if (error === "cancel" || error === "close") return
@@ -489,6 +489,7 @@ onMounted(() => void refresh())
       <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsEmptyText" @row-click="openRow">
         <el-table-column prop="report_date" label="报告日期" width="120" />
         <el-table-column label="安全状态" width="105"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
+        <el-table-column label="生成方式" width="90"><template #default="scope"><el-tag :type="scope.row.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{ scope.row.generation_source === 'manual' ? '手动' : '自动' }}</el-tag></template></el-table-column>
         <el-table-column label="生成" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.generation_status)" size="small">{{ generationLabel(scope.row.generation_status) }}</el-tag></template></el-table-column>
         <el-table-column label="投递" width="125"><template #default="scope"><el-tag :type="tagType(scope.row.delivery_status)" size="small">{{ deliveryLabel(scope.row.delivery_status) }}</el-tag></template></el-table-column>
         <el-table-column prop="recipient_count" label="收件人数" width="90" />
@@ -509,6 +510,7 @@ onMounted(() => void refresh())
             <span class="security-section-label">{{ selected.report_date }}</span>
             <h2>{{ statusLabel(selected.status) }}</h2>
             <div class="security-detail-tags">
+              <el-tag :type="selected.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{ selected.generation_source === 'manual' ? '手动生成' : '自动生成' }}</el-tag>
               <el-tag :type="tagType(selected.generation_status)" size="small">{{ generationLabel(selected.generation_status) }}</el-tag>
               <el-tag :type="tagType(selected.delivery_status)" size="small">{{ deliveryLabel(selected.delivery_status) }}</el-tag>
             </div>

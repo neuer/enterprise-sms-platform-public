@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.42  2026-08-02
+-- v1.6.42：安全日报记录区分自动/手动生成来源，支持手动重生成并立即投递
 -- v1.6.41  2026-08-02
 -- v1.6.41：安全日报管理审计证据只读视图（sms_send 最小 SELECT，不含载荷列）
 -- v1.6.39  2026-08-01
@@ -1383,6 +1385,8 @@ CREATE TABLE security_daily_report (
                       CHECK (status IN ('normal','attention','high')),
     generation_status  VARCHAR(16) NOT NULL DEFAULT 'unavailable'
                       CHECK (generation_status IN ('pending','ready','failed','unavailable')),
+    generation_source  VARCHAR(8)  NOT NULL DEFAULT 'auto'
+                      CHECK (generation_source IN ('auto','manual')),
     delivery_status    VARCHAR(16) NOT NULL DEFAULT 'not_sent'
                       CHECK (delivery_status IN ('not_sent','pending','sending','sent','failed')),
     payload            JSONB,

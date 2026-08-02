@@ -80,6 +80,7 @@ class SecurityDailyReportModel(StrictModel):
     period_start: datetime
     period_end: datetime
     status: SecurityStatus
+    generation_source: Literal["auto", "manual"]
     generation_status: Literal["pending", "ready", "failed", "unavailable"]
     delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed"]
     generated_at: datetime | None
@@ -162,6 +163,7 @@ def _report_model(
         period_start=record.period_start,
         period_end=record.period_end,
         status=record.status,
+        generation_source=record.generation_source,
         generation_status=record.generation_status,
         delivery_status=record.delivery_status,
         generated_at=record.generated_at,
@@ -254,19 +256,27 @@ async def get_security_daily_config(
 @router.post(
     "/generate",
     response_model=SecurityDailyReportModel,
-    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("security_daily_generate")
 async def generate_security_daily_report(
+    request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyReportModel:
-    """管理员立即生成上一上海自然日的日报；该操作不会自动投递邮件。"""
+    """管理员无条件重生成上一上海自然日的日报并立即提交邮件投递。"""
 
-    await _admin(facade, credentials)
+    claims = await _admin(facade, credentials)
     try:
-        record = await service.generate_latest()
+        record = await service.generate_latest(principal=claims.principal, ip=_ip(request))
+    except SecurityDailyStateConflict as error:
+        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except SecurityDailyUnavailable as error:
         raise _unavailable(str(error)) from None
     return _report_model(record, service, include_payload=False)

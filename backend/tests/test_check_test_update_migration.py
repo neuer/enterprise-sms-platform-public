@@ -57,6 +57,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0042_security_daily_config",
         "0043_security_daily_ui_config",
         "0044_security_daily_audit_view",
+        "0045_security_daily_source",
     ]
 
 

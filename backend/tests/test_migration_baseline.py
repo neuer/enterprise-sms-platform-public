@@ -644,6 +644,31 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
     assert module.down_revision == "0043_security_daily_ui_config"
 
 
+def test_security_daily_generation_source_migration_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0045_security_daily_source.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.42：" in schema
+    assert "generation_source  VARCHAR(8)" in schema
+    assert "generation_source IN ('auto','manual')" in schema
+    assert (
+        "ADD COLUMN IF NOT EXISTS generation_source VARCHAR(8) NOT NULL DEFAULT 'auto'"
+        in source
+    )
+    assert "CHECK (generation_source IN ('auto','manual'))" in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_generation_source_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0045_security_daily_source"
+    assert module.down_revision == "0044_security_daily_audit_view"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

@@ -2226,12 +2226,13 @@ paths:
     post:
       tags: [security-daily]
       summary: 管理员立即生成前一自然日（北京时间）报告
-      description: 读取已脱敏的前一自然日（北京时间）证据快照并写入日报记录；不会自动发送邮件。证据缺失时返回 generation_status=unavailable 的记录。
+      description: 无条件重新生成前一自然日（北京时间）的日报并立即提交邮件投递（异步发送）；证据缺失时明确失败且不发送旧报告。
       security: [{ BearerAuth: [] }]
       responses:
         '200': { description: 已生成或已记录数据不可用状态, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyReportModel' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api/v1/web/admin/security-daily/reports:
@@ -2597,13 +2598,14 @@ components:
     SecurityDailyReportModel:
       type: object
       additionalProperties: false
-      required: [id, report_date, period_start, period_end, status, generation_status, delivery_status, generated_at, delivered_at, recipient_count, retry_count, last_error, last_error_at, updated_at]
+      required: [id, report_date, period_start, period_end, status, generation_source, generation_status, delivery_status, generated_at, delivered_at, recipient_count, retry_count, last_error, last_error_at, updated_at]
       properties:
         id: { type: integer, minimum: 1 }
         report_date: { type: string, format: date }
         period_start: { type: string, format: date-time }
         period_end: { type: string, format: date-time }
         status: { type: string, enum: [normal, attention, high] }
+        generation_source: { type: string, enum: [auto, manual] }
         generation_status: { type: string, enum: [pending, ready, failed, unavailable] }
         delivery_status: { type: string, enum: [not_sent, pending, sending, sent, failed] }
         generated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
