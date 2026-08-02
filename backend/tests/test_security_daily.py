@@ -128,7 +128,7 @@ class FakeRepository:
         self.record = record
         self.failed: list[tuple[UUID, str]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
-        self.delivery_failed: list[tuple[date, str]] = []
+        self.delivery_failed: list[tuple[int, str]] = []
         self.ingested: list[dict[str, object]] = []
         self.config = SecurityDailyConfiguration(
             enabled=True,
@@ -166,13 +166,23 @@ class FakeRepository:
 
     async def mark_unavailable(
         self,
-        report_date: object,
+        report_date: date,
         *,
         period_start: object,
         period_end: object,
         reason: str,
         generation_source: str = "auto",
     ) -> bool:
+        del report_date, period_start, period_end
+        self.record = replace(
+            self.record,
+            generation_status="unavailable",
+            generation_source=generation_source,  # type: ignore[arg-type]
+            delivery_status="not_sent",
+            payload=None,
+            last_error=reason,
+            last_error_at=datetime.now(SHANGHAI),
+        )
         return True
 
     async def audit_evidence(self, period_start: object, period_end: object) -> None:
@@ -212,8 +222,26 @@ class FakeRepository:
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
         return SecurityDailyPage((self.record,), 1, query.page, query.page_size)
 
-    async def get_report(self, report_date: date) -> SecurityDailyReportRecord | None:
-        return self.record if report_date == self.record.report_date else None
+    async def get_report(self, report_id: int) -> SecurityDailyReportRecord | None:
+        return self.record if report_id == self.record.id else None
+
+    async def get_latest_report(
+        self,
+        report_date: date,
+        *,
+        generation_source: str | None = None,
+    ) -> SecurityDailyReportRecord | None:
+        if report_date != self.record.report_date:
+            return None
+        if generation_source is not None and self.record.generation_source != generation_source:
+            return None
+        return self.record
+
+    async def exists_sent_delivery(self, report_date: date) -> bool:
+        return (
+            report_date == self.record.report_date
+            and self.record.delivery_status == "sent"
+        )
 
     async def request_delivery(
         self,
@@ -245,8 +273,8 @@ class FakeRepository:
     async def mark_request_failed(self, request_id: UUID, message: str) -> None:
         self.failed.append((request_id, message))
 
-    async def mark_delivery_failed(self, report_date: date, message: str) -> bool:
-        self.delivery_failed.append((report_date, message))
+    async def mark_delivery_failed(self, report_id: int, message: str) -> bool:
+        self.delivery_failed.append((report_id, message))
         return True
 
 
@@ -311,7 +339,7 @@ async def test_service_submits_redacted_report_without_mail_credentials() -> Non
     principal = SecurityPrincipal(1, 2, "admin", "security", "admin")
 
     request = await service.request_delivery(
-        date(2026, 7, 15),
+        1,
         "send",
         principal=principal,
         ip="127.0.0.1",
@@ -392,6 +420,35 @@ async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_generate_latest_records_unavailable_manual_report_and_sends_problem(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository(record())
+    control = FakeControl()
+    service = SecurityDailyService(
+        repository,
+        control,
+        control_dir=tmp_path,
+        clock=lambda: datetime(2026, 7, 16, 9, tzinfo=SHANGHAI),
+    )
+    # 不写入 incoming 快照：手动路径应新增一条 unavailable 记录并发送问题通报。
+
+    result = await service.generate_latest(
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+    )
+
+    assert result.generation_source == "manual"
+    assert result.generation_status == "unavailable"
+    assert result.payload is None
+    assert len(control.submitted) == 1
+    body = control.submitted[0][1]
+    validated = validate_security_daily_payload(body)
+    assert "证据不可用" in validated["summary"]
+    assert all(item["value"] == "不可用" for item in validated["metrics"][:4])
+
+
+@pytest.mark.asyncio
 async def test_generate_latest_refuses_when_mail_config_incomplete(tmp_path: Path) -> None:
     repository = FakeRepository(record())
     repository.config = SecurityDailyConfiguration(
@@ -464,7 +521,7 @@ async def test_submit_auto_delivery_marks_config_incomplete_instead_of_silent_sk
     await service.submit_auto_delivery(date(2026, 7, 15))
 
     assert repository.delivery_failed == [
-        (date(2026, 7, 15), "安全日报发信配置不完整（缺少 Resend Key 或收件人）")
+        (1, "安全日报发信配置不完整（缺少 Resend Key 或收件人）")
     ]
     assert control.submitted == []
 

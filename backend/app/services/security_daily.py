@@ -401,7 +401,16 @@ class SecurityDailyRepository(Protocol):
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage: ...
 
-    async def get_report(self, report_date: date) -> SecurityDailyReportRecord | None: ...
+    async def get_report(self, report_id: int) -> SecurityDailyReportRecord | None: ...
+
+    async def get_latest_report(
+        self,
+        report_date: date,
+        *,
+        generation_source: GenerationSource | None = None,
+    ) -> SecurityDailyReportRecord | None: ...
+
+    async def exists_sent_delivery(self, report_date: date) -> bool: ...
 
     async def request_delivery(
         self,
@@ -419,7 +428,7 @@ class SecurityDailyRepository(Protocol):
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None: ...
 
-    async def mark_delivery_failed(self, report_date: date, message: str) -> bool: ...
+    async def mark_delivery_failed(self, report_id: int, message: str) -> bool: ...
 
 
 async def generate_security_daily_for_date(
@@ -452,6 +461,7 @@ async def generate_security_daily_for_date(
                 period_start=period_start,
                 period_end=period_end,
                 reason="安全日报证据源不可用",
+                generation_source=generation_source,
             )
         raw = await asyncio.to_thread(source.read_text, encoding="utf-8")
         value: Any = json.loads(raw)
@@ -932,11 +942,11 @@ class SecurityDailyService:
         await self._synchronize_control_results()
         return await self.repository.list_reports(query)
 
-    async def get_report(self, report_date: date) -> SecurityDailyReportRecord:
+    async def get_report(self, report_id: int) -> SecurityDailyReportRecord:
         await self._synchronize_control_results()
-        record = await self.repository.get_report(report_date)
+        record = await self.repository.get_report(report_id)
         if record is None:
-            raise SecurityDailyNotFound(report_date.isoformat())
+            raise SecurityDailyNotFound(str(report_id))
         return record
 
     async def generate_latest(
@@ -947,7 +957,8 @@ class SecurityDailyService:
     ) -> SecurityDailyReportRecord:
         """手动无条件重生成上一上海自然日并立即提交投递。
 
-        证据不可用时明确失败且不发送旧报告；投递请求处理中拒绝重生成。
+        每次生成都新增一条记录：证据可用时发送脱敏报告；证据不可用时发送
+        问题通报并保留 unavailable 记录。投递请求处理中拒绝重生成。
         """
 
         configuration = await self.repository.configuration()
@@ -959,7 +970,7 @@ class SecurityDailyService:
             raise SecurityDailyUnavailable("安全日报生成控制目录不可用")
 
         report_date = self.clock().astimezone(SHANGHAI_TZ).date() - timedelta(days=1)
-        existing = await self.repository.get_report(report_date)
+        existing = await self.repository.get_latest_report(report_date)
         if existing is not None and existing.delivery_status in {"pending", "sending"}:
             raise SecurityDailyStateConflict("该日日报存在处理中的投递请求，请稍后再生成")
         changed = await generate_security_daily_for_date(
@@ -972,16 +983,26 @@ class SecurityDailyService:
         )
         if not changed:
             raise SecurityDailyUnavailable("证据源不可用，未生成新日报，未发送邮件")
-        record = await self.repository.get_report(report_date)
+        record = await self.repository.get_latest_report(report_date)
         if record is None:
             raise SecurityDailyUnavailable("安全日报生成未产出记录")
+        payload_override: dict[str, Any] | None = None
+        if record.generation_status != "ready" or record.payload is None:
+            payload_override = _problem_payload(
+                record.report_date,
+                period_start=record.period_start,
+                period_end=record.period_end,
+                generated_at=self.clock(),
+                reason=record.last_error or "证据源不可用",
+            )
         await self.request_delivery(
-            record.report_date,
+            record.id,
             "send",
             principal=principal,
             ip=ip,
+            payload_override=payload_override,
         )
-        refreshed = await self.repository.get_report(report_date)
+        refreshed = await self.repository.get_report(record.id)
         if refreshed is None:
             raise SecurityDailyUnavailable("安全日报生成未产出记录")
         return refreshed
@@ -989,13 +1010,18 @@ class SecurityDailyService:
     async def submit_auto_delivery(self, report_date: date) -> SecurityDailyDeliveryRequest | None:
         """自动路径：无论正常报告还是证据不可用，都向收件人提交一次通知。
 
-        每天只提交一次；发信配置不完整时显式记录失败原因，恢复配置后自动补发。
+        每天只提交一次；当天已有任意记录投递成功（含手动）则跳过；发信配置
+        不完整时显式记录失败原因，恢复配置后自动补发。
         """
 
         configuration = await self.repository.configuration()
         if not configuration.enabled:
             return None
-        record = await self.repository.get_report(report_date)
+        if await self.repository.exists_sent_delivery(report_date):
+            return None
+        record = await self.repository.get_latest_report(
+            report_date, generation_source="auto"
+        )
         if record is None:
             return None
         if record.delivery_status == "sent":
@@ -1008,7 +1034,7 @@ class SecurityDailyService:
             return None
         if not configuration.api_key or not configuration.recipients:
             await self.repository.mark_delivery_failed(
-                report_date,
+                record.id,
                 "安全日报发信配置不完整（缺少 Resend Key 或收件人）",
             )
             return None
@@ -1037,14 +1063,14 @@ class SecurityDailyService:
                 reason=record.last_error or "证据源不可用",
             )
         return await self.request_delivery(
-            report_date,
+            record.id,
             "send",
             system=True,
             payload_override=payload_override,
         )
 
-    async def preview(self, report_date: date) -> SecurityDailyPreview:
-        record = await self.get_report(report_date)
+    async def preview(self, report_id: int) -> SecurityDailyPreview:
+        record = await self.get_report(report_id)
         if record.payload is None or record.generation_status != "ready":
             raise SecurityDailyUnavailable("日报数据不可用，不能生成预览")
         html_preview, text_preview = _render_preview(record.payload)
@@ -1058,7 +1084,7 @@ class SecurityDailyService:
 
     async def request_delivery(
         self,
-        report_date: date,
+        report_id: int,
         action: DeliveryAction,
         *,
         principal: SecurityPrincipal | None = None,
@@ -1069,7 +1095,7 @@ class SecurityDailyService:
         overview = await self.overview()
         if not overview.enabled:
             raise SecurityDailyUnavailable("安全日报尚未启用")
-        record = await self.get_report(report_date)
+        record = await self.get_report(report_id)
         submit_payload = payload_override
         if submit_payload is None and (
             record.payload is None or record.generation_status != "ready"

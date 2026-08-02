@@ -669,6 +669,35 @@ def test_security_daily_generation_source_migration_is_expand_only() -> None:
     assert module.down_revision == "0044_security_daily_audit_view"
 
 
+def test_security_daily_records_append_and_auto_daily_stays_singleton() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0046_security_daily_append_records.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.43：" in schema
+    table = schema.split("CREATE TABLE security_daily_report", maxsplit=1)[1].split(
+        ");",
+        maxsplit=1,
+    )[0]
+    assert "report_date       DATE NOT NULL," in table
+    assert "security_daily_report_report_date_key" in schema
+    assert "WHERE generation_source='auto'" in schema
+    assert "DROP CONSTRAINT IF EXISTS security_daily_report_report_date_key" in source
+    assert "ON CONFLICT (report_date) WHERE generation_source='auto'" in (
+        BACKEND / "app/services/security_daily_repository.py"
+    ).read_text(encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_append_records_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0046_security_daily_append_records"
+    assert module.down_revision == "0045_security_daily_source"
+
+
 def test_export_authorization_scope_is_in_schema_and_fail_closed_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0024_export_authorization_scope.py"

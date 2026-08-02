@@ -101,7 +101,7 @@ describe("安全日报页面", () => {
       sender_address: "security-daily@reports.neuer.cn",
     })
     api.listSecurityDailyReports.mockResolvedValue({ items: reports, total: reports.length, page: 1, page_size: 20 })
-    api.getSecurityDailyReport.mockImplementation((reportDate: string) => Promise.resolve(reports.find((item) => item.report_date === reportDate)))
+    api.getSecurityDailyReport.mockImplementation((reportId: number) => Promise.resolve(reports.find((item) => item.id === reportId)))
     api.previewSecurityDailyReport.mockResolvedValue({ report_date: "2026-07-15", status: "attention", available: true, message: null, html: "", text: "安全日报预览", payload })
     api.sendSecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000001", report_date: "2026-07-13", action: "send", state: "pending", idempotent: false })
     api.retrySecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000002", report_date: "2026-07-15", action: "retry", state: "pending", idempotent: false })
@@ -346,7 +346,7 @@ describe("安全日报页面", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("手动投递"))!.trigger("click")
     await flushPromises()
 
-    expect(api.sendSecurityDailyReport).toHaveBeenCalledWith("2026-07-13")
+    expect(api.sendSecurityDailyReport).toHaveBeenCalledWith(1)
     expect(api.sendSecurityDailyReport.mock.calls[0]).toHaveLength(1)
     wrapper.unmount()
     vi.restoreAllMocks()
@@ -361,7 +361,7 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(api.generateSecurityDailyReport).toHaveBeenCalledOnce()
-    expect(api.getSecurityDailyReport).toHaveBeenCalledWith("2026-07-15")
+    expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3)
     expect(wrapper.text()).toContain("安全预览")
     wrapper.unmount()
     vi.restoreAllMocks()
