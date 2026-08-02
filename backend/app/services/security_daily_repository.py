@@ -18,6 +18,7 @@ from app.services.security_daily import (
     DeliveryAction,
     DeliveryRequestState,
     DeliveryStatus,
+    GenerationSource,
     GenerationStatus,
     SecurityDailyAuditEvent,
     SecurityDailyAuditEvidence,
@@ -73,6 +74,7 @@ def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
         period_start=row["period_start"],
         period_end=row["period_end"],
         status=cast(SecurityStatus, str(row["status"])),
+        generation_source=cast(GenerationSource, str(row["generation_source"])),
         generation_status=generation_status,
         delivery_status=cast(DeliveryStatus, str(row["delivery_status"])),
         generated_at=row["generated_at"],
@@ -280,6 +282,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         payload: dict[str, Any],
         *,
         recipient_count: int,
+        force: bool = False,
+        generation_source: GenerationSource = "auto",
     ) -> bool:
         """把外部证据采集器交付的脱敏日报原子写入事实表。"""
 
@@ -288,6 +292,27 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         period_start = datetime.fromisoformat(str(validated["period_start"]))
         period_end = datetime.fromisoformat(str(validated["period_end"]))
         generated_at = datetime.fromisoformat(str(validated["generated_at"]))
+        conflict_update = """
+            SET period_start=EXCLUDED.period_start,
+                period_end=EXCLUDED.period_end,
+                status=EXCLUDED.status,
+                generation_status='ready',
+                generation_source=EXCLUDED.generation_source,
+                payload=EXCLUDED.payload,
+                generated_at=EXCLUDED.generated_at,
+                recipient_count=EXCLUDED.recipient_count,
+                last_error=NULL,last_error_at=NULL,updated_at=now()
+        """
+        conflict_where = """
+            WHERE security_daily_report.generation_status <> 'ready'
+              AND security_daily_report.last_error IS DISTINCT FROM EXCLUDED.last_error
+        """
+        if force:
+            # 手动重新生成：无条件覆盖并重置投递状态，随后由调用方重新提交发送。
+            conflict_update += (
+                ",delivery_status='not_sent',delivered_at=NULL,retry_count=0"
+            )
+            conflict_where = ""
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -296,24 +321,18 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         """
                         INSERT INTO security_daily_report(
                           report_date,period_start,period_end,status,generation_status,
-                          delivery_status,payload,generated_at,recipient_count,
+                          generation_source,delivery_status,payload,generated_at,recipient_count,
                           last_error,last_error_at,updated_at
                         ) VALUES(
                           :report_date,:period_start,:period_end,:status,'ready',
-                          'not_sent',CAST(:payload AS jsonb),:generated_at,
+                          :generation_source,'not_sent',CAST(:payload AS jsonb),:generated_at,
                           :recipient_count,NULL,NULL,now()
                         )
                         ON CONFLICT (report_date) DO UPDATE
-                        SET period_start=EXCLUDED.period_start,
-                            period_end=EXCLUDED.period_end,
-                            status=EXCLUDED.status,
-                            generation_status='ready',
-                            payload=EXCLUDED.payload,
-                            generated_at=EXCLUDED.generated_at,
-                            recipient_count=EXCLUDED.recipient_count,
-                            last_error=NULL,last_error_at=NULL,updated_at=now()
-                        WHERE security_daily_report.generation_status <> 'ready'
-                          AND security_daily_report.last_error IS DISTINCT FROM EXCLUDED.last_error
+                        """
+                        + conflict_update
+                        + conflict_where
+                        + """
                         RETURNING id
                         """
                     ),
@@ -322,6 +341,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "period_start": period_start,
                         "period_end": period_end,
                         "status": validated["status"],
+                        "generation_source": generation_source,
                         "payload": json.dumps(validated, ensure_ascii=False),
                         "generated_at": generated_at,
                         "recipient_count": min(3, max(0, recipient_count)),
@@ -344,7 +364,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     {
                         "object_id": report_date.isoformat(),
                         "after": json.dumps(
-                            {"status": validated["status"], "generation_status": "ready"},
+                            {
+                                "status": validated["status"],
+                                "generation_status": "ready",
+                                "generation_source": generation_source,
+                            },
                             ensure_ascii=False,
                         ),
                     },
@@ -360,6 +384,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         period_start: datetime,
         period_end: datetime,
         reason: str,
+        generation_source: GenerationSource = "auto",
     ) -> bool:
         """证据源缺失时落明确 unavailable，不用 0 伪造指标。"""
 
@@ -371,13 +396,14 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         """
                         INSERT INTO security_daily_report(
                           report_date,period_start,period_end,status,generation_status,
-                          delivery_status,payload,last_error,last_error_at,updated_at
+                          generation_source,delivery_status,payload,last_error,last_error_at,updated_at
                         ) VALUES(
                           :report_date,:period_start,:period_end,'attention','unavailable',
-                          'not_sent',NULL,:error,now(),now()
+                          :generation_source,'not_sent',NULL,:error,now(),now()
                         )
                         ON CONFLICT (report_date) DO UPDATE
-                        SET period_start=EXCLUDED.period_start,
+                        SET generation_source=EXCLUDED.generation_source,
+                            period_start=EXCLUDED.period_start,
                             period_end=EXCLUDED.period_end,
                             status='attention',generation_status='unavailable',
                             payload=NULL,delivery_status='not_sent',
@@ -390,6 +416,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "report_date": report_date,
                         "period_start": period_start,
                         "period_end": period_end,
+                        "generation_source": generation_source,
                         "error": reason[:256],
                     },
                 )
@@ -410,7 +437,10 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     {
                         "object_id": report_date.isoformat(),
                         "after": json.dumps(
-                            {"generation_status": "unavailable"},
+                            {
+                                "generation_status": "unavailable",
+                                "generation_source": generation_source,
+                            },
                             ensure_ascii=False,
                         ),
                     },
@@ -506,7 +536,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         where = " AND ".join(predicates) or "TRUE"
         columns = (
             "id,report_date,period_start,period_end,status,generation_status,"
-            "delivery_status,generated_at,delivered_at,recipient_count,retry_count,"
+            "generation_source,delivery_status,generated_at,delivered_at,recipient_count,retry_count,"
             "last_error,last_error_at,updated_at,NULL::jsonb AS payload"
         )
         engine = self._engine()
@@ -541,7 +571,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     text(
                         """
                         SELECT id,report_date,period_start,period_end,status,
-                          generation_status,delivery_status,generated_at,delivered_at,
+                          generation_status,generation_source,delivery_status,generated_at,delivered_at,
                           recipient_count,retry_count,last_error,last_error_at,updated_at,payload
                         FROM security_daily_report WHERE report_date=:report_date
                         """
@@ -558,10 +588,29 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         report: SecurityDailyReportRecord,
         action: DeliveryAction,
         *,
-        principal: SecurityPrincipal,
-        ip: str,
+        principal: SecurityPrincipal | None = None,
+        ip: str | None = None,
+        system: bool = False,
     ) -> SecurityDailyDeliveryRequest:
         request_id = uuid4()
+        if system:
+            actor = "security-report-scheduler"
+            actor_kind = "system"
+            role = "system"
+            actor_account_id = None
+            actor_identity_id = None
+            audit_ip = None
+            requested_by = "system"
+        else:
+            if principal is None or ip is None:
+                raise SecurityDailyStateConflict("人工投递缺少操作主体")
+            actor = principal.login_name
+            actor_kind = "human"
+            role = "admin"
+            actor_account_id = principal.account_id
+            actor_identity_id = principal.identity_id
+            audit_ip = ip
+            requested_by = principal.login_name
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -609,7 +658,15 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 next_retry = retry_count + (
                     1 if action == "retry" or delivery_status == "failed" else 0
                 )
-                dedup_key = f"security-daily:{action}:{report.report_date}:{next_retry}"
+                generation_stamp = (
+                    report.generated_at.strftime("%Y%m%dT%H%M%S%f")
+                    if report.generated_at is not None
+                    else "none"
+                )
+                dedup_key = (
+                    f"security-daily:{action}:{report.report_date}:{next_retry}:"
+                    f"{generation_stamp}"
+                )
                 await connection.execute(
                     text(
                         """
@@ -627,14 +684,21 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "report_date": report.report_date,
                         "action": action,
                         "dedup_key": dedup_key,
-                        "actor": principal.login_name,
+                        "actor": requested_by,
                     },
                 )
                 await connection.execute(
                     text(
                         """
                         UPDATE security_daily_report
-                        SET delivery_status='pending',retry_count=:retry_count,updated_at=now()
+                        SET delivery_status='pending',retry_count=:retry_count,
+                            last_error = CASE
+                              WHEN last_error LIKE '安全日报发信配置不完整%'
+                              THEN NULL ELSE last_error END,
+                            last_error_at = CASE
+                              WHEN last_error LIKE '安全日报发信配置不完整%'
+                              THEN NULL ELSE last_error_at END,
+                            updated_at=now()
                         WHERE id=:id
                         """
                     ),
@@ -647,17 +711,19 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id,after_val
                         ) VALUES(
-                          :actor,'human',:actor_account_id,:actor_identity_id,
-                          'admin',CAST(:ip AS inet),:action,'security_daily_report',
+                          :actor,:actor_kind,:actor_account_id,:actor_identity_id,
+                          :role,CAST(:ip AS inet),:action,'security_daily_report',
                           :object_id,CAST(:after AS jsonb)
                         )
                         """
                     ),
                     {
-                        "actor": principal.login_name,
-                        "actor_account_id": principal.account_id,
-                        "actor_identity_id": principal.identity_id,
-                        "ip": ip,
+                        "actor": actor,
+                        "actor_kind": actor_kind,
+                        "actor_account_id": actor_account_id,
+                        "actor_identity_id": actor_identity_id,
+                        "role": role,
+                        "ip": audit_ip,
                         "action": f"security_daily_{action}",
                         "object_id": report.report_date.isoformat(),
                         "after": json.dumps(
@@ -823,5 +889,27 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         ),
                     },
                 )
+        finally:
+            await engine.dispose()
+
+    async def mark_delivery_failed(self, report_date: date, message: str) -> bool:
+        """投递前置条件不满足时显式标记失败，避免静默跳过。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        UPDATE security_daily_report
+                        SET delivery_status='failed',last_error=:error,
+                            last_error_at=now(),updated_at=now()
+                        WHERE report_date=:report_date
+                        RETURNING id
+                        """
+                    ),
+                    {"report_date": report_date, "error": message[:256]},
+                )
+                return result.scalar_one_or_none() is not None
         finally:
             await engine.dispose()

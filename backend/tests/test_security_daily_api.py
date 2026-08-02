@@ -46,6 +46,7 @@ class FakeService:
             period_start=datetime(2026, 7, 31, 0, tzinfo=UTC),
             period_end=datetime(2026, 7, 31, 23, 59, 59, tzinfo=UTC),
             status="normal",
+            generation_source="manual",
             generation_status="ready",
             delivery_status="not_sent",
             generated_at=datetime(2026, 8, 1, 8, tzinfo=UTC),
@@ -86,7 +87,13 @@ class FakeService:
             raise self.list_error
         return SecurityDailyPage((), 0, query.page, query.page_size)
 
-    async def generate_latest(self) -> SecurityDailyReportRecord:
+    async def generate_latest(
+        self,
+        *,
+        principal: object,
+        ip: str,
+    ) -> SecurityDailyReportRecord:
+        del principal, ip
         if self.generate_error is not None:
             raise self.generate_error
         return self.generated
