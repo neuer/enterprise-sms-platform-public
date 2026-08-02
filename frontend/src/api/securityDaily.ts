@@ -187,24 +187,24 @@ export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Pr
   return apiRequest<SecurityDailyPage>(`${basePath}/reports?${query.toString()}`, { method: "GET" })
 }
 
-export function getSecurityDailyReport(reportDate: string): Promise<SecurityDailyReport> {
-  return apiRequest<SecurityDailyReport>(`${basePath}/reports/${reportDate}`, { method: "GET" })
+export function getSecurityDailyReport(reportId: number): Promise<SecurityDailyReport> {
+  return apiRequest<SecurityDailyReport>(`${basePath}/reports/${reportId}`, { method: "GET" })
 }
 
-export function previewSecurityDailyReport(reportDate: string): Promise<SecurityDailyPreview> {
-  return apiRequest<SecurityDailyPreview>(`${basePath}/reports/${reportDate}/preview`, { method: "GET" })
+export function previewSecurityDailyReport(reportId: number): Promise<SecurityDailyPreview> {
+  return apiRequest<SecurityDailyPreview>(`${basePath}/reports/${reportId}/preview`, { method: "GET" })
 }
 
-export function sendSecurityDailyReport(reportDate: string): Promise<SecurityDailyDeliveryResponse> {
-  return apiRequest<SecurityDailyDeliveryResponse>(`${basePath}/reports/${reportDate}/send`, {
+export function sendSecurityDailyReport(reportId: number): Promise<SecurityDailyDeliveryResponse> {
+  return apiRequest<SecurityDailyDeliveryResponse>(`${basePath}/reports/${reportId}/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ confirm: true }),
   })
 }
 
-export function retrySecurityDailyReport(reportDate: string): Promise<SecurityDailyDeliveryResponse> {
-  return apiRequest<SecurityDailyDeliveryResponse>(`${basePath}/reports/${reportDate}/retry`, {
+export function retrySecurityDailyReport(reportId: number): Promise<SecurityDailyDeliveryResponse> {
+  return apiRequest<SecurityDailyDeliveryResponse>(`${basePath}/reports/${reportId}/retry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ confirm: true }),

@@ -34,8 +34,8 @@ Provider、应用 Key 或 `sys_config` 写权限。
 
 安全日报生成只读视图 `security_daily_audit_evidence` 仅暴露
 `created_at/actor/actor_subject_kind/role/ip/action/object_type/object_id`
-非载荷列，`sms_send` 持有该视图 SELECT，用于生成脱敏审计摘要；审计主表的
-`before_val/after_val` 载荷仍不对任何运行 worker 开放。
+非载荷列，`sms_send` 与 `sms_accept` 持有该视图 SELECT，用于生成脱敏审计摘要；
+审计主表的 `before_val/after_val` 载荷仍不对任何运行 worker 开放。
 
 运行连接固定 `search_path=pg_catalog,public`。provision 同时撤销数据库的 PUBLIC
 `TEMPORARY` 与 `CONNECT`，public schema 的 PUBLIC `CREATE` 也被撤销，避免临时对象或

@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -353,47 +353,47 @@ async def list_security_daily_reports(
 
 
 @router.get(
-    "/reports/{report_date}",
+    "/reports/{report_id}",
     response_model=SecurityDailyReportModel,
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def get_security_daily_report(
-    report_date: date,
+    report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyReportModel:
     await _admin(facade, credentials)
     try:
-        record = await service.get_report(report_date)
+        record = await service.get_report(report_id)
     except SecurityDailyNotFound:
-        raise ApiError(404, "NOT_FOUND", "安全日报不存在", None) from None
+        raise ApiError(404, "NOT_FOUND", "安全日报记录不存在", None) from None
     except SecurityDailyControlError:
         raise _unavailable("安全日报独立投递控制面不可用") from None
     return _report_model(record, service, include_payload=True)
 
 
 @router.get(
-    "/reports/{report_date}/preview",
+    "/reports/{report_id}/preview",
     response_model=SecurityDailyPreviewModel,
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def preview_security_daily_report(
-    report_date: date,
+    report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyPreviewModel:
     await _admin(facade, credentials)
     try:
-        preview = await service.preview(report_date)
+        preview = await service.preview(report_id)
     except SecurityDailyNotFound:
-        raise ApiError(404, "NOT_FOUND", "安全日报不存在", None) from None
+        raise ApiError(404, "NOT_FOUND", "安全日报记录不存在", None) from None
     except SecurityDailyUnavailable:
         try:
-            record = await service.get_report(report_date)
+            record = await service.get_report(report_id)
         except SecurityDailyNotFound:
-            raise ApiError(404, "NOT_FOUND", "安全日报不存在", None) from None
+            raise ApiError(404, "NOT_FOUND", "安全日报记录不存在", None) from None
         return SecurityDailyPreviewModel(
             report_date=record.report_date,
             status=record.status,
@@ -417,7 +417,7 @@ async def preview_security_daily_report(
 
 
 async def _request_delivery(
-    report_date: date,
+    report_id: int,
     action: DeliveryAction,
     request: Request,
     service: SecurityDailyService,
@@ -427,13 +427,13 @@ async def _request_delivery(
     claims = await _admin(facade, credentials)
     try:
         result = await service.request_delivery(
-            report_date,
+            report_id,
             action,
             principal=claims.principal,
             ip=_ip(request),
         )
     except SecurityDailyNotFound:
-        raise ApiError(404, "NOT_FOUND", "安全日报不存在", None) from None
+        raise ApiError(404, "NOT_FOUND", "安全日报记录不存在", None) from None
     except SecurityDailyStateConflict as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except SecurityDailyUnavailable as error:
@@ -444,7 +444,7 @@ async def _request_delivery(
 
 
 @router.post(
-    "/reports/{report_date}/send",
+    "/reports/{report_id}/send",
     response_model=SecurityDailyDeliveryResponseModel,
     status_code=status.HTTP_202_ACCEPTED,
     responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE,
@@ -452,18 +452,18 @@ async def _request_delivery(
 )
 @audited("security_daily_send")
 async def send_security_daily_report(
-    report_date: date,
+    report_id: Annotated[int, Path(ge=1)],
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyDeliveryResponseModel:
-    return await _request_delivery(report_date, "send", request, service, facade, credentials)
+    return await _request_delivery(report_id, "send", request, service, facade, credentials)
 
 
 @router.post(
-    "/reports/{report_date}/retry",
+    "/reports/{report_id}/retry",
     response_model=SecurityDailyDeliveryResponseModel,
     status_code=status.HTTP_202_ACCEPTED,
     responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE,
@@ -471,11 +471,11 @@ async def send_security_daily_report(
 )
 @audited("security_daily_retry")
 async def retry_security_daily_report(
-    report_date: date,
+    report_id: Annotated[int, Path(ge=1)],
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyDeliveryResponseModel:
-    return await _request_delivery(report_date, "retry", request, service, facade, credentials)
+    return await _request_delivery(report_id, "retry", request, service, facade, credentials)

@@ -634,7 +634,7 @@ def run_check() -> None:
         docker_psql(
             container,
             "schema_build",
-            "CREATE TABLE alembic_version(version_num varchar(32) NOT NULL)",
+            "CREATE TABLE alembic_version(version_num varchar(64) NOT NULL)",
         )
         schema_sql = (ROOT / "schema.sql").read_text(encoding="utf-8")
         docker_psql(container, "schema_build", "", stdin=schema_sql)

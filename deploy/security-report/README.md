@@ -46,10 +46,15 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 自动投递：生成任务在 08:00 后每天只提交一次投递——正常报告直接发送；
 证据不可用也会发送“问题通报”邮件（指标显式不可用并附原因），提醒收件人处理，
 不会静默不发。发信配置不完整（缺少 Resend Key 或收件人）时物理上无法发信，
-记录会显式标记投递失败并写明原因，恢复配置后自动补发。手动“立即生成”会
-无条件重生成并立即发送；证据不可用时明确失败且不发送旧报告。worker-bulk 对
-`security-report-control` 为可写挂载（用于提交投递请求），但始终不挂载
-Resend 配置目录。
+记录会显式标记投递失败并写明原因，恢复配置后自动补发。
+
+记录保留：日报记录逐条保留，不覆盖。自动路径每天最多一条 `auto` 记录
+（证据源从不可用恢复为可用时允许替换当天 auto 记录）；管理员“立即生成”每次
+新增一条 `manual` 记录并立即投递，证据不可用同样新增记录并发送问题通报。
+当天已有任意记录投递成功（含手动）时，自动路径不再重复投递。
+
+worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递请求），但
+始终不挂载 Resend 配置目录。
 
 ## 证据采集器（一次性安装，之后自动运行）
 
@@ -65,13 +70,15 @@ Resend 配置目录。
   journald ISO、系统 syslog 与“Accepted key”等实际措辞；
 - Fail2ban：`/var/log/fail2ban.log` 及轮转文件；
 - Web/API access log：默认读取 `deploy/security-report-nginx/access.log`
-  （nginx 以 UID 101 落盘），文件缺失时回退读取平台 web 容器的 Docker stdout 日志；
+  （nginx 以 UID 101 落盘），日志格式固定包含 `$time_local` 以便按上海自然日
+  归属；文件缺失时回退读取平台 web 容器的 Docker stdout 日志；
 - 运行态探针：读取 `/var/lib/docker/containers/*/config.v2.json` 聚合平台容器
   运行中/异常计数（一次性初始化容器不计入），不依赖 Docker CLI 或 socket。
 
-管理审计由平台生成任务在入库前单独注入：`sms_send` 只读
-`security_daily_audit_evidence` 视图（不含 before/after 载荷列），日报展示最近
-10 条审计事件与总数，不读取审计 JSON 明细。任一证据源缺失时，报告保持
+管理审计由平台生成任务在入库前单独注入：`sms_send` 与 `sms_accept` 只读
+`security_daily_audit_evidence` 视图（不含 before/after 载荷列；生成代码读取
+时将 `ip` 列别名化为 `source_ip`），日报展示最近 10 条审计事件与总数，不读取
+审计 JSON 明细。任一证据源缺失时，报告保持
 `attention` 并在“证据范围”显示缺口，不会用零值冒充完整覆盖。
 
 由授权运维在主机上安装一次：

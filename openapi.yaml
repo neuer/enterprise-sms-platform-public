@@ -2226,7 +2226,7 @@ paths:
     post:
       tags: [security-daily]
       summary: 管理员立即生成前一自然日（北京时间）报告
-      description: 无条件重新生成前一自然日（北京时间）的日报并立即提交邮件投递（异步发送）；证据缺失时明确失败且不发送旧报告。
+      description: 无条件重新生成前一自然日（北京时间）的日报并新增一条记录，随后立即提交邮件投递（异步发送）；证据不可用时同样新增记录并发送问题通报，历史记录不覆盖。
       security: [{ BearerAuth: [] }]
       responses:
         '200': { description: 已生成或已记录数据不可用状态, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyReportModel' } } } }
@@ -2255,13 +2255,13 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /api/v1/web/admin/security-daily/reports/{report_date}:
+  /api/v1/web/admin/security-daily/reports/{report_id}:
     get:
       tags: [security-daily]
-      summary: 查询单日安全日报详情
+      summary: 按记录 id 查询安全日报详情
       security: [{ BearerAuth: [] }]
       parameters:
-        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+        - { name: report_id, in: path, required: true, schema: { type: integer, minimum: 1 } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyReportModel' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -2269,13 +2269,13 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /api/v1/web/admin/security-daily/reports/{report_date}/preview:
+  /api/v1/web/admin/security-daily/reports/{report_id}/preview:
     get:
       tags: [security-daily]
       summary: 预览安全日报且不触发投递
       security: [{ BearerAuth: [] }]
       parameters:
-        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+        - { name: report_id, in: path, required: true, schema: { type: integer, minimum: 1 } }
       responses:
         '200': { description: "预览结果；数据不可用时明确返回 available=false", content: { application/json: { schema: { $ref: '#/components/schemas/SecurityDailyPreviewModel' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -2283,13 +2283,13 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /api/v1/web/admin/security-daily/reports/{report_date}/send:
+  /api/v1/web/admin/security-daily/reports/{report_id}/send:
     post:
       tags: [security-daily]
       summary: 经管理员确认提交一次安全日报投递请求
       security: [{ BearerAuth: [] }]
       parameters:
-        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+        - { name: report_id, in: path, required: true, schema: { type: integer, minimum: 1 } }
       requestBody:
         required: true
         content:
@@ -2304,13 +2304,13 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
-  /api/v1/web/admin/security-daily/reports/{report_date}/retry:
+  /api/v1/web/admin/security-daily/reports/{report_id}/retry:
     post:
       tags: [security-daily]
       summary: 经管理员确认重试失败的安全日报投递
       security: [{ BearerAuth: [] }]
       parameters:
-        - { name: report_date, in: path, required: true, schema: { type: string, format: date } }
+        - { name: report_id, in: path, required: true, schema: { type: integer, minimum: 1 } }
       requestBody:
         required: true
         content:

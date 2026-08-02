@@ -124,7 +124,7 @@ const reportsEmptyHint = computed(() => {
   const nextSchedule = overview.value.next_scheduled_at
     ? displayMoment(overview.value.next_scheduled_at)
     : "下一次调度时间"
-  return `暂无已生成安全日报；可点击“立即生成”读取前一自然日（北京时间）的脱敏证据（不会自动发送）。${nextSchedule}后仍会按计划自动生成；生成后可打开详情进行安全预览和手动投递。`
+  return `暂无已生成安全日报；可点击“立即生成”新增一条前一自然日（北京时间）的记录并立即投递。${nextSchedule}后自动任务也会按计划生成并发送一封；生成后可打开详情进行安全预览和手动投递。`
 })
 
 function statusLabel(value: string): string {
@@ -326,18 +326,18 @@ async function refresh(): Promise<void> {
 async function generateReport(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      "将无条件重新生成前一自然日（北京时间）的日报并立即发送邮件（覆盖该日现有记录）。",
+      "将无条件重新生成前一自然日（北京时间）的日报，新增一条记录并立即发送邮件（不会覆盖历史记录）。",
       "立即生成安全日报",
       { confirmButtonText: "立即生成并发送", cancelButtonText: "取消", type: "info" },
     )
     generationLoading.value = true
     const report = await generateSecurityDailyReport()
     await refresh()
-    await openReport(report.report_date)
+    await openReport(report.id)
     if (report.generation_status === "ready") {
       ElMessage.success("安全日报已重新生成并提交邮件发送")
     } else {
-      ElMessage.warning(report.last_error ?? "证据源不可用，未生成新日报，未发送邮件")
+      ElMessage.warning(report.last_error ?? "证据源不可用，已新增记录并发送问题通报")
     }
   } catch (error) {
     if (error === "cancel" || error === "close") return
@@ -347,7 +347,7 @@ async function generateReport(): Promise<void> {
   }
 }
 
-async function openReport(reportDate: string): Promise<void> {
+async function openReport(reportId: number): Promise<void> {
   detailLoading.value = true
   drawerOpen.value = true
   previewOpen.value = false
@@ -356,7 +356,7 @@ async function openReport(reportDate: string): Promise<void> {
     document.querySelector<HTMLElement>(".el-drawer__body")?.scrollTo({ top: 0 })
   })
   try {
-    selected.value = await getSecurityDailyReport(reportDate)
+    selected.value = await getSecurityDailyReport(reportId)
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, "日报详情暂不可用，请刷新重试"))
     drawerOpen.value = false
@@ -369,7 +369,7 @@ async function openPreview(): Promise<void> {
   if (!selected.value || previewLoading.value) return
   previewLoading.value = true
   try {
-    const preview = await previewSecurityDailyReport(selected.value.report_date)
+    const preview = await previewSecurityDailyReport(selected.value.id)
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true
   } catch (error) {
@@ -390,13 +390,13 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     )
     delivering.value = true
     if (action === "retry") {
-      await retrySecurityDailyReport(selected.value.report_date)
+      await retrySecurityDailyReport(selected.value.id)
     } else {
-      await sendSecurityDailyReport(selected.value.report_date)
+      await sendSecurityDailyReport(selected.value.id)
     }
     ElMessage.success("投递请求已受理，状态将在 mailer 回写后更新")
     await refresh()
-    await openReport(selected.value.report_date)
+    await openReport(selected.value.id)
   } catch (error) {
     if (error === "cancel" || error === "close") return
     ElMessage.error(apiErrorMessage(error, "投递请求失败，请刷新重试"))
@@ -422,7 +422,7 @@ function canRetry(report: SecurityDailyReport): boolean {
 }
 
 function openRow(row: SecurityDailyReport): void {
-  void openReport(row.report_date)
+  void openReport(row.id)
 }
 
 onMounted(() => void refresh())
@@ -491,6 +491,7 @@ onMounted(() => void refresh())
       </template>
       <el-alert v-if="reportsEmptyHint" :title="reportsEmptyHint" type="info" show-icon :closable="false" />
       <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsEmptyText" @row-click="openRow">
+        <el-table-column prop="id" label="记录" width="75" />
         <el-table-column prop="report_date" label="报告日期" width="120" />
         <el-table-column label="安全状态" width="105"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="生成方式" width="90"><template #default="scope"><el-tag :type="scope.row.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{ scope.row.generation_source === 'manual' ? '手动' : '自动' }}</el-tag></template></el-table-column>
@@ -501,7 +502,7 @@ onMounted(() => void refresh())
         <el-table-column label="投递时间" width="170"><template #default="scope"><time>{{ displayMoment(scope.row.delivered_at) }}</time></template></el-table-column>
         <el-table-column prop="retry_count" label="重试" width="65" />
         <el-table-column label="最新错误" min-width="180"><template #default="scope">{{ scope.row.last_error ?? "—" }}</template></el-table-column>
-        <el-table-column label="操作" width="170" fixed="right"><template #default="scope"><el-button link type="primary" @click.stop="openReport(scope.row.report_date)">查看详情</el-button><el-button v-if="canRetry(scope.row)" link type="warning" @click.stop="openReport(scope.row.report_date)">处理失败</el-button></template></el-table-column>
+        <el-table-column label="操作" width="170" fixed="right"><template #default="scope"><el-button link type="primary" @click.stop="openReport(scope.row.id)">查看详情</el-button><el-button v-if="canRetry(scope.row)" link type="warning" @click.stop="openReport(scope.row.id)">处理失败</el-button></template></el-table-column>
       </el-table>
       <el-pagination v-if="total > 20" v-model:current-page="page" class="security-daily-pagination" background layout="prev, pager, next" :page-size="20" :total="total" @current-change="loadReports" />
     </el-card>
