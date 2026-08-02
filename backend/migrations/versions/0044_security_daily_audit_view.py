@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0044_security_daily_audit_evidence"
+revision = "0044_security_daily_audit_view"
 down_revision = "0043_security_daily_ui_config"
 branch_labels = None
 depends_on = None

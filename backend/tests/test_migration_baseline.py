@@ -617,7 +617,7 @@ def test_security_daily_ui_config_migration_adds_resend_key_and_recipients() -> 
 
 def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    revision = BACKEND / "migrations/versions/0044_security_daily_audit_evidence.py"
+    revision = BACKEND / "migrations/versions/0044_security_daily_audit_view.py"
     source = revision.read_text(encoding="utf-8")
 
     assert "-- v1.6.41：" in schema
@@ -640,7 +640,7 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "0044_security_daily_audit_evidence"
+    assert module.revision == "0044_security_daily_audit_view"
     assert module.down_revision == "0043_security_daily_ui_config"
 
 
