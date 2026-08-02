@@ -59,7 +59,7 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 - Web/API access log：默认读取 `deploy/security-report-nginx/access.log`
   （nginx 以 UID 101 落盘），文件缺失时回退读取平台 web 容器的 Docker stdout 日志；
 - 运行态探针：读取 `/var/lib/docker/containers/*/config.v2.json` 聚合平台容器
-  运行中/异常/健康检查计数，不依赖 Docker CLI 或 socket。
+  运行中/异常计数（一次性初始化容器不计入），不依赖 Docker CLI 或 socket。
 
 管理审计由平台生成任务在入库前单独注入：`sms_send` 只读
 `security_daily_audit_evidence` 视图（不含 before/after 载荷列），日报展示最近
