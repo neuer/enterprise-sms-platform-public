@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -474,3 +475,22 @@ async def test_submit_auto_delivery_skips_already_sent_report() -> None:
     service = SecurityDailyService(repository, FakeControl())
 
     assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_skips_stale_payload_when_snapshot_is_newer(
+    tmp_path: Path,
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    snapshot = incoming / "2026-07-15.json"
+    snapshot.write_text(json.dumps(payload()), encoding="utf-8")
+    fresh = datetime.now(SHANGHAI)
+
+    os.utime(snapshot, (fresh.timestamp() + 3600, fresh.timestamp() + 3600))
+    repository = FakeRepository(record())
+    control = FakeControl()
+    service = SecurityDailyService(repository, control, control_dir=tmp_path)
+
+    assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
+    assert control.submitted == []
