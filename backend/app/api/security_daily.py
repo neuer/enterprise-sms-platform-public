@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -358,7 +358,7 @@ async def list_security_daily_reports(
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def get_security_daily_report(
-    report_id: int,
+    report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -379,7 +379,7 @@ async def get_security_daily_report(
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def preview_security_daily_report(
-    report_id: int,
+    report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -452,7 +452,7 @@ async def _request_delivery(
 )
 @audited("security_daily_send")
 async def send_security_daily_report(
-    report_id: int,
+    report_id: Annotated[int, Path(ge=1)],
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
@@ -471,7 +471,7 @@ async def send_security_daily_report(
 )
 @audited("security_daily_retry")
 async def retry_security_daily_report(
-    report_id: int,
+    report_id: Annotated[int, Path(ge=1)],
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
