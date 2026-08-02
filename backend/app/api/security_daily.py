@@ -256,7 +256,12 @@ async def get_security_daily_config(
 @router.post(
     "/generate",
     response_model=SecurityDailyReportModel,
-    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("security_daily_generate")
 async def generate_security_daily_report(
