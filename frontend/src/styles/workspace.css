@@ -3757,8 +3757,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .el-button.is-link.el-button--primary {
   --el-button-text-color: var(--verdi-l);
-  --el-button-hover-text-color: #71c4ad;
-  --el-button-active-text-color: var(--verdi-l);
+  --el-button-hover-link-text-color: #71c4ad;
+  --el-button-active-color: var(--verdi-l);
 }
 
 .el-tabs__item.is-active {
