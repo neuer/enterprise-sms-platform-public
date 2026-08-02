@@ -317,6 +317,9 @@ def _platform_containers(docker_root: Path) -> list[dict[str, Any]]:
             continue
         name = str(data.get("Name") or "")
         if name.startswith("/sms-platform-") or name.startswith("/sms-security-report-"):
+            if name.endswith(("-migrate-1", "-db-role-provision-1")):
+                # 一次性初始化容器按设计退出，不计入长期运行态探针。
+                continue
             containers.append(data)
     return containers
 
@@ -339,18 +342,25 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
         )
         return rows, False
     total = len(containers)
-    running = 0
+    running_count = 0
     unhealthy = 0
     healthy = 0
     checked = 0
     for container in containers:
         state = container.get("State")
-        status = str(state.get("Status") or "unknown") if isinstance(state, dict) else "unknown"
+        if not isinstance(state, dict):
+            is_running = False
+            restarting = False
+            paused = False
+        else:
+            is_running = bool(state.get("Running"))
+            restarting = bool(state.get("Restarting"))
+            paused = bool(state.get("Paused"))
         health = state.get("Health") if isinstance(state, dict) else None
         health_status = str(health.get("Status") or "") if isinstance(health, dict) else ""
-        if status == "running":
-            running += 1
-        if status != "running" or health_status == "unhealthy":
+        if is_running:
+            running_count += 1
+        if not is_running or paused or restarting or health_status == "unhealthy":
             unhealthy += 1
         if health_status:
             checked += 1
@@ -366,9 +376,9 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
             },
             {
                 "label": "运行中容器",
-                "value": f"{running} 个",
+                "value": f"{running_count} 个",
                 "assessment": "状态来自 Docker 运行态",
-                "tone": "good" if running == total else "warn",
+                "tone": "good" if running_count == total else "warn",
             },
             {
                 "label": "异常容器",

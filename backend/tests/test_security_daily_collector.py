@@ -165,7 +165,7 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
             {
                 "Name": "/sms-platform-web-1",
                 "State": {
-                    "Status": "running",
+                    "Running": True,
                     "Health": {"Status": "healthy"},
                 },
             }
@@ -181,6 +181,17 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
         + "\n"
         + json.dumps({"log": "203.0.113.9 / 200 3\n", "time": "2026-08-02T04:00:00Z"})
         + "\n",
+        encoding="utf-8",
+    )
+    migrate_dir = docker_root / "containers" / "migrate01"
+    migrate_dir.mkdir()
+    migrate_dir.joinpath("config.v2.json").write_text(
+        json.dumps(
+            {
+                "Name": "/sms-platform-migrate-1",
+                "State": {"Running": False, "FinishedAt": "2026-08-02T00:00:00Z"},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -220,7 +231,7 @@ def test_collector_marks_web_unavailable_when_log_does_not_cover_window(
         json.dumps(
             {
                 "Name": "/sms-platform-web-1",
-                "State": {"Status": "running", "Health": {"Status": "healthy"}},
+                "State": {"Running": True, "Health": {"Status": "healthy"}},
             }
         ),
         encoding="utf-8",
