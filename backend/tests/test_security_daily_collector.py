@@ -255,3 +255,57 @@ def test_collector_marks_web_unavailable_when_log_does_not_cover_window(
         "Web/API access log",
         "管理审计",
     }
+    web_gap = next(
+        item for item in payload["coverage"] if item["source"] == "Web/API access log"
+    )
+    assert "无带时间戳记录可归属" in web_gap["note"]
+    assert "未发现可读取的证据源" not in web_gap["note"]
+
+
+def test_collector_attributes_nginx_log_after_format_upgrade(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
+    web = tmp_path / "access.log"
+    web.write_text(
+        # 旧格式行没有时间戳：格式升级前无法归属，不得计入任何报告日。
+        "127.0.0.1 /index.html 200 1345\n"
+        "127.0.0.1 /api/v1/reports 500 23\n"
+        # 新格式行带时间戳，只归属 2026-08-02。
+        "127.0.0.1 [02/Aug/2026:14:50:15 +0000] /index.html 200 3\n"
+        "127.0.0.1 [02/Aug/2026:14:51:15 +0000] /api/v1/reports 200 9\n",
+        encoding="utf-8",
+    )
+
+    before_upgrade = collect_report(
+        date(2026, 8, 1),
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=web,
+        docker_root=tmp_path,
+    )
+    web_gap = next(
+        item
+        for item in before_upgrade["coverage"]
+        if item["source"] == "Web/API access log"
+    )
+    assert web_gap["status"] == "缺失"
+    assert "无带时间戳记录可归属" in web_gap["note"]
+    assert before_upgrade["web"][0]["value"] == "未接入"
+
+    after_upgrade = collect_report(
+        date(2026, 8, 2),
+        generated_at=datetime(2026, 8, 3, 7, 50, tzinfo=SHANGHAI),
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=web,
+        docker_root=tmp_path,
+    )
+    web_ok = next(
+        item
+        for item in after_upgrade["coverage"]
+        if item["source"] == "Web/API access log"
+    )
+    assert web_ok["status"] == "完整"
+    assert after_upgrade["web"][0]["value"] == "2 条"
+    assert after_upgrade["metrics"][3]["value"] == "0"

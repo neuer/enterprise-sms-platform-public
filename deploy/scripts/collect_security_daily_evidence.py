@@ -158,6 +158,7 @@ class WebCounts:
     """Web/API 访问日志聚合；first 为状态码行数，其余按类别计数。"""
 
     available: bool
+    unattributed: bool = False
     total: int = 0
     status_count: int = 0
     count_4xx: int = 0
@@ -295,10 +296,17 @@ def _scan_web(
                 count_5xx += int(500 <= status < 600)
             sensitive += int(SENSITIVE_PATH.search(content) is not None)
     if earliest is None or earliest > report_date:
-        # 源存在但未覆盖报告窗口（例如容器/日志轮换后新起文件），
-        # 视为缺失而不是用 0 冒充完整覆盖。
-        return WebCounts(False)
-    return WebCounts(True, total, status_count, count_4xx, count_5xx, sensitive)
+        # 源存在但未覆盖报告窗口（例如容器/日志轮换后新起文件，或日志
+        # 格式升级前旧行没有时间戳），视为缺失而不是用 0 冒充完整覆盖。
+        return WebCounts(False, unattributed=True)
+    return WebCounts(
+        available=True,
+        total=total,
+        status_count=status_count,
+        count_4xx=count_4xx,
+        count_5xx=count_5xx,
+        sensitive=sensitive,
+    )
 
 
 def _platform_containers(docker_root: Path) -> list[dict[str, Any]]:
@@ -383,12 +391,20 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
     return rows, True
 
 
-def _coverage(source: str, window: str, available: bool, note: str) -> dict[str, str]:
+def _coverage(
+    source: str,
+    window: str,
+    available: bool,
+    note: str,
+    *,
+    missing_note: str | None = None,
+) -> dict[str, str]:
+    unavailable_note = missing_note or f"{note}；采集器未发现可读取的证据源"
     return {
         "source": source,
         "window": window,
         "status": "完整" if available else "缺失",
-        "note": note if available else f"{note}；采集器未发现可读取的证据源",
+        "note": note if available else unavailable_note,
         "tone": "good" if available else "warn",
     }
 
@@ -559,7 +575,17 @@ def collect_report(
         "coverage": [
             _coverage("SSH journal", window, ssh.available, "认证事件仅保留计数"),
             _coverage("Fail2ban", window, bans.available, "封禁事件仅保留计数"),
-            _coverage("Web/API access log", window, web.available, "请求仅按状态码聚合"),
+            _coverage(
+                "Web/API access log",
+                window,
+                web.available,
+                "请求仅按状态码聚合",
+                missing_note=(
+                    "日志已接入，但该日无带时间戳记录可归属（格式升级过渡期）"
+                    if web.unattributed
+                    else "请求仅按状态码聚合"
+                ),
+            ),
             _coverage("管理审计", window, False, "需由平台审计事实单独接入"),
             _coverage("运行态探针", window, runtime_available, "容器状态仅保留聚合计数"),
         ],
