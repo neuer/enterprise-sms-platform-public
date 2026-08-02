@@ -14,6 +14,7 @@ import {
   retrySecurityDailyReport,
   sendSecurityDailyReport,
   type DeliveryStatus,
+  type SecurityActionItem,
   type SecurityDailyConfiguration,
   type GenerationStatus,
   type SecurityDailyConfigurationState,
@@ -60,6 +61,11 @@ const configurationMessages: Record<SecurityDailyConfigurationState, string> = {
   dispatcher_missing: "日报已启用，但独立投递器尚未配置，当前不会正常投递。",
   recipients_empty: "日报已启用，但没有收件人配置，当前不会投递。",
   ready: "当前配置完整，按固定时间生成并交由独立投递器发送。",
+}
+const priorityLabels: Record<SecurityActionItem["priority"], string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
 }
 
 const overview = ref<SecurityDailyOverview | null>(null)
@@ -169,6 +175,22 @@ function tagType(value: string): "success" | "warning" | "danger" | "info" {
   if (value === "attention" || value === "pending" || value === "sending") return "warning"
   if (value === "high" || value === "failed") return "danger"
   return "info"
+}
+
+function priorityType(priority: SecurityActionItem["priority"]): "danger" | "warning" | "info" {
+  if (priority === "high") return "danger"
+  if (priority === "medium") return "warning"
+  return "info"
+}
+
+function displayPeriod(start: string, end: string): string {
+  const startText = displayMoment(start)
+  const endText = displayMoment(end)
+  const fullLength = "YYYY-MM-DD HH:mm:ss".length
+  const sameDay = startText.length === fullLength
+    && endText.length === fullLength
+    && startText.slice(0, 10) === endText.slice(0, 10)
+  return sameDay ? `${startText} — ${endText.slice(11)}` : `${startText} — ${endText}`
 }
 
 function displayMoment(value: string | null | undefined): string {
@@ -485,21 +507,38 @@ onMounted(() => void refresh())
         <div class="security-detail-heading">
           <div>
             <span class="section-index">{{ selected.report_date }}</span>
-            <h2>{{ statusLabel(selected.status) }} · {{ generationLabel(selected.generation_status) }}</h2>
-            <p class="security-detail-period">统计窗口 <time>{{ displayMoment(selected.period_start) }}</time> — <time>{{ displayMoment(selected.period_end) }}</time></p>
+            <h2>{{ statusLabel(selected.status) }}</h2>
+            <div class="security-detail-tags">
+              <el-tag :type="tagType(selected.generation_status)" size="small">{{ generationLabel(selected.generation_status) }}</el-tag>
+              <el-tag :type="tagType(selected.delivery_status)" size="small">{{ deliveryLabel(selected.delivery_status) }}</el-tag>
+            </div>
+            <p class="security-detail-period">统计窗口 <time>{{ displayPeriod(selected.period_start, selected.period_end) }}</time></p>
           </div>
           <div class="security-detail-actions"><el-button plain :loading="previewLoading" @click="openPreview">安全预览</el-button><el-button v-if="canSend(selected)" type="primary" :loading="delivering" @click="requestDelivery('send')">手动投递</el-button><el-button v-if="canRetry(selected)" type="warning" :loading="delivering" @click="requestDelivery('retry')">重试投递</el-button></div>
         </div>
         <el-alert v-if="!selected.payload" title="数据不可用：当前没有可展示的脱敏结构化报告，不生成或投递邮件。" type="warning" show-icon :closable="false" />
-        <template v-else>
+        <section class="security-detail-section">
+          <div class="section-heading"><span class="section-index">状态信息</span></div>
+          <dl class="security-delivery-facts">
+            <div><dt>生成时间</dt><dd><time>{{ displayMoment(selected.generated_at) }}</time></dd></div>
+            <div><dt>投递时间</dt><dd><time>{{ displayMoment(selected.delivered_at) }}</time></dd></div>
+            <div><dt>收件人数</dt><dd>{{ selected.recipient_count }} 人</dd></div>
+            <div><dt>重试次数</dt><dd>{{ selected.retry_count }} 次</dd></div>
+            <div v-if="selected.last_error" class="security-error-cell">
+              <dt>最新错误</dt>
+              <dd class="security-error">{{ selected.last_error }}<time v-if="selected.last_error_at"> · {{ displayMoment(selected.last_error_at) }}</time></dd>
+            </div>
+          </dl>
+        </section>
+        <template v-if="selected.payload">
           <section class="security-detail-summary"><span class="section-index">管理摘要</span><p>{{ selected.payload.summary }}</p><p v-if="selected.payload.pending_confirmation" class="security-pending">待确认：{{ selected.payload.pending_confirmation }}</p></section>
-          <section><div class="section-heading"><span class="section-index">核心指标</span><strong>5 项指标</strong></div><div class="security-metric-grid"><article v-for="metric in selected.payload.metrics" :key="metric.label" :class="['security-metric', metric.tone]"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.note }}</small></article></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">SSH 与主机安全</span></div><div class="security-evidence-list"><div v-for="row in selected.payload.ssh" :key="`ssh-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">Web / API</span></div><div class="security-evidence-list"><div v-for="row in selected.payload.web" :key="`web-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">管理审计</span></div><div class="security-evidence-list"><div v-for="row in selected.payload.audit" :key="`audit-${row.time}-${row.action}`"><strong>{{ row.time }} · {{ row.actor }}</strong><span>{{ row.source_ip }} · {{ row.action }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">运行状态</span></div><div class="security-evidence-list"><div v-for="row in selected.payload.runtime" :key="`runtime-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">建议处置</span></div><div class="security-action-list"><article v-for="action in selected.payload.actions" :key="action.title"><el-tag :type="tagType(action.priority === 'high' ? 'high' : action.priority === 'medium' ? 'attention' : 'normal')" size="small">{{ action.priority }}</el-tag><div><strong>{{ action.title }}</strong><p>{{ action.detail }}</p></div></article></div></section>
-          <section class="security-detail-section"><div class="section-heading"><span class="section-index">证据范围</span></div><el-alert v-if="coverageGaps.length" title="存在日志覆盖缺口" type="warning" show-icon :closable="false"><template #default><div v-for="item in coverageGaps" :key="`gap-${item.source}`">{{ item.source }}：{{ item.note }}</div></template></el-alert><div class="security-evidence-list"><div v-for="item in selected.payload.coverage" :key="item.source"><strong>{{ item.source }}</strong><span>{{ item.window }} · {{ item.note }}</span><el-tag :type="tagType(item.tone)" size="small">{{ item.status }}</el-tag></div></div></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">核心指标</span><strong>{{ selected.payload.metrics.length }} 项指标</strong></div><div v-if="selected.payload.metrics.length" class="security-metric-grid"><article v-for="metric in selected.payload.metrics" :key="metric.label" :class="['security-metric', metric.tone]"><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small>{{ metric.note }}</small></article></div><p v-else class="security-section-empty">该小节无记录</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">SSH 与主机安全</span></div><div v-if="selected.payload.ssh.length" class="security-evidence-list"><div v-for="row in selected.payload.ssh" :key="`ssh-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div><p v-else class="security-section-empty">该证据面无记录</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">Web / API</span></div><div v-if="selected.payload.web.length" class="security-evidence-list"><div v-for="row in selected.payload.web" :key="`web-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div><p v-else class="security-section-empty">该证据面无记录</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">管理审计</span></div><div v-if="selected.payload.audit.length" class="security-evidence-list"><div v-for="row in selected.payload.audit" :key="`audit-${row.time}-${row.action}`" class="security-audit-row"><strong>{{ row.time }} · {{ row.actor }}</strong><span>{{ row.source_ip }} · {{ row.action }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div><p v-else class="security-section-empty">该证据面无记录</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">运行状态</span></div><div v-if="selected.payload.runtime.length" class="security-evidence-list"><div v-for="row in selected.payload.runtime" :key="`runtime-${row.label}`"><strong>{{ row.label }}</strong><span>{{ row.value }}</span><el-tag :type="tagType(row.tone)" size="small">{{ row.assessment }}</el-tag></div></div><p v-else class="security-section-empty">该证据面无记录</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">建议处置</span></div><div v-if="selected.payload.actions.length" class="security-action-list"><article v-for="action in selected.payload.actions" :key="action.title"><el-tag :type="priorityType(action.priority)" size="small">{{ priorityLabels[action.priority] }}</el-tag><div><strong>{{ action.title }}</strong><p>{{ action.detail }}</p></div></article></div><p v-else class="security-section-empty">无需处置事项</p></section>
+          <section class="security-detail-section"><div class="section-heading"><span class="section-index">证据范围</span></div><el-alert v-if="coverageGaps.length" title="存在日志覆盖缺口" type="warning" show-icon :closable="false"><template #default><div v-for="item in coverageGaps" :key="`gap-${item.source}`">{{ item.source }}：{{ item.note }}</div></template></el-alert><div v-if="selected.payload.coverage.length" class="security-evidence-list"><div v-for="item in selected.payload.coverage" :key="item.source"><strong>{{ item.source }}</strong><span>{{ item.window }} · {{ item.note }}</span><el-tag :type="tagType(item.tone)" size="small">{{ item.status }}</el-tag></div></div><p v-else class="security-section-empty">该证据面无记录</p></section>
         </template>
         <section v-if="selected.timeline.length" class="security-detail-section"><div class="section-heading"><span class="section-index">{{ selected.generation_status === "unavailable" || selected.generation_status === "failed" ? "状态时间线" : "投递时间线" }}</span></div><ol class="security-timeline"><li v-for="event in selected.timeline" :key="`${event.type}-${event.at}`"><time>{{ displayMoment(event.at) }}</time><strong>{{ event.label }}</strong><span v-if="event.detail">{{ event.detail }}</span></li></ol></section>
       </template>
