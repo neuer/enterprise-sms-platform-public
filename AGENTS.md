@@ -155,6 +155,7 @@ alembic revision --autogenerate -m "xxx" && alembic upgrade head
 
 ## 工作方式
 
+- **编码与提交一律在新建的 git worktree 中进行**：为当前任务创建独立分支与 worktree（如 `git worktree add <path> -b <branch>`），不得在主工作树直接提交；主工作树可能有他人或其他会话的在制改动
 - 保持 KISS：不要过度工程化；优先采用现有、最短、可验证的流程解决问题，只有在现有流程无法满足明确需求时才增加复杂度
 - 维护期工作由当前用户请求或 Issue/PR 承载，先写清目标、风险域和 1–3 条验收；不维护仓库内任务清单
 - 编码循环优先运行相关测试与局部静态检查；`scripts/dev_check.sh --changed` 是提交前检查，不是每次保存后的必跑命令
