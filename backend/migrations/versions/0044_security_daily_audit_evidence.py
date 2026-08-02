@@ -15,7 +15,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE VIEW security_daily_audit_evidence AS
+        CREATE OR REPLACE VIEW security_daily_audit_evidence AS
         SELECT created_at, actor, actor_subject_kind, role, ip, action,
                object_type, object_id
         FROM audit_log

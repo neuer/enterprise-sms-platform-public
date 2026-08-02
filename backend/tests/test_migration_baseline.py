@@ -629,7 +629,7 @@ def test_security_daily_audit_evidence_view_is_minimal_send_role_grant() -> None
     )[0]
     assert "before_val" not in view
     assert "after_val" not in view
-    assert "CREATE VIEW security_daily_audit_evidence" in source
+    assert "CREATE OR REPLACE VIEW security_daily_audit_evidence" in source
     assert "GRANT SELECT ON security_daily_audit_evidence TO sms_send" in source
     assert "DROP VIEW security_daily_audit_evidence" in source
 
