@@ -45,12 +45,12 @@ describe("安全日报 API client", () => {
         headers: { "Content-Type": "application/json" },
       }),
     )
-    await sendSecurityDailyReport("2026-07-15")
-    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/admin/security-daily/reports/2026-07-15/send")
+    await sendSecurityDailyReport(42)
+    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/admin/security-daily/reports/42/send")
     expect(JSON.parse(fetch.mock.calls[1][1].body as string)).toEqual({ confirm: true })
 
-    await retrySecurityDailyReport("2026-07-15")
-    expect(fetch.mock.calls[2][0]).toBe("/api/v1/web/admin/security-daily/reports/2026-07-15/retry")
+    await retrySecurityDailyReport(42)
+    expect(fetch.mock.calls[2][0]).toBe("/api/v1/web/admin/security-daily/reports/42/retry")
     expect(JSON.parse(fetch.mock.calls[2][1].body as string)).toEqual({ confirm: true })
   })
 

@@ -379,6 +379,7 @@ def test_phone_query_strings_are_excluded_from_access_logs() -> None:
     assert "log_format pii_safe" in config
     assert "access_log /var/log/nginx/access.log pii_safe" in config
     log_format = config.split("log_format pii_safe", 1)[1].split(";", 1)[0]
+    assert "$time_local" in log_format
     assert "$uri" in log_format
     assert "$request_uri" not in log_format and "$request" not in log_format
     assert '"--no-access-log"' in backend

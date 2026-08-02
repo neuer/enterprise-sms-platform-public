@@ -1376,9 +1376,11 @@ CREATE TABLE stat_daily (
 -- ─────────────── 服务器安全日报 ───────────────
 -- payload 只允许 render_security_daily_report.py 契约定义的脱敏 JSON；
 -- Resend Key 与收件地址由安全日报管理员页面维护，独立 mailer 只读取同步配置。
+-- v1.6.43：日报记录逐条保留；自动路径每天仅一条（部分唯一索引），
+-- 手动“立即生成”每次新增记录，历史记录不覆盖。
 CREATE TABLE security_daily_report (
     id                BIGSERIAL PRIMARY KEY,
-    report_date       DATE NOT NULL UNIQUE,
+    report_date       DATE NOT NULL,
     period_start      TIMESTAMPTZ NOT NULL,
     period_end        TIMESTAMPTZ NOT NULL,
     status             VARCHAR(16) NOT NULL
@@ -1408,6 +1410,9 @@ CREATE INDEX idx_security_daily_report_status
     ON security_daily_report(status,report_date DESC);
 CREATE INDEX idx_security_daily_report_delivery
     ON security_daily_report(delivery_status,report_date DESC);
+CREATE UNIQUE INDEX security_daily_report_report_date_key
+    ON security_daily_report(report_date)
+    WHERE generation_source='auto';
 
 CREATE TABLE security_daily_delivery_request (
     request_id       UUID PRIMARY KEY,

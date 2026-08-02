@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -14,8 +15,11 @@ from app.services.security_daily import (
     SecurityDailyConfiguration,
     SecurityDailyConfigurationUpdate,
     SecurityDailyControlError,
+    SecurityDailyDeliveryRequest,
+    SecurityDailyNotFound,
     SecurityDailyOverview,
     SecurityDailyPage,
+    SecurityDailyPreview,
     SecurityDailyQuery,
     SecurityDailyReportRecord,
     SecurityDailyUnavailable,
@@ -97,6 +101,42 @@ class FakeService:
         if self.generate_error is not None:
             raise self.generate_error
         return self.generated
+
+    async def get_report(self, report_id: int) -> SecurityDailyReportRecord:
+        if report_id != self.generated.id:
+            raise SecurityDailyNotFound(str(report_id))
+        return self.generated
+
+    async def preview(self, report_id: int) -> SecurityDailyPreview:
+        if report_id != self.generated.id:
+            raise SecurityDailyNotFound(str(report_id))
+        raise SecurityDailyUnavailable("日报数据不可用，不能生成预览")
+
+    async def request_delivery(
+        self,
+        report_id: int,
+        action: str,
+        *,
+        principal: object | None = None,
+        ip: str | None = None,
+        system: bool = False,
+        payload_override: dict[str, object] | None = None,
+    ) -> SecurityDailyDeliveryRequest:
+        if report_id != self.generated.id:
+            raise SecurityDailyNotFound(str(report_id))
+        return SecurityDailyDeliveryRequest(
+            request_id=UUID(int=0),
+            report_date=self.generated.report_date,
+            action=action,  # type: ignore[arg-type]
+            state="pending",
+            requested_at=datetime(2026, 8, 1, 8, tzinfo=UTC),
+            idempotent=False,
+        )
+
+    @staticmethod
+    def timeline(record: SecurityDailyReportRecord) -> list[dict[str, object]]:
+        del record
+        return []
 
 
 def overview(
@@ -301,3 +341,71 @@ def test_unexpected_list_failure_keeps_unified_500_error_without_partial_respons
     assert response.json()["code"] == "INTERNAL_ERROR"
     assert response.json()["message"] == "服务内部错误"
     assert "database detail" not in response.text
+
+
+def test_report_detail_is_keyed_by_record_id() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    http = client(service)
+
+    response = http.get(
+        "/api/v1/web/admin/security-daily/reports/42",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == 42
+    assert response.json()["report_date"] == "2026-07-31"
+
+
+def test_report_detail_unknown_record_is_a_unified_404() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+
+    response = client(service).get(
+        "/api/v1/web/admin/security-daily/reports/999",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "NOT_FOUND"
+
+
+def test_send_and_retry_are_keyed_by_record_id() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    http = client(service)
+
+    send = http.post(
+        "/api/v1/web/admin/security-daily/reports/42/send",
+        headers={"Authorization": "Bearer jwt"},
+        json={"confirm": True},
+    )
+    retry = http.post(
+        "/api/v1/web/admin/security-daily/reports/42/retry",
+        headers={"Authorization": "Bearer jwt"},
+        json={"confirm": True},
+    )
+
+    assert send.status_code == 202
+    assert send.json()["request_id"] == "00000000-0000-0000-0000-000000000000"
+    assert retry.status_code == 202
+    assert retry.json()["action"] == "retry"
