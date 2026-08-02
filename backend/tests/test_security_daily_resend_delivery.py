@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import yaml
@@ -121,7 +121,12 @@ def test_delivery_uses_exact_endpoint_safe_headers_and_rendered_variants() -> No
         sleep=lambda _delay: None,
     )
 
-    receipt = client.send(report, recipients=("lin.tong@example.com",))
+    request_id = UUID("11111111-2222-3333-4444-555555555555")
+    receipt = client.send(
+        report,
+        recipients=("lin.tong@example.com",),
+        request_id=request_id,
+    )
 
     assert receipt.email_id == "email-123"
     assert receipt.report_date == "2026-07-15"
@@ -130,7 +135,7 @@ def test_delivery_uses_exact_endpoint_safe_headers_and_rendered_variants() -> No
     assert headers == {
         "Authorization": "Bearer re_sensitive_value",
         "Content-Type": "application/json",
-        "Idempotency-Key": "security-daily-2026-07-15",
+        "Idempotency-Key": f"security-daily-2026-07-15-{request_id}",
         "User-Agent": "sms-platform-security-daily/1.0",
     }
     payload = json.loads(encoded)
@@ -159,12 +164,51 @@ def test_transient_failure_retries_with_the_same_idempotent_request() -> None:
         sleep=delays.append,
     )
 
-    receipt = client.send(report, recipients=("lin.tong@example.com",))
+    request_id = UUID("22222222-3333-4444-5555-666666666666")
+    receipt = client.send(
+        report,
+        recipients=("lin.tong@example.com",),
+        request_id=request_id,
+    )
 
     assert receipt.email_id == "email-456"
     assert delays == [1.0, 2.0]
     assert len(transport.requests) == 3
     assert transport.requests[0] == transport.requests[1] == transport.requests[2]
+    assert (
+        transport.requests[0][0]["Idempotency-Key"]
+        == f"security-daily-2026-07-15-{request_id}"
+    )
+
+
+def test_regenerated_delivery_uses_a_fresh_idempotency_key() -> None:
+    module = _module()
+    report = module.renderer.load_report(SAMPLE)
+    transport = FakeTransport(
+        [
+            (200, b'{"id":"email-first"}'),
+            (200, b'{"id":"email-second"}'),
+        ]
+    )
+    client = module.ResendClient(
+        api_key="re_sensitive_value",
+        transport=transport,
+        sleep=lambda _delay: None,
+    )
+
+    client.send(
+        report,
+        recipients=("lin.tong@example.com",),
+        request_id=UUID("33333333-4444-5555-6666-777777777777"),
+    )
+    client.send(
+        report,
+        recipients=("lin.tong@example.com",),
+        request_id=UUID("44444444-5555-6666-7777-888888888888"),
+    )
+
+    keys = [request[0]["Idempotency-Key"] for request in transport.requests]
+    assert len(set(keys)) == 2
 
 
 @pytest.mark.parametrize(
