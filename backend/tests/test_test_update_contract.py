@@ -456,6 +456,7 @@ def test_each_migration_source_sets_migration_changed(
         "deploy/scripts/send_security_daily_report_resend.py",
         "deploy/security-report/Dockerfile",
         "deploy/security-report/docker-compose.yml",
+        "deploy/templates/security_daily_report.html",
     ],
 )
 def test_classifies_vendor_live_control_changes_as_high_risk(path: str) -> None:
@@ -666,6 +667,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/TEST-MANUAL.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
+            "docs/previews/security-daily-report-sample.html",
             "PROGRESS.md",
         ]
     )
