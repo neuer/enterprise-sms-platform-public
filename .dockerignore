@@ -7,6 +7,7 @@ deploy/security-report/runtime/
 deploy/security-report/config/recipients.txt
 deploy/security-report-control/
 deploy/security-report-config/
+deploy/security-report-nginx/
 **/node_modules/
 **/.venv/
 **/dist/

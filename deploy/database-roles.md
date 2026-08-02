@@ -32,6 +32,11 @@ default privileges 明确不向运行角色授权，因此新增表或序列必�
 所有运行角色在 `audit_log` 上都没有 `UPDATE`、`DELETE` 或 `TRUNCATE`。callback 角色没有账号、
 Provider、应用 Key 或 `sys_config` 写权限。
 
+安全日报生成只读视图 `security_daily_audit_evidence` 仅暴露
+`created_at/actor/actor_subject_kind/role/ip/action/object_type/object_id`
+非载荷列，`sms_send` 持有该视图 SELECT，用于生成脱敏审计摘要；审计主表的
+`before_val/after_val` 载荷仍不对任何运行 worker 开放。
+
 运行连接固定 `search_path=pg_catalog,public`。provision 同时撤销数据库的 PUBLIC
 `TEMPORARY` 与 `CONNECT`，public schema 的 PUBLIC `CREATE` 也被撤销，避免临时对象或
 同名对象劫持高风险未限定名写入。

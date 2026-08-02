@@ -161,6 +161,16 @@ prepare() {
   ensure_dev_env
   validate_dev_env
   ensure_dev_secrets
+  # nginx(UID 101) 需要可写目录落盘脱敏访问日志；root 环境按固定属主收紧，
+  # 普通开发账号回退为可写目录，避免 Docker 自动创建 root 属主目录导致 web 重启。
+  local nginx_log_dir="$ROOT/deploy/security-report-nginx"
+  install -d "$nginx_log_dir"
+  if [[ "$(id -u)" == 0 ]]; then
+    chown 101:101 "$nginx_log_dir"
+    chmod 0750 "$nginx_log_dir"
+  else
+    chmod 0777 "$nginx_log_dir"
+  fi
   printf '开发配置与 secrets 已准备完成\n'
 }
 

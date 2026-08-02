@@ -126,6 +126,9 @@ class FakeRepository:
         self.failed: list[tuple[UUID, str]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
 
+    async def audit_evidence(self, period_start: object, period_end: object) -> None:
+        return None
+
     async def configuration(self) -> SecurityDailyConfiguration:
         return SecurityDailyConfiguration(
             enabled=True,
@@ -148,7 +151,7 @@ class FakeRepository:
             configuration_state="ready",
             schedule_time="08:00",
             timezone="Asia/Shanghai",
-            period_description="汇总前一上海自然日",
+            period_description="汇总前一自然日（北京时间）",
             last_generated_at=self.record.generated_at,
             last_delivered_at=None,
             next_scheduled_at=now,

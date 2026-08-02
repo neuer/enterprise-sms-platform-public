@@ -252,6 +252,8 @@ def _check_raw_sql(
             "CREATE SEQUENCE ",
             "CREATE OR REPLACE FUNCTION ",
             "CREATE TRIGGER ",
+            "CREATE OR REPLACE VIEW ",
+            "CREATE VIEW ",
         )
     ):
         return
