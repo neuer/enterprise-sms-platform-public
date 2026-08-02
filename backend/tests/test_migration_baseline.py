@@ -671,7 +671,7 @@ def test_security_daily_generation_source_migration_is_expand_only() -> None:
 
 def test_security_daily_records_append_and_auto_daily_stays_singleton() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    revision = BACKEND / "migrations/versions/0046_security_daily_append_records.py"
+    revision = BACKEND / "migrations/versions/0046_security_daily_append.py"
     source = revision.read_text(encoding="utf-8")
 
     assert "-- v1.6.43：" in schema
@@ -688,13 +688,13 @@ def test_security_daily_records_append_and_auto_daily_stays_singleton() -> None:
     ).read_text(encoding="utf-8")
 
     spec = importlib.util.spec_from_file_location(
-        "security_daily_append_records_revision",
+        "security_daily_append_revision",
         revision,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "0046_security_daily_append_records"
+    assert module.revision == "0046_security_daily_append"
     assert module.down_revision == "0045_security_daily_source"
 
 
