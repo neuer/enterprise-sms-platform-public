@@ -28,6 +28,7 @@ var/exports/
 var/backups/
 *.enc
 *.log
+deploy/security-report-nginx/
 
 # IDE / OS
 .DS_Store
