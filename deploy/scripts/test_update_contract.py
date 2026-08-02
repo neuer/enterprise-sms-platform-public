@@ -253,6 +253,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "PRD.md",
         "PROGRESS.md",
         "deploy/README.md",
+        "docs/previews/security-daily-report-sample.html",
         "deploy/prometheus.example.yml",
         "deploy/redis-ha.md",
         "deploy/vendor-egress.md",
@@ -292,6 +293,12 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
 _WEB_HIGH_RISK_EXACT = frozenset(
     {
         "deploy/nginx-security-headers.conf",
+    }
+)
+_MAILER_HIGH_RISK_EXACT = frozenset(
+    {
+        # 安全日报 mailer 模板：随独立 mailer 镜像发布，不参与 api/web 快速更新构建。
+        "deploy/templates/security_daily_report.html",
     }
 )
 _INFRA_HIGH_RISK_EXACT = frozenset(
@@ -641,6 +648,7 @@ def protected_change_category(
 def _is_high_risk(path: str) -> bool:
     return (
         path in _WEB_HIGH_RISK_EXACT
+        or path in _MAILER_HIGH_RISK_EXACT
         or path in _INFRA_HIGH_RISK_EXACT
         or protected_change_category(path) is not None
     )
@@ -663,6 +671,8 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
             high_risk_paths.add(path)
             if path in _WEB_HIGH_RISK_EXACT:
                 components.add("web")
+            elif path in _MAILER_HIGH_RISK_EXACT:
+                components.add("api")
             elif path.startswith(("backend/", "deploy/", "scripts/")):
                 components.add("api")
             if path.startswith("frontend/"):
