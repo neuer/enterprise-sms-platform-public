@@ -125,8 +125,70 @@ describe("安全日报页面", () => {
     expect(wrapper.text()).toContain("投递失败")
     expect(wrapper.text()).toContain("数据不可用")
     expect(wrapper.text()).toContain("1 人（只展示数量）")
+    expect(wrapper.text()).toContain("2026-07-14 08:00:00")
+    expect(wrapper.text()).not.toContain("2026/7/14")
     expect(wrapper.text()).not.toContain("Resend Key")
     expect(wrapper.text()).not.toContain("security-owner@example.com")
+    wrapper.unmount()
+  })
+
+  it("列表对投递失败行展示处理入口，已投递报告不提供重复投递", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.findAll("button").some((button) => button.text().includes("处理失败"))).toBe(true)
+
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(1)!.trigger("click")
+    await flushPromises()
+    expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
+    expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("投递失败报告详情提供重试投递而不是手动投递", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(2)!.trigger("click")
+    await flushPromises()
+
+    expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(true)
+    expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("筛选生效时空态提示匹配筛选条件且不显示生成引导", async () => {
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    const selects = wrapper.findAllComponents({ name: "ElSelect" })
+    selects[0].vm.$emit("update:modelValue", "high")
+    selects[0].vm.$emit("change", "high")
+    await flushPromises()
+
+    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "high", page: 1 }),
+    )
+    expect(wrapper.text()).toContain("没有符合筛选条件的安全日报")
+    expect(wrapper.text()).not.toContain("暂无已生成安全日报；可点击")
+    wrapper.unmount()
+  })
+
+  it("起始日期晚于结束日期时不发起列表请求", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const pickers = wrapper.findAllComponents({ name: "ElDatePicker" })
+
+    pickers[0].vm.$emit("update:modelValue", "2026-07-20")
+    pickers[0].vm.$emit("change", "2026-07-20")
+    await flushPromises()
+    pickers[1].vm.$emit("update:modelValue", "2026-07-10")
+    pickers[1].vm.$emit("change", "2026-07-10")
+    await flushPromises()
+
+    expect(api.listSecurityDailyReports).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 
@@ -160,6 +222,66 @@ describe("安全日报页面", () => {
       recipients: ["ops@example.com", "security@example.com"],
       resend_api_key: "re_ui_test",
     })
+    wrapper.unmount()
+  })
+
+  it("收件人地址无效或大小写重复时阻止保存并给出提示", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await flushPromises()
+
+    await wrapper.find("textarea").setValue("not-an-email")
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("收件人地址无效")
+    expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
+
+    await wrapper.find("textarea").setValue("Ops@example.com\nops@example.com")
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("收件人不能重复")
+    expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it("勾选清空 Key 时禁用新 Key 输入并提交清空语义", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await flushPromises()
+
+    const passwordInput = wrapper.find("input[type='password']")
+    await passwordInput.setValue("re_should_be_ignored")
+    await wrapper.get(".el-checkbox input").setValue(true)
+    expect(wrapper.find("input[type='password']").attributes("disabled")).toBeDefined()
+
+    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await flushPromises()
+    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
+      enabled: true,
+      recipients: ["security-owner@example.com"],
+      resend_api_key: "",
+    })
+    wrapper.unmount()
+  })
+
+  it("未配置 Key 时不展示清空入口", async () => {
+    api.getSecurityDailyConfiguration.mockResolvedValue({
+      enabled: false,
+      recipients: [],
+      resend_api_key_configured: false,
+      sender_domain: "reports.neuer.cn",
+      sender_address: "security-daily@reports.neuer.cn",
+    })
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("当前状态：未配置")
+    expect(wrapper.findAll("button").some((button) => button.text().includes("清空当前 Key"))).toBe(false)
+    expect(wrapper.find(".el-checkbox").exists()).toBe(false)
     wrapper.unmount()
   })
 

@@ -834,6 +834,63 @@ class TestUpdateManager:
             ) from None
 
 
+def _prepare_from_source(
+    store: StateStore,
+    operations: HostTestUpdateOperations,
+    *,
+    request: TestUpdateRequest,
+) -> None:
+    """执行 prepare，并在 root Git 操作失败后恢复 operator 读路径。
+
+    ``verify_source_scope`` 在进入 ``TestUpdateManager.prepare`` 之前可能执行
+    root-owned fetch/checkout。权限恢复必须覆盖这段前置阶段，否则任一 Git
+    失败都会把日常更新用户锁在 checkout 外，下一次正式入口只能失败关闭。
+    """
+
+    prepare_error: Exception | None = None
+    try:
+        scope = operations.verify_source_scope()
+        operations.load_and_validate_images()
+        TestUpdateManager(store, operations).prepare(
+            scope,
+            update_id=request.update_id,
+            commit=request.commit,
+            migration_from=request.migration_from,
+            migration_target=request.migration_target,
+        )
+    except Exception as error:
+        prepare_error = error
+        with contextlib.suppress(Exception):
+            store.block(
+                TestUpdateState.PREPARED,
+                step="prepare",
+                error_type="validation_failed",
+                actual_commit=request.base_commit,
+                actual_migration_head=request.migration_from,
+            )
+        raise
+    finally:
+        # This is deliberately outside the error handler: a failed restoration
+        # is itself a hard failure and must never be reported as a successful
+        # prepare. The helper only touches .git and tracked worktree paths.
+        try:
+            _restore_operator_git_read_access(operations.root)
+        except Exception as error:
+            with contextlib.suppress(Exception):
+                store.block(
+                    TestUpdateState.PREPARED,
+                    step="git_permissions",
+                    error_type="validation_failed",
+                    actual_commit=request.base_commit,
+                    actual_migration_head=request.migration_from,
+                )
+            if prepare_error is None:
+                raise
+            raise TestUpdateManagerError(
+                "operator Git metadata access could not be restored"
+            ) from error
+
+
 _UPDATE_KINDS = {"web-only", "backend-safe"}
 _UPDATE_PAUSE_RE = re.compile(r"test-update:[A-Za-z0-9_-]{1,64}")
 
@@ -1944,26 +2001,7 @@ def main(argv: list[str] | None = None) -> int:
             raise TestUpdateManagerError("update kind is invalid")
         if args.command == "prepare":
             store.create(raw)
-            try:
-                scope = operations.verify_source_scope()
-                operations.load_and_validate_images()
-                TestUpdateManager(store, operations).prepare(
-                    scope,
-                    update_id=request.update_id,
-                    commit=request.commit,
-                    migration_from=request.migration_from,
-                    migration_target=request.migration_target,
-                )
-            except Exception:
-                with contextlib.suppress(Exception):
-                    store.block(
-                        TestUpdateState.PREPARED,
-                        step="prepare",
-                        error_type="validation_failed",
-                        actual_commit=request.base_commit,
-                        actual_migration_head=request.migration_from,
-                    )
-                raise
+            _prepare_from_source(store, operations, request=request)
         elif args.command == "apply":
             TestUpdateApply(store, operations).apply(
                 kind,  # type: ignore[arg-type]

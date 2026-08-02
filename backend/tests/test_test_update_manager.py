@@ -18,6 +18,7 @@ from test_update_apply import BACKEND_SERVICES  # noqa: E402
 from test_update_contract import ChangedScope  # noqa: E402
 from test_update_manager import (  # noqa: E402
     HostTestUpdateOperations,
+    _prepare_from_source,
     _restore_operator_git_read_access,
     _restore_operator_worktree_read_access,
 )
@@ -125,6 +126,43 @@ def test_restore_operator_git_read_access_rejects_nested_symlink(
 
     with pytest.raises(ManagerError, match="metadata"):
         _restore_operator_git_read_access(tmp_path)
+
+
+def test_prepare_restores_operator_git_access_when_source_verification_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    git_dir.chmod(0o750)
+    index = git_dir / "index"
+    index.write_text("metadata", encoding="utf-8")
+    index.chmod(0o600)
+    monkeypatch.setattr(update_manager_module, "_tracked_worktree_paths", lambda _: [])
+
+    class Operations:
+        root = tmp_path
+
+        def verify_source_scope(self) -> ChangedScope:
+            raise RuntimeError("source checkout failed")
+
+        def load_and_validate_images(self) -> None:
+            raise AssertionError("image loading must not run")
+
+    request = SimpleNamespace(
+        update_id="test-permission-recovery",
+        base_commit="0" * 40,
+        commit="1" * 40,
+        migration_from="0015",
+        migration_target="0015",
+    )
+    store = FakeStore()
+
+    with pytest.raises(RuntimeError, match="source checkout failed"):
+        _prepare_from_source(store, Operations(), request=request)  # type: ignore[arg-type]
+
+    assert store.state is State.BLOCKED
+    assert stat.S_IMODE(index.stat().st_mode) & stat.S_IRGRP
 
 
 class FakePrepareOperations:

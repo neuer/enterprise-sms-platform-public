@@ -581,11 +581,20 @@ def _timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:
     if record.generated_at is not None:
         events.append({"type": "generated", "at": record.generated_at, "label": "报告生成"})
     if record.last_error_at is not None:
+        if record.generation_status == "unavailable":
+            event_type = "evidence_unavailable"
+            label = "证据不可用"
+        elif record.generation_status == "failed":
+            event_type = "generation_failed"
+            label = "生成失败"
+        else:
+            event_type = "delivery_failed"
+            label = "投递失败"
         events.append(
             {
-                "type": "failed",
+                "type": event_type,
                 "at": record.last_error_at,
-                "label": "投递失败",
+                "label": label,
                 "detail": record.last_error,
             }
         )

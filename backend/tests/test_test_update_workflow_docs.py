@@ -53,6 +53,7 @@ def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
         "约 1 分 20 秒",
         "state=verified",
         "operator Git",
+        "恢复 `.git` 与 tracked worktree 的 operator 读路径",
         "浏览器",
         "接口",
         "不重复",

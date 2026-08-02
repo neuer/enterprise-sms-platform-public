@@ -37,6 +37,28 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 
 主 Compose API 需要挂载 `./security-report-config` 和 `./security-report-control`；独立 mailer 只读前者、读写后者。日报生成任务仍由 bulk worker 每分钟检查，在上海时间 08:00 后消费前一自然日的脱敏快照；缺少快照时记录 `unavailable`，不会用 0 伪造指标。
 
+## 证据采集器（一次性安装，之后自动运行）
+
+日报数据不是 mailer 生成的。主机侧需要安装同一提交中的
+`security-report-collector.service` 和 `.timer`；采集器只读取固定主机日志，写入
+`security-report-control/incoming/YYYY-MM-DD.json`，只保留聚合计数与覆盖状态，不写入
+日志原文、IP、账号、请求路径或平台凭据。它默认在 07:50（Asia/Shanghai）运行，供
+08:00 的日报任务消费；Web/API、管理审计或运行态探针未接入时，报告会保持 `attention`
+并在“证据范围”显示缺口，不会用零值冒充完整覆盖。
+
+由授权运维在主机上安装一次：
+
+```bash
+sudo install -m 0644 deploy/systemd/security-report-collector.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/security-report-collector.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now security-report-collector.timer
+```
+
+安装后不需要在页面维护采集器；页面只负责日报启停、Resend 配置、生成、预览和投递。
+若 `incoming` 没有对应日期文件，“立即生成”会明确记录“证据不可用”，不会把示例 JSON
+当作真实报告。
+
 ## 页面验收
 
 1. `/security-daily` 概览显示“配置完整”、收件人数和固定发件地址。

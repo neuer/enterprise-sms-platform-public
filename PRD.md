@@ -270,6 +270,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
 - 配置写入 `sys_config.security_daily_resend_api_key` 与 `security_daily_recipient`，配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
 - 独立 mailer 仍固定使用 `reports.neuer.cn` 发件域名和 `api.resend.com`，平台 API/worker/beat 不直接访问 Resend；日报正文只允许已脱敏结构化 payload，发送、重试、预览和 `unavailable` 语义保持不变
+- 主机侧 `security-report-collector` 在 08:00 前把前一上海自然日的日志聚合为脱敏结构化快照；缺少全部证据源时必须保持 `generation_status=unavailable`，不得用示例或零值替代。部分来源缺失但仍有真实来源时可生成 `attention` 报告，并在 `coverage` 明确列出缺口。
 #### FR-20 审计日志
 - 覆盖全部写操作与敏感读（解密查看/导出/报文重放/回调重推/队列恢复/角色覆盖）
 - **防 PII（v1.2）**：审计记录只存号码数量与批次引用，**禁止存手机号列表明文**

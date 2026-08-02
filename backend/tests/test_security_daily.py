@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -19,6 +20,7 @@ from app.services.security_daily import (
     SecurityDailyReportRecord,
     SecurityDailyService,
     SecurityDailyValidationError,
+    _timeline,
     resolve_configuration_state,
     validate_security_daily_payload,
 )
@@ -229,6 +231,21 @@ def record() -> SecurityDailyReportRecord:
         updated_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
         payload=payload(),
     )
+
+
+def test_unavailable_report_timeline_does_not_claim_delivery_failed() -> None:
+    unavailable = replace(
+        record(),
+        generation_status="unavailable",
+        last_error="安全日报证据源不可用",
+        last_error_at=datetime(2026, 7, 16, 8, 1, tzinfo=SHANGHAI),
+        payload=None,
+    )
+
+    events = _timeline(unavailable)
+
+    assert events[-1]["type"] == "evidence_unavailable"
+    assert events[-1]["label"] == "证据不可用"
 
 
 @pytest.mark.asyncio
