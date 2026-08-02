@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import "../styles/workspace.css"
+
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
@@ -71,6 +73,8 @@ const generationStatus = ref<GenerationStatus | "">("")
 const deliveryStatus = ref<DeliveryStatus | "">("")
 const loading = ref(false)
 const detailLoading = ref(false)
+const delivering = ref(false)
+const previewLoading = ref(false)
 const overviewErrorMessage = ref("")
 const reportsErrorMessage = ref("")
 const selected = ref<SecurityDailyReport | null>(null)
@@ -94,18 +98,21 @@ const coverageGaps = computed(() =>
     (item) => item.tone !== "good" || item.status !== "完整",
   ) ?? [],
 )
-const overviewStatus = computed(() => overview.value?.delivery_status ?? null)
+const hasActiveFilters = computed(() =>
+  Boolean(dateFrom.value || dateTo.value || status.value || generationStatus.value || deliveryStatus.value),
+)
 const overviewDeliveryStatusLabel = computed(() => {
   if (!overview.value) return "数据不可用"
-  return overviewStatus.value ? deliveryLabel(overviewStatus.value) : "尚未生成"
+  return overview.value.delivery_status ? deliveryLabel(overview.value.delivery_status) : "尚未生成"
 })
 const reportsEmptyText = computed(() => {
   if (reportsErrorMessage.value) return "安全日报记录暂不可用，请刷新重试"
+  if (hasActiveFilters.value) return "没有符合筛选条件的安全日报"
   if (overview.value?.configuration_state === "ready") return "暂无已生成安全日报"
   return "暂无安全日报记录"
 })
 const reportsEmptyHint = computed(() => {
-  if (loading.value || reportsErrorMessage.value || total.value > 0 || !overview.value) return ""
+  if (loading.value || reportsErrorMessage.value || total.value > 0 || !overview.value || hasActiveFilters.value) return ""
   if (!overview.value.enabled) return "安全日报尚未启用，启用后才会按固定时间生成日报。"
   if (overview.value.configuration_state !== "ready") return "请先完成安全日报配置，系统才会按固定时间生成日报。"
   const nextSchedule = overview.value.next_scheduled_at
@@ -167,7 +174,22 @@ function tagType(value: string): "success" | "warning" | "danger" | "info" {
 function displayMoment(value: string | null | undefined): string {
   if (!value) return "—"
   const parsed = new Date(value)
-  return Number.isNaN(parsed.valueOf()) ? "数据不可用" : parsed.toLocaleString("zh-CN", { hour12: false })
+  if (Number.isNaN(parsed.valueOf())) return "数据不可用"
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(parsed)
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ""
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
+}
+
+function applyFilters(): void {
+  if (dateFrom.value && dateTo.value && dateFrom.value > dateTo.value) {
+    ElMessage.warning("起始日期不能晚于结束日期")
+    return
+  }
+  page.value = 1
+  void loadReports()
 }
 
 async function loadReports(): Promise<void> {
@@ -232,14 +254,34 @@ function parseRecipients(): string[] {
     .filter(Boolean)
 }
 
+const EMAIL_PATTERN = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/
+
+function validateRecipients(recipients: string[]): string {
+  if (recipients.length > 3) return "收件人最多 3 个"
+  const invalid = recipients.find(
+    (item) => item.length > 254 || !EMAIL_PATTERN.test(item) || item.split("@")[0].length > 64,
+  )
+  if (invalid) return `收件人地址无效：${invalid}`
+  const seen = new Set<string>()
+  const duplicate = recipients.find((item) => {
+    const key = item.toLowerCase()
+    if (seen.has(key)) return true
+    seen.add(key)
+    return false
+  })
+  return duplicate ? `收件人不能重复：${duplicate}` : ""
+}
+
 async function saveConfiguration(): Promise<void> {
+  const recipients = parseRecipients()
+  const validationError = validateRecipients(recipients)
+  if (validationError) {
+    configErrorMessage.value = validationError
+    return
+  }
   configSaving.value = true
   configErrorMessage.value = ""
   try {
-    const recipients = parseRecipients()
-    if (recipients.length > 3) {
-      throw new Error("收件人最多 3 个")
-    }
     currentConfiguration.value = await updateSecurityDailyConfiguration({
       enabled: configEnabled.value,
       recipients,
@@ -298,18 +340,21 @@ async function openReport(reportDate: string): Promise<void> {
 }
 
 async function openPreview(): Promise<void> {
-  if (!selected.value) return
+  if (!selected.value || previewLoading.value) return
+  previewLoading.value = true
   try {
     const preview = await previewSecurityDailyReport(selected.value.report_date)
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, "预览暂不可用，请刷新重试"))
+  } finally {
+    previewLoading.value = false
   }
 }
 
 async function requestDelivery(action: "send" | "retry"): Promise<void> {
-  if (!selected.value) return
+  if (!selected.value || delivering.value) return
   const operation = action === "retry" ? "重试投递" : "手动投递"
   try {
     await ElMessageBox.confirm(
@@ -317,6 +362,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
       "确认安全日报投递",
       { confirmButtonText: "确认", cancelButtonText: "取消", type: "warning" },
     )
+    delivering.value = true
     if (action === "retry") {
       await retrySecurityDailyReport(selected.value.report_date)
     } else {
@@ -328,15 +374,25 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
   } catch (error) {
     if (error === "cancel" || error === "close") return
     ElMessage.error(apiErrorMessage(error, "投递请求失败，请刷新重试"))
+  } finally {
+    delivering.value = false
   }
 }
 
 function canSend(report: SecurityDailyReport): boolean {
-  return Boolean(overview.value?.configuration_state === "ready" && report.generation_status === "ready" && report.payload)
+  return Boolean(
+    overview.value?.configuration_state === "ready"
+    && report.generation_status === "ready"
+    && report.delivery_status === "not_sent",
+  )
 }
 
 function canRetry(report: SecurityDailyReport): boolean {
-  return Boolean(overview.value?.configuration_state === "ready" && report.generation_status === "ready" && report.payload && report.delivery_status === "failed")
+  return Boolean(
+    overview.value?.configuration_state === "ready"
+    && report.generation_status === "ready"
+    && report.delivery_status === "failed",
+  )
 }
 
 function openRow(row: SecurityDailyReport): void {
@@ -348,18 +404,18 @@ onMounted(() => void refresh())
 
 <template>
   <main class="workspace security-daily-page">
-    <header class="workspace-header">
+    <section class="page-heading security-daily-heading">
       <div>
-        <div class="breadcrumb"><span>运维</span><b>/</b><strong>安全日报</strong></div>
+        <p class="eyebrow">SECURITY DAILY / 安全日报</p>
         <h1>服务器安全日报</h1>
         <p>固定 08:00（Asia/Shanghai）汇总前一上海自然日；页面只展示脱敏结构化证据。</p>
       </div>
-      <div>
+      <div class="security-daily-heading-actions">
         <el-button plain :loading="configLoading" @click="openConfiguration">配置邮件</el-button>
         <el-button plain :disabled="!overview?.enabled" :loading="generationLoading" @click="generateReport">立即生成</el-button>
         <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
       </div>
-    </header>
+    </section>
 
     <el-alert v-if="overviewErrorMessage" :title="overviewErrorMessage" type="error" show-icon :closable="false" />
     <el-alert v-if="reportsErrorMessage" :title="reportsErrorMessage" type="error" show-icon :closable="false" />
@@ -388,39 +444,37 @@ onMounted(() => void refresh())
       </dl>
     </section>
 
-    <el-card class="workspace-card" shadow="never">
+    <el-card shadow="never">
       <template #header>
         <div class="card-heading">
           <div><span class="section-index">01 / REPORTS</span><strong>日报记录</strong></div>
           <div class="security-daily-filters">
-            <el-date-picker v-model="dateFrom" type="date" value-format="YYYY-MM-DD" clearable placeholder="起始日期" size="small" @change="page = 1; loadReports()" />
-            <el-date-picker v-model="dateTo" type="date" value-format="YYYY-MM-DD" clearable placeholder="结束日期" size="small" @change="page = 1; loadReports()" />
-            <el-select v-model="status" clearable placeholder="安全状态" size="small" @change="page = 1; loadReports()">
+            <el-date-picker v-model="dateFrom" type="date" value-format="YYYY-MM-DD" clearable placeholder="起始日期" size="small" @change="applyFilters" />
+            <el-date-picker v-model="dateTo" type="date" value-format="YYYY-MM-DD" clearable placeholder="结束日期" size="small" @change="applyFilters" />
+            <el-select v-model="status" clearable placeholder="安全状态" size="small" @change="applyFilters">
               <el-option label="正常" value="normal" /><el-option label="关注" value="attention" /><el-option label="高风险" value="high" />
             </el-select>
-            <el-select v-model="generationStatus" clearable placeholder="生成状态" size="small" @change="page = 1; loadReports()">
-              <el-option label="已生成" value="ready" /><el-option label="生成失败" value="failed" /><el-option label="数据不可用" value="unavailable" />
+            <el-select v-model="generationStatus" clearable placeholder="生成状态" size="small" @change="applyFilters">
+              <el-option label="生成中" value="pending" /><el-option label="已生成" value="ready" /><el-option label="生成失败" value="failed" /><el-option label="数据不可用" value="unavailable" />
             </el-select>
-            <el-select v-model="deliveryStatus" clearable placeholder="投递状态" size="small" @change="page = 1; loadReports()">
-              <el-option label="未投递" value="not_sent" /><el-option label="等待 mailer" value="pending" /><el-option label="已投递" value="sent" /><el-option label="投递失败" value="failed" />
+            <el-select v-model="deliveryStatus" clearable placeholder="投递状态" size="small" @change="applyFilters">
+              <el-option label="未投递" value="not_sent" /><el-option label="等待 mailer" value="pending" /><el-option label="投递中" value="sending" /><el-option label="已投递" value="sent" /><el-option label="投递失败" value="failed" />
             </el-select>
           </div>
         </div>
       </template>
       <el-alert v-if="reportsEmptyHint" :title="reportsEmptyHint" type="info" show-icon :closable="false" />
       <el-table v-loading="loading" :data="reports" row-key="id" :empty-text="reportsEmptyText" @row-click="openRow">
-        <el-table-column prop="report_date" label="报告日期" width="130" />
-        <el-table-column label="安全状态" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
+        <el-table-column prop="report_date" label="报告日期" width="120" />
+        <el-table-column label="安全状态" width="105"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="生成" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.generation_status)" size="small">{{ generationLabel(scope.row.generation_status) }}</el-tag></template></el-table-column>
         <el-table-column label="投递" width="125"><template #default="scope"><el-tag :type="tagType(scope.row.delivery_status)" size="small">{{ deliveryLabel(scope.row.delivery_status) }}</el-tag></template></el-table-column>
-        <el-table-column prop="recipient_count" label="收件人数" width="95" />
-        <el-table-column label="统计窗口" min-width="260"><template #default="scope">{{ displayMoment(scope.row.period_start) }} — {{ displayMoment(scope.row.period_end) }}</template></el-table-column>
-        <el-table-column label="生成时间" width="180"><template #default="scope">{{ displayMoment(scope.row.generated_at) }}</template></el-table-column>
-        <el-table-column label="投递时间" width="180"><template #default="scope">{{ displayMoment(scope.row.delivered_at) }}</template></el-table-column>
-        <el-table-column prop="retry_count" label="重试" width="70" />
+        <el-table-column prop="recipient_count" label="收件人数" width="90" />
+        <el-table-column label="生成时间" width="170"><template #default="scope"><time>{{ displayMoment(scope.row.generated_at) }}</time></template></el-table-column>
+        <el-table-column label="投递时间" width="170"><template #default="scope"><time>{{ displayMoment(scope.row.delivered_at) }}</time></template></el-table-column>
+        <el-table-column prop="retry_count" label="重试" width="65" />
         <el-table-column label="最新错误" min-width="180"><template #default="scope">{{ scope.row.last_error ?? "—" }}</template></el-table-column>
-        <el-table-column label="更新时间" width="180"><template #default="scope">{{ displayMoment(scope.row.updated_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="190" fixed="right"><template #default="scope"><el-button link type="primary" @click.stop="openReport(scope.row.report_date)">查看详情</el-button><el-button v-if="canRetry(scope.row)" link type="warning" @click.stop="openReport(scope.row.report_date)">处理失败</el-button></template></el-table-column>
+        <el-table-column label="操作" width="170" fixed="right"><template #default="scope"><el-button link type="primary" @click.stop="openReport(scope.row.report_date)">查看详情</el-button><el-button v-if="canRetry(scope.row)" link type="warning" @click.stop="openReport(scope.row.report_date)">处理失败</el-button></template></el-table-column>
       </el-table>
       <el-pagination v-if="total > 20" v-model:current-page="page" class="security-daily-pagination" background layout="prev, pager, next" :page-size="20" :total="total" @current-change="loadReports" />
     </el-card>
@@ -429,8 +483,12 @@ onMounted(() => void refresh())
       <el-skeleton v-if="detailLoading" :rows="8" animated />
       <template v-else-if="selected">
         <div class="security-detail-heading">
-          <div><span class="section-index">{{ selected.report_date }}</span><h2>{{ statusLabel(selected.status) }} · {{ generationLabel(selected.generation_status) }}</h2></div>
-          <div class="security-detail-actions"><el-button plain @click="openPreview">安全预览</el-button><el-button v-if="canSend(selected)" type="primary" @click="requestDelivery('send')">手动投递</el-button><el-button v-if="canRetry(selected)" type="warning" @click="requestDelivery('retry')">重试投递</el-button></div>
+          <div>
+            <span class="section-index">{{ selected.report_date }}</span>
+            <h2>{{ statusLabel(selected.status) }} · {{ generationLabel(selected.generation_status) }}</h2>
+            <p class="security-detail-period">统计窗口 <time>{{ displayMoment(selected.period_start) }}</time> — <time>{{ displayMoment(selected.period_end) }}</time></p>
+          </div>
+          <div class="security-detail-actions"><el-button plain :loading="previewLoading" @click="openPreview">安全预览</el-button><el-button v-if="canSend(selected)" type="primary" :loading="delivering" @click="requestDelivery('send')">手动投递</el-button><el-button v-if="canRetry(selected)" type="warning" :loading="delivering" @click="requestDelivery('retry')">重试投递</el-button></div>
         </div>
         <el-alert v-if="!selected.payload" title="数据不可用：当前没有可展示的脱敏结构化报告，不生成或投递邮件。" type="warning" show-icon :closable="false" />
         <template v-else>
@@ -443,7 +501,7 @@ onMounted(() => void refresh())
           <section class="security-detail-section"><div class="section-heading"><span class="section-index">建议处置</span></div><div class="security-action-list"><article v-for="action in selected.payload.actions" :key="action.title"><el-tag :type="tagType(action.priority === 'high' ? 'high' : action.priority === 'medium' ? 'attention' : 'normal')" size="small">{{ action.priority }}</el-tag><div><strong>{{ action.title }}</strong><p>{{ action.detail }}</p></div></article></div></section>
           <section class="security-detail-section"><div class="section-heading"><span class="section-index">证据范围</span></div><el-alert v-if="coverageGaps.length" title="存在日志覆盖缺口" type="warning" show-icon :closable="false"><template #default><div v-for="item in coverageGaps" :key="`gap-${item.source}`">{{ item.source }}：{{ item.note }}</div></template></el-alert><div class="security-evidence-list"><div v-for="item in selected.payload.coverage" :key="item.source"><strong>{{ item.source }}</strong><span>{{ item.window }} · {{ item.note }}</span><el-tag :type="tagType(item.tone)" size="small">{{ item.status }}</el-tag></div></div></section>
         </template>
-        <section v-if="selected.timeline.length" class="security-detail-section"><div class="section-heading"><span class="section-index">投递时间线</span></div><ol class="security-timeline"><li v-for="event in selected.timeline" :key="`${event.type}-${event.at}`"><time>{{ displayMoment(event.at) }}</time><strong>{{ event.label }}</strong><span v-if="event.detail">{{ event.detail }}</span></li></ol></section>
+        <section v-if="selected.timeline.length" class="security-detail-section"><div class="section-heading"><span class="section-index">{{ selected.generation_status === "unavailable" || selected.generation_status === "failed" ? "状态时间线" : "投递时间线" }}</span></div><ol class="security-timeline"><li v-for="event in selected.timeline" :key="`${event.type}-${event.at}`"><time>{{ displayMoment(event.at) }}</time><strong>{{ event.label }}</strong><span v-if="event.detail">{{ event.detail }}</span></li></ol></section>
       </template>
     </el-drawer>
 
@@ -456,9 +514,9 @@ onMounted(() => void refresh())
           <el-switch v-model="configEnabled" active-text="启用" inactive-text="停用" />
         </el-form-item>
         <el-form-item label="Resend API Key">
-          <el-input v-model="configApiKey" type="password" show-password autocomplete="off" placeholder="留空保持当前 Key" />
+          <el-input v-model="configApiKey" type="password" show-password autocomplete="off" :disabled="clearConfigApiKey" placeholder="留空保持当前 Key" />
           <div class="form-tip">当前状态：{{ currentConfiguration?.resend_api_key_configured ? "已配置" : "未配置" }}；Key 不会回显。</div>
-          <el-checkbox v-model="clearConfigApiKey">清空当前 Key</el-checkbox>
+          <el-checkbox v-if="currentConfiguration?.resend_api_key_configured" v-model="clearConfigApiKey">清空当前 Key</el-checkbox>
         </el-form-item>
         <el-form-item label="收件人（每行一个，也可用逗号分隔，最多 3 个）">
           <el-input v-model="configRecipients" type="textarea" :rows="4" placeholder="security@example.com" />
