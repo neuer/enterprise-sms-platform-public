@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate SMS Platform security daily evidence before the 08:00 report
+
+[Timer]
+OnCalendar=*-*-* 07:50:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=security-report-collector.service
+
+[Install]
+WantedBy=timers.target

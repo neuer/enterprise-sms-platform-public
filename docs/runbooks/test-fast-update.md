@@ -173,7 +173,10 @@ SMS_COMPOSE=(
 - `prepare`：取得 lifecycle lock，验证 marker、请求、Git base/target、归档和 amd64
   image ID；原子暂停两条 lane。普通无迁移更新拒绝 submitting/retrying，但允许已有
   uncertain 由 reconcile 继续收敛；high-risk 或迁移更新额外拒绝 uncertain。有迁移时才
-  校验 expand-only 并创建仅密文 checkpoint。
+  校验 expand-only 并创建仅密文 checkpoint。prepare 无论在 root Git
+  fetch/checkout 前置阶段还是后续门禁阶段失败，都会先保持 fail closed，再
+  恢复 `.git` 与 tracked worktree 的 operator 读路径；恢复失败仍以 blocked 退出，不能记录
+  成功或要求人工 chmod/chown 作为日常流程。
 - `apply`：有迁移时先执行迁移；随后保存旧运行镜像身份、切换目标 commit 与不可变镜像，
   仅重建受影响服务；全过程不启动 mock-vendor、不触碰数据 volume。
 - `verify`：核对环境 mode、PostgreSQL recipient/迁移 head、服务集合、账本守恒和 pause

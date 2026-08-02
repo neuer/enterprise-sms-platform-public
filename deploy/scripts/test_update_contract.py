@@ -294,6 +294,9 @@ _INFRA_HIGH_RISK_EXACT = frozenset(
     {
         "deploy/redis-domain-entrypoint.sh",
         "deploy/redis-domain-healthcheck.sh",
+        "deploy/scripts/collect_security_daily_evidence.py",
+        "deploy/systemd/security-report-collector.service",
+        "deploy/systemd/security-report-collector.timer",
     }
 )
 _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
@@ -349,6 +352,7 @@ _PUBLIC_CUTOVER_HIGH_RISK_EXACT = frozenset(
         "deploy/postgres.Dockerfile",
         "deploy/provision-db-roles.sh",
         "deploy/redis.Dockerfile",
+        "deploy/scripts/collect_security_daily_evidence.py",
         "deploy/scripts/lifecycle_manager.py",
         "deploy/scripts/prepare_runtime_secrets.py",
         "deploy/scripts/release_manifest.py",
@@ -365,6 +369,8 @@ _PUBLIC_CUTOVER_HIGH_RISK_EXACT = frozenset(
         "deploy/systemd/sms-partition-maintenance.timer",
         "deploy/systemd/sms-restore-drill.service",
         "deploy/systemd/sms-restore-drill.timer",
+        "deploy/systemd/security-report-collector.service",
+        "deploy/systemd/security-report-collector.timer",
     }
 )
 

@@ -637,3 +637,15 @@
   材料只在确认本次临时目录后清理。完整执行合同见
   `docs/runbooks/public-baseline-activation.md`；该入口完成一次后退役，日常部署恢复
   `scripts/test_update.sh apply --ref origin/main`。
+
+## D061 安全日报由主机采集器提供脱敏证据快照
+
+- 决策：安全日报的主机证据由独立 `security-report-collector` timer 在 08:00 前聚合，
+  只向 `security-report-control/incoming` 写入无原文、无 IP、无账号和无请求路径的
+  结构化计数与覆盖状态。平台 API/worker 不读取主机日志；mailer 只消费已验证快照。
+- 语义：全部证据源缺失时保持 `generation_status=unavailable`；仍有真实来源但存在缺口
+  时生成 `attention` 并在 `coverage` 和处置项中明确缺口，禁止以示例 JSON 或零值伪造
+  完整性。采集器写入失败不改变数据库已有 ready 事实。
+- 原因：原实现只定义了“外部采集器交付”接口，测试主机没有安装采集器时页面只能看到
+  `unavailable`，但缺少可执行的恢复路径。把采集、消费、投递继续隔离，既能补齐默认
+  部署链路，也不会扩大 API 或 mailer 的主机权限。
