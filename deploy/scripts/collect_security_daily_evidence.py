@@ -322,7 +322,11 @@ def write_snapshot(payload: dict[str, Any], output_dir: Path, *, owner_uid: int)
             raise CollectorError("security evidence output directory is unsafe")
         output_dir.mkdir(mode=0o750, parents=False, exist_ok=True)
         if os.geteuid() == 0:
-            os.chown(output_dir, owner_uid, -1)
+            # The systemd unit drops CAP_DAC_OVERRIDE, so root must own the
+            # directory while writing; ownership is handed back to the runtime
+            # uid only after the snapshot is durable.
+            os.chown(output_dir, 0, -1)
+            os.chmod(output_dir, 0o750)
         metadata = output_dir.lstat()
     except (OSError, CollectorError) as error:
         if isinstance(error, CollectorError):
@@ -341,6 +345,9 @@ def write_snapshot(payload: dict[str, Any], output_dir: Path, *, owner_uid: int)
         if os.geteuid() == 0:
             os.chown(temporary, owner_uid, -1)
         os.replace(temporary, destination)
+        if os.geteuid() == 0:
+            os.chown(output_dir, owner_uid, -1)
+            os.chmod(output_dir, 0o750)
     except OSError as error:
         with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
