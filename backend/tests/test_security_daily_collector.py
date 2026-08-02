@@ -215,7 +215,6 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
     assert runtime_values["平台容器总数"] == "1 个"
     assert runtime_values["运行中容器"] == "1 个"
     assert runtime_values["异常容器"] == "0 个"
-    assert runtime_values["健康检查通过"] == "1/1 个"
     assert payload["status"] == "attention"  # Fail2ban 缺口保留
 
 

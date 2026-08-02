@@ -344,8 +344,6 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
     total = len(containers)
     running_count = 0
     unhealthy = 0
-    healthy = 0
-    checked = 0
     for container in containers:
         state = container.get("State")
         if not isinstance(state, dict):
@@ -356,16 +354,10 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
             is_running = bool(state.get("Running"))
             restarting = bool(state.get("Restarting"))
             paused = bool(state.get("Paused"))
-        health = state.get("Health") if isinstance(state, dict) else None
-        health_status = str(health.get("Status") or "") if isinstance(health, dict) else ""
         if is_running:
             running_count += 1
-        if not is_running or paused or restarting or health_status == "unhealthy":
+        if not is_running or paused or restarting:
             unhealthy += 1
-        if health_status:
-            checked += 1
-            if health_status == "healthy":
-                healthy += 1
     rows.extend(
         [
             {
@@ -383,14 +375,8 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
             {
                 "label": "异常容器",
                 "value": f"{unhealthy} 个",
-                "assessment": "未运行或健康检查不通过",
+                "assessment": "未运行、暂停或重启中",
                 "tone": "good" if unhealthy == 0 else "danger",
-            },
-            {
-                "label": "健康检查通过",
-                "value": f"{healthy}/{checked} 个",
-                "assessment": "仅统计配置了健康检查的容器",
-                "tone": "good" if checked and healthy == checked else "warn",
             },
         ]
     )
