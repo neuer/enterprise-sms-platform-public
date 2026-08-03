@@ -22,6 +22,8 @@ from app.services.security_daily import (
     SecurityDailyService,
     SecurityDailyUnavailable,
     SecurityDailyValidationError,
+    _count_delta_suffix,
+    _enrich_day_over_day,
     _finalize_security_daily_payload,
     _problem_payload,
     _timeline,
@@ -425,6 +427,47 @@ def test_finalize_requires_confirmation_when_ssh_failures_exceed_threshold() -> 
     assert finalized["status"] == "attention"
     assert "存在 SSH 失败认证" in finalized["pending_confirmation"]
     assert any(item["title"] == "核查 SSH 失败认证" for item in finalized["actions"])
+
+
+@pytest.mark.parametrize(
+    ("current", "previous", "expected"),
+    [
+        ("14 次", "9 次", "↑56%"),
+        ("3", "3", "与昨日持平"),
+        ("2 次", "0 次", "昨日 0"),
+        ("0", "5", "↓100%"),
+        ("不可用", "5", None),
+    ],
+)
+def test_count_delta_suffix_formats_day_over_day(
+    current: str,
+    previous: str,
+    expected: str | None,
+) -> None:
+    suffix = _count_delta_suffix(current, previous)
+    if expected is None:
+        assert suffix is None
+    else:
+        assert suffix is not None
+        assert expected in suffix
+
+
+def test_enrich_day_over_day_appends_comparison_to_metrics_and_summary() -> None:
+    current = payload()
+    previous = payload()
+    current["metrics"][0]["value"] = "14 次"
+    previous["metrics"][0]["value"] = "9 次"
+    current["metrics"][3]["value"] = "3"
+    previous["metrics"][3]["value"] = "1"
+    current["web"][3]["value"] = "2 次命中"
+    previous["web"][3]["value"] = "0 次命中"
+
+    enriched = _enrich_day_over_day(current, previous)
+
+    assert "（昨日 9，↑56%）" in enriched["metrics"][0]["value"]
+    assert "（昨日 1，↑200%）" in enriched["metrics"][3]["value"]
+    assert "（昨日 0，新增 2）" in enriched["web"][3]["value"]
+    assert "较昨日：" in enriched["summary"]
 
 
 @pytest.mark.asyncio

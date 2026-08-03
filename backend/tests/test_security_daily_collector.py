@@ -25,7 +25,8 @@ GENERATED_AT = datetime(2026, 8, 2, 7, 50, tzinfo=SHANGHAI)
 def _logs(tmp_path: Path) -> tuple[Path, Path, Path]:
     auth = tmp_path / "auth.log"
     auth.write_text(
-        "Aug 1 01:00:00 host sshd[1]: Failed password for invalid user\n"
+        "Aug 1 01:00:00 host sshd[1]: Failed password for invalid user "
+        "from 198.51.100.27 port 22\n"
         "Aug 1 02:00:00 host sshd[2]: Accepted publickey for operator\n"
         "Jul 31 23:59:59 host sshd[3]: Failed password for old\n",
         encoding="utf-8",
@@ -45,6 +46,12 @@ def _logs(tmp_path: Path) -> tuple[Path, Path, Path]:
     return auth, fail2ban, web
 
 
+def _row(payload: dict[str, object], section: str, label: str) -> dict[str, object]:
+    return next(
+        item for item in payload[section] if item["label"] == label  # type: ignore[index]
+    )
+
+
 def test_collector_writes_only_aggregated_redacted_evidence(tmp_path: Path) -> None:
     auth, fail2ban, web = _logs(tmp_path)
 
@@ -62,10 +69,17 @@ def test_collector_writes_only_aggregated_redacted_evidence(tmp_path: Path) -> N
     assert payload["metrics"][1]["value"] == "1"
     assert payload["metrics"][2]["value"] == "1"
     assert payload["metrics"][3]["value"] == "1"
+    ssh_top = _row(payload, "ssh", "失败来源 Top")
+    assert "198.51.100.27 ×1" in ssh_top["value"]
+    web_5xx = _row(payload, "web", "5xx 路径 Top")
+    assert "/health" in web_5xx["value"]
+    web_4xx = _row(payload, "web", "4xx 路径 Top")
+    assert "/.env" in web_4xx["value"]
+    sensitive_detail = _row(payload, "web", "敏感路径明细")
+    assert "/.env ×1" in sensitive_detail["value"]
     encoded = json.dumps(payload, ensure_ascii=False)
     assert "192.0.2.8" not in encoded
     assert "operator" not in encoded
-    assert "/.env" not in encoded
 
     destination = write_snapshot(payload, tmp_path, owner_uid=10_001)
     assert json.loads(destination.read_text(encoding="utf-8"))["report_date"] == "2026-08-01"
@@ -117,7 +131,8 @@ def test_collector_reads_rotated_and_gzipped_logs_with_real_formats(
     )
     rotated_auth = tmp_path / "auth.log.1"
     rotated_auth.write_text(
-        "2026-08-01T01:00:00+08:00 host sshd[2]: Failed password for invalid user\n"
+        "2026-08-01T01:00:00+08:00 host sshd[2]: Failed password for invalid user "
+        "from 198.51.100.27 port 22\n"
         "2026-08-01T02:00:00+08:00 host sshd[3]: Accepted key ED25519 SHA256:abc\n"
         "2026-08-01T03:00:00+08:00 host sshd[4]: Connection closed by invalid user root\n",
         encoding="utf-8",
@@ -149,6 +164,9 @@ def test_collector_reads_rotated_and_gzipped_logs_with_real_formats(
     assert payload["metrics"][3]["value"] == "1"  # Web 5xx from bracket format
     assert payload["web"][1]["value"] == "1 条"  # 4xx
     assert payload["web"][3]["value"] == "1 次命中"  # sensitive /.env
+    assert "198.51.100.27 ×1" in _row(payload, "ssh", "失败来源 Top")["value"]
+    assert "/readyz" in _row(payload, "web", "5xx 路径 Top")["value"]
+    assert "/.env" in _row(payload, "web", "4xx 路径 Top")["value"]
     assert payload["status"] == "high"
 
 
@@ -207,6 +225,7 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
     assert payload["metrics"][3]["value"] == "1"
     assert payload["web"][0]["value"] == "2 条"
     assert payload["web"][1]["value"] == "0 条"
+    assert "/api/v1/reports" in _row(payload, "web", "5xx 路径 Top")["value"]
     assert {item["source"] for item in payload["coverage"] if item["tone"] == "warn"} == {
         "Fail2ban",
         "管理审计",
@@ -260,6 +279,35 @@ def test_collector_marks_web_unavailable_when_log_does_not_cover_window(
     )
     assert "无带时间戳记录可归属" in web_gap["note"]
     assert "未发现可读取的证据源" not in web_gap["note"]
+
+
+def test_collector_sanitizes_uri_details_before_rendering(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
+    web = tmp_path / "access.log"
+    web.write_text(
+        '127.0.0.1 - - [01/Aug/2026:04:00:01 +0800] '
+        '"GET /api/v1/13800138000?x=1 HTTP/1.1" 500 12\n'
+        '127.0.0.1 - - [01/Aug/2026:04:01:01 +0800] '
+        '"GET /api/health?token=abc HTTP/1.1" 500 4\n',
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    encoded = json.dumps(payload, ensure_ascii=False)
+    assert "13800138000" not in encoded
+    assert "token=abc" not in encoded
+    top = _row(payload, "web", "5xx 路径 Top")["value"]
+    assert "[phone]" in top
+    assert "/api/health" in top
 
 
 def test_collector_attributes_nginx_log_after_format_upgrade(tmp_path: Path) -> None:
