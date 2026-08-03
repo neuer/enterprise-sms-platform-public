@@ -667,6 +667,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "deploy/vendor-egress.md",
             "docs/DECISIONS.md",
             "docs/TEST-MANUAL.md",
+            "docs/UAT.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
             "docs/previews/security-daily-report-sample.html",
