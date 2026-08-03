@@ -17,12 +17,14 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert source.lower().startswith("<!doctype html>")
     assert "X-Api-Key" in source
     assert "/api/v1/messages/send" in source
+    assert "/api/v1/messages/uat-send" in source
     assert "/api/v1/messages/batches/" in source
     assert "IP_NOT_ALLOWED" in source
     assert "biz_id" in source
     assert 'id="errorBanner"' in source
     assert 'id="sendFeedback"' in source
     assert 'id="selfCheck"' in source
+    assert 'id="uatSendBtn"' in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None
     assert re.search(r"<script(?:\s[^>]*)?>", source, re.IGNORECASE) is not None
 
