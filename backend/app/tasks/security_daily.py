@@ -37,6 +37,7 @@ async def generate_security_daily_once(
             control_dir,
             report_date=report_date,
             recipient_count=recipient_count,
+            generated_at=local_now,
         )
     )
 

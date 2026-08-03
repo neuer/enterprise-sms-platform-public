@@ -22,6 +22,7 @@ from app.services.security_daily import (
     SecurityDailyService,
     SecurityDailyUnavailable,
     SecurityDailyValidationError,
+    _finalize_security_daily_payload,
     _problem_payload,
     _timeline,
     resolve_configuration_state,
@@ -394,6 +395,38 @@ def test_problem_payload_is_validated_and_never_fabricates_numbers() -> None:
     assert all(item["status"] == "缺失" for item in validated["coverage"])
 
 
+def test_finalize_keeps_small_ssh_failure_count_out_of_pending_confirmation() -> None:
+    value = payload()
+    value["metrics"][0]["value"] = "14"
+    for item in value["coverage"]:
+        item["status"] = "完整"
+        item["tone"] = "good"
+    value["web"][3]["value"] = "0 次命中"
+
+    finalized = _finalize_security_daily_payload(value)
+
+    assert finalized["status"] == "normal"
+    assert finalized["pending_confirmation"] == "无待确认事项。"
+    assert finalized["metrics"][0]["tone"] == "neutral"
+    assert finalized["metrics"][0]["note"] == "低于关注阈值，无需人工确认"
+    assert not any(item["title"] == "核查 SSH 失败认证" for item in finalized["actions"])
+
+
+def test_finalize_requires_confirmation_when_ssh_failures_exceed_threshold() -> None:
+    value = payload()
+    value["metrics"][0]["value"] = "25"
+    for item in value["coverage"]:
+        item["status"] = "完整"
+        item["tone"] = "good"
+    value["web"][3]["value"] = "0 次命中"
+
+    finalized = _finalize_security_daily_payload(value)
+
+    assert finalized["status"] == "attention"
+    assert "存在 SSH 失败认证" in finalized["pending_confirmation"]
+    assert any(item["title"] == "核查 SSH 失败认证" for item in finalized["actions"])
+
+
 @pytest.mark.asyncio
 async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Path) -> None:
     repository = FakeRepository(record())
@@ -416,6 +449,9 @@ async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Pa
     assert result.generation_source == "manual"
     assert repository.ingested[-1]["force"] is True
     assert repository.ingested[-1]["generation_source"] == "manual"
+    assert repository.ingested[-1]["payload"]["generated_at"] == (
+        "2026-07-16T09:00:00+08:00"
+    )
     assert len(control.submitted) == 1
 
 
@@ -551,3 +587,26 @@ async def test_submit_auto_delivery_skips_stale_payload_when_snapshot_is_newer(
 
     assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
     assert control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_sends_when_snapshot_predates_generation(
+    tmp_path: Path,
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    snapshot = incoming / "2026-07-15.json"
+    snapshot.write_text(json.dumps(payload()), encoding="utf-8")
+    # 快照写入时间早于记录生成时间：正常自动路径必须发送，不能被误判为过期。
+    os.utime(
+        snapshot,
+        (datetime(2026, 7, 16, 7, tzinfo=SHANGHAI).timestamp(),) * 2,
+    )
+    repository = FakeRepository(record())
+    control = FakeControl()
+    service = SecurityDailyService(repository, control, control_dir=tmp_path)
+
+    request = await service.submit_auto_delivery(date(2026, 7, 15))
+
+    assert request is not None
+    assert len(control.submitted) == 1
