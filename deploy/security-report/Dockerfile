@@ -9,10 +9,10 @@ RUN apk add --no-cache ca-certificates \
 
 WORKDIR /app
 
-COPY deploy/scripts/render_security_daily_report.py ./deploy/scripts/
-COPY deploy/scripts/send_security_daily_report_resend.py ./deploy/scripts/
-COPY deploy/templates/security_daily_report.html ./deploy/templates/
-COPY deploy/templates/security_daily_report.txt ./deploy/templates/
+COPY --chmod=0644 deploy/scripts/render_security_daily_report.py ./deploy/scripts/
+COPY --chmod=0644 deploy/scripts/send_security_daily_report_resend.py ./deploy/scripts/
+COPY --chmod=0644 deploy/templates/security_daily_report.html ./deploy/templates/
+COPY --chmod=0644 deploy/templates/security_daily_report.txt ./deploy/templates/
 
 USER security-report
 
