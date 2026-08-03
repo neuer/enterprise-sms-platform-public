@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import sys
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -60,6 +61,14 @@ HTTP_STATUS = re.compile(r"\s(?P<status>[1-5]\d{2})(?:\s|$)")
 SENSITIVE_PATH = re.compile(
     r"(?:/\.env(?:\b|/)|/\.git(?:\b|/)|/debug(?:\b|/)|/actuator(?:\b|/))", re.I
 )
+IPV4_RE = re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
+IPV6_RE = re.compile(r"(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}")
+WEB_METHOD_URI_RE = re.compile(
+    r"\b(?:GET|POST|PUT|DELETE|HEAD|PATCH|OPTIONS)\s+([^\s\"']+)"
+)
+WEB_BRACKET_URI_RE = re.compile(r"\]\s+(\S+)\s+[1-5]\d{2}")
+WEB_LEAD_URI_RE = re.compile(r"^\S+\s+(\S+)\s+[1-5]\d{2}")
+SENSITIVE_MARKERS = ("/.env", "/.git", "/debug", "/actuator")
 
 
 class CollectorError(RuntimeError):
@@ -73,6 +82,7 @@ class LogCounts:
     first: int = 0
     second: int = 0
     third: int = 0
+    top_sources: tuple[tuple[str, int], ...] = ()
 
 
 def _line_matches_date(line: str, report_date: date) -> bool:
@@ -129,13 +139,49 @@ def _iter_lines(paths: Sequence[Path]) -> Iterator[str]:
         opener = gzip.open if candidate.suffix == ".gz" else open
         try:
             with opener(candidate, "rt", encoding="utf-8", errors="replace") as source:
-                for line in source:
-                    yield line
+                yield from source
         except (OSError, UnicodeError) as error:
             raise CollectorError("security evidence log is unavailable") from error
 
 
-def _scan_log(path: Path, report_date: date, patterns: Sequence[re.Pattern[str]]) -> LogCounts:
+def _first_ip(line: str) -> str | None:
+    """从日志行提取首个 IPv4/IPv6 地址；仅用于聚合计数，不保留原始行。"""
+
+    match = IPV4_RE.search(line) or IPV6_RE.search(line)
+    return match.group(0) if match is not None else None
+
+
+def _sanitize_uri(uri: str) -> str:
+    """去掉查询串与尾部分隔符，并对手机号/令牌文本打码后截断。"""
+
+    value = uri.split("?", 1)[0].strip().strip("\"'.,;)]")
+    value = re.sub(r"(?<!\d)1\d{10}(?!\d)", "[phone]", value)
+    value = re.sub(
+        r"Bearer\s+[A-Za-z0-9._~+/-]+",
+        "[token]",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return value[:80]
+
+
+def _web_uri(line: str) -> str | None:
+    """从常见 nginx/访问日志行提取请求 URI（不含查询串）。"""
+
+    for pattern in (WEB_METHOD_URI_RE, WEB_BRACKET_URI_RE, WEB_LEAD_URI_RE):
+        match = pattern.search(line)
+        if match is not None:
+            return _sanitize_uri(match.group(1))
+    return None
+
+
+def _scan_log(
+    path: Path,
+    report_date: date,
+    patterns: Sequence[re.Pattern[str]],
+    *,
+    source_pattern: re.Pattern[str] | None = None,
+) -> LogCounts:
     """只扫描固定日志文件并返回匹配计数，不保留任何原始行。"""
 
     files = _log_file_paths(path)
@@ -143,6 +189,7 @@ def _scan_log(path: Path, report_date: date, patterns: Sequence[re.Pattern[str]]
         return LogCounts(False)
     counters = [0] * len(patterns)
     total = 0
+    sources: Counter[str] = Counter()
     for line in _iter_lines(files):
         if not _line_matches_date(line, report_date):
             continue
@@ -150,7 +197,14 @@ def _scan_log(path: Path, report_date: date, patterns: Sequence[re.Pattern[str]]
         for index, pattern in enumerate(patterns):
             if pattern.search(line):
                 counters[index] += 1
-    return LogCounts(True, total, *counters)
+        if source_pattern is not None and source_pattern.search(line):
+            source = _first_ip(line)
+            if source is not None:
+                sources[source] += 1
+    top_sources = tuple(
+        sorted(sources.items(), key=lambda item: (-item[1], item[0]))[:5]
+    )
+    return LogCounts(True, total, *counters, top_sources=top_sources)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +218,9 @@ class WebCounts:
     count_4xx: int = 0
     count_5xx: int = 0
     sensitive: int = 0
+    top_5xx: tuple[tuple[str, int], ...] = ()
+    top_4xx: tuple[tuple[str, int], ...] = ()
+    sensitive_paths: tuple[tuple[str, int], ...] = ()
 
 
 def _web_container_logs(docker_root: Path) -> list[Path]:
@@ -269,6 +326,9 @@ def _scan_web(
     count_4xx = 0
     count_5xx = 0
     sensitive = 0
+    five_xx: Counter[str] = Counter()
+    four_xx: Counter[str] = Counter()
+    sensitive_paths: Counter[str] = Counter()
     for line in _iter_lines(files):
         observe(_line_date(line, report_date.year))
         if not _line_matches_date(line, report_date):
@@ -278,9 +338,21 @@ def _scan_web(
         if status_match is not None:
             status_count += 1
             status = int(status_match.group("status"))
-            count_4xx += int(400 <= status < 500)
-            count_5xx += int(500 <= status < 600)
-        sensitive += int(SENSITIVE_PATH.search(line) is not None)
+            if 400 <= status < 500:
+                count_4xx += 1
+                uri = _web_uri(line)
+                if uri is not None:
+                    four_xx[uri] += 1
+            elif 500 <= status < 600:
+                count_5xx += 1
+                uri = _web_uri(line)
+                if uri is not None:
+                    five_xx[uri] += 1
+        if SENSITIVE_PATH.search(line):
+            sensitive += 1
+            for marker in SENSITIVE_MARKERS:
+                if marker in line:
+                    sensitive_paths[marker] += 1
     for candidate in docker_logs:
         for line in _iter_lines([candidate]):
             observe(_docker_log_line_date_obj(line))
@@ -292,9 +364,21 @@ def _scan_web(
             if status_match is not None:
                 status_count += 1
                 status = int(status_match.group("status"))
-                count_4xx += int(400 <= status < 500)
-                count_5xx += int(500 <= status < 600)
-            sensitive += int(SENSITIVE_PATH.search(content) is not None)
+                if 400 <= status < 500:
+                    count_4xx += 1
+                    uri = _web_uri(content)
+                    if uri is not None:
+                        four_xx[uri] += 1
+                elif 500 <= status < 600:
+                    count_5xx += 1
+                    uri = _web_uri(content)
+                    if uri is not None:
+                        five_xx[uri] += 1
+            if SENSITIVE_PATH.search(content):
+                sensitive += 1
+                for marker in SENSITIVE_MARKERS:
+                    if marker in content:
+                        sensitive_paths[marker] += 1
     if earliest is None or earliest > report_date:
         # 源存在但未覆盖报告窗口（例如容器/日志轮换后新起文件，或日志
         # 格式升级前旧行没有时间戳），视为缺失而不是用 0 冒充完整覆盖。
@@ -306,6 +390,15 @@ def _scan_web(
         count_4xx=count_4xx,
         count_5xx=count_5xx,
         sensitive=sensitive,
+        top_5xx=tuple(
+            sorted(five_xx.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ),
+        top_4xx=tuple(
+            sorted(four_xx.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ),
+        sensitive_paths=tuple(
+            sorted(sensitive_paths.items(), key=lambda item: (-item[1], item[0]))
+        ),
     )
 
 
@@ -439,7 +532,12 @@ def collect_report(
     if generated_at <= period_end:
         raise CollectorError("generated_at must be after the report period")
 
-    ssh = _scan_log(auth_log, report_date, (FAILED_SSH, ACCEPTED_SSH))
+    ssh = _scan_log(
+        auth_log,
+        report_date,
+        (FAILED_SSH, ACCEPTED_SSH),
+        source_pattern=FAILED_SSH,
+    )
     bans = _scan_log(fail2ban_log, report_date, (FAIL2BAN_BAN,))
     web = _scan_web(web_log, docker_root, report_date)
     available_sources = sum((ssh.available, bans.available, web.available))
@@ -536,6 +634,82 @@ def collect_report(
             }
         )
 
+    def top_value(
+        entries: Sequence[tuple[str, int]],
+        *,
+        limit: int,
+    ) -> str:
+        parts: list[str] = []
+        for name, count in entries[:limit]:
+            candidate = f"{name[:40]} ×{count}"
+            if parts and sum(len(part) + 1 for part in parts) + len(candidate) > 150:
+                break
+            parts.append(candidate)
+        return "、".join(parts)
+
+    ssh_rows = [
+        _detail(
+            "失败认证",
+            f"{ssh.first} 次",
+            available=ssh.available,
+            note="含失败来源 Top",
+        ),
+        _detail("成功认证", f"{ssh.second} 次", available=ssh.available, note="不展示来源明细"),
+        _detail(
+            "Fail2ban", f"{bans.first} 次封禁", available=bans.available, note="策略日志可读"
+        ),
+    ]
+    if ssh.available and ssh.top_sources:
+        ssh_rows.append(
+            {
+                "label": "失败来源 Top",
+                "value": top_value(ssh.top_sources, limit=5),
+                "assessment": "攻击来源，已按日聚合",
+                "tone": "warn",
+            }
+        )
+
+    web_rows = [
+        _detail("访问请求", f"{web.total} 条", available=web.available, note="仅保留数量"),
+        _detail("拒绝请求", f"{web.count_4xx} 条", available=web.available, note="按状态码聚合"),
+        _detail(
+            "服务端错误", f"{web.count_5xx} 条", available=web.available, note="按状态码聚合"
+        ),
+        _detail(
+            "敏感路径",
+            f"{web.sensitive} 次命中",
+            available=web.available,
+            note="不保留原始路径",
+        ),
+    ]
+    if web.available and web.top_5xx:
+        web_rows.append(
+            {
+                "label": "5xx 路径 Top",
+                "value": top_value(web.top_5xx, limit=3),
+                "assessment": "服务端错误路径",
+                "tone": "danger",
+            }
+        )
+    if web.available and web.top_4xx:
+        web_rows.append(
+            {
+                "label": "4xx 路径 Top",
+                "value": top_value(web.top_4xx, limit=3),
+                "assessment": "客户端错误路径",
+                "tone": "warn",
+            }
+        )
+    if web.available and web.sensitive_paths:
+        web_rows.append(
+            {
+                "label": "敏感路径明细",
+                "value": top_value(web.sensitive_paths, limit=4),
+                "assessment": "命中模式",
+                "tone": "danger",
+            }
+        )
+
     window = f"{report_date.isoformat()} 00:00 — 23:59（UTC+8）"
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -549,26 +723,8 @@ def collect_report(
         "summary": summary,
         "pending_confirmation": pending,
         "metrics": metrics,
-        "ssh": [
-            _detail("失败认证", f"{ssh.first} 次", available=ssh.available, note="仅保留聚合数量"),
-            _detail("成功认证", f"{ssh.second} 次", available=ssh.available, note="不展示来源明细"),
-            _detail(
-                "Fail2ban", f"{bans.first} 次封禁", available=bans.available, note="策略日志可读"
-            ),
-        ],
-        "web": [
-            _detail("访问请求", f"{web.total} 条", available=web.available, note="仅保留数量"),
-            _detail("拒绝请求", f"{web.count_4xx} 条", available=web.available, note="按状态码聚合"),
-            _detail(
-                "服务端错误", f"{web.count_5xx} 条", available=web.available, note="按状态码聚合"
-            ),
-            _detail(
-                "敏感路径",
-                f"{web.sensitive} 次命中",
-                available=web.available,
-                note="不保留原始路径",
-            ),
-        ],
+        "ssh": ssh_rows,
+        "web": web_rows,
         "audit": [],
         "runtime": runtime_rows,
         "actions": actions,

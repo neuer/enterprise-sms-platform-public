@@ -40,7 +40,7 @@ def test_sample_renders_equivalent_html_and_text() -> None:
     html = module.render_html(report)
     text = module.render_text(report)
 
-    for token in ("服务器安全日报", "待确认", "SSH 与主机安全", "证据范围"):
+    for token in ("服务器安全日报", "待确认", "今日需要你处理", "SSH 与主机安全", "证据范围"):
         assert token in html
         assert token in text
     assert module.render_subject(report) == "[短信平台安全日报][关注] 2026-07-15"
@@ -144,3 +144,16 @@ def test_html_exposes_mobile_stacking_hooks() -> None:
     ):
         assert f'class="{class_name}"' in html
         assert f".{class_name}" in html
+
+
+def test_empty_actions_render_as_no_action_needed() -> None:
+    module = _module()
+    payload = _sample_payload()
+    payload["actions"] = []
+
+    html = module.render_html(module.parse_report(payload))
+    text = module.render_text(module.parse_report(payload))
+
+    assert "今日需要你处理" in html
+    assert "今日无需处理" in html
+    assert "今日无需处理" in text

@@ -58,6 +58,10 @@ class FakeRepository:
         self.unavailable.append((report_date.isoformat(), reason))
         return True
 
+    async def get_latest_report(self, report_date: Any, **kwargs: Any) -> None:
+        del report_date, kwargs
+        return None
+
     async def mark_delivery_failed(self, report_date: Any, message: str) -> bool:
         return True
 
@@ -189,6 +193,7 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
                 action="login",
             ),
         ),
+        category_counts=(("登录认证", 2), ("系统配置", 1)),
     )
 
     changed = await generate_security_daily_once(
@@ -206,3 +211,6 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     audit_coverage = next(item for item in payload["coverage"] if item["source"] == "管理审计")
     assert audit_coverage["status"] == "完整"
     assert "管理审计" not in payload["pending_confirmation"]
+    assert "管理审计共 3 条" in payload["summary"]
+    assert "登录认证 2" in payload["summary"]
+    assert "系统配置 1" in payload["summary"]

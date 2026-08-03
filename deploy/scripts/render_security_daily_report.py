@@ -476,6 +476,11 @@ def _audit_html(rows: tuple[AuditRow, ...]) -> str:
 
 
 def _actions_html(items: tuple[ActionItem, ...]) -> str:
+    if not items:
+        return (
+            '<tr><td style="padding:14px 0;font-size:14px;line-height:21px;'
+            'color:#4b5863;">今日无需处理，继续保持现有采集计划。</td></tr>'
+        )
     styles = {
         "high": ("01", "立即", "#991b1b", "#fde8e8"),
         "medium": ("02", "今日", "#8a4b08", "#fff1d6"),
@@ -589,7 +594,7 @@ def render_text(report: SecurityDailyReport) -> str:
     actions = "\n".join(
         f"- [{item.priority.upper()}] {item.title}: {item.detail}"
         for item in report.actions
-    ) or "- 无"
+    ) or "今日无需处理"
     coverage = "\n".join(
         f"- {item.source}: {item.window} | {item.status} | {item.note}"
         for item in report.coverage

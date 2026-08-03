@@ -9,6 +9,9 @@ $summary
 【待确认】
 $pending_confirmation
 
+【今日需要你处理】
+$action_rows
+
 【核心指标】
 $metrics
 
@@ -23,9 +26,6 @@ $audit_rows
 
 【运行状态】
 $runtime_rows
-
-【建议处置】
-$action_rows
 
 【证据范围】
 $coverage_rows

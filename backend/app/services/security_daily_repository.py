@@ -35,6 +35,7 @@ from app.services.security_daily import (
     SecurityDailyStateConflict,
     SecurityDailyValidationError,
     SecurityStatus,
+    _audit_category,
     _next_schedule,
     resolve_configuration_state,
     validate_resend_api_key,
@@ -180,10 +181,32 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     ),
                     {"start": period_start, "end": period_end},
                 )
+                category_result = await connection.execute(
+                    text(
+                        """
+                        SELECT action, count(*) AS n
+                        FROM security_daily_audit_evidence
+                        WHERE created_at >= :start AND created_at < :end
+                          AND action NOT LIKE 'security_daily_%'
+                        GROUP BY action
+                        ORDER BY n DESC, action ASC
+                        """
+                    ),
+                    {"start": period_start, "end": period_end},
+                )
         except SQLAlchemyError:
             return None
         finally:
             await engine.dispose()
+        category_counter: dict[str, int] = {}
+        for row in category_result.mappings():
+            category = _audit_category(str(row["action"]))
+            category_counter[category] = category_counter.get(category, 0) + int(
+                row["n"]
+            )
+        category_counts = tuple(
+            sorted(category_counter.items(), key=lambda item: (-item[1], item[0]))
+        )
         events = tuple(
             SecurityDailyAuditEvent(
                 time=row["created_at"].astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
@@ -193,7 +216,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             )
             for row in events_result.mappings()
         )
-        return SecurityDailyAuditEvidence(total=int(count_result.scalar_one()), events=events)
+        return SecurityDailyAuditEvidence(
+            total=int(count_result.scalar_one()),
+            events=events,
+            category_counts=category_counts,
+        )
 
     async def update_configuration(
         self,

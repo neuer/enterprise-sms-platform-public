@@ -353,6 +353,7 @@ class SecurityDailyAuditEvidence:
 
     total: int
     events: tuple[SecurityDailyAuditEvent, ...]
+    category_counts: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,6 +476,13 @@ async def generate_security_daily_for_date(
         if evidence is not None:
             value = _enrich_audit_evidence(value, evidence)
         value = _finalize_security_daily_payload(value)
+        previous = await repository.get_latest_report(report_date - timedelta(days=1))
+        if (
+            previous is not None
+            and previous.generation_status == "ready"
+            and previous.payload is not None
+        ):
+            value = _enrich_day_over_day(value, previous.payload)
         value["generated_at"] = generation_time.isoformat()
         return await repository.ingest_payload(
             value,
@@ -532,6 +540,51 @@ AUDIT_ASSESSMENT_BY_ACTION: dict[str, str] = {
     "reply_optout": "退订操作",
 }
 
+AUDIT_CATEGORY_BY_ACTION: dict[str, str] = {
+    "login": "登录认证",
+    "session_refresh": "登录认证",
+    "logout": "登录认证",
+    "local_password_change": "密码安全",
+    "local_password_reset": "密码安全",
+    "role_override": "账号与角色",
+    "account_status_change": "账号与角色",
+    "force_logout": "账号与角色",
+    "config_update": "系统配置",
+    "security_daily_config_update": "系统配置",
+    "auth_provider_save_draft": "认证源配置",
+    "auth_provider_test": "认证源配置",
+    "auth_provider_activate": "认证源配置",
+    "auth_provider_disable": "认证源配置",
+    "auth_provider_role_mappings_replace": "认证源配置",
+    "app_create": "应用密钥",
+    "app_update": "应用密钥",
+    "app_disable": "应用密钥",
+    "app_rotate_key": "应用密钥",
+    "app_revoke_old_key": "应用密钥",
+    "app_rotate_callback_secret": "应用密钥",
+    "approval_decision": "审批操作",
+    "message_send": "发送操作",
+    "batch_cancel": "发送操作",
+    "batch_reschedule": "发送操作",
+    "batch_resend_failed": "发送操作",
+    "blacklist_add": "管控操作",
+    "blacklist_delete": "管控操作",
+    "sensitive_word_add": "管控操作",
+    "sensitive_word_delete": "管控操作",
+    "reply_optout": "退订操作",
+    "export_create": "数据导出",
+    "export_download": "数据导出",
+    "import_create": "号码导入",
+    "import_resolve": "号码导入",
+}
+
+
+def _audit_category(action: str) -> str:
+    """把审计 action 归为邮件可读的类别；未知动作归入其他管理操作。"""
+
+    return AUDIT_CATEGORY_BY_ACTION.get(action, "其他管理操作")
+
+
 AUDIT_TONE_BY_ACTION: dict[str, str] = {
     "login": "good",
     "session_refresh": "good",
@@ -574,6 +627,13 @@ def _enrich_audit_evidence(
             item["status"] = "完整"
             item["note"] = "按平台审计事实表聚合，不读取载荷明细"
             item["tone"] = "good"
+    if evidence.total > 0 and evidence.category_counts:
+        category_text = "、".join(
+            f"{label} {count}" for label, count in evidence.category_counts[:3]
+        )
+        payload["summary"] = (
+            f"{payload['summary']} 管理审计共 {evidence.total} 条：{category_text}。"
+        )
     return payload
 
 
@@ -584,6 +644,45 @@ def _count_from_value(value: str) -> int:
         return int(str(value).strip().split()[0])
     except (ValueError, IndexError):
         return 0
+
+
+def _count_delta_suffix(current: str, previous: str) -> str | None:
+    """生成“（昨日 N，↑x%）”环比后缀；任一值不可解析时返回 None。"""
+
+    current_raw = str(current).strip()
+    previous_raw = str(previous).strip()
+    if not current_raw[:1].isdigit() or not previous_raw[:1].isdigit():
+        return None
+    current_count = _count_from_value(current_raw)
+    previous_count = _count_from_value(previous_raw)
+    if current_count == previous_count:
+        return "（与昨日持平）"
+    if previous_count == 0:
+        return f"（昨日 0，新增 {current_count}）"
+    delta = current_count - previous_count
+    percent = round(abs(delta) * 100 / previous_count)
+    arrow = "↑" if delta > 0 else "↓"
+    return f"（昨日 {previous_count}，{arrow}{percent}%）"
+
+
+def _enrich_day_over_day(payload: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """在平台侧追加昨日环比：SSH 失败、Web 5xx、敏感路径三个关键面。"""
+
+    comparisons: list[str] = []
+    pairs = (
+        (payload["metrics"][0], previous["metrics"][0], "SSH 失败认证"),
+        (payload["metrics"][3], previous["metrics"][3], "Web 5xx"),
+        (payload["web"][3], previous["web"][3], "敏感路径"),
+    )
+    for current, old, label in pairs:
+        suffix = _count_delta_suffix(current["value"], old["value"])
+        if suffix is None:
+            continue
+        current["value"] = f"{current['value']}{suffix}"
+        comparisons.append(f"{label}{suffix}")
+    if comparisons:
+        payload["summary"] = f"{payload['summary']} 较昨日：{'、'.join(comparisons)}。"
+    return payload
 
 
 def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -633,14 +732,6 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     f"当日发现 {ssh_failed} 次 SSH 失败认证；日报不保留来源明细，"
                     "请结合主机安全日志核对。"
                 ),
-            }
-        )
-    if not actions:
-        actions.append(
-            {
-                "priority": "low",
-                "title": "保持现有采集计划",
-                "detail": "继续按日报周期生成脱敏结构化快照。",
             }
         )
     payload["status"] = status
@@ -899,6 +990,14 @@ def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
     sections = [
         ("管理摘要", validated["summary"]),
         ("待确认", validated["pending_confirmation"] or "无"),
+        (
+            "今日需要你处理",
+            "\n".join(
+                f"[{item['priority']}] {item['title']}: {item['detail']}"
+                for item in validated["actions"]
+            )
+            or "今日无需处理",
+        ),
     ]
     for key, label in (
         ("metrics", "核心指标"),
@@ -906,7 +1005,6 @@ def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
         ("web", "Web/API"),
         ("audit", "管理审计"),
         ("runtime", "运行状态"),
-        ("actions", "建议处置"),
         ("coverage", "证据范围"),
     ):
         sections.append((label, json.dumps(validated[key], ensure_ascii=False, indent=2)))
