@@ -39,6 +39,7 @@ RESEND_EMAIL_PATTERN = re.compile(
 MAX_RESEND_API_KEY_LENGTH = 512
 MAX_RESEND_RECIPIENTS = 3
 MAX_SECURITY_DAILY_INPUT_BYTES = 384 * 1024
+SSH_FAILED_CONFIRM_THRESHOLD = 20
 FORBIDDEN_KEYS = frozenset(
     {
         "credential",
@@ -439,12 +440,14 @@ async def generate_security_daily_for_date(
     recipient_count: int,
     force: bool = False,
     generation_source: GenerationSource = "auto",
+    generated_at: datetime | None = None,
 ) -> bool:
     """读取指定上海自然日的脱敏快照并写入日报事实表。
 
     定时任务和管理员手动生成共用此入口，确保两条路径使用完全相同的
     文件大小、JSON 结构和 unavailable 语义；该函数只处理已脱敏结构化证据，
-    不会触发邮件投递。
+    不会触发邮件投递。记录与 payload 的 generated_at 使用平台生成时刻，
+    而不是采集器写快照的时刻，保证每次生成都有独立可区分的生成时间。
     """
 
     period_start = datetime.combine(report_date, datetime.min.time(), tzinfo=SHANGHAI_TZ)
@@ -453,6 +456,7 @@ async def generate_security_daily_for_date(
         datetime.max.time().replace(microsecond=0),
         tzinfo=SHANGHAI_TZ,
     )
+    generation_time = generated_at or datetime.now(SHANGHAI_TZ)
     source = control_dir / "incoming" / f"{report_date.isoformat()}.json"
     try:
         if not source.is_file() or source.stat().st_size > MAX_SECURITY_DAILY_INPUT_BYTES:
@@ -471,6 +475,7 @@ async def generate_security_daily_for_date(
         if evidence is not None:
             value = _enrich_audit_evidence(value, evidence)
         value = _finalize_security_daily_payload(value)
+        value["generated_at"] = generation_time.isoformat()
         return await repository.ingest_payload(
             value,
             recipient_count=recipient_count,
@@ -587,11 +592,20 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     gaps = [str(item["source"]) for item in payload["coverage"] if item.get("status") != "完整"]
     web_sensitive = _count_from_value(str(payload["web"][3]["value"])) if payload["web"] else 0
     ssh_failed = _count_from_value(str(payload["metrics"][0]["value"]))
-    status = "high" if web_sensitive else ("attention" if gaps or ssh_failed else "normal")
+    ssh_needs_confirm = ssh_failed >= SSH_FAILED_CONFIRM_THRESHOLD
+    status = (
+        "high"
+        if web_sensitive
+        else ("attention" if gaps or ssh_needs_confirm else "normal")
+    )
     pending = (
         f"待接入证据源：{'、'.join(gaps)}。"
         if gaps
-        else ("存在 SSH 失败认证，需要确认是否属于授权运维。" if ssh_failed else "无待确认事项。")
+        else (
+            "存在 SSH 失败认证，需要确认是否属于授权运维。"
+            if ssh_needs_confirm
+            else "无待确认事项。"
+        )
     )
     actions: list[dict[str, str]] = []
     if web_sensitive:
@@ -610,6 +624,17 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "detail": f"接入{'、'.join(gaps)}后，下一日报才可覆盖完整安全面。",
             }
         )
+    if ssh_needs_confirm:
+        actions.append(
+            {
+                "priority": "medium",
+                "title": "核查 SSH 失败认证",
+                "detail": (
+                    f"当日发现 {ssh_failed} 次 SSH 失败认证；日报不保留来源明细，"
+                    "请结合主机安全日志核对。"
+                ),
+            }
+        )
     if not actions:
         actions.append(
             {
@@ -621,6 +646,9 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload["status"] = status
     payload["pending_confirmation"] = pending
     payload["actions"] = actions
+    if ssh_failed and not ssh_needs_confirm:
+        payload["metrics"][0]["tone"] = "neutral"
+        payload["metrics"][0]["note"] = "低于关注阈值，无需人工确认"
     return payload
 
 
@@ -980,6 +1008,7 @@ class SecurityDailyService:
             recipient_count=len(configuration.recipients),
             force=True,
             generation_source="manual",
+            generated_at=self.clock(),
         )
         if not changed:
             raise SecurityDailyUnavailable("证据源不可用，未生成新日报，未发送邮件")

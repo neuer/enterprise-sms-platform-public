@@ -119,6 +119,9 @@ async def test_generation_consumes_only_validated_redacted_snapshot(
     assert changed == 1
     assert len(repository.ingested) == 1
     assert repository.ingested[0]["recipient_count"] == 2
+    assert repository.ingested[0]["payload"]["generated_at"] == (
+        "2026-07-16T08:01:00+08:00"
+    )
     assert repository.unavailable == []
 
 
