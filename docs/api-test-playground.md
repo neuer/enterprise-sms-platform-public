@@ -42,6 +42,15 @@
 - 页面顶部会显示脚本错误横幅；发送按钮下方有即时状态反馈，失败时自动滚动到结果区；
 - 请求 15 秒无响应会提示超时。
 
+## 维护注意（CSP 哈希）
+
+该页面是自包含单文件，平台全局 CSP 默认禁止内联脚本/样式。nginx 为
+`/api-test.html` 单独配置了哈希白名单（`deploy/nginx.conf` 中
+`location = /api-test.html` 的两个 `sha256-` 值）。修改
+`frontend/public/api-test.html` 时必须同步更新这两个哈希，
+`backend/tests/test_api_test_playground.py` 会强制二者一致；不要改用
+`script-src 'unsafe-inline'` 放宽全局 CSP。
+
 ## 安全说明
 
 - API Key 只保存在当前页面 JS 内存变量，不写 `localStorage`、`sessionStorage`、
