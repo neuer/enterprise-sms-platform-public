@@ -335,6 +335,34 @@ def test_collector_does_not_treat_time_tokens_as_ssh_sources(tmp_path: Path) -> 
     assert "198.51.100.7 ×1" in top
 
 
+def test_collector_ignores_sudo_command_text_with_failure_keywords(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "2026-08-01T15:43:28+08:00 ecs sudo: smsops : USER=root ; "
+        "COMMAND=/usr/bin/sh -c 'awk \"/Failed password|Invalid user/\" "
+        "/var/log/auth.log'\n"
+        "2026-08-01T16:00:00+08:00 host sshd[42]: Failed password for root "
+        "from 203.0.113.5 port 22\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=tmp_path / "missing-web.log",
+        docker_root=tmp_path,
+    )
+
+    assert payload["metrics"][0]["value"] == "1"
+    top = _row(payload, "ssh", "失败来源 Top")["value"]
+    assert "203.0.113.5 ×1" in top
+    assert "15:43:28" not in top
+
+
 def test_collector_keeps_long_uri_rows_within_value_limit(tmp_path: Path) -> None:
     auth = tmp_path / "auth.log"
     auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
