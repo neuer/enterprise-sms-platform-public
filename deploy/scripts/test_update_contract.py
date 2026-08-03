@@ -260,6 +260,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "deploy/vendor-egress.md",
         "docs/DECISIONS.md",
         "docs/TEST-MANUAL.md",
+        "docs/UAT.md",
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
         "docs/runbooks/controlled-real-vendor-test.md",
         "docs/runbooks/test-fast-update.md",
