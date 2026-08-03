@@ -62,7 +62,7 @@ SENSITIVE_PATH = re.compile(
     r"(?:/\.env(?:\b|/)|/\.git(?:\b|/)|/debug(?:\b|/)|/actuator(?:\b|/))", re.I
 )
 IPV4_RE = re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
-IPV6_RE = re.compile(r"(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}")
+IPV6_RE = re.compile(r"(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}")
 WEB_METHOD_URI_RE = re.compile(
     r"\b(?:GET|POST|PUT|DELETE|HEAD|PATCH|OPTIONS)\s+([^\s\"']+)"
 )
@@ -170,8 +170,11 @@ def _web_uri(line: str) -> str | None:
 
     for pattern in (WEB_METHOD_URI_RE, WEB_BRACKET_URI_RE, WEB_LEAD_URI_RE):
         match = pattern.search(line)
-        if match is not None:
-            return _sanitize_uri(match.group(1))
+        if match is None:
+            continue
+        uri = _sanitize_uri(match.group(1))
+        if uri and uri != "-":
+            return uri
     return None
 
 
@@ -639,13 +642,30 @@ def collect_report(
         *,
         limit: int,
     ) -> str:
-        parts: list[str] = []
+        parts: list[tuple[str, int]] = []
         for name, count in entries[:limit]:
-            candidate = f"{name[:40]} ×{count}"
-            if parts and sum(len(part) + 1 for part in parts) + len(candidate) > 150:
+            candidate = (name[:80], count)
+            if parts and (
+                sum(len(part[0]) + len(str(part[1])) + 4 for part in parts)
+                + len(candidate[0])
+                + len(str(candidate[1]))
+                + 4
+                > 150
+            ):
                 break
             parts.append(candidate)
-        return "、".join(parts)
+        while parts and (
+            sum(len(name) + len(str(count)) + 4 for name, count in parts) - 1 > 150
+        ):
+            index = max(range(len(parts)), key=lambda i: len(parts[i][0]))
+            name, count = parts[index]
+            shortened = name[: max(8, len(name) - 12)]
+            parts[index] = (shortened, count)
+            if len(shortened) <= 8 and len(parts) > 1:
+                del parts[index]
+            elif len(shortened) <= 8:
+                break
+        return "、".join(f"{name} ×{count}" for name, count in parts)
 
     ssh_rows = [
         _detail(
