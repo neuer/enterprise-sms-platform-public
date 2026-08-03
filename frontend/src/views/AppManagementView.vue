@@ -41,14 +41,14 @@ const rotatingCallbackId = ref<number | null>(null)
 const form = reactive({
   name: "", dept: "", allowed_categories: ["notice"] as AppCategory[], default_sign: "",
   daily_quota: 0, rate_limit_per_min: 60, blacklist_check: true, freq_override: "",
-  callback_url: "", callback_report_enabled: false, status: 1 as 0 | 1,
+  allowed_ips: "", callback_url: "", callback_report_enabled: false, status: 1 as 0 | 1,
 })
 
 function resetForm(): void {
   Object.assign(form, {
     name: "", dept: "", allowed_categories: ["notice"], default_sign: "",
     daily_quota: 0, rate_limit_per_min: 60, blacklist_check: true, freq_override: "",
-    callback_url: "", callback_report_enabled: false, status: 1,
+    allowed_ips: "", callback_url: "", callback_report_enabled: false, status: 1,
   })
 }
 
@@ -82,10 +82,15 @@ function openEdit(item: ManagedApp): void {
   Object.assign(form, {
     ...item,
     default_sign: item.default_sign || "",
+    allowed_ips: item.allowed_ips.join("\n"),
     callback_url: item.callback_url || "",
     freq_override: item.freq_override ? JSON.stringify(item.freq_override) : "",
   })
   drawerOpen.value = true
+}
+
+function parseAllowedIps(input: string): string[] {
+  return input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 }
 
 function payload(): AppPayload {
@@ -95,6 +100,7 @@ function payload(): AppPayload {
     default_sign: form.default_sign.trim() || null, daily_quota: form.daily_quota,
     rate_limit_per_min: form.rate_limit_per_min, blacklist_check: form.blacklist_check,
     freq_override: override, callback_url: form.callback_url.trim() || null,
+    allowed_ips: parseAllowedIps(form.allowed_ips),
     callback_report_enabled: form.callback_report_enabled, status: form.status,
   }
 }
@@ -226,6 +232,7 @@ async function enable(item: ManagedApp): Promise<void> {
       rate_limit_per_min: item.rate_limit_per_min,
       blacklist_check: item.blacklist_check,
       freq_override: item.freq_override,
+      allowed_ips: item.allowed_ips,
       callback_url: item.callback_url,
       callback_report_enabled: item.callback_report_enabled,
       status: 1,
@@ -260,6 +267,6 @@ onMounted(() => {
     </article>
     <EmptyState v-if="!loading && !items.length" title="当前没有接入应用" description="创建应用后可配置类别、配额、限流和回调。" />
   </section>
-  <el-drawer v-model="drawerOpen" :title="editingId === null ? '新建应用' : '编辑应用'" size="min(560px, 100vw)" :teleported="false"><el-form label-position="top"><el-form-item label="应用名"><el-input v-model="form.name" :disabled="editingId !== null" /></el-form-item><el-form-item label="部门"><el-input v-model="form.dept" /></el-form-item><el-form-item label="允许类别"><el-checkbox-group v-model="form.allowed_categories"><el-checkbox value="verify">验证码</el-checkbox><el-checkbox value="notice">通知</el-checkbox><el-checkbox value="market">营销</el-checkbox></el-checkbox-group></el-form-item><el-form-item label="默认签名"><el-input v-model="form.default_sign" /></el-form-item><el-form-item label="日配额"><el-input-number v-model="form.daily_quota" :min="0" /></el-form-item><el-form-item label="每分钟限流"><el-input-number v-model="form.rate_limit_per_min" :min="1" /></el-form-item><el-form-item label="黑名单检查"><el-switch v-model="form.blacklist_check" /></el-form-item><el-form-item label="频控覆盖 JSON"><el-input v-model="form.freq_override" data-testid="freq-override" type="textarea" placeholder='例如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":1}' /></el-form-item><el-form-item label="回调 URL"><el-input v-model="form.callback_url" /></el-form-item><el-form-item label="消息级回调"><el-switch v-model="form.callback_report_enabled" /></el-form-item></el-form><template #footer><el-button @click="drawerOpen=false">取消</el-button><el-button data-testid="save-app" type="primary" :loading="saving" @click="save">保存</el-button></template></el-drawer>
+  <el-drawer v-model="drawerOpen" :title="editingId === null ? '新建应用' : '编辑应用'" size="min(560px, 100vw)" :teleported="false"><el-form label-position="top"><el-form-item label="应用名"><el-input v-model="form.name" :disabled="editingId !== null" /></el-form-item><el-form-item label="部门"><el-input v-model="form.dept" /></el-form-item><el-form-item label="允许类别"><el-checkbox-group v-model="form.allowed_categories"><el-checkbox value="verify">验证码</el-checkbox><el-checkbox value="notice">通知</el-checkbox><el-checkbox value="market">营销</el-checkbox></el-checkbox-group></el-form-item><el-form-item label="默认签名"><el-input v-model="form.default_sign" /></el-form-item><el-form-item label="日配额"><el-input-number v-model="form.daily_quota" :min="0" /></el-form-item><el-form-item label="每分钟限流"><el-input-number v-model="form.rate_limit_per_min" :min="1" /></el-form-item><el-form-item label="黑名单检查"><el-switch v-model="form.blacklist_check" /></el-form-item><el-form-item label="频控覆盖 JSON"><el-input v-model="form.freq_override" data-testid="freq-override" type="textarea" placeholder='例如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":1}' /></el-form-item><el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，空=不限）"><el-input v-model="form.allowed_ips" data-testid="allowed-ips-input" type="textarea" placeholder="203.0.113.0/24" /></el-form-item><el-form-item label="回调 URL"><el-input v-model="form.callback_url" /></el-form-item><el-form-item label="消息级回调"><el-switch v-model="form.callback_report_enabled" /></el-form-item></el-form><template #footer><el-button @click="drawerOpen=false">取消</el-button><el-button data-testid="save-app" type="primary" :loading="saving" @click="save">保存</el-button></template></el-drawer>
   <el-dialog v-model="secretOpen" :title="secretTitle" width="min(560px, 92vw)" :close-on-click-modal="false" :before-close="beforeSecretClose" destroy-on-close @closed="clearSecret"><el-alert type="warning" :closable="false" :title="secretHint" /><pre class="one-time-secret">{{ secretValue }}</pre><template #footer><el-button data-testid="secret-close" type="primary" @click="closeSecret">我已安全保存</el-button></template></el-dialog>
 </template>

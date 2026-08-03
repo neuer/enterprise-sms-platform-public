@@ -36,5 +36,6 @@
 | 26 | 发送量异常告警 | mock 对 app-iam 灌 verify 突增（>基线×3 且≥500） | alert_log 有crit，文案含"核查来源/停用Key"建议；同日不重复且无外呼 | FR-25 |
 | 27 | 任务健康与心跳 | docker stop beat 容器，等 2×最短任务间隔 | job_stalled 告警触发；恢复后仪表盘任务格转绿；手动触发按钮可用并记审计 | FR-27 |
 | 28 | 号码时间线 | 对同一测试号发 notice、verify，再用 mock enqueue_reply 注入其回复 | 时间线按时序合并三事件，verify 内容已打码，回复右缩进标"↩ 用户回复"，徽标显示近30日量 | FR-26 |
+| 29 | 应用 IP 白名单 | admin 将测试应用 allowed_ips 设为仅办公室出口 CIDR；分别从白名单内/外来源调用 API 发送，再清空恢复 | 白名单内 200；白名单外 403 IP_NOT_ALLOWED 且不消耗限流/配额；清空后任意来源 200 | FR-18 |
 
 附加抽查（不计入 28 例，DB/存储/日志层）：七个职责角色均非 owner/超级用户且 audit 非 INSERT 操作被拒，callback/metrics 越权写入被拒，旧 sms_app 停用；raw_vendor_log 只有 payload_enc/custom_ids 无 phone JSON；callback_task 无 phone/body；导入逐号三列；decrypted 导出磁盘文件不可 grep 出 11 位号码；全量日志无 11 位连续手机号；stat_daily 计费条与当日批次 quota_cost 汇总一致。

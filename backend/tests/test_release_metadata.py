@@ -19,7 +19,7 @@ from release_metadata import (  # noqa: E402
 
 def test_repository_has_one_version_source_and_one_migration_head() -> None:
     assert source_version(ROOT) == "1.6.0"
-    assert schema_head(ROOT) == "0048_security_daily_audit_accept"
+    assert schema_head(ROOT) == "0049_app_ip_allowlist"
 
 
 def test_release_metadata_binds_exact_commit_contract_workflow_and_sboms(
@@ -42,7 +42,7 @@ def test_release_metadata_binds_exact_commit_contract_workflow_and_sboms(
 
     assert metadata.app_version == "1.6.0"
     assert metadata.git_sha == "c" * 40
-    assert metadata.schema_revision == "0048_security_daily_audit_accept"
+    assert metadata.schema_revision == "0049_app_ip_allowlist"
     assert len(metadata.openapi_sha256) == 64
     assert metadata.workflow_run_id == 123
     assert set(metadata.sbom_sha256) == {"api", "web", "postgres", "redis"}

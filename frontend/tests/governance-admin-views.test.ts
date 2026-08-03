@@ -26,6 +26,7 @@ const app = {
   rate_limit_per_min: 60,
   blacklist_check: true,
   freq_override: null,
+  allowed_ips: [],
   callback_url: null,
   callback_report_enabled: false,
   status: 1,
@@ -214,6 +215,7 @@ describe("管理员治理页面", () => {
       rate_limit_per_min: disabledApp.rate_limit_per_min,
       blacklist_check: disabledApp.blacklist_check,
       freq_override: disabledApp.freq_override,
+      allowed_ips: disabledApp.allowed_ips,
       callback_url: disabledApp.callback_url,
       callback_report_enabled: disabledApp.callback_report_enabled,
       status: 1,
@@ -260,6 +262,39 @@ describe("管理员治理页面", () => {
     await flushPromises()
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1)
 
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("来源 IP 白名单按行解析并随应用创建提交", async () => {
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return response({ id: 2, api_key: "once-only-key", callback_secret: null })
+      }
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    await wrapper.get("[data-testid='new-app']").trigger("click")
+    const textInputs = wrapper.findAll("input[type='text']")
+    await textInputs[0].setValue("new-app")
+    await textInputs[1].setValue("平台部")
+    await wrapper.get("[data-testid='allowed-ips-input']").setValue("203.0.113.7\n10.0.0.0/8 \n")
+    await wrapper.get("[data-testid='save-app']").trigger("click")
+    await flushPromises()
+
+    const createCall = fetch.mock.calls.find(([, init]) => init?.method === "POST")
+    expect(createCall).toBeDefined()
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        name: "new-app",
+        allowed_ips: ["203.0.113.7", "10.0.0.0/8"],
+      }),
+    )
     wrapper.unmount()
     vi.unstubAllGlobals()
   })

@@ -23,6 +23,7 @@ VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
 FREQ_OVERRIDE_KEYS = frozenset(
     {"verify_per_minute", "verify_per_day", "market_per_day"}
 )
+MAX_ALLOWED_IPS = 50
 
 
 class InvalidAppConfig(ValueError):
@@ -47,6 +48,7 @@ class AppCreate:
     rate_limit_per_min: int = 60
     blacklist_check: bool = True
     freq_override: Mapping[str, int] | None = None
+    allowed_ips: tuple[str, ...] = ()
     callback_url: str | None = None
     callback_report_enabled: bool = False
 
@@ -60,6 +62,7 @@ class AppUpdate:
     rate_limit_per_min: int = 60
     blacklist_check: bool = True
     freq_override: Mapping[str, int] | None = None
+    allowed_ips: tuple[str, ...] = ()
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: int = 1
@@ -241,6 +244,23 @@ class AppManagementService:
         }
 
     @staticmethod
+    def _normalize_allowed_ips(entries: Sequence[str]) -> tuple[str, ...]:
+        """校验并规范化来源 IP/CIDR 白名单：单 IP 归一化为 /32 或 /128，排序去重。"""
+
+        if len(entries) > MAX_ALLOWED_IPS:
+            raise InvalidAppConfig(f"IP 白名单最多 {MAX_ALLOWED_IPS} 条")
+        normalized: set[str] = set()
+        for raw in entries:
+            if not isinstance(raw, str) or not raw.strip() or len(raw) > 64:
+                raise InvalidAppConfig("IP 白名单条目必须为合法 IP 或 CIDR")
+            try:
+                network = ipaddress.ip_network(raw.strip(), strict=False)
+            except ValueError as exc:
+                raise InvalidAppConfig("IP 白名单条目必须为合法 IP 或 CIDR") from exc
+            normalized.add(str(network))
+        return tuple(sorted(normalized))
+
+    @staticmethod
     def _callback_secret_context(app_name: str) -> EncryptionContext:
         """应用名创建后不可变，可作为 callback secret 的稳定对象标识。"""
 
@@ -269,6 +289,7 @@ class AppManagementService:
             "rate_limit_per_min": config.rate_limit_per_min,
             "blacklist_check": config.blacklist_check,
             "freq_override": dict(config.freq_override) if config.freq_override else None,
+            "allowed_ips": self._normalize_allowed_ips(config.allowed_ips),
             "callback_url": callback_url,
             "callback_report_enabled": config.callback_report_enabled,
         }

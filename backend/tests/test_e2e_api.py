@@ -62,7 +62,9 @@ class FakeQuotaProbe:
 
 
 def test_case_registry_is_exact_autopilot_subset() -> None:
-    expected = tuple([f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27"])
+    expected = tuple(
+        [f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"]
+    )
     assert expected == CASE_IDS
 
 

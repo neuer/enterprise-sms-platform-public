@@ -29,6 +29,7 @@ from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/admin/apps", tags=["admin"])
 Category = Literal["verify", "notice", "market"]
+IpCidr = Annotated[str, Field(max_length=64)]
 
 
 def _no_store(response: Response) -> None:
@@ -68,6 +69,11 @@ class AppCreateRequest(BaseModel):
     rate_limit_per_min: int = Field(default=60, ge=1, le=60_000)
     blacklist_check: bool = True
     freq_override: FrequencyOverride | None = None
+    allowed_ips: list[IpCidr] = Field(
+        default_factory=list,
+        max_length=50,
+        description="入站来源 IP/CIDR 白名单，空数组=不限",
+    )
     callback_url: str | None = None
     callback_report_enabled: bool = False
 
@@ -80,6 +86,11 @@ class AppUpdateRequest(BaseModel):
     rate_limit_per_min: int = Field(ge=1, le=60_000)
     blacklist_check: bool
     freq_override: FrequencyOverride | None = None
+    allowed_ips: list[IpCidr] = Field(
+        default_factory=list,
+        max_length=50,
+        description="入站来源 IP/CIDR 白名单，空数组=不限",
+    )
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: Literal[0, 1] = 1
@@ -95,6 +106,11 @@ class AppResponse(BaseModel):
     rate_limit_per_min: int
     blacklist_check: bool
     freq_override: FrequencyOverride | None = None
+    allowed_ips: list[IpCidr] = Field(
+        default_factory=list,
+        max_length=50,
+        description="入站来源 IP/CIDR 白名单，空数组=不限",
+    )
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: Literal[0, 1]
@@ -194,10 +210,11 @@ async def create_app(
         result = await service.create(
             AppCreate(
                 **payload.model_dump(
-                    exclude={"allowed_categories", "freq_override"}
+                    exclude={"allowed_categories", "freq_override", "allowed_ips"}
                 ),
                 allowed_categories=frozenset(payload.allowed_categories),
                 freq_override=_frequency_values(payload.freq_override),
+                allowed_ips=tuple(payload.allowed_ips),
             ),
             actor=actor,
             ip=ip,
@@ -249,10 +266,11 @@ async def update_app(
             id,
             AppUpdate(
                 **payload.model_dump(
-                    exclude={"allowed_categories", "freq_override"}
+                    exclude={"allowed_categories", "freq_override", "allowed_ips"}
                 ),
                 allowed_categories=frozenset(payload.allowed_categories),
                 freq_override=_frequency_values(payload.freq_override),
+                allowed_ips=tuple(payload.allowed_ips),
             ),
             actor=actor,
             ip=ip,
