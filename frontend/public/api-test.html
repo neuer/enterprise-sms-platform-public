@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>短信平台 API 测试台</title>
+  <style>
+    :root {
+      --bg: #0e1420; --card: #171f2e; --line: #263246; --text: #dbe4f0;
+      --muted: #8fa1b8; --accent: #4da3ff; --ok: #38c793; --warn: #e8b93d;
+      --danger: #ef6b6b; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    header { padding: 18px 16px 10px; }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    main { padding: 0 16px 40px; max-width: 860px; margin: 0 auto; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; margin: 14px 0;
+    }
+    .card h2 { margin: 0 0 10px; font-size: 16px; }
+    label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 13px; }
+    input, select, textarea {
+      width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--line);
+      background: #0d1320; color: var(--text); font-size: 15px; font-family: inherit;
+    }
+    textarea { font-family: var(--mono); font-size: 13px; }
+    input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
+    button {
+      appearance: none; border: 1px solid var(--line); background: #1d2839; color: var(--text);
+      border-radius: 8px; padding: 10px 14px; font-size: 14px; cursor: pointer; margin: 8px 6px 0 0;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 600; }
+    button.danger { color: var(--danger); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row > * { margin: 0; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+      border: 1px solid var(--line); color: var(--muted); margin: 2px 4px 2px 0; cursor: pointer;
+    }
+    .pill:hover { border-color: var(--accent); color: var(--accent); }
+    #result {
+      font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all;
+      background: #0d1320; border: 1px solid var(--line); border-radius: 8px;
+      padding: 12px; max-height: 46vh; overflow: auto; margin-top: 10px;
+    }
+    #statusLine { font-size: 13px; margin-top: 10px; min-height: 20px; }
+    .ok { color: var(--ok); } .warn { color: var(--warn); } .danger { color: var(--danger); }
+    fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0 0; padding: 8px 10px; }
+    legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+    @media (max-width: 560px) {
+      button { flex: 1 1 45%; }
+      .row button { flex: 1 1 45%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>短信平台 API 测试台</h1>
+    <p>应用接口（X-Api-Key）发送与批次操作 · 密钥仅保存在本页内存，关闭页面即消失</p>
+  </header>
+  <main>
+    <section class="card" id="connection">
+      <h2>连接</h2>
+      <label for="apiBase">API 地址（同源时留空；跨域地址需要平台开启 CORS）</label>
+      <input id="apiBase" inputmode="url" placeholder="/api/v1" autocomplete="off">
+      <label for="apiKey">API Key（仅本页内存，不写入任何存储）</label>
+      <div class="row">
+        <input id="apiKey" type="password" autocomplete="off" style="flex:1" placeholder="粘贴应用 API Key">
+        <button id="toggleKey" type="button">显示</button>
+        <button id="clearKey" type="button" class="danger">清空</button>
+      </div>
+      <p class="hint">服务端看到的来源 IP 是当前网络出口 IP；应用配置了 IP 白名单时，来源不在白名单会返回 403 IP_NOT_ALLOWED。</p>
+    </section>
+
+    <section class="card" id="send">
+      <h2>发送短信</h2>
+      <label for="category">消息类别</label>
+      <select id="category">
+        <option value="verify">verify 验证码</option>
+        <option value="notice" selected>notice 通知</option>
+        <option value="market">market 营销</option>
+      </select>
+      <label for="contentMode">内容来源</label>
+      <div class="row">
+        <button id="modeContent" type="button" class="primary">直接内容</button>
+        <button id="modeTemplate" type="button">模板</button>
+      </div>
+      <div id="contentPanel">
+        <label for="content">内容（≤500 字符）</label>
+        <textarea id="content" rows="3" placeholder="测试通知：平台 API 接口验证"></textarea>
+      </div>
+      <div id="templatePanel" hidden>
+        <label for="templateId">模板 ID</label>
+        <input id="templateId" type="number" min="1" inputmode="numeric" placeholder="如 12">
+        <label for="templateParams">模板参数（逗号分隔）</label>
+        <input id="templateParams" placeholder="参数1,参数2" autocomplete="off">
+      </div>
+      <label for="signName">签名（可选，默认用应用签名）</label>
+      <input id="signName" autocomplete="off">
+      <label for="mobiles">手机号（每行一个，最多 10000）</label>
+      <textarea id="mobiles" rows="3" placeholder="13800138000&#10;19900000001"></textarea>
+      <p class="hint" id="mobileCount">0 个号码</p>
+      <div class="row">
+        <div style="flex:1;min-width:220px">
+          <label for="bizId">biz_id（可选，≤32 位；同应用 24h 内同值幂等）</label>
+          <input id="bizId" maxlength="32" autocomplete="off">
+        </div>
+        <div style="flex:1;min-width:220px">
+          <label for="scheduledAt">定时发送（可选，上海时区）</label>
+          <input id="scheduledAt" type="datetime-local">
+        </div>
+      </div>
+      <p class="hint">market 在营销时间窗外会自动转为次日窗口定时；verify 号码级频控默认 1 条/分钟、10 条/天。</p>
+      <button id="sendBtn" type="button" class="primary">发送</button>
+    </section>
+
+    <section class="card" id="batch">
+      <h2>批次操作</h2>
+      <label for="batchNo">批次号 batch_no</label>
+      <input id="batchNo" autocomplete="off" placeholder="发送成功后自动填入最近批次">
+      <div class="row">
+        <button id="getBatch" type="button">查询</button>
+        <button id="getDetails" type="button">明细</button>
+        <button id="cancelBatch" type="button" class="danger">取消</button>
+        <button id="resendFailed" type="button">重发失败</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="rescheduleAt" type="datetime-local" style="flex:1;min-width:180px">
+        <button id="rescheduleBtn" type="button">改期到所选时间</button>
+      </div>
+    </section>
+
+    <section class="card" id="resultCard">
+      <h2>结果</h2>
+      <div id="statusLine" class="muted">尚未发起请求</div>
+      <div id="recentBox"></div>
+      <pre id="result">（响应 JSON 将显示在这里）</pre>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    const state = { key: "", recent: [] };
+    const SEND_PATH = "/api/v1/messages/send";
+
+    function apiBase() {
+      return $("apiBase").value.trim().replace(/\/+$/, "");
+    }
+
+    function apiKey() {
+      return state.key;
+    }
+
+    async function request(method, path, body) {
+      const headers = { "Accept": "application/json" };
+      if (apiKey()) headers["X-Api-Key"] = apiKey();
+      if (body !== undefined) headers["Content-Type"] = "application/json";
+      const response = await fetch(apiBase() + path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const text = await response.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch (_) { /* 非 JSON 响应 */ }
+      return { status: response.status, data, text };
+    }
+
+    function showStatus(text, kind) {
+      const line = $("statusLine");
+      line.textContent = text;
+      line.className = kind || "";
+    }
+
+    function showResult(label, response) {
+      const ok = response.status >= 200 && response.status < 300;
+      showStatus(`${label} → HTTP ${response.status}${response.data && response.data.code ? " " + response.data.code : ""}`, ok ? "ok" : "danger");
+      $("result").textContent = response.text || "(空响应)";
+    }
+
+    function showError(label, error) {
+      showStatus(`${label} → ${error instanceof Error ? error.message : String(error)}`, "danger");
+      $("result").textContent = String(error instanceof Error ? error.stack || error : error);
+    }
+
+    function parsedMobiles() {
+      return $("mobiles").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    }
+
+    function refreshMobileCount() {
+      const list = parsedMobiles();
+      const invalid = list.filter((phone) => !/^1\d{10}$/.test(phone));
+      const text = `${list.length} 个号码${invalid.length ? `，${invalid.length} 个格式非法` : ""}`;
+      $("mobileCount").textContent = text;
+      $("mobileCount").className = invalid.length ? "danger" : "hint";
+      return { list, invalid };
+    }
+
+    function isoShanghai(value) {
+      if (!value) return null;
+      return `${value}:00+08:00`;
+    }
+
+    function templateParams() {
+      return $("templateParams").value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    let contentMode = "content";
+    function setContentMode(mode) {
+      contentMode = mode;
+      $("modeContent").className = mode === "content" ? "primary" : "";
+      $("modeTemplate").className = mode === "template" ? "primary" : "";
+      $("contentPanel").hidden = mode !== "content";
+      $("templatePanel").hidden = mode !== "template";
+    }
+
+    function rememberBatch(batchNo, status) {
+      if (!batchNo) return;
+      state.recent = [{ batchNo, status, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) }, ...state.recent.filter((item) => item.batchNo !== batchNo)].slice(0, 8);
+      renderRecent();
+      $("batchNo").value = batchNo;
+    }
+
+    function renderRecent() {
+      const box = $("recentBox");
+      box.innerHTML = "";
+      if (!state.recent.length) return;
+      const label = document.createElement("span");
+      label.className = "muted";
+      label.textContent = "最近批次：";
+      box.appendChild(label);
+      for (const item of state.recent) {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.title = item.at;
+        pill.textContent = `${item.batchNo.slice(0, 12)}… ${item.status}`;
+        pill.addEventListener("click", () => {
+          $("batchNo").value = item.batchNo;
+          void doGetBatch();
+        });
+        box.appendChild(pill);
+      }
+    }
+
+    async function doSend() {
+      const { list, invalid } = refreshMobileCount();
+      if (!list.length) { showStatus("请至少输入一个手机号", "warn"); return; }
+      if (invalid.length) { showStatus(`存在 ${invalid.length} 个非法手机号`, "danger"); return; }
+      if (list.length > 10000) { showStatus("手机号超过 10000 个", "danger"); return; }
+      if (!apiKey()) { showStatus("请先填写 API Key", "warn"); return; }
+      const payload = {
+        category: $("category").value,
+        mobiles: list,
+        sign_name: $("signName").value.trim() || null,
+        biz_id: $("bizId").value.trim() || null,
+        scheduled_at: isoShanghai($("scheduledAt").value),
+      };
+      if (contentMode === "content") {
+        const content = $("content").value;
+        if (!content) { showStatus("请填写内容", "warn"); return; }
+        payload.content = content;
+      } else {
+        const templateId = Number($("templateId").value);
+        if (!Number.isInteger(templateId) || templateId < 1) { showStatus("模板 ID 无效", "warn"); return; }
+        payload.template_id = templateId;
+        payload.template_params = templateParams();
+      }
+      $("sendBtn").disabled = true;
+      try {
+        const response = await request("POST", SEND_PATH, payload);
+        showResult("发送", response);
+        if (response.status === 200 && response.data) {
+          rememberBatch(response.data.batch_no, response.data.status || "queued");
+        }
+      } catch (error) {
+        showError("发送", error);
+      } finally {
+        $("sendBtn").disabled = false;
+      }
+    }
+
+    async function doGetBatch() {
+      const batchNo = $("batchNo").value.trim();
+      if (!batchNo) { showStatus("请先填写批次号", "warn"); return; }
+      try {
+        const response = await request("GET", `/api/v1/messages/batches/${encodeURIComponent(batchNo)}`);
+        showResult("查询批次", response);
+      } catch (error) { showError("查询批次", error); }
+    }
+
+    async function doGetDetails() {
+      const batchNo = $("batchNo").value.trim();
+      if (!batchNo) { showStatus("请先填写批次号", "warn"); return; }
+      try {
+        const response = await request("GET", `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?page=1&size=100`);
+        showResult("批次明细", response);
+      } catch (error) { showError("批次明细", error); }
+    }
+
+    async function doCancel() {
+      const batchNo = $("batchNo").value.trim();
+      if (!batchNo) { showStatus("请先填写批次号", "warn"); return; }
+      if (!window.confirm(`确认取消批次 ${batchNo}？`)) return;
+      try {
+        const response = await request("POST", `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/cancel`);
+        showResult("取消批次", response);
+        if (response.status === 200) {
+          state.recent = state.recent.map((item) => item.batchNo === batchNo ? { ...item, status: "cancelled" } : item);
+          renderRecent();
+        }
+      } catch (error) { showError("取消批次", error); }
+    }
+
+    async function doReschedule() {
+      const batchNo = $("batchNo").value.trim();
+      const scheduledAt = isoShanghai($("rescheduleAt").value);
+      if (!batchNo || !scheduledAt) { showStatus("请填写批次号与新的定时时间", "warn"); return; }
+      try {
+        const response = await request("POST", `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/reschedule`, { scheduled_at: scheduledAt });
+        showResult("改期", response);
+      } catch (error) { showError("改期", error); }
+    }
+
+    async function doResendFailed() {
+      const batchNo = $("batchNo").value.trim();
+      if (!batchNo) { showStatus("请先填写批次号", "warn"); return; }
+      if (!window.confirm(`确认重发批次 ${batchNo} 的失败号码？`)) return;
+      try {
+        const response = await request("POST", `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`);
+        showResult("重发失败", response);
+      } catch (error) { showError("重发失败", error); }
+    }
+
+    $("toggleKey").addEventListener("click", () => {
+      const input = $("apiKey");
+      input.type = input.type === "password" ? "text" : "password";
+      $("toggleKey").textContent = input.type === "password" ? "显示" : "隐藏";
+    });
+    $("clearKey").addEventListener("click", () => {
+      state.key = "";
+      $("apiKey").value = "";
+      showStatus("API Key 已从内存清空", "warn");
+    });
+    $("apiKey").addEventListener("input", (event) => {
+      state.key = event.target.value;
+    });
+    $("mobiles").addEventListener("input", refreshMobileCount);
+    $("modeContent").addEventListener("click", () => setContentMode("content"));
+    $("modeTemplate").addEventListener("click", () => setContentMode("template"));
+    $("sendBtn").addEventListener("click", doSend);
+    $("getBatch").addEventListener("click", doGetBatch);
+    $("getDetails").addEventListener("click", doGetDetails);
+    $("cancelBatch").addEventListener("click", doCancel);
+    $("rescheduleBtn").addEventListener("click", doReschedule);
+    $("resendFailed").addEventListener("click", doResendFailed);
+    $("batchNo").addEventListener("keydown", (event) => { if (event.key === "Enter") void doGetBatch(); });
+    refreshMobileCount();
+    renderRecent();
+  </script>
+</body>
+</html>
