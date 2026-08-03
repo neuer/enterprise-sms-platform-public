@@ -24,7 +24,7 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert 'id="sendFeedback"' in source
     assert 'id="selfCheck"' in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None
-    assert re.search(r"<script(?:\s[^>]*)?>", source) is not None
+    assert re.search(r"<script(?:\s[^>]*)?>", source, re.IGNORECASE) is not None
 
 
 def test_playground_keeps_credentials_in_memory_only() -> None:
