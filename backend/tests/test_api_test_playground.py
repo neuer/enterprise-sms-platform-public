@@ -18,6 +18,9 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert "/api/v1/messages/batches/" in source
     assert "IP_NOT_ALLOWED" in source
     assert "biz_id" in source
+    assert 'id="errorBanner"' in source
+    assert 'id="sendFeedback"' in source
+    assert 'id="selfCheck"' in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None
 
 

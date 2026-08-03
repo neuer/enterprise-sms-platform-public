@@ -55,6 +55,12 @@
     }
     #statusLine { font-size: 13px; margin-top: 10px; min-height: 20px; }
     .ok { color: var(--ok); } .warn { color: var(--warn); } .danger { color: var(--danger); }
+    #errorBanner {
+      position: sticky; top: 0; z-index: 10; background: #3a1620; color: var(--danger);
+      border: 1px solid var(--danger); border-radius: 0 0 10px 10px; padding: 10px 16px;
+      font-size: 13px;
+    }
+    #sendFeedback { margin-top: 10px; min-height: 20px; font-size: 13px; }
     fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0 0; padding: 8px 10px; }
     legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
     @media (max-width: 560px) {
@@ -68,6 +74,7 @@
     <h1>短信平台 API 测试台</h1>
     <p>应用接口（X-Api-Key）发送与批次操作 · 密钥仅保存在本页内存，关闭页面即消失</p>
   </header>
+  <div id="errorBanner" hidden></div>
   <main>
     <section class="card" id="connection">
       <h2>连接</h2>
@@ -121,7 +128,11 @@
         </div>
       </div>
       <p class="hint">market 在营销时间窗外会自动转为次日窗口定时；verify 号码级频控默认 1 条/分钟、10 条/天。</p>
-      <button id="sendBtn" type="button" class="primary">发送</button>
+      <div class="row">
+        <button id="sendBtn" type="button" class="primary">发送</button>
+        <button id="selfCheck" type="button">自检连接</button>
+      </div>
+      <div id="sendFeedback" class="muted"></div>
     </section>
 
     <section class="card" id="batch">
@@ -154,6 +165,19 @@
     const state = { key: "", recent: [] };
     const SEND_PATH = "/api/v1/messages/send";
 
+    function banner(message) {
+      const box = $("errorBanner");
+      box.hidden = !message;
+      box.textContent = message || "";
+    }
+    window.addEventListener("error", (event) => {
+      banner(`页面脚本错误：${event.message}`);
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      const reason = event.reason;
+      banner(`请求异常：${reason instanceof Error ? reason.message : String(reason)}`);
+    });
+
     function apiBase() {
       return $("apiBase").value.trim().replace(/\/+$/, "");
     }
@@ -166,15 +190,27 @@
       const headers = { "Accept": "application/json" };
       if (apiKey()) headers["X-Api-Key"] = apiKey();
       if (body !== undefined) headers["Content-Type"] = "application/json";
-      const response = await fetch(apiBase() + path, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const text = await response.text();
-      let data = null;
-      try { data = JSON.parse(text); } catch (_) { /* 非 JSON 响应 */ }
-      return { status: response.status, data, text };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(apiBase() + path, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const text = await response.text();
+        let data = null;
+        try { data = JSON.parse(text); } catch (_) { /* 非 JSON 响应 */ }
+        return { status: response.status, data, text };
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          throw new Error("请求超时（15 秒无响应）");
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     function showStatus(text, kind) {
@@ -183,14 +219,24 @@
       line.className = kind || "";
     }
 
+    function showFeedback(text, kind) {
+      const line = $("sendFeedback");
+      line.textContent = text;
+      line.className = kind || "muted";
+      line.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
     function showResult(label, response) {
       const ok = response.status >= 200 && response.status < 300;
       showStatus(`${label} → HTTP ${response.status}${response.data && response.data.code ? " " + response.data.code : ""}`, ok ? "ok" : "danger");
+      showFeedback(`${label} → HTTP ${response.status}${response.data && response.data.code ? " " + response.data.code : ""}`, ok ? "ok" : "danger");
       $("result").textContent = response.text || "(空响应)";
     }
 
     function showError(label, error) {
-      showStatus(`${label} → ${error instanceof Error ? error.message : String(error)}`, "danger");
+      const message = error instanceof Error ? error.message : String(error);
+      showStatus(`${label} → ${message}`, "danger");
+      showFeedback(`${label} → ${message}`, "danger");
       $("result").textContent = String(error instanceof Error ? error.stack || error : error);
     }
 
@@ -277,6 +323,7 @@
         payload.template_params = templateParams();
       }
       $("sendBtn").disabled = true;
+      showFeedback("正在发送…");
       try {
         const response = await request("POST", SEND_PATH, payload);
         showResult("发送", response);
@@ -287,6 +334,45 @@
         showError("发送", error);
       } finally {
         $("sendBtn").disabled = false;
+      }
+    }
+
+    async function doSelfCheck() {
+      showFeedback("正在自检连接…");
+      banner("");
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        let response;
+        try {
+          response = await fetch(apiBase() + SEND_PATH, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        const text = await response.text();
+        let data = null;
+        try { data = JSON.parse(text); } catch (_) { /* 非 JSON 响应 */ }
+        if (response.status === 401 && data && data.code === "UNAUTHORIZED") {
+          showStatus("自检通过：API 通路正常（不带 Key 返回 401 属预期）", "ok");
+          showFeedback("自检通过（401 UNAUTHORIZED 属预期）", "ok");
+          $("result").textContent = text;
+        } else {
+          const message = `自检异常：期望 401 UNAUTHORIZED，实际 HTTP ${response.status}`;
+          showStatus(message, "danger");
+          showFeedback(message, "danger");
+          $("result").textContent = text;
+        }
+      } catch (error) {
+        const message = error && error.name === "AbortError"
+          ? "自检超时：请确认页面由平台同源托管（如 http://服务器IP:18080/api-test.html），不要用手机本地文件打开"
+          : `自检失败：${error instanceof Error ? error.message : String(error)}。请确认页面由平台同源托管，不要用手机本地文件打开`;
+        showStatus(message, "danger");
+        showFeedback(message, "danger");
       }
     }
 
@@ -359,6 +445,7 @@
     $("modeContent").addEventListener("click", () => setContentMode("content"));
     $("modeTemplate").addEventListener("click", () => setContentMode("template"));
     $("sendBtn").addEventListener("click", doSend);
+    $("selfCheck").addEventListener("click", doSelfCheck);
     $("getBatch").addEventListener("click", doGetBatch);
     $("getDetails").addEventListener("click", doGetDetails);
     $("cancelBatch").addEventListener("click", doCancel);
