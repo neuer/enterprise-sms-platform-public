@@ -310,6 +310,56 @@ def test_collector_sanitizes_uri_details_before_rendering(tmp_path: Path) -> Non
     assert "/api/health" in top
 
 
+def test_collector_does_not_treat_time_tokens_as_ssh_sources(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "Aug 1 01:00:00 host sshd[1]: Failed password for root "
+        "from 203.0.113.9 port 22\n"
+        "2026-08-01T15:43:28+08:00 host sshd[2]: Failed password for admin "
+        "from 198.51.100.7 port 22\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=tmp_path / "missing-web.log",
+        docker_root=tmp_path,
+    )
+
+    top = _row(payload, "ssh", "失败来源 Top")["value"]
+    assert "15:43:28" not in top
+    assert "203.0.113.9 ×1" in top
+    assert "198.51.100.7 ×1" in top
+
+
+def test_collector_keeps_long_uri_rows_within_value_limit(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
+    long_path = "/api/v1/very/long/path/" + "x" * 100
+    web = tmp_path / "access.log"
+    web.write_text(
+        f"127.0.0.1 [01/Aug/2026:04:00:01 +0800] {long_path} 500 12\n"
+        f"127.0.0.1 [01/Aug/2026:04:01:01 +0800] /api/health 500 4\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    top = _row(payload, "web", "5xx 路径 Top")["value"]
+    assert len(top) <= 150
+    assert "/api/health" in top
+
+
 def test_collector_attributes_nginx_log_after_format_upgrade(tmp_path: Path) -> None:
     auth = tmp_path / "auth.log"
     auth.write_text("Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8")
