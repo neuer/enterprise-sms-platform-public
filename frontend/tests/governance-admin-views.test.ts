@@ -133,7 +133,7 @@ describe("管理员治理页面", () => {
 
     expect(document.body.textContent).toContain("这是当前最终 API Key")
     expect(document.body.textContent).toContain("复制并安全保存")
-    expect(document.body.textContent).toContain("旧 Key 宽限期至 2026-07-13T08:00:00+08:00")
+    expect(document.body.textContent).toContain("旧 Key 宽限期至 2026-07-13 08:00:00")
     expect(otherRotateButton.attributes("disabled")).toBeDefined()
     expect(callbackButton.attributes("disabled")).toBeDefined()
     expect(newAppButton.attributes("disabled")).toBeDefined()
@@ -169,6 +169,111 @@ describe("管理员治理页面", () => {
 
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-key"))).toHaveLength(0)
     expect(wrapper.get("[data-testid='rotate-key-1']").attributes("disabled")).toBeUndefined()
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("卡片呈现黑名单、频控覆盖与回调投递策略摘要", async () => {
+    const configured = {
+      ...app,
+      daily_quota: 0,
+      blacklist_check: false,
+      freq_override: { verify_per_minute: 2, market_per_day: 1 },
+      callback_url: "https://callback.internal/sms",
+      callback_report_enabled: true,
+    }
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      return response([configured])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    const card = wrapper.get(".managed-app-card")
+    expect(card.text()).toContain("不限量")
+    expect(card.text()).toContain("黑名单检查")
+    expect(card.text()).toContain("关闭")
+    expect(card.text()).toContain("频控覆盖")
+    expect(card.text()).toContain("验证码 2/分")
+    expect(card.text()).toContain("营销 1/日")
+    expect(card.text()).toContain("https://callback.internal/sms")
+    expect(card.text()).toContain("消息级回调")
+    expect(card.text()).toContain("开启")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("取消回调密钥轮换确认不产生写请求", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("回调密钥"),
+      "确认轮换回调密钥",
+      expect.objectContaining({ type: "warning" }),
+    )
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-callback-secret"))).toHaveLength(0)
+    expect(wrapper.get("[data-testid='rotate-callback-1']").attributes("disabled")).toBeUndefined()
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("一次性密钥弹窗支持复制到剪贴板，关闭后清空", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (url.endsWith("/rotate-callback-secret")) {
+        return response({ callback_secret: "cb-secret-once" })
+      }
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
+    Object.defineProperty(window.navigator, "clipboard", { value: { writeText }, configurable: true })
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true })
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
+    await flushPromises()
+    expect(document.body.textContent).toContain("cb-secret-once")
+
+    await wrapper.get("[data-testid='secret-copy']").trigger("click")
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith("cb-secret-once")
+
+    await wrapper.get("[data-testid='secret-close']").trigger("click")
+    await flushPromises()
+    expect(document.body.textContent).not.toContain("cb-secret-once")
 
     wrapper.unmount()
     vi.unstubAllGlobals()
