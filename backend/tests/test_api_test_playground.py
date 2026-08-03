@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 from pathlib import Path
 
@@ -22,6 +24,7 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert 'id="sendFeedback"' in source
     assert 'id="selfCheck"' in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None
+    assert re.search(r"<script(?:\s[^>]*)?>", source, re.IGNORECASE) is not None
 
 
 def test_playground_keeps_credentials_in_memory_only() -> None:
@@ -31,3 +34,22 @@ def test_playground_keeps_credentials_in_memory_only() -> None:
         assert forbidden not in source
     assert 'type="password"' in source
     assert "state.key" in source
+
+
+def test_playground_csp_hashes_match_nginx_route() -> None:
+    """内联 script/style 的 CSP 哈希必须与 nginx 单路由白名单一致。"""
+
+    source = PLAYGROUND.read_text(encoding="utf-8")
+    nginx = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+    location_start = nginx.index("location = /api-test.html {")
+    location_text = nginx[location_start:]
+
+    assert "script-src-attr 'none'" in location_text
+    assert "script-src 'self' 'unsafe-inline'" not in location_text
+    for name in ("script", "style"):
+        match = re.search(rf"<{name}>([\s\S]*?)</{name}>", source)
+        assert match is not None, name
+        digest = base64.b64encode(
+            hashlib.sha256(match.group(1).encode("utf-8")).digest()
+        ).decode()
+        assert f"'sha256-{digest}'" in location_text, f"{name} hash missing in nginx CSP"
