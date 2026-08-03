@@ -61,6 +61,10 @@ HTTP_STATUS = re.compile(r"\s(?P<status>[1-5]\d{2})(?:\s|$)")
 SENSITIVE_PATH = re.compile(
     r"(?:/\.env(?:\b|/)|/\.git(?:\b|/)|/debug(?:\b|/)|/actuator(?:\b|/))", re.I
 )
+SSHD_MESSAGE_RE = re.compile(r"\bsshd(?:\[\d+\])?:", re.IGNORECASE)
+FAIL2BAN_MESSAGE_RE = re.compile(
+    r"\bfail2ban(?:\.\w+)?(?:\[\d+\])?:", re.IGNORECASE
+)
 IPV4_RE = re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")
 IPV6_RE = re.compile(r"(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}")
 WEB_METHOD_URI_RE = re.compile(
@@ -184,8 +188,13 @@ def _scan_log(
     patterns: Sequence[re.Pattern[str]],
     *,
     source_pattern: re.Pattern[str] | None = None,
+    message_required: re.Pattern[str] | None = None,
 ) -> LogCounts:
-    """只扫描固定日志文件并返回匹配计数，不保留任何原始行。"""
+    """只扫描固定日志文件并返回匹配计数，不保留任何原始行。
+
+    message_required 用于限定真实程序日志（如 sshd/fail2ban），避免把
+    sudo COMMAND 等命令文本里的关键词误判为安全事件。
+    """
 
     files = _log_file_paths(path)
     if not files:
@@ -197,6 +206,8 @@ def _scan_log(
         if not _line_matches_date(line, report_date):
             continue
         total += 1
+        if message_required is not None and message_required.search(line) is None:
+            continue
         for index, pattern in enumerate(patterns):
             if pattern.search(line):
                 counters[index] += 1
@@ -540,8 +551,14 @@ def collect_report(
         report_date,
         (FAILED_SSH, ACCEPTED_SSH),
         source_pattern=FAILED_SSH,
+        message_required=SSHD_MESSAGE_RE,
     )
-    bans = _scan_log(fail2ban_log, report_date, (FAIL2BAN_BAN,))
+    bans = _scan_log(
+        fail2ban_log,
+        report_date,
+        (FAIL2BAN_BAN,),
+        message_required=FAIL2BAN_MESSAGE_RE,
+    )
     web = _scan_web(web_log, docker_root, report_date)
     available_sources = sum((ssh.available, bans.available, web.available))
     if available_sources == 0:
