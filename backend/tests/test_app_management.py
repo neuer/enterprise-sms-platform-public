@@ -175,3 +175,91 @@ async def test_callback_secret_rotation_only_persists_packed_ciphertext() -> Non
     assert result == {"callback_secret": "rotated-callback-secret"}
     stored = repo.calls[0][1]
     assert b"rotated-callback-secret" not in stored["callback_secret_enc"]
+
+
+@pytest.mark.asyncio
+async def test_allowed_ips_are_normalized_deduped_and_sorted_on_create() -> None:
+    repo = FakeRepository()
+    service = AppManagementService(
+        repo,
+        crypto(),
+        validator("10.1.1.1"),
+        secret_generator=lambda: "api-key-plain-once",
+    )
+
+    await service.create(
+        AppCreate(
+            name="app-ip",
+            dept="研发部",
+            allowed_ips=(
+                "203.0.113.7",
+                "203.0.113.7/32",
+                "10.0.0.0/8",
+                "2001:db8::1",
+            ),
+        ),
+        actor="admin01",
+        ip="10.0.0.8",
+    )
+
+    stored = repo.calls[0][1]
+    assert stored["allowed_ips"] == (
+        "10.0.0.0/8",
+        "2001:db8::1/128",
+        "203.0.113.7/32",
+    )
+
+
+@pytest.mark.asyncio
+async def test_allowed_ips_reject_invalid_entries_and_exceed_bounds() -> None:
+    repo = FakeRepository()
+    service = AppManagementService(
+        repo,
+        crypto(),
+        validator("10.1.1.1"),
+        secret_generator=lambda: "api-key-plain-once",
+    )
+
+    for invalid in (
+        ("10.0.0.0/33",),
+        ("example.com",),
+        ("",),
+        ("x" * 65,),
+        (123,),  # type: ignore[arg-type]
+    ):
+        with pytest.raises(InvalidAppConfig, match="IP 白名单"):
+            await service.create(
+                AppCreate(name="app-ip", dept="研发部", allowed_ips=invalid),
+                actor="admin01",
+                ip="10.0.0.8",
+            )
+
+    too_many = tuple(f"10.0.{index}.0/24" for index in range(51))
+    with pytest.raises(InvalidAppConfig, match="最多 50"):
+        await service.create(
+            AppCreate(name="app-ip", dept="研发部", allowed_ips=too_many),
+            actor="admin01",
+            ip="10.0.0.8",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_requires_callback_secret_before_callback_url() -> None:
+    repo = FakeRepository()
+    service = AppManagementService(
+        repo,
+        crypto(),
+        validator("10.1.1.1"),
+        secret_generator=lambda: "api-key-plain-once",
+    )
+
+    with pytest.raises(InvalidAppConfig, match="callback secret"):
+        await service.update(
+            1,
+            AppUpdate(
+                dept="研发部",
+                callback_url="http://callback.internal/hook",
+            ),
+            actor="admin01",
+            ip="10.0.0.8",
+        )

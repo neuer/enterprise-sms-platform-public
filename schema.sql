@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.43  2026-08-03
+-- v1.6.43：应用来源 IP/CIDR 白名单（allowed_ips，空数组=不限，仅 API Key 路径强制）
 -- v1.6.42  2026-08-02
 -- v1.6.42：安全日报记录区分自动/手动生成来源，支持手动重生成并立即投递
 -- v1.6.41  2026-08-02
@@ -296,6 +298,7 @@ CREATE TABLE app (
     rate_limit_per_min   INTEGER      NOT NULL DEFAULT 60,
     blacklist_check      BOOLEAN      NOT NULL DEFAULT TRUE, -- notice 类是否查黑名单
     freq_override        JSONB,                           -- 号码级频控应用覆盖,如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":2}
+    allowed_ips          TEXT[]       NOT NULL DEFAULT '{}', -- 入站来源CIDR白名单;空=不限
     callback_url         VARCHAR(256),                    -- 结果回调(内网CIDR白名单校验)
     callback_secret_enc  BYTEA,                           -- 回调签名密钥(加密存储)
     callback_report_enabled BOOLEAN   NOT NULL DEFAULT FALSE, -- 明细级回调开关

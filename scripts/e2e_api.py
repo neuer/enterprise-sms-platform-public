@@ -23,7 +23,9 @@ from zoneinfo import ZoneInfo
 
 from runtime_credentials import read_secret_file
 
-CASE_IDS = tuple([f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27"])
+CASE_IDS = tuple(
+    [f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"]
+)
 REQUIRED_APPS = frozenset({"app-iam", "app-oa", "app-mkt"})
 SAFE_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_DATABASE_VALUE = re.compile(r"^[A-Za-z0-9_.:@+\-]+$")
@@ -2094,6 +2096,96 @@ class UatSuite:
             isinstance(item, dict) and item.get("object_id") == job_name for item in audit_items
         ):
             raise UatFailure("UAT-27 manual trigger audit missing")
+
+    def case_29(self) -> None:
+        created = self._expect(
+            "29",
+            self._request(
+                self.api,
+                "POST",
+                "/api/v1/web/admin/apps",
+                payload={
+                    "name": f"uat-ipallow-{self.run_id}",
+                    "dept": "平台技术部",
+                    "allowed_categories": ["notice"],
+                    "daily_quota": 0,
+                    "rate_limit_per_min": 100,
+                    "blacklist_check": False,
+                    "allowed_ips": ["198.51.100.0/24"],
+                },
+                headers=self._bearer("admin01"),
+            ),
+            200,
+        )
+        app_id = created.get("id")
+        api_key = created.get("api_key")
+        if not isinstance(app_id, int) or not isinstance(api_key, str):
+            raise UatFailure("UAT-29 app credentials missing")
+        self.rollback.defer(
+            lambda: self._cleanup_http(
+                "29",
+                "DELETE",
+                f"/api/v1/web/admin/apps/{app_id}",
+                headers=self._bearer("admin01"),
+                allowed=(204,),
+            )
+        )
+        denied = self._request(
+            self.api,
+            "POST",
+            "/api/v1/messages/send",
+            payload={
+                "category": "notice",
+                "mobiles": [self.phone(29, 0)],
+                "content": "IP白名单拒绝验收",
+                "biz_id": f"u29-{self.run_id}-denied",
+            },
+            headers={"X-Api-Key": api_key},
+        )
+        self._expect("29", denied, 403, code="IP_NOT_ALLOWED")
+
+        updated = self._expect(
+            "29",
+            self._request(
+                self.api,
+                "PUT",
+                f"/api/v1/web/admin/apps/{app_id}",
+                payload={
+                    "dept": "平台技术部",
+                    "allowed_categories": ["notice"],
+                    "daily_quota": 0,
+                    "rate_limit_per_min": 100,
+                    "blacklist_check": False,
+                    "freq_override": None,
+                    "allowed_ips": ["0.0.0.0/0", "::/0"],
+                    "callback_url": None,
+                    "callback_report_enabled": False,
+                    "status": 1,
+                },
+                headers=self._bearer("admin01"),
+            ),
+            200,
+        )
+        if updated.get("allowed_ips") != ["0.0.0.0/0", "::/0"]:
+            raise UatFailure("UAT-29 allowlist update mismatch")
+
+        allowed = self._request(
+            self.api,
+            "POST",
+            "/api/v1/messages/send",
+            payload={
+                "category": "notice",
+                "mobiles": [self.phone(29, 1)],
+                "content": "IP白名单放行验收",
+                "biz_id": f"u29-{self.run_id}-allowed",
+            },
+            headers={"X-Api-Key": api_key},
+        )
+        data = self._expect("29", allowed, 200)
+        batch_no = data.get("batch_no")
+        if not isinstance(batch_no, str):
+            raise UatFailure("UAT-29 batch missing")
+        self.wait_send("29", batch_no)
 
     def run(self, case_ids: Sequence[str]) -> list[str]:
         completed: list[str] = []

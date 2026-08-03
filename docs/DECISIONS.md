@@ -649,3 +649,17 @@
 - 原因：原实现只定义了“外部采集器交付”接口，测试主机没有安装采集器时页面只能看到
   `unavailable`，但缺少可执行的恢复路径。把采集、消费、投递继续隔离，既能补齐默认
   部署链路，也不会扩大 API 或 mailer 的主机权限。
+
+## D062 应用来源 IP 白名单只作用于 API Key 认证路径
+
+- 决策：`app.allowed_ips`（TEXT[]，规范化 CIDR，空数组=不限）作为应用级入站白名单，
+  在 `core/apikey.py` 的 `require_api_app`/`optional_api_app` 认证依赖内统一强制：
+  白名单非空且 `request.client.host` 未命中或不可解析时返回 `403 IP_NOT_ALLOWED`，
+  且拒绝发生在路由处理之前，不消费应用限流与配额。Web 用户 JWT 路径不受影响。
+- 原因：内部系统主要通过 X-Api-Key 接入，密钥泄露后 IP 白名单是最直接的止损边界；
+  强制点放在唯一认证依赖内可避免散落 if-else，也满足“认证方式不得按路径猜测”的契约。
+  IP 来源依赖既有可信代理契约（nginx 只写单跳 XFF、uvicorn `--forwarded-allow-ips`
+  固定 172.31.250.3），不需要新增环境变量或中间件；未来接 CDN/WAF 时必须同步调整
+  nginx XFF 拼接与部署契约测试。
+- 影响：schema/migration、`core/apikey.py`、应用管理 API 与前端、openapi/PRD/AGENTS
+  错误码表、单元/API/集成/E2E 与 UAT-29 用例；轮换后新旧 Key 受同一白名单约束。

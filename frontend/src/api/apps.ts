@@ -40,6 +40,7 @@ export interface ManagedApp {
   rate_limit_per_min: number
   blacklist_check: boolean
   freq_override: FrequencyOverride | null
+  allowed_ips: string[]
   callback_url: string | null
   callback_report_enabled: boolean
   status: 0 | 1
@@ -54,6 +55,7 @@ export interface AppPayload {
   rate_limit_per_min: number
   blacklist_check: boolean
   freq_override: FrequencyOverride | null
+  allowed_ips: string[]
   callback_url: string | null
   callback_report_enabled: boolean
   status?: 0 | 1

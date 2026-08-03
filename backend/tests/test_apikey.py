@@ -124,3 +124,108 @@ def test_explicit_dependency_protects_route_and_returns_app_context() -> None:
         headers={"X-Api-Key": "valid-key-value"},
     )
     assert success.json() == {"app_id": 1, "categories": ["verify"]}
+
+
+def _probe_app(candidates: list[ApiKeyCandidate]) -> FastAPI:
+    class ProbeRepository(FakeRepository):
+        pass
+
+    repository = ProbeRepository(candidates)
+    authenticator = ApiKeyAuthenticator(repository)
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.dependency_overrides[get_api_key_authenticator] = lambda: authenticator
+
+    @app.get("/api/v1/messages/probe")
+    async def probe(
+        context: Annotated[ApiAppContext, Depends(require_api_app)],
+    ) -> dict[str, object]:
+        return {"app_id": context.app_id, "ips": list(context.allowed_ips)}
+
+    return app
+
+
+def test_ip_allowlist_accepts_matching_cidr_and_blocks_other_sources() -> None:
+    key = "current_key_with_enough_entropy_123"
+    candidate = ApiKeyCandidate(
+        app_id=21,
+        name="app-ip",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=("203.0.113.0/24", "2001:db8::/32"),
+    )
+    app = _probe_app([candidate])
+    headers = {"X-Api-Key": key}
+
+    allowed_v4 = TestClient(app, client=("203.0.113.9", 12345))
+    assert allowed_v4.get("/api/v1/messages/probe", headers=headers).status_code == 200
+
+    allowed_v6 = TestClient(app, client=("2001:db8::1", 12345))
+    assert allowed_v6.get("/api/v1/messages/probe", headers=headers).status_code == 200
+
+    blocked = TestClient(app, client=("198.51.100.9", 12345))
+    response = blocked.get("/api/v1/messages/probe", headers=headers)
+    assert response.status_code == 403
+    assert response.json()["code"] == "IP_NOT_ALLOWED"
+
+
+def test_empty_allowlist_allows_any_source_and_unparsable_client_fails_closed() -> None:
+    key = "current_key_with_enough_entropy_123"
+    unrestricted = ApiKeyCandidate(
+        app_id=22,
+        name="app-open",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=(),
+    )
+    assert (
+        TestClient(_probe_app([unrestricted]), client=("192.0.2.7", 12345))
+        .get("/api/v1/messages/probe", headers={"X-Api-Key": key})
+        .status_code
+        == 200
+    )
+
+    restricted = ApiKeyCandidate(
+        app_id=23,
+        name="app-restricted",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=("10.0.0.0/8",),
+    )
+    # TestClient 默认 client host 为 "testclient"，不是合法 IP → fail closed。
+    response = TestClient(_probe_app([restricted])).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert response.status_code == 403
+    assert response.json()["code"] == "IP_NOT_ALLOWED"
+
+
+def test_corrupt_allowlist_entry_fails_closed_without_plaintext_detail() -> None:
+    key = "current_key_with_enough_entropy_123"
+    candidate = ApiKeyCandidate(
+        app_id=24,
+        name="app-corrupt",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=("not-a-cidr",),
+    )
+    response = TestClient(_probe_app([candidate]), client=("10.1.2.3", 12345)).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+    assert "not-a-cidr" not in response.text

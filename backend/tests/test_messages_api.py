@@ -255,6 +255,77 @@ def test_live_test_ordinary_api_send_is_console_only(
     assert response.json()["code"] == "VENDOR_TEST_CONSOLE_ONLY"
 
 
+def test_send_api_blocks_source_ip_outside_app_allowlist_without_consuming_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RestrictedKeyAuth:
+        async def authenticate(self, key: str) -> ApiAppContext:
+            return ApiAppContext(
+                7,
+                "app-iam",
+                "平台部",
+                frozenset({"verify", "notice"}),
+                allowed_ips=("203.0.113.0/24",),
+            )
+
+    class CountingPipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def accept(
+            self,
+            app: ApiAppContext,
+            request: SendRequest,
+            **_kwargs: object,
+        ) -> BatchResponse:
+            self.calls += 1
+            return BatchResponse(
+                "batch-1",
+                False,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                "queued",
+                None,
+                None,
+            )
+
+    pipeline = CountingPipeline()
+
+    async def fake_factory(app: ApiAppContext) -> CountingPipeline:
+        return pipeline
+
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(
+        RequestValidationError,
+        validation_error_handler,  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_api_key_authenticator] = RestrictedKeyAuth
+    app.include_router(messages_module.router)
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+
+    blocked = TestClient(app, client=("198.51.100.7", 12345)).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={"category": "verify", "mobiles": ["13800138000"], "content": "验证码123456"},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["code"] == "IP_NOT_ALLOWED"
+    assert pipeline.calls == 0
+
+    allowed = TestClient(app, client=("203.0.113.7", 12345)).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={"category": "verify", "mobiles": ["13800138000"], "content": "验证码123456"},
+    )
+    assert allowed.status_code == 200
+    assert pipeline.calls == 1
+
+
 def test_controlled_api_uat_uses_api_key_and_protected_registered_recipient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

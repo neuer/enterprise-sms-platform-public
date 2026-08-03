@@ -250,6 +250,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 #### FR-18 应用与密钥
 - CRUD：allowed_categories、默认签名、日配额（计费条）、限流、blacklist_check、freq_override、回调配置
 - API Key：一次性明文；**双 Key 轮换**（宽限期默认72h，可提前作废）；callback_secret 轮换
+- 来源 IP 白名单（v1.6.43）：应用级 `allowed_ips` 配置规范化 CIDR（单 IP 自动归一化为 /32 或 /128，上限 50 条，空=不限）；仅作用于 X-Api-Key 认证路径（发送、批次查询、uat-send），修改立即生效；来源不在白名单返回 `403 IP_NOT_ALLOWED`，Web 用户 JWT 路径不受影响
 #### FR-18a 用户管理（v1.2 补）
 - 统一账号台账显示认证源、账号/身份状态、本地凭据状态、AD 同步状态、当前角色与来源组；全部写操作以稳定 `account_id` 定位
 - 本地账号仅由管理员创建，设置临时密码；支持启停、重置临时密码、角色调整和强制下线，不提供注册、重命名、硬删除

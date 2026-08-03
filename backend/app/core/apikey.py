@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from app.settings import Settings, get_settings
 
 PREFIX_LENGTH = 8
 MIN_KEY_LENGTH = 16
+MAX_ALLOWED_IPS = 50
 VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
 api_key_scheme = APIKeyHeader(
     name="X-Api-Key",
@@ -47,6 +49,7 @@ class ApiKeyCandidate:
     blacklist_check: bool = True
     freq_override: dict[str, int] | None = None
     rate_limit_per_min: int = 60
+    allowed_ips: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,7 @@ class ApiAppContext:
     blacklist_check: bool = True
     freq_override: dict[str, int] | None = None
     rate_limit_per_min: int = 60
+    allowed_ips: tuple[str, ...] = ()
 
 
 class ApiKeyRepository(Protocol):
@@ -91,6 +95,7 @@ class SqlApiKeyRepository:
                         SELECT id, name, dept, allowed_categories, default_sign,
                                daily_quota, blacklist_check, freq_override,
                                rate_limit_per_min,
+                               allowed_ips,
                                api_key_hash, api_key_prev_hash, api_key_prev_expires
                         FROM app
                         WHERE status = 1
@@ -122,9 +127,46 @@ class SqlApiKeyRepository:
                     blacklist_check=bool(row["blacklist_check"]),
                     freq_override=cast(dict[str, int] | None, row["freq_override"]),
                     rate_limit_per_min=int(row.get("rate_limit_per_min", 60)),
+                    allowed_ips=tuple(
+                        str(item) for item in (row["allowed_ips"] or ())
+                    ),
                 )
                 for row in result.mappings()
             ]
+
+
+@lru_cache(maxsize=256)
+def _compile_allowlist(
+    entries: tuple[str, ...],
+) -> frozenset[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """预编译规范化 CIDR 白名单；配置损坏时 fail closed。"""
+
+    networks: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
+    for raw in entries:
+        try:
+            networks.add(ipaddress.ip_network(raw, strict=False))
+        except ValueError as exc:
+            raise ApiError(500, "INTERNAL_ERROR", "应用 IP 白名单配置无效", None) from exc
+    return frozenset(networks)
+
+
+def _ip_allowed(client_host: str, allowed_ips: tuple[str, ...]) -> bool:
+    """空白名单放行；非空白名单必须命中且客户端 IP 可解析（fail closed）。"""
+
+    if not allowed_ips:
+        return True
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    networks = _compile_allowlist(allowed_ips)
+    return any(client_ip in network for network in networks)
+
+
+def _enforce_ip_allowlist(request: Request, context: ApiAppContext) -> None:
+    client_host = request.client.host if request.client is not None else ""
+    if not _ip_allowed(client_host, context.allowed_ips):
+        raise ApiError(403, "IP_NOT_ALLOWED", "来源 IP 不在应用白名单", None)
 
 
 class ApiKeyAuthenticator:
@@ -171,6 +213,7 @@ class ApiKeyAuthenticator:
                     candidate.blacklist_check,
                     candidate.freq_override,
                     candidate.rate_limit_per_min,
+                    candidate.allowed_ips,
                 )
         raise InvalidApiKey("API Key 无效")
 
@@ -189,6 +232,7 @@ async def optional_api_app(
 
     existing = getattr(request.state, "sms_app", None)
     if isinstance(existing, ApiAppContext):
+        _enforce_ip_allowlist(request, existing)
         return existing
     if not key:
         return None
@@ -196,6 +240,7 @@ async def optional_api_app(
         context = await authenticator.authenticate(key)
     except InvalidApiKey:
         raise _unauthorized() from None
+    _enforce_ip_allowlist(request, context)
     request.state.sms_app = context
     return context
 
@@ -209,6 +254,7 @@ async def require_api_app(
 
     existing = getattr(request.state, "sms_app", None)
     if isinstance(existing, ApiAppContext):
+        _enforce_ip_allowlist(request, existing)
         return existing
     if not key:
         raise _unauthorized()
@@ -216,6 +262,7 @@ async def require_api_app(
         context = await authenticator.authenticate(key)
     except InvalidApiKey:
         raise _unauthorized() from None
+    _enforce_ip_allowlist(request, context)
     request.state.sms_app = context
     return context
 

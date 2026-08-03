@@ -15,7 +15,7 @@ from app.settings import Settings, get_settings
 APP_COLUMNS = """
 id, name, dept, allowed_categories, default_sign, daily_quota,
 rate_limit_per_min, blacklist_check, freq_override, callback_url,
-callback_report_enabled, status, created_at, updated_at,
+allowed_ips, callback_report_enabled, status, created_at, updated_at,
 (callback_secret_enc IS NOT NULL) AS callback_secret_configured
 """
 
@@ -125,13 +125,14 @@ class SqlAppRepository:
                           name, dept, api_key_hash, api_key_prefix,
                           allowed_categories, default_sign, daily_quota,
                           rate_limit_per_min, blacklist_check, freq_override,
+                          allowed_ips,
                           callback_url, callback_secret_enc,
                           callback_report_enabled, created_by
                         ) VALUES (
                           :name, :dept, :api_key_hash, :api_key_prefix,
                           :allowed_categories, :default_sign, :daily_quota,
                           :rate_limit_per_min, :blacklist_check,
-                          CAST(:freq_override AS jsonb), :callback_url,
+                          CAST(:freq_override AS jsonb), :allowed_ips, :callback_url,
                           :callback_secret_enc, :callback_report_enabled, :actor
                         ) RETURNING id
                         """
@@ -142,7 +143,8 @@ class SqlAppRepository:
                             json.dumps(values["freq_override"])
                             if values["freq_override"] is not None
                             else None
-                        )
+                        ),
+                        "allowed_ips": list(values["allowed_ips"]),
                     },
                 )
                 app_id = int(result.scalar_one())
@@ -152,7 +154,10 @@ class SqlAppRepository:
                     ip=str(values["ip"]),
                     action="app_create",
                     app_id=app_id,
-                    after={"name": values["name"]},
+                    after={
+                        "name": values["name"],
+                        "allowed_ips": list(values["allowed_ips"]),
+                    },
                 )
                 return app_id
         finally:
@@ -171,6 +176,7 @@ class SqlAppRepository:
                           rate_limit_per_min=:rate_limit_per_min,
                           blacklist_check=:blacklist_check,
                           freq_override=CAST(:freq_override AS jsonb),
+                          allowed_ips=:allowed_ips,
                           callback_url=:callback_url,
                           callback_report_enabled=:callback_report_enabled,
                           status=:status, updated_at=now()
@@ -186,6 +192,7 @@ class SqlAppRepository:
                             if values["freq_override"] is not None
                             else None
                         ),
+                        "allowed_ips": list(values["allowed_ips"]),
                     },
                 )
                 row = result.mappings().one_or_none()
@@ -197,6 +204,7 @@ class SqlAppRepository:
                     ip=str(values["ip"]),
                     action="app_update",
                     app_id=app_id,
+                    after={"allowed_ips": list(values["allowed_ips"])},
                 )
                 return _safe_row(row)
         finally:

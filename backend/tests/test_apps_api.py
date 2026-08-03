@@ -20,6 +20,7 @@ APP = {
     "rate_limit_per_min": 60,
     "blacklist_check": True,
     "freq_override": None,
+    "allowed_ips": [],
     "callback_url": None,
     "callback_report_enabled": False,
     "status": 1,
@@ -154,3 +155,26 @@ def test_frequency_override_accepts_only_documented_positive_integer_keys() -> N
     )
 
     assert response.status_code == 200
+
+
+def test_app_responses_echo_allowlist_and_create_rejects_invalid_entries() -> None:
+    browser = client()
+    headers = {"Authorization": "Bearer admin.jwt"}
+
+    detail = browser.get("/api/v1/web/admin/apps/1", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["allowed_ips"] == []
+
+    invalid_payloads = [
+        {"allowed_ips": ["x" * 65]},
+        {"allowed_ips": [123]},
+        {"allowed_ips": ["10.0.0.1"] * 51},
+    ]
+    for invalid in invalid_payloads:
+        response = browser.post(
+            "/api/v1/web/admin/apps",
+            headers=headers,
+            json={"name": "new", "dept": "研发部", **invalid},
+        )
+        assert response.status_code == 400, invalid
+        assert response.json()["code"] == "INVALID_PARAM"

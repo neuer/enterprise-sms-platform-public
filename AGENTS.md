@@ -106,6 +106,7 @@ deploy/
 | FORBIDDEN | 403 | 角色/数据权限不足 |
 | CATEGORY_NOT_ALLOWED | 403 | 应用无该消息类别权限 |
 | SELF_APPROVAL_DENIED | 403 | 审批回避：不能审批本人提交 |
+| IP_NOT_ALLOWED | 403 | 来源 IP 不在应用白名单 |
 | NOT_FOUND | 404 | 资源不存在 |
 | STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
 | ACCOUNT_SOURCE_CONFLICT | 409 | 规范化登录名已由其他认证源先占用 |
