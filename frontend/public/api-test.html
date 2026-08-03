@@ -128,11 +128,28 @@
         </div>
       </div>
       <p class="hint">market 在营销时间窗外会自动转为次日窗口定时；verify 号码级频控默认 1 条/分钟、10 条/天。</p>
+      <p class="hint">若当前环境是受控真实联调（development-vendor-live），普通发送会返回 VENDOR_TEST_CONSOLE_ONLY；请改用下方 UAT 区块或 Mock 环境。</p>
       <div class="row">
         <button id="sendBtn" type="button" class="primary">发送</button>
         <button id="selfCheck" type="button">自检连接</button>
       </div>
       <div id="sendFeedback" class="muted"></div>
+    </section>
+
+    <section class="card" id="uat">
+      <h2>受控真实联调 UAT（会产生真实短信）</h2>
+      <p class="hint">仅用于已登记并激活的测试号码；每日共 100 个计费条、uncertain 占额、应用限流与 24h 幂等约束。IP 白名单同样生效。</p>
+      <label for="uatRecipient">测试号码（必须是在真实联调控制台登记的 active 号码）</label>
+      <input id="uatRecipient" inputmode="numeric" maxlength="11" placeholder="19900000001" autocomplete="off">
+      <label for="uatContent">内容（≤500 字符，直接内容）</label>
+      <textarea id="uatContent" rows="2" placeholder="真实联调 UAT 通知"></textarea>
+      <label for="uatSignName">签名（可选，默认用应用签名）</label>
+      <input id="uatSignName" autocomplete="off">
+      <label for="uatBizId">biz_id（必填，1–32 位，24h 幂等）</label>
+      <input id="uatBizId" maxlength="32" autocomplete="off">
+      <div class="row">
+        <button id="uatSendBtn" type="button" class="primary">发送真实测试短信</button>
+      </div>
     </section>
 
     <section class="card" id="batch">
@@ -376,6 +393,36 @@
       }
     }
 
+    async function doUatSend() {
+      const recipient = $("uatRecipient").value.trim();
+      const content = $("uatContent").value.trim();
+      const bizId = $("uatBizId").value.trim();
+      if (!apiKey()) { showStatus("请先填写 API Key", "warn"); return; }
+      if (!/^1\d{10}$/.test(recipient)) { showStatus("请填写 11 位已登记测试号码", "warn"); return; }
+      if (!content) { showStatus("请填写内容", "warn"); return; }
+      if (!bizId || bizId.length > 32) { showStatus("biz_id 必填且不超过 32 位", "warn"); return; }
+      if (!window.confirm(`确认向测试号码 ${recipient} 发送真实短信？该操作计入每日 100 计费条。`)) return;
+      $("uatSendBtn").disabled = true;
+      showFeedback("正在发送真实测试短信…");
+      try {
+        const response = await request("POST", "/api/v1/messages/uat-send", {
+          category: "notice",
+          mobiles: [recipient],
+          content,
+          sign_name: $("uatSignName").value.trim() || null,
+          biz_id: bizId,
+        });
+        showResult("UAT 发送", response);
+        if (response.status === 200 && response.data) {
+          rememberBatch(response.data.batch_no, response.data.status || "queued");
+        }
+      } catch (error) {
+        showError("UAT 发送", error);
+      } finally {
+        $("uatSendBtn").disabled = false;
+      }
+    }
+
     async function doGetBatch() {
       const batchNo = $("batchNo").value.trim();
       if (!batchNo) { showStatus("请先填写批次号", "warn"); return; }
@@ -446,6 +493,7 @@
     $("modeTemplate").addEventListener("click", () => setContentMode("template"));
     $("sendBtn").addEventListener("click", doSend);
     $("selfCheck").addEventListener("click", doSelfCheck);
+    $("uatSendBtn").addEventListener("click", doUatSend);
     $("getBatch").addEventListener("click", doGetBatch);
     $("getDetails").addEventListener("click", doGetDetails);
     $("cancelBatch").addEventListener("click", doCancel);
