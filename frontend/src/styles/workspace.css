@@ -3671,6 +3671,10 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .managed-key small { grid-column: 1 / -1; }
 .managed-app-card footer { display: flex; gap: 0 7px; margin-top: 10px; flex-wrap: wrap; }
 .managed-app-card footer .el-button { margin-left: 0; }
+.managed-app-card dl.managed-app-policy { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.apps-error { margin-bottom: 14px; }
+.apps-drawer .el-input-number { width: 100%; }
+.one-time-secret { padding: 13px 15px; margin: 14px 0 0; overflow-x: auto; color: #71c4ad; font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 
 .security-daily-heading-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .security-daily-overview { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 2fr); gap: 1px; margin-bottom: 16px; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
