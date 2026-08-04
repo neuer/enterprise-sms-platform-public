@@ -78,33 +78,38 @@ Content-Type: application/json
 |---|---|---|---|---|
 | `category` | string | 是 | `verify` / `notice` / `market` | 消息类别，决定队列、时间窗、频控与黑名单策略 |
 | `mobiles` | string[] | 是 | 1–10000 个，格式 `^1\d{10}$` | 手机号列表 |
-| `content` | string | 二选一 | 1–500 字符 | 直接内容 |
-| `template_id` | int | 二选一 | 已审核模板 | 平台模板 ID |
+| `content` | string | 二选一（不推荐） | 1–500 字符 | 直接内容；会进入服务商人工审核流程，发送延迟大，正式接入必须改用模板 |
+| `template_id` | int | 二选一（必须） | 已审核模板 | 平台模板 ID；正式接入统一使用模板发送 |
 | `template_params` | string[] | 随模板 | 参数个数与模板一致 | 按 `{1}..{n}` 顺序替换 |
 | `sign_name` | string | 否 | ≤32 字符 | 覆盖默认签名；未传使用应用默认签名 |
 | `scheduled_at` | string | 否 | ISO8601 含时区 | 定时发送；如 `2026-08-05T10:00:00+08:00` |
 | `biz_id` | string | 否 | ≤32 字符 | 业务幂等键（强烈建议使用，见 3.4） |
 
-请求示例：
+> ⚠ **发送方式要求**：正式接入必须使用已审核模板（`template_id` + `template_params`）。
+> 直接内容（`content`）提交后会进入服务商的人工审核流程，发送延迟可能从数分钟到数小时；
+> 仅在紧急且平台方同意的例外场景使用。模板在厂商侧审核通过（`approved`）后，
+> 按模板发送全程自动、无需人工介入。
+
+模板发送示例（正式接入标准用法）：
+
+```json
+{
+  "category": "notice",
+  "mobiles": ["138****8000"],
+  "template_id": 12,
+  "template_params": ["张三", "123456"],
+  "biz_id": "ORDER-20260804-001"
+}
+```
+
+（不推荐）直接内容示例——仅紧急例外：
 
 ```json
 {
   "category": "notice",
   "mobiles": ["138****8000"],
   "content": "您的工单 #1024 已创建，请及时处理。",
-  "biz_id": "ORDER-20260804-001"
-}
-```
-
-模板发送示例：
-
-```json
-{
-  "category": "verify",
-  "mobiles": ["138****8000"],
-  "template_id": 12,
-  "template_params": ["张三", "123456"],
-  "biz_id": "OTP-20260804-0930"
+  "biz_id": "ORDER-20260804-002"
 }
 ```
 
@@ -195,6 +200,7 @@ Content-Type: application/json
 
 请求时使用 `template_id + template_params`，**不要同时传 `content`**。
 模板不存在或尚未审核通过时，发送返回 `400 INVALID_PARAM`。
+接入方应**默认全部使用模板发送**；`content` 只允许作为紧急例外。
 
 ### 4.2 模板参数规则
 
@@ -210,6 +216,8 @@ Content-Type: application/json
   且达到阈值（notice ≥100、market ≥50）的批量发送；
 - 模板的"审核"发生在模板生命周期一次：`pending → 厂商审核 → approved`；
   审核通过后，后续每次模板发送均为全自动；
+- **直接内容（`content`）每次提交都可能触发服务商人工审核**，发送延迟可能达数小时；
+  这是正式接入必须使用已审核模板的原因；
 - 敏感词、黑名单、频控等管控对模板渲染后的内容同样生效。
 
 ## 5. 批次查询与操作
@@ -263,7 +271,8 @@ curl -X POST 'https://sms.example.com/api/v1/messages/send' \
   -d '{
     "category": "notice",
     "mobiles": ["138****8000"],
-    "content": "您的工单 #1024 已创建。",
+    "template_id": 12,
+    "template_params": ["张三", "123456"],
     "biz_id": "ORDER-20260804-001"
   }'
 ```
@@ -275,10 +284,22 @@ import requests
 
 URL = "https://sms.example.com/api/v1/messages/send"
 
-def send_sms(api_key: str, mobiles: list[str], content: str, biz_id: str) -> dict:
+def send_sms(
+    api_key: str,
+    mobiles: list[str],
+    template_id: int,
+    template_params: list[str],
+    biz_id: str,
+) -> dict:
     resp = requests.post(
         URL,
-        json={"category": "notice", "mobiles": mobiles, "content": content, "biz_id": biz_id},
+        json={
+            "category": "notice",
+            "mobiles": mobiles,
+            "template_id": template_id,
+            "template_params": template_params,
+            "biz_id": biz_id,
+        },
         headers={"X-Api-Key": api_key},
         timeout=15,
     )
@@ -298,7 +319,8 @@ const response = await fetch("https://sms.example.com/api/v1/messages/send", {
   body: JSON.stringify({
     category: "notice",
     mobiles: ["138****8000"],
-    content: "您的工单 #1024 已创建。",
+    template_id: 12,
+    template_params: ["张三", "123456"],
     biz_id: "ORDER-20260804-001",
   }),
 });
@@ -338,6 +360,7 @@ const data = await response.json();
 - [ ] API Key 已存入服务端密钥管理，并完成轮换演练；
 - [ ] 来源 IP 白名单已配置接入方稳定出口 IP；
 - [ ] 模板已审核、签名已绑定；
+- [ ] 确认全部发送使用已审核模板（直接内容仅限紧急例外）；
 - [ ] 使用模板发送时已拿到 `template_id` 与参数规格（占位符数量、各参数 `max_len`）；
 - [ ] 已实现 `biz_id` 幂等与超时重试逻辑（同键重试）；
 - [ ] 已保存 `batch_no` 并实现状态查询或回调验签；
