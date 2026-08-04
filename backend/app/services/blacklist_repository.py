@@ -8,8 +8,14 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
-from app.services.blacklist import BlacklistEntry
+from app.services.blacklist import BlacklistEntry, BlacklistPage, BlacklistUpsertResult
 from app.settings import Settings, get_settings
+
+
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符，配合 ESCAPE '\\' 使用。"""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class SqlBlacklistRepository:
@@ -19,19 +25,46 @@ class SqlBlacklistRepository:
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
-    async def list_entries(self) -> list[BlacklistEntry]:
+    async def list_page(
+        self,
+        *,
+        source: str | None,
+        keyword: str | None,
+        page: int,
+        size: int,
+    ) -> BlacklistPage:
+        where = ""
+        params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
+        conditions: list[str] = []
+        if source is not None:
+            conditions.append("source=:source")
+            params["source"] = source
+        if keyword is not None:
+            conditions.append("(phone_mask ILIKE :keyword OR remark ILIKE :keyword)")
+            params["keyword"] = f"%{_escape_like(keyword)}%"
+        if conditions:
+            where = " WHERE " + " AND ".join(conditions)
         engine = self._engine()
         try:
             async with engine.connect() as connection:
+                total = await connection.scalar(
+                    text(f"SELECT count(*) FROM blacklist{where}"),  # noqa: S608
+                    params,
+                )
                 result = await connection.execute(
                     text(
-                        """
+                        f"""
                         SELECT phone_hmac,phone_enc,phone_mask,key_version,source,remark,created_at
-                        FROM blacklist ORDER BY created_at DESC
-                        """
-                    )
+                        FROM blacklist{where} ORDER BY created_at DESC
+                        LIMIT :limit OFFSET :offset
+                        """  # noqa: S608
+                    ),
+                    params,
                 )
-                return [BlacklistEntry(**dict(row)) for row in result.mappings()]
+                return BlacklistPage(
+                    total=int(total or 0),
+                    items=[BlacklistEntry(**dict(row)) for row in result.mappings()],
+                )
         finally:
             await engine.dispose()
 
@@ -50,10 +83,15 @@ class SqlBlacklistRepository:
         *,
         actor: str,
         source: str,
-    ) -> int:
+    ) -> BlacklistUpsertResult:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                existing = await connection.execute(
+                    text("SELECT phone_hmac FROM blacklist WHERE phone_hmac=ANY(:hmacs)"),
+                    {"hmacs": [item.phone_hmac for item in entries]},
+                )
+                updated = len(list(existing))
                 await connection.execute(
                     text(
                         """
@@ -81,7 +119,7 @@ class SqlBlacklistRepository:
                     ],
                 )
                 await self._audit(connection, actor, "blacklist_add", len(entries), source)
-                return len(entries)
+                return BlacklistUpsertResult(added=len(entries) - updated, updated=updated)
         finally:
             await engine.dispose()
 

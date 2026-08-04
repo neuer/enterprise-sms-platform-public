@@ -467,17 +467,18 @@ describe("管理员治理页面", () => {
   it("黑名单只展示掩码并支持批量添加和删除", async () => {
     const item = { phone_hmac: "a".repeat(64), phone_mask: "138****8000", source: "manual", remark: "投诉", created_at: null }
     const fetch = vi.fn()
-      .mockResolvedValueOnce(response([item]))
-      .mockResolvedValueOnce(response({ added: 1, items: [item] }))
-      .mockResolvedValueOnce(response([item]))
+      .mockResolvedValueOnce(response({ total: 1, items: [item] }))
+      .mockResolvedValueOnce(response({ added: 1, updated: 0, items: [item] }))
+      .mockResolvedValueOnce(response({ total: 1, items: [item] }))
       .mockResolvedValueOnce(response(undefined, 204))
-      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mount(BlacklistView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.find(".blacklist-mobile-list").exists()).toBe(true)
+    expect(String(fetch.mock.calls[0][0])).toContain("/api/v1/web/admin/blacklist?page=1&size=20")
     expect(wrapper.get("[data-testid='mobile-blacklist-delete-aaaaaaaa']").text()).toContain("移除")
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.text()).not.toContain("13800138000")

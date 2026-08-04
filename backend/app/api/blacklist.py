@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, Path, Request, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
@@ -15,30 +15,42 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
-from app.services.blacklist import BlacklistEntry, BlacklistService, RedisBlacklistCache
+from app.services.blacklist import (
+    BlacklistEntry,
+    BlacklistService,
+    RedisBlacklistCache,
+)
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/admin/blacklist", tags=["admin"])
 
+BlacklistSource = Literal["manual", "reply_optout", "import"]
+
 
 class BlacklistItem(BaseModel):
     phone_hmac: str
     phone_mask: str
-    source: Literal["manual", "reply_optout", "import"]
+    source: BlacklistSource
     remark: str | None
     created_at: datetime | None
 
 
+class BlacklistPageModel(BaseModel):
+    total: int
+    items: list[BlacklistItem]
+
+
 class AddBlacklistRequest(BaseModel):
     phones: list[str] = Field(min_length=1, max_length=50000)
-    source: Literal["manual", "reply_optout", "import"] = "manual"
+    source: BlacklistSource = "manual"
     remark: str | None = Field(default=None, max_length=128)
 
 
 class AddBlacklistResponse(BaseModel):
     added: int
+    updated: int
     items: list[BlacklistItem]
 
 
@@ -46,7 +58,7 @@ def _item(entry: BlacklistEntry) -> BlacklistItem:
     return BlacklistItem(
         phone_hmac=entry.phone_hmac,
         phone_mask=entry.phone_mask,
-        source=cast(Literal["manual", "reply_optout", "import"], entry.source),
+        source=cast(BlacklistSource, entry.source),
         remark=entry.remark,
         created_at=entry.created_at,
     )
@@ -78,7 +90,7 @@ async def _admin(
     return claims.username
 
 
-@router.get("", response_model=list[BlacklistItem])
+@router.get("", response_model=BlacklistPageModel)
 async def list_blacklist(
     service: Annotated[BlacklistService, Depends(get_blacklist_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
@@ -87,9 +99,14 @@ async def list_blacklist(
         Depends(bearer_scheme),
     ],
     request: Request,
-) -> list[BlacklistItem]:
+    source: Annotated[BlacklistSource | None, Query()] = None,
+    keyword: Annotated[str | None, Query(max_length=64)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> BlacklistPageModel:
     await _admin(request, facade, credentials)
-    return [_item(entry) for entry in await service.list_entries()]
+    result = await service.list_page(source=source, keyword=keyword, page=page, size=size)
+    return BlacklistPageModel(total=result.total, items=[_item(entry) for entry in result.items])
 
 
 @router.post(
@@ -110,7 +127,7 @@ async def add_blacklist(
 ) -> AddBlacklistResponse:
     actor = await _admin(request, facade, credentials)
     try:
-        entries = await service.add(
+        result = await service.add(
             payload.phones,
             source=payload.source,
             remark=payload.remark,
@@ -118,8 +135,8 @@ async def add_blacklist(
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
-    items = [_item(entry) for entry in entries]
-    return AddBlacklistResponse(added=len(items), items=items)
+    items = [_item(entry) for entry in result.entries]
+    return AddBlacklistResponse(added=result.added, updated=result.updated, items=items)
 
 
 @router.delete(
@@ -140,8 +157,6 @@ async def delete_blacklist(
     ],
 ) -> Response:
     actor = await _admin(request, facade, credentials)
-    if len(phone_hmac) != 64 or any(char not in "0123456789abcdef" for char in phone_hmac):
-        raise ApiError(400, "INVALID_PARAM", "phone_hmac 格式错误", None)
     if not await service.delete(phone_hmac, actor=actor):
         raise ApiError(404, "NOT_FOUND", "黑名单记录不存在", None)
     return Response(status_code=204)
