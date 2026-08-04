@@ -407,7 +407,20 @@ describe("管理员治理页面", () => {
   })
 
   it("接入示例展示多语言 demo 脚本并支持复制", async () => {
-    const fetch = vi.fn(async () => response([app]))
+    const approvedTemplate = {
+      id: 12,
+      name: "工单通知",
+      content: "尊敬的{1}，您的工单{2}已创建",
+      var_specs: [{ pos: 1, max_len: 10 }, { pos: 2, max_len: 20 }],
+      dept: "平台技术部",
+      vendor_template_id: "T123",
+      vendor_state: "approved",
+      vendor_reject_reason: null,
+    }
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/web/templates")) return response([approvedTemplate])
+      return response([app])
+    })
     vi.stubGlobal("fetch", fetch)
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
     Object.defineProperty(window.navigator, "clipboard", { value: { writeText }, configurable: true })
@@ -422,9 +435,12 @@ describe("管理员治理页面", () => {
     await flushPromises()
 
     expect(document.body.textContent).toContain("接入示例 · app-iam")
+    expect(wrapper.find("[data-testid='demo-template-select']").exists()).toBe(true)
+    expect(wrapper.get("[data-testid='demo-template-info']").text()).toContain("尊敬的{1}，您的工单{2}已创建")
     const curlBody = wrapper.get("[data-testid='demo-script-body-curl']")
     expect(curlBody.text()).toContain("X-Api-Key")
-    expect(curlBody.text()).toContain("template_id")
+    expect(curlBody.text()).toContain('"template_id":12')
+    expect(curlBody.text()).toContain('"template_params":["示例参数1","示例参数2"]')
     expect(curlBody.text()).toContain("138****8000")
 
     const tabs = wrapper.findAll(".el-tabs__item")
@@ -435,6 +451,7 @@ describe("管理员治理页面", () => {
     const pythonBody = wrapper.get("[data-testid='demo-script-body-python']")
     expect(pythonBody.text()).toContain("import requests")
     expect(pythonBody.text()).toContain('os.environ["SMS_API_KEY"]')
+    expect(pythonBody.text()).toContain("send_template([\"138****8000\"], 12, [\"示例参数1\", \"示例参数2\"]")
 
     await wrapper.get("[data-testid='demo-copy']").trigger("click")
     await flushPromises()
