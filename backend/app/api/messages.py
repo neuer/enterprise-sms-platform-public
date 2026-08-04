@@ -129,18 +129,37 @@ class SendResponseModel(BaseModel):
 
 
 class VendorTestApiUatRequestModel(BaseModel):
-    """应用侧真实联调只接受单号码、通知和显式幂等键。"""
+    """应用侧真实联调只接受单号码、通知、直接内容或已审核模板和显式幂等键。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "oneOf": [
+                {"required": ["content"], "not": {"required": ["template_id"]}},
+                {
+                    "required": ["template_id", "template_params"],
+                    "not": {"required": ["content"]},
+                },
+            ]
+        },
+    )
 
     category: Literal["notice"]
     mobiles: list[Annotated[str, Field(pattern=r"^1\d{10}$")]] = Field(
         min_length=1,
         max_length=1,
     )
-    content: str = Field(min_length=1, max_length=500)
+    content: str | None = Field(default=None, max_length=500)
+    template_id: int | None = None
+    template_params: list[str] | None = None
     sign_name: str | None = Field(default=None, max_length=64)
     biz_id: str = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def content_or_template(self) -> VendorTestApiUatRequestModel:
+        if (self.content is None) == (self.template_id is None):
+            raise ValueError("content 与 template_id 必须且只能提供一个")
+        return self
 
 
 class BatchModel(BaseModel):
@@ -480,6 +499,8 @@ async def send_vendor_test_api_uat(
                 category=payload.category,
                 mobiles=(),
                 content=payload.content,
+                template_id=payload.template_id,
+                template_params=payload.template_params,
                 sign_name=payload.sign_name,
                 biz_id=payload.biz_id,
                 channel="api",

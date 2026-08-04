@@ -144,20 +144,19 @@
       <label for="uatMode">内容来源</label>
       <div class="row">
         <button id="uatModeContent" type="button" class="primary">直接内容</button>
-        <button id="uatModeTemplate" type="button">模板（本地渲染）</button>
+        <button id="uatModeTemplate" type="button">模板（已审核）</button>
       </div>
       <div id="uatContentPanel">
         <label for="uatContent">内容（≤500 字符，直接内容）</label>
         <textarea id="uatContent" rows="2" placeholder="真实联调 UAT 通知"></textarea>
       </div>
       <div id="uatTemplatePanel" hidden>
-        <label for="uatTemplateText">模板文本（占位符 {1}..{n}）</label>
-        <textarea id="uatTemplateText" rows="2" placeholder="尊敬的{1}，您的验证码是{2}"></textarea>
-        <label for="uatTemplateParams">模板参数（逗号分隔）</label>
+        <label for="uatTemplateId">模板 ID（平台已审核通过的模板）</label>
+        <input id="uatTemplateId" type="number" min="1" inputmode="numeric" placeholder="如 12">
+        <label for="uatTemplateParams">模板参数（逗号分隔，个数与 {1}..{n} 一致）</label>
         <input id="uatTemplateParams" placeholder="张三,123456" autocomplete="off">
-        <p class="hint" id="uatTemplatePreview"></p>
       </div>
-      <p class="hint">uat-send 接口只接受直接内容（平台规则 38，禁止模板字段）；模板模式仅在页面本地组装最终内容。</p>
+      <p class="hint">模板模式通过 uat-send 携带 template_id 与参数，由平台渲染；模板须已审核通过，参数规则与普通发送一致。</p>
       <label for="uatSignName">签名（可选，默认用应用签名）</label>
       <input id="uatSignName" autocomplete="off">
       <label for="uatBizId">biz_id（必填，1–32 位，24h 幂等）</label>
@@ -304,39 +303,6 @@
     }
 
     let uatMode = "content";
-    function renderUatTemplate(text, params) {
-      const placeholders = text.match(/\{(\d+)\}/g) || [];
-      if (!placeholders.length) return { ok: false, rendered: "", reason: "模板中未找到 {1}..{n} 占位符" };
-      if (params.length !== placeholders.length) {
-        return { ok: false, rendered: "", reason: `占位符 ${placeholders.length} 个，参数 ${params.length} 个，数量不一致` };
-      }
-      let rendered = text;
-      params.forEach((value, index) => {
-        rendered = rendered.replace(new RegExp(`\\{${index + 1}\\}`, "g"), value);
-      });
-      if (/\{\d+\}/.test(rendered)) {
-        return { ok: false, rendered: "", reason: "存在未替换的占位符（应使用连续的 {1}..{n}）" };
-      }
-      if (!rendered || rendered.length > 500) {
-        return { ok: false, rendered: "", reason: "渲染后内容为空或超过 500 字符" };
-      }
-      return { ok: true, rendered, reason: "" };
-    }
-
-    function refreshUatTemplatePreview() {
-      const text = $("uatTemplateText").value;
-      const params = $("uatTemplateParams").value.split(",").map((item) => item.trim()).filter(Boolean);
-      const result = renderUatTemplate(text, params);
-      const preview = $("uatTemplatePreview");
-      if (result.ok) {
-        preview.textContent = `渲染预览（${result.rendered.length} 字符）：${result.rendered}`;
-        preview.className = "ok";
-      } else {
-        preview.textContent = result.reason;
-        preview.className = "danger";
-      }
-      return result;
-    }
 
     function setUatMode(mode) {
       uatMode = mode;
@@ -344,7 +310,6 @@
       $("uatModeTemplate").className = mode === "template" ? "primary" : "";
       $("uatContentPanel").hidden = mode !== "content";
       $("uatTemplatePanel").hidden = mode !== "template";
-      refreshUatTemplatePreview();
     }
 
     function rememberBatch(batchNo, status) {
@@ -454,17 +419,19 @@
 
     async function doUatSend() {
       const recipient = $("uatRecipient").value.trim();
-      const content = uatMode === "template"
-        ? renderUatTemplate(
-            $("uatTemplateText").value,
-            $("uatTemplateParams").value.split(",").map((item) => item.trim()).filter(Boolean),
-          ).rendered
-        : $("uatContent").value.trim();
+      const content = uatMode === "content" ? $("uatContent").value.trim() : null;
+      const templateId = uatMode === "template" ? Number($("uatTemplateId").value) : null;
+      const templateParams = uatMode === "template"
+        ? $("uatTemplateParams").value.split(",").map((item) => item.trim()).filter(Boolean)
+        : null;
       const bizId = $("uatBizId").value.trim();
       if (!apiKey()) { showStatus("请先填写 API Key", "warn"); return; }
       if (!/^1\d{10}$/.test(recipient)) { showStatus("请填写 11 位已登记测试号码", "warn"); return; }
-      if (!content) { showStatus("请填写内容", "warn"); return; }
-      if (uatMode === "template" && !refreshUatTemplatePreview().ok) { return; }
+      if (uatMode === "content" && !content) { showStatus("请填写内容", "warn"); return; }
+      if (uatMode === "template") {
+        if (!Number.isInteger(templateId) || templateId < 1) { showStatus("模板 ID 无效", "warn"); return; }
+        if (!templateParams.length) { showStatus("请填写模板参数", "warn"); return; }
+      }
       if (!bizId || bizId.length > 32) { showStatus("biz_id 必填且不超过 32 位", "warn"); return; }
       if (!window.confirm(`确认向测试号码 ${recipient} 发送真实短信？该操作计入每日 100 计费条。`)) return;
       $("uatSendBtn").disabled = true;
@@ -474,6 +441,8 @@
           category: "notice",
           mobiles: [recipient],
           content,
+          template_id: templateId,
+          template_params: templateParams,
           sign_name: $("uatSignName").value.trim() || null,
           biz_id: bizId,
         });
@@ -560,8 +529,6 @@
     $("selfCheck").addEventListener("click", doSelfCheck);
     $("uatModeContent").addEventListener("click", () => setUatMode("content"));
     $("uatModeTemplate").addEventListener("click", () => setUatMode("template"));
-    $("uatTemplateText").addEventListener("input", refreshUatTemplatePreview);
-    $("uatTemplateParams").addEventListener("input", refreshUatTemplatePreview);
     $("uatSendBtn").addEventListener("click", doUatSend);
     $("getBatch").addEventListener("click", doGetBatch);
     $("getDetails").addEventListener("click", doGetDetails);

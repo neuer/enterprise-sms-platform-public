@@ -387,6 +387,108 @@ def test_controlled_api_uat_uses_api_key_and_protected_registered_recipient(
     assert "13800138000" not in response.text
 
 
+def test_controlled_api_uat_supports_approved_template_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = FakePipeline()
+    resolved = VendorTestRecipientForSend(
+        id=9,
+        phone_enc=b"ciphertext-only",
+        phone_hmac="a" * 64,
+        phone_mask="138****8000",
+        key_version=2,
+        hmac_candidates=((1, "b" * 64), (2, "a" * 64)),
+    )
+
+    async def fake_factory(app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    async def fake_resolve(_phone: str) -> VendorTestRecipientForSend:
+        return resolved
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    monkeypatch.setattr(
+        messages_module,
+        "_require_vendor_test_api_ready",
+        allow_vendor_test_api_ready,
+    )
+    monkeypatch.setattr(
+        messages_module,
+        "_resolve_vendor_test_api_recipient",
+        fake_resolve,
+    )
+
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/uat-send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "notice",
+            "mobiles": ["13800138000"],
+            "template_id": 12,
+            "template_params": ["张三", "123456"],
+            "biz_id": "api-uat-template-1",
+        },
+    )
+
+    assert response.status_code == 200
+    _app, request = pipeline.calls[0]
+    assert request.content is None
+    assert request.template_id == 12
+    assert request.template_params == ["张三", "123456"]
+    assert request.vendor_test_uat is True
+    assert request.is_test is True
+    assert request.biz_id == "api-uat-template-1"
+
+
+def test_controlled_api_uat_rejects_content_and_template_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = FakePipeline()
+    resolved = VendorTestRecipientForSend(
+        id=9,
+        phone_enc=b"ciphertext-only",
+        phone_hmac="a" * 64,
+        phone_mask="138****8000",
+        key_version=2,
+        hmac_candidates=((1, "b" * 64), (2, "a" * 64)),
+    )
+
+    async def fake_factory(_app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    async def fake_resolve(_phone: str) -> VendorTestRecipientForSend:
+        return resolved
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    monkeypatch.setattr(
+        messages_module,
+        "_require_vendor_test_api_ready",
+        allow_vendor_test_api_ready,
+    )
+    monkeypatch.setattr(
+        messages_module,
+        "_resolve_vendor_test_api_recipient",
+        fake_resolve,
+    )
+
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/uat-send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "notice",
+            "mobiles": ["13800138000"],
+            "content": "直接内容",
+            "template_id": 12,
+            "template_params": ["张三"],
+            "biz_id": "api-uat-both-1",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"
+    assert pipeline.calls == []
+
+
 def test_controlled_api_uat_returns_completed_idempotent_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

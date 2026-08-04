@@ -215,7 +215,8 @@ paths:
       description: |
         仅在 live-test 已激活且控制代理状态新鲜时开放。普通 `/send` 仍返回
         `VENDOR_TEST_CONSOLE_ONLY`。本入口只允许一个已登记 active 测试号码、notice
-        直接内容和必填 biz_id。应用限流与 notice 权限先于号码查询；全部 HMAC 版本必须
+        直接内容或已审核模板（template_id+template_params）和必填 biz_id，禁止定时、
+        验证码与营销。应用限流与 notice 权限先于号码查询；全部 HMAC 版本必须
         完全匹配，发送 worker 与号码维护共享 advisory xact lock，queued/sending 测试批次
         会阻止号码维护。复用 24h 幂等、加密持久化、原子 agent-stale critical pause、每日 100 个计费条及
         uncertain 不重发边界。幂等命中时 status 返回历史批次当前状态，可能已经进入
@@ -228,7 +229,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [category, mobiles, content, biz_id]
+              required: [category, mobiles, biz_id]
+              oneOf:
+                - required: [content]
+                  not: { required: [template_id] }
+                - required: [template_id, template_params]
+                  not: { required: [content] }
               properties:
                 category: { type: string, const: notice }
                 mobiles:
@@ -236,7 +242,13 @@ paths:
                   items: { type: string, pattern: '^1\d{10}$' }
                   minItems: 1
                   maxItems: 1
-                content: { type: string, minLength: 1, maxLength: 500 }
+                content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID，须已审核通过 }
+                template_params:
+                  anyOf:
+                    - { type: array, items: { type: string } }
+                    - { type: 'null' }
+                  description: 模板 {1}..{n} 占位参数
                 sign_name: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
                 biz_id: { type: string, minLength: 1, maxLength: 32 }
       responses:
