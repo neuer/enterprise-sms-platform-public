@@ -2051,6 +2051,10 @@ main {
   border-bottom: 1px solid var(--line);
 }
 
+.template-detail-vars {
+  margin-top: 6px;
+}
+
 .template-form {
   padding-right: 4px;
 }
