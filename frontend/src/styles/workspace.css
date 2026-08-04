@@ -1963,7 +1963,7 @@ main {
   margin: 5px 0 0;
   padding: 14px;
   white-space: pre-wrap;
-  background: #f4f6f3;
+  background: var(--surface-soft);
   border-left: 3px solid var(--verdi);
 }
 
@@ -2012,11 +2012,6 @@ main {
   width: auto;
 }
 
-.template-card .el-table {
-  --el-table-header-bg-color: #f3f5f2;
-  --el-table-row-hover-bg-color: #f5faf7;
-}
-
 .template-card .el-table__row {
   cursor: pointer;
 }
@@ -2035,11 +2030,11 @@ main {
   display: inline-block;
   margin: 2px 5px 2px 0;
   padding: 2px 6px;
-  color: var(--verdi);
+  color: var(--verdi-l);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
-  background: color-mix(in srgb, var(--verdi) 7%, var(--card));
-  border: 1px solid color-mix(in srgb, var(--verdi) 25%, var(--line));
+  background: color-mix(in srgb, var(--verdi) 12%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--verdi) 35%, var(--line));
   border-radius: 4px;
 }
 
@@ -2073,13 +2068,13 @@ main {
 
 .variable-row {
   padding: 8px 10px;
-  background: #f4f6f3;
+  background: var(--surface-soft);
   border-bottom: 1px solid var(--line);
 }
 
 .variable-row code {
   width: 38px;
-  color: var(--verdi);
+  color: var(--verdi-l);
   font-family: "IBM Plex Mono", monospace;
 }
 

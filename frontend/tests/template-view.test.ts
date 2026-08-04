@@ -104,6 +104,40 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
+  it("已通过模板操作列显示占位且无可用写操作", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null },
+      json: async () => [{ ...template, id: 3, vendor_state: "approved" }],
+    }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-edit-3']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-delete-3']").exists()).toBe(false)
+    const actionCell = wrapper.get(".template-table .el-table__row td:last-child")
+    expect(actionCell.text()).toBe("—")
+    expect(actionCell.get(".muted").attributes("title")).toContain("已通过审核")
+    vi.unstubAllGlobals()
+  })
+
+  it("部门为空时列表与移动卡片均显示占位", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null },
+      json: async () => [{ ...template, id: 4, dept: "" }],
+    }))
+    const pinia = applyRole("admin")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    const deptCell = wrapper.get(".template-table .el-table__row td:nth-child(4)")
+    expect(deptCell.text()).toBe("—")
+    expect(deptCell.get("span").classes()).toContain("muted")
+    expect(wrapper.get(".template-mobile-list dl > div:last-child dd").text()).toBe("—")
+    vi.unstubAllGlobals()
+  })
+
   it("编辑器内联提示占位与变量声明不一致，并可从内容识别变量", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: { get: () => null }, json: async () => [template],

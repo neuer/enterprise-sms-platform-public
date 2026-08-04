@@ -237,7 +237,9 @@ onMounted(load)
           </span>
         </template>
       </el-table-column>
-      <el-table-column prop="dept" label="部门" min-width="120" />
+      <el-table-column label="部门" min-width="120">
+        <template #default="{ row }"><span :class="{ muted: !row.dept }">{{ row.dept || "—" }}</span></template>
+      </el-table-column>
       <el-table-column label="厂商状态" width="110">
         <template #default="{ row }"><StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" /></template>
       </el-table-column>
@@ -247,6 +249,7 @@ onMounted(load)
             <el-button v-if="row.vendor_state === 'pending'" :data-testid="`template-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
             <el-button v-if="['draft', 'rejected'].includes(row.vendor_state)" :data-testid="`template-edit-${row.id}`" link @click="resetEditor(row)">编辑</el-button>
             <el-button v-if="row.vendor_state !== 'approved'" :data-testid="`template-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
+            <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的模板不可变更">—</span>
           </div>
         </template>
       </el-table-column>
@@ -277,12 +280,13 @@ onMounted(load)
               </span>
             </dd>
           </div>
-          <div><dt>所属部门</dt><dd>{{ row.dept }}</dd></div>
+          <div><dt>所属部门</dt><dd :class="{ muted: !row.dept }">{{ row.dept || "—" }}</dd></div>
         </dl>
         <footer v-if="canWrite" @click.stop>
           <el-button v-if="row.vendor_state === 'pending'" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
           <el-button v-if="['draft', 'rejected'].includes(row.vendor_state)" link @click="resetEditor(row)">编辑</el-button>
           <el-button v-if="row.vendor_state !== 'approved'" link type="danger" @click="remove(row)">删除</el-button>
+          <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的模板不可变更">—</span>
         </footer>
       </article>
       <EmptyState
@@ -302,7 +306,7 @@ onMounted(load)
       <dl class="approval-detail-grid">
         <div><dt>平台编号</dt><dd>{{ detail.id }}</dd></div>
         <div><dt>厂商编号</dt><dd>{{ detail.vendor_template_id || "—" }}</dd></div>
-        <div><dt>所属部门</dt><dd>{{ detail.dept }}</dd></div>
+        <div><dt>所属部门</dt><dd :class="{ muted: !detail.dept }">{{ detail.dept || "—" }}</dd></div>
       </dl>
       <div class="content-proof"><span>平台格式内容</span><p>{{ detail.content }}</p></div>
       <div class="content-proof">
