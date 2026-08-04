@@ -1149,4 +1149,4 @@ def test_backend_requires_a_cryptography_release_fixed_for_scanned_cves() -> Non
     pyproject = tomllib.loads((ROOT / "backend/pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"]["dependencies"]
 
-    assert "cryptography>=48.0.1,<49" in dependencies
+    assert "cryptography>=50.0.0,<51" in dependencies
