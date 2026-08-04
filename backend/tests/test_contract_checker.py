@@ -122,11 +122,20 @@ def test_controlled_api_uat_contract_is_single_notice_and_idempotent() -> None:
 
     assert operation["security"] == [{"ApiKeyAuth": []}]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"category", "mobiles", "content", "biz_id"}
+    assert set(schema["required"]) == {"category", "mobiles", "biz_id"}
     assert schema["properties"]["category"]["const"] == "notice"
     assert schema["properties"]["mobiles"]["minItems"] == 1
     assert schema["properties"]["mobiles"]["maxItems"] == 1
-    assert schema["properties"]["content"]["minLength"] == 1
+    assert schema["oneOf"] == [
+        {"required": ["content"], "not": {"required": ["template_id"]}},
+        {
+            "required": ["template_id", "template_params"],
+            "not": {"required": ["content"]},
+        },
+    ]
+    assert schema["properties"]["content"]["anyOf"][0]["maxLength"] == 500
+    assert "template_id" in schema["properties"]
+    assert "template_params" in schema["properties"]
     assert schema["properties"]["biz_id"] == {
         "type": "string",
         "minLength": 1,

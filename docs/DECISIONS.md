@@ -168,7 +168,7 @@
 
 ## D029 真实联调增加窄化的应用 API UAT 入口
 
-- 决策：保留普通 `/api/v1/messages/send` 与 Web 发送的 `VENDOR_TEST_CONSOLE_ONLY` 边界，只增加 `POST /api/v1/messages/uat-send`。它必须使用有效 `X-Api-Key`，请求仅允许 `notice`、一个手机号、直接内容、可选签名和必填 1–32 位 `biz_id`，拒绝模板、定时、验证码、营销和额外字段。API 先消费应用限流并校验通知权限，再要求 live-test 与 agent 新鲜受控，随后用全版本 HMAC 从 PostgreSQL 定位 active recipient，且数据库所有保留版本 digest 必须与当次输入完全一致；明文不进入 SQL、日志或持久层，只把已有加密四元组交给相同 pipeline。worker 加载分片时与号码维护共享同一 advisory xact lock 并再次检查 active recipient，queued/sending 测试批次在终态前阻止号码停用或删除；控制状态损坏或过期通过 Redis 原子命令写入两个独立 agent-stale critical pause 键，写入未确认即保持 503。继续执行每日 100 个计费条、uncertain 占额、应用限流和 24h 幂等。
+- 决策：保留普通 `/api/v1/messages/send` 与 Web 发送的 `VENDOR_TEST_CONSOLE_ONLY` 边界，只增加 `POST /api/v1/messages/uat-send`。它必须使用有效 `X-Api-Key`，请求仅允许 `notice`、一个手机号、直接内容或已审核模板（`template_id`+`template_params`）、可选签名和必填 1–32 位 `biz_id`，拒绝定时、验证码、营销和额外字段。API 先消费应用限流并校验通知权限，再要求 live-test 与 agent 新鲜受控，随后用全版本 HMAC 从 PostgreSQL 定位 active recipient，且数据库所有保留版本 digest 必须与当次输入完全一致；明文不进入 SQL、日志或持久层，只把已有加密四元组交给相同 pipeline。worker 加载分片时与号码维护共享同一 advisory xact lock 并再次检查 active recipient，queued/sending 测试批次在终态前阻止号码停用或删除；控制状态损坏或过期通过 Redis 原子命令写入两个独立 agent-stale critical pause 键，写入未确认即保持 503。继续执行每日 100 个计费条、uncertain 占额、应用限流和 24h 幂等。
 - 原因：开发测试需要验证真实的 `X-Api-Key → API → pipeline → queue → carrier` 应用接入链路，但直接放开普通发送会扩大类别、批量、定时和模板表面。独立窄入口可以复用生产链路，同时把真实影响固定在已登记号码和单条通知。
 - 影响：AGENTS/PRD/OpenAPI、messages API、测试号码 HMAC 查询、审计覆盖、真实联调手册和 high-risk 快速更新门禁。创建入口和发布本身不发送短信；每次真实 API UAT 仍须操作者明确确认。
 
