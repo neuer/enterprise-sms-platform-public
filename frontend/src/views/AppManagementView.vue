@@ -93,6 +93,214 @@ function messageCallbackText(item: ManagedApp): string {
   return item.callback_report_enabled ? "开启" : "关闭"
 }
 
+const DEMO_LANGUAGES = ["curl", "python", "node", "java", "go", "php"] as const
+type DemoLanguage = (typeof DEMO_LANGUAGES)[number]
+
+const DEMO_LABELS: Record<DemoLanguage, string> = {
+  curl: "cURL",
+  python: "Python",
+  node: "Node.js",
+  java: "Java",
+  go: "Go",
+  php: "PHP",
+}
+
+/** 生成指定语言的模板发送 demo；API Key 一律使用环境变量占位，不嵌入明文。 */
+function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
+  const base = "https://sms.example.com/api/v1"
+  const appLine = `应用：${app.name}（id=${app.id}）`
+  const head = `// ${appLine} · 模板发送示例；正式接入必须使用已审核模板，直接内容会进入服务商人工审核`
+  const baseHint = "// 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）"
+  if (language === "curl") {
+    return [
+      `# ${appLine} · 模板发送示例；正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
+      `# 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）`,
+      `curl -X POST '${base}/messages/send' \\`,
+      `  -H 'X-Api-Key: $SMS_API_KEY' \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -d '{"category":"notice","mobiles":["138****8000"],"template_id":12,"template_params":["张三","123456"],"biz_id":"ORDER-20260804-001"}'`,
+    ].join("\n")
+  }
+  const templateBody = [
+    head,
+    baseHint,
+  ]
+  if (language === "python") {
+    return [
+      ...templateBody,
+      `import os`,
+      `import requests`,
+      ``,
+      `URL = "${base}/messages/send"`,
+      ``,
+      `def send_template(mobiles, template_id, template_params, biz_id):`,
+      `    resp = requests.post(`,
+      `        URL,`,
+      `        json={`,
+      `            "category": "notice",`,
+      `            "mobiles": mobiles,`,
+      `            "template_id": template_id,`,
+      `            "template_params": template_params,`,
+      `            "biz_id": biz_id,`,
+      `        },`,
+      `        headers={"X-Api-Key": os.environ["SMS_API_KEY"]},`,
+      `        timeout=15,`,
+      `    )`,
+      `    resp.raise_for_status()`,
+      `    return resp.json()`,
+      ``,
+      `print(send_template(["138****8000"], 12, ["张三", "123456"], "ORDER-20260804-001"))`,
+    ].join("\n")
+  }
+  if (language === "node") {
+    return [
+      ...templateBody,
+      `const SMS_API_KEY = process.env.SMS_API_KEY;`,
+      `const URL = "${base}/messages/send";`,
+      ``,
+      `const response = await fetch(URL, {`,
+      `  method: "POST",`,
+      `  headers: {`,
+      `    "X-Api-Key": SMS_API_KEY,`,
+      `    "Content-Type": "application/json",`,
+      `  },`,
+      `  body: JSON.stringify({`,
+      `    category: "notice",`,
+      `    mobiles: ["138****8000"],`,
+      `    template_id: 12,`,
+      `    template_params: ["张三", "123456"],`,
+      `    biz_id: "ORDER-20260804-001",`,
+      `  }),`,
+      `});`,
+      `const data = await response.json();`,
+      `console.log(data.batch_no, data.status, data.quota_cost);`,
+    ].join("\n")
+  }
+  if (language === "java") {
+    return [
+      ...templateBody,
+      `import java.net.URI;`,
+      `import java.net.http.HttpClient;`,
+      `import java.net.http.HttpRequest;`,
+      `import java.net.http.HttpResponse;`,
+      ``,
+      `public class SmsDemo {`,
+      `    public static void main(String[] args) throws Exception {`,
+      `        String body = """`,
+      `            {"category":"notice","mobiles":["138****8000"],"template_id":12,"template_params":["张三","123456"],"biz_id":"ORDER-20260804-001"}`,
+      `            """;`,
+      `        HttpRequest request = HttpRequest.newBuilder()`,
+      `            .uri(URI.create("${base}/messages/send"))`,
+      `            .header("X-Api-Key", System.getenv("SMS_API_KEY"))`,
+      `            .header("Content-Type", "application/json")`,
+      `            .POST(HttpRequest.BodyPublishers.ofString(body))`,
+      `            .build();`,
+      `        HttpResponse<String> response = HttpClient.newHttpClient()`,
+      `            .send(request, HttpResponse.BodyHandlers.ofString());`,
+      `        System.out.println(response.statusCode());`,
+      `        System.out.println(response.body());`,
+      `    }`,
+      `}`,
+    ].join("\n")
+  }
+  if (language === "go") {
+    return [
+      ...templateBody,
+      `package main`,
+      ``,
+      `import (`,
+      `    "bytes"`,
+      `    "encoding/json"`,
+      `    "fmt"`,
+      `    "io"`,
+      `    "net/http"`,
+      `    "os"`,
+      `)`,
+      ``,
+      `func main() {`,
+      `    payload, _ := json.Marshal(map[string]interface{}{`,
+      `        "category":        "notice",`,
+      `        "mobiles":         []string{"138****8000"},`,
+      `        "template_id":     12,`,
+      `        "template_params": []string{"张三", "123456"},`,
+      `        "biz_id":          "ORDER-20260804-001",`,
+      `    })`,
+      `    req, _ := http.NewRequest("POST", "${base}/messages/send", bytes.NewReader(payload))`,
+      `    req.Header.Set("X-Api-Key", os.Getenv("SMS_API_KEY"))`,
+      `    req.Header.Set("Content-Type", "application/json")`,
+      `    resp, _ := http.DefaultClient.Do(req)`,
+      `    defer resp.Body.Close()`,
+      `    body, _ := io.ReadAll(resp.Body)`,
+      `    fmt.Println(resp.StatusCode, string(body))`,
+      `}`,
+    ].join("\n")
+  }
+  return [
+    ...templateBody,
+    `<?php`,
+    `$url = '${base}/messages/send';`,
+    `$payload = json_encode([`,
+    `    'category' => 'notice',`,
+    `    'mobiles' => ['138****8000'],`,
+    `    'template_id' => 12,`,
+    `    'template_params' => ['张三', '123456'],`,
+    `    'biz_id' => 'ORDER-20260804-001',`,
+    `]);`,
+    `$ch = curl_init($url);`,
+    `curl_setopt_array($ch, [`,
+    `    CURLOPT_POST => true,`,
+    `    CURLOPT_POSTFIELDS => $payload,`,
+    `    CURLOPT_HTTPHEADER => [`,
+    `        'X-Api-Key: ' . getenv('SMS_API_KEY'),`,
+    `        'Content-Type: application/json',`,
+    `    ],`,
+    `    CURLOPT_RETURNTRANSFER => true,`,
+    `    CURLOPT_TIMEOUT => 15,`,
+    `]);`,
+    `$response = curl_exec($ch);`,
+    `$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);`,
+    `curl_close($ch);`,
+    `echo $status, "\\n", $response, "\\n";`,
+  ].join("\n")
+}
+
+const demoOpen = ref(false)
+const demoApp = ref<ManagedApp | null>(null)
+const demoLang = ref<DemoLanguage>("curl")
+const demoScript = computed(() =>
+  demoApp.value ? buildDemoScript(demoLang.value, demoApp.value) : "",
+)
+
+function openDemo(item: ManagedApp): void {
+  demoApp.value = item
+  demoLang.value = "curl"
+  demoOpen.value = true
+}
+
+/** 复制 demo 脚本；优先异步剪贴板 API，非安全上下文回退隐藏 textarea。 */
+async function copyDemo(): Promise<void> {
+  if (!demoScript.value) return
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      await navigator.clipboard.writeText(demoScript.value)
+    } else {
+      const helper = document.createElement("textarea")
+      helper.value = demoScript.value
+      helper.setAttribute("readonly", "")
+      helper.style.position = "fixed"
+      helper.style.opacity = "0"
+      document.body.appendChild(helper)
+      helper.select()
+      const copied = document.execCommand("copy")
+      helper.remove()
+      if (!copied) throw new Error("execCommand copy rejected")
+    }
+    ElMessage.success("脚本已复制到剪贴板")
+  } catch {
+    ElMessage.error("复制失败，请手动选择文本复制")
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = ""
@@ -371,6 +579,7 @@ onMounted(() => {
         <small>{{ keyGraceHours === null ? '旧 Key 宽限期暂不可用' : `旧 Key 宽限期 ${keyGraceHours} 小时` }}</small>
       </div>
       <footer>
+        <el-button :data-testid="`demo-script-${row.id}`" link @click="openDemo(row)">接入示例</el-button>
         <el-button :data-testid="`edit-app-${row.id}`" link type="primary" @click="openEdit(row)">编辑</el-button>
         <el-button :data-testid="`rotate-key-${row.id}`" link type="primary" :loading="rotatingKeyId === row.id" :disabled="secretOperation !== null" @click="rotateKey(row)">轮换 Key</el-button>
         <el-button :data-testid="`revoke-key-${row.id}`" link @click="revokeKey(row)">作废旧 Key</el-button>
@@ -446,6 +655,20 @@ onMounted(() => {
     <template #footer>
       <el-button data-testid="secret-copy" :disabled="!secretValue" @click="copySecret">复制</el-button>
       <el-button data-testid="secret-close" type="primary" @click="closeSecret">我已安全保存</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="demoOpen" :title="demoApp ? `接入示例 · ${demoApp.name}` : '接入示例'" width="min(720px, 96vw)" :close-on-click-modal="false" class="demo-dialog">
+    <p class="muted">应用 #{{ demoApp?.id }} · {{ demoApp?.dept }} · 类别 {{ (demoApp?.allowed_categories || []).join(' / ') }}</p>
+    <p class="hint">正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key 请通过环境变量注入，不要硬编码或写入日志。</p>
+    <el-tabs v-model="demoLang">
+      <el-tab-pane v-for="language in DEMO_LANGUAGES" :key="language" :label="DEMO_LABELS[language]" :name="language">
+        <pre class="demo-script" :data-testid="`demo-script-body-${language}`">{{ demoScript }}</pre>
+      </el-tab-pane>
+    </el-tabs>
+    <template #footer>
+      <el-button data-testid="demo-copy" :disabled="!demoScript" @click="copyDemo">复制脚本</el-button>
+      <el-button data-testid="demo-close" type="primary" @click="demoOpen = false">关闭</el-button>
     </template>
   </el-dialog>
 </template>

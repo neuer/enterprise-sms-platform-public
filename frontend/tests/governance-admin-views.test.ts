@@ -406,6 +406,47 @@ describe("管理员治理页面", () => {
     vi.unstubAllGlobals()
   })
 
+  it("接入示例展示多语言 demo 脚本并支持复制", async () => {
+    const fetch = vi.fn(async () => response([app]))
+    vi.stubGlobal("fetch", fetch)
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
+    Object.defineProperty(window.navigator, "clipboard", { value: { writeText }, configurable: true })
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true })
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='demo-script-1']").trigger("click")
+    await flushPromises()
+
+    expect(document.body.textContent).toContain("接入示例 · app-iam")
+    const curlBody = wrapper.get("[data-testid='demo-script-body-curl']")
+    expect(curlBody.text()).toContain("X-Api-Key")
+    expect(curlBody.text()).toContain("template_id")
+    expect(curlBody.text()).toContain("138****8000")
+
+    const tabs = wrapper.findAll(".el-tabs__item")
+    const pythonTab = tabs.find((tab) => tab.text().includes("Python"))
+    expect(pythonTab).toBeDefined()
+    await pythonTab!.trigger("click")
+    await flushPromises()
+    const pythonBody = wrapper.get("[data-testid='demo-script-body-python']")
+    expect(pythonBody.text()).toContain("import requests")
+    expect(pythonBody.text()).toContain('os.environ["SMS_API_KEY"]')
+
+    await wrapper.get("[data-testid='demo-copy']").trigger("click")
+    await flushPromises()
+    expect(writeText).toHaveBeenCalled()
+    expect(writeText.mock.calls[0][0]).toContain("template_id")
+    expect(writeText.mock.calls[0][0]).toContain("SMS_API_KEY")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
   it("黑名单只展示掩码并支持批量添加和删除", async () => {
     const item = { phone_hmac: "a".repeat(64), phone_mask: "138****8000", source: "manual", remark: "投诉", created_at: null }
     const fetch = vi.fn()
