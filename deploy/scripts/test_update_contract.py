@@ -262,6 +262,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/TEST-MANUAL.md",
         "docs/UAT.md",
         "docs/api-test-playground.md",
+        "docs/api-integration.md",
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
         "docs/runbooks/controlled-real-vendor-test.md",
         "docs/runbooks/test-fast-update.md",

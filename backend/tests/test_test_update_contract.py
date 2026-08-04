@@ -669,6 +669,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/TEST-MANUAL.md",
             "docs/UAT.md",
             "docs/api-test-playground.md",
+            "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
             "docs/previews/security-daily-report-sample.html",
