@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus from "element-plus"
+import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { vi } from "vitest"
 
@@ -88,6 +88,119 @@ describe("模板管理", () => {
 
     expect(wrapper.get("[data-testid='new-template']").text()).toContain("新建模板")
     expect(wrapper.get("[data-testid='template-sync-1']").text()).toContain("同步")
+    vi.unstubAllGlobals()
+  })
+
+  it("状态筛选包含草稿选项", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null }, json: async () => [{ ...template, vendor_state: "draft" }],
+    }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get(".template-toolbar").text()).toContain("草稿")
+    expect(wrapper.get(".template-toolbar").text()).toContain("待审核")
+    vi.unstubAllGlobals()
+  })
+
+  it("编辑器内联提示占位与变量声明不一致，并可从内容识别变量", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
+    }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='new-template']").trigger("click")
+    await flushPromises()
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+    expect(textarea).toBeTruthy()
+    textarea.value = "尊敬的{1}，验证码{2}"
+    textarea.dispatchEvent(new Event("input"))
+    // el-form-item 的错误状态经 100ms 防抖后才渲染
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await flushPromises()
+    expect(document.body.textContent).toContain("未声明变量最大长度")
+
+    ;(document.querySelector("[data-testid='template-sync-vars']") as HTMLElement).click()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await flushPromises()
+    expect(document.body.textContent).not.toContain("未声明变量最大长度")
+    expect(document.querySelectorAll(".variable-row")).toHaveLength(2)
+
+    // 改为跳号占位后提示必须从 {1} 连续编号
+    textarea.value = "验证码{2}"
+    textarea.dispatchEvent(new Event("input"))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await flushPromises()
+    expect(document.body.textContent).toContain("必须从 {1} 开始连续编号")
+    vi.unstubAllGlobals()
+  })
+
+  it("校验不通过时不发起提交请求", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => ({ close: () => undefined }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='new-template']").trigger("click")
+    await flushPromises()
+    ;(document.querySelector("[data-testid='template-submit']") as HTMLElement).click()
+    await flushPromises()
+
+    expect(warning).toHaveBeenCalledWith("请填写模板名称")
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/templates")).length).toBe(1)
+    vi.unstubAllGlobals()
+  })
+
+  it("取消删除确认框不发起请求也不报错", async () => {
+    const rejectedTemplate = { ...template, id: 2, name: "通知", vendor_state: "rejected" }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: { get: () => null }, json: async () => [rejectedTemplate],
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
+    const error = vi.spyOn(ElMessage, "error")
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='template-delete-2']").trigger("click")
+    await flushPromises()
+
+    expect(ElMessageBox.confirm).toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,
+    ).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
+  it("同步失败时给出错误反馈", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/sync")) {
+        return {
+          ok: false, status: 502,
+          headers: { get: () => null },
+          json: async () => ({ code: "VENDOR_ERROR", message: "厂商模板接口不可用", detail: null }),
+        }
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [template] }
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const error = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: () => undefined }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='template-sync-1']").trigger("click")
+    await flushPromises()
+    expect(error).toHaveBeenCalledWith("厂商模板接口不可用")
     vi.unstubAllGlobals()
   })
 })

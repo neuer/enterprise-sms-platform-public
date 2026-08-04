@@ -18,10 +18,15 @@ import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { useSessionStore } from "../stores/session"
 
+const PLACEHOLDER_TOKEN = /\{[^{}]*\}/g
+const PLACEHOLDER_POSITION = /^\{([1-9]\d*)\}$/
+
 const session = useSessionStore()
 
 const items = ref<SmsTemplate[]>([])
 const loading = ref(false)
+const saving = ref(false)
+const syncingId = ref<number | null>(null)
 const errorMessage = ref("")
 const stateFilter = ref<TemplateState | "all">("all")
 const detail = ref<SmsTemplate | null>(null)
@@ -40,6 +45,35 @@ const filtered = computed(() =>
 function stateLabel(state: TemplateState): string {
   return { draft: "草稿", pending: "待审核", approved: "已通过", rejected: "已拒绝" }[state]
 }
+
+/** 提取内容中的 {n} 占位位置；非法 {} 片段单独计数用于内联提示。 */
+function contentPlaceholders(content: string): { positions: number[]; invalidTokens: number } {
+  const tokens = content.match(PLACEHOLDER_TOKEN) ?? []
+  const positions: number[] = []
+  let invalidTokens = 0
+  for (const token of tokens) {
+    const matched = PLACEHOLDER_POSITION.exec(token)
+    if (matched) positions.push(Number(matched[1]))
+    else invalidTokens += 1
+  }
+  return { positions, invalidTokens }
+}
+
+/** 提交前的即时反馈，与服务端校验（占位与 var_specs 一一对应、从 1 连续）保持一致。 */
+const contentIssue = computed(() => {
+  if (!form.content) return ""
+  const { positions, invalidTokens } = contentPlaceholders(form.content)
+  if (invalidTokens > 0) return "模板仅允许使用 {1}..{n} 格式占位"
+  const used = [...new Set(positions)].sort((a, b) => a - b)
+  if (used.some((pos, index) => pos !== index + 1)) return "内容占位必须从 {1} 开始连续编号"
+  const declared = form.var_specs.map((spec) => spec.pos)
+  const missing = used.filter((pos) => !declared.includes(pos))
+  const unused = declared.filter((pos) => !used.includes(pos))
+  const issues: string[] = []
+  if (missing.length) issues.push(`占位 ${missing.map((pos) => `{${pos}}`).join(" ")} 未声明变量最大长度`)
+  if (unused.length) issues.push(`变量 ${unused.map((pos) => `{${pos}}`).join(" ")} 未在内容中使用`)
+  return issues.join("；")
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -75,36 +109,77 @@ function removeVariable(index: number): void {
   form.var_specs.forEach((spec, position) => (spec.pos = position + 1))
 }
 
+/** 按内容中的占位生成变量声明，保留已设置的最大长度。 */
+function syncVariablesFromContent(): void {
+  const { positions, invalidTokens } = contentPlaceholders(form.content)
+  if (invalidTokens > 0 || !positions.length) return
+  const keep = new Map(form.var_specs.map((spec) => [spec.pos, spec.max_len]))
+  form.var_specs = [...new Set(positions)]
+    .sort((a, b) => a - b)
+    .map((pos) => ({ pos, max_len: keep.get(pos) ?? 10 }))
+}
+
 async function submit(): Promise<void> {
-  loading.value = true
+  if (!form.name.trim()) {
+    ElMessage.warning("请填写模板名称")
+    return
+  }
+  if (!form.content.trim()) {
+    ElMessage.warning("请填写平台格式内容")
+    return
+  }
+  if (contentIssue.value) {
+    ElMessage.warning(contentIssue.value)
+    return
+  }
+  saving.value = true
   try {
-    if (editingId.value === null) await createTemplate(form)
-    else await updateTemplate(editingId.value, form)
+    const payload: TemplatePayload = {
+      name: form.name.trim(),
+      content: form.content,
+      var_specs: form.var_specs,
+    }
+    if (editingId.value === null) await createTemplate(payload)
+    else await updateTemplate(editingId.value, payload)
     editorOpen.value = false
     ElMessage.success("模板已提交厂商审核")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "模板提交失败")
   } finally {
-    loading.value = false
+    saving.value = false
   }
 }
 
 async function sync(item: SmsTemplate): Promise<void> {
-  await syncTemplate(item.id)
-  ElMessage.success("审核状态已同步")
-  await load()
+  if (syncingId.value !== null) return
+  syncingId.value = item.id
+  try {
+    await syncTemplate(item.id)
+    ElMessage.success("审核状态已同步")
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "审核状态同步失败")
+  } finally {
+    syncingId.value = null
+  }
 }
 
 async function remove(item: SmsTemplate): Promise<void> {
-  await ElMessageBox.confirm("确认删除模板「" + item.name + "」？", "删除模板", {
-    type: "warning",
-    confirmButtonText: "确认删除",
-    cancelButtonText: "取消",
-  })
-  await deleteTemplate(item.id)
-  ElMessage.success("模板已删除")
-  await load()
+  try {
+    await ElMessageBox.confirm("确认删除模板「" + item.name + "」？", "删除模板", {
+      type: "warning",
+      confirmButtonText: "确认删除",
+      cancelButtonText: "取消",
+    })
+    await deleteTemplate(item.id)
+    ElMessage.success("模板已删除")
+    await load()
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(error instanceof Error ? error.message : "模板删除失败")
+    }
+  }
 }
 
 onMounted(load)
@@ -126,6 +201,7 @@ onMounted(load)
         v-model="stateFilter"
         :options="[
           { label: '全部', value: 'all' },
+          { label: '草稿', value: 'draft' },
           { label: '待审核', value: 'pending' },
           { label: '已通过', value: 'approved' },
           { label: '已拒绝', value: 'rejected' },
@@ -168,7 +244,7 @@ onMounted(load)
       <el-table-column v-if="canWrite" label="操作" width="190" fixed="right">
         <template #default="{ row }">
           <div @click.stop>
-            <el-button v-if="row.vendor_state === 'pending'" :data-testid="`template-sync-${row.id}`" link type="primary" @click="sync(row)">同步</el-button>
+            <el-button v-if="row.vendor_state === 'pending'" :data-testid="`template-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
             <el-button v-if="['draft', 'rejected'].includes(row.vendor_state)" :data-testid="`template-edit-${row.id}`" link @click="resetEditor(row)">编辑</el-button>
             <el-button v-if="row.vendor_state !== 'approved'" :data-testid="`template-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
           </div>
@@ -204,7 +280,7 @@ onMounted(load)
           <div><dt>所属部门</dt><dd>{{ row.dept }}</dd></div>
         </dl>
         <footer v-if="canWrite" @click.stop>
-          <el-button v-if="row.vendor_state === 'pending'" link type="primary" @click="sync(row)">同步</el-button>
+          <el-button v-if="row.vendor_state === 'pending'" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
           <el-button v-if="['draft', 'rejected'].includes(row.vendor_state)" link @click="resetEditor(row)">编辑</el-button>
           <el-button v-if="row.vendor_state !== 'approved'" link type="danger" @click="remove(row)">删除</el-button>
         </footer>
@@ -227,9 +303,17 @@ onMounted(load)
         <div><dt>平台编号</dt><dd>{{ detail.id }}</dd></div>
         <div><dt>厂商编号</dt><dd>{{ detail.vendor_template_id || "—" }}</dd></div>
         <div><dt>所属部门</dt><dd>{{ detail.dept }}</dd></div>
-        <div><dt>变量数量</dt><dd>{{ detail.var_specs.length }}</dd></div>
       </dl>
       <div class="content-proof"><span>平台格式内容</span><p>{{ detail.content }}</p></div>
+      <div class="content-proof">
+        <span>变量约束</span>
+        <div class="template-detail-vars">
+          <span v-if="!detail.var_specs.length" class="muted">无变量</span>
+          <span v-for="spec in detail.var_specs" :key="spec.pos" class="var-chip">
+            {{ "{" + spec.pos + "}" }} · 最大 {{ spec.max_len }} 字
+          </span>
+        </div>
+      </div>
       <el-alert
         v-if="detail.vendor_reject_reason"
         :title="detail.vendor_reject_reason"
@@ -245,8 +329,13 @@ onMounted(load)
     size="min(560px, 94vw)"
   >
     <el-form label-position="top" class="template-form">
+      <p class="drawer-intro">
+        {{ editingId === null
+          ? "提交后由服务端转换为厂商格式并送审，审核期间不可编辑。"
+          : "重新提交将生成新的厂商模板编号并重新进入审核。" }}
+      </p>
       <el-form-item label="模板名称"><el-input v-model="form.name" maxlength="64" /></el-form-item>
-      <el-form-item label="平台格式内容">
+      <el-form-item label="平台格式内容" :error="contentIssue || undefined">
         <el-input
           v-model="form.content"
           type="textarea"
@@ -256,18 +345,24 @@ onMounted(load)
           placeholder="例如：尊敬的{1}，验证码{2}"
         />
       </el-form-item>
-      <div class="variable-head"><b>变量最大长度</b><el-button @click="addVariable">添加变量</el-button></div>
+      <div class="variable-head">
+        <b>变量最大长度</b>
+        <div>
+          <el-button data-testid="template-sync-vars" @click="syncVariablesFromContent">从内容识别</el-button>
+          <el-button @click="addVariable">添加变量</el-button>
+        </div>
+      </div>
       <div v-for="(spec, index) in form.var_specs" :key="spec.pos" class="variable-row">
         <code>{{ "{" + spec.pos + "}" }}</code>
         <el-input-number v-model="spec.max_len" :min="1" :max="100" />
         <span>字</span>
         <el-button link type="danger" @click="removeVariable(index)">移除</el-button>
       </div>
-      <p class="form-hint">占位与变量必须从 1 连续对应；提交后由服务端转换为厂商格式。</p>
+      <p class="form-hint">占位与变量必须从 1 连续一一对应；提交后由服务端转换为厂商格式。</p>
     </el-form>
     <template #footer>
       <el-button @click="editorOpen = false">取消</el-button>
-      <el-button type="primary" :loading="loading" @click="submit">提交厂商审核</el-button>
+      <el-button data-testid="template-submit" type="primary" :loading="saving" @click="submit">提交厂商审核</el-button>
     </template>
   </el-drawer>
 </template>
