@@ -18,6 +18,7 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
+import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 
@@ -105,29 +106,73 @@ const DEMO_LABELS: Record<DemoLanguage, string> = {
   php: "PHP",
 }
 
+interface DemoContext {
+  app: ManagedApp
+  templateId: number
+  templateName: string
+  templateContent: string
+  params: string[]
+}
+
+const DEMO_BIZ_ID = "ORDER-20260804-001"
+const DEMO_MOBILES = ["138****8000"]
+
+/** 按 var_specs 生成不超过 max_len 的示例参数值。 */
+function exampleParamsFor(specs: VarSpec[]): string[] {
+  const sorted = [...specs].sort((a, b) => a.pos - b.pos)
+  return sorted.map((spec) => {
+    for (const candidate of [`示例参数${spec.pos}`, `参数${spec.pos}`, "示例", "值"]) {
+      if (candidate.length <= spec.max_len) return candidate
+    }
+    return "a".repeat(spec.max_len)
+  })
+}
+
+/** 生成目标语言可用的模板参数数组字面量。 */
+function paramsLiteral(language: DemoLanguage, params: string[]): string {
+  const quoted = params.map((value) => `"${value}"`)
+  if (language === "java") return `new String[]{${quoted.join(", ")}}`
+  if (language === "go") return `[]string{${quoted.join(", ")}}`
+  if (language === "php") return `[${params.map((value) => `'${value}'`).join(", ")}]`
+  return `[${quoted.join(", ")}]`
+}
+
+/** 生成与语言无关的请求 JSON（cURL 与 Java 文本块直接内嵌）。 */
+function payloadJson(context: DemoContext): string {
+  return JSON.stringify({
+    category: "notice",
+    mobiles: DEMO_MOBILES,
+    template_id: context.templateId,
+    template_params: context.params,
+    biz_id: DEMO_BIZ_ID,
+  })
+}
+
 /** 生成指定语言的模板发送 demo；API Key 一律使用环境变量占位，不嵌入明文。 */
-function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
+function buildDemoScript(language: DemoLanguage, context: DemoContext): string {
   const base = "https://sms.example.com/api/v1"
-  const appLine = `应用：${app.name}（id=${app.id}）`
-  const head = `// ${appLine} · 模板发送示例；正式接入必须使用已审核模板，直接内容会进入服务商人工审核`
+  const head = `// 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`
+  const warning = "// 正式接入必须使用已审核模板，直接内容会进入服务商人工审核"
   const baseHint = "// 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）"
+  const contentLine = context.templateContent ? `// 模板内容：${context.templateContent}` : ""
+  const params = paramsLiteral(language, context.params)
   if (language === "curl") {
     return [
-      `# ${appLine} · 模板发送示例；正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
+      `# 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`,
+      contentLine,
+      `# 正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
       `# 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）`,
       `curl -X POST '${base}/messages/send' \\`,
       `  -H 'X-Api-Key: $SMS_API_KEY' \\`,
       `  -H 'Content-Type: application/json' \\`,
-      `  -d '{"category":"notice","mobiles":["138****8000"],"template_id":12,"template_params":["张三","123456"],"biz_id":"ORDER-20260804-001"}'`,
-    ].join("\n")
+      `  -d '${payloadJson(context)}'`,
+    ].filter(Boolean).join("\n")
   }
-  const templateBody = [
-    head,
-    baseHint,
-  ]
+  const common: string[] = [head, warning, baseHint]
+  if (contentLine) common.splice(1, 0, contentLine)
   if (language === "python") {
     return [
-      ...templateBody,
+      ...common,
       `import os`,
       `import requests`,
       ``,
@@ -149,13 +194,14 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
       `    resp.raise_for_status()`,
       `    return resp.json()`,
       ``,
-      `print(send_template(["138****8000"], 12, ["张三", "123456"], "ORDER-20260804-001"))`,
+      `print(send_template(${JSON.stringify(DEMO_MOBILES)}, ${context.templateId}, ${params}, "${DEMO_BIZ_ID}"))`,
     ].join("\n")
   }
   if (language === "node") {
     return [
-      ...templateBody,
+      ...common,
       `const SMS_API_KEY = process.env.SMS_API_KEY;`,
+      `const TEMPLATE_ID = ${context.templateId};`,
       `const URL = "${base}/messages/send";`,
       ``,
       `const response = await fetch(URL, {`,
@@ -166,10 +212,10 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
       `  },`,
       `  body: JSON.stringify({`,
       `    category: "notice",`,
-      `    mobiles: ["138****8000"],`,
-      `    template_id: 12,`,
-      `    template_params: ["张三", "123456"],`,
-      `    biz_id: "ORDER-20260804-001",`,
+      `    mobiles: ${JSON.stringify(DEMO_MOBILES)},`,
+      `    template_id: TEMPLATE_ID,`,
+      `    template_params: ${params},`,
+      `    biz_id: "${DEMO_BIZ_ID}",`,
       `  }),`,
       `});`,
       `const data = await response.json();`,
@@ -178,7 +224,7 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
   }
   if (language === "java") {
     return [
-      ...templateBody,
+      ...common,
       `import java.net.URI;`,
       `import java.net.http.HttpClient;`,
       `import java.net.http.HttpRequest;`,
@@ -187,7 +233,7 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
       `public class SmsDemo {`,
       `    public static void main(String[] args) throws Exception {`,
       `        String body = """`,
-      `            {"category":"notice","mobiles":["138****8000"],"template_id":12,"template_params":["张三","123456"],"biz_id":"ORDER-20260804-001"}`,
+      `            ${payloadJson(context)}`,
       `            """;`,
       `        HttpRequest request = HttpRequest.newBuilder()`,
       `            .uri(URI.create("${base}/messages/send"))`,
@@ -205,7 +251,7 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
   }
   if (language === "go") {
     return [
-      ...templateBody,
+      ...common,
       `package main`,
       ``,
       `import (`,
@@ -221,9 +267,9 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
       `    payload, _ := json.Marshal(map[string]interface{}{`,
       `        "category":        "notice",`,
       `        "mobiles":         []string{"138****8000"},`,
-      `        "template_id":     12,`,
-      `        "template_params": []string{"张三", "123456"},`,
-      `        "biz_id":          "ORDER-20260804-001",`,
+      `        "template_id":     ${context.templateId},`,
+      `        "template_params": ${params},`,
+      `        "biz_id":          "${DEMO_BIZ_ID}",`,
       `    })`,
       `    req, _ := http.NewRequest("POST", "${base}/messages/send", bytes.NewReader(payload))`,
       `    req.Header.Set("X-Api-Key", os.Getenv("SMS_API_KEY"))`,
@@ -236,15 +282,15 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
     ].join("\n")
   }
   return [
-    ...templateBody,
+    ...common,
     `<?php`,
     `$url = '${base}/messages/send';`,
     `$payload = json_encode([`,
     `    'category' => 'notice',`,
     `    'mobiles' => ['138****8000'],`,
-    `    'template_id' => 12,`,
-    `    'template_params' => ['张三', '123456'],`,
-    `    'biz_id' => 'ORDER-20260804-001',`,
+    `    'template_id' => ${context.templateId},`,
+    `    'template_params' => ${params},`,
+    `    'biz_id' => '${DEMO_BIZ_ID}',`,
     `]);`,
     `$ch = curl_init($url);`,
     `curl_setopt_array($ch, [`,
@@ -267,14 +313,67 @@ function buildDemoScript(language: DemoLanguage, app: ManagedApp): string {
 const demoOpen = ref(false)
 const demoApp = ref<ManagedApp | null>(null)
 const demoLang = ref<DemoLanguage>("curl")
-const demoScript = computed(() =>
-  demoApp.value ? buildDemoScript(demoLang.value, demoApp.value) : "",
+const approvedTemplates = ref<SmsTemplate[]>([])
+const demoTemplatesLoading = ref(false)
+const demoTemplateId = ref<number | null>(null)
+const demoTemplate = computed(() =>
+  approvedTemplates.value.find((item) => item.id === demoTemplateId.value) ?? null,
 )
+const demoParamsSummary = computed(() => {
+  const template = demoTemplate.value
+  if (!template || !template.var_specs.length) return "无变量"
+  return [...template.var_specs]
+    .sort((a, b) => a.pos - b.pos)
+    .map((spec) => `{${spec.pos}}≤${spec.max_len}`)
+    .join("，")
+})
+const demoContext = computed<DemoContext | null>(() => {
+  const app = demoApp.value
+  const template = demoTemplate.value
+  if (!app || !template) return null
+  return {
+    app,
+    templateId: template.id,
+    templateName: template.name,
+    templateContent: template.content,
+    params: exampleParamsFor(template.var_specs),
+  }
+})
+const demoScript = computed(() => {
+  const app = demoApp.value
+  if (!app) return ""
+  const context = demoContext.value ?? {
+    app,
+    templateId: 12,
+    templateName: "（请选择已审核模板）",
+    templateContent: "",
+    params: ["张三", "123456"],
+  }
+  return buildDemoScript(demoLang.value, context)
+})
+
+async function loadApprovedTemplates(): Promise<void> {
+  demoTemplatesLoading.value = true
+  try {
+    const templates = await listTemplates()
+    approvedTemplates.value = templates.filter((item) => item.vendor_state === "approved")
+    if (demoTemplateId.value === null && approvedTemplates.value.length) {
+      demoTemplateId.value = approvedTemplates.value[0].id
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "模板加载失败")
+    approvedTemplates.value = []
+  } finally {
+    demoTemplatesLoading.value = false
+  }
+}
 
 function openDemo(item: ManagedApp): void {
   demoApp.value = item
   demoLang.value = "curl"
+  demoTemplateId.value = null
   demoOpen.value = true
+  void loadApprovedTemplates()
 }
 
 /** 复制 demo 脚本；优先异步剪贴板 API，非安全上下文回退隐藏 textarea。 */
@@ -661,6 +760,14 @@ onMounted(() => {
   <el-dialog v-model="demoOpen" :title="demoApp ? `接入示例 · ${demoApp.name}` : '接入示例'" width="min(720px, 96vw)" :close-on-click-modal="false" class="demo-dialog">
     <p class="muted">应用 #{{ demoApp?.id }} · {{ demoApp?.dept }} · 类别 {{ (demoApp?.allowed_categories || []).join(' / ') }}</p>
     <p class="hint">正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key 请通过环境变量注入，不要硬编码或写入日志。</p>
+    <label class="muted" for="demo-template-select">已审核模板</label>
+    <el-select v-model="demoTemplateId" data-testid="demo-template-select" placeholder="选择已审核模板" :loading="demoTemplatesLoading" style="width: 100%">
+      <el-option v-for="template in approvedTemplates" :key="template.id" :value="template.id" :label="'#' + template.id + ' · ' + template.name" />
+    </el-select>
+    <p v-if="demoTemplate" class="hint" data-testid="demo-template-info">
+      模板内容：{{ demoTemplate.content }} · 参数：{{ demoParamsSummary }}
+    </p>
+    <p v-else class="hint">暂无已审核模板，示例将使用占位模板 ID；请先在「模板管理」创建模板并提交审核。</p>
     <el-tabs v-model="demoLang">
       <el-tab-pane v-for="language in DEMO_LANGUAGES" :key="language" :label="DEMO_LABELS[language]" :name="language">
         <pre class="demo-script" :data-testid="`demo-script-body-${language}`">{{ demoScript }}</pre>
