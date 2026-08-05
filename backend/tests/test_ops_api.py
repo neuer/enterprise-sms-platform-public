@@ -24,7 +24,7 @@ from app.services.ops import (
     UncertainRecord,
     UnmatchedRecord,
 )
-from app.services.outbox import OutboxStats
+from app.services.outbox import OutboxEventPage, OutboxEventRecord, OutboxStats
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
 PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000134")
@@ -162,9 +162,41 @@ class FakeOutbox:
     def __init__(self) -> None:
         self.retried: list[tuple[UUID, SecurityPrincipal]] = []
         self.retry_result = True
+        self.list_calls: list[tuple[str | None, int, int]] = []
 
     async def stats(self) -> OutboxStats:
         return OutboxStats(3, 2, 1, 4, 7, 301)
+
+    async def list_events(
+        self,
+        state: str | None,
+        page: int,
+        page_size: int,
+    ) -> OutboxEventPage:
+        self.list_calls.append((state, page, page_size))
+        return OutboxEventPage(
+            (
+                OutboxEventRecord(
+                    PUBLIC_ID,
+                    "usage.release",
+                    "usage_reservation",
+                    "c0a80101-0000-4000-8000-000000000134",
+                    "app.tasks.outbox.release_usage",
+                    "realtime",
+                    "dead",
+                    12,
+                    12,
+                    3,
+                    "BrokerTimeout",
+                    NOW,
+                    NOW,
+                    NOW,
+                ),
+            ),
+            1,
+            page,
+            page_size,
+        )
 
     async def retry_dead(
         self,
@@ -294,6 +326,29 @@ def test_outbox_retry_rejects_non_dead_state() -> None:
     assert response.json()["code"] == "STATE_CONFLICT"
 
 
+def test_outbox_events_listing_filters_state_and_hides_args() -> None:
+    browser, values = client()
+    headers = {"Authorization": "Bearer admin.jwt"}
+
+    response = browser.get(
+        "/api/v1/web/admin/outbox/events?state=dead&page=2",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1 and body["page"] == 2
+    item = body["items"][0]
+    assert item["id"] == str(PUBLIC_ID)
+    assert item["state"] == "dead"
+    assert item["attempts"] == 12 and item["max_attempts"] == 12
+    assert item["last_error"] == "BrokerTimeout"
+    assert "args" not in str(body).lower()
+    assert "dedup_key" not in str(body)
+    assert "correlation_id" not in str(body)
+    assert values["outbox"].list_calls == [("dead", 2, 20)]
+
+
 def test_all_ops_routes_are_admin_only() -> None:
     browser, _ = client("viewer")
     response = browser.get(
@@ -301,3 +356,8 @@ def test_all_ops_routes_are_admin_only() -> None:
         headers={"Authorization": "Bearer viewer.jwt"},
     )
     assert response.status_code == 403 and response.json()["code"] == "FORBIDDEN"
+    events = browser.get(
+        "/api/v1/web/admin/outbox/events",
+        headers={"Authorization": "Bearer viewer.jwt"},
+    )
+    assert events.status_code == 403 and events.json()["code"] == "FORBIDDEN"

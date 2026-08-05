@@ -49,6 +49,7 @@ class CallbackTaskModel(BaseModel):
 
 class CallbackPageModel(BaseModel):
     total: int
+    dead_total: int
     items: list[CallbackTaskModel]
 
 
@@ -75,10 +76,20 @@ async def list_callbacks(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     status: Annotated[CallbackStatus | None, Query()] = None,
     app_id: Annotated[int | None, Query(ge=1)] = None,
+    event: Annotated[Literal["batch.finished", "message.report"] | None, Query()] = None,
+    batch_no: Annotated[str | None, Query(max_length=32)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
     await _admin(facade, credentials)
-    return await repository.list_page(status=status, app_id=app_id, page=page)
+    return await repository.list_page(
+        status=status,
+        app_id=app_id,
+        event=event,
+        batch_no=batch_no,
+        page=page,
+        size=size,
+    )
 
 
 @router.post(

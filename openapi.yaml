@@ -2026,12 +2026,15 @@ paths:
   /api/v1/web/admin/callbacks:
     get:
       tags: [admin]
-      summary: 回调任务查询（v1.1，支持按状态过滤，dead 可手动重推）
+      summary: 回调任务查询（v1.1，支持状态/应用/事件/批次号过滤，dead 可手动重推）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, retrying, done, dead] }, { type: 'null' }] } }
         - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
+        - { name: event, in: query, required: false, schema: { anyOf: [{ type: string, enum: [batch.finished, message.report] }, { type: 'null' }] } }
+        - { name: batch_no, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 32, description: 模糊匹配（ILIKE 通配符转义） }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
       responses:
         '200':
           description: OK
@@ -2039,9 +2042,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [total, items]
+                required: [total, dead_total, items]
                 properties:
                   total: { type: integer }
+                  dead_total: { type: integer, description: 全库 dead 任务总数（不受筛选影响，健康脉冲用） }
                   items:
                     type: array
                     items:
@@ -2139,6 +2143,20 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OutboxStatsModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/outbox/events:
+    get:
+      tags: [admin]
+      summary: 分页列出 Outbox 事件无 PII 元数据（dead 优先，不返回 args/dedup_key）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: state, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, leased, published, processing, completed, dead] }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OutboxEventPageModel' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -3206,6 +3224,34 @@ components:
         dead: { type: integer, minimum: 0.0 }
         failed_attempts: { type: integer, minimum: 0.0 }
         oldest_age_seconds: { type: integer, minimum: 0.0 }
+
+    OutboxEventModel:
+      type: object
+      required: [id, event_type, aggregate_type, aggregate_id, task_name, queue, state, attempts, max_attempts, failure_count, last_error, next_attempt_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_type: { type: string }
+        aggregate_type: { type: string }
+        aggregate_id: { type: string }
+        task_name: { type: string }
+        queue: { type: string }
+        state: { type: string, enum: [pending, leased, published, processing, completed, dead] }
+        attempts: { type: integer, minimum: 0.0 }
+        max_attempts: { type: integer, minimum: 1.0, maximum: 100.0 }
+        failure_count: { type: integer, minimum: 0.0 }
+        last_error: { anyOf: [{ type: string }, { type: 'null' }] }
+        next_attempt_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OutboxEventPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/OutboxEventModel' } }
 
     QueueStatusModel:
       type: object

@@ -552,16 +552,19 @@
   tree 完全一致，且原 head 的精确 `ci-gate` 仍为 GitHub Actions success 时，才把该证据
   复用于 merge SHA，避免重复 G2。开发默认从最新 `main` 创建非堆叠分支，避免父 PR
   squash 后对子 PR 重放。
-- 落后处理：自动合并前先读取 PR 的 `mergeStateStatus`；`BEHIND` 时先用
-  `gh pr update-branch` 把 base main 合入 PR 分支并立即结束本次运行，由更新后的精确
-  push CI 再次触发同一流程完成 squash merge；`DIRTY` 时明确失败关闭并保留 PR 供人工
-  处理，避免 `--auto` 在严格分支保护下无限排队直到 12 分钟超时。
+- 落后处理：自动合并前先读取 PR 的 `mergeStateStatus`；`BEHIND` 时明确失败关闭并提示
+  把 base main 合入 PR 分支后重新推送（`GITHUB_TOKEN` 产生的分支更新不会触发 push CI，
+  自动化无法在内部自证新 head）；`DIRTY` 时同样明确失败并保留 PR 供人工处理，避免
+  `--auto` 在严格分支保护下无限排队直到 12 分钟超时。
 
 ## D057 维护期开发与测试部署解耦
 
 - 决策：`MAINTENANCE.md` 是唯一日常流程入口；建设期任务清单和分阶段门禁入口退出后
   已从工作树删除，历史通过 Git 查阅。编码循环运行定向测试，提交前才运行
   `scripts/dev_check.sh --changed`，普通维护工作不再默认绑定测试服务器。
+- 元数据分类：`test_update_contract.py` 把 `.github/**` 与受信任的操作文档视为无运行时
+  变更，因此包含工作流/文档提交的 main 不再阻塞后续快速更新的差异分类；`.github/` 的
+  CI 门禁仍由 `classify_ci_changes.py` 按 G2 全量执行，未放宽受保护变更约束。
 - 测试部署：只有需要共享环境验收时，才默认对自动合并后的精确 `origin/main` 执行
   `scripts/test_update.sh apply --ref origin/main`。`apply` 已验证最终 `state=verified`；
   `plan` 和独立 `status` 分别降为可选预览与后续诊断。分支部署仅作为明确例外。

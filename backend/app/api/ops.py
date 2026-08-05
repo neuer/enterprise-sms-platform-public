@@ -40,6 +40,7 @@ from app.services.ops import (
 )
 from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender
 from app.services.ops_repository import SqlOpsRepository
+from app.services.outbox import OutboxEventPage
 from app.services.outbox_repository import SqlOutboxRepository
 from app.services.raw_replay import (
     RawIntegrityConflict,
@@ -156,6 +157,27 @@ class OutboxStatsModel(BaseModel):
     oldest_age_seconds: int = Field(ge=0)
 
 
+class OutboxEventModel(BaseModel):
+    id: UUID
+    event_type: str
+    aggregate_type: str
+    aggregate_id: str
+    task_name: str
+    queue: str
+    state: Literal["pending", "leased", "published", "processing", "completed", "dead"]
+    attempts: int = Field(ge=0)
+    max_attempts: int = Field(ge=1, le=100)
+    failure_count: int = Field(ge=0)
+    last_error: str | None
+    next_attempt_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class OutboxEventPageModel(PageModel):
+    items: list[OutboxEventModel]
+
+
 class UnmatchedExportModel(BaseModel):
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
     start: datetime | None = None
@@ -243,7 +265,10 @@ def _ip(request: Request) -> str:
     return request.client.host if request.client is not None else "0.0.0.0"
 
 
-def _page(value: OpsPage[Any], model: type[BaseModel]) -> dict[str, object]:
+def _page(
+    value: OpsPage[Any] | OutboxEventPage,
+    model: type[BaseModel],
+) -> dict[str, object]:
     return {
         "items": [model.model_validate(item, from_attributes=True) for item in value.items],
         "total": value.total,
@@ -266,6 +291,29 @@ async def outbox_status(
     return OutboxStatsModel.model_validate(
         await repository.stats(),
         from_attributes=True,
+    )
+
+
+@router.get(
+    "/outbox/events",
+    response_model=OutboxEventPageModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+)
+async def list_outbox_events(
+    repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    state: Literal[
+        "pending", "leased", "published", "processing", "completed", "dead"
+    ]
+    | None = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, object]:
+    await _admin(facade, credentials)
+    return _page(
+        await repository.list_events(state, page, page_size),
+        OutboxEventModel,
     )
 
 

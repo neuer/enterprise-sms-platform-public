@@ -257,6 +257,12 @@ def _safe_error(error: str | None) -> str | None:
     return error if SAFE_ERROR.fullmatch(error) else "CallbackError"
 
 
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符（PostgreSQL 默认反斜杠转义）。"""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class SqlCallbackRepository:
     """callback PostgreSQL 事实源；每次执行使用独立 UUID fencing token。"""
 
@@ -311,6 +317,8 @@ class SqlCallbackRepository:
         *,
         status: str | None,
         app_id: int | None,
+        event: str | None,
+        batch_no: str | None,
         page: int,
         size: int = 20,
     ) -> dict[str, object]:
@@ -319,18 +327,28 @@ class SqlCallbackRepository:
             OR t.status=CAST(:status AS varchar(10)))
           AND (CAST(:app_id AS bigint) IS NULL
             OR t.app_id=CAST(:app_id AS bigint))
+          AND (CAST(:event AS varchar(20)) IS NULL
+            OR t.event=CAST(:event AS varchar(20)))
         """
-        params = {
+        params: dict[str, object] = {
             "status": status,
             "app_id": app_id,
+            "event": event,
             "limit": size,
             "offset": (page - 1) * size,
         }
+        if batch_no is not None and batch_no.strip():
+            where += " AND trim(b.batch_no) ILIKE :batch_no"
+            params["batch_no"] = f"%{_escape_like(batch_no.strip())}%"
+        source = (
+            " FROM callback_task t JOIN app a ON a.id=t.app_id"
+            " LEFT JOIN sms_batch b ON b.id=t.batch_id "
+        )
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 total_result = await connection.execute(
-                    text("SELECT count(*) FROM callback_task t WHERE " + where),
+                    text("SELECT count(*)" + source + "WHERE " + where),
                     params,
                 )
                 rows_result = await connection.execute(
@@ -345,16 +363,20 @@ class SqlCallbackRepository:
                           (t.lease_id IS NOT NULL AND t.lease_expires_at<=now()) stalled,
                           t.last_http_code,t.last_error,
                           t.created_at,t.finished_at
-                        FROM callback_task t JOIN app a ON a.id=t.app_id
-                        LEFT JOIN sms_batch b ON b.id=t.batch_id
-                        WHERE """
+                        """
+                        + source
+                        + "WHERE "
                         + where
                         + " ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset"
                     ),
                     params,
                 )
+                dead_result = await connection.execute(
+                    text("SELECT count(*) FROM callback_task WHERE status='dead'"),
+                )
                 return {
                     "total": int(total_result.scalar_one()),
+                    "dead_total": int(dead_result.scalar_one()),
                     "items": [dict(row) for row in rows_result.mappings()],
                 }
         finally:

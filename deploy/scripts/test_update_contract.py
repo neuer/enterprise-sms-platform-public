@@ -671,7 +671,11 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
 
     for raw_path in paths:
         path = _require_safe_changed_path(raw_path)
-        if path in _SAFE_OPERATIONAL_DOCS or path in _SAFE_NON_RUNTIME_GATES:
+        if (
+            path in _SAFE_OPERATIONAL_DOCS
+            or path in _SAFE_NON_RUNTIME_GATES
+            or path.startswith(".github/")
+        ):
             continue
         if _is_high_risk(path):
             high_risk_paths.add(path)
