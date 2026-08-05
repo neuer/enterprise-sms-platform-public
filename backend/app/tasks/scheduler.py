@@ -21,6 +21,8 @@ CONFIGURABLE_JOB_SCHEDULES = {
     "poll-report": "poll_report",
     "poll-reply": "poll_reply",
     "reconcile": "reconcile",
+    "expire-approvals": "expire_approvals",
+    "dispatch-scheduled": "dispatch_scheduled",
     "poll-balance": "poll_balance",
     "anomaly-scan": "anomaly_scan",
     "usage-projection-reconcile": "usage_projection_reconcile",

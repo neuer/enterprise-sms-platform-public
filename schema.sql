@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.44  2026-08-05
+-- v1.6.44：approval_scan_seconds/scheduled_scan_seconds 纳入系统参数注册表（beat 启动读取）
 -- v1.6.43  2026-08-03
 -- v1.6.43：应用来源 IP/CIDR 白名单（allowed_ips，空数组=不限，仅 API Key 路径强制）
 -- v1.6.42  2026-08-02
@@ -1517,6 +1519,9 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 -- v1.6.27 新增
 ('usage_projection_reconcile_seconds','300','int','配额/频控投影漂移巡检间隔(重启beat生效)'),
 ('usage_ledger_retention_days','90',   'int',  '已过期配额/频控事实账本保留天数'),
+-- v1.6.44 新增
+('approval_scan_seconds',   '300',   'int',  '审批过期扫描间隔(秒,重启beat生效)'),
+('scheduled_scan_seconds',  '60',    'int',  '定时批次扫描间隔(秒,重启beat生效)'),
 -- v1.6.39 新增
 ('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),

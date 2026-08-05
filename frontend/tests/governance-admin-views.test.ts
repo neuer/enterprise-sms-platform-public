@@ -497,7 +497,7 @@ describe("管理员治理页面", () => {
   })
 
   it("敏感词支持批量添加、删除并在本页切换 block/audit 策略", async () => {
-    const config = { key: "sensitive_action", value: "block", value_type: "str", description: "敏感词策略", group: "内容治理", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null }
+    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/admin/configs") && init?.method === "PUT") return response([config])
       if (url.endsWith("/admin/configs")) return response([config])
@@ -524,7 +524,7 @@ describe("管理员治理页面", () => {
     await flushPromises()
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/admin/configs",
-      expect.objectContaining({ method: "PUT", body: JSON.stringify({ items: [{ key: "sensitive_action", value: "audit" }] }) }),
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ items: [{ key: "sensitive_hit_action", value: "audit" }] }) }),
     )
     wrapper.unmount()
     vi.unstubAllGlobals()

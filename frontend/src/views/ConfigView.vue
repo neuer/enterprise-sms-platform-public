@@ -22,6 +22,7 @@ import {
   type LdapProviderConfig,
 } from "../api/admin"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
+import EmptyState from "../components/EmptyState.vue"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -41,6 +42,7 @@ const touched = new Set<string>()
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref("")
+const searchQuery = ref("")
 
 const adProvider = ref<AuthProviderAdmin | null>(null)
 const providerLoading = ref(false)
@@ -73,14 +75,36 @@ const roleLabels: Record<AdminUserRole, string> = {
   viewer: "只读用户",
 }
 
+const GROUP_ORDER = ["运行调度", "发送策略", "安全控制", "告警通知", "生命周期"]
+
+const FORMAT_HINTS: Record<string, string> = {
+  market_send_window: "格式：递增的 HH:MM-HH:MM（如 08:00-21:00）",
+  callback_retry_schedule: "格式：五个递增正整数秒数，逗号分隔",
+  callback_allow_cidrs: "格式：批准私网 CIDR，逗号分隔",
+  alert_mail_to: "格式：邮箱地址，逗号分隔；留空则仅落日志",
+}
+
 const groups = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
   const result = new Map<string, ConfigItem[]>()
   for (const item of configs.value) {
+    if (
+      query &&
+      ![item.key, item.description ?? "", item.group].some((text) =>
+        text.toLowerCase().includes(query),
+      )
+    ) {
+      continue
+    }
     const rows = result.get(item.group) || []
     rows.push(item)
     result.set(item.group, rows)
   }
-  return [...result.entries()]
+  const order = (group: string): number => {
+    const index = GROUP_ORDER.indexOf(group)
+    return index === -1 ? GROUP_ORDER.length : index
+  }
+  return [...result.entries()].sort(([a], [b]) => order(a) - order(b))
 })
 
 const currentDraftTested = computed(
@@ -161,6 +185,28 @@ async function loadProvider(): Promise<void> {
 
 function mark(key: string): void {
   touched.add(key)
+}
+
+function setNumber(key: string, value: number | undefined): void {
+  values[key] = value === undefined || Number.isNaN(value) ? "" : String(value)
+  mark(key)
+}
+
+function resetToDefault(item: ConfigItem): void {
+  values[item.key] = item.default
+  mark(item.key)
+}
+
+function isModified(item: ConfigItem): boolean {
+  return !item.sensitive && values[item.key] !== item.default
+}
+
+function formatTime(value: string | null): string {
+  if (!value) return ""
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(new Date(value)).replaceAll("/", "-")
 }
 
 function markProviderDirty(): void {
@@ -460,7 +506,19 @@ onMounted(() => {
     </el-alert>
     <el-alert class="config-restart-alert" title="调度生效规则" type="warning" :closable="false" show-icon description="标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。" />
 
+    <div class="config-toolbar">
+      <el-input
+        v-model="searchQuery"
+        data-testid="config-search"
+        clearable
+        placeholder="按参数名、说明或分组搜索"
+        aria-label="搜索系统参数"
+      />
+      <span>{{ groups.reduce((total, [, items]) => total + items.length, 0) }} / {{ configs.length }} 项</span>
+    </div>
+
     <section v-loading="loading" class="config-groups">
+      <EmptyState v-if="!groups.length && !loading" title="没有匹配的系统参数" description="换个关键字试试，或清空搜索查看全部参数。" />
       <el-card v-for="[group, items] in groups" :key="group" shadow="never" class="config-group-card">
         <template #header><div class="config-group-title"><strong>{{ group }}</strong><span>{{ items.length }} PARAMETERS</span></div></template>
         <div class="config-grid">
@@ -468,8 +526,26 @@ onMounted(() => {
             <header><code>{{ item.key }}</code><span v-if="item.beat_restart_required" class="restart-badge">BEAT RESTART</span><span v-if="item.sensitive" class="secret-badge">SENSITIVE</span></header>
             <p>{{ item.description || "未提供参数说明" }}</p>
             <el-select v-if="item.value_type === 'bool'" v-model="values[item.key]" :data-testid="`config-${item.key}`" @change="mark(item.key)"><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false" /></el-select>
+            <el-input-number
+              v-else-if="item.value_type === 'int'"
+              :model-value="values[item.key] === '' ? undefined : Number(values[item.key])"
+              :data-testid="`config-${item.key}`"
+              :min="item.min_value ?? 1"
+              :max="item.max_value ?? undefined"
+              :step="1"
+              step-strictly
+              controls-position="right"
+              @update:model-value="(value: number | undefined) => setNumber(item.key, value)"
+            />
             <el-input v-else v-model="values[item.key]" :data-testid="`config-${item.key}`" :type="item.sensitive ? 'password' : 'text'" :show-password="item.sensitive" :placeholder="item.sensitive && item.configured ? '留空保持原值' : '输入参数值'" @input="mark(item.key)" />
-            <div v-if="item.sensitive && item.configured" class="secret-control"><small>已配置，值不回显</small><el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button></div><small v-else-if="item.sensitive">未配置 · 当前 log-sink</small><small v-else-if="item.updated_by">最近由 {{ item.updated_by }} 更新</small>
+            <small v-if="!item.sensitive && item.value_type === 'int' && (item.min_value !== null || item.max_value !== null)" class="config-range-hint">范围 {{ item.min_value ?? 1 }} – {{ item.max_value ?? "∞" }} · 默认 {{ item.default }}</small>
+            <small v-else-if="!item.sensitive && FORMAT_HINTS[item.key]" class="config-range-hint">{{ FORMAT_HINTS[item.key] }}</small>
+            <div v-if="item.sensitive && item.configured" class="secret-control"><small>已配置，值不回显</small><el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button></div><small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
+            <div class="config-item-meta">
+              <small v-if="item.updated_by">最近由 {{ item.updated_by }} 更新<template v-if="formatTime(item.updated_at)"> · {{ formatTime(item.updated_at) }}</template></small>
+              <small v-else></small>
+              <el-button v-if="isModified(item)" link type="primary" :data-testid="`config-reset-${item.key}`" @click="resetToDefault(item)">重置默认值</el-button>
+            </div>
           </article>
         </div>
       </el-card>
