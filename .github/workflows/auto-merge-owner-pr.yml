@@ -102,6 +102,25 @@ jobs:
             if [[ "$(jq -r '.isDraft' <<<"$details")" == true ]]; then
               gh pr ready "$number" --repo "$REPOSITORY"
             fi
+
+            merge_state="$(
+              gh pr view "$number" \
+                --repo "$REPOSITORY" \
+                --json mergeStateStatus
+            )"
+            if [[ "$(jq -r '.mergeStateStatus' <<<"$merge_state")" == BEHIND ]]; then
+              if ! gh pr update-branch "$number" --repo "$REPOSITORY"; then
+                echo "PR branch is behind main and could not be updated; leaving PR open for manual resolution." >&2
+                exit 1
+              fi
+              echo "PR branch updated with base main; follow-up push CI will auto-merge the exact new head."
+              exit 0
+            fi
+            if [[ "$(jq -r '.mergeStateStatus' <<<"$merge_state")" == DIRTY ]]; then
+              echo "PR has merge conflicts with main; leaving PR open for manual resolution." >&2
+              exit 1
+            fi
+
             gh pr merge "$number" \
               --repo "$REPOSITORY" \
               --auto \

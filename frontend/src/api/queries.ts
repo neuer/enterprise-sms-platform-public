@@ -32,6 +32,7 @@ export interface BatchFilters {
   channel?: string
   app_id?: number
   dept?: string
+  batch_no?: string
   start?: string
   end?: string
   page: number
@@ -101,6 +102,7 @@ export function listBatches(filters: BatchFilters): Promise<BatchPage> {
   if (filters.channel) query.set("channel", filters.channel)
   if (filters.app_id) query.set("app_id", String(filters.app_id))
   if (filters.dept) query.set("dept", filters.dept)
+  if (filters.batch_no) query.set("batch_no", filters.batch_no)
   if (filters.start) query.set("start", filters.start)
   if (filters.end) query.set("end", filters.end)
   return apiRequest<BatchPage>(`/batches?${query}`, { method: "GET" })
@@ -110,9 +112,19 @@ export function getBatch(batchNo: string): Promise<BatchItem> {
   return directRequest<BatchItem>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}`)
 }
 
-export function getBatchMessages(batchNo: string): Promise<BatchMessagePage> {
+export interface BatchMessageFilters {
+  status?: string
+  page?: number
+}
+
+export function getBatchMessages(
+  batchNo: string,
+  filters: BatchMessageFilters = {},
+): Promise<BatchMessagePage> {
+  const query = new URLSearchParams({ page: String(filters.page ?? 1), size: "20" })
+  if (filters.status) query.set("status", filters.status)
   return directRequest<BatchMessagePage>(
-    `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?page=1&size=100`,
+    `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`,
   )
 }
 

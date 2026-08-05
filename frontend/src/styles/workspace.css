@@ -1902,6 +1902,24 @@ main {
   font-size: 10px;
 }
 
+.decider-cell {
+  display: grid;
+}
+
+.decider-cell b {
+  font-size: 12px;
+}
+
+.decider-cell small {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.approval-expiry.urgent {
+  color: var(--red);
+}
+
 .self-note {
   color: var(--tx-3);
   font-size: 11px;
@@ -2659,6 +2677,28 @@ main {
 .batch-summary strong { font-family: var(--mono); }
 .batch-content { margin: 16px 0; padding: 12px 14px; border-left: 3px solid var(--cyan); background: var(--surface-soft); }
 
+.batch-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.batch-meta div {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--surface);
+}
+
+.batch-meta dt { color: var(--muted); font-size: 11px; }
+.batch-meta dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.batch-deferred { margin-top: 12px; }
+.batch-detail-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
+.batch-detail-head h3 { margin: 0; font-size: 13px; }
+.batch-detail-pagination { margin-top: 10px; }
+
 .view-switch {
   display: flex;
   padding: 4px;
@@ -2776,6 +2816,7 @@ main {
   .query-mobile-list time { color: var(--muted); font: 10px/1 var(--mono); }
   .query-pagination { align-items: flex-start; gap: 10px; }
   .batch-summary { grid-template-columns: 1fr; }
+  .batch-meta { grid-template-columns: 1fr; }
   .phone-badges { align-items: flex-start; flex-wrap: wrap; }
   .phone-badges strong { width: 100%; margin-left: 0; }
   .timeline-panel { padding: 14px 10px; }
@@ -3167,6 +3208,12 @@ main {
 .role-mapping-empty { margin: 14px 0 0; padding: 14px; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; text-align: center; }
 .role-mapping-panel footer { display: flex; justify-content: flex-end; margin-top: 12px; }
 .config-restart-alert { margin-top: 16px; }
+.config-toolbar { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
+.config-toolbar .el-input { max-width: 340px; }
+.config-toolbar > span { flex: 0 0 auto; color: var(--muted); font: 10px/1 var(--mono); }
+.config-range-hint { color: var(--muted); font-size: 10px; }
+.config-item-meta { display: flex; align-items: center; justify-content: space-between; min-height: 18px; }
+.config-item-meta > small { color: var(--muted); font-size: 10px; }
 .config-groups { display: grid; gap: 16px; margin-top: 16px; padding-bottom: 74px; }
 .config-group-card > .el-card__header { padding: 14px 18px; }
 .config-group-title { display: flex; align-items: center; justify-content: space-between; }
