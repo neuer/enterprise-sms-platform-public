@@ -709,7 +709,6 @@ def test_openapi_contract_is_explicitly_non_runtime() -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        ".github/workflows/example.yml",
         "scripts/future_runtime.py",
         "future/runtime.py",
     ],
@@ -717,6 +716,37 @@ def test_openapi_contract_is_explicitly_non_runtime() -> None:
 def test_rejects_every_unclassified_path(path: str) -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_changed_paths([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/ci.yml",
+        ".github/workflows/auto-merge-owner-pr.yml",
+        ".github/CODEOWNERS",
+    ],
+)
+def test_classifies_github_metadata_as_non_runtime(path: str) -> None:
+    change = classify_changed_paths([path])
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+    assert change.migration_changed is False
+
+
+def test_github_metadata_does_not_block_mixed_application_change() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/replies.py",
+            ".github/workflows/auto-merge-owner-pr.yml",
+            "docs/DECISIONS.md",
+        ]
+    )
+
+    assert change.components == frozenset({"api"})
+    assert change.runtime_changed is True
+    assert change.risk == "backend-safe"
 
 
 def test_rejects_unclassified_path_mixed_with_known_application_change() -> None:
