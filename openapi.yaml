@@ -748,7 +748,10 @@ paths:
         - { name: phone, in: query, required: true, schema: { type: string, pattern: '^1\d{10}$' } }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+        - { name: category, in: query, required: false, schema: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other] }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
       responses:
         '200':
           description: 该号码的收发记录（下行明细+关联批次，权限内）
@@ -787,12 +790,12 @@ paths:
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
       responses:
         '200':
-          description: 事件流（时间倒序）+ 号码状态徽标
+          description: 事件流（时间倒序，最多返回最近 500 条）+ 号码状态徽标
           content:
             application/json:
               schema:
                 type: object
-                required: [badge, events]
+                required: [badge, events, truncated]
                 properties:
                   badge:
                     type: object
@@ -814,6 +817,7 @@ paths:
                         content: { type: string, description: 摘要，verify 已打码 }
                         status: { anyOf: [{ type: string }, { type: 'null' }] }
                         sender: { anyOf: [{ type: string }, { type: 'null' }], description: 应用名或Web提交人 }
+                  truncated: { type: boolean, description: 事件超过 500 条上限时为 true，仅返回最近 500 条 }
 
   /api/v1/web/messages/{id}/phone/decrypt:
     post:
@@ -2022,12 +2026,15 @@ paths:
   /api/v1/web/admin/callbacks:
     get:
       tags: [admin]
-      summary: 回调任务查询（v1.1，支持按状态过滤，dead 可手动重推）
+      summary: 回调任务查询（v1.1，支持状态/应用/事件/批次号过滤，dead 可手动重推）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, retrying, done, dead] }, { type: 'null' }] } }
         - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
+        - { name: event, in: query, required: false, schema: { anyOf: [{ type: string, enum: [batch.finished, message.report] }, { type: 'null' }] } }
+        - { name: batch_no, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 32, description: 模糊匹配（ILIKE 通配符转义） }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
       responses:
         '200':
           description: OK
@@ -2035,9 +2042,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [total, items]
+                required: [total, dead_total, items]
                 properties:
                   total: { type: integer }
+                  dead_total: { type: integer, description: 全库 dead 任务总数（不受筛选影响，健康脉冲用） }
                   items:
                     type: array
                     items:
@@ -3650,13 +3658,14 @@ components:
 
     Reply:
       type: object
-      required: [id, phone, content, batch_no, reply_time]
+      required: [id, phone, content, batch_no, reply_time, blacklisted]
       properties:
         id: { type: integer }
         phone: { type: string, description: 掩码展示 }
         content: { type: string }
         batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
         reply_time: { type: string, format: date-time }
+        blacklisted: { type: boolean, description: 回复号码当前是否在黑名单中 }
 
     App:
       type: object

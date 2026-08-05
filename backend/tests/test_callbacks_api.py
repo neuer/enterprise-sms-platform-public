@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 import app.api.apps as apps_api
@@ -10,7 +11,11 @@ import app.api.callbacks as api
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
-from app.core.errors import ApiError, api_error_handler
+from app.core.errors import (
+    ApiError,
+    api_error_handler,
+    validation_error_handler,
+)
 from app.services.callback_repository import (
     CallbackRetryConflict,
     CallbackTaskNotFound,
@@ -36,6 +41,7 @@ class FakeRepository:
         self.list_calls.append(values)
         return {
             "total": 1,
+            "dead_total": 1,
             "items": [
                 {
                     "id": 9,
@@ -75,6 +81,10 @@ class FakeRepository:
 def client(repository: FakeRepository, role: str = "admin") -> TestClient:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(
+        RequestValidationError,
+        validation_error_handler,  # type: ignore[arg-type]
+    )
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[api.get_callback_repository] = lambda: repository
@@ -85,17 +95,45 @@ def test_admin_lists_safe_callback_task_summary_and_non_admin_is_forbidden() -> 
     repository = FakeRepository()
     headers = {"Authorization": "Bearer jwt"}
     response = client(repository).get(
-        "/api/v1/web/admin/callbacks?status=dead&app_id=7&page=1",
+        "/api/v1/web/admin/callbacks"
+        "?status=dead&app_id=7&event=batch.finished&batch_no=BATCH&page=1&size=50",
         headers=headers,
     )
 
     assert response.status_code == 200
     assert response.json()["items"][0]["status"] == "dead"
+    assert response.json()["dead_total"] == 1
     assert "url" not in response.text and "body" not in response.text
-    assert repository.list_calls == [{"status": "dead", "app_id": 7, "page": 1}]
+    assert repository.list_calls == [
+        {
+            "status": "dead",
+            "app_id": 7,
+            "event": "batch.finished",
+            "batch_no": "BATCH",
+            "page": 1,
+            "size": 50,
+        }
+    ]
     assert client(FakeRepository(), "operator").get(
         "/api/v1/web/admin/callbacks", headers=headers
     ).status_code == 403
+
+
+def test_callback_list_rejects_invalid_filters() -> None:
+    headers = {"Authorization": "Bearer jwt"}
+    bad_event = client(FakeRepository()).get(
+        "/api/v1/web/admin/callbacks?event=batch.started",
+        headers=headers,
+    )
+    bad_size = client(FakeRepository()).get(
+        "/api/v1/web/admin/callbacks?size=101",
+        headers=headers,
+    )
+
+    assert bad_event.status_code == 400
+    assert bad_event.json()["code"] == "INVALID_PARAM"
+    assert bad_size.status_code == 400
+    assert bad_size.json()["code"] == "INVALID_PARAM"
 
 
 def test_manual_retry_maps_missing_and_state_conflict() -> None:

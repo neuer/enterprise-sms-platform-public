@@ -77,6 +77,7 @@ export interface TimelineEvent {
 export interface TimelineResult {
   badge: { blacklisted: boolean; blacklist_source: string | null; recv_30d: number }
   events: TimelineEvent[]
+  truncated: boolean
 }
 
 async function directRequest<T>(url: string, init: RequestInit = { method: "GET" }): Promise<T> {
@@ -127,20 +128,33 @@ export function getBatchMessages(
   )
 }
 
-function phoneQuery(phone: string, start?: string, end?: string, page?: number): string {
+export interface MessageSearchFilters {
+  start?: string
+  end?: string
+  category?: string
+  status?: string
+  page?: number
+}
+
+function phoneQuery(phone: string, filters: MessageSearchFilters = {}): string {
   const query = new URLSearchParams({ phone })
-  if (start) query.set("start", start)
-  if (end) query.set("end", end)
-  if (page) query.set("page", String(page))
+  if (filters.start) query.set("start", filters.start)
+  if (filters.end) query.set("end", filters.end)
+  if (filters.category) query.set("category", filters.category)
+  if (filters.status) query.set("status", filters.status)
+  if (filters.page) query.set("page", String(filters.page))
   return query.toString()
 }
 
-export function searchMessages(phone: string, start?: string, end?: string, page = 1): Promise<MessagePage> {
-  return apiRequest<MessagePage>(`/messages?${phoneQuery(phone, start, end, page)}`, { method: "GET" })
+export function searchMessages(
+  phone: string,
+  filters: MessageSearchFilters = {},
+): Promise<MessagePage> {
+  return apiRequest<MessagePage>(`/messages?${phoneQuery(phone, filters)}`, { method: "GET" })
 }
 
 export function getTimeline(phone: string, start?: string, end?: string): Promise<TimelineResult> {
-  return apiRequest<TimelineResult>(`/messages/timeline?${phoneQuery(phone, start, end)}`, { method: "GET" })
+  return apiRequest<TimelineResult>(`/messages/timeline?${phoneQuery(phone, { start, end })}`, { method: "GET" })
 }
 
 export function decryptMessagePhone(id: number): Promise<{ phone: string }> {

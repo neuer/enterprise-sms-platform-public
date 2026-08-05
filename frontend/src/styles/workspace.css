@@ -604,6 +604,10 @@ button:focus-visible {
   width: 180px;
 }
 
+.callback-filter .el-input {
+  width: 200px;
+}
+
 .callback-table-card .el-card__body {
   padding: 0;
 }
@@ -668,7 +672,8 @@ button:focus-visible {
     margin-left: 0;
   }
 
-  .callback-filter .el-select {
+  .callback-filter .el-select,
+  .callback-filter .el-input {
     width: 100%;
   }
 
@@ -2715,6 +2720,21 @@ main {
 .message-results { margin-top: 18px; }
 .message-content { margin: 7px 0 0; color: var(--ink-soft); }
 .phone-mask + .el-button { margin-left: 6px; }
+
+.report-desc {
+  margin: 5px 0 0;
+  color: var(--verm);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.timeline-truncated {
+  max-width: 820px;
+  margin: 14px auto 0;
+  color: var(--amber);
+  font-size: 12px;
+}
 
 .timeline-panel {
   margin-top: 18px;

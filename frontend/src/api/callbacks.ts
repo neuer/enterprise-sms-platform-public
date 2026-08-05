@@ -27,12 +27,24 @@ export interface CallbackTask {
 
 export interface CallbackPage {
   total: number
+  dead_total: number
   items: CallbackTask[]
 }
 
-export function listCallbacks(status: CallbackStatus | "", page: number): Promise<CallbackPage> {
-  const query = new URLSearchParams({ page: String(page) })
-  if (status) query.set("status", status)
+export interface CallbackFilters {
+  status?: CallbackStatus | ""
+  appId?: number | null
+  event?: CallbackEvent | ""
+  batchNo?: string
+  page: number
+}
+
+export function listCallbacks(filters: CallbackFilters): Promise<CallbackPage> {
+  const query = new URLSearchParams({ page: String(filters.page) })
+  if (filters.status) query.set("status", filters.status)
+  if (filters.appId) query.set("app_id", String(filters.appId))
+  if (filters.event) query.set("event", filters.event)
+  if (filters.batchNo?.trim()) query.set("batch_no", filters.batchNo.trim())
   return apiRequest<CallbackPage>(`/admin/callbacks?${query}`, { method: "GET" })
 }
 

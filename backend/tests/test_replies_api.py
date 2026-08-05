@@ -38,6 +38,7 @@ class FakeService:
                     "TD",
                     "BATCH-1",
                     datetime.fromisoformat("2026-07-12T08:00:00+08:00"),
+                    False,
                 ),
             ),
         )
@@ -74,6 +75,7 @@ def test_viewer_plus_lists_only_masked_reply_fields_with_department_scope() -> N
                 "content": "TD",
                 "batch_no": "BATCH-1",
                 "reply_time": "2026-07-12T08:00:00+08:00",
+                "blacklisted": False,
             }
         ],
     }
