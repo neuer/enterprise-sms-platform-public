@@ -138,7 +138,7 @@
 
 ## D024 sys_config 按请求或任务边界加载一致快照
 
-- 决策：运行策略由 `RuntimePolicy` 单点完成类型、格式和跨字段解析；Admin 更新在全局事务锁和完整 `sys_config FOR UPDATE` 快照内执行最终校验。认证、回调、导入、测试发送与 uncertain 对账在各自请求或任务开始时读取一次；跨 `asyncio.run` 的 callback/reconcile 使用 NullPool 一次性引擎。只有 `report_poll_seconds`、`reply_poll_seconds`、`reconcile_interval_min`、`balance_poll_seconds`、`anomaly_scan_minutes` 五个 beat 调度键由 beat 与 API 在启动时读取，分别固定调度表与心跳预期间隔；修改后必须重启 beat 和 API。Callback 白名单只允许 RFC1918 IPv4 或 `fc00::/7` ULA 的相同/更细子网。
+- 决策：运行策略由 `RuntimePolicy` 单点完成类型、格式和跨字段解析；Admin 更新在全局事务锁和完整 `sys_config FOR UPDATE` 快照内执行最终校验。认证、回调、导入、测试发送与 uncertain 对账在各自请求或任务开始时读取一次。`report_poll_seconds`、`reply_poll_seconds`、`reconcile_interval_min`、`balance_poll_seconds`、`approval_scan_seconds`、`scheduled_scan_seconds`、`anomaly_scan_minutes`、`usage_projection_reconcile_seconds` 八个 beat 调度键由 beat 与 API 在启动时读取，分别固定调度表与心跳预期间隔；修改后必须重启 beat 和 API。Callback 白名单只允许 RFC1918 IPv4 或 `fc00::/7` ULA 的相同/更细子网。
 - 原因：每个字段散落转换会造成管理端“保存成功但运行仍用硬编码”或同一任务读到半套配置；并发分字段更新若只做服务层预检会提交非法组合；跨事件循环复用 asyncpg 池会产生 loop 归属错误；宽泛 CIDR 会把 SSRF 白名单退化为公网代理；beat 动态热更则违反 v1.6 的启动时调度契约。
 - 影响：Admin 事务最终校验、登录防爆破、callback 超时/重试与 SSRF、导入/审批过期、Web 测试发送、uncertain 告警、任务心跳、系统参数页重启提示与迁移基准。
 
@@ -552,6 +552,10 @@
   tree 完全一致，且原 head 的精确 `ci-gate` 仍为 GitHub Actions success 时，才把该证据
   复用于 merge SHA，避免重复 G2。开发默认从最新 `main` 创建非堆叠分支，避免父 PR
   squash 后对子 PR 重放。
+- 落后处理：自动合并前先读取 PR 的 `mergeStateStatus`；`BEHIND` 时先用
+  `gh pr update-branch` 把 base main 合入 PR 分支并立即结束本次运行，由更新后的精确
+  push CI 再次触发同一流程完成 squash merge；`DIRTY` 时明确失败关闭并保留 PR 供人工
+  处理，避免 `--auto` 在严格分支保护下无限排队直到 12 分钟超时。
 
 ## D057 维护期开发与测试部署解耦
 

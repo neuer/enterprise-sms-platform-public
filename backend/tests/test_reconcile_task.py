@@ -14,9 +14,8 @@ async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions
     operation_repository = object()
 
     class PolicyLoader:
-        def __init__(self, settings: object, *, task_safe: bool) -> None:
+        def __init__(self, settings: object) -> None:
             assert settings == "settings"
-            assert task_safe is True
 
         async def load(self) -> object:
             return "policy"
@@ -97,7 +96,7 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
     from app.tasks import reconcile as task_module
 
     class PolicyLoader:
-        def __init__(self, settings: object, *, task_safe: bool) -> None:
+        def __init__(self, settings: object) -> None:
             pass
 
         async def load(self) -> object:

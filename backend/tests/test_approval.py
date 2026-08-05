@@ -194,3 +194,22 @@ async def test_outbox_expiry_keeps_log_sink_alert_without_direct_refund() -> Non
     assert quota.calls == []
     assert alerts.events[0]["alert_type"] == "approval_expired"
     assert alerts.events[0]["detail"] == {"batch_no": "batch-1", "dept": "平台部"}
+
+
+@pytest.mark.asyncio
+async def test_decide_trims_reason_before_transition() -> None:
+    repository = FakeRepository(case())
+    await ApprovalService(repository, FakeQuota(), FakePublisher(), FakeAlerts()).decide(
+        3, action="reject", principal=APPROVER, reason="  内容不合规  "
+    )
+    assert repository.transitioned == [(3, "reject", "approver01", "内容不合规")]
+
+
+@pytest.mark.asyncio
+async def test_reject_with_blank_reason_is_invalid_before_transition() -> None:
+    repository = FakeRepository(case())
+    with pytest.raises(ValueError, match="驳回必须填写原因"):
+        await ApprovalService(
+            repository, FakeQuota(), FakePublisher(), FakeAlerts()
+        ).decide(3, action="reject", principal=APPROVER, reason="   ")
+    assert repository.transitioned == []

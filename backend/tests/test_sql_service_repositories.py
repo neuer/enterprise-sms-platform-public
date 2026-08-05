@@ -229,6 +229,8 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
                         "status": "pending",
                         "approver": None,
                         "reason": None,
+                        "expires_at": scheduled_at,
+                        "decided_at": None,
                         "created_at": scheduled_at,
                     }
                 ]
@@ -241,12 +243,16 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
     result = await repository.list_page(status="pending", dept=None, page=1)
 
     assert result["items"][0]["estimated_segments"] == 120  # type: ignore[index]
+    assert result["items"][0]["expires_at"] == scheduled_at  # type: ignore[index]
+    assert result["items"][0]["decided_at"] is None  # type: ignore[index]
     select_sql = connection.calls[1][0]
     assert "b.segments" in select_sql
     assert "b.quota_cost estimated_segments" in select_sql
     assert "b.scheduled_at" in select_sql
     assert "p.trigger_threshold" in select_sql
     assert "p.trigger_threshold_source" in select_sql
+    assert "p.expires_at" in select_sql
+    assert "p.decided_at" in select_sql
 
 
 @pytest.mark.asyncio
@@ -826,6 +832,7 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
         channel=None,
         app_id=None,
         is_test=None,
+        batch_no=None,
         start=None,
         end=None,
         page=1,
@@ -842,6 +849,33 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
             "limit": 20,
             "offset": 0,
         }
+
+
+@pytest.mark.asyncio
+async def test_batch_list_batch_no_filter_escapes_like_wildcards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BatchQueryService()
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    bind_engine(monkeypatch, service, connection)
+
+    await service.list_batches(
+        scope=BatchAccessScope(dept="业务一部"),
+        category=None,
+        status=None,
+        channel=None,
+        app_id=None,
+        is_test=None,
+        batch_no=" AB_100% ",
+        start=None,
+        end=None,
+        page=1,
+        size=20,
+    )
+
+    for sql, params in connection.calls:
+        assert "trim(b.batch_no) ILIKE :batch_no" in sql
+        assert params["batch_no"] == "%AB\\_100\\%%"
 
 
 @pytest.mark.asyncio

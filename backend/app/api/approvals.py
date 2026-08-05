@@ -41,7 +41,9 @@ class ApprovalItem(BaseModel):
     content: str
     status: Literal["pending", "approved", "rejected", "expired"]
     approver: str | None
-    reason: str | None
+    reason: str | None = Field(max_length=256)
+    expires_at: datetime
+    decided_at: datetime | None
     created_at: datetime
 
 
@@ -52,7 +54,7 @@ class ApprovalPage(BaseModel):
 
 class DecisionRequest(BaseModel):
     action: Literal["approve", "reject"]
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=256)
 
 
 async def get_approval_service() -> AsyncIterator[ApprovalService]:

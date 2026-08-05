@@ -37,7 +37,7 @@ async function load(): Promise<void> {
     ])
     items.value = page.items
     total.value = page.total
-    policy.value = configs.find((item) => item.key === "sensitive_action")?.value || "block"
+    policy.value = configs.find((item) => item.key === "sensitive_hit_action")?.value || "block"
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : "敏感词加载失败" }
   finally { loading.value = false }
 }
@@ -67,7 +67,7 @@ async function add(): Promise<void> {
 
 async function savePolicy(value: string): Promise<void> {
   try {
-    await updateConfigs([{ key: "sensitive_action", value }])
+    await updateConfigs([{ key: "sensitive_hit_action", value }])
     ElMessage.success(value === "block" ? "敏感词命中将阻断发送" : "敏感词命中仅审计记录")
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : "策略更新失败") }
 }

@@ -720,6 +720,7 @@ paths:
         - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
         - { name: dept, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] } }
         - { name: is_test, in: query, required: false, schema: { anyOf: [{ type: boolean }, { type: 'null' }] } }
+        - { name: batch_no, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }, description: 批次号模糊匹配（不区分大小写） }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
@@ -886,7 +887,7 @@ paths:
               required: [action]
               properties:
                 action: { type: string, enum: [approve, reject] }
-                reason: { anyOf: [{ type: string }, { type: 'null' }], description: 驳回时必填 }
+                reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }], description: 驳回时必填（去空白后非空）；通过时可选填审批意见 }
       responses:
         '200': { description: 处理成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -2829,7 +2830,7 @@ components:
 
     ConfigModel:
       type: object
-      required: [key, value, value_type, description, group, sensitive, configured, beat_restart_required, updated_by, updated_at]
+      required: [key, value, value_type, description, group, sensitive, configured, beat_restart_required, updated_by, updated_at, default, min_value, max_value]
       properties:
         key: { type: string }
         value: { anyOf: [{ type: string }, { type: 'null' }] }
@@ -2841,6 +2842,9 @@ components:
         beat_restart_required: { type: boolean }
         updated_by: { anyOf: [{ type: string }, { type: 'null' }] }
         updated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        default: { type: string }
+        min_value: { anyOf: [{ type: integer }, { type: 'null' }] }
+        max_value: { anyOf: [{ type: integer }, { type: 'null' }] }
 
     ConfigUpdateModel:
       type: object
@@ -3549,7 +3553,7 @@ components:
 
     Approval:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, created_at]
+      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
@@ -3567,7 +3571,9 @@ components:
         content: { type: string }
         status: { type: string, enum: [pending, approved, rejected, expired] }
         approver: { anyOf: [{ type: string }, { type: 'null' }] }
-        reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }] }
+        expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
+        decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
         created_at: { type: string, format: date-time }
 
     Template:

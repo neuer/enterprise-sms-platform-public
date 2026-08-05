@@ -18,6 +18,8 @@ export interface ApprovalItem {
   status: ApprovalStatus
   approver: string | null
   reason: string | null
+  expires_at?: string | null
+  decided_at?: string | null
   created_at: string
 }
 
@@ -28,10 +30,22 @@ export interface ApprovalPage {
 
 type ApprovalWireItem = Omit<
   ApprovalItem,
-  "segments" | "estimated_segments" | "scheduled_at" | "trigger_threshold" | "trigger_threshold_source"
+  | "segments"
+  | "estimated_segments"
+  | "scheduled_at"
+  | "trigger_threshold"
+  | "trigger_threshold_source"
+  | "expires_at"
+  | "decided_at"
 > & Partial<Pick<
   ApprovalItem,
-  "segments" | "estimated_segments" | "scheduled_at" | "trigger_threshold" | "trigger_threshold_source"
+  | "segments"
+  | "estimated_segments"
+  | "scheduled_at"
+  | "trigger_threshold"
+  | "trigger_threshold_source"
+  | "expires_at"
+  | "decided_at"
 >>
 
 export async function listApprovals(status: ApprovalStatus, page = 1): Promise<ApprovalPage> {
@@ -48,6 +62,8 @@ export async function listApprovals(status: ApprovalStatus, page = 1): Promise<A
       estimated_segments: item.estimated_segments ?? null,
       trigger_threshold: item.trigger_threshold ?? null,
       trigger_threshold_source: item.trigger_threshold_source ?? "legacy_unknown",
+      expires_at: item.expires_at ?? null,
+      decided_at: item.decided_at ?? null,
     })),
   }
 }

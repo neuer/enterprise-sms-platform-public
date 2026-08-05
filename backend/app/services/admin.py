@@ -11,6 +11,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.services.alert import validate_alert_destinations
 from app.services.runtime_policy import (
     BEAT_STARTUP_ONLY_KEYS,
+    CONFIG_SPECS,
     InvalidRuntimePolicy,
     RuntimePolicy,
 )
@@ -80,6 +81,9 @@ class ConfigItem:
     beat_restart_required: bool
     updated_by: str | None
     updated_at: datetime | None
+    default: str
+    min_value: int | None
+    max_value: int | None
 
 
 class AdminRepository(Protocol):
@@ -111,22 +115,6 @@ UI_ONLY_CONFIG_KEYS = frozenset(
 BEAT_CONFIG_KEYS = BEAT_STARTUP_ONLY_KEYS
 
 
-def _group(key: str) -> str:
-    if key in BEAT_CONFIG_KEYS or key.startswith(("vendor_", "reserved_realtime")):
-        return "运行调度"
-    if key.startswith(("alert_", "fail_rate", "balance_alert", "uncertain_alert")):
-        return "告警通知"
-    if key.endswith(("retention_days", "retention_months", "expire_hours")) or key in {
-        "job_history_days",
-        "msg_retention_months",
-        "audit_retention_months",
-    }:
-        return "生命周期"
-    if key.startswith(("login_", "callback_", "key_grace")):
-        return "安全控制"
-    return "发送策略"
-
-
 class AdminService:
     """对查询时间、配置类型和敏感配置回显实行 fail-closed。"""
 
@@ -146,17 +134,29 @@ class AdminService:
     @staticmethod
     def _item(row: ConfigRow) -> ConfigItem:
         sensitive = row.key in SENSITIVE_CONFIG_KEYS
+        spec = CONFIG_SPECS.get(row.key)
         return ConfigItem(
             key=row.key,
             value=None if sensitive else row.value,
             value_type=row.value_type,
             description=row.description,
-            group=_group(row.key),
+            group=spec.group if spec is not None else "发送策略",
             sensitive=sensitive,
             configured=bool(row.value),
             beat_restart_required=row.key in BEAT_CONFIG_KEYS,
             updated_by=row.updated_by,
             updated_at=row.updated_at,
+            default=spec.default if spec is not None else "",
+            min_value=(
+                spec.minimum
+                if spec is not None and spec.value_type == "int"
+                else None
+            ),
+            max_value=(
+                spec.maximum
+                if spec is not None and spec.value_type == "int"
+                else None
+            ),
         )
 
     async def list_configs(self) -> tuple[ConfigItem, ...]:

@@ -95,7 +95,7 @@ async def process_import_once(import_id: str) -> int:
     if claim is None:
         return 0
     crypto = CryptoService.from_settings(settings)
-    policy = await SqlRuntimePolicyLoader(settings, task_safe=True).load()
+    policy = await SqlRuntimePolicyLoader(settings).load()
     limits = ImportLimits.from_policy(policy)
     codec = ImportFileCodec(crypto, settings.import_storage_dir)
     redis: Any = Redis.from_url(settings.redis_control_url, decode_responses=True)

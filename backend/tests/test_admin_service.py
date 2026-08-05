@@ -80,6 +80,28 @@ async def test_configs_are_grouped_and_sensitive_value_is_never_returned() -> No
 
 
 @pytest.mark.asyncio
+async def test_config_items_expose_registry_metadata_for_console_controls() -> None:
+    service = AdminService(FakeRepository())
+
+    items = await service.list_configs()
+
+    vendor_qps = next(item for item in items if item.key == "vendor_qps")
+    assert vendor_qps.default == "5"
+    assert vendor_qps.min_value is None
+    assert vendor_qps.max_value == 1_000
+    assert vendor_qps.group == "运行调度"
+    report = next(item for item in items if item.key == "report_poll_seconds")
+    assert (report.min_value, report.max_value) == (10, 3_600)
+    window = next(item for item in items if item.key == "market_send_window")
+    assert window.min_value is None and window.max_value is None
+    assert window.group == "发送策略"
+    cidrs = next(item for item in items if item.key == "callback_allow_cidrs")
+    assert cidrs.group == "安全控制"
+    fail_rate = next(item for item in items if item.key == "fail_rate_threshold")
+    assert fail_rate.group == "告警通知" and fail_rate.max_value == 100
+
+
+@pytest.mark.asyncio
 async def test_config_update_validates_types_duplicates_and_sensitive_keep_semantics() -> None:
     repository = FakeRepository()
     service = AdminService(repository)
@@ -145,6 +167,10 @@ async def test_audit_query_requires_aware_ordered_range() -> None:
         ("alert_smtp_port", "70000"),
         ("fail_rate_threshold", "101"),
         ("callback_retry_schedule", "60,300"),
+        ("alert_mail_to", "not-an-email"),
+        ("alert_mail_to", "ops@example.com, bad-address"),
+        ("report_poll_seconds", "9"),
+        ("vendor_qps", "1001"),
     ),
 )
 async def test_invalid_semantic_config_is_rejected_before_any_write(
