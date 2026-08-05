@@ -552,10 +552,10 @@
   tree 完全一致，且原 head 的精确 `ci-gate` 仍为 GitHub Actions success 时，才把该证据
   复用于 merge SHA，避免重复 G2。开发默认从最新 `main` 创建非堆叠分支，避免父 PR
   squash 后对子 PR 重放。
-- 落后处理：自动合并前先读取 PR 的 `mergeStateStatus`；`BEHIND` 时先用
-  `gh pr update-branch` 把 base main 合入 PR 分支并立即结束本次运行，由更新后的精确
-  push CI 再次触发同一流程完成 squash merge；`DIRTY` 时明确失败关闭并保留 PR 供人工
-  处理，避免 `--auto` 在严格分支保护下无限排队直到 12 分钟超时。
+- 落后处理：自动合并前先读取 PR 的 `mergeStateStatus`；`BEHIND` 时明确失败关闭并提示
+  把 base main 合入 PR 分支后重新推送（`GITHUB_TOKEN` 产生的分支更新不会触发 push CI，
+  自动化无法在内部自证新 head）；`DIRTY` 时同样明确失败并保留 PR 供人工处理，避免
+  `--auto` 在严格分支保护下无限排队直到 12 分钟超时。
 
 ## D057 维护期开发与测试部署解耦
 
