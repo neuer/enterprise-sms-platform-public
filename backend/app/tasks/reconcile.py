@@ -27,7 +27,7 @@ from app.tasks import celery_app
 
 async def _reconcile() -> int:
     settings = get_settings()
-    policy = await SqlRuntimePolicyLoader(settings, task_safe=True).load()
+    policy = await SqlRuntimePolicyLoader(settings).load()
     uncertain = await UncertainReconciler.from_policy(
         SqlUncertainRepository(settings),
         CryptoService.from_settings(settings),
