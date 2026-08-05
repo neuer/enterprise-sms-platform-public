@@ -62,6 +62,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0047_widen_alembic_version",
         "0048_security_daily_audit_accept",
         "0049_app_ip_allowlist",
+        "0050_beat_scan_config",
     ]
 
 

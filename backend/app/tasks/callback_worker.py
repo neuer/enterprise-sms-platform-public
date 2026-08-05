@@ -39,7 +39,7 @@ def _callback_transport() -> HttpxCallbackTransport:
 
 async def _deliver(task_id: int) -> int:
     settings = get_settings()
-    policy = await SqlRuntimePolicyLoader(settings, task_safe=True).load()
+    policy = await SqlRuntimePolicyLoader(settings).load()
     repository = SqlCallbackRepository(settings)
     validator = CallbackUrlValidator(
         policy.callback_allow_cidrs,

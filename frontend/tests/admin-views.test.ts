@@ -17,9 +17,9 @@ function response(body: unknown, status = 200) {
 }
 
 const configs = [
-  { key: "vendor_qps", value: "5", value_type: "int", description: "厂商 QPS", group: "运行调度", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null },
-  { key: "report_poll_seconds", value: "60", value_type: "int", description: "报告轮询", group: "运行调度", sensitive: false, configured: true, beat_restart_required: true, updated_by: null, updated_at: null },
-  { key: "alert_wecom_webhook", value: null, value_type: "str", description: "企微 Webhook", group: "告警通知", sensitive: true, configured: true, beat_restart_required: false, updated_by: "admin01", updated_at: "2026-07-12T08:00:00+08:00" },
+  { key: "vendor_qps", value: "5", value_type: "int", description: "厂商 QPS", group: "运行调度", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "5", min_value: null, max_value: 1000 },
+  { key: "report_poll_seconds", value: "60", value_type: "int", description: "报告轮询", group: "运行调度", sensitive: false, configured: true, beat_restart_required: true, updated_by: null, updated_at: null, default: "60", min_value: 10, max_value: 3600 },
+  { key: "alert_wecom_webhook", value: null, value_type: "str", description: "企微 Webhook", group: "告警通知", sensitive: true, configured: true, beat_restart_required: false, updated_by: "admin01", updated_at: "2026-07-12T08:00:00+08:00", default: "", min_value: null, max_value: null },
 ]
 
 const adConfig = {
@@ -125,7 +125,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.text()).toContain("由 beat 与 API 在启动时读取")
     expect(wrapper.text()).toContain("修改后需重启两个容器")
     expect(wrapper.text()).toContain("已配置，值不回显")
-    await wrapper.get("[data-testid='config-report_poll_seconds']").setValue("90")
+    await wrapper.get("[data-testid='config-report_poll_seconds'] input").setValue("90")
     await wrapper.findAll("button").find((button) => button.text().includes("清除配置"))!.trigger("click")
     await wrapper.findAll("button").find((button) => button.text().includes("保存变更"))!.trigger("click")
     await flushPromises()
@@ -140,6 +140,36 @@ describe("审计与系统参数", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it("支持按关键字搜索参数并展示数值范围与重置入口", async () => {
+    vi.stubGlobal("fetch", configFetch())
+    const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("范围 10 – 3600 · 默认 60")
+    expect(wrapper.findAll(".config-item")).toHaveLength(3)
+
+    await wrapper.get("[data-testid='config-search']").setValue("webhook")
+    expect(wrapper.findAll(".config-item")).toHaveLength(1)
+    expect(wrapper.text()).toContain("企微 Webhook")
+    expect(wrapper.text()).not.toContain("报告轮询")
+
+    await wrapper.get("[data-testid='config-search']").setValue("不存在的参数")
+    expect(wrapper.findAll(".config-item")).toHaveLength(0)
+    expect(wrapper.text()).toContain("没有匹配的系统参数")
+
+    await wrapper.get("[data-testid='config-search']").setValue("")
+    await wrapper.get("[data-testid='config-report_poll_seconds'] input").setValue("90")
+    const reset = wrapper.get("[data-testid='config-reset-report_poll_seconds']")
+    await reset.trigger("click")
+    expect(
+      (wrapper.get("[data-testid='config-report_poll_seconds'] input").element as HTMLInputElement).value,
+    ).toBe("60")
+    expect(wrapper.find("[data-testid='config-reset-report_poll_seconds']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='config-reset-alert_wecom_webhook']").exists()).toBe(false)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it("在运行参数之前展示不可变本地源与 AD 非敏感配置状态", async () => {

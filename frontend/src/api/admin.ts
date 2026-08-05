@@ -48,6 +48,9 @@ export interface ConfigItem {
   beat_restart_required: boolean
   updated_by: string | null
   updated_at: string | null
+  default: string
+  min_value: number | null
+  max_value: number | null
 }
 
 export interface ConfigUpdate {

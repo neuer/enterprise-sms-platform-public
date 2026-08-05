@@ -2829,7 +2829,7 @@ components:
 
     ConfigModel:
       type: object
-      required: [key, value, value_type, description, group, sensitive, configured, beat_restart_required, updated_by, updated_at]
+      required: [key, value, value_type, description, group, sensitive, configured, beat_restart_required, updated_by, updated_at, default, min_value, max_value]
       properties:
         key: { type: string }
         value: { anyOf: [{ type: string }, { type: 'null' }] }
@@ -2841,6 +2841,9 @@ components:
         beat_restart_required: { type: boolean }
         updated_by: { anyOf: [{ type: string }, { type: 'null' }] }
         updated_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        default: { type: string }
+        min_value: { anyOf: [{ type: integer }, { type: 'null' }] }
+        max_value: { anyOf: [{ type: integer }, { type: 'null' }] }
 
     ConfigUpdateModel:
       type: object

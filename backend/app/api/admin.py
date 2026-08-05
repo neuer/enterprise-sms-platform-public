@@ -63,6 +63,9 @@ class ConfigModel(BaseModel):
     beat_restart_required: bool
     updated_by: str | None
     updated_at: datetime | None
+    default: str
+    min_value: int | None
+    max_value: int | None
 
 
 class ConfigUpdateModel(BaseModel):

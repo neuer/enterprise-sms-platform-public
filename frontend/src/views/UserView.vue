@@ -74,6 +74,21 @@ const syncLabels: Record<UserSyncStatus, string> = {
   pending: "待同步",
   disabled: "已停用",
 }
+const roleDescriptions: Record<UserRole, string> = {
+  admin: "全部功能，含账号维护、角色覆盖、队列恢复与强制下线",
+  approver: "审批（不能审本人提交），查看全量记录与报表",
+  operator: "Web 人工发送（通知/营销），本部门记录与模板",
+  viewer: "本部门记录与报表",
+}
+const LOCAL_LOGIN_RE = /^[a-z0-9._-]{3,64}$/
+
+const filtering = computed(
+  () =>
+    Boolean(filters.keyword.trim()) ||
+    Boolean(filters.providerCode) ||
+    Boolean(filters.role) ||
+    filters.status !== "",
+)
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -151,6 +166,41 @@ function search(): void {
   void load()
 }
 
+function resetFilters(): void {
+  filters.keyword = ""
+  filters.providerCode = ""
+  filters.role = ""
+  filters.status = ""
+  filters.page = 1
+  void load()
+}
+
+function usernameProblem(value: string): string | null {
+  // 与服务端 validate_local_login_name 同一规则（规范化后 3–64 位小写字符集）。
+  return LOCAL_LOGIN_RE.test(value.trim().toLowerCase())
+    ? null
+    : "本地用户名必须为 3–64 位字母、数字、点、下划线或短横线"
+}
+
+function passwordProblem(password: string, username: string): string | null {
+  // 提交前按服务端下发的策略即时校验；服务端仍为权威校验。
+  const policy = passwordPolicy.value
+  if (password.length < policy.min_length || password.length > policy.max_length) {
+    return `密码长度必须为 ${policy.min_length}–${policy.max_length} 位`
+  }
+  const classes = [/\p{Ll}/u, /\p{Lu}/u, /\p{N}/u, /[^\p{L}\p{N}]/u].filter((re) =>
+    re.test(password),
+  ).length
+  if (classes < policy.required_character_classes) {
+    return `密码必须满足至少 ${policy.required_character_classes} 类：大写字母、小写字母、数字、特殊字符`
+  }
+  const normalized = username.trim().toLowerCase()
+  if (policy.forbid_username && normalized && password.toLowerCase().includes(normalized)) {
+    return "密码不能包含用户名"
+  }
+  return null
+}
+
 function resetCreateForm(): void {
   createForm.username = ""
   createForm.display_name = ""
@@ -170,11 +220,27 @@ function closeCreate(): void {
 }
 
 async function saveLocalUser(): Promise<void> {
+  const username = createForm.username.trim()
+  const displayName = createForm.display_name.trim()
+  const usernameIssue = usernameProblem(username)
+  if (usernameIssue) {
+    ElMessage.warning(usernameIssue)
+    return
+  }
+  if (!displayName) {
+    ElMessage.warning("请输入显示名称")
+    return
+  }
+  const passwordIssue = passwordProblem(createForm.temporary_password, username)
+  if (passwordIssue) {
+    ElMessage.warning(passwordIssue)
+    return
+  }
   saving.value = true
   try {
     await createLocalUser({
-      username: createForm.username.trim(),
-      display_name: createForm.display_name.trim(),
+      username,
+      display_name: displayName,
       dept: createForm.dept.trim(),
       role: createForm.role,
       temporary_password: createForm.temporary_password,
@@ -225,6 +291,11 @@ function closePasswordReset(): void {
 
 async function confirmPasswordReset(): Promise<void> {
   if (!selected.value) return
+  const passwordIssue = passwordProblem(resetPasswordDraft.value, selected.value.username)
+  if (passwordIssue) {
+    ElMessage.warning(passwordIssue)
+    return
+  }
   try {
     await ElMessageBox.confirm(
       `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话。`,
@@ -312,7 +383,7 @@ onMounted(() => {
   <el-card shadow="never" class="user-filter-card">
     <el-form class="user-filter filter-grid" label-position="top" @submit.prevent="search">
       <el-form-item class="filter-span-4" label="搜索用户">
-        <el-input v-model="filters.keyword" clearable placeholder="用户名、姓名或部门" />
+        <el-input v-model="filters.keyword" data-testid="user-filter-keyword" clearable placeholder="用户名、姓名或部门" />
       </el-form-item>
       <el-form-item class="filter-span-2" label="认证源">
         <el-select v-model="filters.providerCode" clearable placeholder="全部来源">
@@ -332,7 +403,7 @@ onMounted(() => {
         </el-select>
       </el-form-item>
       <el-form-item class="user-filter-action filter-actions filter-span-2">
-        <el-button type="primary" :loading="loading" native-type="submit">查询</el-button>
+        <el-button data-testid="user-search" type="primary" :loading="loading" native-type="submit">查询</el-button>
       </el-form-item>
     </el-form>
   </el-card>
@@ -373,7 +444,8 @@ onMounted(() => {
           <template #default="{ row }">
             <el-tag size="small" :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '账号有效' : '账号停用' }}</el-tag>
             <span class="sync-state" :class="row.sync_status"><i></i>{{ syncLabel(row.sync_status) }}</span>
-            <time>{{ localTime(row.last_synced_at) }}</time>
+            <time v-if="row.provider_code !== 'local'">同步 {{ localTime(row.last_synced_at) }}</time>
+            <time>最近登录 {{ localTime(row.last_login_at) }}</time>
           </template>
         </el-table-column>
         <el-table-column label="操作" min-width="250" fixed="right">
@@ -400,6 +472,7 @@ onMounted(() => {
             <span class="sync-state" :class="user.sync_status"><i></i>{{ syncLabel(user.sync_status) }}</span>
           </div>
           <p>{{ user.dept || '未分配部门' }}</p>
+          <p>最近登录 {{ localTime(user.last_login_at) }}</p>
           <div class="source-groups">
             <el-tag v-for="group in user.source_groups" :key="group" size="small" effect="plain">{{ group }}</el-tag>
             <small v-if="!user.source_groups.length">{{ user.provider_code === 'local' ? '本地维护，无目录来源组' : '暂无同步记录' }}</small>
@@ -416,6 +489,10 @@ onMounted(() => {
         </article>
       </div>
     </template>
+    <div v-else-if="filtering" class="user-empty-action">
+      <EmptyState title="没有符合条件的账号" description="调整关键词或筛选条件后重新查询。" />
+      <el-button data-testid="clear-user-filters" @click="resetFilters">清除筛选</el-button>
+    </div>
     <div v-else class="user-empty-action">
       <EmptyState title="尚无平台账号" description="本地账号由管理员创建；AD 账号在首次成功登录后进入台账。" />
       <el-button data-testid="empty-create-local-user" type="primary" @click="openCreate">创建本地账号</el-button>
@@ -444,6 +521,7 @@ onMounted(() => {
         <el-select v-model="createForm.role">
           <el-option v-for="(label, value) in roleLabels" :key="value" :label="label" :value="value" />
         </el-select>
+        <small class="field-rule" data-testid="create-role-permission">{{ roleDescriptions[createForm.role] }}</small>
       </el-form-item>
       <el-form-item label="临时密码" required>
         <el-input v-model="createForm.temporary_password" data-testid="create-password" type="password" show-password autocomplete="new-password" :maxlength="passwordPolicy.max_length" />
@@ -468,6 +546,7 @@ onMounted(() => {
           <el-select v-model="roleDraft" :disabled="selected.provider_code === 'ad' && !overrideDraft">
             <el-option v-for="(label, value) in roleLabels" :key="value" :label="label" :value="value" />
           </el-select>
+          <small class="field-rule" data-testid="role-permission">{{ roleDescriptions[roleDraft] }}</small>
         </el-form-item>
         <el-form-item label="角色来源">
           <div v-if="selected.provider_code === 'ad'" class="override-control">

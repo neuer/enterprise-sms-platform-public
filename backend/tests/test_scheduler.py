@@ -27,6 +27,16 @@ def test_beat_schedule_reads_report_interval_once_at_startup() -> None:
         "options": {"queue": "realtime"},
     }
     assert schedule["expire-approvals"]["schedule"] == 300
+    assert build_beat_schedule({"approval_scan_seconds": "91"})["expire-approvals"] == {
+        "task": "app.tasks.expire_approvals",
+        "schedule": 91,
+        "options": {"queue": "realtime"},
+    }
+    assert build_beat_schedule({"scheduled_scan_seconds": "29"})["dispatch-scheduled"] == {
+        "task": "app.tasks.dispatch_scheduled",
+        "schedule": 29,
+        "options": {"queue": "realtime"},
+    }
     assert schedule["sync-templates"] == {
         "task": "app.tasks.sync_templates",
         "schedule": 600,
@@ -90,6 +100,8 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
             "report_poll_seconds": "17",
             "reply_poll_seconds": "73",
             "reconcile_interval_min": "7",
+            "approval_scan_seconds": "91",
+            "scheduled_scan_seconds": "29",
             "balance_poll_seconds": "41",
             "anomaly_scan_minutes": "11",
             "usage_projection_reconcile_seconds": "47",
@@ -103,6 +115,8 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
                 "poll_report",
                 "poll_reply",
                 "reconcile",
+                "expire_approvals",
+                "dispatch_scheduled",
                 "poll_balance",
                 "anomaly_scan",
                 "usage_projection_reconcile",
@@ -111,6 +125,8 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
             "poll_report": 17,
             "poll_reply": 73,
             "reconcile": 420,
+            "expire_approvals": 91,
+            "dispatch_scheduled": 29,
             "poll_balance": 41,
             "anomaly_scan": 660,
             "usage_projection_reconcile": 47,
