@@ -464,10 +464,11 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
 ) -> None:
     repository = SqlBlacklistRepository()
     entry = BlacklistEntry("a" * 64, b"cipher", "138****8000", 1, "import", "投诉")
-    connection = FakeConnection([FakeResult(), FakeResult()])
+    connection = FakeConnection([FakeResult(), FakeResult(), FakeResult()])
     bind_engine(monkeypatch, repository, connection)
-    assert await repository.upsert_many([entry], actor="admin01", source="import") == 1
-    audit_params = connection.calls[1][1]
+    outcome = await repository.upsert_many([entry], actor="admin01", source="import")
+    assert (outcome.added, outcome.updated) == (1, 0)
+    audit_params = connection.calls[2][1]
     assert "138" not in str(audit_params)
     assert '"count": 1' in audit_params["after"]  # type: ignore[index]
 
@@ -484,9 +485,14 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
         "remark": "投诉",
         "created_at": datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
     }
-    connection = FakeConnection([FakeResult(rows=[row])])
+    connection = FakeConnection([FakeResult(rows=[row])], scalar_values=[1])
     bind_engine(monkeypatch, repository, connection)
-    assert (await repository.list_entries())[0].phone_mask == "138****8000"
+    page = await repository.list_page(source=None, keyword="8000", page=1, size=20)
+    assert page.total == 1
+    assert page.items[0].phone_mask == "138****8000"
+    count_sql, count_params = connection.calls[0]
+    assert "count(*)" in count_sql
+    assert count_params["keyword"] == "%8000%"  # type: ignore[index]
 
     connection = FakeConnection([FakeResult(scalars=["a" * 64 + " "])])
     bind_engine(monkeypatch, repository, connection)

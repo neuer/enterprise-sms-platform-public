@@ -1,18 +1,35 @@
 import { apiRequest } from "./webMessages"
 
+export type BlacklistSource = "manual" | "reply_optout" | "import"
+
 export interface BlacklistItem {
   phone_hmac: string
   phone_mask: string
-  source: "manual" | "reply_optout" | "import"
+  source: BlacklistSource
   remark: string | null
   created_at: string | null
 }
 
-export const listBlacklist = () =>
-  apiRequest<BlacklistItem[]>("/admin/blacklist", { method: "GET" })
+export interface BlacklistPage {
+  total: number
+  items: BlacklistItem[]
+}
+
+export interface BlacklistFilters {
+  source: BlacklistSource | ""
+  keyword: string
+  page: number
+}
+
+export const listBlacklist = (filters: BlacklistFilters) => {
+  const query = new URLSearchParams({ page: String(filters.page), size: "20" })
+  if (filters.source) query.set("source", filters.source)
+  if (filters.keyword) query.set("keyword", filters.keyword)
+  return apiRequest<BlacklistPage>(`/admin/blacklist?${query}`, { method: "GET" })
+}
 
 export const addBlacklist = (phones: string[], remark: string | null) =>
-  apiRequest<{ added: number; items: BlacklistItem[] }>("/admin/blacklist", {
+  apiRequest<{ added: number; updated: number; items: BlacklistItem[] }>("/admin/blacklist", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ phones, source: "manual", remark }),

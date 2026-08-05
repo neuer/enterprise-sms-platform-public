@@ -2129,6 +2129,20 @@ main {
   justify-content: flex-end;
 }
 
+.blacklist-filter .el-input {
+  flex: 0 1 220px;
+}
+
+.blacklist-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 58px;
+  padding: 8px 16px;
+  color: var(--tx-3);
+  border-top: 1px solid var(--line);
+}
+
 .sensitive-entry-actions {
   margin-top: 4px;
   padding-top: 16px;
@@ -2225,7 +2239,8 @@ main {
   }
 
   .sign-mobile-list dt,
-  .blacklist-mobile-list header span {
+  .blacklist-mobile-list header span,
+  .blacklist-mobile-list footer time {
     color: var(--muted);
     font-size: 10px;
   }

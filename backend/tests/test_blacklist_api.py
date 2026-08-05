@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import app.api.blacklist as blacklist_api
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
-from app.services.blacklist import BlacklistEntry
+from app.services.blacklist import BlacklistAddResult, BlacklistEntry, BlacklistPage
 
 
 class FakeFacade:
@@ -25,13 +25,15 @@ class FakeService:
             "manual",
             "投诉",
         )
+        self.last_filters: dict[str, object] = {}
 
-    async def list_entries(self) -> list[BlacklistEntry]:
-        return [self.entry]
+    async def list_page(self, **filters: object) -> BlacklistPage:
+        self.last_filters = filters
+        return BlacklistPage(total=1, items=[self.entry])
 
-    async def add(self, phones: list[str], **_: object) -> list[BlacklistEntry]:
+    async def add(self, phones: list[str], **_: object) -> BlacklistAddResult:
         assert phones == ["13800138000"]
-        return [self.entry]
+        return BlacklistAddResult([self.entry], added=1, updated=0)
 
     async def delete(self, phone_hmac: str, **_: object) -> bool:
         return phone_hmac == self.entry.phone_hmac
@@ -51,7 +53,10 @@ def test_blacklist_admin_crud_never_returns_plaintext_or_ciphertext() -> None:
         headers=headers,
         json={"phones": ["13800138000"], "source": "manual", "remark": "投诉"},
     )
-    listed = client.get("/api/v1/web/admin/blacklist", headers=headers)
+    listed = client.get(
+        "/api/v1/web/admin/blacklist?source=manual&keyword=投诉&page=2&size=50",
+        headers=headers,
+    )
     deleted = client.delete(
         f"/api/v1/web/admin/blacklist/{'a' * 64}",
         headers=headers,
@@ -59,7 +64,11 @@ def test_blacklist_admin_crud_never_returns_plaintext_or_ciphertext() -> None:
 
     assert created.status_code == 200
     assert created.json()["added"] == 1
-    assert listed.json()[0]["phone_mask"] == "138****8000"
+    assert created.json()["updated"] == 0
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["items"][0]["phone_mask"] == "138****8000"
+    assert service.last_filters == {"source": "manual", "keyword": "投诉", "page": 2, "size": 50}
     assert deleted.status_code == 204
     assert "13800138000" not in created.text + listed.text
     assert "ciphertext" not in created.text + listed.text
