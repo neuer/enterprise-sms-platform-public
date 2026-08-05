@@ -2106,6 +2106,10 @@ main {
   width: auto;
 }
 
+.sign-card .el-table {
+  --el-table-header-bg-color: #f3f5f2;
+}
+
 .governance-entry-form {
   min-width: 0;
 }
@@ -2129,11 +2133,13 @@ main {
   justify-content: flex-end;
 }
 
-.blacklist-filter .el-input {
+.blacklist-filter .el-input,
+.sensitive-filter .el-input {
   flex: 0 1 220px;
 }
 
-.blacklist-pagination {
+.blacklist-pagination,
+.sensitive-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2150,7 +2156,8 @@ main {
 }
 
 .sign-mobile-list,
-.blacklist-mobile-list {
+.blacklist-mobile-list,
+.sensitive-mobile-list {
   display: none;
 }
 
@@ -2188,24 +2195,28 @@ main {
 
   .approval-mobile-list,
   .sign-mobile-list,
+  .sensitive-mobile-list,
   .blacklist-mobile-list {
     min-height: 120px;
   }
 
   .sign-table,
-  .blacklist-table {
+  .blacklist-table,
+  .sensitive-table {
     display: none;
   }
 
   .sign-mobile-list,
-  .blacklist-mobile-list {
+  .blacklist-mobile-list,
+  .sensitive-mobile-list {
     display: grid;
     gap: 10px;
     padding: 12px;
   }
 
   .sign-mobile-list article,
-  .blacklist-mobile-list article {
+  .blacklist-mobile-list article,
+  .sensitive-mobile-list article {
     min-width: 0;
     padding: 14px;
     background: var(--surface-soft);
@@ -2216,7 +2227,9 @@ main {
   .sign-mobile-list header,
   .sign-mobile-list footer,
   .blacklist-mobile-list header,
-  .blacklist-mobile-list footer {
+  .blacklist-mobile-list footer,
+  .sensitive-mobile-list header,
+  .sensitive-mobile-list footer {
     display: flex;
     flex-wrap: wrap;
     gap: 8px 10px;
@@ -2240,7 +2253,8 @@ main {
 
   .sign-mobile-list dt,
   .blacklist-mobile-list header span,
-  .blacklist-mobile-list footer time {
+  .blacklist-mobile-list footer time,
+  .sensitive-mobile-list header time {
     color: var(--muted);
     font-size: 10px;
   }
@@ -2251,7 +2265,8 @@ main {
   }
 
   .sign-mobile-list footer,
-  .blacklist-mobile-list footer {
+  .blacklist-mobile-list footer,
+  .sensitive-mobile-list footer {
     justify-content: flex-end;
     padding-top: 8px;
     border-top: 1px solid var(--line);

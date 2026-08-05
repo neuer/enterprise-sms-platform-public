@@ -1116,9 +1116,9 @@ class UatSuite:
             payload={"words": [word]},
             headers=self._bearer("admin01"),
         )
-        if created_response.status != 200 or not isinstance(created_response.data, list):
+        if created_response.status != 200 or not isinstance(created_response.data, dict):
             raise UatFailure("UAT-14 sensitive word creation failed")
-        created = created_response.data
+        created = created_response.data.get("items") or []
         word_id = created[0].get("id") if created and isinstance(created[0], dict) else None
         if not isinstance(word_id, int):
             raise UatFailure("UAT-14 sensitive word reference missing")

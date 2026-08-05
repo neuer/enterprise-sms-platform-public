@@ -501,9 +501,9 @@ describe("管理员治理页面", () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/admin/configs") && init?.method === "PUT") return response([config])
       if (url.endsWith("/admin/configs")) return response([config])
-      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST") return response([{ id: 2, word: "诈骗" }])
+      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST") return response({ added: 1, skipped: 0, items: [{ id: 2, word: "诈骗", created_at: null }] })
       if (url.includes("/admin/sensitive-words/")) return response(undefined, 204)
-      return response([{ id: 1, word: "测试敏感词" }])
+      return response({ total: 1, items: [{ id: 1, word: "测试敏感词", created_at: null }] })
     })
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(SensitiveWordView, { global: { plugins: [createPinia(), ElementPlus] } })
