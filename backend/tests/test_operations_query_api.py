@@ -105,7 +105,7 @@ def make_client(
 def test_viewer_batch_filters_are_locked_to_jwt_department() -> None:
     client, batches, _ = make_client()
     response = client.get(
-        "/api/v1/web/batches?category=notice&is_test=false&page=2",
+        "/api/v1/web/batches?category=notice&is_test=false&batch_no=AB12&page=2",
         headers={"Authorization": "Bearer jwt"},
     )
 
@@ -113,6 +113,7 @@ def test_viewer_batch_filters_are_locked_to_jwt_department() -> None:
     assert batches.calls[0]["scope"] == BatchAccessScope(dept="平台部")
     assert batches.calls[0]["category"] == "notice"
     assert batches.calls[0]["is_test"] is False
+    assert batches.calls[0]["batch_no"] == "AB12"
     assert batches.calls[0]["page"] == 2
 
 

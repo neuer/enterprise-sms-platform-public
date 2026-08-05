@@ -832,6 +832,7 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
         channel=None,
         app_id=None,
         is_test=None,
+        batch_no=None,
         start=None,
         end=None,
         page=1,
@@ -848,6 +849,33 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
             "limit": 20,
             "offset": 0,
         }
+
+
+@pytest.mark.asyncio
+async def test_batch_list_batch_no_filter_escapes_like_wildcards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BatchQueryService()
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    bind_engine(monkeypatch, service, connection)
+
+    await service.list_batches(
+        scope=BatchAccessScope(dept="业务一部"),
+        category=None,
+        status=None,
+        channel=None,
+        app_id=None,
+        is_test=None,
+        batch_no=" AB_100% ",
+        start=None,
+        end=None,
+        page=1,
+        size=20,
+    )
+
+    for sql, params in connection.calls:
+        assert "trim(b.batch_no) ILIKE :batch_no" in sql
+        assert params["batch_no"] == "%AB\\_100\\%%"
 
 
 @pytest.mark.asyncio
