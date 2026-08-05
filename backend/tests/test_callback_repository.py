@@ -349,16 +349,30 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
         "created_at": datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
         "finished_at": datetime(2026, 7, 12, 9, 0, tzinfo=UTC),
     }
-    connection = FakeConnection([FakeResult(scalars=[1]), FakeResult(rows=[row])])
+    connection = FakeConnection(
+        [FakeResult(scalars=[1]), FakeResult(rows=[row]), FakeResult(scalars=[3])]
+    )
     bind(repository, connection)
 
-    page = await repository.list_page(status="dead", app_id=7, page=2)
+    page = await repository.list_page(
+        status="dead",
+        app_id=7,
+        event="message.report",
+        batch_no="BATCH_1%",
+        page=2,
+        size=50,
+    )
 
-    assert page == {"total": 1, "items": [row]}
-    assert connection.calls[0][1]["offset"] == 20
+    assert page == {"total": 1, "dead_total": 3, "items": [row]}
+    assert connection.calls[0][1]["offset"] == 50
     sql = " ".join(call[0] for call in connection.calls)
     assert "CAST(:status AS varchar(10))" in sql
     assert "CAST(:app_id AS bigint)" in sql
+    assert "CAST(:event AS varchar(20))" in sql
+    assert "trim(b.batch_no) ILIKE :batch_no" in sql
+    # LIKE 通配符必须被转义，批次号子串两端补 %
+    assert connection.calls[0][1]["batch_no"] == "%BATCH\\_1\\%%"
+    assert "WHERE status='dead'" in connection.calls[2][0]
     assert "callback_url" not in sql and "callback_secret" not in sql and "phone" not in sql
 
 

@@ -4,9 +4,11 @@ import "../styles/workspace.css"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
+import { listApps, type ManagedApp } from "../api/apps"
 import {
   listCallbacks,
   retryCallback,
+  type CallbackEvent,
   type CallbackStatus,
   type CallbackTask,
 } from "../api/callbacks"
@@ -16,11 +18,18 @@ withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 
 const items = ref<CallbackTask[]>([])
 const total = ref(0)
+const deadTotal = ref(0)
 const page = ref(1)
 const status = ref<CallbackStatus | "">("")
+const appId = ref<number | null>(null)
+const event = ref<CallbackEvent | "">("")
+const batchNo = ref("")
+const apps = ref<ManagedApp[]>([])
 const loading = ref(false)
 const errorMessage = ref("")
-const deadCount = computed(() => items.value.filter((item) => item.status === "dead").length)
+const hasFilter = computed(() =>
+  Boolean(status.value || appId.value || event.value || batchNo.value.trim()),
+)
 
 const statusMeta: Record<CallbackStatus, { label: string; type: "warning" | "success" | "danger" | "info" }> = {
   pending: { label: "待投递", type: "info" },
@@ -29,8 +38,8 @@ const statusMeta: Record<CallbackStatus, { label: string; type: "warning" | "suc
   dead: { label: "已死亡", type: "danger" },
 }
 
-function eventLabel(event: CallbackTask["event"]): string {
-  return event === "batch.finished" ? "批次终态" : "明细报告"
+function eventLabel(value: CallbackTask["event"]): string {
+  return value === "batch.finished" ? "批次终态" : "明细报告"
 }
 
 function statusLabel(value: CallbackStatus): string {
@@ -55,13 +64,28 @@ async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listCallbacks(status.value, page.value)
+    const result = await listCallbacks({
+      status: status.value,
+      appId: appId.value,
+      event: event.value,
+      batchNo: batchNo.value,
+      page: page.value,
+    })
     items.value = result.items
     total.value = result.total
+    deadTotal.value = result.dead_total
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "回调任务加载失败"
   } finally {
     loading.value = false
+  }
+}
+
+async function loadApps(): Promise<void> {
+  try {
+    apps.value = await listApps()
+  } catch {
+    apps.value = []
   }
 }
 
@@ -80,7 +104,10 @@ async function retry(item: CallbackTask): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void loadApps()
+  void load()
+})
 </script>
 
 <template>
@@ -90,8 +117,8 @@ onMounted(load)
       <h1>回调任务</h1>
       <p>仅展示状态与错误类型；目标 URL、签名密钥和消息 body 永不进入管理界面。</p>
     </div>
-    <div class="callback-pulse" :class="{ danger: deadCount > 0 }">
-      <span>本页 dead</span><strong>{{ deadCount }}</strong><small>/ {{ items.length }} 项</small>
+    <div class="callback-pulse" :class="{ danger: deadTotal > 0 }">
+      <span>dead 总计</span><strong>{{ deadTotal }}</strong><small>/ 列表 {{ total }} 项</small>
     </div>
   </section>
 
@@ -104,6 +131,17 @@ onMounted(load)
         <el-option label="已完成" value="done" />
         <el-option label="已死亡" value="dead" />
       </el-select>
+      <label for="callback-app">应用</label>
+      <el-select id="callback-app" v-model="appId" placeholder="全部应用" clearable filterable data-testid="callback-app-filter" @change="filter">
+        <el-option v-for="app in apps" :key="app.id" :label="app.name" :value="app.id" />
+      </el-select>
+      <label for="callback-event">事件</label>
+      <el-select id="callback-event" v-model="event" placeholder="全部事件" clearable data-testid="callback-event-filter" @change="filter">
+        <el-option label="批次终态" value="batch.finished" />
+        <el-option label="明细报告" value="message.report" />
+      </el-select>
+      <label for="callback-batch-no">批次号</label>
+      <el-input id="callback-batch-no" v-model="batchNo" placeholder="模糊匹配批次号" clearable maxlength="32" data-testid="callback-batch-filter" @change="filter" @clear="filter" />
       <span>重试序列 60s → 5m → 15m → 1h → 1h</span>
     </div>
   </el-card>
@@ -132,8 +170,11 @@ onMounted(load)
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="尝试" width="88">
-        <template #default="{ row }"><span class="retry-count">{{ row.retry_count }}/5</span></template>
+      <el-table-column label="尝试 / 下次重试" width="142">
+        <template #default="{ row }">
+          <span class="retry-count">{{ row.retry_count }}/5</span>
+          <small v-if="row.status === 'retrying' && row.next_retry_at">{{ formatTime(row.next_retry_at) }}</small>
+        </template>
       </el-table-column>
       <el-table-column label="租约" min-width="132">
         <template #default="{ row }">
@@ -157,7 +198,7 @@ onMounted(load)
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <template #empty><EmptyState title="当前没有回调任务" description="启用应用回调后，投递任务会出现在这里。" /></template>
+      <template #empty><EmptyState :title="hasFilter ? '没有符合筛选的回调任务' : '当前没有回调任务'" :description="hasFilter ? '可调整状态、应用、事件或批次号后重试。' : '启用应用回调后，投递任务会出现在这里。'" /></template>
     </el-table>
 
     <div class="callback-mobile-list">
@@ -172,6 +213,7 @@ onMounted(load)
         <dl>
           <div><dt>引用</dt><dd>{{ item.reference_count }}</dd></div>
           <div><dt>重试</dt><dd>{{ item.retry_count }}/5</dd></div>
+          <div v-if="item.status === 'retrying' && item.next_retry_at"><dt>下次重试</dt><dd>{{ formatTime(item.next_retry_at) }}</dd></div>
           <div><dt>租约</dt><dd>{{ item.stalled ? "已停滞" : item.lease_id ? "执行中" : "—" }}</dd></div>
           <div><dt>接管</dt><dd>{{ item.takeover_count }}</dd></div>
           <div><dt>结果</dt><dd>{{ item.last_http_code ? `HTTP ${item.last_http_code}` : item.last_error || "—" }}</dd></div>
@@ -181,7 +223,7 @@ onMounted(load)
           <el-button v-if="item.status === 'dead'" link type="danger" @click="retry(item)">手动重推</el-button>
         </footer>
       </article>
-      <EmptyState v-if="!items.length" title="当前没有回调任务" description="启用应用回调后，投递任务会出现在这里。" />
+      <EmptyState v-if="!items.length" :title="hasFilter ? '没有符合筛选的回调任务' : '当前没有回调任务'" :description="hasFilter ? '可调整状态、应用、事件或批次号后重试。' : '启用应用回调后，投递任务会出现在这里。'" />
     </div>
 
     <footer class="callback-pagination">

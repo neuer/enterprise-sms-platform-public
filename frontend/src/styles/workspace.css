@@ -604,6 +604,10 @@ button:focus-visible {
   width: 180px;
 }
 
+.callback-filter .el-input {
+  width: 200px;
+}
+
 .callback-table-card .el-card__body {
   padding: 0;
 }
@@ -668,7 +672,8 @@ button:focus-visible {
     margin-left: 0;
   }
 
-  .callback-filter .el-select {
+  .callback-filter .el-select,
+  .callback-filter .el-input {
     width: 100%;
   }
 
