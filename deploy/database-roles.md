@@ -37,6 +37,11 @@ Provider、应用 Key 或 `sys_config` 写权限。
 非载荷列，`sms_send` 与 `sms_accept` 持有该视图 SELECT，用于生成脱敏审计摘要；
 审计主表的 `before_val/after_val` 载荷仍不对任何运行 worker 开放。
 
+自动日报任务运行在 bulk worker（`sms_send`），因此 `sms_send` 除
+`security_daily_report` 外，还持有 `security_daily_delivery_request` 的
+SELECT/INSERT/UPDATE（迁移 0041 起报告表、0051 起投递请求表），用于生成记录并
+提交自动投递；人工生成与投递仍由 API 的 `sms_accept` 身份执行。
+
 运行连接固定 `search_path=pg_catalog,public`。provision 同时撤销数据库的 PUBLIC
 `TEMPORARY` 与 `CONNECT`，public schema 的 PUBLIC `CREATE` 也被撤销，避免临时对象或
 同名对象劫持高风险未限定名写入。

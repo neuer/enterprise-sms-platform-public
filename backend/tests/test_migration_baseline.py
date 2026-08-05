@@ -663,6 +663,36 @@ def test_security_daily_audit_view_grants_accept_role() -> None:
     assert module.down_revision == "0047_widen_alembic_version"
 
 
+def test_security_daily_delivery_request_grants_send_role_for_auto_path() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0051_security_daily_delivery_send.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.45：" in schema
+    assert (
+        "GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send"
+        in schema
+    )
+    assert (
+        "GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send"
+        in source
+    )
+    assert (
+        "REVOKE SELECT, INSERT, UPDATE ON security_daily_delivery_request FROM sms_send"
+        in source
+    )
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_delivery_send_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0051_security_daily_delivery_send"
+    assert module.down_revision == "0050_beat_scan_config"
+
+
 def test_security_daily_generation_source_migration_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0045_security_daily_source.py"

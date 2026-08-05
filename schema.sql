@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.45  2026-08-05
+-- v1.6.45：安全日报自动投递请求表补充 sms_send 最小读写授权（bulk worker 自动路径）
 -- v1.6.44  2026-08-05
 -- v1.6.44：approval_scan_seconds/scheduled_scan_seconds 纳入系统参数注册表（beat 启动读取）
 -- v1.6.43  2026-08-03
@@ -1708,7 +1710,8 @@ GRANT SELECT ON
     balance_snapshot, alert_log, outbox_event, usage_reservation,
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
     usage_frequency_entry, usage_projection, usage_projection_drift, stat_daily,
-    sys_config, security_daily_report, vendor_test_daily_usage, vendor_test_send_attempt,
+    sys_config, security_daily_report, security_daily_delivery_request,
+    vendor_test_daily_usage, vendor_test_send_attempt,
     security_daily_recipient,
     vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation
 TO sms_send;
@@ -1720,6 +1723,7 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_projection, usage_projection_drift, stat_daily
 TO sms_send;
 GRANT INSERT, UPDATE ON security_daily_report TO sms_send;
+GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send;
 GRANT UPDATE, DELETE ON import_task TO sms_send;
 GRANT INSERT, DELETE ON import_phone TO sms_send;
 GRANT INSERT ON
