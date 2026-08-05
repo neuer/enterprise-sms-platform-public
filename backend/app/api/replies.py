@@ -34,6 +34,7 @@ class ReplyModel(BaseModel):
     content: str
     batch_no: str | None
     reply_time: datetime
+    blacklisted: bool
 
 
 class ReplyPageModel(BaseModel):
@@ -104,6 +105,7 @@ async def list_replies(
                 content=item.content,
                 batch_no=item.batch_no,
                 reply_time=item.reply_time,
+                blacklisted=item.blacklisted,
             )
             for item in result.items
         ],

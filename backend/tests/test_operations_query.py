@@ -10,6 +10,7 @@ import pytest
 from app.services.batch_query import BatchAccessScope
 from app.services.crypto import CryptoService
 from app.services.operations_query import (
+    TIMELINE_EVENT_LIMIT,
     MessageQueryPage,
     OperationsQueryService,
     PhoneBadge,
@@ -73,7 +74,10 @@ async def test_phone_search_uses_all_hmac_versions_and_never_passes_plaintext() 
         phone="13800138000",
         start=start,
         end=end,
+        category="notice",
+        status="failed",
         page=2,
+        size=50,
         scope=BatchAccessScope(dept="平台部"),
     )
 
@@ -82,7 +86,9 @@ async def test_phone_search_uses_all_hmac_versions_and_never_passes_plaintext() 
     assert isinstance(values, dict)
     assert len(values["phone_hmacs"]) == 2
     assert "13800138000" not in repr(values)
-    assert values["page"] == 2 and values["scope"] == BatchAccessScope(dept="平台部")
+    assert values["category"] == "notice" and values["status"] == "failed"
+    assert values["page"] == 2 and values["size"] == 50
+    assert values["scope"] == BatchAccessScope(dept="平台部")
 
 
 @pytest.mark.asyncio
@@ -97,7 +103,10 @@ async def test_query_rejects_naive_reversed_time_and_invalid_page() -> None:
             **values,
             start=datetime(2026, 7, 1),
             end=None,
+            category=None,
+            status=None,
             page=1,
+            size=20,
         )
     with pytest.raises(ValueError, match="later"):
         await service.timeline(
@@ -106,7 +115,17 @@ async def test_query_rejects_naive_reversed_time_and_invalid_page() -> None:
             end=datetime(2026, 7, 1, tzinfo=UTC),
         )
     with pytest.raises(ValueError, match="positive"):
-        await service.search_messages(**values, start=None, end=None, page=0)
+        await service.search_messages(
+            **values, start=None, end=None, category=None, status=None, page=0, size=20,
+        )
+    with pytest.raises(ValueError, match="size"):
+        await service.search_messages(
+            **values, start=None, end=None, category=None, status=None, page=1, size=0,
+        )
+    with pytest.raises(ValueError, match="size"):
+        await service.search_messages(
+            **values, start=None, end=None, category=None, status=None, page=1, size=101,
+        )
 
 
 @pytest.mark.asyncio
@@ -215,13 +234,19 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
         phone_hmacs=("a" * 64,),
         start=None,
         end=None,
+        category="notice",
+        status="delivered",
         page=1,
+        size=20,
         scope=BatchAccessScope(dept="平台部"),
     )
 
     assert page.total == 1 and page.items[0].phone_mask == "138****8000"
     sql = " ".join(item[0] for item in connection.calls)
     assert "b.dept=:scope_dept" in sql
+    assert "b.category=:category" in sql and "m.status=:status" in sql
+    assert all(item[1]["category"] == "notice" for item in connection.calls)
+    assert all(item[1]["status"] == "delivered" for item in connection.calls)
     assert "phone_mask" in sql
     assert "phone_enc" not in sql and "phone_hmac AS" not in sql
     assert "13800138000" not in repr(connection.calls)
@@ -275,13 +300,52 @@ async def test_sql_timeline_combines_directions_and_badge_without_decryption() -
     )
 
     assert timeline.badge == PhoneBadge(True, "reply_optout", 2)
+    assert timeline.truncated is False
     assert [item.direction for item in timeline.events] == ["out", "in"]
     union_sql = connection.calls[2][0]
     assert "UNION ALL" in union_sql and "send_content_enc" not in union_sql
+    assert "LIMIT :event_limit" in union_sql
+    assert connection.calls[2][1]["event_limit"] == TIMELINE_EVENT_LIMIT + 1
     assert "phone_enc" not in union_sql and "验证码******" in timeline.events[0].content
     assert "b.dept=:scope_dept" in connection.calls[0][0]
     assert "CAST(:start AS timestamptz) IS NULL" in union_sql
     assert "CAST(:end AS timestamptz) IS NULL" in union_sql
+
+
+@pytest.mark.asyncio
+async def test_sql_timeline_caps_events_and_marks_truncated() -> None:
+    repository = SqlOperationsQueryRepository()
+    moment = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
+    rows = [
+        {
+            "ts": moment,
+            "direction": "out",
+            "category": "notice",
+            "batch_no": f"BATCH-{index}",
+            "content": "系统通知",
+            "status": "delivered",
+            "sender": "通知应用",
+        }
+        for index in range(TIMELINE_EVENT_LIMIT + 1)
+    ]
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[]),
+            FakeResult(scalar=TIMELINE_EVENT_LIMIT + 1),
+            FakeResult(rows=rows),
+        ]
+    )
+    bind(repository, connection)
+
+    timeline = await repository.timeline(
+        phone_hmacs=("a" * 64,),
+        start=None,
+        end=None,
+        scope=BatchAccessScope(dept="平台部"),
+    )
+
+    assert timeline.truncated is True
+    assert len(timeline.events) == TIMELINE_EVENT_LIMIT
 
 
 @pytest.mark.asyncio

@@ -2721,6 +2721,21 @@ main {
 .message-content { margin: 7px 0 0; color: var(--ink-soft); }
 .phone-mask + .el-button { margin-left: 6px; }
 
+.report-desc {
+  margin: 5px 0 0;
+  color: var(--verm);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.timeline-truncated {
+  max-width: 820px;
+  margin: 14px auto 0;
+  color: var(--amber);
+  font-size: 12px;
+}
+
 .timeline-panel {
   margin-top: 18px;
   padding: 20px;
