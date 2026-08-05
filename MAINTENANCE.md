@@ -27,10 +27,11 @@ git push -u origin <branch>
 `dev_check --changed` 是提交前组件检查，不要求每次保存后运行，也不触发测试服务器部署。
 推送时，`pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显命中内容。
 owner 分支会自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为 Ready
-并请求 squash merge。若 PR 落后于 main，自动化先通过 `gh pr update-branch` 合入 base
-并等待新的精确 push CI 接力合并；冲突时失败关闭并保留 PR 供人工处理。required `ci-gate`、
-会话解决和冲突保护仍由 GitHub 强制，禁止管理员绕过。合并完成后，自动化以一次性 tag
-把后续 `ci-gate` 精确绑定到 squash merge
+并请求 squash merge。若 PR 落后于 main，自动化明确失败并提示合并 main 后重新推送以生成
+新的精确 push CI（`GITHUB_TOKEN` 更新分支不会触发 push CI，自动化无法自证新 head）；
+冲突时同样失败关闭并保留 PR 供人工处理。required `ci-gate`、会话解决和冲突保护仍由
+GitHub 强制，禁止管理员绕过。合并完成后，自动化以一次性 tag 把后续 `ci-gate` 精确绑定
+到 squash merge
 SHA：PR head tree 与原 `ci-gate` 证据完全吻合时直接复用，否则在合并提交上完整重跑。
 普通手工 `workflow_dispatch` 始终完整运行。已合并的远端分支只有在仍指向原 head SHA
 时才以 lease 删除；若分支已被推进则保留并失败关闭。
