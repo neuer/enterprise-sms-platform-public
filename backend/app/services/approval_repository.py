@@ -120,7 +120,7 @@ class SqlApprovalRepository:
                           b.total,b.segments,b.quota_cost estimated_segments,
                           b.scheduled_at,p.trigger_threshold,
                           p.trigger_threshold_source,b.content,p.status,
-                          p.approver,p.reason,p.created_at
+                          p.approver,p.reason,p.expires_at,p.decided_at,p.created_at
                         {source} ORDER BY p.created_at DESC LIMIT :limit OFFSET :offset
                         """
                     ),

@@ -886,7 +886,7 @@ paths:
               required: [action]
               properties:
                 action: { type: string, enum: [approve, reject] }
-                reason: { anyOf: [{ type: string }, { type: 'null' }], description: 驳回时必填 }
+                reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }], description: 驳回时必填（去空白后非空）；通过时可选填审批意见 }
       responses:
         '200': { description: 处理成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -3549,7 +3549,7 @@ components:
 
     Approval:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, created_at]
+      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
@@ -3567,7 +3567,9 @@ components:
         content: { type: string }
         status: { type: string, enum: [pending, approved, rejected, expired] }
         approver: { anyOf: [{ type: string }, { type: 'null' }] }
-        reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }] }
+        expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
+        decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
         created_at: { type: string, format: date-time }
 
     Template:

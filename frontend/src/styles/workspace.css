@@ -1902,6 +1902,24 @@ main {
   font-size: 10px;
 }
 
+.decider-cell {
+  display: grid;
+}
+
+.decider-cell b {
+  font-size: 12px;
+}
+
+.decider-cell small {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.approval-expiry.urgent {
+  color: var(--red);
+}
+
 .self-note {
   color: var(--tx-3);
   font-size: 11px;
