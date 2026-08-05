@@ -8,8 +8,19 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
-from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, SensitiveWord
+from app.services.sensitive import (
+    SENSITIVE_WORD_REVISION_KEY,
+    SensitiveWord,
+    SensitiveWordAddResult,
+    SensitiveWordPage,
+)
 from app.settings import Settings, get_settings
+
+
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符，配合 ESCAPE '\\' 使用。"""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class SqlSensitiveWordRepository:
@@ -19,21 +30,52 @@ class SqlSensitiveWordRepository:
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
-    async def list_words(self) -> list[SensitiveWord]:
+    async def list_page(
+        self,
+        *,
+        keyword: str | None,
+        page: int,
+        size: int,
+    ) -> SensitiveWordPage:
+        where = ""
+        params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
+        if keyword is not None:
+            where = " WHERE word ILIKE :keyword"
+            params["keyword"] = f"%{_escape_like(keyword)}%"
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT id,word FROM sensitive_word ORDER BY created_at DESC")
+                total = await connection.scalar(
+                    text(f"SELECT count(*) FROM sensitive_word{where}"),  # noqa: S608
+                    params,
                 )
-                return [
-                    SensitiveWord(int(row["id"]), str(row["word"])) for row in result.mappings()
-                ]
+                result = await connection.execute(
+                    text(
+                        f"""
+                        SELECT id,word,created_at FROM sensitive_word{where}
+                        ORDER BY created_at DESC LIMIT :limit OFFSET :offset
+                        """  # noqa: S608
+                    ),
+                    params,
+                )
+                return SensitiveWordPage(
+                    total=int(total or 0),
+                    items=[
+                        SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
+                        for row in result.mappings()
+                    ],
+                )
         finally:
             await engine.dispose()
 
     async def all_words(self) -> list[str]:
-        return [item.word for item in await self.list_words()]
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(text("SELECT word FROM sensitive_word"))
+                return [str(value) for value in result.scalars()]
+        finally:
+            await engine.dispose()
 
     async def current_revision(self) -> int:
         engine = self._engine()
@@ -48,7 +90,7 @@ class SqlSensitiveWordRepository:
         finally:
             await engine.dispose()
 
-    async def add_many(self, words: list[str], *, actor: str) -> list[SensitiveWord]:
+    async def add_many(self, words: list[str], *, actor: str) -> SensitiveWordAddResult:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -57,18 +99,19 @@ class SqlSensitiveWordRepository:
                         """
                         INSERT INTO sensitive_word(word,created_by)
                         SELECT value,:actor FROM unnest(CAST(:words AS text[])) value
-                        ON CONFLICT(word) DO NOTHING RETURNING id,word
+                        ON CONFLICT(word) DO NOTHING RETURNING id,word,created_at
                         """
                     ),
                     {"words": words, "actor": actor},
                 )
                 created = [
-                    SensitiveWord(int(row["id"]), str(row["word"])) for row in result.mappings()
+                    SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
+                    for row in result.mappings()
                 ]
                 if created:
                     await self._bump_revision(connection, actor)
                 await self._audit(connection, actor, "sensitive_word_add", len(created))
-                return created
+                return SensitiveWordAddResult(created, skipped=len(words) - len(created))
         finally:
             await engine.dispose()
 

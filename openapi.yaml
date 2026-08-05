@@ -1592,14 +1592,23 @@ paths:
   /api/v1/web/admin/sensitive-words:
     get:
       tags: [admin]
-      summary: 敏感词列表
+      summary: 敏感词列表（分页 + 关键词筛选）
       security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: keyword, in: query, required: false, schema: { type: string, maxLength: 64 }, description: 模糊匹配词面 }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
+              schema:
+                type: object
+                required: [total, items]
+                properties:
+                  total: { type: integer }
+                  items: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
     post:
       tags: [admin]
       summary: 添加敏感词（批量）
@@ -1618,7 +1627,13 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
+              schema:
+                type: object
+                required: [added, skipped, items]
+                properties:
+                  added: { type: integer, description: 本次新增词条数（去重后） }
+                  skipped: { type: integer, description: 词库已存在而跳过的词条数 }
+                  items: { type: array, items: { $ref: '#/components/schemas/SensitiveWordItem' } }
         '400': { $ref: '#/components/responses/BadRequest' }
 
   /api/v1/web/admin/sensitive-words/{id}:
@@ -3470,10 +3485,11 @@ components:
 
     SensitiveWordItem:
       type: object
-      required: [id, word]
+      required: [id, word, created_at]
       properties:
         id: { type: integer }
         word: { type: string }
+        created_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
 
     BlacklistItem:
       type: object

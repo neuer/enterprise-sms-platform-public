@@ -30,6 +30,7 @@ from app.services.report_ingest import ProtectedReport, ReportApplyResult
 from app.services.report_repository import SqlReportRepository
 from app.services.resend import SqlResendRepository
 from app.services.scheduling_repository import SqlSchedulingRepository
+from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
 
@@ -497,6 +498,31 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
     connection = FakeConnection([FakeResult(scalars=["a" * 64 + " "])])
     bind_engine(monkeypatch, repository, connection)
     assert await repository.all_hmacs() == {"a" * 64}
+
+
+@pytest.mark.asyncio
+async def test_sensitive_word_repository_paginates_and_reports_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SqlSensitiveWordRepository()
+    row = {"id": 7, "word": "诈骗", "created_at": datetime(2026, 7, 11, 8, 0, tzinfo=UTC)}
+    connection = FakeConnection([FakeResult(rows=[row])], scalar_values=[1])
+    bind_engine(monkeypatch, repository, connection)
+    page = await repository.list_page(keyword="诈", page=1, size=20)
+    assert page.total == 1
+    assert page.items[0].word == "诈骗"
+    count_sql, count_params = connection.calls[0]
+    assert "count(*)" in count_sql
+    assert count_params["keyword"] == "%诈%"  # type: ignore[index]
+
+    connection = FakeConnection([FakeResult(rows=[row]), FakeResult(), FakeResult()])
+    bind_engine(monkeypatch, repository, connection)
+    result = await repository.add_many(["诈骗", "赌博"], actor="admin01")
+    assert [item.word for item in result.created] == ["诈骗"]
+    assert result.skipped == 1
+    audit_params = connection.calls[2][1]
+    assert "诈骗" not in str(audit_params)
+    assert '"count": 1' in audit_params["after"]  # type: ignore[index]
 
 
 @pytest.mark.asyncio

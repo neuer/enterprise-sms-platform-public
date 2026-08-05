@@ -5,27 +5,51 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 import ahocorasick
 
 SENSITIVE_WORD_REVISION_KEY = "__sensitive_word_revision"
+MAX_PAGE_SIZE = 100
+MAX_WORD_LENGTH = 64
 
 
 @dataclass(frozen=True, slots=True)
 class SensitiveWord:
     id: int
     word: str
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SensitiveWordPage:
+    total: int
+    items: list[SensitiveWord]
+
+
+@dataclass(frozen=True, slots=True)
+class SensitiveWordAddResult:
+    """批量加词结果：created 为新增词条，skipped 为词库已存在而跳过的数量。"""
+
+    created: list[SensitiveWord]
+    skipped: int
 
 
 class SensitiveWordRepository(Protocol):
-    async def list_words(self) -> list[SensitiveWord]: ...
+    async def list_page(
+        self,
+        *,
+        keyword: str | None,
+        page: int,
+        size: int,
+    ) -> SensitiveWordPage: ...
 
     async def all_words(self) -> list[str]: ...
 
     async def current_revision(self) -> int: ...
 
-    async def add_many(self, words: list[str], *, actor: str) -> list[SensitiveWord]: ...
+    async def add_many(self, words: list[str], *, actor: str) -> SensitiveWordAddResult: ...
 
     async def delete(self, word_id: int, *, actor: str) -> bool: ...
 
@@ -93,22 +117,40 @@ class SensitiveWordManager:
         self.repository = repository
         self.index = index
 
-    async def list_words(self) -> list[SensitiveWord]:
-        return await self.repository.list_words()
+    async def list_page(
+        self,
+        *,
+        keyword: str | None = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> SensitiveWordPage:
+        """分页查询词库；keyword 模糊匹配词面。"""
+        if page < 1 or not 1 <= size <= MAX_PAGE_SIZE:
+            raise ValueError("invalid pagination")
+        keyword = (keyword or "").strip() or None
+        return await self.repository.list_page(keyword=keyword, page=page, size=size)
 
-    async def add(self, words: list[str], *, actor: str) -> list[SensitiveWord]:
+    async def add(self, words: list[str], *, actor: str) -> SensitiveWordAddResult:
+        """批量加词；先校验长度，报错只带行号，写库后整体重建自动机快照。"""
         normalized = list(dict.fromkeys(word.strip() for word in words if word.strip()))
         if not normalized:
             raise ValueError("敏感词不能为空")
-        if any(len(word) > 64 for word in normalized):
-            raise ValueError("敏感词长度不能超过64")
-        created = await self.repository.add_many(normalized, actor=actor)
+        oversized = [
+            str(index)
+            for index, word in enumerate(words, start=1)
+            if len(word.strip()) > MAX_WORD_LENGTH
+        ]
+        if oversized:
+            shown = "、".join(oversized[:5])
+            suffix = f" 等共 {len(oversized)}" if len(oversized) > 5 else ""
+            raise ValueError(f"第 {shown}{suffix} 行敏感词超过 {MAX_WORD_LENGTH} 字")
+        result = await self.repository.add_many(normalized, actor=actor)
         revision = await self.repository.current_revision()
         await self.index.replace(
             await self.repository.all_words(),
             revision=revision,
         )
-        return created
+        return result
 
     async def delete(self, word_id: int, *, actor: str) -> bool:
         removed = await self.repository.delete(word_id, actor=actor)
