@@ -2106,10 +2106,6 @@ main {
   width: auto;
 }
 
-.sign-card .el-table {
-  --el-table-header-bg-color: #f3f5f2;
-}
-
 .governance-entry-form {
   min-width: 0;
 }
