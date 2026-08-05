@@ -16,6 +16,8 @@ from app.core.runtime_resources import database_engine
 from app.services.outbox import (
     OutboxClaim,
     OutboxContractConflict,
+    OutboxEventPage,
+    OutboxEventRecord,
     OutboxEventSpec,
     OutboxLease,
     OutboxLeaseLost,
@@ -403,6 +405,59 @@ class SqlOutboxRepository:
                 int(row["dead"]),
                 int(row["failed_attempts"]),
                 max(0, int(row["oldest_age_seconds"])),
+            )
+
+    async def list_events(
+        self,
+        state: str | None,
+        page: int,
+        page_size: int,
+    ) -> OutboxEventPage:
+        """按状态分页列出事件元数据；dead 优先，永不返回 args/dedup_key。"""
+        if page < 1 or not 1 <= page_size <= 100:
+            raise ValueError("invalid outbox event page")
+        where = "(CAST(:state AS varchar(16)) IS NULL OR state=CAST(:state AS varchar(16)))"
+        params = {"state": state, "limit": page_size, "offset": (page - 1) * page_size}
+        async with self._engine().connect() as connection:
+            count = await connection.execute(
+                text("SELECT count(*) FROM outbox_event WHERE " + where),
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    "SELECT id,event_type,aggregate_type,aggregate_id,task_name,queue,"
+                    "state,attempts,max_attempts,failure_count,last_error,"
+                    "next_attempt_at,created_at,updated_at "
+                    "FROM outbox_event WHERE "
+                    + where
+                    + " ORDER BY (state='dead') DESC,updated_at DESC,id "
+                    "LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            return OutboxEventPage(
+                tuple(
+                    OutboxEventRecord(
+                        UUID(str(row["id"])),
+                        str(row["event_type"]),
+                        str(row["aggregate_type"]),
+                        str(row["aggregate_id"]),
+                        str(row["task_name"]),
+                        str(row["queue"]),
+                        str(row["state"]),
+                        int(row["attempts"]),
+                        int(row["max_attempts"]),
+                        int(row["failure_count"]),
+                        None if row["last_error"] is None else str(row["last_error"]),
+                        row["next_attempt_at"],
+                        row["created_at"],
+                        row["updated_at"],
+                    )
+                    for row in result.mappings()
+                ),
+                int(count.scalar_one()),
+                page,
+                page_size,
             )
 
     async def retry_dead(

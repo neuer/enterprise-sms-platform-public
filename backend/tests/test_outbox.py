@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -475,3 +476,122 @@ async def test_celery_publisher_fixes_task_id_to_outbox_event(
             "ignore_result": True,
         }
     ]
+
+
+class _FakeResult:
+    def __init__(
+        self,
+        *,
+        scalar: object = None,
+        rows: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.scalar = scalar
+        self.rows = rows or []
+
+    def scalar_one(self) -> object:
+        return self.scalar
+
+    def mappings(self) -> _FakeResult:
+        return self
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self.rows)
+
+
+class _FakeConnection:
+    def __init__(self, results: list[_FakeResult]) -> None:
+        self.results = results
+        self.calls: list[tuple[str, Any]] = []
+
+    async def execute(self, statement: object, params: Any = None) -> _FakeResult:
+        self.calls.append((str(statement), params))
+        return self.results.pop(0)
+
+
+class _FakeContext:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _FakeConnection:
+        return self.connection
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _FakeEngine:
+    def __init__(self, connection: _FakeConnection) -> None:
+        self.connection = connection
+
+    def connect(self) -> _FakeContext:
+        return _FakeContext(self.connection)
+
+
+@pytest.mark.asyncio
+async def test_list_events_sql_filters_state_dead_first_and_hides_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    moment = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
+    connection = _FakeConnection(
+        [
+            _FakeResult(scalar=1),
+            _FakeResult(
+                rows=[
+                    {
+                        "id": "c0a80101-0000-4000-8000-000000000134",
+                        "event_type": "usage.release",
+                        "aggregate_type": "usage_reservation",
+                        "aggregate_id": "c0a80101-0000-4000-8000-000000000134",
+                        "task_name": "app.tasks.outbox.release_usage",
+                        "queue": "realtime",
+                        "state": "dead",
+                        "attempts": 12,
+                        "max_attempts": 12,
+                        "failure_count": 3,
+                        "last_error": "BrokerTimeout",
+                        "next_attempt_at": moment,
+                        "created_at": moment,
+                        "updated_at": moment,
+                    }
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        outbox_repository_module,
+        "database_engine",
+        lambda _database_url: _FakeEngine(connection),
+    )
+    settings = type("SettingsStub", (), {"database_url": "postgresql+asyncpg://test"})()
+    repository = SqlOutboxRepository(settings)
+
+    page = await repository.list_events("dead", 2, 20)
+
+    assert page.total == 1 and page.page == 2 and page.page_size == 20
+    item = page.items[0]
+    assert item.id == UUID("c0a80101-0000-4000-8000-000000000134")
+    assert item.state == "dead" and item.last_error == "BrokerTimeout"
+    assert item.attempts == 12 and item.max_attempts == 12
+    count_sql, count_params = connection.calls[0]
+    rows_sql, rows_params = connection.calls[1]
+    assert "count(*)" in count_sql
+    assert "CAST(:state AS varchar(16))" in count_sql
+    for sql in (count_sql, rows_sql):
+        assert "args" not in sql
+        assert "dedup_key" not in sql
+        assert "correlation_id" not in sql
+    assert "(state='dead') DESC" in rows_sql
+    assert "updated_at DESC" in rows_sql
+    expected_params = {"state": "dead", "limit": 20, "offset": 20}
+    assert count_params == expected_params
+    assert rows_params == expected_params
+
+
+@pytest.mark.asyncio
+async def test_list_events_rejects_invalid_page() -> None:
+    settings = type("SettingsStub", (), {"database_url": "postgresql+asyncpg://test"})()
+    repository = SqlOutboxRepository(settings)
+    with pytest.raises(ValueError, match="invalid outbox event page"):
+        await repository.list_events(None, 0, 20)
+    with pytest.raises(ValueError, match="invalid outbox event page"):
+        await repository.list_events(None, 1, 101)

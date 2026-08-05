@@ -1,11 +1,12 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox } from "element-plus"
+import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
 import OpsView from "../src/views/OpsView.vue"
 
 const publicId = "c0a80101-0000-4000-8000-000000000134"
+const outboxEventId = "c0a80101-0000-4000-8000-000000000199"
 
 function response(body: unknown, status = 200) {
   return {
@@ -24,6 +25,7 @@ function result(url: string, method: string): unknown {
       return { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
     }
     if (url.includes("/queue/resume")) return { resumed_batches: 2, paused_codes: ["999"] }
+    if (url.includes("/outbox/") && url.endsWith("/retry")) return undefined
     return undefined
   }
   if (url.includes(`/reports/export/${publicId}`) && !url.endsWith("/download")) return { id: publicId, status: "done", decrypted: false, row_count: 45, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }
@@ -31,7 +33,12 @@ function result(url: string, method: string): unknown {
   if (url.includes("/raw-logs")) return { items: [{ id: 2, source: "report", item_count: 3, custom_id_count: 2, processed: false, error: "ValueError", fetched_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/chunks/uncertain")) return { items: [{ chunk_id: 3, batch_no: "BATCH-1", custom_id: "CUSTOM-1", phone_count: 50, vendor_code: null, uncertain_since: "2026-07-12T08:00:00+08:00", age_seconds: 90000 }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/unmatched-reports")) return { items: [{ id: 4, vendor_task_id: "vendor-1", custom_id: "legacy-1", phone_mask: "138****8000", report_status: 1, report_desc: "DELIVRD", report_time: "2026-07-12T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
-  if (url.includes("/jobs")) return [{ job_name: "poll_report", last_run_at: "2026-07-12T08:00:00+08:00", last_status: "failed", last_duration_ms: 120, last_items: 0, success_rate_24h: 0.75, stalled: true }]
+  if (url.includes("/jobs")) return [
+    { job_name: "poll_report", last_run_at: "2026-07-12T08:00:00+08:00", last_status: "failed", last_duration_ms: 120, last_items: 0, success_rate_24h: 0.75, stalled: true },
+    { job_name: "housekeeping", last_run_at: null, last_status: null, last_duration_ms: null, last_items: 0, success_rate_24h: 0, stalled: false },
+  ]
+  if (url.includes("/outbox/events")) return { items: [{ id: outboxEventId, event_type: "usage.release", aggregate_type: "usage_reservation", aggregate_id: "9f1c2e7a", task_name: "app.tasks.outbox.release_usage", queue: "realtime", state: "dead", attempts: 12, max_attempts: 12, failure_count: 3, last_error: "BrokerTimeout", next_attempt_at: "2026-07-12T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00", updated_at: "2026-07-12T08:00:00+08:00" }], total: 1, page: 1, page_size: 20 }
+  if (url.endsWith("/admin/outbox")) return { pending: 3, published: 2, processing: 1, dead: 1, failed_attempts: 7, oldest_age_seconds: 301 }
   if (url.includes("/queue/status")) return { realtime_code: "999", bulk_code: "999", balance: 20000, threshold: 10000 }
   return { total: 0, items: [] }
 }
@@ -65,6 +72,7 @@ describe("统一运维中心", () => {
     await flushPromises()
     expect(wrapper.text()).toContain("poll_report")
     expect(wrapper.text()).toContain("轮询厂商状态报告，保存原始报文后解析并更新发送结果")
+    expect(wrapper.text()).toContain("无记录")
     await wrapper.findAll("button").find((item) => item.text().includes("手动触发"))!.trigger("click")
     await flushPromises()
     expect(fetch.mock.calls.some(([url, init]) => String(url).includes("/jobs/poll_report/trigger") && init?.method === "POST")).toBe(true)
@@ -113,6 +121,90 @@ describe("统一运维中心", () => {
 
     wrapper.unmount()
     sessionStorage.removeItem("sms_token")
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("Outbox 面板展示投递统计并支持确认式死信重推", async () => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
+    vi.stubGlobal("fetch", fetch)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/outbox"))).toBe(false)
+
+    await tab(wrapper, "Outbox 投递").trigger("click")
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='outbox-stats']").text()).toContain("死信")
+    expect(wrapper.text()).toContain("usage.release")
+    expect(wrapper.text()).toContain("release_usage")
+    expect(wrapper.text()).toContain("BrokerTimeout")
+    expect(wrapper.text()).toContain("12/12")
+
+    await wrapper.get(`[data-testid='outbox-retry-${outboxEventId}']`).trigger("click")
+    await flushPromises()
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(String(confirm.mock.calls[0][0])).toContain("usage.release")
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => String(url).endsWith(`/outbox/${outboxEventId}/retry`) && init?.method === "POST",
+      ),
+    ).toBe(true)
+    expect(
+      fetch.mock.calls.filter(([url]) => String(url).includes("/outbox/events")).length,
+    ).toBeGreaterThanOrEqual(2)
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("告警行可打开详情抽屉查看结构化 detail", async () => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='alert-detail-1']").trigger("click")
+    await flushPromises()
+
+    const detail = wrapper.get("[data-testid='alert-detail-json']")
+    expect(detail.text()).toContain("job_name")
+    expect(detail.text()).toContain("poll_report")
+    expect(wrapper.text()).toContain("告警详情")
+    expect(wrapper.text()).toContain("任务连续失败")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("unmatched 手机号格式不合法时查询与导出均被提交前拦截", async () => {
+    const warning = vi.spyOn(ElMessage, "warning")
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await tab(wrapper, "unmatched").trigger("click")
+    await flushPromises()
+    const unmatchedCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url).includes("/unmatched-reports")).length
+    expect(unmatchedCalls()).toBe(1)
+
+    await wrapper.get("[data-testid='ops-unmatched-phone']").setValue("12345")
+    await wrapper.get("[data-testid='ops-unmatched-search']").trigger("click")
+    await flushPromises()
+    expect(warning).toHaveBeenCalledWith("手机号须为 11 位以 1 开头的数字")
+    expect(unmatchedCalls()).toBe(1)
+
+    await wrapper.findAll("button").find((item) => item.text().includes("导出对账"))!.trigger("click")
+    await flushPromises()
+    expect(unmatchedCalls()).toBe(1)
+
+    wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
