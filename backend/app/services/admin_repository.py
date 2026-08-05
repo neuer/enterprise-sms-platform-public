@@ -168,6 +168,7 @@ class SqlAdminRepository:
                OR correlation_id=:correlation_id)
           AND (CAST(:action AS varchar(48)) IS NULL OR action=:action)
           AND (CAST(:object_type AS varchar(32)) IS NULL OR object_type=:object_type)
+          AND (CAST(:object_id AS varchar(64)) IS NULL OR object_id=:object_id)
           AND (CAST(:start AS timestamptz) IS NULL OR created_at>=:start)
           AND (CAST(:end AS timestamptz) IS NULL OR created_at<=:end)
         """
@@ -177,6 +178,7 @@ class SqlAdminRepository:
             "correlation_id": query.correlation_id,
             "action": query.action,
             "object_type": query.object_type,
+            "object_id": query.object_id,
             "start": query.start,
             "end": query.end,
             "limit": query.page_size,
@@ -231,5 +233,23 @@ class SqlAdminRepository:
                     for row in result.mappings()
                 )
                 return items, int(total_result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    async def list_audit_actions(self) -> tuple[str, ...]:
+        """审计动作去重清单；只读明细列，不触碰载荷。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT action FROM audit_log
+                        GROUP BY action ORDER BY action LIMIT 500
+                        """
+                    )
+                )
+                return tuple(str(row["action"]) for row in result.mappings())
         finally:
             await engine.dispose()

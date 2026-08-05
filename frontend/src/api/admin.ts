@@ -31,6 +31,8 @@ export interface AuditFilters {
   actorAccountId: string
   action: string
   objectType: string
+  objectId: string
+  correlationId: string
   start: string
   end: string
   page: number
@@ -113,10 +115,15 @@ export function listAudits(filters: AuditFilters): Promise<AuditPage> {
   if (filters.actorAccountId.trim()) query.set("actor_account_id", filters.actorAccountId.trim())
   if (filters.action.trim()) query.set("action", filters.action.trim())
   if (filters.objectType.trim()) query.set("object_type", filters.objectType.trim())
+  if (filters.objectId.trim()) query.set("object_id", filters.objectId.trim())
+  if (filters.correlationId.trim()) query.set("correlation_id", filters.correlationId.trim())
   if (filters.start) query.set("start", filters.start)
   if (filters.end) query.set("end", filters.end)
   return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET" })
 }
+
+export const listAuditActions = () =>
+  apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
 
 export const listConfigs = () =>
   apiRequest<ConfigItem[]>("/admin/configs", { method: "GET" })

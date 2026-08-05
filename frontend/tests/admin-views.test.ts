@@ -77,10 +77,24 @@ function configFetch(
 }
 
 const auditPage = {
-  items: [{ id: 9, actor: "admin01", role: "admin", ip: "10.0.0.8", action: "config_update", object_type: "sys_config", object_id: "vendor_qps", before_val: { value: "5" }, after_val: { value: "8" }, created_at: "2026-07-12T08:00:00+08:00" }],
+  items: [{ id: 9, correlation_id: "30000000-0000-4000-8000-000000000009", actor: "admin01", actor_subject_kind: "human", actor_account_id: 1, actor_identity_id: 10, actor_app_id: null, role: "admin", ip: "10.0.0.8", action: "config_update", object_type: "sys_config", object_id: "vendor_qps", before_val: { value: "5", note: "old" }, after_val: { value: "8", enabled: true }, created_at: "2026-07-12T08:00:00+08:00" }],
   total: 1,
   page: 1,
   page_size: 20,
+}
+
+function auditFetch() {
+  return vi.fn().mockImplementation((url: string) => {
+    if (String(url).includes("/admin/audit-logs/actions")) {
+      return Promise.resolve(response(["config_update", "user_create"]))
+    }
+    return Promise.resolve(response(auditPage))
+  })
+}
+
+function lastAuditQuery(fetch: ReturnType<typeof auditFetch>): string {
+  const calls = fetch.mock.calls.filter((call) => String(call[0]).includes("/admin/audit-logs?"))
+  return String(calls.at(-1)![0])
 }
 
 describe("审计与系统参数", () => {
@@ -321,8 +335,8 @@ describe("审计与系统参数", () => {
     vi.restoreAllMocks()
   })
 
-  it("检索审计并在 drawer 展示安全前后值", async () => {
-    const fetch = vi.fn().mockResolvedValue(response(auditPage))
+  it("检索审计并在 drawer 展示载荷差异与同链路追踪", async () => {
+    const fetch = auditFetch()
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(AuditView, {
       attachTo: document.body,
@@ -334,15 +348,73 @@ describe("审计与系统参数", () => {
     expect(wrapper.get(".audit-filter").classes()).toContain("filter-grid")
     expect(wrapper.text()).toContain("config_update")
     expect(wrapper.find('input[placeholder="开始时间"]').exists()).toBe(true)
+    expect(wrapper.find("[data-testid='audit-action']").exists()).toBe(true)
+    expect(
+      fetch.mock.calls.some((call) => String(call[0]).includes("/admin/audit-logs/actions")),
+    ).toBe(true)
+
     await wrapper.get("[data-testid='audit-actor']").setValue("admin01")
+    await wrapper.get("[data-testid='audit-object-id']").setValue("vendor_qps")
+    await wrapper
+      .get("[data-testid='audit-correlation-id']")
+      .setValue("30000000-0000-4000-8000-000000000009")
     await wrapper.findAll("button").find((button) => button.text().includes("查询"))!.trigger("click")
     await flushPromises()
-    expect(String(fetch.mock.calls[1][0])).toContain("actor=admin01")
+    expect(lastAuditQuery(fetch)).toContain("actor=admin01")
+    expect(lastAuditQuery(fetch)).toContain("object_id=vendor_qps")
+    expect(lastAuditQuery(fetch)).toContain("correlation_id=30000000-0000-4000-8000-000000000009")
+
+    await wrapper.get("[data-testid='audit-reset']").trigger("click")
+    await flushPromises()
+    expect(lastAuditQuery(fetch)).not.toContain("actor=admin01")
+    expect(lastAuditQuery(fetch)).not.toContain("object_id")
 
     await wrapper.findAll("button").find((button) => button.text().includes("详情"))!.trigger("click")
     await flushPromises()
-    expect(document.body.textContent).toContain('"value": "8"')
+    expect(document.body.textContent).toContain("变更")
+    expect(document.body.textContent).toContain("删除")
+    expect(document.body.textContent).toContain("新增")
     expect(document.body.textContent).toContain("载荷受数据库 PII 约束保护")
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true })
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    document.querySelector<HTMLElement>("[data-testid='audit-copy-correlation']")!.click()
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith("30000000-0000-4000-8000-000000000009")
+
+    document.querySelector<HTMLElement>("[data-testid='audit-trace-correlation']")!.click()
+    await flushPromises()
+    expect(lastAuditQuery(fetch)).toContain("correlation_id=30000000-0000-4000-8000-000000000009")
+    expect(lastAuditQuery(fetch)).not.toContain("object_id")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("审计空态区分暂无事件与筛选无结果", async () => {
+    const fetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes("/admin/audit-logs/actions")) return Promise.resolve(response([]))
+      return Promise.resolve(response({ items: [], total: 0, page: 1, page_size: 20 }))
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AuditView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("暂无审计事件")
+
+    await wrapper.get("[data-testid='audit-actor']").setValue("admin01")
+    await wrapper.findAll("button").find((button) => button.text().includes("查询"))!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("没有符合条件的审计事件")
+
+    await wrapper.get("[data-testid='audit-clear-filters']").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("暂无审计事件")
+    expect(lastAuditQuery(fetch)).not.toContain("actor=")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })

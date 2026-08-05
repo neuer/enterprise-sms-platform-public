@@ -32,6 +32,7 @@ class AuditQuery:
     page_size: int
     actor_account_id: int | None = None
     correlation_id: UUID | None = None
+    object_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,8 @@ class AdminRepository(Protocol):
         self,
         query: AuditQuery,
     ) -> tuple[tuple[AuditRecord, ...], int]: ...
+
+    async def list_audit_actions(self) -> tuple[str, ...]: ...
 
 
 SENSITIVE_CONFIG_KEYS = frozenset({"alert_wecom_webhook", "security_daily_resend_api_key"})
@@ -249,7 +252,13 @@ class AdminService:
             ("actor", query.actor, 64),
             ("action", query.action, 48),
             ("object_type", query.object_type, 32),
+            ("object_id", query.object_id, 64),
         ):
             if value is not None and len(value) > limit:
                 raise InvalidAdminQuery(f"{label} 过滤值过长")
         return await self.repository.list_audits(query)
+
+    async def list_audit_actions(self) -> tuple[str, ...]:
+        """返回审计动作清单供前端下拉，避免管理员手输未知动作。"""
+
+        return await self.repository.list_audit_actions()

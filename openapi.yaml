@@ -2405,6 +2405,7 @@ paths:
         - { name: correlation_id, in: query, required: false, schema: { anyOf: [{ type: string, format: uuid }, { type: 'null' }] }, description: 按 request ID 查询同一请求或异步链路的审计事件 }
         - { name: action, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 48 }, { type: 'null' }] } }
         - { name: object_type, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] } }
+        - { name: object_id, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }, description: 按对象 ID 串联同一业务对象的全部审计事件（如批次号、配置 key） }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
@@ -2416,6 +2417,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditPageModel' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/audit-logs/actions:
+    get:
+      tags: [admin]
+      summary: 审计动作去重清单（仅 admin，供筛选下拉使用）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { type: string } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 

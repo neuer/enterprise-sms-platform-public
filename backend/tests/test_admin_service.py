@@ -66,6 +66,9 @@ class FakeRepository:
         self.audit_queries.append(query)
         return ((), 0)
 
+    async def list_audit_actions(self) -> tuple[str, ...]:
+        return ("config_update", "user_create")
+
 
 @pytest.mark.asyncio
 async def test_configs_are_grouped_and_sensitive_value_is_never_returned() -> None:
@@ -152,6 +155,29 @@ async def test_audit_query_requires_aware_ordered_range() -> None:
         await service.list_audits(AuditQuery(None, None, None, datetime(2026, 7, 12), None, 1, 20))
     with pytest.raises(InvalidAdminQuery, match="晚于"):
         await service.list_audits(AuditQuery(None, None, None, end, start, 1, 20))
+
+
+@pytest.mark.asyncio
+async def test_audit_query_object_id_length_is_bounded() -> None:
+    repository = FakeRepository()
+    service = AdminService(repository)
+
+    await service.list_audits(
+        AuditQuery(None, None, None, None, None, 1, 20, object_id="vendor_qps")
+    )
+
+    assert repository.audit_queries[0].object_id == "vendor_qps"
+    with pytest.raises(InvalidAdminQuery, match="object_id 过滤值过长"):
+        await service.list_audits(
+            AuditQuery(None, None, None, None, None, 1, 20, object_id="x" * 65)
+        )
+
+
+@pytest.mark.asyncio
+async def test_audit_actions_pass_through_repository() -> None:
+    service = AdminService(FakeRepository())
+
+    assert await service.list_audit_actions() == ("config_update", "user_create")
 
 
 @pytest.mark.asyncio
