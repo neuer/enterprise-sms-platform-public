@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import "../styles/workspace.css"
 
-import { ElMessage } from "element-plus"
+import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
 import PhoneMask from "../components/PhoneMask.vue"
@@ -17,7 +17,23 @@ const phone = ref("")
 const range = ref<[Date, Date] | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
+const optingOutId = ref<number | null>(null)
 const canOptout = computed(() => session.role === "admin" || session.role === "operator")
+// 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
+const PHONE_RE = /^1\d{10}$/
+
+const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value))
+const emptyState = computed(() =>
+  filtering.value
+    ? {
+        title: "没有符合筛选条件的回复",
+        description: "调整回复时间或手机号后重新查询，也可重置筛选查看全部回复。",
+      }
+    : {
+        title: "尚未采集到上行回复",
+        description: "回复轮询每 5 分钟运行一次，也可按时间或手机号缩小查询范围。",
+      },
+)
 
 function formatTime(value: string): string {
   const parts = new Intl.DateTimeFormat("zh-CN", {
@@ -54,7 +70,16 @@ async function load(): Promise<void> {
   }
 }
 
+function phoneProblem(value: string): string | null {
+  return value === "" || PHONE_RE.test(value) ? null : "手机号须为 11 位以 1 开头的数字"
+}
+
 function search(): void {
+  const issue = phoneProblem(phone.value.trim())
+  if (issue) {
+    ElMessage.warning(issue)
+    return
+  }
   page.value = 1
   void load()
 }
@@ -68,11 +93,23 @@ function reset(): void {
 
 async function optout(item: ReplyItem): Promise<void> {
   try {
+    await ElMessageBox.confirm(
+      `将回复号码 ${item.phone} 加入退订黑名单？后续发送将自动剔除该号码。`,
+      "退订加黑确认",
+      { confirmButtonText: "加入黑名单", cancelButtonText: "取消", type: "warning" },
+    )
+  } catch {
+    return
+  }
+  optingOutId.value = item.id
+  try {
     await blacklistReply(item.id)
     ElMessage.success("已加入退订黑名单")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "退订加黑失败")
+  } finally {
+    optingOutId.value = null
   }
 }
 
@@ -98,6 +135,7 @@ onMounted(load)
       <el-form-item class="filter-span-4" label="手机号精确查询">
         <el-input
           v-model="phone"
+          data-testid="reply-filter-phone"
           placeholder="输入 11 位手机号"
           maxlength="11"
           clearable
@@ -115,8 +153,8 @@ onMounted(load)
         />
       </el-form-item>
       <el-form-item class="reply-filter-actions filter-actions filter-span-2">
-        <el-button type="primary" :loading="loading" native-type="submit">查询</el-button>
-        <el-button @click="reset">重置</el-button>
+        <el-button data-testid="reply-search" type="primary" :loading="loading" native-type="submit">查询</el-button>
+        <el-button data-testid="reply-reset" @click="reset">重置</el-button>
       </el-form-item>
     </el-form>
     <p class="reply-filter-note">手机号仅在本次请求内计算 HMAC 索引，不进入查询日志或持久层。</p>
@@ -142,11 +180,19 @@ onMounted(load)
       </el-table-column>
       <el-table-column v-if="canOptout" label="处置" width="108" fixed="right">
         <template #default="{ row }">
-          <el-button link type="danger" @click="optout(row)">退订加黑</el-button>
+          <el-tag v-if="row.blacklisted" type="info" effect="plain">已加黑</el-tag>
+          <el-button
+            v-else
+            link
+            type="danger"
+            :loading="optingOutId === row.id"
+            :data-testid="`reply-optout-${row.id}`"
+            @click="optout(row)"
+          >退订加黑</el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <EmptyState title="尚未采集到上行回复" description="回复轮询每 5 分钟运行一次，也可按时间或手机号缩小查询范围。" />
+        <EmptyState :title="emptyState.title" :description="emptyState.description" />
       </template>
     </el-table>
 
@@ -160,10 +206,18 @@ onMounted(load)
         <footer>
           <code v-if="item.batch_no" class="batch-code">{{ item.batch_no }}</code>
           <el-tag v-else type="warning" effect="plain">未关联</el-tag>
-          <el-button v-if="canOptout" link type="danger" @click="optout(item)">退订加黑</el-button>
+          <el-tag v-if="item.blacklisted && canOptout" type="info" effect="plain">已加黑</el-tag>
+          <el-button
+            v-else-if="canOptout"
+            link
+            type="danger"
+            :loading="optingOutId === item.id"
+            :data-testid="`reply-mobile-optout-${item.id}`"
+            @click="optout(item)"
+          >退订加黑</el-button>
         </footer>
       </article>
-      <EmptyState v-if="!items.length" title="尚未采集到上行回复" description="回复轮询每 5 分钟运行一次，也可按时间或手机号缩小查询范围。" />
+      <EmptyState v-if="!items.length" :title="emptyState.title" :description="emptyState.description" />
     </div>
 
     <footer class="reply-pagination">
