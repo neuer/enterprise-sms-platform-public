@@ -169,6 +169,7 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
                         "content": "TD",
                         "batch_no": "BATCH-1",
                         "reply_time": moment,
+                        "blacklisted": False,
                     }
                 ]
             ),
@@ -185,9 +186,13 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
     )
 
     assert page.items[0].phone_mask == "138****8000"
+    assert page.items[0].blacklisted is False
     assert all("phone_enc" not in sql for sql, _ in connection.calls)
     assert "phone_hmac = ANY" in connection.calls[0][0]
     assert "b.dept=CAST(:dept AS text)" in connection.calls[0][0]
+    rows_sql = connection.calls[1][0]
+    assert "EXISTS" in rows_sql and "blacklist" in rows_sql
+    assert "bl.phone_hmac=r.phone_hmac" in rows_sql
 
 
 @pytest.mark.asyncio

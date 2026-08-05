@@ -27,6 +27,7 @@ class ReplyItem:
     content: str
     batch_no: str | None
     reply_time: datetime
+    blacklisted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +148,10 @@ class SqlReplyQueryRepository:
                 rows_result = await connection.execute(
                     text(
                         """
-                        SELECT r.id,r.phone_mask,r.content,b.batch_no,r.reply_time
+                        SELECT r.id,r.phone_mask,r.content,b.batch_no,r.reply_time,
+                          EXISTS(
+                            SELECT 1 FROM blacklist bl WHERE bl.phone_hmac=r.phone_hmac
+                          ) AS blacklisted
                         FROM sms_reply r LEFT JOIN sms_batch b ON b.id=r.batch_id
                         WHERE """
                         + where

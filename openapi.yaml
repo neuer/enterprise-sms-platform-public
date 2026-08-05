@@ -3602,13 +3602,14 @@ components:
 
     Reply:
       type: object
-      required: [id, phone, content, batch_no, reply_time]
+      required: [id, phone, content, batch_no, reply_time, blacklisted]
       properties:
         id: { type: integer }
         phone: { type: string, description: 掩码展示 }
         content: { type: string }
         batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
         reply_time: { type: string, format: date-time }
+        blacklisted: { type: boolean, description: 回复号码当前是否在黑名单中 }
 
     App:
       type: object
