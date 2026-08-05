@@ -2659,6 +2659,28 @@ main {
 .batch-summary strong { font-family: var(--mono); }
 .batch-content { margin: 16px 0; padding: 12px 14px; border-left: 3px solid var(--cyan); background: var(--surface-soft); }
 
+.batch-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.batch-meta div {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--surface);
+}
+
+.batch-meta dt { color: var(--muted); font-size: 11px; }
+.batch-meta dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.batch-deferred { margin-top: 12px; }
+.batch-detail-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
+.batch-detail-head h3 { margin: 0; font-size: 13px; }
+.batch-detail-pagination { margin-top: 10px; }
+
 .view-switch {
   display: flex;
   padding: 4px;
@@ -2761,6 +2783,7 @@ main {
   .query-mobile-list time { color: var(--muted); font: 10px/1 var(--mono); }
   .query-pagination { align-items: flex-start; gap: 10px; }
   .batch-summary { grid-template-columns: 1fr; }
+  .batch-meta { grid-template-columns: 1fr; }
   .phone-badges { align-items: flex-start; flex-wrap: wrap; }
   .phone-badges strong { width: 100%; margin-left: 0; }
   .timeline-panel { padding: 14px 10px; }

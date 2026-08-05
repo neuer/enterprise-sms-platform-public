@@ -34,6 +34,12 @@ class BatchAccessScope:
         raise ValueError("batch query scope must be constrained")
 
 
+def _escape_like(value: str) -> str:
+    """转义 LIKE 通配符（PostgreSQL 默认反斜杠转义）。"""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class BatchQueryService:
     """查询永不选择手机号密文/HMAC，响应只能使用 phone_mask。"""
 
@@ -52,6 +58,7 @@ class BatchQueryService:
         channel: str | None,
         app_id: int | None,
         is_test: bool | None,
+        batch_no: str | None,
         start: datetime | None,
         end: datetime | None,
         page: int,
@@ -86,6 +93,9 @@ class BatchQueryService:
             if value is not None:
                 clauses.append(clause)
                 params[name] = value
+        if batch_no is not None and batch_no.strip():
+            clauses.append("trim(b.batch_no) ILIKE :batch_no")
+            params["batch_no"] = f"%{_escape_like(batch_no.strip())}%"
         where = "\n AND ".join(clauses)
         engine = self._engine()
         try:

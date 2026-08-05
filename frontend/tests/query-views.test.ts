@@ -74,11 +74,105 @@ describe("批次与号码查询", () => {
     await detail!.trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.text()).toContain("operator-a")
+    expect(wrapper.text()).toContain("单条计费条")
     expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("失败号码重发")
     await wrapper.get("[data-testid='batch-phone-decrypt-9']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("13800138000")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/messages/batches/BATCH-1")
+    expect(fetch.mock.calls[2][0]).toBe("/api/v1/messages/batches/BATCH-1/details?page=1&size=20")
+    vi.unstubAllGlobals()
+  })
+
+  it("批次号模糊查询，抽屉明细支持状态筛选与分页", async () => {
+    const batch = {
+      batch_no: "BATCH-9", category: "notice", channel: "api", app_name: "通知应用",
+      creator: "operator-b", dept: "平台部", content: "系统通知", status: "completed",
+      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 21,
+      total: 21, removed_freq_limit: 0, delivered: 20, failed: 1, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const message = {
+      id: 9, phone: "138****8000", status: "delivered",
+      vendor_task_id: "task-1", report_desc: "DELIVRD", report_time: "2026-07-12T08:01:00+08:00",
+    }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
+      .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
+      .mockResolvedValueOnce(response(batch))
+      .mockResolvedValueOnce(response({ total: 21, items: [message] }))
+      .mockResolvedValueOnce(response({ total: 1, items: [{ ...message, status: "failed" }] }))
+      .mockResolvedValueOnce(response({ total: 1, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="模糊匹配批次号"]').setValue("BATCH-9")
+    await wrapper.find("form.query-filter").trigger("submit")
+    await flushPromises()
+    expect(fetch.mock.calls[1][0]).toContain("/api/v1/web/batches?")
+    expect(fetch.mock.calls[1][0]).toContain("batch_no=BATCH-9")
+
+    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-9/details?page=1&size=20")
+    expect(wrapper.text()).toContain("共 21 条")
+
+    const detailSelect = wrapper
+      .findAllComponents({ name: "ElSelect" })
+      .find((item) => item.attributes("data-testid") === "batch-detail-status")!
+    detailSelect.vm.$emit("update:modelValue", "failed")
+    detailSelect.vm.$emit("change", "failed")
+    await flushPromises()
+    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-9/details?page=1&size=20&status=failed")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("抽屉明细翻页保留状态筛选", async () => {
+    const batch = {
+      batch_no: "BATCH-10", category: "notice", channel: "web", app_name: null,
+      creator: "operator-c", dept: "平台部", content: "系统通知", status: "sending",
+      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 40,
+      total: 40, removed_freq_limit: 0, delivered: 10, failed: 0, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const message = {
+      id: 9, phone: "138****8000", status: "sent",
+      vendor_task_id: "task-1", report_desc: null, report_time: null,
+    }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
+      .mockResolvedValueOnce(response(batch))
+      .mockResolvedValueOnce(response({ total: 40, items: [message] }))
+      .mockResolvedValueOnce(response({ total: 25, items: [message] }))
+      .mockResolvedValueOnce(response({ total: 25, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await flushPromises()
+
+    const detailSelect = wrapper
+      .findAllComponents({ name: "ElSelect" })
+      .find((item) => item.attributes("data-testid") === "batch-detail-status")!
+    detailSelect.vm.$emit("update:modelValue", "sent")
+    detailSelect.vm.$emit("change", "sent")
+    await flushPromises()
+    expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=1&size=20&status=sent")
+
+    await wrapper.find(".batch-detail-pagination .btn-next").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=2&size=20&status=sent")
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 

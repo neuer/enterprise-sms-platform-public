@@ -720,6 +720,7 @@ paths:
         - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
         - { name: dept, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] } }
         - { name: is_test, in: query, required: false, schema: { anyOf: [{ type: boolean }, { type: 'null' }] } }
+        - { name: batch_no, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }, description: 批次号模糊匹配（不区分大小写） }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
