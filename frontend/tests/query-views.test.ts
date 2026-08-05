@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox } from "element-plus"
+import ElementPlus, { ElMessageBox, ElPagination, ElSelect } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { vi } from "vitest"
 
@@ -146,6 +146,7 @@ describe("批次与号码查询", () => {
 
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.text()).not.toContain("13800138000")
+    expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages?phone=13800138000&page=1")
     const reveal = wrapper.findAll("button").find((item) => item.text().includes("授权查看"))
     await reveal!.trigger("click")
     await flushPromises()
@@ -154,9 +155,61 @@ describe("批次与号码查询", () => {
     vi.unstubAllGlobals()
   })
 
+  it("号码列表支持类别状态筛选、分页并展示失败回报", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      total: 45,
+      items: [{
+        id: 9,
+        phone: "138****8000",
+        status: "failed",
+        report_desc: "UNDELIV",
+        report_time: "2026-07-12T08:01:00+08:00",
+        created_at: "2026-07-12T08:00:00+08:00",
+        batch_no: "BATCH-1",
+        category: "notice",
+        content: "系统通知",
+        sender: "通知应用",
+      }],
+    }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(MessageView, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
+    await wrapper.find("form").trigger("submit")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("UNDELIV")
+    expect(wrapper.find(".report-desc").exists()).toBe(true)
+
+    const selects = wrapper.findAllComponents(ElSelect)
+    selects[0].vm.$emit("update:modelValue", "notice")
+    selects[0].vm.$emit("change", "notice")
+    await flushPromises()
+    selects[1].vm.$emit("update:modelValue", "failed")
+    selects[1].vm.$emit("change", "failed")
+    await flushPromises()
+
+    expect(fetch.mock.calls[1][0]).toContain("category=notice")
+    expect(fetch.mock.calls[1][0]).not.toContain("status=")
+    expect(fetch.mock.calls[2][0]).toContain("category=notice")
+    expect(fetch.mock.calls[2][0]).toContain("status=failed")
+    expect(fetch.mock.calls[2][0]).toContain("page=1")
+
+    const pager = wrapper.getComponent(ElPagination)
+    pager.vm.$emit("update:currentPage", 2)
+    pager.vm.$emit("current-change", 2)
+    await flushPromises()
+    expect(fetch.mock.calls[3][0]).toContain("page=2")
+    expect(fetch.mock.calls[3][0]).toContain("status=failed")
+    vi.unstubAllGlobals()
+  })
+
   it("时间线展示号码徽标并将用户回复标为回声", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
       badge: { blacklisted: true, blacklist_source: "reply_optout", recv_30d: 3 },
+      truncated: true,
       events: [{
         ts: "2026-07-12T08:02:00+08:00",
         direction: "in",
@@ -175,6 +228,7 @@ describe("批次与号码查询", () => {
     expect(wrapper.text()).toContain("已在黑名单")
     expect(wrapper.text()).toContain("近30日 3 条")
     expect(wrapper.text()).toContain("↩ 用户回复")
+    expect(wrapper.text()).toContain("仅显示最近 500 条")
     vi.unstubAllGlobals()
   })
 })

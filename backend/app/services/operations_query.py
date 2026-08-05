@@ -18,6 +18,10 @@ class QueryNotFound(LookupError):
     """查询对象不存在或不在调用方数据权限内。"""
 
 
+TIMELINE_EVENT_LIMIT = 500
+MAX_PAGE_SIZE = 100
+
+
 @dataclass(frozen=True, slots=True)
 class MessageQueryItem:
     id: int
@@ -60,6 +64,7 @@ class TimelineEvent:
 class Timeline:
     badge: PhoneBadge
     events: tuple[TimelineEvent, ...]
+    truncated: bool = False
 
 
 class OperationsQueryRepository(Protocol):
@@ -69,7 +74,10 @@ class OperationsQueryRepository(Protocol):
         phone_hmacs: tuple[str, ...],
         start: datetime | None,
         end: datetime | None,
+        category: str | None,
+        status: str | None,
         page: int,
+        size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage: ...
 
@@ -119,17 +127,25 @@ class OperationsQueryService:
         phone: str,
         start: datetime | None,
         end: datetime | None,
+        category: str | None,
+        status: str | None,
         page: int,
+        size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage:
         if page < 1:
             raise ValueError("page must be positive")
+        if not 1 <= size <= MAX_PAGE_SIZE:
+            raise ValueError("page size out of range")
         _validate_range(start, end)
         return await self.repository.search_messages(
             phone_hmacs=self._hmacs(phone),
             start=start,
             end=end,
+            category=category,
+            status=status,
             page=page,
+            size=size,
             scope=scope,
         )
 
@@ -183,7 +199,10 @@ class SqlOperationsQueryRepository:
         phone_hmacs: tuple[str, ...],
         start: datetime | None,
         end: datetime | None,
+        category: str | None,
+        status: str | None,
         page: int,
+        size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage:
         predicate, scope_params = scope.sql()
@@ -191,14 +210,18 @@ class SqlOperationsQueryRepository:
           m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
           AND (CAST(:start AS timestamptz) IS NULL OR m.created_at>=:start)
           AND (CAST(:end AS timestamptz) IS NULL OR m.created_at<=:end)
+          AND (CAST(:category AS varchar(10)) IS NULL OR b.category=:category)
+          AND (CAST(:status AS varchar(10)) IS NULL OR m.status=:status)
           AND {predicate}
         """
         params = {
             "phone_hmacs": list(phone_hmacs),
             "start": start,
             "end": end,
-            "limit": 20,
-            "offset": (page - 1) * 20,
+            "category": category,
+            "status": status,
+            "limit": size,
+            "offset": (page - 1) * size,
             **scope_params,
         }
         source = " FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id "
@@ -243,6 +266,7 @@ class SqlOperationsQueryRepository:
             "phone_hmacs": list(phone_hmacs),
             "start": start,
             "end": end,
+            "event_limit": TIMELINE_EVENT_LIMIT + 1,
             **scope_params,
         }
         engine = self._engine()
@@ -303,18 +327,23 @@ class SqlOperationsQueryRepository:
                             AND (CAST(:end AS timestamptz) IS NULL
                               OR COALESCE(r.reply_time,r.created_at)<=:end)
                             AND {predicate}
-                        ) events ORDER BY ts DESC,direction
+                        ) events ORDER BY ts DESC,direction LIMIT :event_limit
                         """
                     ),
                     params,
                 )
+                rows = [dict(row) for row in events_result.mappings()]
+                truncated = len(rows) > TIMELINE_EVENT_LIMIT
                 return Timeline(
                     PhoneBadge(
                         blacklist_row is not None,
                         str(blacklist_row["source"]) if blacklist_row is not None else None,
                         int(received_result.scalar_one()),
                     ),
-                    tuple(TimelineEvent(**dict(row)) for row in events_result.mappings()),
+                    tuple(
+                        TimelineEvent(**row) for row in rows[:TIMELINE_EVENT_LIMIT]
+                    ),
+                    truncated,
                 )
         finally:
             await engine.dispose()

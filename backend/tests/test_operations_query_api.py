@@ -129,7 +129,10 @@ def test_non_admin_cannot_request_another_department() -> None:
 def test_message_search_and_timeline_return_masked_contract() -> None:
     client, _, operations = make_client(role="approver")
     headers = {"Authorization": "Bearer jwt"}
-    search = client.get("/api/v1/web/messages?phone=13800138000", headers=headers)
+    search = client.get(
+        "/api/v1/web/messages?phone=13800138000&category=notice&status=failed&page=2&size=50",
+        headers=headers,
+    )
     timeline = client.get(
         "/api/v1/web/messages/timeline?phone=13800138000",
         headers=headers,
@@ -144,7 +147,36 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
         "blacklist_source": "reply_optout",
         "recv_30d": 3,
     }
-    assert operations.calls[0][1]["scope"] == BatchAccessScope(dept="平台部")
+    assert timeline.json()["truncated"] is False
+    name, values = operations.calls[0]
+    assert name == "search"
+    assert values["category"] == "notice" and values["status"] == "failed"
+    assert values["page"] == 2 and values["size"] == 50
+    assert values["scope"] == BatchAccessScope(dept="平台部")
+
+
+def test_message_search_rejects_invalid_filters() -> None:
+    client, _, _ = make_client()
+    headers = {"Authorization": "Bearer jwt"}
+    bad_category = client.get(
+        "/api/v1/web/messages?phone=13800138000&category=urgent",
+        headers=headers,
+    )
+    bad_status = client.get(
+        "/api/v1/web/messages?phone=13800138000&status=lost",
+        headers=headers,
+    )
+    bad_size = client.get(
+        "/api/v1/web/messages?phone=13800138000&size=101",
+        headers=headers,
+    )
+
+    assert bad_category.status_code == 400
+    assert bad_category.json()["code"] == "INVALID_PARAM"
+    assert bad_status.status_code == 400
+    assert bad_status.json()["code"] == "INVALID_PARAM"
+    assert bad_size.status_code == 400
+    assert bad_size.json()["code"] == "INVALID_PARAM"
 
 
 def test_decrypt_requires_approver_or_admin_and_passes_actor_scope() -> None:

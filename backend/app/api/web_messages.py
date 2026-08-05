@@ -182,6 +182,7 @@ class TimelineEventModel(BaseModel):
 class TimelineModel(BaseModel):
     badge: PhoneBadgeModel
     events: list[TimelineEventModel]
+    truncated: bool
 
 
 class DecryptedPhoneModel(BaseModel):
@@ -410,7 +411,13 @@ async def search_web_messages(
     phone: Annotated[str, Query(pattern=r"^1\d{10}$")],
     start: Annotated[datetime | None, Query()] = None,
     end: Annotated[datetime | None, Query()] = None,
+    category: Annotated[Literal["verify", "notice", "market"] | None, Query()] = None,
+    status: Annotated[
+        Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None,
+        Query(),
+    ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> MessageQueryPageModel:
     claims = await _reader(facade, credentials)
     try:
@@ -418,7 +425,10 @@ async def search_web_messages(
             phone=phone,
             start=start,
             end=end,
+            category=category,
+            status=status,
             page=page,
+            size=size,
             scope=_query_scope(claims),
         )
     except ValueError as error:
@@ -483,6 +493,7 @@ async def message_timeline(
             )
             for item in result.events
         ],
+        truncated=result.truncated,
     )
 
 
