@@ -119,8 +119,9 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
-3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建；若 PR 落后于 main，自动化先更新
-   分支并等待新的精确 push CI，成功后自动 Ready 并请求 squash merge。
+3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建；若 PR 落后于 main，自动化会明确
+   失败并提示合并 main 后重新推送（`GITHUB_TOKEN` 更新分支不会触发 push CI），新 push CI
+   成功后自动 Ready 并请求 squash merge。
 4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
 5. 获取自动合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果。
 6. 如需预览，执行 `scripts/test_update.sh plan --ref origin/main` 查看分类和门禁。
