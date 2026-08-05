@@ -2138,6 +2138,20 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/web/admin/outbox/events:
+    get:
+      tags: [admin]
+      summary: 分页列出 Outbox 事件无 PII 元数据（dead 优先，不返回 args/dedup_key）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: state, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, leased, published, processing, completed, dead] }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OutboxEventPageModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/web/admin/outbox/{event_id}/retry:
     post:
       tags: [admin]
@@ -3187,6 +3201,34 @@ components:
         dead: { type: integer, minimum: 0.0 }
         failed_attempts: { type: integer, minimum: 0.0 }
         oldest_age_seconds: { type: integer, minimum: 0.0 }
+
+    OutboxEventModel:
+      type: object
+      required: [id, event_type, aggregate_type, aggregate_id, task_name, queue, state, attempts, max_attempts, failure_count, last_error, next_attempt_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_type: { type: string }
+        aggregate_type: { type: string }
+        aggregate_id: { type: string }
+        task_name: { type: string }
+        queue: { type: string }
+        state: { type: string, enum: [pending, leased, published, processing, completed, dead] }
+        attempts: { type: integer, minimum: 0.0 }
+        max_attempts: { type: integer, minimum: 1.0, maximum: 100.0 }
+        failure_count: { type: integer, minimum: 0.0 }
+        last_error: { anyOf: [{ type: string }, { type: 'null' }] }
+        next_attempt_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OutboxEventPageModel:
+      type: object
+      required: [total, page, page_size, items]
+      properties:
+        total: { type: integer, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        items: { type: array, items: { $ref: '#/components/schemas/OutboxEventModel' } }
 
     QueueStatusModel:
       type: object

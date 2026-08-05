@@ -9,6 +9,24 @@ export interface UnmatchedItem { id: number; vendor_task_id: string | null; cust
 export interface JobItem { job_name: string; last_run_at: string | null; last_status: "running" | "success" | "failed" | null; last_duration_ms: number | null; last_items: number; success_rate_24h: number; stalled: boolean }
 export interface QueueStatus { realtime_code: string | null; bulk_code: string | null; balance: number | null; threshold: number }
 export interface QueueResumeResult { resumed_batches: number; paused_codes: string[] }
+export interface OutboxStats { pending: number; published: number; processing: number; dead: number; failed_attempts: number; oldest_age_seconds: number }
+export type OutboxState = "pending" | "leased" | "published" | "processing" | "completed" | "dead"
+export interface OutboxEventItem {
+  id: string
+  event_type: string
+  aggregate_type: string
+  aggregate_id: string
+  task_name: string
+  queue: string
+  state: OutboxState
+  attempts: number
+  max_attempts: number
+  failure_count: number
+  last_error: string | null
+  next_attempt_at: string
+  created_at: string
+  updated_at: string
+}
 
 export interface PageQuery { page?: number; pageSize?: number }
 export interface AlertQuery extends PageQuery { alertType?: string; level?: AlertItem["level"]; start?: string; end?: string }
@@ -56,6 +74,13 @@ export const listJobs = () => apiRequest<JobItem[]>("/admin/jobs", { method: "GE
 export const triggerJob = (name: string) => apiRequest<void>(`/admin/jobs/${encodeURIComponent(name)}/trigger`, { method: "POST" })
 export const getQueueStatus = () => apiRequest<QueueStatus>("/admin/queue/status", { method: "GET" })
 export const resumeQueue = (force: boolean) => apiRequest<QueueResumeResult>(`/admin/queue/resume?force=${force}`, { method: "POST" })
+export const getOutboxStatus = () => apiRequest<OutboxStats>("/admin/outbox", { method: "GET" })
+export function listOutboxEvents(query: PageQuery & { state?: OutboxState }): Promise<OpsPage<OutboxEventItem>> {
+  const params = pageParams(query)
+  if (query.state) params.set("state", query.state)
+  return apiRequest<OpsPage<OutboxEventItem>>(`/admin/outbox/events?${params}`, { method: "GET" })
+}
+export const retryOutboxEvent = (id: string) => apiRequest<void>(`/admin/outbox/${id}/retry`, { method: "POST" })
 export function createUnmatchedExport(filters: UnmatchedExportFilters, decrypted: boolean): Promise<ExportTask> {
   return apiRequest<ExportTask>("/admin/unmatched-reports/export", {
     method: "POST",

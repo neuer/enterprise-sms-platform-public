@@ -8,6 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -126,6 +127,36 @@ class OutboxStats:
     dead: int
     failed_attempts: int
     oldest_age_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxEventRecord:
+    """运维中心用无 PII 事件元数据；args/dedup_key/correlation_id 不对外。"""
+
+    id: UUID
+    event_type: str
+    aggregate_type: str
+    aggregate_id: str
+    task_name: str
+    queue: str
+    state: str
+    attempts: int
+    max_attempts: int
+    failure_count: int
+    last_error: str | None
+    next_attempt_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxEventPage:
+    """事件分页结果；字段与 ops.OpsPage 对齐但不引入其 jobtrack 依赖。"""
+
+    items: tuple[OutboxEventRecord, ...]
+    total: int
+    page: int
+    page_size: int
 
 
 def _assert_safe(value: Any, *, key: str | None = None) -> None:
