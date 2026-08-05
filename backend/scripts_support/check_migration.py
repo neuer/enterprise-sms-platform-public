@@ -1072,7 +1072,7 @@ def run_check() -> None:
                 callback_mtls_key_file=None,
             ),
         )
-        task_loader = SqlRuntimePolicyLoader(task_settings, task_safe=True)
+        task_loader = SqlRuntimePolicyLoader(task_settings)
         run_async_check(task_loader.load())
         run_async_check(task_loader.load())
 

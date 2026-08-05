@@ -119,7 +119,8 @@ class ApprovalService:
     ) -> ApprovalCase:
         if action not in {"approve", "reject"}:
             raise ValueError("invalid approval action")
-        if action == "reject" and not reason:
+        cleaned_reason = reason.strip() if reason else None
+        if action == "reject" and not cleaned_reason:
             raise ValueError("驳回必须填写原因")
         current = await self.repository.get(approval_id)
         if current is None or current.status != "pending":
@@ -132,7 +133,7 @@ class ApprovalService:
             approval_id,
             action=action,
             principal=principal,
-            reason=reason,
+            reason=cleaned_reason,
         )
         if decided is None:
             raise StateConflict("审批单状态冲突")

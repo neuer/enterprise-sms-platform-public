@@ -63,6 +63,9 @@ class FakeService:
                 False,
                 None,
                 NOW,
+                "5",
+                None,
+                1_000,
             ),
         )
 
@@ -106,6 +109,9 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     assert audits.json()["items"][0]["after_val"] == {"value": "8"}
     assert audits.json()["items"][0]["correlation_id"] == str(CORRELATION_ID)
     assert configs.status_code == 200 and configs.json()[0]["group"] == "运行调度"
+    assert configs.json()[0]["default"] == "5"
+    assert configs.json()[0]["min_value"] is None
+    assert configs.json()[0]["max_value"] == 1_000
     assert updated.status_code == 200
     assert service.updates[0][1].login_name == "admin01"
     assert vars(admin_api.update_configs)["__audited_action__"] == "config_update"

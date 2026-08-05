@@ -108,10 +108,12 @@ describe("用户与角色", () => {
     expect(wrapper.find("[data-testid='reset-password-21']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='mobile-reset-password-8']").exists()).toBe(true)
     expect(wrapper.find("[data-testid='mobile-status-21']").exists()).toBe(true)
+    expect(wrapper.text()).toContain("最近登录 2026-07-16 08:00:00")
 
     await wrapper.get("[data-testid='role-21']").trigger("click")
     expect(wrapper.find("[data-testid='override-switch']").exists()).toBe(true)
     expect(wrapper.text()).toContain("按最近来源组和当前映射恢复角色")
+    expect(wrapper.get("[data-testid='role-permission']").text()).toContain("Web 人工发送")
     wrapper.unmount()
   })
 
@@ -128,6 +130,7 @@ describe("用户与角色", () => {
     await flushPromises()
 
     await wrapper.get("[data-testid='create-local-user']").trigger("click")
+    expect(wrapper.get("[data-testid='create-role-permission']").text()).toContain("本部门记录与报表")
     await wrapper.get("[data-testid='create-username']").setValue("new.user")
     await wrapper.get("[data-testid='create-display-name']").setValue("新用户")
     await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
@@ -205,6 +208,72 @@ describe("用户与角色", () => {
     expect(wrapper.text()).toContain("尚无平台账号")
     expect(wrapper.text()).toContain("本地账号由管理员创建；AD 账号在首次成功登录后进入台账")
     expect(wrapper.find("[data-testid='empty-create-local-user']").exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("筛选无结果时区分空台账并给出清除筛选入口", async () => {
+    const fetch = routeFetch((url) => {
+      if (url.startsWith("/api/v1/web/admin/users?")) return response(listBody([]))
+      return undefined
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(UserView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain("尚无平台账号")
+
+    await wrapper.get("[data-testid='user-filter-keyword']").setValue("不存在的用户")
+    await wrapper.get("form.user-filter").trigger("submit")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("没有符合条件的账号")
+    expect(wrapper.text()).not.toContain("尚无平台账号")
+
+    await wrapper.get("[data-testid='clear-user-filters']").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("尚无平台账号")
+    expect((wrapper.get("[data-testid='user-filter-keyword']").element as HTMLInputElement).value).toBe("")
+    wrapper.unmount()
+  })
+
+  it("提交前拦截不合规用户名与临时密码，不发起请求", async () => {
+    const warning = vi.spyOn(ElMessage, "warning")
+    const fetch = routeFetch()
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(UserView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    const created = () =>
+      fetch.mock.calls.filter(([url]) => url === "/api/v1/web/admin/users/local").length
+
+    await wrapper.get("[data-testid='create-local-user']").trigger("click")
+    await wrapper.get("[data-testid='create-username']").setValue("x")
+    await wrapper.get("[data-testid='create-display-name']").setValue("新用户")
+    await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
+    await wrapper.get("[data-testid='save-local-user']").trigger("click")
+    await flushPromises()
+    expect(warning).toHaveBeenCalledWith("本地用户名必须为 3–64 位字母、数字、点、下划线或短横线")
+    expect(created()).toBe(0)
+
+    await wrapper.get("[data-testid='create-username']").setValue("new.user")
+    await wrapper.get("[data-testid='create-password']").setValue("short")
+    await wrapper.get("[data-testid='save-local-user']").trigger("click")
+    await flushPromises()
+    expect(warning).toHaveBeenCalledWith("密码长度必须为 12–128 位")
+    expect(created()).toBe(0)
+
+    await wrapper.get("[data-testid='create-password']").setValue("New.user@12345")
+    await wrapper.get("[data-testid='save-local-user']").trigger("click")
+    await flushPromises()
+    expect(warning).toHaveBeenCalledWith("密码不能包含用户名")
+    expect(created()).toBe(0)
+
+    await wrapper.get("[data-testid='create-password']").setValue("Valid@Pass123")
+    await wrapper.get("[data-testid='save-local-user']").trigger("click")
+    await flushPromises()
+    expect(created()).toBe(1)
     wrapper.unmount()
   })
 })

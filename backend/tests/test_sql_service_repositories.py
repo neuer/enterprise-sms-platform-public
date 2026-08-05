@@ -229,6 +229,8 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
                         "status": "pending",
                         "approver": None,
                         "reason": None,
+                        "expires_at": scheduled_at,
+                        "decided_at": None,
                         "created_at": scheduled_at,
                     }
                 ]
@@ -241,12 +243,16 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
     result = await repository.list_page(status="pending", dept=None, page=1)
 
     assert result["items"][0]["estimated_segments"] == 120  # type: ignore[index]
+    assert result["items"][0]["expires_at"] == scheduled_at  # type: ignore[index]
+    assert result["items"][0]["decided_at"] is None  # type: ignore[index]
     select_sql = connection.calls[1][0]
     assert "b.segments" in select_sql
     assert "b.quota_cost estimated_segments" in select_sql
     assert "b.scheduled_at" in select_sql
     assert "p.trigger_threshold" in select_sql
     assert "p.trigger_threshold_source" in select_sql
+    assert "p.expires_at" in select_sql
+    assert "p.decided_at" in select_sql
 
 
 @pytest.mark.asyncio
