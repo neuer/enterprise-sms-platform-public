@@ -29,8 +29,10 @@ class FakeFacade:
 class FakeService:
     def __init__(self) -> None:
         self.updates: list[tuple[tuple[ConfigUpdate, ...], SecurityPrincipal, str]] = []
+        self.queries: list[AuditQuery] = []
 
     async def list_audits(self, query: AuditQuery) -> tuple[tuple[AuditRecord, ...], int]:
+        self.queries.append(query)
         return (
             (
                 AuditRecord(
@@ -49,6 +51,9 @@ class FakeService:
             ),
             1,
         )
+
+    async def list_audit_actions(self) -> tuple[str, ...]:
+        return ("config_update", "user_create")
 
     async def list_configs(self) -> tuple[ConfigItem, ...]:
         return (
@@ -95,7 +100,8 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     headers = {"Authorization": "Bearer test"}
 
     audits = http.get(
-        "/api/v1/web/admin/audit-logs?action=config_update&page=1&page_size=20",
+        "/api/v1/web/admin/audit-logs?action=config_update&object_id=vendor_qps"
+        f"&correlation_id={CORRELATION_ID}&page=1&page_size=20",
         headers=headers,
     )
     configs = http.get("/api/v1/web/admin/configs", headers=headers)
@@ -108,6 +114,9 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     assert audits.status_code == 200 and audits.json()["total"] == 1
     assert audits.json()["items"][0]["after_val"] == {"value": "8"}
     assert audits.json()["items"][0]["correlation_id"] == str(CORRELATION_ID)
+    assert service.queries[0].object_id == "vendor_qps"
+    assert service.queries[0].correlation_id == CORRELATION_ID
+    assert service.queries[0].action == "config_update"
     assert configs.status_code == 200 and configs.json()[0]["group"] == "运行调度"
     assert configs.json()[0]["default"] == "5"
     assert configs.json()[0]["min_value"] is None
@@ -117,12 +126,25 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     assert vars(admin_api.update_configs)["__audited_action__"] == "config_update"
 
 
+def test_admin_can_list_audit_actions_for_filter_dropdown() -> None:
+    http, _ = client()
+    headers = {"Authorization": "Bearer test"}
+
+    response = http.get("/api/v1/web/admin/audit-logs/actions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == ["config_update", "user_create"]
+
+
 def test_non_admin_is_denied_without_calling_service() -> None:
     http, service = client("viewer")
     headers = {"Authorization": "Bearer test"}
 
     response = http.get("/api/v1/web/admin/audit-logs", headers=headers)
+    actions = http.get("/api/v1/web/admin/audit-logs/actions", headers=headers)
 
     assert response.status_code == 403
     assert response.json()["code"] == "FORBIDDEN"
+    assert actions.status_code == 403
+    assert actions.json()["code"] == "FORBIDDEN"
     assert service.updates == []

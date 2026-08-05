@@ -112,7 +112,16 @@ async def test_audit_list_uses_parameterized_filters_and_stable_pagination() -> 
             ),
         ]
     )
-    query = AuditQuery("admin01", "config_update", "sys_config", NOW, NOW, 2, 20)
+    query = AuditQuery(
+        "admin01",
+        "config_update",
+        "sys_config",
+        NOW,
+        NOW,
+        2,
+        20,
+        object_id="vendor_qps",
+    )
 
     items, total = await repo.list_audits(query)
 
@@ -121,7 +130,23 @@ async def test_audit_list_uses_parameterized_filters_and_stable_pagination() -> 
     sql, params = connection.calls[1]
     assert "ORDER BY created_at DESC,id DESC" in sql
     assert "before_val" in sql and "after_val" in sql
+    assert "object_id=:object_id" in sql
     assert params["offset"] == 20 and params["actor"] == "admin01"
+    assert params["object_id"] == "vendor_qps"
+
+
+@pytest.mark.asyncio
+async def test_audit_action_listing_is_distinct_ordered_and_capped() -> None:
+    repo, connection = repository(
+        [FakeResult([{"action": "config_update"}, {"action": "user_create"}])]
+    )
+
+    actions = await repo.list_audit_actions()
+
+    assert actions == ("config_update", "user_create")
+    sql, _ = connection.calls[0]
+    assert "GROUP BY action" in sql and "ORDER BY action" in sql and "LIMIT 500" in sql
+    assert "before_val" not in sql and "after_val" not in sql
 
 
 @pytest.mark.asyncio

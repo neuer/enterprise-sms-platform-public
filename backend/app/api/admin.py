@@ -114,6 +114,7 @@ async def list_audit_logs(
     correlation_id: UUID | None = None,
     action: Annotated[str | None, Query(max_length=48)] = None,
     object_type: Annotated[str | None, Query(max_length=32)] = None,
+    object_id: Annotated[str | None, Query(max_length=64)] = None,
     start: datetime | None = None,
     end: datetime | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
@@ -132,6 +133,7 @@ async def list_audit_logs(
                 page_size,
                 actor_account_id=actor_account_id,
                 correlation_id=correlation_id,
+                object_id=object_id,
             )
         )
     except InvalidAdminQuery as error:
@@ -142,6 +144,21 @@ async def list_audit_logs(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/audit-logs/actions",
+    response_model=list[str],
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+)
+async def list_audit_actions(
+    request: Request,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> list[str]:
+    await _admin(request, facade, credentials)
+    return list(await service.list_audit_actions())
 
 
 @router.get(
