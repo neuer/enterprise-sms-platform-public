@@ -6,6 +6,7 @@ export interface ReplyItem {
   content: string
   batch_no: string | null
   reply_time: string
+  blacklisted: boolean
 }
 
 export interface ReplyPage {
