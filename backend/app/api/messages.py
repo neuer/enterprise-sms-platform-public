@@ -77,6 +77,7 @@ Category = Literal["verify", "notice", "market"]
 
 class SendRequestModel(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "oneOf": [
                 {"required": ["content"], "not": {"required": ["template_id"]}},
@@ -213,6 +214,8 @@ class MessageDetailPage(BaseModel):
 
 
 class RescheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     scheduled_at: datetime
 
 
