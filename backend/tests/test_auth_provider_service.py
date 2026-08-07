@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from app.core.auth.providers import LdapProviderKind
 from app.services.auth_provider import (
     AuthProviderService,
     DuplicateRoleMapping,
@@ -16,6 +18,7 @@ from app.services.auth_provider import (
     ProviderSummary,
     ProviderTestResult,
     UntestedProviderConfig,
+    validate_ldap_allowed,
 )
 
 ADMIN = "admin"
@@ -37,6 +40,22 @@ def valid_ad_config() -> dict[str, object]:
         "connect_timeout_s": 5.0,
         "receive_timeout_s": 10.0,
     }
+
+
+def test_ldap_provider_kind_rejects_target_outside_deployment_allowlist() -> None:
+    kind = LdapProviderKind(
+        SimpleNamespace(ldap_allowed_host_set=frozenset({"dc01.example.com:636"}))
+    )
+    assert kind.validate_config(valid_ad_config())["server"] == "ldaps://dc01.example.com:636"
+    with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
+        kind.validate_config(
+            {**valid_ad_config(), "server": "ldaps://evil.example.com:636"}
+        )
+
+
+def test_ldap_allowed_list_empty_fails_closed() -> None:
+    with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
+        validate_ldap_allowed("ldaps://dc01.example.com:636", frozenset())
 
 
 def provider(
