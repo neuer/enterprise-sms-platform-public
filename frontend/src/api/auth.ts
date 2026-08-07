@@ -95,11 +95,15 @@ export async function loginRequest(
   return (await response.json()) as LoginResponse
 }
 
-export async function refreshRequest(refreshToken: string): Promise<LoginSuccess> {
+export async function refreshRequest(
+  refreshToken: string,
+  signal?: AbortSignal,
+): Promise<LoginSuccess> {
   const response = await fetch("/api/v1/web/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh_token: refreshToken }),
+    signal,
   })
   if (!response.ok) throw await apiError(response)
   return (await response.json()) as LoginSuccess

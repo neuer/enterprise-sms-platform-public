@@ -105,6 +105,7 @@ export const useSessionStore = defineStore("session", {
     clearAllTabs() {
       this.clear()
       try {
+        window.dispatchEvent(new Event("sms:session-clearing"))
         localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
         localStorage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
       } catch {
