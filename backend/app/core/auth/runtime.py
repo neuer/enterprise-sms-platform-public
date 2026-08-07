@@ -418,6 +418,7 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
     tokens = JwtService(
         settings.credential("jwt_secret"),
         store,
+        accept_legacy=settings.jwt_accept_legacy,
         security_session_loader=users.load_security_session,
     )
     return AuthFacade(

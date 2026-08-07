@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     data_aes_key_file: Path = Path("/run/secrets/data_aes_key")
     data_hmac_key_file: Path = Path("/run/secrets/data_hmac_key")
     jwt_secret_file: Path = Path("/run/secrets/jwt_secret")
+    jwt_accept_legacy: bool = True
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
     metrics_scrape_token_file: Path = Path("/run/secrets/metrics_scrape_token")
     ldap_ca_certs_file: Path = Path("/etc/ssl/certs/ca-certificates.crt")
@@ -130,6 +131,7 @@ class Settings(BaseSettings):
     callback_mtls_key_file: Path | None = None
     callback_ca_certs_file: Path | None = None
     alert_smtp_allowed_hosts: str = "smtp"
+    ldap_allowed_hosts: str = ""
 
     @property
     def vendor_live_test(self) -> bool:
@@ -462,6 +464,31 @@ class Settings(BaseSettings):
             re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,251}[a-z0-9])?", host) is None for host in hosts
         ):
             raise ValueError("ALERT_SMTP_ALLOWED_HOSTS contains an invalid host")
+        return hosts
+
+    @property
+    def ldap_allowed_host_set(self) -> frozenset[str]:
+        """解析部署侧 LDAP 精确允许主机；空列表表示拒绝真实 LDAP 出站。"""
+
+        hosts = frozenset(
+            host.strip().casefold()
+            for host in self.ldap_allowed_hosts.replace(";", ",").split(",")
+            if host.strip()
+        )
+        if any(
+            re.fullmatch(
+                r"[a-z0-9](?:[a-z0-9._-]{0,251}[a-z0-9])?(?::\d{1,5})?",
+                host,
+            )
+            is None
+            for host in hosts
+        ):
+            raise ValueError("LDAP_ALLOWED_HOSTS contains an invalid host")
+        for host in hosts:
+            if ":" in host:
+                port = int(host.rsplit(":", 1)[1])
+                if not 1 <= port <= 65535:
+                    raise ValueError("LDAP_ALLOWED_HOSTS contains an invalid port")
         return hosts
 
 
