@@ -20,6 +20,7 @@ from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.export_step_up import ExportStepUpService
+from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.user_repository import SqlUserManagementRepository
 
 pytestmark = pytest.mark.skipif(
@@ -337,4 +338,55 @@ async def test_local_account_create_persists_real_audit_row() -> None:
                     text("DELETE FROM user_account WHERE id=:account_id"),
                     {"account_id": account_id},
                 )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sensitive_word_add_and_delete_persist_real_audit_rows() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlSensitiveWordRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    word = f"audit-word-{uuid4().hex[:8]}"
+    word_id: int | None = None
+    try:
+        with correlation_scope(uuid4()):
+            result = await repository.add_many([word], actor="audit-admin")
+        assert result.created
+        word_id = result.created[0].id
+        with correlation_scope(uuid4()):
+            await repository.delete(word_id, actor="audit-admin")
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, object_type
+                        FROM audit_log
+                        WHERE action IN ('sensitive_word_add','sensitive_word_delete')
+                          AND actor='audit-admin'
+                        ORDER BY id
+                        """
+                    )
+                )
+            ).mappings().all()
+        assert [str(row["action"]) for row in rows] == [
+            "sensitive_word_add",
+            "sensitive_word_delete",
+        ]
+        assert all(str(row["actor"]) == "audit-admin" for row in rows)
+    finally:
+        async with engine.begin() as connection:
+            if word_id is not None:
+                await connection.execute(
+                    text("DELETE FROM sensitive_word WHERE id=:word_id"),
+                    {"word_id": word_id},
+                )
+            await connection.execute(
+                text(
+                    "DELETE FROM audit_log WHERE action LIKE 'sensitive_word_%' "
+                    "AND actor='audit-admin'"
+                )
+            )
         await engine.dispose()
