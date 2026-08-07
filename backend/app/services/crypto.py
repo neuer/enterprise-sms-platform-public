@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.settings import get_settings
 
+LOGGER = logging.getLogger(__name__)
 PHONE_PATTERN = re.compile(r"^1\d{10}$")
 NONCE_SIZE = 12
 TAG_SIZE = 16
@@ -244,9 +246,9 @@ class CryptoService:
         key_version: int,
         context: EncryptionContext,
         *,
-        allow_legacy: bool = True,
+        allow_legacy: bool = False,
     ) -> bytes:
-        """读取 v2 上下文密文，并在迁移期显式兼容旧版通用 AAD。"""
+        """读取 v2 上下文密文；legacy 兼容只能通过受控迁移接口显式开启。"""
 
         if payload.startswith(BOUND_ENVELOPE_MAGIC):
             encrypted = payload[len(BOUND_ENVELOPE_MAGIC) :]
@@ -261,6 +263,28 @@ class CryptoService:
         if not allow_legacy:
             raise ValueError("legacy ciphertext requires controlled migration")
         return self.decrypt_bytes(payload, key_version)
+
+    def decrypt_bound_with_legacy_migration(
+        self,
+        payload: bytes,
+        key_version: int,
+        context: EncryptionContext,
+    ) -> bytes:
+        """受控迁移读取：仅迁移任务调用，并记录不含敏感内容的可观测日志。"""
+
+        LOGGER.warning(
+            "legacy bound ciphertext migration read domain=%s table=%s column=%s key_version=%s",
+            context.domain,
+            context.table,
+            context.column,
+            key_version,
+        )
+        return self.decrypt_bound_bytes(
+            payload,
+            key_version,
+            context,
+            allow_legacy=True,
+        )
 
     def encrypt_text(self, plaintext: str) -> EncryptedValue:
         """以 UTF-8 加密文本。"""
@@ -287,7 +311,7 @@ class CryptoService:
         key_version: int,
         context: EncryptionContext,
         *,
-        allow_legacy: bool = True,
+        allow_legacy: bool = False,
     ) -> str:
         """解密上下文绑定文本，并严格按 UTF-8 还原。"""
 
@@ -296,6 +320,20 @@ class CryptoService:
             key_version,
             context,
             allow_legacy=allow_legacy,
+        ).decode("utf-8")
+
+    def decrypt_bound_text_with_legacy_migration(
+        self,
+        payload: bytes,
+        key_version: int,
+        context: EncryptionContext,
+    ) -> str:
+        """受控迁移读取文本；仅供白名单迁移任务使用。"""
+
+        return self.decrypt_bound_with_legacy_migration(
+            payload,
+            key_version,
+            context,
         ).decode("utf-8")
 
     def encrypt_packed_text(self, plaintext: str) -> bytes:
@@ -327,7 +365,7 @@ class CryptoService:
         packed: bytes,
         context: EncryptionContext,
         *,
-        allow_legacy: bool = True,
+        allow_legacy: bool = False,
     ) -> str:
         """解密单字段上下文密文，并兼容迁移前历史值。"""
 
@@ -339,6 +377,22 @@ class CryptoService:
             version,
             context,
             allow_legacy=allow_legacy,
+        )
+
+    def decrypt_bound_packed_text_with_legacy_migration(
+        self,
+        packed: bytes,
+        context: EncryptionContext,
+    ) -> str:
+        """受控迁移读取打包密文；仅供白名单迁移任务使用。"""
+
+        if len(packed) <= KEY_VERSION_BYTES:
+            raise ValueError("packed ciphertext payload is too short")
+        version = int.from_bytes(packed[:KEY_VERSION_BYTES], "big")
+        return self.decrypt_bound_text_with_legacy_migration(
+            packed[KEY_VERSION_BYTES:],
+            version,
+            context,
         )
 
     @staticmethod
@@ -412,7 +466,7 @@ class CryptoService:
         *,
         table: str = "sms_message",
         column: str = "phone_enc",
-        allow_legacy: bool = True,
+        allow_legacy: bool = False,
     ) -> str:
         """仅在提供持久化 HMAC 与表字段上下文时解密手机号。"""
 

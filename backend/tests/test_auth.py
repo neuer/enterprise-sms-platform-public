@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,7 +15,12 @@ from app.core.auth.backends import (
     ProviderDisabled,
     SessionStateUnavailable,
 )
-from app.core.auth.jwt import JwtClaims, JwtService
+from app.core.auth.jwt import (
+    JWT_AUDIENCE,
+    JWT_ISSUER,
+    JwtClaims,
+    JwtService,
+)
 from app.core.auth.ldap_real import LdapConfig, LdapPasswordProvider
 from app.core.auth.mock import MockLdapProvider
 from app.core.auth.providers import AuthProviderRegistry
@@ -654,7 +661,7 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
         first.refresh_token,
         service.secret,
         algorithms=["HS256"],
-        options={"verify_exp": False},
+        options={"verify_exp": False, "verify_aud": False},
     )
     moments[0] += timedelta(days=2)
     second = await service.rotate_refresh(first.refresh_token)
@@ -662,7 +669,7 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
         second.refresh_token,
         service.secret,
         algorithms=["HS256"],
-        options={"verify_exp": False},
+        options={"verify_exp": False, "verify_aud": False},
     )
 
     assert second.refresh_expires_in == 5 * 24 * 60 * 60
@@ -744,3 +751,124 @@ async def test_jwt_rejects_old_username_subject_and_password_change_tokens() -> 
     )
     with pytest.raises(InvalidCredentials):
         await service.verify(change_token)
+
+
+def _keyring(active: int, keys: dict[int, str]) -> str:
+    return json.dumps(
+        {
+            "active_version": active,
+            "keys": {
+                str(version): base64.b64encode(key.encode("utf-8")).decode("ascii")
+                for version, key in keys.items()
+            },
+        }
+    )
+
+
+def test_jwt_new_tokens_carry_kid_issuer_and_audience() -> None:
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        FakeKeyValue(),
+    )
+    token = service.issue(access_claims())
+
+    header = jwt.get_unverified_header(token)
+    assert header["kid"] == "1"
+    payload = jwt.decode(
+        token,
+        service.secret,
+        algorithms=["HS256"],
+        options={"verify_exp": False, "verify_aud": False},
+    )
+    assert payload["iss"] == JWT_ISSUER
+    assert payload["aud"] == JWT_AUDIENCE
+
+
+def test_jwt_unknown_kid_and_wrong_audience_fail_closed() -> None:
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        FakeKeyValue(),
+    )
+    token = service.issue(access_claims())
+    unknown = jwt.encode(
+        jwt.decode(
+            token,
+            service.secret,
+            algorithms=["HS256"],
+            options={"verify_exp": False, "verify_aud": False},
+        ),
+        service.secret,
+        algorithm="HS256",
+        headers={"kid": "99"},
+    )
+    with pytest.raises(InvalidCredentials):
+        service._decode(unknown)
+
+    wrong_aud = jwt.encode(
+        {
+            **jwt.decode(
+                token,
+                service.secret,
+                algorithms=["HS256"],
+                options={"verify_exp": False, "verify_aud": False},
+            ),
+            "aud": "other-service",
+        },
+        service.secret,
+        algorithm="HS256",
+        headers={"kid": "1"},
+    )
+    with pytest.raises(InvalidCredentials):
+        service._decode(wrong_aud)
+
+
+@pytest.mark.asyncio
+async def test_jwt_keyring_rotation_keeps_old_verification_keys() -> None:
+    old_secret = _keyring(1, {"1": "o" * 32})
+    rotated_secret = _keyring(
+        2,
+        {
+            "1": "o" * 32,
+            "2": "n" * 32,
+        },
+    )
+    old_service = JwtService(old_secret, FakeKeyValue())
+    rotated_service = JwtService(rotated_secret, FakeKeyValue())
+
+    old_token = old_service.issue(access_claims())
+    assert (await rotated_service.verify(old_token)).account_id == 8
+    assert jwt.get_unverified_header(rotated_service.issue(access_claims()))["kid"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_jwt_legacy_token_rejected_when_compat_window_closed() -> None:
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    secret = "a-jwt-secret-that-is-long-enough-for-hs256-tests"
+    strict = JwtService(
+        secret,
+        FakeKeyValue(),
+        clock=lambda: now,
+        accept_legacy=False,
+    )
+    legacy = jwt.encode(
+        {
+            "sub": "8",
+            "identity_id": 18,
+            "provider_code": "local",
+            "login_name": "operator01",
+            "display_name": "操作员",
+            "dept": "平台部",
+            "role": "operator",
+            "security_version": 1,
+            "token_type": "access",
+            "sid": "session",
+            "jti": "legacy-token",
+            "iat": now.timestamp(),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+        },
+        secret,
+        algorithm="HS256",
+    )
+
+    with pytest.raises(InvalidCredentials):
+        await strict.verify(legacy)

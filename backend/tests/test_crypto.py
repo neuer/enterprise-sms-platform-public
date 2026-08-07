@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from pathlib import Path
 
 import pytest
 from cryptography.exceptions import InvalidTag
@@ -15,6 +16,8 @@ from app.services.crypto import (
     CryptoService,
     EncryptionContext,
 )
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def b64(byte: bytes) -> str:
@@ -167,7 +170,13 @@ def test_bound_reader_dual_reads_legacy_then_reencrypts_without_plaintext_persis
     context = EncryptionContext("vendor-raw", "raw_vendor_log", "payload_enc", "report:digest")
     legacy = service.encrypt_bytes(b'{"code":0}')
 
-    plaintext = service.decrypt_bound_bytes(legacy.payload, legacy.key_version, context)
+    with pytest.raises(ValueError, match="legacy"):
+        service.decrypt_bound_bytes(legacy.payload, legacy.key_version, context)
+    plaintext = service.decrypt_bound_with_legacy_migration(
+        legacy.payload,
+        legacy.key_version,
+        context,
+    )
     migrated = service.encrypt_bound_bytes(plaintext, context)
 
     assert migrated.payload != legacy.payload
@@ -182,8 +191,19 @@ def test_bound_reader_dual_reads_legacy_then_reencrypts_without_plaintext_persis
             legacy.payload,
             legacy.key_version,
             context,
-            allow_legacy=False,
         )
+
+
+def test_regular_code_never_enables_legacy_bound_degradation() -> None:
+    """静态门禁：仅 crypto.py 的受控迁移接口可显式开启 legacy 降级。"""
+
+    offenders = []
+    for path in (BACKEND_ROOT / "app").rglob("*.py"):
+        if path.name == "crypto.py":
+            continue
+        if "allow_legacy=True" in path.read_text(encoding="utf-8"):
+            offenders.append(str(path.relative_to(BACKEND_ROOT)))
+    assert offenders == []
 
 
 @given(
