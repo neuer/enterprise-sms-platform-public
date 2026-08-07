@@ -14,8 +14,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.audit import AuditEvent, insert_audit
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.correlation import correlation_scope
+from app.services.admin import ConfigUpdate
+from app.services.admin_repository import SqlAdminRepository
 from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
@@ -526,4 +529,73 @@ async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None
                     "OR action LIKE 'sign_%' AND actor='audit-admin'"
                 )
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_config_update_persists_real_audit_row() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(
+        Any,
+        SimpleNamespace(
+            database_url=database_url,
+            alert_smtp_allowed_host_set=frozenset({"smtp"}),
+        ),
+    )
+    repository = SqlAdminRepository(settings)
+    principal = SecurityPrincipal(
+        account_id=8,
+        identity_id=18,
+        login_name="audit-admin",
+        dept="平台部",
+        role="admin",
+    )
+    original: str | None = None
+    try:
+        async with engine.connect() as connection:
+            original = str(
+                (
+                    await connection.execute(
+                        text("SELECT value FROM sys_config WHERE key='vendor_qps'")
+                    )
+                ).scalar_one()
+            )
+        with correlation_scope(uuid4()):
+            await repository.update_configs(
+                (ConfigUpdate(key="vendor_qps", value="8"),),
+                principal=principal,
+                ip="127.0.0.1",
+            )
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, actor_account_id, object_type, object_id
+                        FROM audit_log
+                        WHERE action='config_update'
+                          AND actor='audit-admin'
+                        ORDER BY id DESC
+                        """
+                    )
+                )
+            ).mappings().one()
+        assert row["action"] == "config_update"
+        assert int(row["actor_account_id"]) == 8
+        assert row["object_type"] == "sys_config"
+        assert row["object_id"] == "vendor_qps"
+    finally:
+        if original is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE sys_config SET value=:value WHERE key='vendor_qps'"),
+                    {"value": original},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM audit_log WHERE action='config_update' "
+                        "AND actor='audit-admin'"
+                    )
+                )
         await engine.dispose()
