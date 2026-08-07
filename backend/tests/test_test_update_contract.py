@@ -492,7 +492,6 @@ def test_ci_and_test_update_share_backend_critical_paths(path: str) -> None:
         "deploy/postgres.Dockerfile",
         "deploy/redis.Dockerfile",
         "deploy/initdb/01-create-app-role.sh",
-        "deploy/secrets.md",
         "deploy/systemd/sms-platform.service",
         "deploy/scripts/release_manager.py",
         "deploy/scripts/prepare_runtime_secrets.py",
@@ -590,6 +589,7 @@ def test_database_role_gate_inputs_are_safe_non_runtime_changes() -> None:
     change = classify_changed_paths(
         [
             "deploy/database-roles.md",
+            "deploy/secrets.md",
             "docs/runbooks/public-baseline-activation.md",
             "scripts/verify_database_roles.sh",
         ]
