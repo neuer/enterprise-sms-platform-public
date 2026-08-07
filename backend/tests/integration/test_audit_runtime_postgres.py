@@ -20,6 +20,7 @@ from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.export_step_up import ExportStepUpService
+from app.services.user_repository import SqlUserManagementRepository
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -269,4 +270,71 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                 text("DELETE FROM auth_provider WHERE code=:code"),
                 {"code": code},
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_local_account_create_persists_real_audit_row() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlUserManagementRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    username = f"audit-{uuid4().hex[:12]}"
+    account_id: int | None = None
+    identity_id: int | None = None
+    try:
+        with correlation_scope(uuid4()):
+            record = await repository.create_local(
+                username=username,
+                display_name="审计测试账号",
+                dept="平台部",
+                role="operator",
+                password_hash="not-a-real-password-hash",
+                actor="audit-admin",
+                ip="127.0.0.1",
+            )
+        account_id = record.account_id
+        identity_id = record.identity_id
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, object_type, object_id, role
+                        FROM audit_log
+                        WHERE action='local_account_create'
+                          AND object_type='user_account'
+                          AND object_id=CAST(:account_id AS text)
+                        """
+                    ),
+                    {"account_id": account_id},
+                )
+            ).mappings().one()
+        assert row["action"] == "local_account_create"
+        assert row["actor"] == "audit-admin"
+        assert int(row["object_id"]) == account_id
+    finally:
+        async with engine.begin() as connection:
+            if account_id is not None:
+                await connection.execute(
+                    text(
+                        "DELETE FROM audit_log WHERE object_type='user_account' "
+                        "AND object_id=CAST(:account_id AS text)"
+                    ),
+                    {"account_id": account_id},
+                )
+                if identity_id is not None:
+                    await connection.execute(
+                        text("DELETE FROM local_credential WHERE identity_id=:identity_id"),
+                        {"identity_id": identity_id},
+                    )
+                    await connection.execute(
+                        text("DELETE FROM auth_identity WHERE id=:identity_id"),
+                        {"identity_id": identity_id},
+                    )
+                await connection.execute(
+                    text("DELETE FROM user_account WHERE id=:account_id"),
+                    {"account_id": account_id},
+                )
         await engine.dispose()
