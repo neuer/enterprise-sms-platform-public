@@ -12,12 +12,12 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
-from app.core.audit import audited
+from app.core.audit import AuditEvent, audited, insert_audit
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
-from app.core.runtime_resources import redis_client
+from app.core.runtime_resources import database_engine, redis_client
 from app.services.crypto import CryptoService
 from app.services.dashboard import DashboardService, DashboardSnapshot
 from app.services.dashboard_repository import SqlDashboardRepository
@@ -202,7 +202,16 @@ def get_export_step_up_service(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> ExportStepUpService:
     settings = get_settings()
-    return ExportStepUpService(facade, redis_client(settings.redis_auth_url))
+
+    async def audit_step_up(event: AuditEvent) -> None:
+        async with database_engine(settings.database_url).connect() as connection:
+            await insert_audit(connection, event)
+
+    return ExportStepUpService(
+        facade,
+        redis_client(settings.redis_auth_url),
+        audit_sink=audit_step_up,
+    )
 
 
 def get_dashboard_service() -> DashboardService:
