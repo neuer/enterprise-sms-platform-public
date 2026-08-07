@@ -326,6 +326,7 @@ async def list_outbox_events(
         409: ERROR_RESPONSE,
     },
 )
+@audited("outbox_retry")
 async def retry_outbox_event(
     event_id: UUID,
     repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],

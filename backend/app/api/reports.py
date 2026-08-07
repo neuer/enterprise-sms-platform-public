@@ -435,6 +435,7 @@ async def get_export(
         423: ERROR_RESPONSE,
     },
 )
+@audited("export_step_up")
 async def export_step_up(
     public_id: UUID,
     payload: ExportStepUpRequestModel,

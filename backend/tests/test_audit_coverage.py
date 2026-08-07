@@ -28,18 +28,55 @@ from app.api import (
 from app.main import create_app
 from app.services.app_repository import SqlAppRepository
 
+READ_ONLY_POST_PATHS = frozenset(
+    {
+        "/api/v1/web/billing/preview",
+        "/api/v1/web/admin/vendor-test/messages/preview",
+    }
+)
+
+
+def _audited_write_routes(application) -> list[APIRoute]:
+    """递归展开 FastAPI 延迟路由，返回全部写路由端点。"""
+
+    routes: list[APIRoute] = []
+    for route in application.routes:
+        if type(route).__name__ == "_IncludedRouter":
+            routes.extend(_audited_write_routes(route.original_router))
+        elif isinstance(route, APIRoute):
+            routes.append(route)
+    return routes
+
 
 def test_every_registered_write_route_declares_an_audit_action() -> None:
     """自动枚举路由；新增写端点未加 @audited 时 CI 必须失败。"""
 
     missing = []
-    for route in create_app().routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _audited_write_routes(create_app()):
         if not route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        if route.path in READ_ONLY_POST_PATHS:
             continue
         if not getattr(route.endpoint, "__audited_action__", None):
             missing.append(f"{','.join(sorted(route.methods))} {route.path}")
+    assert missing == []
+
+
+def test_every_audited_action_has_a_test_file_reference() -> None:
+    """新增受审计动作若完全没有任何测试引用，CI 必须失败。"""
+
+    actions = {
+        route.endpoint.__dict__.get("__audited_action__")
+        for route in _audited_write_routes(create_app())
+        if route.methods.intersection({"POST", "PUT", "PATCH", "DELETE"})
+        and route.path not in READ_ONLY_POST_PATHS
+        and route.endpoint.__dict__.get("__audited_action__") is not None
+    }
+    tests_root = Path(__file__).resolve().parents[1] / "tests"
+    test_texts = "\n".join(
+        path.read_text(encoding="utf-8") for path in tests_root.rglob("*.py")
+    )
+    missing = sorted(action for action in actions if action not in test_texts)
     assert missing == []
 
 
