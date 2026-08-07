@@ -25,6 +25,8 @@ from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.blacklist import BlacklistEntry
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
+from app.services.export import ExportFilterSet
+from app.services.export_repository import SqlExportRepository
 from app.services.export_step_up import ExportStepUpService
 from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.sign_repository import SqlSignRepository
@@ -597,5 +599,61 @@ async def test_config_update_persists_real_audit_row() -> None:
                         "DELETE FROM audit_log WHERE action='config_update' "
                         "AND actor='audit-admin'"
                     )
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_export_create_persists_real_audit_row() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlExportRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    principal = SecurityPrincipal(
+        account_id=8,
+        identity_id=18,
+        login_name="audit-admin",
+        dept="平台部",
+        role="admin",
+    )
+    public_id: str | None = None
+    try:
+        with correlation_scope(uuid4()):
+            task = await repository.create(
+                principal=principal,
+                filters=ExportFilterSet(None, None, None, None, None, None, (), "平台部"),
+                decrypted=False,
+            )
+        public_id = str(task.public_id)
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, actor_account_id, object_type, object_id
+                        FROM audit_log
+                        WHERE action='export_create' AND object_id=:public_id
+                        """
+                    ),
+                    {"public_id": public_id},
+                )
+            ).mappings().one()
+        assert row["action"] == "export_create"
+        assert int(row["actor_account_id"]) == 8
+        assert row["object_type"] == "export_task"
+    finally:
+        async with engine.begin() as connection:
+            if public_id is not None:
+                await connection.execute(
+                    text(
+                        "DELETE FROM audit_log WHERE action='export_create' "
+                        "AND object_id=:public_id"
+                    ),
+                    {"public_id": public_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM export_task WHERE public_id=CAST(:public_id AS uuid)"),
+                    {"public_id": public_id},
                 )
         await engine.dispose()
