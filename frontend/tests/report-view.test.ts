@@ -45,7 +45,13 @@ describe("统计报表页", () => {
       .mockResolvedValueOnce(response({ id: publicId, status: "done", decrypted: false, row_count: 15, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }))
       .mockResolvedValueOnce(response(null))
     vi.stubGlobal("fetch", fetch)
-    vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:test"), revokeObjectURL: vi.fn() })
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: vi.fn(() => "blob:test"),
+        revokeObjectURL: vi.fn(),
+      }),
+    )
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
 
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
@@ -83,7 +89,13 @@ describe("统计报表页", () => {
       .mockResolvedValueOnce(response({ token: "single-use-token", expires_in: 300 }))
       .mockResolvedValueOnce(response(null))
     vi.stubGlobal("fetch", fetch)
-    vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:test"), revokeObjectURL: vi.fn() })
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: vi.fn(() => "blob:test"),
+        revokeObjectURL: vi.fn(),
+      }),
+    )
     vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "current-password", action: "confirm" } as never)
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
 
