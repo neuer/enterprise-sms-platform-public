@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -19,6 +21,8 @@ PHONE_PATTERN = re.compile(r"^1\d{10}$")
 PHONE_IN_TEXT = re.compile(r"(?<!\d)(1\d{10})(?!\d)")
 CUSTOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{0,36}$")
 VENDOR_TIMEOUT_S = 10.0
+VENDOR_MAX_RESPONSE_HEADER_BYTES = 64 * 1024
+VENDOR_MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024
 
 
 class VendorError(RuntimeError):
@@ -29,6 +33,14 @@ class VendorTransportError(VendorError):
     """网络或超时错误；发送结果未知，调用方严禁自动重发。"""
 
     result_unknown = True
+
+
+class VendorResponseTooLarge(VendorTransportError):
+    """厂商响应超过硬上限；请求可能已被上游接收，保持结果未知。"""
+
+
+class VendorTotalTimeout(VendorTransportError):
+    """厂商请求完整生命周期超过绝对总截止时间；保持结果未知。"""
 
 
 class VendorProtocolError(VendorError):
@@ -93,11 +105,24 @@ class ZhihuiClient:
         secret_name: str,
         secret_key: str,
         http_client: httpx.AsyncClient | None = None,
+        max_response_header_bytes: int = VENDOR_MAX_RESPONSE_HEADER_BYTES,
+        max_response_body_bytes: int = VENDOR_MAX_RESPONSE_BODY_BYTES,
+        total_timeout_s: float = VENDOR_TIMEOUT_S,
     ) -> None:
         if not secret_name or not secret_key:
             raise ValueError("vendor credentials must not be empty")
+        if (
+            max_response_header_bytes < 1
+            or max_response_body_bytes < 1
+            or total_timeout_s <= 0
+        ):
+            raise ValueError("vendor response limits and timeout must be positive")
         self._secret_name = secret_name
         self._secret_key = secret_key
+        self._base_url = base_url.rstrip("/")
+        self.max_response_header_bytes = max_response_header_bytes
+        self.max_response_body_bytes = max_response_body_bytes
+        self.total_timeout_s = total_timeout_s
         self._client = http_client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(VENDOR_TIMEOUT_S),
@@ -137,7 +162,28 @@ class ZhihuiClient:
         }
         started = perf_counter()
         try:
-            response = await self._client.post(path, json=body)
+            async with asyncio.timeout(self.total_timeout_s):
+                url = httpx.URL(self._base_url).join(path)
+                request = self._client.build_request("POST", url, json=body)
+                response = await self._client.send(request, stream=True)
+                try:
+                    self._check_response_header_limits(response)
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > self.max_response_body_bytes:
+                            raise VendorResponseTooLarge(
+                                "vendor response body exceeds hard limit"
+                            )
+                        chunks.append(chunk)
+                    content = b"".join(chunks)
+                finally:
+                    await response.aclose()
+        except TimeoutError:
+            raise VendorTotalTimeout("vendor request exceeded absolute deadline") from None
+        except VendorError:
+            raise
         except httpx.TransportError:
             LOGGER.error("vendor transport error endpoint=%s", path)
             raise VendorTransportError("vendor transport failed; result unknown") from None
@@ -152,8 +198,8 @@ class ZhihuiClient:
             )
             raise VendorProtocolError(f"vendor HTTP status {response.status_code}")
         try:
-            envelope = response.json()
-        except ValueError:
+            envelope = json.loads(content)
+        except (ValueError, UnicodeError):
             raise VendorProtocolError("vendor response is not JSON") from None
         if not isinstance(envelope, dict):
             raise VendorProtocolError("vendor response envelope must be an object")
@@ -174,7 +220,27 @@ class ZhihuiClient:
             )
             raise VendorApiError(code, message)
         LOGGER.info("vendor API success endpoint=%s duration_ms=%s", path, duration_ms)
-        return _VendorPayload(_strip_keys(envelope["data"]), response.content)
+        return _VendorPayload(_strip_keys(envelope["data"]), content)
+
+    def _check_response_header_limits(self, response: httpx.Response) -> None:
+        """在读取响应体前校验响应头和声明长度。"""
+
+        header_bytes = sum(
+            len(name.encode("ascii", "ignore"))
+            + len(value.encode("latin-1", "ignore"))
+            + 4
+            for name, value in response.headers.multi_items()
+        )
+        if header_bytes > self.max_response_header_bytes:
+            raise VendorResponseTooLarge("vendor response headers exceed hard limit")
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                declared_length = int(declared)
+            except ValueError:
+                raise VendorProtocolError("vendor content-length is invalid") from None
+            if declared_length < 0 or declared_length > self.max_response_body_bytes:
+                raise VendorResponseTooLarge("vendor response body exceeds hard limit")
 
     async def send(
         self,
