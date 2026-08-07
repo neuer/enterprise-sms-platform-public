@@ -85,7 +85,13 @@ describe("人工发送工作台", () => {
       return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, json: async () => imported }
     })
     vi.stubGlobal("fetch", fetch)
-    vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:masked"), revokeObjectURL: vi.fn() })
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: vi.fn(() => "blob:masked"),
+        revokeObjectURL: vi.fn(),
+      }),
+    )
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     ;(wrapper.vm as unknown as { form: { source: string } }).form.source = "import"

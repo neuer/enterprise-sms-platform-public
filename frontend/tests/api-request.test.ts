@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, vi } from "vitest"
 
-import { apiRequest } from "../src/api/webMessages"
+import { apiRequest, authorizedFetch } from "../src/api/webMessages"
 import {
   createLocalUser,
   listUsers,
@@ -38,9 +38,11 @@ describe("统一 API 请求", () => {
     localStorage.clear()
     sessionStorage.clear()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     for (const listener of unauthorizedListeners) {
       window.removeEventListener("sms:unauthorized", listener)
     }
@@ -312,5 +314,87 @@ describe("统一 API 请求", () => {
     expect(JSON.parse(String(calls[1][1].body)).temporary_password).toBe("Temporary@123")
     expect(JSON.stringify(created)).not.toContain("temporary_password")
     expect(page.items[0].account_id).toBe(8)
+  })
+
+  it.each([
+    "https://evil.example/api/v1/web/reports/dashboard",
+    "//evil.example/api/v1/web/reports/dashboard",
+    "javascript:alert(1)",
+    "data:text/plain,hello",
+  ])("授权请求拒绝非同源目标 %s 且不调用 fetch", async (url) => {
+    const fetch = vi.fn()
+    vi.stubGlobal("fetch", fetch)
+
+    await expect(authorizedFetch(url, { method: "GET" })).rejects.toThrow(
+      "授权请求必须与当前站点同源",
+    )
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it("请求超过默认总超时后以明确错误失败", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("请求超时", "TimeoutError")),
+          )
+        }),
+    )
+    vi.stubGlobal("fetch", fetch)
+
+    const pending = authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
+    const assertion = expect(pending).rejects.toThrow("请求超时")
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
+
+  it("会话清理事件取消全部在途授权请求", async () => {
+    const fetch = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("会话已清理", "AbortError")),
+          )
+        }),
+    )
+    vi.stubGlobal("fetch", fetch)
+
+    const pending = authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
+    const assertion = expect(pending).rejects.toThrow("会话已清理")
+    window.dispatchEvent(new Event("sms:session-clearing"))
+    await assertion
+  })
+
+  it("刷新超时后释放 single-flight 并可再次发起", async () => {
+    vi.useFakeTimers()
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_refresh_token", "refresh-1")
+    sessionStorage.setItem("sms_user", "{}")
+    let refreshCalls = 0
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/web/auth/refresh") {
+        refreshCalls += 1
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("刷新超时", "TimeoutError")),
+          )
+        })
+      }
+      return Promise.resolve(response({ code: "UNAUTHORIZED" }, 401))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const first = apiRequest("/reports/dashboard", { method: "GET" })
+    const firstAssertion = expect(first).rejects.toThrow("会话权威状态暂不可用")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await firstAssertion
+    expect(refreshCalls).toBe(1)
+
+    const second = apiRequest("/reports/dashboard", { method: "GET" })
+    const secondAssertion = expect(second).rejects.toThrow("会话权威状态暂不可用")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await secondAssertion
+    expect(refreshCalls).toBe(2)
   })
 })
