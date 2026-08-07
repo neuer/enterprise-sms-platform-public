@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, cast
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -82,15 +83,14 @@ class UserResponse(StrictModel):
 
 class LoginResponse(StrictModel):
     token: str
-    refresh_token: str = Field(json_schema_extra={"writeOnly": True})
     expires_in: Literal[900]
     refresh_expires_in: int = Field(ge=1, le=604800)
     user: UserResponse
 
 
 class RefreshRequest(StrictModel):
-    refresh_token: str = Field(
-        min_length=1,
+    refresh_token: str | None = Field(
+        default=None,
         max_length=4096,
         json_schema_extra={"writeOnly": True},
     )
@@ -168,7 +168,6 @@ def _login_response(result: LoginSuccess) -> LoginResponse:
     user = result.user
     return LoginResponse(
         token=result.token,
-        refresh_token=result.refresh_token,
         expires_in=result.expires_in,
         refresh_expires_in=result.refresh_expires_in,
         user=UserResponse(
@@ -181,6 +180,21 @@ def _login_response(result: LoginSuccess) -> LoginResponse:
             role=user.role,
         ),
     )
+
+
+def _assert_same_origin(request: Request) -> None:
+    """Cookie 写请求必须由同源页面发起，拒绝跨站 CSRF。"""
+
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        raise ApiError(403, "FORBIDDEN", "缺少同源校验来源", None)
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname != request.url.hostname
+        or parsed.port != request.url.port
+    ):
+        raise ApiError(403, "FORBIDDEN", "请求来源非同源", None)
 
 
 @router.get(
@@ -277,7 +291,11 @@ async def refresh(
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> LoginResponse:
-    result = await facade.refresh(payload.refresh_token)
+    _assert_same_origin(request)
+    refresh_token = payload.refresh_token or request.cookies.get(REFRESH_COOKIE_NAME)
+    if not refresh_token:
+        raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
+    result = await facade.refresh(refresh_token)
     response.headers["Cache-Control"] = "no-store"
     _set_refresh_cookie(
         response,
@@ -355,7 +373,9 @@ async def logout(
         Depends(bearer_scheme),
     ],
 ) -> Response:
-    await facade.logout(_bearer(credentials), _client_ip(request))
+    token = _bearer(credentials)
+    _assert_same_origin(request)
+    await facade.logout(token, _client_ip(request))
     outcome = Response(status_code=200)
     _clear_refresh_cookie(outcome)
     return outcome

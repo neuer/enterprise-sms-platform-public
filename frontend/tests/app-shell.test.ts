@@ -52,7 +52,7 @@ describe("应用骨架", () => {
       ],
     })
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",
@@ -83,7 +83,7 @@ describe("应用骨架", () => {
       ],
     })
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",
@@ -123,7 +123,7 @@ describe("应用骨架", () => {
     await router.isReady()
 
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",
@@ -152,7 +152,7 @@ describe("应用骨架", () => {
       ],
     })
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 2,
       identity_id: 12,
       provider_code: "local",
@@ -184,7 +184,7 @@ describe("应用骨架", () => {
       ],
     })
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 3,
       identity_id: 13,
       provider_code: "local",
@@ -215,7 +215,7 @@ describe("应用骨架", () => {
       ],
     })
     const pinia = createPinia()
-    useSessionStore(pinia).apply("jwt", "refresh.jwt", {
+    useSessionStore(pinia).apply("jwt", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",
@@ -262,7 +262,7 @@ describe("应用骨架", () => {
     })
     const pinia = createPinia()
     const session = useSessionStore(pinia)
-    session.apply("jwt", "refresh.jwt", {
+    session.apply("jwt", {
       account_id: 2,
       identity_id: 12,
       provider_code: "local",
@@ -293,7 +293,7 @@ describe("应用骨架", () => {
     })
     const pinia = createPinia()
     const session = useSessionStore(pinia)
-    session.apply("jwt", "refresh.jwt", {
+    session.apply("jwt", {
       account_id: 2,
       identity_id: 12,
       provider_code: "local",
@@ -327,7 +327,7 @@ describe("应用骨架", () => {
     })
     const pinia = createPinia()
     const session = useSessionStore(pinia)
-    session.apply("jwt-local", "refresh.jwt", {
+    session.apply("jwt-local", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",
@@ -417,7 +417,7 @@ describe("应用骨架", () => {
     })
     const pinia = createPinia()
     const session = useSessionStore(pinia)
-    session.apply("jwt", "refresh.jwt", {
+    session.apply("jwt", {
       account_id: 1,
       identity_id: 11,
       provider_code: "local",

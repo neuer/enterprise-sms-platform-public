@@ -9,7 +9,7 @@ import ApprovalView from "../src/views/ApprovalView.vue"
 function mountApproverView() {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useSessionStore().apply("jwt", "refresh.jwt", {
+  useSessionStore().apply("jwt", {
     account_id: 3,
     identity_id: 13,
     provider_code: "local",

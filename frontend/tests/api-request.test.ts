@@ -51,7 +51,6 @@ describe("统一 API 请求", () => {
 
   it("401 时清除持久会话并广播未授权事件", async () => {
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_refresh_token", "stale-refresh")
     sessionStorage.setItem("sms_user", "{}")
     const fetch = vi
       .fn()
@@ -63,7 +62,6 @@ describe("统一 API 请求", () => {
     await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
 
     expect(sessionStorage.getItem("sms_token")).toBeNull()
-    expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).toHaveBeenCalledOnce()
   })
@@ -73,7 +71,6 @@ describe("统一 API 请求", () => {
     const sessionRefreshed = vi.fn()
     window.addEventListener("sms:session-refreshed", sessionRefreshed, { once: true })
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_refresh_token", "refresh-1")
     sessionStorage.setItem("sms_user", "{}")
     const updatedUser = {
       account_id: 8,
@@ -91,7 +88,6 @@ describe("统一 API 请求", () => {
         response(
           {
             token: "access-2",
-            refresh_token: "refresh-2",
             expires_in: 900,
             refresh_expires_in: 604800,
             user: updatedUser,
@@ -107,13 +103,10 @@ describe("统一 API 请求", () => {
 
     expect(fetch).toHaveBeenCalledTimes(3)
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/auth/refresh")
-    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
-      refresh_token: "refresh-1",
-    })
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({})
     expect(fetch.mock.calls[2][1].headers).toMatchObject({
       Authorization: "Bearer access-2",
     })
-    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh-2")
     expect(JSON.parse(sessionStorage.getItem("sms_user") || "null")).toEqual(updatedUser)
     expect(sessionRefreshed).toHaveBeenCalledOnce()
     expect(refreshed).not.toHaveBeenCalled()
@@ -121,7 +114,6 @@ describe("统一 API 请求", () => {
 
   it("并发 401 共享一次 refresh，避免重复消费单次令牌", async () => {
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_refresh_token", "refresh-1")
     sessionStorage.setItem("sms_user", "{}")
     const user = {
       account_id: 8,
@@ -138,7 +130,6 @@ describe("统一 API 请求", () => {
           response(
             {
               token: "access-2",
-              refresh_token: "refresh-2",
               expires_in: 900,
               refresh_expires_in: 604800,
               user,
@@ -168,7 +159,6 @@ describe("统一 API 请求", () => {
 
   it("refresh 状态服务故障时保留会话并显式返回 503", async () => {
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_refresh_token", "refresh-1")
     sessionStorage.setItem("sms_user", "{}")
     const fetch = vi
       .fn()
@@ -190,7 +180,6 @@ describe("统一 API 请求", () => {
     )
 
     expect(sessionStorage.getItem("sms_token")).toBe("expired")
-    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh-1")
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
@@ -369,7 +358,6 @@ describe("统一 API 请求", () => {
   it("刷新超时后释放 single-flight 并可再次发起", async () => {
     vi.useFakeTimers()
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_refresh_token", "refresh-1")
     sessionStorage.setItem("sms_user", "{}")
     let refreshCalls = 0
     const fetch = vi.fn((url: string, init?: RequestInit) => {

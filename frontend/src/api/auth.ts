@@ -26,7 +26,6 @@ export interface PlatformUser {
 
 export interface LoginSuccess {
   token: string
-  refresh_token: string
   expires_in: 900
   refresh_expires_in: number
   user: PlatformUser
@@ -95,14 +94,11 @@ export async function loginRequest(
   return (await response.json()) as LoginResponse
 }
 
-export async function refreshRequest(
-  refreshToken: string,
-  signal?: AbortSignal,
-): Promise<LoginSuccess> {
+export async function refreshRequest(signal?: AbortSignal): Promise<LoginSuccess> {
   const response = await fetch("/api/v1/web/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
+    body: JSON.stringify({}),
     signal,
   })
   if (!response.ok) throw await apiError(response)

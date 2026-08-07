@@ -20,7 +20,7 @@ const template = {
 function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof createPinia> {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useSessionStore().apply("jwt", "refresh.jwt", {
+  useSessionStore().apply("jwt", {
     account_id: 1,
     identity_id: 11,
     provider_code: "local",

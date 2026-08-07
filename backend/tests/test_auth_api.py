@@ -151,7 +151,6 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     assert success.headers["cache-control"] == "no-store"
     assert success.json() == {
         "token": "signed.jwt",
-        "refresh_token": "refresh.jwt",
         "expires_in": 900,
         "refresh_expires_in": 604800,
         "user": {
@@ -173,12 +172,13 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
 
     refreshed = response_client.post(
         "/api/v1/web/auth/refresh",
-        json={"refresh_token": "refresh.jwt"},
+        headers={"Origin": "http://testserver"},
+        json={},
     )
     assert refreshed.status_code == 200
     assert refreshed.headers["cache-control"] == "no-store"
     assert refreshed.json()["token"] == "rotated.jwt"
-    assert refreshed.json()["refresh_token"] == "rotated-refresh.jwt"
+    assert "refresh_token" not in refreshed.json()
     refreshed_cookie = refreshed.headers.get("set-cookie", "")
     assert "sms_refresh_token=rotated-refresh.jwt" in refreshed_cookie
     assert "HttpOnly" in refreshed_cookie
@@ -212,6 +212,23 @@ def test_temporary_login_and_both_password_change_endpoints() -> None:
         "next_action": "change_password",
     }
     assert "token" not in login.json() and "user" not in login.json()
+
+
+def test_cookie_refresh_rejects_cross_origin_request() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+    response_client.post(
+        "/api/v1/web/auth/login",
+        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+    )
+
+    denied = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://evil.example"},
+        json={},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "FORBIDDEN"
 
     initial = response_client.post(
         "/api/v1/web/auth/password/initial",
@@ -270,7 +287,10 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     assert response_client.post("/api/v1/web/auth/logout").status_code == 401
     logged_out = response_client.post(
         "/api/v1/web/auth/logout",
-        headers={"Authorization": "Bearer current.jwt"},
+        headers={
+            "Authorization": "Bearer current.jwt",
+            "Origin": "http://testserver",
+        },
     )
     assert logged_out.status_code == 200
     cleared = logged_out.headers.get("set-cookie", "")

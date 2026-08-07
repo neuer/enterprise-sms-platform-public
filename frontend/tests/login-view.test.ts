@@ -78,7 +78,6 @@ describe("登录页", () => {
       .mockResolvedValueOnce(
         response({
           token: "jwt",
-          refresh_token: "refresh.jwt",
           expires_in: 900,
           refresh_expires_in: 604800,
           user: {
@@ -113,7 +112,7 @@ describe("登录页", () => {
     )
     expect(router.currentRoute.value.path).toBe("/dashboard")
     expect(sessionStorage.getItem("sms_token")).toBe("jwt")
-    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh.jwt")
+    expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.getItem("sms_token")).toBeNull()
   })
 

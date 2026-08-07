@@ -73,7 +73,6 @@ export class ApiRequestError extends Error {
 }
 
 const TOKEN_KEY = "sms_token"
-const REFRESH_TOKEN_KEY = "sms_refresh_token"
 const USER_KEY = "sms_user"
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const REFRESH_TIMEOUT_MS = 10_000
@@ -158,7 +157,6 @@ function requestWithCurrentAuthorization(
 function clearSession(): void {
   cancelSessionRequests()
   sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(REFRESH_TOKEN_KEY)
   sessionStorage.removeItem(USER_KEY)
   window.dispatchEvent(new Event("sms:unauthorized"))
 }
@@ -166,11 +164,6 @@ function clearSession(): void {
 async function refreshSession(): Promise<RefreshResult> {
   if (refreshInFlight) return refreshInFlight
   refreshInFlight = (async () => {
-    const refreshToken = sessionStorage.getItem(REFRESH_TOKEN_KEY)
-    if (!refreshToken) {
-      clearSession()
-      return "unauthorized"
-    }
     try {
       const controller = new AbortController()
       const timer = window.setTimeout(
@@ -179,12 +172,11 @@ async function refreshSession(): Promise<RefreshResult> {
       )
       let result: Awaited<ReturnType<typeof refreshRequest>>
       try {
-        result = await refreshRequest(refreshToken, controller.signal)
+        result = await refreshRequest(controller.signal)
       } finally {
         window.clearTimeout(timer)
       }
       sessionStorage.setItem(TOKEN_KEY, result.token)
-      sessionStorage.setItem(REFRESH_TOKEN_KEY, result.refresh_token)
       sessionStorage.setItem(USER_KEY, JSON.stringify(result.user))
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"

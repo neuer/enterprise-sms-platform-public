@@ -52,7 +52,6 @@ describe("Provider 与 JWT 会话", () => {
     const fetch = vi.fn().mockResolvedValue(
       response({
         token: "jwt-token",
-        refresh_token: "refresh-token",
         expires_in: 900,
         refresh_expires_in: 604800,
         user: admin,
@@ -81,7 +80,7 @@ describe("Provider 与 JWT 会话", () => {
     expect(session.providerCode).toBe("local")
     expect(session.roleLabel).toBe("管理员")
     expect(JSON.parse(sessionStorage.getItem("sms_user") || "null")).toEqual(admin)
-    expect(sessionStorage.getItem("sms_refresh_token")).toBe("refresh-token")
+    expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.getItem("sms_token")).toBeNull()
     expect(localStorage.getItem("sms_user")).toBeNull()
   })
@@ -129,7 +128,7 @@ describe("Provider 与 JWT 会话", () => {
     expect(sessionStorage.getItem("sms_change_token")).toBeNull()
     expect(sessionStorage.getItem("sms_change_token_expires_at")).toBeNull()
     expect(sessionStorage.getItem("sms_token")).toBe("must-not-authenticate")
-    expect(sessionStorage.getItem("sms_refresh_token")).toBe("must-not-refresh")
+    expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.length).toBe(0)
   })
 
