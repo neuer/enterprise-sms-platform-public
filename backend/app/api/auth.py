@@ -15,6 +15,7 @@ from app.core.auth.runtime import (
     PasswordChangeRequired,
     get_auth_facade,
 )
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 
 router = APIRouter(prefix="/api/v1/web", tags=["auth"])
@@ -125,7 +126,7 @@ class PasswordChangeRequest(StrictModel):
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client is not None else "0.0.0.0"
+    return trusted_client_ip(request)
 
 
 def _bearer(credentials: HTTPAuthorizationCredentials | None) -> str:

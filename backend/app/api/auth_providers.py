@@ -17,6 +17,7 @@ from app.core.auth.providers import create_provider_registry
 from app.core.auth.roles import Role
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.auth.users import SqlUserRepository
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.auth_provider import (
     AuthProviderService,
@@ -138,7 +139,7 @@ async def _admin(
     claims = await facade.verify(_token(credentials))
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可管理认证源", None)
-    ip = request.client.host if request.client is not None else "0.0.0.0"
+    ip = trusted_client_ip(request)
     return claims.login_name, ip
 
 

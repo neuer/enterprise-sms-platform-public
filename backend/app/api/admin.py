@@ -14,6 +14,7 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.admin import (
     AdminService,
@@ -95,7 +96,7 @@ async def _admin(
     claims = await facade.verify(credentials.credentials)
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可访问审计与系统参数", None)
-    ip = request.client.host if request.client is not None else "0.0.0.0"
+    ip = trusted_client_ip(request)
     return claims.principal, ip
 
 
