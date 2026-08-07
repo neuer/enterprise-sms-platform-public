@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal, cast
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -286,13 +286,15 @@ async def login(
 )
 @audited("session_refresh")
 async def refresh(
-    payload: RefreshRequest,
     request: Request,
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    payload: Annotated[RefreshRequest, Body()] = None,  # type: ignore[assignment]
 ) -> LoginResponse:
     _assert_same_origin(request)
-    refresh_token = payload.refresh_token or request.cookies.get(REFRESH_COOKIE_NAME)
+    refresh_token = (
+        payload.refresh_token if payload is not None else None
+    ) or request.cookies.get(REFRESH_COOKIE_NAME)
     if not refresh_token:
         raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
     result = await facade.refresh(refresh_token)

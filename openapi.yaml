@@ -417,7 +417,6 @@ paths:
         refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
         身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
       requestBody:
-        required: false
         content:
           application/json:
             schema: { $ref: '#/components/schemas/RefreshRequest' }
@@ -2799,7 +2798,12 @@ components:
       type: object
       additionalProperties: false
       properties:
-        refresh_token: { type: string, nullable: true, maxLength: 4096, writeOnly: true, description: 兼容旧客户端；新客户端通过 HttpOnly Cookie 提供 }
+        refresh_token:
+          anyOf:
+            - { type: string, maxLength: 4096 }
+            - { type: "null" }
+          writeOnly: true
+          description: 兼容旧客户端；新客户端通过 HttpOnly Cookie 提供
 
     PasswordChangeRequired:
       type: object
