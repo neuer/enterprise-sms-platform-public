@@ -387,7 +387,7 @@ services:
     volumes:
       # 脱敏访问日志持久化：nginx(101) 写入独立目录，主机采集器(host root)只读聚合。
       - ${SMS_SECURITY_REPORT_NGINX_DIR:-./security-report-nginx}:/var/log/nginx:rw
-    ports: ["${WEB_PORT:-18080}:8080"] # 公网 HTTP 备用端口；生产 TLS 在宿主 18443 终结
+    ports: ["${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-18080}:8080"] # 明文 HTTP 上游；生产只允许本机或显式批准的 TLS 终结器访问
     depends_on:
       api: { condition: service_healthy }
     networks:

@@ -296,7 +296,7 @@ def test_host_ports_are_overridable_without_changing_container_contract() -> Non
     services = compose["services"]
 
     assert services["api"]["ports"] == ["127.0.0.1:${API_PORT:-8000}:8000"]
-    assert services["web"]["ports"] == ["${WEB_PORT:-18080}:8080"]
+    assert services["web"]["ports"] == ["${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-18080}:8080"]
     assert services["mock-vendor"]["ports"] == ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
 
 
@@ -305,7 +305,7 @@ def test_production_docs_use_reserved_public_ports() -> None:
     runbook = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
 
     assert "WEB_BASE_URL=https://sms.example.com:18443" in env_example
-    assert "宿主机 `18080`" in runbook
+    assert "明文 HTTP 上游默认绑定回环" in runbook
     assert "`18443`" in runbook
     assert "80/443/8080/8443/8000/9028" in runbook
 
