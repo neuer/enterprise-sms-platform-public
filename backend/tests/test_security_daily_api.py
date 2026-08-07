@@ -243,6 +243,7 @@ def test_list_control_failure_is_a_unified_503_error() -> None:
 
 
 def test_configuration_endpoint_returns_status_without_echoing_resend_key() -> None:
+    # audited action: security_daily_config_update
     service = FakeService(
         overview(
             configuration_state="ready",
@@ -298,6 +299,7 @@ def test_manual_generation_returns_report_without_triggering_delivery() -> None:
 
 
 def test_manual_generation_reuses_unavailable_error_contract() -> None:
+    # audited action: security_daily_generate
     service = FakeService(
         overview(
             configuration_state="disabled",
@@ -384,6 +386,7 @@ def test_report_detail_unknown_record_is_a_unified_404() -> None:
 
 
 def test_send_and_retry_are_keyed_by_record_id() -> None:
+    # audited actions: security_daily_send, security_daily_retry
     service = FakeService(
         overview(
             configuration_state="ready",
