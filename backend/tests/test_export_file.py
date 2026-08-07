@@ -12,7 +12,7 @@ import pytest
 from cryptography.exceptions import InvalidTag
 
 from app.services.crypto import CryptoService
-from app.services.export_file import ExportFileCodec
+from app.services.export_file import ExportFileCodec, _csv_cell
 
 LEASE_ID = UUID("20000000-0000-4000-8000-000000000009")
 
@@ -46,6 +46,29 @@ async def test_chunked_export_is_always_ciphertext_and_streams_authenticated_csv
     assert parsed[1] == ["13800138000", "'=HYPERLINK(\"https://bad\")", "delivered"]
     assert parsed[2] == ["13900139000", "系统通知", "failed"]
     assert payload.count(b"SMSX2") == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "=1+1",
+        "+1+1",
+        "-1+1",
+        "@SUM(1,1)",
+        "\t=HYPERLINK(\"https://example.invalid\")",
+        "\r=1+1",
+        "\n=1+1",
+        "  =1+1",
+        "\t  @SUM(1,1)",
+    ],
+)
+def test_csv_cell_escapes_formula_after_whitespace_normalization(value: str) -> None:
+    assert _csv_cell(value).startswith("'")
+
+
+def test_csv_cell_keeps_normal_text_and_safe_hyphens() -> None:
+    assert _csv_cell("正常通知") == "正常通知"
+    assert _csv_cell("订单-123") == "订单-123"
 
 
 @pytest.mark.asyncio
