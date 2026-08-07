@@ -417,7 +417,6 @@ paths:
         refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
         身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
       requestBody:
-        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/RefreshRequest' }
@@ -2788,10 +2787,9 @@ components:
     LoginSuccess:
       type: object
       additionalProperties: false
-      required: [token, refresh_token, expires_in, refresh_expires_in, user]
+      required: [token, expires_in, refresh_expires_in, user]
       properties:
         token: { type: string, description: 15 分钟 Bearer access JWT }
-        refresh_token: { type: string, writeOnly: true, description: 七天内有效且每次使用后原子轮换的 refresh JWT }
         expires_in: { type: integer, const: 900 }
         refresh_expires_in: { type: integer, minimum: 1, maximum: 604800, description: refresh family 自首次登录起的实际剩余秒数 }
         user: { $ref: '#/components/schemas/AuthUser' }
@@ -2799,9 +2797,13 @@ components:
     RefreshRequest:
       type: object
       additionalProperties: false
-      required: [refresh_token]
       properties:
-        refresh_token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+        refresh_token:
+          anyOf:
+            - { type: string, maxLength: 4096 }
+            - { type: "null" }
+          writeOnly: true
+          description: 兼容旧客户端；新客户端通过 HttpOnly Cookie 提供
 
     PasswordChangeRequired:
       type: object

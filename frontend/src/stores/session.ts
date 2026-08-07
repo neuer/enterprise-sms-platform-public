@@ -11,7 +11,6 @@ import {
 } from "../api/auth"
 
 const TOKEN_KEY = "sms_token"
-const REFRESH_TOKEN_KEY = "sms_refresh_token"
 const USER_KEY = "sms_user"
 const CHANGE_TOKEN_KEY = "sms_change_token"
 const CHANGE_TOKEN_EXPIRES_AT_KEY = "sms_change_token_expires_at"
@@ -19,12 +18,13 @@ export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
 
 function clearLegacyPersistence(): void {
   localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(REFRESH_TOKEN_KEY)
+  localStorage.removeItem("sms_refresh_token")
   localStorage.removeItem(USER_KEY)
   localStorage.removeItem(CHANGE_TOKEN_KEY)
   localStorage.removeItem(CHANGE_TOKEN_EXPIRES_AT_KEY)
   sessionStorage.removeItem(CHANGE_TOKEN_KEY)
   sessionStorage.removeItem(CHANGE_TOKEN_EXPIRES_AT_KEY)
+  sessionStorage.removeItem("sms_refresh_token")
 }
 
 const roleLabels: Record<UserRole, string> = {
@@ -53,7 +53,6 @@ function isPlatformUser(value: unknown): value is PlatformUser {
 export const useSessionStore = defineStore("session", {
   state: () => ({
     token: "",
-    refreshToken: "",
     accountId: 0,
     identityId: 0,
     providerCode: "",
@@ -71,7 +70,6 @@ export const useSessionStore = defineStore("session", {
   actions: {
     resetIdentity() {
       this.token = ""
-      this.refreshToken = ""
       this.accountId = 0
       this.identityId = 0
       this.providerCode = ""
@@ -80,13 +78,11 @@ export const useSessionStore = defineStore("session", {
       this.dept = ""
       this.role = null
       sessionStorage.removeItem(TOKEN_KEY)
-      sessionStorage.removeItem(REFRESH_TOKEN_KEY)
       sessionStorage.removeItem(USER_KEY)
     },
-    apply(token: string, refreshToken: string, user: PlatformUser) {
+    apply(token: string, user: PlatformUser) {
       clearLegacyPersistence()
       this.token = token
-      this.refreshToken = refreshToken
       this.accountId = user.account_id
       this.identityId = user.identity_id
       this.providerCode = user.provider_code
@@ -95,7 +91,6 @@ export const useSessionStore = defineStore("session", {
       this.dept = user.dept
       this.role = user.role
       sessionStorage.setItem(TOKEN_KEY, token)
-      sessionStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
       sessionStorage.setItem(USER_KEY, JSON.stringify(user))
     },
     clear() {
@@ -115,9 +110,8 @@ export const useSessionStore = defineStore("session", {
     restore() {
       clearLegacyPersistence()
       const token = sessionStorage.getItem(TOKEN_KEY)
-      const refreshToken = sessionStorage.getItem(REFRESH_TOKEN_KEY)
       const rawUser = sessionStorage.getItem(USER_KEY)
-      if (!token || !refreshToken || !rawUser) {
+      if (!token || !rawUser) {
         this.clear()
         return
       }
@@ -127,7 +121,7 @@ export const useSessionStore = defineStore("session", {
           this.clear()
           return
         }
-        this.apply(token, refreshToken, user)
+        this.apply(token, user)
       } catch {
         this.clear()
       }
@@ -153,7 +147,7 @@ export const useSessionStore = defineStore("session", {
           expiresAt: Date.now() + response.expires_in * 1000,
         }
       }
-      this.apply(response.token, response.refresh_token, response.user)
+      this.apply(response.token, response.user)
       return { nextAction: "authenticated" }
     },
     async changePassword(currentPassword: string, newPassword: string) {

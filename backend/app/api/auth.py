@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, cast
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +21,8 @@ from app.core.errors import ApiError
 
 router = APIRouter(prefix="/api/v1/web", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
+REFRESH_COOKIE_NAME = "sms_refresh_token"
+REFRESH_COOKIE_PATH = "/api/v1/web/auth"
 ERROR_RESPONSE = {
     "content": {
         "application/json": {
@@ -80,15 +83,14 @@ class UserResponse(StrictModel):
 
 class LoginResponse(StrictModel):
     token: str
-    refresh_token: str = Field(json_schema_extra={"writeOnly": True})
     expires_in: Literal[900]
     refresh_expires_in: int = Field(ge=1, le=604800)
     user: UserResponse
 
 
 class RefreshRequest(StrictModel):
-    refresh_token: str = Field(
-        min_length=1,
+    refresh_token: str | None = Field(
+        default=None,
         max_length=4096,
         json_schema_extra={"writeOnly": True},
     )
@@ -129,6 +131,33 @@ def _client_ip(request: Request) -> str:
     return trusted_client_ip(request)
 
 
+def _set_refresh_cookie(
+    response: Response,
+    token: str,
+    *,
+    secure: bool,
+    max_age: int,
+) -> None:
+    """Refresh Token 只进入 HttpOnly Cookie，前端 JavaScript 不可读取。"""
+
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=max_age,
+        path=REFRESH_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path=REFRESH_COOKIE_PATH,
+    )
+
+
 def _bearer(credentials: HTTPAuthorizationCredentials | None) -> str:
     if credentials is None or credentials.scheme.casefold() != "bearer":
         raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
@@ -139,7 +168,6 @@ def _login_response(result: LoginSuccess) -> LoginResponse:
     user = result.user
     return LoginResponse(
         token=result.token,
-        refresh_token=result.refresh_token,
         expires_in=result.expires_in,
         refresh_expires_in=result.refresh_expires_in,
         user=UserResponse(
@@ -152,6 +180,21 @@ def _login_response(result: LoginSuccess) -> LoginResponse:
             role=user.role,
         ),
     )
+
+
+def _assert_same_origin(request: Request) -> None:
+    """Cookie 写请求必须由同源页面发起，拒绝跨站 CSRF。"""
+
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        raise ApiError(403, "FORBIDDEN", "缺少同源校验来源", None)
+    parsed = urlsplit(origin)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname != request.url.hostname
+        or parsed.port != request.url.port
+    ):
+        raise ApiError(403, "FORBIDDEN", "请求来源非同源", None)
 
 
 @router.get(
@@ -223,6 +266,12 @@ async def login(
         )
     if not isinstance(result, LoginSuccess):
         raise RuntimeError("unsupported login result")
+    _set_refresh_cookie(
+        response,
+        result.refresh_token,
+        secure=request.url.scheme == "https",
+        max_age=result.refresh_expires_in,
+    )
     return _login_response(result)
 
 
@@ -237,12 +286,25 @@ async def login(
 )
 @audited("session_refresh")
 async def refresh(
-    payload: RefreshRequest,
+    request: Request,
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    payload: Annotated[RefreshRequest, Body()] = None,  # type: ignore[assignment]
 ) -> LoginResponse:
-    result = await facade.refresh(payload.refresh_token)
+    _assert_same_origin(request)
+    refresh_token = (
+        payload.refresh_token if payload is not None else None
+    ) or request.cookies.get(REFRESH_COOKIE_NAME)
+    if not refresh_token:
+        raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
+    result = await facade.refresh(refresh_token)
     response.headers["Cache-Control"] = "no-store"
+    _set_refresh_cookie(
+        response,
+        result.refresh_token,
+        secure=request.url.scheme == "https",
+        max_age=result.refresh_expires_in,
+    )
     return _login_response(result)
 
 
@@ -313,5 +375,9 @@ async def logout(
         Depends(bearer_scheme),
     ],
 ) -> Response:
-    await facade.logout(_bearer(credentials), _client_ip(request))
-    return Response(status_code=200)
+    token = _bearer(credentials)
+    _assert_same_origin(request)
+    await facade.logout(token, _client_ip(request))
+    outcome = Response(status_code=200)
+    _clear_refresh_cookie(outcome)
+    return outcome
