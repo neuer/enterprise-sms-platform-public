@@ -101,7 +101,13 @@ describe("统一运维中心", () => {
     expect(wrapper.text()).toContain("45 行")
     expect(wrapper.get("[data-testid='download-unmatched-export']").text()).toContain("下载 CSV")
 
-    vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:masked-export"), revokeObjectURL: vi.fn() })
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, {
+        createObjectURL: vi.fn(() => "blob:masked-export"),
+        revokeObjectURL: vi.fn(),
+      }),
+    )
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
     await wrapper.get("[data-testid='download-unmatched-export']").trigger("click")
     await flushPromises()
