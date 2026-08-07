@@ -14,10 +14,24 @@ from app.services.callback import DeliveryOutcome
 
 RETRY_DELAYS_S = (60, 300, 900, 3600, 3600)
 CALLBACK_LEASE_SECONDS = 30
+PERMANENT_CALLBACK_STATUSES = frozenset({400, 401, 403, 404, 410, 422})
+RETRYABLE_CALLBACK_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class CallbackLeaseLost(RuntimeError):
     """当前 callback worker 的 fencing token 已失效。"""
+
+
+def classify_callback_http_status(status: int) -> str:
+    """集中分类回调响应：success / retryable / permanent。"""
+
+    if 200 <= status < 300:
+        return "success"
+    if status in RETRYABLE_CALLBACK_STATUSES or 500 <= status < 600:
+        return "retryable"
+    if status in PERMANENT_CALLBACK_STATUSES or 400 <= status < 500:
+        return "permanent"
+    return "retryable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +197,31 @@ class CallbackWorker:
                 outcome.http_code,
             )
             return 1
+        if (
+            outcome.http_code is not None
+            and classify_callback_http_status(outcome.http_code) == "permanent"
+        ):
+            await self.repository.mark_dead(
+                task_id,
+                claimed.lease_id,
+                retry_count=claimed.retry_count,
+                http_code=outcome.http_code,
+                error=outcome.error or "permanent_failure",
+            )
+            await self.alerts.emit(
+                alert_type="callback_dead",
+                level="crit",
+                title="结果回调永久失败",
+                detail={
+                    "callback_task_id": claimed.task_id,
+                    "app_id": claimed.app_id,
+                    "event": claimed.event,
+                    "failure_kind": "permanent_failure",
+                    "http_code": outcome.http_code,
+                },
+                dedup_key=f"callback_permanent:{claimed.task_id}:{outcome.http_code}",
+            )
+            return 1
         if claimed.retry_count < len(self.retry_delays_s):
             await self.repository.mark_retry(
                 task_id,
@@ -208,6 +247,7 @@ class CallbackWorker:
                 "callback_task_id": claimed.task_id,
                 "app_id": claimed.app_id,
                 "event": claimed.event,
+                "failure_kind": "retries_exhausted",
             },
             dedup_key=f"callback_dead:{claimed.task_id}",
         )
