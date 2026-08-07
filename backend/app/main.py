@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -71,37 +72,45 @@ class StartupConfigGate:
             self.loaded = True
 
 
-@asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """在 API 进程内启动和关闭后台任务心跳巡检。"""
+def create_lifespan(
+    settings: Settings,
+) -> Any:
+    """构造使用唯一 Settings 来源的应用 lifespan。"""
 
-    configure_runtime_resources(get_settings(), component="api")
-    heartbeat = None
-    runtime_monitor = None
-    try:
-        register_task_modules()
-        startup_gate: StartupConfigGate = application.state.startup_config_gate
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        """在 API 进程内启动和关闭后台任务心跳巡检。"""
+
+        selected = getattr(application.state, "settings", settings)
+        configure_runtime_resources(selected, component="api")
+        heartbeat = None
+        runtime_monitor = None
         try:
-            await startup_gate.ensure()
-        except Exception as error:
-            LOGGER.warning(
-                "startup_configuration_not_ready",
-                extra={"error_type": type(error).__name__},
-            )
-        heartbeat = create_default_heartbeat_service()
-        runtime_monitor = create_runtime_monitor()
-        application.state.job_heartbeat = heartbeat
-        application.state.runtime_monitor = runtime_monitor
-        heartbeat.start()
-        runtime_monitor.start()
-        yield
-    finally:
-        if runtime_monitor is not None:
-            await runtime_monitor.stop()
-        if heartbeat is not None:
-            await heartbeat.stop()
-        await close_runtime_resources()
-        close_bounded_executor()
+            register_task_modules()
+            startup_gate: StartupConfigGate = application.state.startup_config_gate
+            try:
+                await startup_gate.ensure()
+            except Exception as error:
+                LOGGER.warning(
+                    "startup_configuration_not_ready",
+                    extra={"error_type": type(error).__name__},
+                )
+            heartbeat = create_default_heartbeat_service()
+            runtime_monitor = create_runtime_monitor()
+            application.state.job_heartbeat = heartbeat
+            application.state.runtime_monitor = runtime_monitor
+            heartbeat.start()
+            runtime_monitor.start()
+            yield
+        finally:
+            if runtime_monitor is not None:
+                await runtime_monitor.stop()
+            if heartbeat is not None:
+                await heartbeat.stop()
+            await close_runtime_resources()
+            close_bounded_executor()
+
+    return lifespan
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -112,12 +121,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(
         title="企业短信管理平台 API",
         version=APP_VERSION,
-        lifespan=lifespan,
+        lifespan=create_lifespan(selected_settings),
         docs_url=documentation,
         redoc_url=None if selected_settings.is_production else "/redoc",
         openapi_url=None if selected_settings.is_production else "/openapi.json",
     )
     startup_gate = StartupConfigGate(lambda: load_and_apply_job_intervals())
+    application.state.settings = selected_settings
     application.state.startup_config_gate = startup_gate
     application.state.readiness_probe = create_readiness_probe(
         selected_settings,
