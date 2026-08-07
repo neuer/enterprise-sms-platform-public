@@ -17,6 +17,8 @@ from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.jwt import JwtClaims
 from app.core.correlation import correlation_scope
 from app.services.app_repository import SqlAppRepository
+from app.services.auth_provider import ProviderTestResult
+from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.export_step_up import ExportStepUpService
 
 pytestmark = pytest.mark.skipif(
@@ -183,4 +185,88 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
                     text("DELETE FROM app WHERE id=:app_id"),
                     {"app_id": app_id},
                 )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlAuthProviderRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    code = f"audit-{uuid4().hex[:10]}"
+    config: dict[str, object] = {
+        "server": "ldaps://dc01.example.com:636",
+        "base_dn": "DC=example,DC=com",
+        "bind_dn": "CN=reader,DC=example,DC=com",
+        "user_search_filter": "(uid={username})",
+        "username_attribute": "uid",
+        "display_name_attribute": "displayName",
+        "dept_attribute": "department",
+        "subject_attribute": "objectGUID",
+        "group_attribute": "memberOf",
+        "connect_timeout_s": 5.0,
+        "receive_timeout_s": 10.0,
+    }
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO auth_provider(code,name,kind,enabled,draft_config,draft_version)
+                    VALUES (:code,:name,'ldap',FALSE,'{}',1)
+                    """
+                ),
+                {"code": code, "name": "审计测试 AD"},
+            )
+        with correlation_scope(uuid4()):
+            saved = await repository.save_draft(
+                code,
+                config,
+                actor="audit-admin",
+                ip="127.0.0.1",
+            )
+            await repository.record_test(
+                code,
+                saved.draft_version,
+                ProviderTestResult(True, "OK"),
+                actor="audit-admin",
+                ip="127.0.0.1",
+            )
+            await repository.activate(code, actor="audit-admin", ip="127.0.0.1")
+            await repository.disable(code, actor="audit-admin", ip="127.0.0.1")
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, object_type, object_id
+                        FROM audit_log
+                        WHERE object_type='auth_provider' AND object_id=:code
+                        ORDER BY id
+                        """
+                    ),
+                    {"code": code},
+                )
+            ).mappings().all()
+        assert [str(row["action"]) for row in rows] == [
+            "auth_provider_save_draft",
+            "auth_provider_test",
+            "auth_provider_activate",
+            "auth_provider_disable",
+        ]
+        assert all(str(row["actor"]) == "audit-admin" for row in rows)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM audit_log WHERE object_type='auth_provider' AND object_id=:code"
+                ),
+                {"code": code},
+            )
+            await connection.execute(
+                text("DELETE FROM auth_provider WHERE code=:code"),
+                {"code": code},
+            )
         await engine.dispose()
