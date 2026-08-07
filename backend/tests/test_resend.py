@@ -6,7 +6,7 @@ import inspect
 import pytest
 
 from app.services.batch_query import BatchAccessScope
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.pipeline_repository import SqlPipelineStore
 from app.services.resend import (
     EncryptedFailedPhone,
@@ -19,6 +19,18 @@ from app.services.resend import (
 def crypto() -> CryptoService:
     key = base64.b64encode(b"r" * 32).decode()
     return CryptoService.from_secret_values(key, key)
+
+
+def bound_content(service: CryptoService, batch_no: str, content: str) -> bytes:
+    return service.encrypt_bound_packed_text(
+        content,
+        EncryptionContext(
+            domain="sms-content",
+            table="sms_batch",
+            column="send_content_enc",
+            object_id=batch_no,
+        ),
+    )
 
 
 class FakeRepository:
@@ -41,7 +53,7 @@ async def test_resend_decrypts_failed_phones_in_memory_and_preserves_controls() 
             dept="市场部",
             category="market",
             channel="web",
-            send_content_enc=service.encrypt_packed_text("活动回T退订"),
+            send_content_enc=bound_content(service, "original-1", "活动回T退订"),
             sign_name="【青鸾】",
             consent_confirmed=True,
             is_test=False,
@@ -81,7 +93,7 @@ async def test_resend_rejects_source_without_failed_recipient() -> None:
             dept="平台部",
             category="notice",
             channel="api",
-            send_content_enc=service.encrypt_packed_text("通知"),
+            send_content_enc=bound_content(service, "original-1", "通知"),
             sign_name=None,
             consent_confirmed=False,
             is_test=False,
