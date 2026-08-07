@@ -13,6 +13,7 @@ from app.services.callback_worker import (
     CallbackClaim,
     CallbackLeaseLost,
     CallbackWorker,
+    classify_callback_http_status,
 )
 
 EVENT_ID = UUID("10000000-0000-4000-8000-000000000009")
@@ -175,10 +176,70 @@ async def test_fifth_retry_failure_marks_dead_and_emits_log_sink_alert() -> None
             "alert_type": "callback_dead",
             "level": "crit",
             "title": "结果回调重试耗尽",
-            "detail": {"callback_task_id": 9, "app_id": 7, "event": "batch.finished"},
+            "detail": {
+                "callback_task_id": 9,
+                "app_id": 7,
+                "event": "batch.finished",
+                "failure_kind": "retries_exhausted",
+            },
             "dedup_key": "callback_dead:9",
         }
     ]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 422])
+@pytest.mark.asyncio
+async def test_permanent_4xx_marks_dead_without_retry(status: int) -> None:
+    repository = FakeRepository(claim())
+    alerts = FakeAlerts()
+
+    await CallbackWorker(
+        repository,
+        FakeDelivery(DeliveryOutcome(False, status)),
+        alerts,
+    ).process(9)
+
+    assert ("dead", (9, 0, status, "permanent_failure")) in repository.events
+    assert alerts.events == [
+        {
+            "alert_type": "callback_dead",
+            "level": "crit",
+            "title": "结果回调永久失败",
+            "detail": {
+                "callback_task_id": 9,
+                "app_id": 7,
+                "event": "batch.finished",
+                "failure_kind": "permanent_failure",
+                "http_code": status,
+            },
+            "dedup_key": f"callback_permanent:9:{status}",
+        }
+    ]
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+@pytest.mark.asyncio
+async def test_retryable_statuses_keep_retry_schedule(status: int) -> None:
+    repository = FakeRepository(claim(1))
+
+    await CallbackWorker(
+        repository,
+        FakeDelivery(DeliveryOutcome(False, status)),
+        FakeAlerts(),
+    ).process(9)
+
+    assert (
+        "retry",
+        (9, 1, RETRY_DELAYS_S[1], status, None),
+    ) in repository.events
+
+
+@pytest.mark.asyncio
+async def test_classify_callback_http_status_is_conservative() -> None:
+    assert classify_callback_http_status(200) == "success"
+    assert classify_callback_http_status(400) == "permanent"
+    assert classify_callback_http_status(429) == "retryable"
+    assert classify_callback_http_status(599) == "retryable"
 
 
 @pytest.mark.asyncio
