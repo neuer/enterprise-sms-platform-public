@@ -19,6 +19,9 @@ from app.core.correlation import correlation_scope
 from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from app.services.blacklist import BlacklistEntry
+from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.crypto import CryptoService
 from app.services.export_step_up import ExportStepUpService
 from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.user_repository import SqlUserManagementRepository
@@ -386,6 +389,66 @@ async def test_sensitive_word_add_and_delete_persist_real_audit_rows() -> None:
             await connection.execute(
                 text(
                     "DELETE FROM audit_log WHERE action LIKE 'sensitive_word_%' "
+                    "AND actor='audit-admin'"
+                )
+            )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlBlacklistRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    crypto = CryptoService.from_secret_values(
+        "a" * 32,
+        "b" * 32,
+    )
+    phone = f"139{str(uuid4().int)[:8]}"
+    protected = crypto.protect_phone(phone)
+    entry = BlacklistEntry(
+        phone_hmac=protected.phone_hmac,
+        phone_enc=protected.phone_enc,
+        phone_mask=protected.phone_mask,
+        key_version=protected.key_version,
+        source="integration",
+        remark="audit-runtime",
+        created_at=datetime.now(UTC),
+    )
+    try:
+        with correlation_scope(uuid4()):
+            await repository.upsert_many([entry], actor="audit-admin", source="integration")
+            await repository.delete(entry.phone_hmac, actor="audit-admin")
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, object_type
+                        FROM audit_log
+                        WHERE action IN ('blacklist_add','blacklist_delete')
+                          AND actor='audit-admin'
+                        ORDER BY id
+                        """
+                    )
+                )
+            ).mappings().all()
+        assert [str(row["action"]) for row in rows] == [
+            "blacklist_add",
+            "blacklist_delete",
+        ]
+        assert all(str(row["actor"]) == "audit-admin" for row in rows)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM blacklist WHERE phone_hmac=:phone_hmac"),
+                {"phone_hmac": entry.phone_hmac},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM audit_log WHERE action LIKE 'blacklist_%' "
                     "AND actor='audit-admin'"
                 )
             )
