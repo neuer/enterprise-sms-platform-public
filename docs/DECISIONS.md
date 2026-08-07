@@ -665,8 +665,8 @@
   且拒绝发生在路由处理之前，不消费应用限流与配额。Web 用户 JWT 路径不受影响。
 - 原因：内部系统主要通过 X-Api-Key 接入，密钥泄露后 IP 白名单是最直接的止损边界；
   强制点放在唯一认证依赖内可避免散落 if-else，也满足“认证方式不得按路径猜测”的契约。
-  IP 来源依赖既有可信代理契约（nginx 只写单跳 XFF、uvicorn `--forwarded-allow-ips`
-  固定 172.31.250.3），不需要新增环境变量或中间件；未来接 CDN/WAF 时必须同步调整
-  nginx XFF 拼接与部署契约测试。
+  IP 来源依赖既有可信代理契约（外部 TLS 终结器必须剥离并重写 XFF/X-Real-IP，
+  内部 Nginx 仅透传、uvicorn `--forwarded-allow-ips` 固定 172.31.250.3），不需要新增
+  环境变量或中间件；未来接 CDN/WAF 时必须同步调整外部代理头重写与部署契约测试。
 - 影响：schema/migration、`core/apikey.py`、应用管理 API 与前端、openapi/PRD/AGENTS
   错误码表、单元/API/集成/E2E 与 UAT-29 用例；轮换后新旧 Key 受同一白名单约束。

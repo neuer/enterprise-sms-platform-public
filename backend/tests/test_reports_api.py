@@ -186,7 +186,7 @@ def make_client(
     app.dependency_overrides[module.get_export_step_up_service] = lambda: step_up
     app.dependency_overrides[module.get_export_codec] = FakeCodec
     app.include_router(module.router)
-    return TestClient(app), service, step_up
+    return TestClient(app, client=("127.0.0.1", 50000)), service, step_up
 
 
 def test_create_masked_export_returns_202_and_normalized_request() -> None:
@@ -263,7 +263,7 @@ def test_decrypted_download_requires_task_bound_single_use_step_up() -> None:
     )
     assert issued.status_code == 200
     assert issued.json() == {"token": "one-use-export-token", "expires_in": 300}
-    assert step_up.issues == [(PUBLIC_ID, "current-password", 11, "testclient")]
+    assert step_up.issues == [(PUBLIC_ID, "current-password", 11, "127.0.0.1")]
 
     downloaded = client.get(
         f"/api/v1/web/reports/export/{PUBLIC_ID}/download",
@@ -271,7 +271,7 @@ def test_decrypted_download_requires_task_bound_single_use_step_up() -> None:
     )
     assert downloaded.status_code == 200
     assert step_up.consumes == [
-        ("one-use-export-token", PUBLIC_ID, 11, "testclient")
+        ("one-use-export-token", PUBLIC_ID, 11, "127.0.0.1")
     ]
     assert any(call[0] == "download" for call in service.calls)
 
