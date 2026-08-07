@@ -147,6 +147,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [category, mobiles]
               oneOf:
                 - required: [content]
@@ -350,6 +351,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [scheduled_at]
               properties:
                 scheduled_at: { type: string, format: date-time }
@@ -539,6 +541,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [category]
               oneOf:
                 - required: [content]
@@ -596,6 +599,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [category, accepted_count]
               oneOf:
                 - required: [content]

@@ -174,6 +174,21 @@ def test_send_api_uses_app_context_and_returns_complete_acceptance(
     assert pipeline.calls[0][0].app_id == 7
 
 
+def test_send_api_rejects_unknown_fields_with_422() -> None:
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "scheduled_at_typo": "2026-08-08T00:00:00+08:00",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"
+
+
 def test_send_api_rejects_invalid_phone_with_uniform_error() -> None:
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
