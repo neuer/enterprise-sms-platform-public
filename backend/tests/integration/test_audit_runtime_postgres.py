@@ -24,6 +24,8 @@ from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
 from app.services.export_step_up import ExportStepUpService
 from app.services.sensitive_repository import SqlSensitiveWordRepository
+from app.services.sign_repository import SqlSignRepository
+from app.services.template_repository import SqlTemplateRepository
 from app.services.user_repository import SqlUserManagementRepository
 
 pytestmark = pytest.mark.skipif(
@@ -450,6 +452,78 @@ async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
                 text(
                     "DELETE FROM audit_log WHERE action LIKE 'blacklist_%' "
                     "AND actor='audit-admin'"
+                )
+            )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    template_repository = SqlTemplateRepository(settings)
+    sign_repository = SqlSignRepository(settings)
+    template_id: int | None = None
+    sign_id: int | None = None
+    template_name = f"audit-template-{uuid4().hex[:8]}"
+    sign_name = f"【审计签名{uuid4().hex[:6]}】"
+    try:
+        with correlation_scope(uuid4()):
+            template = await template_repository.create(
+                name=template_name,
+                content="验证码{1}",
+                var_specs=[{"index": 1, "max_len": 6}],
+                dept="平台部",
+                vendor_template_id=0,
+                actor="audit-admin",
+            )
+            template_id = template.id
+            sign = await sign_repository.create(
+                name=sign_name,
+                vendor_sign_id="0",
+                actor="audit-admin",
+            )
+            sign_id = sign.id
+            await template_repository.delete(template_id, actor="audit-admin")
+            await sign_repository.delete(sign_id, actor="audit-admin")
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT action, actor, object_type
+                        FROM audit_log
+                        WHERE action IN (
+                          'template_create','template_delete','sign_create','sign_delete'
+                        ) AND actor='audit-admin'
+                        ORDER BY id
+                        """
+                    )
+                )
+            ).mappings().all()
+        assert [str(row["action"]) for row in rows] == [
+            "template_create",
+            "template_delete",
+            "sign_create",
+            "sign_delete",
+        ]
+    finally:
+        async with engine.begin() as connection:
+            if template_id is not None:
+                await connection.execute(
+                    text("DELETE FROM sms_template WHERE id=:template_id"),
+                    {"template_id": template_id},
+                )
+            if sign_id is not None:
+                await connection.execute(
+                    text("DELETE FROM sms_sign WHERE id=:sign_id"),
+                    {"sign_id": sign_id},
+                )
+            await connection.execute(
+                text(
+                    "DELETE FROM audit_log WHERE action LIKE 'template_%' "
+                    "OR action LIKE 'sign_%' AND actor='audit-admin'"
                 )
             )
         await engine.dispose()
