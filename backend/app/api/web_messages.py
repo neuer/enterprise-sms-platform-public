@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,6 +22,7 @@ from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
+from app.core.client_ip import trusted_client_ip
 from app.core.correlation import correlation_headers
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
@@ -507,6 +508,7 @@ async def message_timeline(
 @audited("message_phone_decrypt")
 async def decrypt_message_phone(
     id: int,
+    request: Request,
     response: Response,
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
@@ -519,7 +521,8 @@ async def decrypt_message_phone(
         phone = await service.decrypt_phone(
             id,
             scope=_query_scope(claims),
-            actor=claims.username,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
         )
     except QueryNotFound as error:
         raise ApiError(404, "NOT_FOUND", str(error), None) from None

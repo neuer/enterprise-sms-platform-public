@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 
+from app.core.audit import AuditEvent, insert_audit
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope
 from app.services.crypto import CryptoService
@@ -95,7 +97,8 @@ class OperationsQueryRepository(Protocol):
         message_id: int,
         *,
         scope: BatchAccessScope,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
     ) -> tuple[bytes, int, str] | None: ...
 
 
@@ -170,14 +173,16 @@ class OperationsQueryService:
         message_id: int,
         *,
         scope: BatchAccessScope,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
     ) -> str:
         if message_id < 1:
             raise QueryNotFound("消息不存在")
         protected = await self.repository.authorized_phone(
             message_id,
             scope=scope,
-            actor=actor,
+            principal=principal,
+            ip=ip,
         )
         if protected is None:
             raise QueryNotFound("消息不存在")
@@ -353,10 +358,11 @@ class SqlOperationsQueryRepository:
         message_id: int,
         *,
         scope: BatchAccessScope,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
     ) -> tuple[bytes, int, str] | None:
         predicate, scope_params = scope.sql()
-        params = {"message_id": message_id, "actor": actor, **scope_params}
+        params = {"message_id": message_id, **scope_params}
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -375,26 +381,17 @@ class SqlOperationsQueryRepository:
                 row = result.mappings().first()
                 if row is None:
                     return None
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO audit_log(
-                          actor,action,object_type,object_id,after_val
-                        ) VALUES (
-                          CAST(:actor AS varchar(128)),
-                          'message_phone_decrypt','sms_message',
-                          CAST(CAST(:message_id AS bigint) AS text),
-                          jsonb_build_object(
-                            'count',1,'batch_no',CAST(:batch_no AS text)
-                          )
-                        )
-                        """
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        action="message_phone_decrypt",
+                        object_type="sms_message",
+                        object_id=str(message_id),
+                        ip=ip,
+                        after={"count": 1, "batch_no": str(row["batch_no"])},
                     ),
-                    {
-                        "actor": actor,
-                        "message_id": message_id,
-                        "batch_no": str(row["batch_no"]),
-                    },
                 )
                 return (
                     bytes(row["phone_enc"]),

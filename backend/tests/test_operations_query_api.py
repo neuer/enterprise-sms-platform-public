@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from app.api import web_messages as module
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler, validation_error_handler
@@ -25,7 +26,18 @@ class FakeFacade:
         self.role = role
 
     async def verify(self, _token: str) -> JwtClaims:
-        return JwtClaims("tester", "测试用户", "平台部", self.role)  # type: ignore[arg-type]
+        return JwtClaims(
+            11,
+            101,
+            "local",
+            "tester",
+            "测试用户",
+            "平台部",
+            self.role,
+            1,
+            "jti",
+            "sid",
+        )
 
 
 class FakeBatchQueries:
@@ -197,6 +209,16 @@ def test_decrypt_requires_approver_or_admin_and_passes_actor_scope() -> None:
     assert allowed.headers["cache-control"] == "no-store"
     assert operations.calls[-1] == (
         "decrypt",
-        {"scope": BatchAccessScope(dept="平台部"), "actor": "tester"},
+        {
+            "scope": BatchAccessScope(dept="平台部"),
+            "principal": SecurityPrincipal(
+                11,
+                101,
+                "tester",
+                "平台部",
+                "approver",
+            ),
+            "ip": "0.0.0.0",
+        },
     )
     assert module.decrypt_message_phone.__audited_action__ == "message_phone_decrypt"  # type: ignore[attr-defined]
