@@ -164,6 +164,11 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
             "role": "operator",
         },
     }
+    login_cookie = success.headers.get("set-cookie", "")
+    assert "sms_refresh_token=refresh.jwt" in login_cookie
+    assert "HttpOnly" in login_cookie
+    assert "Path=/api/v1/web/auth" in login_cookie
+    assert "SameSite=lax" in login_cookie
     assert facade.login_calls[0][:3] == ("local", "operator01", "correct")
 
     refreshed = response_client.post(
@@ -174,6 +179,9 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     assert refreshed.headers["cache-control"] == "no-store"
     assert refreshed.json()["token"] == "rotated.jwt"
     assert refreshed.json()["refresh_token"] == "rotated-refresh.jwt"
+    refreshed_cookie = refreshed.headers.get("set-cookie", "")
+    assert "sms_refresh_token=rotated-refresh.jwt" in refreshed_cookie
+    assert "HttpOnly" in refreshed_cookie
     assert vars(auth_api.refresh)["__audited_action__"] == "session_refresh"
 
     missing_source = response_client.post(
@@ -260,13 +268,15 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     response_client = client(facade)
 
     assert response_client.post("/api/v1/web/auth/logout").status_code == 401
-    assert (
-        response_client.post(
-            "/api/v1/web/auth/logout",
-            headers={"Authorization": "Bearer current.jwt"},
-        ).status_code
-        == 200
+    logged_out = response_client.post(
+        "/api/v1/web/auth/logout",
+        headers={"Authorization": "Bearer current.jwt"},
     )
+    assert logged_out.status_code == 200
+    cleared = logged_out.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in cleared
+    assert "Max-Age=0" in cleared
+    assert "Path=/api/v1/web/auth" in cleared
     assert facade.logout_tokens == ["current.jwt"]
 
     response = response_client.post(

@@ -20,6 +20,8 @@ from app.core.errors import ApiError
 
 router = APIRouter(prefix="/api/v1/web", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
+REFRESH_COOKIE_NAME = "sms_refresh_token"
+REFRESH_COOKIE_PATH = "/api/v1/web/auth"
 ERROR_RESPONSE = {
     "content": {
         "application/json": {
@@ -129,6 +131,33 @@ def _client_ip(request: Request) -> str:
     return trusted_client_ip(request)
 
 
+def _set_refresh_cookie(
+    response: Response,
+    token: str,
+    *,
+    secure: bool,
+    max_age: int,
+) -> None:
+    """Refresh Token 只进入 HttpOnly Cookie，前端 JavaScript 不可读取。"""
+
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=max_age,
+        path=REFRESH_COOKIE_PATH,
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path=REFRESH_COOKIE_PATH,
+    )
+
+
 def _bearer(credentials: HTTPAuthorizationCredentials | None) -> str:
     if credentials is None or credentials.scheme.casefold() != "bearer":
         raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
@@ -223,6 +252,12 @@ async def login(
         )
     if not isinstance(result, LoginSuccess):
         raise RuntimeError("unsupported login result")
+    _set_refresh_cookie(
+        response,
+        result.refresh_token,
+        secure=request.url.scheme == "https",
+        max_age=result.refresh_expires_in,
+    )
     return _login_response(result)
 
 
@@ -238,11 +273,18 @@ async def login(
 @audited("session_refresh")
 async def refresh(
     payload: RefreshRequest,
+    request: Request,
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> LoginResponse:
     result = await facade.refresh(payload.refresh_token)
     response.headers["Cache-Control"] = "no-store"
+    _set_refresh_cookie(
+        response,
+        result.refresh_token,
+        secure=request.url.scheme == "https",
+        max_age=result.refresh_expires_in,
+    )
     return _login_response(result)
 
 
@@ -314,4 +356,6 @@ async def logout(
     ],
 ) -> Response:
     await facade.logout(_bearer(credentials), _client_ip(request))
-    return Response(status_code=200)
+    outcome = Response(status_code=200)
+    _clear_refresh_cookie(outcome)
+    return outcome
