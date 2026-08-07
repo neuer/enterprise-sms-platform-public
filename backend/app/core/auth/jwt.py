@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,6 +26,11 @@ PASSWORD_CHANGE_TOKEN_TYPE = "password_change"
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
 REFRESH_TOKEN_TTL = timedelta(days=7)
 PASSWORD_CHANGE_TTL = timedelta(minutes=10)
+JWT_ISSUER = "sms-platform-web"
+JWT_AUDIENCE = "sms-platform-api"
+JWT_KEY_VERSION_BYTES = 2
+
+LOGGER = logging.getLogger(__name__)
 
 _ROTATE_REFRESH_LUA = """
 local current = redis.call('GET', KEYS[1])
@@ -123,6 +131,57 @@ class PasswordChangeClaims:
     expires_at: int
 
 
+@dataclass(frozen=True, slots=True)
+class JwtKeyring:
+    """版本化 JWT 签名 keyring：一个活动签名 key 加受限历史验证 key。"""
+
+    active_version: int
+    keys: dict[int, bytes]
+
+
+def _decode_jwt_key(encoded: object, *, version: int) -> bytes:
+    if not isinstance(encoded, str):
+        raise ValueError(f"JWT key version {version} must be base64 text")
+    try:
+        key = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise ValueError(f"JWT key version {version} is not valid base64") from None
+    if len(key) < 32:
+        raise ValueError(f"JWT key version {version} must decode to at least 32 bytes")
+    return key
+
+
+def parse_jwt_keyring(secret: str) -> JwtKeyring:
+    """解析裸 v1 key 或版本化 JSON keyring；新签发必须使用带 kid 的 key。"""
+
+    if not secret.startswith("{"):
+        return JwtKeyring(1, {1: secret.encode("utf-8")})
+    try:
+        document = json.loads(secret)
+    except json.JSONDecodeError as exc:
+        raise ValueError("JWT keyring is not valid JSON") from exc
+    if not isinstance(document, dict):
+        raise ValueError("JWT keyring must be an object")
+    active = document.get("active_version")
+    raw_keys = document.get("keys")
+    if not isinstance(active, int) or isinstance(active, bool) or active < 1:
+        raise ValueError("JWT keyring active_version must be a positive integer")
+    if not isinstance(raw_keys, dict) or not raw_keys:
+        raise ValueError("JWT keyring keys must be a non-empty object")
+    keys: dict[int, bytes] = {}
+    for raw_version, encoded in raw_keys.items():
+        try:
+            version = int(raw_version)
+        except (TypeError, ValueError):
+            raise ValueError("JWT keyring version must be an integer") from None
+        if str(version) != str(raw_version) or version < 1:
+            raise ValueError(f"JWT keyring version is invalid: {raw_version}")
+        keys[version] = _decode_jwt_key(encoded, version=version)
+    if active not in keys:
+        raise ValueError("JWT keyring active key version is missing")
+    return JwtKeyring(active, keys)
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -135,6 +194,7 @@ class JwtService:
         secret: str,
         store: AsyncKeyValue,
         *,
+        accept_legacy: bool = True,
         clock: Callable[[], datetime] = utc_now,
         ttl: timedelta = ACCESS_TOKEN_TTL,
         refresh_ttl: timedelta = REFRESH_TOKEN_TTL,
@@ -149,6 +209,8 @@ class JwtService:
         if refresh_ttl < timedelta(minutes=1) or refresh_ttl > timedelta(days=7):
             raise ValueError("JWT refresh ttl must be between 1 minute and 7 days")
         self.secret = secret
+        self._keyring = parse_jwt_keyring(secret)
+        self.accept_legacy = accept_legacy
         self.store = store
         self.clock = clock
         self.ttl = ttl
@@ -177,6 +239,8 @@ class JwtService:
         self._require_stable(claims)
         now = self.clock()
         return {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
             "sub": str(claims.account_id),
             "identity_id": claims.identity_id,
             "provider_code": claims.provider_code,
@@ -200,8 +264,9 @@ class JwtService:
                 session_id=session_id,
                 ttl=self.ttl,
             ),
-            self.secret,
+            self._signing_key(),
             algorithm="HS256",
+            headers={"kid": str(self._keyring.active_version)},
         )
 
     def _encode_refresh(
@@ -218,7 +283,20 @@ class JwtService:
         )
         payload["family_exp"] = family_expires_at
         payload["exp"] = family_expires_at
-        return jwt.encode(payload, self.secret, algorithm="HS256"), payload
+        return (
+            jwt.encode(
+                payload,
+                self._signing_key(),
+                algorithm="HS256",
+                headers={"kid": str(self._keyring.active_version)},
+            ),
+            payload,
+        )
+
+    def _signing_key(self) -> bytes:
+        """当前活动签名 key；旧版本仅保留在验证 keyring 中。"""
+
+        return self._keyring.keys[self._keyring.active_version]
 
     def issue(self, claims: JwtClaims) -> str:
         """仅供不需要 refresh 的内部测试/窄流程签发短访问令牌。"""
@@ -280,6 +358,8 @@ class JwtService:
             raise ValueError("password change token requires a local identity")
         now = self.clock()
         payload = {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
             "sub": str(account_id),
             "identity_id": identity_id,
             "provider_code": provider_code,
@@ -289,18 +369,52 @@ class JwtService:
             "iat": now.timestamp(),
             "exp": int((now + PASSWORD_CHANGE_TTL).timestamp()),
         }
-        return jwt.encode(payload, self.secret, algorithm="HS256")
+        return jwt.encode(
+            payload,
+            self._signing_key(),
+            algorithm="HS256",
+            headers={"kid": str(self._keyring.active_version)},
+        )
 
     def _decode(self, token: str) -> dict[str, Any]:
         try:
+            header = jwt.get_unverified_header(token)
+        except jwt.PyJWTError:
+            raise InvalidCredentials("无效或已吊销的令牌") from None
+        kid = header.get("kid")
+        if kid is None:
+            if not self.accept_legacy:
+                raise InvalidCredentials("无效或已吊销的令牌")
+            key = self._keyring.keys.get(1) or self._keyring.keys[
+                self._keyring.active_version
+            ]
+            LOGGER.warning("legacy JWT without kid accepted")
+        else:
+            try:
+                raw_kid = str(kid)
+                if not raw_kid.isdigit() or str(int(raw_kid)) != raw_kid:
+                    raise ValueError("invalid kid")
+                key = self._keyring.keys[int(raw_kid)]
+            except (TypeError, ValueError, KeyError):
+                raise InvalidCredentials("无效或已吊销的令牌") from None
+        try:
             payload = jwt.decode(
                 token,
-                self.secret,
+                key,
                 algorithms=["HS256"],
-                options={"verify_exp": False, "verify_iat": False},
+                options={
+                    "verify_exp": False,
+                    "verify_iat": False,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                },
             )
         except jwt.PyJWTError:
             raise InvalidCredentials("无效或已吊销的令牌") from None
+        if kid is not None and (
+            payload.get("iss") != JWT_ISSUER or payload.get("aud") != JWT_AUDIENCE
+        ):
+            raise InvalidCredentials("无效或已吊销的令牌")
         if not {"sub", "token_type", "jti", "iat", "exp"}.issubset(payload):
             raise InvalidCredentials("无效或已吊销的令牌")
         try:
