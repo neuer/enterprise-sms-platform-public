@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     data_aes_key_file: Path = Path("/run/secrets/data_aes_key")
     data_hmac_key_file: Path = Path("/run/secrets/data_hmac_key")
     jwt_secret_file: Path = Path("/run/secrets/jwt_secret")
+    jwt_accept_legacy: bool = True
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
     metrics_scrape_token_file: Path = Path("/run/secrets/metrics_scrape_token")
     ldap_ca_certs_file: Path = Path("/etc/ssl/certs/ca-certificates.crt")
