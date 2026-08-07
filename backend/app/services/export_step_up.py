@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from uuid import UUID
 
+from app.core.audit import AuditEvent
 from app.core.auth.jwt import JwtClaims
 
 EXPORT_STEP_UP_TTL_SECONDS = 300
@@ -64,9 +66,15 @@ def _key(token: str) -> str:
 class ExportStepUpService:
     """签发五分钟有效、绑定稳定主体和具体导出任务的单次令牌。"""
 
-    def __init__(self, auth: ReauthenticationFacade, store: StepUpStore) -> None:
+    def __init__(
+        self,
+        auth: ReauthenticationFacade,
+        store: StepUpStore,
+        audit_sink: Callable[[AuditEvent], Awaitable[None]] | None = None,
+    ) -> None:
         self.auth = auth
         self.store = store
+        self.audit_sink = audit_sink
 
     @staticmethod
     def _valid_claims(claims: JwtClaims) -> bool:
@@ -94,6 +102,17 @@ class ExportStepUpService:
             _binding(claims, ip, public_id),
             ex=EXPORT_STEP_UP_TTL_SECONDS,
         )
+        if self.audit_sink is not None:
+            await self.audit_sink(
+                AuditEvent(
+                    principal=claims.principal,
+                    action="export_step_up",
+                    object_type="export_task",
+                    object_id=str(public_id),
+                    role=claims.role,
+                    ip=ip,
+                )
+            )
         return token
 
     async def consume(

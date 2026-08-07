@@ -272,6 +272,8 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
     {
         # 仓库级忽略规则；不进入镜像、服务配置或运行态。
         ".gitignore",
+        # 密钥管理与部署说明文档；不包含真实密钥，也不进入镜像或运行态。
+        "deploy/secrets.md",
         "deploy/database-roles.md",
         # 仅用于把安全日报 control 运行态目录保留在 Git 中；不进入镜像或服务配置。
         "deploy/security-report-control/.gitignore",

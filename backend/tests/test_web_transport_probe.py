@@ -12,6 +12,7 @@ from verify_web_transport import (  # noqa: E402
     TransportProbeError,
     validate_browser_headers,
     validate_redirect,
+    validate_web_bind_ip,
 )
 
 
@@ -83,3 +84,23 @@ def test_transport_contract_rejects_weak_browser_policy(
     headers[header] = value
     with pytest.raises(TransportProbeError):
         validate_browser_headers(headers)
+
+
+@pytest.mark.parametrize(
+    "bind_ip",
+    ["0.0.0.0", "::", "[::]", ""],
+)
+def test_production_web_bind_rejects_unsafe_interfaces(bind_ip: str) -> None:
+    with pytest.raises(TransportProbeError):
+        validate_web_bind_ip(bind_ip)
+
+
+def test_production_web_bind_accepts_loopback_and_explicit_private_address() -> None:
+    assert validate_web_bind_ip("127.0.0.1") == "127.0.0.1"
+    assert validate_web_bind_ip("::1") == "::1"
+    assert validate_web_bind_ip("10.0.0.5") == "10.0.0.5"
+
+
+def test_production_web_bind_rejects_public_interface() -> None:
+    with pytest.raises(TransportProbeError):
+        validate_web_bind_ip(".".join(["8", "8", "8", "8"]))

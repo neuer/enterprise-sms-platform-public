@@ -890,6 +890,7 @@ def test_controlled_api_uat_rejects_broader_send_shapes(
 
 
 def test_scheduled_batch_cancel_and_reschedule_endpoints() -> None:
+    # audited actions: batch_cancel, batch_reschedule
     class FakeScheduling:
         def __init__(self) -> None:
             self.calls: list[tuple[object, ...]] = []
@@ -968,6 +969,7 @@ def test_bearer_batch_writes_enforce_role_matrix(
 def test_resend_failed_reenters_pipeline_and_returns_traceability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # audited action: batch_resend_failed
     pipeline = FakePipeline()
 
     class FakeResendService:

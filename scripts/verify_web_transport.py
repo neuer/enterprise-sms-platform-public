@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import socket
 import ssl
@@ -18,6 +19,7 @@ from urllib.parse import urljoin, urlsplit
 
 MIN_HSTS_SECONDS = 31_536_000
 ALLOWED_TLS_VERSIONS = frozenset({"TLSv1.2", "TLSv1.3"})
+UNSAFE_WEB_BIND_IPS = frozenset({"0.0.0.0", "::", "[::]", ""})
 
 
 class TransportProbeError(RuntimeError):
@@ -134,6 +136,25 @@ def validate_browser_headers(headers: Mapping[str, str]) -> int:
     return max_age
 
 
+def validate_web_bind_ip(bind_ip: str, *, production: bool = True) -> str:
+    """校验 Web 明文上游宿主绑定；生产模式禁止全网卡绑定。"""
+
+    value = bind_ip.strip()
+    if not value:
+        raise TransportProbeError("WEB_BIND_IP must not be empty")
+    if value in UNSAFE_WEB_BIND_IPS:
+        raise TransportProbeError("WEB_BIND_IP must not bind all host interfaces")
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise TransportProbeError("WEB_BIND_IP is not a valid IPv4/IPv6 address") from error
+    if production and not (address.is_loopback or address.is_private):
+        raise TransportProbeError("WEB_BIND_IP must be loopback or a private network address")
+    return bind_ip.strip()
+
+
 def _probe_redirect(http_base: str, https_base: str, *, timeout_s: float) -> int:
     request = urllib.request.Request(urljoin(http_base.rstrip("/") + "/", "login"), method="GET")
     opener = urllib.request.build_opener(NoRedirect())
@@ -213,6 +234,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--http-base", required=True)
     parser.add_argument("--https-base", required=True)
+    parser.add_argument(
+        "--web-bind-ip",
+        default=None,
+        help="Web 明文上游宿主绑定地址；生产模式必须为回环或显式批准的私网地址",
+    )
     parser.add_argument("--min-certificate-days", type=int, default=14)
     parser.add_argument("--timeout-s", type=float, default=10)
     args = parser.parse_args(argv)
@@ -222,6 +248,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_certificate_days=args.min_certificate_days,
         timeout_s=args.timeout_s,
     )
+    if args.web_bind_ip is not None:
+        validate_web_bind_ip(args.web_bind_ip)
     print(
         json.dumps(
             {
@@ -230,6 +258,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "tls_version": evidence.tls_version,
                 "certificate_days_remaining": evidence.certificate_days_remaining,
                 "hsts_max_age": evidence.hsts_max_age,
+                "web_bind_ip": args.web_bind_ip,
             },
             sort_keys=True,
         )
