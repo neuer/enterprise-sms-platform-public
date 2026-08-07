@@ -143,7 +143,8 @@ def test_deployment_index_documents_systemd_install_recovery_and_rollback() -> N
     ):
         assert token in index
     assert "sudo /usr/local/sbin/sms-compose up -d --remove-orphans" in index
-    assert "18080/18443" in index
+    assert "明文 HTTP 上游默认绑定回环" in index
+    assert "公开入口只允许经审批的 `18443`" in index
     assert "80/443/8080/8443" in index
 
 

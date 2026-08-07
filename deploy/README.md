@@ -25,10 +25,10 @@ API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需�
 
 ## 公网端口
 
-- Web HTTP 默认使用宿主机 `18080`，映射到容器内非特权 Nginx `8080`；需要隔离测试时可通过 `WEB_PORT` 覆盖宿主端口。
+- Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；需要隔离测试时可通过 `WEB_PORT` 覆盖宿主端口，远程 TLS 终结器场景必须显式设置 `WEB_BIND_IP` 为专用私网接口。
 - `18443` 预留给配置证书后的 TLS 终结服务；未配置证书前不得作为 HTTPS 对外宣称可用。
 - API `8000` 与 dev profile 的 Mock `9028` 只绑定宿主机回环地址，不得直接暴露到公网。
-- 云主机防火墙与 Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的公网入站，只允许经审批的 `18080/18443`。
+- 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；云主机防火墙与 Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的公网入站，公开入口只允许经审批的 `18443`。
 
 ## 存活、就绪与容器运行边界
 
@@ -623,7 +623,7 @@ bash scripts/verify_data_images.sh
 3. 先 `sudo systemctl stop sms-platform.service`，再次确认目标目录属于本项目且没有真实数据或真实厂商发送，再删除 `/run/sms-platform/secrets`，随后 `sudo systemctl start sms-platform.service`；
 4. 执行 `sudo reboot`，重连后检查 `sudo systemctl status sms-platform.service`。
 
-每次必须自动重建 `current` generation 并恢复健康，且公网仍只允许 `18080/18443`，`80/443/8080/8443/8000/9028` 继续禁用。失败时禁止手工 chmod `0644`、改 root 容器、绕过预处理器或部分启动新容器。
+每次必须自动重建 `current` generation 并恢复健康，且公网仍只允许经审批的 `18443`，`80/443/8080/8443/8000/9028` 与明文上游端口继续禁用。失败时禁止手工 chmod `0644`、改 root 容器、绕过预处理器或部分启动新容器。
 
 代码回退先停止 unit，恢复上一已审核版本的 Compose、包装器、预处理器和 unit，再执行 `systemctl daemon-reload` 与受控启动。`rotate backend` 在共享 lifecycle flock 内执行整个 current-target→prepare→重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控清理旧 generation。代码回退不删除 18 件权威源、数据库卷或旧 generation。若彻底撤销 systemd 托管，执行 `sudo systemctl disable --now sms-platform.service`，但不得把后续生产操作切回 raw Compose。
 
