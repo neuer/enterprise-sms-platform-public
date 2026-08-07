@@ -146,6 +146,33 @@ def test_metrics_source_allowlist_rejects_public_or_all_address_networks() -> No
             )
 
 
+def test_ldap_allowed_hosts_parse_and_reject_invalid_entries() -> None:
+    module = load_settings_module()
+    settings = module.Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        vendor_base_url="http://vendor-mock:9028",
+        ldap_allowed_hosts="dc01.example.com:636;dc02.example.com:636",
+    )
+    assert settings.ldap_allowed_host_set == frozenset(
+        {"dc01.example.com:636", "dc02.example.com:636"}
+    )
+    with pytest.raises(ValueError, match="LDAP_ALLOWED_HOSTS"):
+        invalid = module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            vendor_base_url="http://vendor-mock:9028",
+            ldap_allowed_hosts="bad host",
+        )
+        _ = invalid.ldap_allowed_host_set
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
