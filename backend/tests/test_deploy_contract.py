@@ -367,7 +367,8 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
         "${SMS_WEB_INGRESS_IPV4:-172.31.250.3}"
     )
     config = (ROOT / "deploy/nginx.conf").read_text(encoding="utf-8")
-    assert "proxy_set_header X-Forwarded-For $remote_addr;" in config
+    assert "proxy_set_header X-Forwarded-For $http_x_forwarded_for;" in config
+    assert "proxy_set_header X-Real-IP $http_x_real_ip;" in config
     assert "$proxy_add_x_forwarded_for" not in config
 
 

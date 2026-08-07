@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from app.api.auth import ERROR_RESPONSE
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.metrics import MetricsService, render_prometheus
 from app.services.metrics_repository import SqlMetricsRepository
@@ -44,7 +45,7 @@ def authorize_metrics(
     """同时校验固定抓取源网段与独立 Bearer secret，任一失败即拒绝。"""
 
     typed_settings = cast("Settings", settings)
-    client_host = request.client.host if request.client is not None else ""
+    client_host = trusted_client_ip(request)
     try:
         client_ip = ip_address(client_host)
     except ValueError:

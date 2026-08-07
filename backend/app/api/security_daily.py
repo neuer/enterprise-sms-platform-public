@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.security_daily import (
     ConfigurationState,
@@ -148,7 +149,7 @@ async def _admin(
 
 
 def _ip(request: Request) -> str:
-    return request.client.host if request.client is not None else "0.0.0.0"
+    return trusted_client_ip(request)
 
 
 def _report_model(
