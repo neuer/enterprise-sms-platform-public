@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from app.core.auth.roles import Role
 
 LDAP_ATTRIBUTE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
+LDAP_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,251}[a-z0-9])?$")
 LDAP_CONFIG_FIELDS = frozenset(
     {
         "server",
@@ -54,6 +55,35 @@ class StaleProviderDraft(ProviderError):
 
 class DuplicateRoleMapping(ProviderError):
     """同一认证源的外部组映射重复。"""
+
+
+def validate_ldap_allowed(server: str, allowed_hosts: frozenset[str]) -> None:
+    """部署侧精确允许列表；空列表或未命中目标时必须在使用 Bind Secret 前失败。"""
+
+    parsed = urlsplit(server)
+    hostname = (parsed.hostname or "").casefold()
+    if not hostname or LDAP_HOST_RE.fullmatch(hostname) is None:
+        raise InvalidProviderConfig("LDAP 地址无法解析为受控主机")
+    if not allowed_hosts:
+        raise InvalidProviderConfig("LDAP 出站目标未配置部署允许列表")
+    port = parsed.port or 636
+    matched = False
+    for entry in allowed_hosts:
+        entry_host, separator, raw_port = entry.partition(":")
+        if not separator:
+            if entry_host == hostname and port == 636:
+                matched = True
+                break
+            continue
+        try:
+            entry_port = int(raw_port)
+        except ValueError:
+            raise InvalidProviderConfig("LDAP 允许列表端口无效") from None
+        if entry_host == hostname and entry_port == port:
+            matched = True
+            break
+    if not matched:
+        raise InvalidProviderConfig("LDAP 目标不在部署允许列表")
 
 
 @dataclass(frozen=True, slots=True)

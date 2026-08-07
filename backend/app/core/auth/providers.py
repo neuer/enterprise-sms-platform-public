@@ -19,6 +19,7 @@ from app.services.auth_provider import (
     ProviderNotFound,
     ProviderRecord,
     ProviderTestResult,
+    validate_ldap_allowed,
 )
 from app.settings import Settings
 
@@ -131,7 +132,9 @@ class LdapProviderKind:
         return "password"
 
     def validate_config(self, config: dict[str, object]) -> dict[str, object]:
-        return LdapProviderConfig.from_mapping(config).to_mapping()
+        value = LdapProviderConfig.from_mapping(config)
+        validate_ldap_allowed(value.server, self.settings.ldap_allowed_host_set)
+        return value.to_mapping()
 
     def _provider(
         self,
@@ -139,6 +142,7 @@ class LdapProviderKind:
         config: dict[str, object],
     ) -> LdapPasswordProvider:
         value = LdapProviderConfig.from_mapping(config)
+        validate_ldap_allowed(value.server, self.settings.ldap_allowed_host_set)
         return LdapPasswordProvider(
             LdapConfig(
                 provider_code=provider_code,
