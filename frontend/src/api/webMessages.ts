@@ -75,15 +75,57 @@ export class ApiRequestError extends Error {
 const TOKEN_KEY = "sms_token"
 const REFRESH_TOKEN_KEY = "sms_refresh_token"
 const USER_KEY = "sms_user"
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const REFRESH_TIMEOUT_MS = 10_000
+const DOWNLOAD_TIMEOUT_MS = 120_000
 type RefreshResult = "refreshed" | "unauthorized" | "unavailable"
 let refreshInFlight: Promise<RefreshResult> | null = null
+const sessionControllers = new Set<AbortController>()
+window.addEventListener("sms:session-clearing", cancelSessionRequests)
 
 export function authorization(): Record<string, string> {
   const token = sessionStorage.getItem(TOKEN_KEY)
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-function requestWithCurrentAuthorization(url: string, init: RequestInit): Promise<Response> {
+function assertSameOrigin(url: string): void {
+  let target: URL
+  try {
+    target = new URL(url, window.location.origin)
+  } catch {
+    throw new ApiRequestError(0, "INVALID_REQUEST_URL", "请求 URL 无效")
+  }
+  if (!["http:", "https:"].includes(target.protocol) || target.origin !== window.location.origin) {
+    throw new ApiRequestError(0, "CROSS_ORIGIN_REQUEST", "授权请求必须与当前站点同源")
+  }
+}
+
+function cancelSessionRequests(): void {
+  for (const controller of sessionControllers) controller.abort()
+  sessionControllers.clear()
+}
+
+function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  controller: AbortController,
+  timeoutMs: number,
+): Promise<Response> {
+  const timer = window.setTimeout(
+    () => controller.abort(new DOMException("请求超时", "TimeoutError")),
+    timeoutMs,
+  )
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => {
+    window.clearTimeout(timer)
+  })
+}
+
+function requestWithCurrentAuthorization(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  assertSameOrigin(url)
   const headers: Record<string, string> = {}
   if (init.headers instanceof Headers) {
     init.headers.forEach((value, key) => {
@@ -99,10 +141,22 @@ function requestWithCurrentAuthorization(url: string, init: RequestInit): Promis
   }
   const token = sessionStorage.getItem(TOKEN_KEY)
   if (token) headers.Authorization = `Bearer ${token}`
-  return fetch(url, { ...init, headers })
+  const controller = new AbortController()
+  const externalSignal = init.signal
+  const abortFromExternal = () => controller.abort(externalSignal?.reason)
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort(externalSignal.reason)
+    else externalSignal.addEventListener("abort", abortFromExternal, { once: true })
+  }
+  sessionControllers.add(controller)
+  return fetchWithTimeout(url, { ...init, headers }, controller, timeoutMs).finally(() => {
+    sessionControllers.delete(controller)
+    if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternal)
+  })
 }
 
 function clearSession(): void {
+  cancelSessionRequests()
   sessionStorage.removeItem(TOKEN_KEY)
   sessionStorage.removeItem(REFRESH_TOKEN_KEY)
   sessionStorage.removeItem(USER_KEY)
@@ -118,7 +172,17 @@ async function refreshSession(): Promise<RefreshResult> {
       return "unauthorized"
     }
     try {
-      const result = await refreshRequest(refreshToken)
+      const controller = new AbortController()
+      const timer = window.setTimeout(
+        () => controller.abort(new DOMException("刷新超时", "TimeoutError")),
+        REFRESH_TIMEOUT_MS,
+      )
+      let result: Awaited<ReturnType<typeof refreshRequest>>
+      try {
+        result = await refreshRequest(refreshToken, controller.signal)
+      } finally {
+        window.clearTimeout(timer)
+      }
       sessionStorage.setItem(TOKEN_KEY, result.token)
       sessionStorage.setItem(REFRESH_TOKEN_KEY, result.refresh_token)
       sessionStorage.setItem(USER_KEY, JSON.stringify(result.user))
@@ -147,9 +211,13 @@ async function errorCode(response: Response): Promise<string | undefined> {
   }
 }
 
-export async function authorizedFetch(url: string, init: RequestInit): Promise<Response> {
+export async function authorizedFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   const attemptedToken = sessionStorage.getItem(TOKEN_KEY)
-  const response = await requestWithCurrentAuthorization(url, init)
+  const response = await requestWithCurrentAuthorization(url, init, timeoutMs)
   const code = await errorCode(response)
   if (response.status === 423 && code === "ACCOUNT_LOCKED") {
     clearSession()
@@ -159,11 +227,11 @@ export async function authorizedFetch(url: string, init: RequestInit): Promise<R
 
   const currentToken = sessionStorage.getItem(TOKEN_KEY)
   if (currentToken && attemptedToken && currentToken !== attemptedToken) {
-    return requestWithCurrentAuthorization(url, init)
+    return requestWithCurrentAuthorization(url, init, timeoutMs)
   }
   const refreshed = await refreshSession()
   if (refreshed === "refreshed") {
-    return requestWithCurrentAuthorization(url, init)
+    return requestWithCurrentAuthorization(url, init, timeoutMs)
   }
   if (refreshed === "unavailable") {
     return new Response(
@@ -214,7 +282,7 @@ export async function uploadPhones(file: File): Promise<ImportResult> {
 }
 
 export async function downloadImportInvalidFile(url: string): Promise<Blob> {
-  const response = await authorizedFetch(url, { method: "GET" })
+  const response = await authorizedFetch(url, { method: "GET" }, DOWNLOAD_TIMEOUT_MS)
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody
     throw new Error(body.message || body.code || `下载失败（${response.status}）`)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -11,6 +12,8 @@ from app.vendor.codes import ERROR_POLICIES
 from app.vendor.zhihui import (
     VendorApiError,
     VendorProtocolError,
+    VendorResponseTooLarge,
+    VendorTotalTimeout,
     VendorTransportError,
     ZhihuiClient,
 )
@@ -182,3 +185,69 @@ def test_error_policy_table_is_complete_and_marks_life_line_actions() -> None:
     assert ERROR_POLICIES[1011].delay_s == 1800
     assert ERROR_POLICIES[10010].delay_s == 300
     assert ERROR_POLICIES[10003].pause_queues is True
+
+
+@pytest.mark.asyncio
+async def test_vendor_response_body_over_hard_limit_fails_closed() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            content=b'{"code":0,"msg":null,"data":' + b"x" * 64 + b"}",
+            request=request,
+        )
+    )
+    client = ZhihuiClient(
+        base_url="http://vendor.test",
+        secret_name="name",
+        secret_key="key",
+        http_client=httpx.AsyncClient(transport=transport),
+        max_response_body_bytes=32,
+    )
+    with pytest.raises(VendorResponseTooLarge) as captured:
+        await client.get_balance()
+    await client.aclose()
+    assert captured.value.result_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_vendor_declared_content_length_over_limit_fails_before_read() -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            content=b"{}",
+            headers={"content-length": "4096"},
+            request=request,
+        )
+    )
+    client = ZhihuiClient(
+        base_url="http://vendor.test",
+        secret_name="name",
+        secret_key="key",
+        http_client=httpx.AsyncClient(transport=transport),
+        max_response_body_bytes=1024,
+    )
+    with pytest.raises(VendorResponseTooLarge):
+        await client.get_balance()
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_vendor_total_timeout_covers_slow_chunked_response() -> None:
+    async def slow_stream(request: httpx.Request) -> httpx.Response:
+        async def body():
+            yield b'{"code":0'
+            await asyncio.sleep(0.2)
+            yield b',"msg":null,"data":1}'
+
+        return httpx.Response(200, content=body(), request=request)
+
+    client = ZhihuiClient(
+        base_url="http://vendor.test",
+        secret_name="name",
+        secret_key="key",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(slow_stream)),
+        total_timeout_s=0.05,
+    )
+    with pytest.raises(VendorTotalTimeout):
+        await client.get_balance()
+    await client.aclose()
