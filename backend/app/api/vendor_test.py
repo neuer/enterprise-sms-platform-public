@@ -26,6 +26,7 @@ from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import (
     ApiError,
     api_error_handler,
@@ -374,7 +375,7 @@ async def _admin(
     claims = await facade.verify(credentials.credentials)
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可访问真实联调控制台", None)
-    ip = request.client.host if request.client is not None else "0.0.0.0"
+    ip = trusted_client_ip(request)
     return claims, ip
 
 

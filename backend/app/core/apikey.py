@@ -16,6 +16,7 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import text
 from starlette.requests import Request
 
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
 from app.settings import Settings, get_settings
@@ -164,7 +165,7 @@ def _ip_allowed(client_host: str, allowed_ips: tuple[str, ...]) -> bool:
 
 
 def _enforce_ip_allowlist(request: Request, context: ApiAppContext) -> None:
-    client_host = request.client.host if request.client is not None else ""
+    client_host = trusted_client_ip(request)
     if not _ip_allowed(client_host, context.allowed_ips):
         raise ApiError(403, "IP_NOT_ALLOWED", "来源 IP 不在应用白名单", None)
 

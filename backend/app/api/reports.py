@@ -15,6 +15,7 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
 from app.core.runtime_resources import redis_client
@@ -528,4 +529,4 @@ async def download_export(
 
 
 def _ip(request: Request) -> str:
-    return request.client.host if request.client is not None else "0.0.0.0"
+    return trusted_client_ip(request)
