@@ -4,6 +4,7 @@ import { createPinia } from "pinia"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { beforeEach, vi } from "vitest"
 
+import { clearAccessSession } from "../src/api/sessionTokens"
 import LoginView from "../src/views/LoginView.vue"
 
 function response(body: unknown, status = 200) {
@@ -41,6 +42,7 @@ describe("登录页", () => {
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
+    clearAccessSession()
     vi.unstubAllGlobals()
   })
 
@@ -111,7 +113,7 @@ describe("登录页", () => {
       }),
     )
     expect(router.currentRoute.value.path).toBe("/dashboard")
-    expect(sessionStorage.getItem("sms_token")).toBe("jwt")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.getItem("sms_token")).toBeNull()
   })
