@@ -148,7 +148,7 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [category, mobiles]
+              required: [category, mobiles, biz_id]
               oneOf:
                 - required: [content]
                   not: { required: [template_id] }
@@ -173,7 +173,7 @@ paths:
                   description: 模板 {1}..{n} 占位参数（v1.2，本期全批次同参，平台渲染后下发，个数不符返回 422 TEMPLATE_PARAM_MISMATCH）
                 sign_name: { anyOf: [{ type: string }, { type: 'null' }], description: 缺省用应用默认签名 }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                biz_id: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 调用方业务ID，幂等键与对账用 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
       responses:
         '200':
           description: 受理成功（含幂等命中）
@@ -542,7 +542,7 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [category]
+              required: [category, biz_id]
               oneOf:
                 - required: [content]
                   not: { required: [template_id] }
@@ -557,6 +557,7 @@ paths:
                 template_params: { anyOf: [{ type: array, items: { type: string } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
                 sign_name: { anyOf: [{ type: string }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
                 is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗，v1.2） }
                 consent_confirmed: { type: boolean, default: false, description: market 必须为 true（"已获用户同意"留痕，v1.2），否则 422 CONSENT_REQUIRED }
                 remark: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
