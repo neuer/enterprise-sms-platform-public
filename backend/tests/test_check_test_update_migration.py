@@ -64,7 +64,30 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0049_app_ip_allowlist",
         "0050_beat_scan_config",
         "0051_security_daily_delivery_send",
+        "0052_idempotency_request_hash",
     ]
+
+
+def test_accepts_drop_not_null_as_expand_only(tmp_path: Path) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\n"
+        "down_revision=None\n"
+        "def upgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_widen.py").write_text(
+        "from alembic import op\n"
+        "revision='0002_widen'\n"
+        "down_revision='0001_base'\n"
+        "def upgrade():\n"
+        "    op.execute('ALTER TABLE protected_data ALTER COLUMN value DROP NOT NULL')\n",
+        encoding="utf-8",
+    )
+
+    checked = check_expand_only(tmp_path, "0001_base", "0002_widen")
+
+    assert [item.revision for item in checked] == ["0002_widen"]
 
 
 def test_fast_update_refuses_to_cross_destructive_0015() -> None:

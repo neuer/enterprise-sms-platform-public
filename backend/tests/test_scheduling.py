@@ -101,6 +101,26 @@ async def test_cancel_refunds_once_and_reschedule_requires_future_time() -> None
 
 
 @pytest.mark.asyncio
+async def test_reschedule_rejects_beyond_max_schedule_window() -> None:
+    repository = FakeRepository()
+    service = SchedulingService(
+        repository,
+        FakeQuota(),
+        FakePublisher(),
+        clock=lambda: datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
+        max_schedule_ahead_days=90,
+    )
+
+    with pytest.raises(ValueError, match="不能超过"):
+        await service.reschedule(
+            "market-1",
+            BatchAccessScope(app_id=7),
+            datetime(2026, 10, 20, 8, 0, tzinfo=UTC),
+        )
+    assert repository.rescheduled is None
+
+
+@pytest.mark.asyncio
 async def test_outbox_cancel_does_not_apply_a_second_direct_refund() -> None:
     repository = FakeRepository()
     repository.cancelled = ScheduledBatch(

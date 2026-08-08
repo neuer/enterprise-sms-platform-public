@@ -122,7 +122,7 @@ class SqlPipelineStore:
                 },
             )
 
-    async def exists(self, app_id: int, biz_id: str, batch_no: str) -> bool:
+    async def exists(self, app_id: int | None, biz_id: str, batch_no: str) -> bool:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
@@ -130,7 +130,8 @@ class SqlPipelineStore:
                         SELECT EXISTS (
                           SELECT 1 FROM idempotency_record i
                           JOIN sms_batch b ON b.id=i.batch_id
-                          WHERE i.app_id=:app_id AND i.biz_id=:biz_id
+                          WHERE i.app_id IS NOT DISTINCT FROM :app_id
+                            AND i.biz_id=:biz_id
                             AND i.expires_at > now() AND b.batch_no=:batch_no
                         )
                         """
@@ -139,16 +140,32 @@ class SqlPipelineStore:
             )
             return bool(result.scalar_one())
 
-    async def find_existing(self, app_id: int, biz_id: str) -> str | None:
+    async def find_existing(self, app_id: int | None, biz_id: str) -> str | None:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
                     """
                         SELECT b.batch_no FROM idempotency_record i
                         JOIN sms_batch b ON b.id=i.batch_id
-                        WHERE i.app_id=:app_id AND i.biz_id=:biz_id
+                        WHERE i.app_id IS NOT DISTINCT FROM :app_id
+                          AND i.biz_id=:biz_id
                           AND i.expires_at > now()
                         """
+                ),
+                {"app_id": app_id, "biz_id": biz_id},
+            )
+            value = result.scalar_one_or_none()
+            return str(value).strip() if value is not None else None
+
+    async def find_request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+        async with self._engine().connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT request_hash FROM idempotency_record
+                    WHERE app_id IS NOT DISTINCT FROM :app_id AND biz_id=:biz_id
+                      AND expires_at > now()
+                    """
                 ),
                 {"app_id": app_id, "biz_id": biz_id},
             )
@@ -162,7 +179,8 @@ class SqlPipelineStore:
                 text(
                     """
                     DELETE FROM idempotency_record
-                    WHERE app_id=:app_id AND biz_id=:biz_id AND expires_at <= now()
+                    WHERE app_id IS NOT DISTINCT FROM :app_id
+                      AND biz_id=:biz_id AND expires_at <= now()
                     """
                 ),
                 {"app_id": command.app_id, "biz_id": command.biz_id},
@@ -265,11 +283,21 @@ class SqlPipelineStore:
                 text(
                     """
                     INSERT INTO idempotency_record (
-                      app_id, biz_id, batch_id, expires_at
-                    ) VALUES (:app_id, :biz_id, :batch_id, now() + interval '24 hours')
+                      app_id, biz_id, batch_id, request_hash, expires_at
+                    ) VALUES (
+                      :app_id, :biz_id, :batch_id, :request_hash,
+                      COALESCE((CAST(:scheduled_at AS timestamptz) + interval '7 days'),
+                               now() + interval '24 hours')
+                    )
                     """
                 ),
-                {"app_id": command.app_id, "biz_id": command.biz_id, "batch_id": batch_id},
+                {
+                    "app_id": command.app_id,
+                    "biz_id": command.biz_id,
+                    "batch_id": batch_id,
+                    "request_hash": command.request_hash,
+                    "scheduled_at": command.scheduled_at,
+                },
             )
         if command.status == "pending_approval":
             if not isinstance(command.principal, SecurityPrincipal):

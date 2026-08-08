@@ -18,7 +18,12 @@ from app.core.errors import (
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.batch_query import BatchAccessScope
 from app.services.category import CategoryNotAllowed
-from app.services.pipeline import BatchResponse, SendRequest, VendorTestConsoleOnly
+from app.services.pipeline import (
+    BatchResponse,
+    IdempotencyConflict,
+    SendRequest,
+    VendorTestConsoleOnly,
+)
 from app.services.vendor_control_state import VendorControlStateUnavailable
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.services.vendor_test_recipient import (
@@ -172,6 +177,40 @@ def test_send_api_uses_app_context_and_returns_complete_acceptance(
         "scheduled_at": None,
     }
     assert pipeline.calls[0][0].app_id == 7
+
+
+def test_send_maps_idempotency_conflict_to_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ConflictPipeline:
+        async def preauthorize(self, _app: ApiAppContext, _category: str) -> object:
+            return object()
+
+        async def accept(
+            self,
+            _app: ApiAppContext,
+            _request: SendRequest,
+            **_kwargs: object,
+        ) -> BatchResponse:
+            raise IdempotencyConflict("同一幂等键已用于不同请求")
+
+    async def fake_factory(_app: ApiAppContext) -> ConflictPipeline:
+        return ConflictPipeline()
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-conflict",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "IDEMPOTENCY_CONFLICT"
 
 
 def test_send_api_rejects_unknown_fields_with_422() -> None:

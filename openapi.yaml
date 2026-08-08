@@ -135,9 +135,11 @@ paths:
       tags: [messages]
       summary: 发送短信（应用接入，免审批，支持幂等）
       description: |
-        幂等：同一应用相同 biz_id 24h 内重复提交，返回首次批次号且 idempotent=true，不重复发送。
-        幂等命中时 status 为该历史批次的当前状态，因此可能已经进入 sending、completed、
-        cancelled 或 balance_blocked。
+        幂等：同一应用相同 biz_id 在幂等记录有效期内重复提交，先按请求指纹比较；
+        完全相同请求返回首次批次号且 idempotent=true，不重复发送；不同请求返回
+        409 IDEMPOTENCY_CONFLICT。幂等记录有效期覆盖定时发送时间后安全窗口，
+        不再固定 24 小时。幂等命中时 status 为该历史批次的当前状态，因此可能已经
+        进入 sending、completed、cancelled 或 balance_blocked。
         类别策略：verify 不查黑名单走 realtime 队列；notice 走 realtime；market 走 bulk 且受发送时间窗约束，
         窗外提交自动转次日窗口起点定时（响应 status=scheduled，deferred_reason=market_window）。
       security: [{ ApiKeyAuth: [] }]
@@ -198,6 +200,9 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
           description: 类别越权（CATEGORY_NOT_ALLOWED）
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '409':
+          description: 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT）
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '422':
           description: 敏感词命中 / 全部号码被剔除
@@ -584,7 +589,7 @@ paths:
         '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT 或 IDEMPOTENCY_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: 业务校验失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '429': { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: USAGE_PROJECTION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

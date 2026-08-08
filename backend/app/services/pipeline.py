@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -48,6 +49,10 @@ class AllFiltered(ValueError):
 
 class SensitiveWord(ValueError):
     """内容命中阻断敏感词，对应 SENSITIVE_WORD/422。"""
+
+
+class IdempotencyConflict(RuntimeError):
+    """同一幂等键已用于不同请求，禁止静默复用旧批次。"""
 
 
 class IdempotencyClaimLost(RuntimeError):
@@ -147,6 +152,7 @@ class PipelineConfig:
     market_approval_threshold: int = 50
     approval_expire_hours: int = 24
     test_send_max: int = 5
+    max_schedule_ahead_days: int = 90
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +185,7 @@ class BatchCommand:
     usage_reservation_id: UUID | None
     import_reservation_id: UUID | None
     messages: tuple[ProtectedPhone, ...]
+    request_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,27 +223,29 @@ class PipelineStore(Protocol):
 
 
 class IdempotencyPort(Protocol):
-    def claim_key(self, app_id: int, biz_id: str) -> str: ...
+    def claim_key(self, app_id: int | None, biz_id: str) -> str: ...
 
-    def frequency_result_key(self, app_id: int, biz_id: str) -> str: ...
+    def frequency_result_key(self, app_id: int | None, biz_id: str) -> str: ...
 
-    def quota_result_key(self, app_id: int, biz_id: str, date_key: str) -> str: ...
+    def quota_result_key(self, app_id: int | None, biz_id: str, date_key: str) -> str: ...
 
-    async def lookup(self, app_id: int, biz_id: str) -> str | None: ...
+    async def request_hash(self, app_id: int | None, biz_id: str) -> str | None: ...
 
-    async def remember(self, app_id: int, biz_id: str, batch_no: str) -> None: ...
+    async def lookup(self, app_id: int | None, biz_id: str) -> str | None: ...
 
-    async def claim(self, app_id: int, biz_id: str) -> str | None: ...
+    async def remember(self, app_id: int | None, biz_id: str, batch_no: str) -> None: ...
 
-    async def wait(self, app_id: int, biz_id: str) -> str | None: ...
+    async def claim(self, app_id: int | None, biz_id: str) -> str | None: ...
 
-    async def release(self, app_id: int, biz_id: str, token: str) -> None: ...
+    async def wait(self, app_id: int | None, biz_id: str) -> str | None: ...
 
-    async def renew(self, app_id: int, biz_id: str, token: str) -> bool: ...
+    async def release(self, app_id: int | None, biz_id: str, token: str) -> None: ...
+
+    async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool: ...
 
     async def heartbeat(
         self,
-        app_id: int,
+        app_id: int | None,
         biz_id: str,
         token: str,
         lost: asyncio.Event,
@@ -474,6 +483,118 @@ class SendPipeline:
         return "scheduled", "market_window", target
 
     @staticmethod
+    def _request_hash(
+        request: SendRequest,
+        app: ApiAppContext,
+        policy: CategoryPolicy,
+    ) -> str:
+        """规范化请求指纹，覆盖会改变真实短信副作用与稳定作用域的字段。"""
+
+        actor = request.actor
+        if isinstance(actor, SecurityPrincipal):
+            actor_document = {
+                "kind": "human",
+                "account_id": actor.account_id,
+                "identity_id": actor.identity_id,
+            }
+        elif isinstance(actor, ApplicationPrincipal):
+            actor_document = {"kind": "app", "app_id": actor.app_id}
+        elif actor is None:
+            actor_document = None
+        else:
+            actor_document = str(actor)
+        document = {
+            "app_id": app.app_id,
+            "dept": app.dept,
+            "actor": actor_document,
+            "channel": request.channel,
+            "category": request.category,
+            "content": request.content,
+            "template_id": request.template_id,
+            "template_params": list(request.template_params or ()),
+            "sign_name": request.sign_name or app.default_sign,
+            "scheduled_at": request.scheduled_at.isoformat()
+            if request.scheduled_at is not None
+            else None,
+            "consent_confirmed": request.consent_confirmed,
+            "is_test": request.is_test,
+            "mobiles": list(request.mobiles or ()),
+            "protected_phone_masks": [
+                item.phone_mask for item in request.protected_mobiles
+            ],
+            "vendor_test_uat": request.vendor_test_uat,
+            "resend_of": request.resend_of,
+            "resend_dept": request.resend_dept,
+            "policy": {
+                "queue": policy.queue,
+                "blacklist_required": policy.blacklist_required,
+            },
+        }
+        return hashlib.sha256(
+            json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _resolve_policy(
+        app: ApiAppContext,
+        request: SendRequest,
+        preauthorization: AcceptancePreauthorization | None,
+    ) -> CategoryPolicy:
+        expected = policy_for_category(
+            request.category,
+            app.allowed_categories,
+            notice_blacklist=app.blacklist_check,
+        )
+        if preauthorization is None:
+            return expected
+        if (
+            preauthorization.app_id != app.app_id
+            or preauthorization.category != request.category
+            or preauthorization.policy != expected
+        ):
+            raise ValueError("应用预授权合同无效")
+        return preauthorization.policy
+
+    @staticmethod
+    def _idempotency_app_id(
+        request: SendRequest,
+        app: ApiAppContext,
+    ) -> int | None:
+        """Web 人工发送没有真实 app 行，幂等作用域使用 NULL 并由协调层映射为 web。"""
+
+        if request.channel == "web" and not request.vendor_test_uat:
+            return None
+        return app.app_id
+
+    def _validate_schedule(self, request: SendRequest) -> None:
+        if request.scheduled_at is None:
+            return
+        if request.scheduled_at.tzinfo is None or request.scheduled_at.utcoffset() is None:
+            raise ValueError("scheduled_at must include timezone")
+        now = self.clock()
+        if request.scheduled_at <= now:
+            raise ValueError("scheduled_at must be in the future")
+        horizon = now + timedelta(days=self.config.max_schedule_ahead_days)
+        if request.scheduled_at > horizon:
+            raise ValueError(
+                f"scheduled_at 不能超过 {self.config.max_schedule_ahead_days} 天"
+            )
+
+    async def _ensure_same_request(
+        self,
+        app_id: int | None,
+        biz_id: str,
+        request_hash: str,
+    ) -> None:
+        """旧记录（无指纹）沿用原幂等行为；新记录指纹不一致时拒绝静默复用。"""
+
+        stored_hash = await self.idempotency.request_hash(app_id, biz_id)
+        if stored_hash is not None and stored_hash != request_hash:
+            raise IdempotencyConflict(
+                "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+            )
+
+    @staticmethod
     def _quota_clock(now: datetime) -> tuple[str, int]:
         local = now.astimezone(SHANGHAI)
         next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -517,25 +638,32 @@ class SendPipeline:
                 request,
                 preauthorization=preauthorization,
             )
-        existing = await self.idempotency.lookup(app.app_id, biz_id)
+        idem_app_id = self._idempotency_app_id(request, app)
+        policy = self._resolve_policy(app, request, preauthorization)
+        request_hash = self._request_hash(request, app, policy)
+        existing = await self.idempotency.lookup(idem_app_id, biz_id)
         if existing is not None:
+            await self._ensure_same_request(idem_app_id, biz_id, request_hash)
             return await self.store.response_for(existing)
-        token = await self.idempotency.claim(app.app_id, biz_id)
+        token = await self.idempotency.claim(idem_app_id, biz_id)
         if token is None:
-            existing = await self.idempotency.wait(app.app_id, biz_id)
+            existing = await self.idempotency.wait(idem_app_id, biz_id)
             if existing is not None:
+                await self._ensure_same_request(idem_app_id, biz_id, request_hash)
                 return await self.store.response_for(existing)
-            token = await self.idempotency.claim(app.app_id, biz_id)
+            token = await self.idempotency.claim(idem_app_id, biz_id)
         if token is None:
             raise RuntimeError("idempotency coordination unavailable")
         lost = asyncio.Event()
-        heartbeat = asyncio.create_task(self.idempotency.heartbeat(app.app_id, biz_id, token, lost))
+        heartbeat = asyncio.create_task(
+            self.idempotency.heartbeat(idem_app_id, biz_id, token, lost)
+        )
 
         async def check_ownership() -> None:
             if lost.is_set():
                 raise IdempotencyClaimLost("idempotency claim lost")
             try:
-                owned = await self.idempotency.renew(app.app_id, biz_id, token)
+                owned = await self.idempotency.renew(idem_app_id, biz_id, token)
             except Exception:
                 lost.set()
                 raise IdempotencyClaimLost("idempotency claim unavailable") from None
@@ -544,8 +672,9 @@ class SendPipeline:
                 raise IdempotencyClaimLost("idempotency claim lost")
 
         try:
-            existing = await self.idempotency.lookup(app.app_id, biz_id)
+            existing = await self.idempotency.lookup(idem_app_id, biz_id)
             if existing is not None:
+                await self._ensure_same_request(idem_app_id, biz_id, request_hash)
                 return await self.store.response_for(existing)
             await check_ownership()
             return await self._accept_claimed(
@@ -553,16 +682,20 @@ class SendPipeline:
                 request,
                 preauthorization=preauthorization,
                 ownership_check=check_ownership,
-                claim_key=self.idempotency.claim_key(app.app_id, biz_id),
+                claim_key=self.idempotency.claim_key(idem_app_id, biz_id),
                 claim_token=token,
-                frequency_result_key=self.idempotency.frequency_result_key(app.app_id, biz_id),
+                frequency_result_key=self.idempotency.frequency_result_key(
+                    idem_app_id, biz_id
+                ),
+                idem_app_id=idem_app_id,
+                request_hash=request_hash,
             )
         finally:
             heartbeat.cancel()
             with suppress(asyncio.CancelledError):
                 await heartbeat
             try:
-                await self.idempotency.release(app.app_id, biz_id, token)
+                await self.idempotency.release(idem_app_id, biz_id, token)
             except Exception as exc:
                 LOGGER.error(
                     "idempotency claim release unavailable",
@@ -578,9 +711,16 @@ class SendPipeline:
         claim_key: str | None = None,
         claim_token: str | None = None,
         frequency_result_key: str | None = None,
+        idem_app_id: int | None = None,
+        request_hash: str | None = None,
     ) -> BatchResponse:
         if ownership_check is not None:
             await ownership_check()
+        idem_app_id = self._idempotency_app_id(request, app) if idem_app_id is None else idem_app_id
+        if request.biz_id and request_hash is None:
+            policy = self._resolve_policy(app, request, preauthorization)
+            request_hash = self._request_hash(request, app, policy)
+        self._validate_schedule(request)
         has_plain = bool(request.mobiles)
         has_protected = bool(request.protected_mobiles)
         if has_plain == has_protected:
@@ -599,26 +739,12 @@ class SendPipeline:
             raise ValueError(f"测试发送最多{self.config.test_send_max}个号码")
         if self.recipient_guard is not None and has_plain:
             self.recipient_guard.require_allowed(request.mobiles)
-        expected_policy = policy_for_category(
-            request.category,
-            app.allowed_categories,
-            notice_blacklist=app.blacklist_check,
-        )
-        if preauthorization is None:
-            if self.acceptance_limiter is not None:
-                await self.acceptance_limiter.check(
-                    app_id=app.app_id,
-                    limit_per_minute=app.rate_limit_per_min,
-                )
-            policy = expected_policy
-        else:
-            if (
-                preauthorization.app_id != app.app_id
-                or preauthorization.category != request.category
-                or preauthorization.policy != expected_policy
-            ):
-                raise ValueError("应用预授权合同无效")
-            policy = preauthorization.policy
+        if preauthorization is None and self.acceptance_limiter is not None:
+            await self.acceptance_limiter.check(
+                app_id=app.app_id,
+                limit_per_minute=app.rate_limit_per_min,
+            )
+        policy = self._resolve_policy(app, request, preauthorization)
         rendered = await self._render(request)
         sign_name = request.sign_name or app.default_sign
         if sign_name is not None and self.signs is not None:
@@ -795,7 +921,7 @@ class SendPipeline:
         if ownership_check is not None:
             await ownership_check()
         quota_reservation_key = (
-            self.idempotency.quota_result_key(app.app_id, request.biz_id, date_key)
+            self.idempotency.quota_result_key(idem_app_id, request.biz_id, date_key)
             if request.biz_id
             else None
         )
@@ -931,6 +1057,7 @@ class SendPipeline:
                 status=status,
                 deferred_reason=deferred_reason,
                 scheduled_at=scheduled_at,
+                request_hash=request_hash,
                 removed_duplicate=removed_duplicate,
                 removed_blacklist=len(blocked_active),
                 removed_freq=removed_freq,
@@ -952,22 +1079,29 @@ class SendPipeline:
         except Exception as original:
             if save_attempted and request.biz_id:
                 try:
-                    existing = await self.idempotency.lookup(app.app_id, request.biz_id)
+                    existing = await self.idempotency.lookup(idem_app_id, request.biz_id)
                 except Exception:
                     raise original from None
                 if existing is not None:
+                    await self._ensure_same_request(
+                        idem_app_id, request.biz_id, request_hash or ""
+                    )
                     await release_usage("idempotent-reuse")
                     return await self.store.response_for(existing)
             await compensate_reservation()
             raise
         if stored.idempotent:
+            if request.biz_id:
+                await self._ensure_same_request(
+                    idem_app_id, request.biz_id, request_hash or ""
+                )
             if self.usage_ledger is not None:
                 await release_usage("idempotent-reuse")
             elif not reservation_reused:
                 await compensate_reservation()
             return await self.store.response_for(stored.batch_no)
         if request.biz_id:
-            await self.idempotency.remember(app.app_id, request.biz_id, stored.batch_no)
+            await self.idempotency.remember(idem_app_id, request.biz_id, stored.batch_no)
         if status == "queued" and not stored.outbox_persisted:
             if ownership_check is not None:
                 await ownership_check()

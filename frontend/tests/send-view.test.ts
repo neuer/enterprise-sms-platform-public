@@ -111,4 +111,69 @@ describe("人工发送工作台", () => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
+
+  it("网络重试复用同一幂等键，修改内容后轮换新键", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    const sentBodies: Array<{ biz_id: string }> = []
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url)
+      if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => (target.endsWith("/reports/dashboard")
+            ? { ui_policy: { test_send_max: 5 } }
+            : []),
+        }
+      }
+      if (target.endsWith("/messages/send")) {
+        sentBodies.push(JSON.parse(String(init?.body)) as { biz_id: string })
+        if (sentBodies.length === 1) {
+          return {
+            ok: false,
+            status: 500,
+            headers: { get: () => null },
+            json: async () => ({ code: "INTERNAL_ERROR", message: "网络丢失", detail: null }),
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ batch_no: "b1", status: "queued", accepted: 1, quota_cost: 1 }),
+        }
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as {
+      form: { category: string; mobilesText: string; content: string }
+    }
+    vm.form.category = "notice"
+    vm.form.mobilesText = "13800138000"
+    vm.form.content = "维护通知"
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get("[data-testid='send-button']").trigger("click")
+    await flushPromises()
+    await wrapper.get("[data-testid='send-button']").trigger("click")
+    await flushPromises()
+
+    expect(sentBodies).toHaveLength(2)
+    expect(sentBodies[0].biz_id).toBe(sentBodies[1].biz_id)
+
+    vm.form.content = "维护通知（改期）"
+    await wrapper.vm.$nextTick()
+    await wrapper.get("[data-testid='send-button']").trigger("click")
+    await flushPromises()
+
+    expect(sentBodies).toHaveLength(3)
+    expect(sentBodies[2].biz_id).not.toBe(sentBodies[0].biz_id)
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
 })

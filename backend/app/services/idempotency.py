@@ -1,4 +1,4 @@
-"""Redis 快速索引与 PostgreSQL 事实源协同的 24 小时幂等。"""
+"""Redis 快速索引与 PostgreSQL 事实源协同的幂等合同。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from uuid import uuid4
 
-IDEMPOTENCY_TTL_S = 86400
+IDEMPOTENCY_TTL_S = 86400  # Redis 快速索引 TTL；DB 事实源按 scheduled_at+安全窗口延长
 IDEMPOTENCY_CLAIM_TTL_S = 30
 IDEMPOTENCY_WAIT_ATTEMPTS = 100
 IDEMPOTENCY_WAIT_INTERVAL_S = 0.05
@@ -44,9 +44,15 @@ class IdempotencyRedis(Protocol):
 
 
 class IdempotencyRepository(Protocol):
-    async def exists(self, app_id: int, biz_id: str, batch_no: str) -> bool: ...
+    async def exists(
+        self, app_id: int | None, biz_id: str, batch_no: str
+    ) -> bool: ...
 
-    async def find_existing(self, app_id: int, biz_id: str) -> str | None: ...
+    async def find_existing(
+        self, app_id: int | None, biz_id: str
+    ) -> str | None: ...
+
+    async def find_request_hash(self, app_id: int | None, biz_id: str) -> str | None: ...
 
 
 class IdempotencyCoordinator:
@@ -92,33 +98,43 @@ class IdempotencyCoordinator:
         self.sleeper = sleeper
 
     @staticmethod
-    def key(app_id: int, biz_id: str) -> str:
+    def key(app_id: int | None, biz_id: str) -> str:
         if not biz_id or len(biz_id) > 32:
             raise ValueError("biz_id length must be 1..32")
-        return f"idem:{app_id}:{biz_id}"
+        scope = "web" if app_id is None else str(app_id)
+        return f"idem:{scope}:{biz_id}"
 
     @classmethod
-    def claim_key(cls, app_id: int, biz_id: str) -> str:
+    def claim_key(cls, app_id: int | None, biz_id: str) -> str:
+        scope = "web" if app_id is None else str(app_id)
         cls.key(app_id, biz_id)
-        return f"idem:claim:{app_id}:{biz_id}"
+        return f"idem:claim:{scope}:{biz_id}"
 
     @classmethod
-    def frequency_result_key(cls, app_id: int, biz_id: str) -> str:
+    def frequency_result_key(cls, app_id: int | None, biz_id: str) -> str:
         """生成幂等请求的逐号码频控结果缓存键。"""
 
+        scope = "web" if app_id is None else str(app_id)
         cls.key(app_id, biz_id)
-        return f"idem:freq:{app_id}:{biz_id}"
+        return f"idem:freq:{scope}:{biz_id}"
 
     @classmethod
-    def quota_result_key(cls, app_id: int, biz_id: str, date_key: str) -> str:
+    def quota_result_key(cls, app_id: int | None, biz_id: str, date_key: str) -> str:
         """生成限定到上海自然日的配额预扣结果键。"""
 
+        scope = "web" if app_id is None else str(app_id)
         cls.key(app_id, biz_id)
         if len(date_key) != 8 or not date_key.isdigit():
             raise ValueError("date_key must be YYYYMMDD")
-        return f"idem:quota:{app_id}:{biz_id}:{date_key}"
+        return f"idem:quota:{scope}:{biz_id}:{date_key}"
 
-    async def lookup(self, app_id: int, biz_id: str) -> str | None:
+    async def request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+        """返回 PostgreSQL 事实源中的请求指纹；旧记录可能为 NULL。"""
+
+        self.key(app_id, biz_id)
+        return await self.repository.find_request_hash(app_id, biz_id)
+
+    async def lookup(self, app_id: int | None, biz_id: str) -> str | None:
         key = self.key(app_id, biz_id)
         batch_no = await self.redis.get(key)
         if batch_no is None:
@@ -131,7 +147,7 @@ class IdempotencyCoordinator:
         await self.redis.delete(key)
         return None
 
-    async def remember(self, app_id: int, biz_id: str, batch_no: str) -> None:
+    async def remember(self, app_id: int | None, biz_id: str, batch_no: str) -> None:
         await self.redis.set(
             self.key(app_id, biz_id),
             batch_no,
@@ -139,7 +155,7 @@ class IdempotencyCoordinator:
             ex=IDEMPOTENCY_TTL_S,
         )
 
-    async def claim(self, app_id: int, biz_id: str) -> str | None:
+    async def claim(self, app_id: int | None, biz_id: str) -> str | None:
         token = uuid4().hex
         acquired = await self.redis.set(
             self.claim_key(app_id, biz_id),
@@ -149,7 +165,7 @@ class IdempotencyCoordinator:
         )
         return token if acquired else None
 
-    async def wait(self, app_id: int, biz_id: str) -> str | None:
+    async def wait(self, app_id: int | None, biz_id: str) -> str | None:
         claim_key = self.claim_key(app_id, biz_id)
         for attempt in range(self.wait_attempts):
             if await self.redis.get(claim_key) is None:
@@ -165,7 +181,7 @@ class IdempotencyCoordinator:
             return batch_no
         raise IdempotencyCoordinationTimeout("idempotency wait timed out")
 
-    async def renew(self, app_id: int, biz_id: str, token: str) -> bool:
+    async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool:
         renewed = await self.redis.eval(
             CLAIM_RENEW_LUA,
             1,
@@ -177,7 +193,7 @@ class IdempotencyCoordinator:
 
     async def heartbeat(
         self,
-        app_id: int,
+        app_id: int | None,
         biz_id: str,
         token: str,
         lost: asyncio.Event,
@@ -194,7 +210,7 @@ class IdempotencyCoordinator:
                 lost.set()
                 return
 
-    async def release(self, app_id: int, biz_id: str, token: str) -> None:
+    async def release(self, app_id: int | None, biz_id: str, token: str) -> None:
         await self.redis.eval(
             CLAIM_RELEASE_LUA,
             1,

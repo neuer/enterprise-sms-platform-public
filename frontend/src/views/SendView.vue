@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import type { UploadRequestOptions } from "element-plus"
-import { computed, onMounted, reactive, ref } from "vue"
+import { computed, onMounted, reactive, ref, watch } from "vue"
 
 import {
   previewBilling,
@@ -39,6 +39,7 @@ const preview = ref<BillingPreview | null>(null)
 const busy = ref(false)
 const errorMessage = ref("")
 const successMessage = ref("")
+const idempotencyKey = ref(crypto.randomUUID())
 const templates = ref<SmsTemplate[]>([])
 const templateParams = ref<string[]>([])
 const testSendMax = ref<number | null>(null)
@@ -90,6 +91,28 @@ function contentPayload() {
     template_params: templateParams.value.map((value) => value.trim()),
   }
 }
+
+watch(
+  () =>
+    JSON.stringify({
+      category: form.category,
+      source: form.source,
+      contentMode: form.contentMode,
+      mobilesText: form.mobilesText,
+      content: form.content,
+      templateId: form.templateId,
+      templateParams: templateParams.value,
+      signName: form.signName,
+      scheduledAt: form.scheduledAt,
+      isTest: form.isTest,
+      consentConfirmed: form.consentConfirmed,
+      remark: form.remark,
+      importId: imported.value?.import_id ?? null,
+    }),
+  () => {
+    idempotencyKey.value = crypto.randomUUID()
+  },
+)
 
 async function loadTemplates(): Promise<void> {
   try { templates.value = await listTemplates() }
@@ -177,7 +200,7 @@ async function submit(): Promise<void> {
   busy.value = true
   const payload: WebMessagePayload = {
     category: form.category,
-    biz_id: crypto.randomUUID(),
+    biz_id: idempotencyKey.value,
     ...contentPayload(),
     sign_name: form.signName || undefined,
     scheduled_at: form.scheduledAt ? new Date(form.scheduledAt).toISOString() : undefined,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from app.services.batch_query import BatchAccessScope
@@ -73,12 +73,14 @@ class SchedulingService:
         *,
         clock: Callable[[], datetime] = utc_now,
         approval_expire_hours: int = 24,
+        max_schedule_ahead_days: int = 90,
     ) -> None:
         self.repository = repository
         self.quota = quota
         self.publisher = publisher
         self.clock = clock
         self.approval_expire_hours = approval_expire_hours
+        self.max_schedule_ahead_days = max_schedule_ahead_days
 
     async def dispatch_due(self) -> int:
         batches = await self.repository.claim_due()
@@ -116,6 +118,10 @@ class SchedulingService:
             raise ValueError("scheduled_at must include timezone")
         if scheduled_at <= self.clock():
             raise ValueError("scheduled_at must be in the future")
+        if scheduled_at > self.clock() + timedelta(days=self.max_schedule_ahead_days):
+            raise ValueError(
+                f"scheduled_at 不能超过 {self.max_schedule_ahead_days} 天"
+            )
         if not await self.repository.reschedule(
             batch_no,
             scope,
