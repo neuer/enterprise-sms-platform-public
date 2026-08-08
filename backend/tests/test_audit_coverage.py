@@ -162,8 +162,7 @@ def test_app_audit_numeric_id_has_explicit_bigint_bind_for_asyncpg() -> None:
 def test_all_numeric_audit_object_ids_bind_as_bigint_before_text() -> None:
     services = Path(__file__).resolve().parents[1] / "app/services"
     expected = {
-            "approval_repository.py": "CAST(CAST(:id AS bigint) AS text)",
-            "operations_query.py": "CAST(CAST(:message_id AS bigint) AS text)",
+        "approval_repository.py": "CAST(CAST(:id AS bigint) AS text)",
         "sign_repository.py": "CAST(CAST(:id AS bigint) AS text)",
         "template_repository.py": "CAST(CAST(:id AS bigint) AS text)",
     }
@@ -173,6 +172,11 @@ def test_all_numeric_audit_object_ids_bind_as_bigint_before_text() -> None:
         if needle not in (services / name).read_text(encoding="utf-8")
     ]
     assert missing == []
+
+    core = Path(__file__).resolve().parents[1] / "app/core"
+    assert "CAST(CAST(:object_id AS bigint) AS text)" in (
+        core / "audit.py"
+    ).read_text(encoding="utf-8")
 
     export_source = (services / "export_repository.py").read_text(encoding="utf-8")
     assert "CAST(:public_id AS text)" in export_source

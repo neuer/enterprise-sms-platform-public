@@ -69,16 +69,21 @@ async def insert_audit(connection: Any, event: AuditEvent) -> None:
     validate_audit_payload(event.after)
     correlation_id = current_correlation_id()
     assert correlation_id is not None
+    object_id_sql = (
+        "CAST(CAST(:object_id AS bigint) AS text)"
+        if event.object_id is not None and event.object_id.isdigit()
+        else ":object_id"
+    )
     await connection.execute(
         text(
-            """
+            f"""
             INSERT INTO audit_log(
               correlation_id,actor,actor_subject_kind,actor_account_id,
               actor_identity_id,actor_app_id,role,ip,action,object_type,
               object_id,before_val,after_val
             ) VALUES(
               :correlation_id,:actor,:subject_kind,:account_id,:identity_id,
-              :app_id,:role,CAST(:ip AS inet),:action,:object_type,:object_id,
+              :app_id,:role,CAST(:ip AS inet),:action,:object_type,{object_id_sql},
               CAST(:before AS jsonb),CAST(:after AS jsonb)
             )
             """
