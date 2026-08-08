@@ -209,7 +209,7 @@ def main() -> int:
             "POST",
             "/api/v1/web/auth/login",
             body={
-                "provider_code": "local",
+                "provider_code": "ad",
                 "username": "operator01",
                 "password": mock_password,
             },
@@ -220,6 +220,10 @@ def main() -> int:
         set_cookie = headers.get("set-cookie", "")
         if "Secure" not in set_cookie:
             raise RuntimeError("TLS E2E refresh cookie missing Secure")
+        login_data = json.loads(body.decode("utf-8"))
+        access_token = login_data.get("token")
+        if not isinstance(access_token, str) or not access_token:
+            raise RuntimeError("TLS E2E login omitted access token")
 
         refresh_headers = {
             "X-Simulated-Client": SIMULATED_CLIENTS[1],
@@ -242,7 +246,7 @@ def main() -> int:
             headers={
                 "X-Simulated-Client": SIMULATED_CLIENTS[0],
                 "Origin": f"https://smslocal:{proxy_port}",
-                "Authorization": "Bearer current.jwt",
+                "Authorization": f"Bearer {access_token}",
             },
         )
         if status != 200:
