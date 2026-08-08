@@ -9,6 +9,7 @@ from app.services.idempotency import (
     CLAIM_RENEW_LUA,
     IDEMPOTENCY_WAIT_MARGIN_S,
     IdempotencyCoordinator,
+    IdempotencyScope,
 )
 from app.services.quota import (
     REFUND_LUA,
@@ -77,17 +78,19 @@ class FakeIdemRepository:
         self.find_calls = 0
 
     async def exists(
-        self, app_id: int | None, biz_id: str, batch_no: str
+        self, scope: IdempotencyScope, biz_id: str, batch_no: str
     ) -> bool:
         return batch_no in self.batches
 
     async def find_existing(
-        self, app_id: int | None, biz_id: str
+        self, scope: IdempotencyScope, biz_id: str
     ) -> str | None:
         self.find_calls += 1
         return next(iter(self.batches), None)
 
-    async def find_request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+    async def find_request_hash(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None:
         return None
 
 
@@ -95,14 +98,15 @@ class FakeIdemRepository:
 async def test_idempotency_uses_exact_key_ttl_and_does_not_trust_stale_redis() -> None:
     redis = FakeRedis()
     repo = FakeIdemRepository()
-    redis.values["idem:7:biz-1"] = "stale-batch"
+    scope = IdempotencyScope("app", "7")
+    redis.values["idem:app:7:biz-1"] = "stale-batch"
     coordinator = IdempotencyCoordinator(redis, repo)
 
-    assert await coordinator.lookup(7, "biz-1") is None
-    assert "idem:7:biz-1" not in redis.values
-    await coordinator.remember(7, "biz-1", "new-batch")
+    assert await coordinator.lookup(scope, "biz-1") is None
+    assert "idem:app:7:biz-1" not in redis.values
+    await coordinator.remember(scope, "biz-1", "new-batch")
     assert redis.set_calls[-1] == {
-        "key": "idem:7:biz-1",
+        "key": "idem:app:7:biz-1",
         "value": "new-batch",
         "nx": True,
         "ex": 86400,
@@ -110,30 +114,37 @@ async def test_idempotency_uses_exact_key_ttl_and_does_not_trust_stale_redis() -
 
 
 @pytest.mark.asyncio
-async def test_idempotency_web_scope_uses_null_app_and_request_hash_port() -> None:
+async def test_idempotency_account_scope_uses_stable_identity_and_hash_port() -> None:
     redis = FakeRedis()
     repo = FakeIdemRepository()
+    scope = IdempotencyScope("account", "1:10")
     repo.batches.add("web-batch")
-    redis.values["idem:web:biz-web"] = "web-batch"
+    redis.values["idem:account:1:10:biz-web"] = "web-batch"
     coordinator = IdempotencyCoordinator(redis, repo)
 
-    assert IdempotencyCoordinator.key(None, "biz-web") == "idem:web:biz-web"
-    assert coordinator.claim_key(None, "biz-web") == "idem:claim:web:biz-web"
-    assert coordinator.frequency_result_key(None, "biz-web") == "idem:freq:web:biz-web"
-    assert coordinator.quota_result_key(None, "biz-web", "20260711") == (
-        "idem:quota:web:biz-web:20260711"
+    assert IdempotencyCoordinator.key(scope, "biz-web") == "idem:account:1:10:biz-web"
+    assert coordinator.claim_key(scope, "biz-web") == "idem:claim:account:1:10:biz-web"
+    assert coordinator.frequency_result_key(scope, "biz-web") == (
+        "idem:freq:account:1:10:biz-web"
     )
-    assert await coordinator.lookup(None, "biz-web") == "web-batch"
-    assert await coordinator.request_hash(None, "biz-web") is None
+    assert coordinator.quota_result_key(scope, "biz-web", "20260711") == (
+        "idem:quota:account:1:10:biz-web:20260711"
+    )
+    assert await coordinator.lookup(scope, "biz-web") == "web-batch"
+    assert await coordinator.request_hash(scope, "biz-web") is None
 
 
 @pytest.mark.asyncio
 async def test_idempotency_returns_only_database_confirmed_batch() -> None:
     redis = FakeRedis()
     repo = FakeIdemRepository()
+    scope = IdempotencyScope("app", "7")
     repo.batches.add("real-batch")
-    redis.values["idem:7:biz-2"] = "real-batch"
-    assert await IdempotencyCoordinator(redis, repo).lookup(7, "biz-2") == "real-batch"
+    redis.values["idem:app:7:biz-2"] = "real-batch"
+    assert (
+        await IdempotencyCoordinator(redis, repo).lookup(scope, "biz-2")
+        == "real-batch"
+    )
 
 
 @pytest.mark.asyncio
@@ -146,24 +157,27 @@ async def test_idempotency_claim_wait_and_compare_delete_release_are_bounded() -
         wait_attempts=2,
         wait_interval_s=0,
     )
+    scope = IdempotencyScope("app", "7")
 
-    token = await coordinator.claim(7, "biz-3")
+    token = await coordinator.claim(scope, "biz-3")
     assert token is not None
-    assert redis.set_calls[-1]["key"] == "idem:claim:7:biz-3"
+    assert redis.set_calls[-1]["key"] == "idem:claim:app:7:biz-3"
     assert redis.set_calls[-1]["nx"] is True
     assert redis.set_calls[-1]["ex"] > 0
-    assert await coordinator.claim(7, "biz-3") is None
+    assert await coordinator.claim(scope, "biz-3") is None
     with pytest.raises(RuntimeError, match="timed out"):
-        await coordinator.wait(7, "biz-3")
+        await coordinator.wait(scope, "biz-3")
     assert repo.find_calls == 1
 
-    await coordinator.release(7, "biz-3", "wrong-token")
-    assert redis.values["idem:claim:7:biz-3"] == token
-    await coordinator.release(7, "biz-3", token)
-    assert "idem:claim:7:biz-3" not in redis.values
+    await coordinator.release(scope, "biz-3", "wrong-token")
+    assert redis.values["idem:claim:app:7:biz-3"] == token
+    await coordinator.release(scope, "biz-3", token)
+    assert "idem:claim:app:7:biz-3" not in redis.values
     assert "redis.call('GET', KEYS[1]) == ARGV[1]" in CLAIM_RELEASE_LUA
-    assert coordinator.frequency_result_key(7, "biz-3") == "idem:freq:7:biz-3"
-    assert coordinator.quota_result_key(7, "biz-3", "20260711") == ("idem:quota:7:biz-3:20260711")
+    assert coordinator.frequency_result_key(scope, "biz-3") == "idem:freq:app:7:biz-3"
+    assert coordinator.quota_result_key(scope, "biz-3", "20260711") == (
+        "idem:quota:app:7:biz-3:20260711"
+    )
 
 
 @pytest.mark.asyncio
@@ -176,17 +190,18 @@ async def test_idempotency_wait_returns_database_fact_from_claim_owner() -> None
         wait_attempts=2,
         wait_interval_s=0,
     )
-    assert await coordinator.claim(7, "biz-4") is not None
+    scope = IdempotencyScope("app", "7")
+    assert await coordinator.claim(scope, "biz-4") is not None
     sleeps = 0
 
     async def publish_fact(_seconds: float) -> None:
         nonlocal sleeps
         sleeps += 1
         repo.batches.add("owner-batch")
-        redis.values.pop("idem:claim:7:biz-4", None)
+        redis.values.pop("idem:claim:app:7:biz-4", None)
 
     coordinator.sleeper = publish_fact
-    assert await coordinator.wait(7, "biz-4") == "owner-batch"
+    assert await coordinator.wait(scope, "biz-4") == "owner-batch"
     assert sleeps == 1
     assert repo.find_calls == 1
 
@@ -195,11 +210,12 @@ async def test_idempotency_wait_returns_database_fact_from_claim_owner() -> None
 async def test_claim_renew_requires_owner_token_and_default_wait_covers_lease() -> None:
     redis = FakeRedis()
     coordinator = IdempotencyCoordinator(redis, FakeIdemRepository())
-    token = await coordinator.claim(7, "biz-renew")
+    scope = IdempotencyScope("app", "7")
+    token = await coordinator.claim(scope, "biz-renew")
     assert token is not None
 
-    assert await coordinator.renew(7, "biz-renew", "wrong-token") is False
-    assert await coordinator.renew(7, "biz-renew", token) is True
+    assert await coordinator.renew(scope, "biz-renew", "wrong-token") is False
+    assert await coordinator.renew(scope, "biz-renew", token) is True
     assert "redis.call('GET', KEYS[1]) == ARGV[1]" in CLAIM_RENEW_LUA
     assert coordinator.wait_attempts * coordinator.wait_interval_s >= (
         coordinator.claim_ttl_s + IDEMPOTENCY_WAIT_MARGIN_S

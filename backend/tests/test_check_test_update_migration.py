@@ -65,6 +65,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0050_beat_scan_config",
         "0051_security_daily_delivery_send",
         "0052_idempotency_request_hash",
+        "0053_idempotency_scope",
     ]
 
 

@@ -18,6 +18,7 @@ from app.services.approval_repository import SqlApprovalRepository, record_pendi
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.blacklist import BlacklistEntry
 from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.idempotency import IdempotencyScope
 from app.services.import_repository import (
     ImportStateConflict,
     SqlImportRepository,
@@ -949,15 +950,16 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
 
     connection = FakeConnection([FakeResult(scalar=True)])
     bind_engine(monkeypatch, store, connection)
-    assert await store.exists(7, "biz-1", "batch-1") is True
+    scope = IdempotencyScope("app", "7")
+    assert await store.exists(scope, "biz-1", "batch-1") is True
 
     connection = FakeConnection([FakeResult(scalar="batch-1 ")])
     bind_engine(monkeypatch, store, connection)
-    assert await store.find_existing(7, "biz-1") == "batch-1"
+    assert await store.find_existing(scope, "biz-1") == "batch-1"
 
     connection = FakeConnection([FakeResult(scalar=None)])
     bind_engine(monkeypatch, store, connection)
-    assert await store.find_existing(7, "missing") is None
+    assert await store.find_existing(scope, "missing") is None
 
 
 @pytest.mark.asyncio

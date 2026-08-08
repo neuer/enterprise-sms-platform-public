@@ -28,6 +28,7 @@ from app.services.billing import calculate_segments
 from app.services.category import CategoryPolicy, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
+from app.services.idempotency import IdempotencyScope
 from app.services.masking import mask_phone_text, mask_verify_otp
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -185,6 +186,8 @@ class BatchCommand:
     usage_reservation_id: UUID | None
     import_reservation_id: UUID | None
     messages: tuple[ProtectedPhone, ...]
+    scope_kind: str
+    scope_id: str
     request_hash: str | None = None
 
 
@@ -223,29 +226,47 @@ class PipelineStore(Protocol):
 
 
 class IdempotencyPort(Protocol):
-    def claim_key(self, app_id: int | None, biz_id: str) -> str: ...
+    def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
 
-    def frequency_result_key(self, app_id: int | None, biz_id: str) -> str: ...
+    def frequency_result_key(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str: ...
 
-    def quota_result_key(self, app_id: int | None, biz_id: str, date_key: str) -> str: ...
+    def quota_result_key(
+        self, scope: IdempotencyScope, biz_id: str, date_key: str
+    ) -> str: ...
 
-    async def request_hash(self, app_id: int | None, biz_id: str) -> str | None: ...
+    async def request_hash(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None: ...
 
-    async def lookup(self, app_id: int | None, biz_id: str) -> str | None: ...
+    async def lookup(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None: ...
 
-    async def remember(self, app_id: int | None, biz_id: str, batch_no: str) -> None: ...
+    async def remember(
+        self, scope: IdempotencyScope, biz_id: str, batch_no: str
+    ) -> None: ...
 
-    async def claim(self, app_id: int | None, biz_id: str) -> str | None: ...
+    async def claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None: ...
 
-    async def wait(self, app_id: int | None, biz_id: str) -> str | None: ...
+    async def wait(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None: ...
 
-    async def release(self, app_id: int | None, biz_id: str, token: str) -> None: ...
+    async def release(
+        self, scope: IdempotencyScope, biz_id: str, token: str
+    ) -> None: ...
 
-    async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool: ...
+    async def renew(
+        self, scope: IdempotencyScope, biz_id: str, token: str
+    ) -> bool: ...
 
     async def heartbeat(
         self,
-        app_id: int | None,
+        scope: IdempotencyScope,
         biz_id: str,
         token: str,
         lost: asyncio.Event,
@@ -556,15 +577,20 @@ class SendPipeline:
         return preauthorization.policy
 
     @staticmethod
-    def _idempotency_app_id(
+    def _idempotency_scope(
         request: SendRequest,
         app: ApiAppContext,
-    ) -> int | None:
-        """Web 人工发送没有真实 app 行，幂等作用域使用 NULL 并由协调层映射为 web。"""
+    ) -> IdempotencyScope:
+        """稳定幂等主体：API=app，Web=稳定账号/身份复合作用域。"""
 
         if request.channel == "web" and not request.vendor_test_uat:
-            return None
-        return app.app_id
+            if not isinstance(request.actor, SecurityPrincipal):
+                raise ValueError("Web 发送必须绑定稳定账号")
+            return IdempotencyScope(
+                "account",
+                f"{request.actor.account_id}:{request.actor.identity_id}",
+            )
+        return IdempotencyScope("app", str(app.app_id))
 
     def _validate_schedule(self, request: SendRequest) -> None:
         if request.scheduled_at is None:
@@ -582,13 +608,13 @@ class SendPipeline:
 
     async def _ensure_same_request(
         self,
-        app_id: int | None,
+        scope: IdempotencyScope,
         biz_id: str,
         request_hash: str,
     ) -> None:
         """旧记录（无指纹）沿用原幂等行为；新记录指纹不一致时拒绝静默复用。"""
 
-        stored_hash = await self.idempotency.request_hash(app_id, biz_id)
+        stored_hash = await self.idempotency.request_hash(scope, biz_id)
         if stored_hash is not None and stored_hash != request_hash:
             raise IdempotencyConflict(
                 "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
@@ -638,32 +664,32 @@ class SendPipeline:
                 request,
                 preauthorization=preauthorization,
             )
-        idem_app_id = self._idempotency_app_id(request, app)
+        idem_scope = self._idempotency_scope(request, app)
         policy = self._resolve_policy(app, request, preauthorization)
         request_hash = self._request_hash(request, app, policy)
-        existing = await self.idempotency.lookup(idem_app_id, biz_id)
+        existing = await self.idempotency.lookup(idem_scope, biz_id)
         if existing is not None:
-            await self._ensure_same_request(idem_app_id, biz_id, request_hash)
+            await self._ensure_same_request(idem_scope, biz_id, request_hash)
             return await self.store.response_for(existing)
-        token = await self.idempotency.claim(idem_app_id, biz_id)
+        token = await self.idempotency.claim(idem_scope, biz_id)
         if token is None:
-            existing = await self.idempotency.wait(idem_app_id, biz_id)
+            existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_app_id, biz_id, request_hash)
+                await self._ensure_same_request(idem_scope, biz_id, request_hash)
                 return await self.store.response_for(existing)
-            token = await self.idempotency.claim(idem_app_id, biz_id)
+            token = await self.idempotency.claim(idem_scope, biz_id)
         if token is None:
             raise RuntimeError("idempotency coordination unavailable")
         lost = asyncio.Event()
         heartbeat = asyncio.create_task(
-            self.idempotency.heartbeat(idem_app_id, biz_id, token, lost)
+            self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
         )
 
         async def check_ownership() -> None:
             if lost.is_set():
                 raise IdempotencyClaimLost("idempotency claim lost")
             try:
-                owned = await self.idempotency.renew(idem_app_id, biz_id, token)
+                owned = await self.idempotency.renew(idem_scope, biz_id, token)
             except Exception:
                 lost.set()
                 raise IdempotencyClaimLost("idempotency claim unavailable") from None
@@ -672,9 +698,9 @@ class SendPipeline:
                 raise IdempotencyClaimLost("idempotency claim lost")
 
         try:
-            existing = await self.idempotency.lookup(idem_app_id, biz_id)
+            existing = await self.idempotency.lookup(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_app_id, biz_id, request_hash)
+                await self._ensure_same_request(idem_scope, biz_id, request_hash)
                 return await self.store.response_for(existing)
             await check_ownership()
             return await self._accept_claimed(
@@ -682,12 +708,12 @@ class SendPipeline:
                 request,
                 preauthorization=preauthorization,
                 ownership_check=check_ownership,
-                claim_key=self.idempotency.claim_key(idem_app_id, biz_id),
+                claim_key=self.idempotency.claim_key(idem_scope, biz_id),
                 claim_token=token,
                 frequency_result_key=self.idempotency.frequency_result_key(
-                    idem_app_id, biz_id
+                    idem_scope, biz_id
                 ),
-                idem_app_id=idem_app_id,
+                idem_scope=idem_scope,
                 request_hash=request_hash,
             )
         finally:
@@ -695,7 +721,7 @@ class SendPipeline:
             with suppress(asyncio.CancelledError):
                 await heartbeat
             try:
-                await self.idempotency.release(idem_app_id, biz_id, token)
+                await self.idempotency.release(idem_scope, biz_id, token)
             except Exception as exc:
                 LOGGER.error(
                     "idempotency claim release unavailable",
@@ -711,12 +737,15 @@ class SendPipeline:
         claim_key: str | None = None,
         claim_token: str | None = None,
         frequency_result_key: str | None = None,
-        idem_app_id: int | None = None,
+        idem_scope: IdempotencyScope | None = None,
         request_hash: str | None = None,
     ) -> BatchResponse:
         if ownership_check is not None:
             await ownership_check()
-        idem_app_id = self._idempotency_app_id(request, app) if idem_app_id is None else idem_app_id
+        if idem_scope is None and request.biz_id:
+            idem_scope = self._idempotency_scope(request, app)
+        if request.biz_id and idem_scope is None:
+            raise RuntimeError("idempotency scope unavailable")
         if request.biz_id and request_hash is None:
             policy = self._resolve_policy(app, request, preauthorization)
             request_hash = self._request_hash(request, app, policy)
@@ -920,11 +949,12 @@ class SendPipeline:
         quota_cost = prepared.segments * len(accepted)
         if ownership_check is not None:
             await ownership_check()
-        quota_reservation_key = (
-            self.idempotency.quota_result_key(idem_app_id, request.biz_id, date_key)
-            if request.biz_id
-            else None
-        )
+        if request.biz_id and idem_scope is not None:
+            quota_reservation_key = (
+                self.idempotency.quota_result_key(idem_scope, request.biz_id, date_key)
+            )
+        else:
+            quota_reservation_key = None
         try:
             if self.usage_ledger is not None and usage_reservation_id is not None:
                 next_day = (now.astimezone(SHANGHAI) + timedelta(days=1)).replace(
@@ -1052,6 +1082,8 @@ class SendPipeline:
                 sign_name=sign_name,
                 template_id=request.template_id,
                 biz_id=request.biz_id,
+                scope_kind=idem_scope.kind if idem_scope is not None else "app",
+                scope_id=idem_scope.id if idem_scope is not None else "",
                 segments=prepared.segments,
                 quota_cost=quota_cost,
                 status=status,
@@ -1078,13 +1110,14 @@ class SendPipeline:
             stored = await self.store.save(command)
         except Exception as original:
             if save_attempted and request.biz_id:
+                assert idem_scope is not None
                 try:
-                    existing = await self.idempotency.lookup(idem_app_id, request.biz_id)
+                    existing = await self.idempotency.lookup(idem_scope, request.biz_id)
                 except Exception:
                     raise original from None
                 if existing is not None:
                     await self._ensure_same_request(
-                        idem_app_id, request.biz_id, request_hash or ""
+                        idem_scope, request.biz_id, request_hash or ""
                     )
                     await release_usage("idempotent-reuse")
                     return await self.store.response_for(existing)
@@ -1092,8 +1125,9 @@ class SendPipeline:
             raise
         if stored.idempotent:
             if request.biz_id:
+                assert idem_scope is not None
                 await self._ensure_same_request(
-                    idem_app_id, request.biz_id, request_hash or ""
+                    idem_scope, request.biz_id, request_hash or ""
                 )
             if self.usage_ledger is not None:
                 await release_usage("idempotent-reuse")
@@ -1101,7 +1135,8 @@ class SendPipeline:
                 await compensate_reservation()
             return await self.store.response_for(stored.batch_no)
         if request.biz_id:
-            await self.idempotency.remember(idem_app_id, request.biz_id, stored.batch_no)
+            assert idem_scope is not None
+            await self.idempotency.remember(idem_scope, request.biz_id, stored.batch_no)
         if status == "queued" and not stored.outbox_persisted:
             if ownership_check is not None:
                 await ownership_check()
