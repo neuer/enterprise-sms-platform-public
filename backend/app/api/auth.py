@@ -188,11 +188,26 @@ def _assert_same_origin(request: Request) -> None:
     origin = request.headers.get("origin") or request.headers.get("referer")
     if not origin:
         raise ApiError(403, "FORBIDDEN", "缺少同源校验来源", None)
-    parsed = urlsplit(origin)
+    try:
+        source = urlsplit(origin)
+        source_port = source.port
+    except (TypeError, ValueError):
+        raise ApiError(403, "FORBIDDEN", "请求来源非同源", None) from None
     if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname != request.url.hostname
-        or parsed.port != request.url.port
+        source.scheme not in {"http", "https"}
+        or not source.hostname
+        or source.username is not None
+        or source.password is not None
+    ):
+        raise ApiError(403, "FORBIDDEN", "请求来源非同源", None)
+    expected_scheme = request.url.scheme
+    expected_host = (request.url.hostname or "").casefold()
+    expected_port = request.url.port or (443 if expected_scheme == "https" else 80)
+    source_effective_port = source_port or (443 if source.scheme == "https" else 80)
+    if (
+        source.scheme != expected_scheme
+        or source.hostname.casefold() != expected_host
+        or source_effective_port != expected_port
     ):
         raise ApiError(403, "FORBIDDEN", "请求来源非同源", None)
 

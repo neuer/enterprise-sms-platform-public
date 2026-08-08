@@ -26,7 +26,7 @@ VERSION_SIZE = 2
 LENGTH_SIZE = 4
 FRAME_KIND_SIZE = 1
 DEFAULT_FRAME_SIZE = 64 * 1024
-DANGEROUS_CSV_PREFIXES = ("=", "+", "-", "@")
+DANGEROUS_CSV_RE = re.compile(r"^[\s\t\r\n]*(?:[=+\-@])")
 EXPORT_FILENAME = re.compile(
     r"^export-(?P<task_id>[1-9][0-9]*)-"
     r"(?P<lease_id>[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
@@ -36,7 +36,7 @@ EXPORT_FILENAME = re.compile(
 
 def _csv_cell(value: object) -> str:
     text = "" if value is None else str(value)
-    return "'" + text if text.startswith(DANGEROUS_CSV_PREFIXES) else text
+    return "'" + text if DANGEROUS_CSV_RE.match(text) else text
 
 
 def _csv_line(values: Sequence[object]) -> bytes:

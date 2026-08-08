@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.api.auth as auth_api
@@ -228,6 +229,33 @@ def test_cookie_refresh_rejects_cross_origin_request() -> None:
     denied = response_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": "http://evil.example"},
+        json={},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "FORBIDDEN"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://testserver:99999",
+        "http://testserver:not-a-port",
+        "http://user:pass@testserver",
+        "javascript:alert(1)",
+        "http://",
+    ],
+)
+def test_cookie_refresh_rejects_malformed_origin_with_stable_403(origin: str) -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+    response_client.post(
+        "/api/v1/web/auth/login",
+        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+    )
+
+    denied = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": origin},
         json={},
     )
     assert denied.status_code == 403
