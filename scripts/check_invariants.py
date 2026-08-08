@@ -110,10 +110,10 @@ def check_vendor_live_invariants() -> None:
     pipeline = require_fragments(
         APP / "services/pipeline.py",
         "require_allowed(request.mobiles)",
-        "self.crypto.protect_phone(phone)",
+        "await run_bounded(",
     )
     if pipeline and pipeline.index("require_allowed(request.mobiles)") > pipeline.index(
-        "self.crypto.protect_phone(phone)"
+        "await run_bounded("
     ):
         fail(APP / "services/pipeline.py", "白名单必须在手机号持久化准备前检查")
 
