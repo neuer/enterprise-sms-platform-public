@@ -300,6 +300,10 @@ def _check_raw_sql(
                 normalized,
             )
             or re.search(
+                r"\bALTER\s+COLUMN\s+[A-Z_][A-Z0-9_]*\s+DROP\s+NOT\s+NULL\b",
+                normalized,
+            )
+            or re.search(
                 r"\bALTER\s+COLUMN\s+[A-Z_][A-Z0-9_]*\s+SET\s+DEFAULT\b",
                 normalized,
             )

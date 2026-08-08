@@ -110,3 +110,11 @@ def test_optional_resend_reference_has_explicit_asyncpg_type() -> None:
     source = inspect.getsource(SqlPipelineStore._insert)
     assert "batch_no=CAST(:resend_of AS char(32))" in source
     assert ":resend_of IS NULL" not in source
+
+
+def test_idempotency_fingerprint_and_scheduled_retention_are_persisted() -> None:
+    source = inspect.getsource(SqlPipelineStore._insert)
+    assert "request_hash" in source
+    assert "COALESCE(:scheduled_at + interval '7 days'," in source
+    assert "now() + interval '24 hours')" in source
+    assert "app_id IS NOT DISTINCT FROM :app_id" in source

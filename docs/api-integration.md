@@ -345,6 +345,7 @@ const data = await response.json();
 | `VENDOR_TEST_CONSOLE_ONLY` | 403 | 受控真实联调环境下的普通发送保护，仅测试环境出现 |
 | `NOT_FOUND` | 404 | 批次不存在或不属于本应用 |
 | `STATE_CONFLICT` | 409 | 状态机非法流转（如取消已发送批次） |
+| `IDEMPOTENCY_CONFLICT` | 409 | 同一幂等键已用于不同请求，更换 biz_id 或复用原请求 |
 | `SENSITIVE_WORD` | 422 | 内容命中敏感词 |
 | `TEMPLATE_PARAM_MISMATCH` | 422 | 模板参数个数不符或超长 |
 | `ALL_FILTERED` | 422 | 号码全部被去重/黑名单/频控剔除 |

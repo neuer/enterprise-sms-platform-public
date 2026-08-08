@@ -32,6 +32,7 @@ from app.services.pipeline import (
     AllFiltered,
     BatchResponse,
     ConsentRequired,
+    IdempotencyConflict,
     InvalidContent,
     PipelineConfig,
     SendPipeline,
@@ -306,6 +307,13 @@ async def _batch_scope(
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, IdempotencyConflict):
+        return ApiError(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            str(error),
+            None,
+        )
     if isinstance(error, VendorTestConsoleOnly):
         return ApiError(
             403,
@@ -353,6 +361,7 @@ def _error(error: Exception) -> ApiError:
         400: ERROR_RESPONSE,
         401: ERROR_RESPONSE,
         403: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
         429: ERROR_RESPONSE,
         503: ERROR_RESPONSE,
@@ -383,6 +392,7 @@ async def send_message(
         AllFiltered,
         CategoryNotAllowed,
         ConsentRequired,
+        IdempotencyConflict,
         InvalidContent,
         ApplicationRateLimitExceeded,
         QuotaExceeded,

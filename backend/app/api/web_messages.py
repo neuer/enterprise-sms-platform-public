@@ -792,6 +792,7 @@ async def send_web_message(
                     template_params=payload.template_params,
                     sign_name=payload.sign_name,
                     scheduled_at=payload.scheduled_at,
+                    biz_id=payload.biz_id,
                     channel="web",
                     consent_confirmed=payload.consent_confirmed,
                     actor=claims.principal,

@@ -76,12 +76,19 @@ class FakeIdemRepository:
         self.batches: set[str] = set()
         self.find_calls = 0
 
-    async def exists(self, app_id: int, biz_id: str, batch_no: str) -> bool:
+    async def exists(
+        self, app_id: int | None, biz_id: str, batch_no: str
+    ) -> bool:
         return batch_no in self.batches
 
-    async def find_existing(self, app_id: int, biz_id: str) -> str | None:
+    async def find_existing(
+        self, app_id: int | None, biz_id: str
+    ) -> str | None:
         self.find_calls += 1
         return next(iter(self.batches), None)
+
+    async def find_request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -100,6 +107,24 @@ async def test_idempotency_uses_exact_key_ttl_and_does_not_trust_stale_redis() -
         "nx": True,
         "ex": 86400,
     }
+
+
+@pytest.mark.asyncio
+async def test_idempotency_web_scope_uses_null_app_and_request_hash_port() -> None:
+    redis = FakeRedis()
+    repo = FakeIdemRepository()
+    repo.batches.add("web-batch")
+    redis.values["idem:web:biz-web"] = "web-batch"
+    coordinator = IdempotencyCoordinator(redis, repo)
+
+    assert IdempotencyCoordinator.key(None, "biz-web") == "idem:web:biz-web"
+    assert coordinator.claim_key(None, "biz-web") == "idem:claim:web:biz-web"
+    assert coordinator.frequency_result_key(None, "biz-web") == "idem:freq:web:biz-web"
+    assert coordinator.quota_result_key(None, "biz-web", "20260711") == (
+        "idem:quota:web:biz-web:20260711"
+    )
+    assert await coordinator.lookup(None, "biz-web") == "web-batch"
+    assert await coordinator.request_hash(None, "biz-web") is None
 
 
 @pytest.mark.asyncio

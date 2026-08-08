@@ -365,7 +365,7 @@ CREATE TABLE sms_batch (
       OR (creator_account_id IS NOT NULL AND creator_identity_id IS NOT NULL)
     )
 );
--- biz_id 只用于追踪；24h 后允许复用，唯一性由 idempotency_record 管理。
+-- biz_id 只用于追踪；过期后允许复用，唯一性由 idempotency_record 管理。
 CREATE INDEX idx_batch_app_biz ON sms_batch(app_id, biz_id)
     WHERE biz_id IS NOT NULL AND app_id IS NOT NULL;
 CREATE INDEX idx_batch_created  ON sms_batch(created_at);
@@ -377,16 +377,19 @@ CREATE INDEX idx_sms_batch_creator_account
 CREATE INDEX idx_batch_active   ON sms_batch(status)
     WHERE status IN ('scheduled','queued','sending','balance_blocked');
 
--- 24h 幂等 DB 兜底：请求事务先删除同键 expires_at<=now() 的记录，再创建
+-- 幂等 DB 兜底：请求事务先删除同键 expires_at<=now() 的记录，再创建
 -- batch+record；唯一冲突时回查未过期 batch 返回 idempotent=true。
+-- request_hash 固化请求指纹，生命周期覆盖 scheduled_at + 安全窗口。
+-- app_id 为 NULL 表示 Web 人工发送作用域（biz_id 为前端生成 UUID）。
 CREATE TABLE idempotency_record (
     id         BIGSERIAL PRIMARY KEY,
-    app_id     BIGINT       NOT NULL REFERENCES app(id),
+    app_id     BIGINT       REFERENCES app(id),
     biz_id     VARCHAR(32)  NOT NULL,
+    request_hash VARCHAR(64),
     batch_id   BIGINT       NOT NULL UNIQUE REFERENCES sms_batch(id),
     expires_at TIMESTAMPTZ  NOT NULL,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT uk_idem_app_biz UNIQUE (app_id, biz_id)
+    CONSTRAINT uk_idem_app_biz UNIQUE NULLS NOT DISTINCT (app_id, biz_id)
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
 

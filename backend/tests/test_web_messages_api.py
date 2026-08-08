@@ -320,6 +320,7 @@ def test_send_reserves_import_and_decrypts_only_for_pipeline(
     )
     assert isinstance(pipeline.request, SendRequest)
     assert pipeline.request.mobiles == ["13800138000"]
+    assert pipeline.request.biz_id == "biz-1"
     assert pipeline.request.import_reservation_id == UUID(
         "22222222-2222-4222-8222-222222222222"
     )
