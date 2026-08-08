@@ -64,6 +64,15 @@ def test_production_disables_interactive_api_documentation(tmp_path: Path) -> No
     assert application.openapi_url is None
 
 
+def test_create_app_stores_single_settings_source() -> None:
+    module = load_main_module()
+    settings = module.get_settings()
+
+    application = module.create_app(settings)
+
+    assert application.state.settings is settings
+
+
 def test_api_lifespan_owns_job_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
