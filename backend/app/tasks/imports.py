@@ -110,6 +110,7 @@ async def process_import_once(import_id: str) -> int:
         temporary = await run_bounded(
             codec.decrypt_to_memory,
             claim.source_file,
+            expected_import_id=claim.import_id,
             expected_size=claim.source_size,
             max_bytes=limits.max_bytes,
             timeout_s=30,

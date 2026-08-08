@@ -107,6 +107,7 @@ class ImportFileCodec:
                     raise ValueError("上传文件大小在登记期间发生变化")
                 manifest = json.dumps(
                     {
+                        "import_id": str(import_id),
                         "frame_count": frame_index + 1,
                         "plaintext_size": size,
                         "sha256": digest.hexdigest(),
@@ -170,12 +171,15 @@ class ImportFileCodec:
         *,
         version: int,
         import_id: UUID,
+        expected_import_id: UUID,
         expected_size: int,
         max_bytes: int,
         temporary: SpooledTemporaryFile[bytes],
     ) -> int:
         """读取 SMSI2：逐帧上下文认证、严格连续序号与认证最终 manifest。"""
 
+        if import_id != expected_import_id:
+            raise ValueError("导入源文件身份与任务不一致")
         total = 0
         digest = hashlib.sha256()
         frame_index = 0
@@ -238,6 +242,7 @@ class ImportFileCodec:
                     raise ValueError("导入源文件终止清单无效") from None
                 if (
                     not isinstance(manifest, dict)
+                    or manifest.get("import_id") != str(expected_import_id)
                     or manifest.get("frame_count") != frame_index + 1
                     or manifest.get("plaintext_size") != expected_size
                     or manifest.get("sha256") != digest.hexdigest()
@@ -257,6 +262,7 @@ class ImportFileCodec:
         self,
         relative: str,
         *,
+        expected_import_id: UUID,
         expected_size: int,
         max_bytes: int,
     ) -> SpooledTemporaryFile[bytes]:
@@ -264,6 +270,8 @@ class ImportFileCodec:
 
         if expected_size < 0 or expected_size > max_bytes:
             raise ValueError("导入源文件大小无效")
+        if relative != f"import-{expected_import_id}.smsx":
+            raise ValueError("导入源文件名与任务身份不一致")
         # 返回给调用方消费并关闭，不能在本函数退出时使用上下文管理器。
         temporary = SpooledTemporaryFile(  # noqa: SIM115
             max_size=max_bytes + 1,
@@ -320,6 +328,7 @@ class ImportFileCodec:
                         source,
                         version=int.from_bytes(version_raw, "big"),
                         import_id=import_id,
+                        expected_import_id=expected_import_id,
                         expected_size=expected_size,
                         max_bytes=max_bytes,
                         temporary=temporary,
