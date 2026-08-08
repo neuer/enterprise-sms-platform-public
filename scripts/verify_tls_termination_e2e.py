@@ -83,6 +83,7 @@ def _start_proxy(web_port: int) -> tuple[threading.Thread, int]:
     TlsProxyHandler.web_port = web_port
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), TlsProxyHandler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     with tempfile.TemporaryDirectory() as directory:
         cert = Path(directory) / "cert.pem"
         key = Path(directory) / "key.pem"
