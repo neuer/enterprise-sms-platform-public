@@ -649,6 +649,9 @@ def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
     change = classify_changed_paths(
         [
             "scripts/verify_redis_domains.sh",
+            "scripts/verify_release_control.sh",
+            "scripts/verify_tls_termination_e2e.py",
+            "scripts/verify_all.sh",
             "scripts/verify_web_transport.py",
         ]
     )
