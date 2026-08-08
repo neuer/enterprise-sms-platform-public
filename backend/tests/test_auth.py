@@ -56,7 +56,6 @@ class FakeKeyValue:
         if current is None:
             return 0
         if current != expected:
-            self.values.pop(str(key), None)
             return -1
         self.values[str(key)] = replacement
         return 1
@@ -613,7 +612,7 @@ async def test_jwt_rejects_disabled_or_changed_authoritative_projection(
 
 @pytest.mark.asyncio
 @pytest.mark.authorization
-async def test_refresh_rotates_once_and_reuse_revokes_the_family() -> None:
+async def test_refresh_rotates_once_and_out_of_grace_reuse_revokes_the_family() -> None:
     store = FakeKeyValue()
 
     async def load_security_session(
@@ -632,6 +631,10 @@ async def test_refresh_rotates_once_and_reuse_revokes_the_family() -> None:
     first = await service.issue_pair(access_claims())
     second = await service.rotate_refresh(first.refresh_token)
     assert (await service.verify(second.token)).account_id == 8
+
+    grace = await service.rotate_refresh(first.refresh_token)
+    assert grace.refresh_token == second.refresh_token
+    store.values.pop(service._refresh_grace_key(first.refresh_token))
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token)
@@ -675,6 +678,41 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
     assert second.refresh_expires_in == 5 * 24 * 60 * 60
     assert second_payload["family_exp"] == first_payload["family_exp"]
     assert second_payload["exp"] == first_payload["exp"]
+
+
+@pytest.mark.asyncio
+async def test_old_refresh_token_gets_bounded_grace_without_destroying_family() -> None:
+    store = FakeKeyValue()
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        store,
+    )
+    first = await service.issue_pair(access_claims())
+    second = await service.rotate_refresh(first.refresh_token)
+
+    grace = await service.rotate_refresh(first.refresh_token)
+
+    assert grace.refresh_token == second.refresh_token
+    assert (await service.verify(grace.token)).account_id == 8
+    # 新 family 仍然有效，可以在 grace 之外继续正常轮换。
+    assert (await service.rotate_refresh(second.refresh_token)).token
+
+
+@pytest.mark.asyncio
+async def test_out_of_grace_refresh_replay_still_destroys_family() -> None:
+    store = FakeKeyValue()
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        store,
+    )
+    first = await service.issue_pair(access_claims())
+    second = await service.rotate_refresh(first.refresh_token)
+    store.values.pop(service._refresh_grace_key(first.refresh_token))
+
+    with pytest.raises(InvalidCredentials):
+        await service.rotate_refresh(first.refresh_token)
+    with pytest.raises(InvalidCredentials):
+        await service.rotate_refresh(second.refresh_token)
 
 
 @pytest.mark.asyncio
