@@ -1,4 +1,9 @@
 import { AuthApiError, refreshRequest } from "./auth"
+import {
+  clearAccessSession,
+  getAccessToken,
+  setAccessSession,
+} from "./sessionTokens"
 
 export type Category = "notice" | "market"
 
@@ -72,8 +77,6 @@ export class ApiRequestError extends Error {
   }
 }
 
-const TOKEN_KEY = "sms_token"
-const USER_KEY = "sms_user"
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const REFRESH_TIMEOUT_MS = 10_000
 const DOWNLOAD_TIMEOUT_MS = 120_000
@@ -83,7 +86,7 @@ const sessionControllers = new Set<AbortController>()
 window.addEventListener("sms:session-clearing", cancelSessionRequests)
 
 export function authorization(): Record<string, string> {
-  const token = sessionStorage.getItem(TOKEN_KEY)
+  const token = getAccessToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -138,7 +141,7 @@ function requestWithCurrentAuthorization(
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === "authorization") delete headers[key]
   }
-  const token = sessionStorage.getItem(TOKEN_KEY)
+  const token = getAccessToken()
   if (token) headers.Authorization = `Bearer ${token}`
   const controller = new AbortController()
   const externalSignal = init.signal
@@ -156,8 +159,7 @@ function requestWithCurrentAuthorization(
 
 function clearSession(): void {
   cancelSessionRequests()
-  sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(USER_KEY)
+  clearAccessSession()
   window.dispatchEvent(new Event("sms:unauthorized"))
 }
 
@@ -176,8 +178,7 @@ async function refreshSession(): Promise<RefreshResult> {
       } finally {
         window.clearTimeout(timer)
       }
-      sessionStorage.setItem(TOKEN_KEY, result.token)
-      sessionStorage.setItem(USER_KEY, JSON.stringify(result.user))
+      setAccessSession(result.token, result.user)
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"
     } catch (error) {
@@ -208,7 +209,7 @@ export async function authorizedFetch(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
-  const attemptedToken = sessionStorage.getItem(TOKEN_KEY)
+  const attemptedToken = getAccessToken()
   const response = await requestWithCurrentAuthorization(url, init, timeoutMs)
   const code = await errorCode(response)
   if (response.status === 423 && code === "ACCOUNT_LOCKED") {
@@ -217,7 +218,7 @@ export async function authorizedFetch(
   }
   if (response.status !== 401 || code !== "UNAUTHORIZED") return response
 
-  const currentToken = sessionStorage.getItem(TOKEN_KEY)
+  const currentToken = getAccessToken()
   if (currentToken && attemptedToken && currentToken !== attemptedToken) {
     return requestWithCurrentAuthorization(url, init, timeoutMs)
   }
