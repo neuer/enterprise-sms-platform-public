@@ -348,7 +348,7 @@ start_stack() {
   python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
     --mode "${SMS_EXTERNAL_TLS_MODE:-0}" \
     --cidrs "${SMS_TRUSTED_PROXY_CIDRS:-}" \
-    --output "${SMS_TRUSTED_PROXY_CONF:-$ROOT/deploy/trusted-proxies.conf}"
+    --output "${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
   "${COMPOSE[@]}" config --quiet
   "${COMPOSE[@]}" up "$@"
 }

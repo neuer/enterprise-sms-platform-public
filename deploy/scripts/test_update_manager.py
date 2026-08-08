@@ -73,6 +73,7 @@ _ACTIVATABLE_IMAGE_ENV_KEYS = frozenset(
 _TRUSTED_PROXY_DOTENV_KEYS = frozenset(
     {"SMS_EXTERNAL_TLS_MODE", "SMS_TRUSTED_PROXY_CIDRS", "SMS_TRUSTED_PROXY_CONF"}
 )
+_TRUSTED_PROXY_RUNTIME_CONF = "/usr/local/share/sms-platform/trusted-proxies.conf"
 _BACKEND_RUNTIME_GID = 10001
 _BACKUP_CONFIG_FIELDS = frozenset(
     {"schema_version", "database", "output_root", "key_file"}
@@ -1733,9 +1734,7 @@ class HostTestUpdateOperations:
             key, value = line.split("=", 1)
             if key in _TRUSTED_PROXY_DOTENV_KEYS:
                 values[key] = value
-        output = values.get("SMS_TRUSTED_PROXY_CONF") or str(
-            self.root / "deploy/trusted-proxies.conf"
-        )
+        output = values.get("SMS_TRUSTED_PROXY_CONF") or _TRUSTED_PROXY_RUNTIME_CONF
         self.host.runner.run(
             [
                 "/usr/bin/python3",
