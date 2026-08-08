@@ -38,9 +38,16 @@ IMPORT_CONTEXT_COLUMN = "import_phone_stage"
 class ImportFileCodec:
     """上传时逐帧加密，worker 解析前只解密到严格有界内存文件。"""
 
-    def __init__(self, crypto: CryptoService, root: Path) -> None:
+    def __init__(
+        self,
+        crypto: CryptoService,
+        root: Path,
+        *,
+        reject_legacy: bool = True,
+    ) -> None:
         self.crypto = crypto
         self.root = root.resolve()
+        self.reject_legacy = reject_legacy
 
     def _ensure_root(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -267,6 +274,8 @@ class ImportFileCodec:
             with self._controlled(relative).open("rb") as source:
                 magic = source.read(len(MAGIC_V1))
                 if magic == MAGIC_V1:
+                    if self.reject_legacy:
+                        raise ValueError("legacy import format rejected")
                     version_raw = source.read(VERSION_SIZE)
                     if len(version_raw) != VERSION_SIZE:
                         raise ValueError("导入源文件密文头无效")

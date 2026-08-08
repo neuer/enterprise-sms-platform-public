@@ -26,6 +26,7 @@ PASSWORD_CHANGE_TOKEN_TYPE = "password_change"
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
 REFRESH_TOKEN_TTL = timedelta(days=7)
 PASSWORD_CHANGE_TTL = timedelta(minutes=10)
+REFRESH_GRACE_SECONDS = 5
 JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
@@ -36,7 +37,6 @@ _ROTATE_REFRESH_LUA = """
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
 if current ~= ARGV[1] then
-  redis.call('DEL', KEYS[1])
   return -1
 end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
@@ -308,6 +308,11 @@ class JwtService:
         return f"auth:jwt:refresh-family:{session_id}"
 
     @staticmethod
+    def _refresh_grace_key(token: str) -> str:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return f"auth:jwt:refresh-grace:{digest}"
+
+    @staticmethod
     def _refresh_binding(payload: dict[str, Any]) -> str:
         return json.dumps(
             {
@@ -573,7 +578,36 @@ class JwtService:
         except Exception:
             raise SessionStateUnavailable("refresh token state unavailable") from None
         if int(result) != 1:
+            if int(result) == -1:
+                try:
+                    grace_token = await self.store.get(
+                        self._refresh_grace_key(token)
+                    )
+                except Exception:
+                    raise SessionStateUnavailable(
+                        "refresh token state unavailable"
+                    ) from None
+                if grace_token:
+                    return IssuedTokenPair(
+                        self._encode_access(claims, session_id),
+                        str(grace_token),
+                        refresh_expires_in=remaining,
+                    )
+            try:
+                await self.store.delete(self._refresh_key(session_id))
+            except Exception:
+                raise SessionStateUnavailable(
+                    "refresh token state unavailable"
+                ) from None
             raise InvalidCredentials("无效或已使用的刷新令牌")
+        try:
+            await self.store.set(
+                self._refresh_grace_key(token),
+                new_refresh,
+                ex=REFRESH_GRACE_SECONDS,
+            )
+        except Exception:
+            raise SessionStateUnavailable("refresh token state unavailable") from None
         return IssuedTokenPair(
             new_access,
             new_refresh,

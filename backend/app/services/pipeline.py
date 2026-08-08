@@ -20,6 +20,7 @@ from app.core.auth.accounts import (
     ApplicationPrincipal,
     SecurityPrincipal,
 )
+from app.core.bounded_executor import run_bounded
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
@@ -414,6 +415,38 @@ class SendPipeline:
             raise InvalidContent("模板服务不可用")
         return await self.templates.render(request.template_id, request.template_params or ())
 
+    def _protect_plain_phones(
+        self,
+        phones: Sequence[str],
+        *,
+        blacklist_required: bool,
+    ) -> tuple[
+        list[ProtectedPhone],
+        dict[str, frozenset[str]],
+        dict[str, str],
+        dict[str, dict[int, str]],
+    ]:
+        """同步保护一批明文号码；必须放入有界执行器，避免阻塞事件循环。"""
+
+        protected: list[ProtectedPhone] = []
+        candidates_by_active: dict[str, frozenset[str]] = {}
+        frequency_hmac_by_active: dict[str, str] = {}
+        frequency_aliases_by_active: dict[str, dict[int, str]] = {}
+        for phone in phones:
+            item = self.crypto.protect_phone(phone)
+            protected.append(item)
+            aliases = self.crypto.hmac_candidates(phone)
+            frequency_hmac_by_active[item.phone_hmac] = aliases[min(aliases)]
+            frequency_aliases_by_active[item.phone_hmac] = aliases
+            if blacklist_required:
+                candidates_by_active[item.phone_hmac] = frozenset(aliases.values())
+        return (
+            protected,
+            candidates_by_active,
+            frequency_hmac_by_active,
+            frequency_aliases_by_active,
+        )
+
     def _schedule(
         self,
         request: SendRequest,
@@ -647,14 +680,17 @@ class SendPipeline:
             if policy.blacklist_required:
                 candidates_by_active = {protected[0].phone_hmac: frozenset(aliases.values())}
         else:
-            for phone in unique_phones:
-                item = self.crypto.protect_phone(phone)
-                protected.append(item)
-                aliases = self.crypto.hmac_candidates(phone)
-                frequency_hmac_by_active[item.phone_hmac] = aliases[min(aliases)]
-                frequency_aliases_by_active[item.phone_hmac] = aliases
-                if policy.blacklist_required:
-                    candidates_by_active[item.phone_hmac] = frozenset(aliases.values())
+            (
+                protected,
+                candidates_by_active,
+                frequency_hmac_by_active,
+                frequency_aliases_by_active,
+            ) = await run_bounded(
+                self._protect_plain_phones,
+                unique_phones,
+                blacklist_required=policy.blacklist_required,
+                timeout_s=10,
+            )
         blocked_candidates = (
             await self.store.blacklisted(
                 set().union(*candidates_by_active.values()) if candidates_by_active else set()
