@@ -38,7 +38,12 @@ from test_update_contract import (
 )
 from test_update_store import TestUpdateState, TestUpdateStore
 from test_update_verify import TestUpdateVerify
-from vendor_test_files import read_vendor_test_marker, reconcile_pure_mock_dotenv
+from vendor_test_files import (
+    VendorTestFileError,
+    _parse_dotenv,
+    read_vendor_test_marker,
+    reconcile_pure_mock_dotenv,
+)
 
 UNSAFE_CHUNK_STATUSES = ("submitting", "retrying", "uncertain")
 _DATABASE = "sms"
@@ -64,6 +69,9 @@ _REDIS_IMAGE_ENV_KEY = "SMS_REDIS_IMAGE"
 _IMAGE_ENV_KEYS = {"api": "SMS_API_IMAGE", "web": "SMS_WEB_IMAGE"}
 _ACTIVATABLE_IMAGE_ENV_KEYS = frozenset(
     {*_IMAGE_ENV_KEYS.values(), _REDIS_IMAGE_ENV_KEY}
+)
+_TRUSTED_PROXY_DOTENV_KEYS = frozenset(
+    {"SMS_EXTERNAL_TLS_MODE", "SMS_TRUSTED_PROXY_CIDRS", "SMS_TRUSTED_PROXY_CONF"}
 )
 _BACKEND_RUNTIME_GID = 10001
 _BACKUP_CONFIG_FIELDS = frozenset(
@@ -1681,6 +1689,7 @@ class HostTestUpdateOperations:
         )
         if "web" in self.request.components:
             self._activate_source_and_image("web")
+            self._render_trusted_proxy_conf()
             self.host._run(
                 "up",
                 "-d",
@@ -1695,6 +1704,7 @@ class HostTestUpdateOperations:
     def replace_web(self) -> None:
         self._prepare_rollback_images(frozenset({"web"}))
         self._activate_source_and_image("web")
+        self._render_trusted_proxy_conf()
         self.host._run(
             "up",
             "-d",
@@ -1704,6 +1714,39 @@ class HostTestUpdateOperations:
             "--wait-timeout",
             "120",
             "web",
+        )
+
+    def _render_trusted_proxy_conf(self) -> None:
+        """启动 web 前渲染受信 TLS 终结器配置，并保证容器 uid 101 可读。"""
+
+        env_path = self.root / ".env"
+        try:
+            raw = env_path.read_text(encoding="utf-8")
+            lines, _positions = _parse_dotenv(raw)
+        except (OSError, UnicodeError, VendorTestFileError) as exc:
+            raise TestUpdateManagerError("trusted proxy dotenv is unavailable") from exc
+        values: dict[str, str] = {}
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, value = line.split("=", 1)
+            if key in _TRUSTED_PROXY_DOTENV_KEYS:
+                values[key] = value
+        output = values.get("SMS_TRUSTED_PROXY_CONF") or str(
+            self.root / "deploy/trusted-proxies.conf"
+        )
+        self.host.runner.run(
+            [
+                "/usr/bin/python3",
+                str(self.root / "deploy/scripts/render_trusted_proxy_conf.py"),
+                "--mode",
+                values.get("SMS_EXTERNAL_TLS_MODE", "0"),
+                "--cidrs",
+                values.get("SMS_TRUSTED_PROXY_CIDRS", ""),
+                "--output",
+                output,
+            ]
         )
 
     def rollback_no_migration(
