@@ -404,13 +404,6 @@ async def send_message(
         UsageProjectionUnavailable,
     ) as error:
         raise _error(error) from None
-    except Exception as error:  # pragma: no cover - temporary debug
-        raise ApiError(
-            500,
-            "INTERNAL_ERROR",
-            "服务内部错误",
-            {"error_type": type(error).__name__, "message": str(error)},
-        ) from error
 
 
 async def _pause_vendor_test_agent_stale(settings: Any) -> None:

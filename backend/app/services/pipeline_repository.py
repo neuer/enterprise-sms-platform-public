@@ -286,7 +286,7 @@ class SqlPipelineStore:
                       app_id, biz_id, batch_id, request_hash, expires_at
                     ) VALUES (
                       :app_id, :biz_id, :batch_id, :request_hash,
-                      COALESCE(:scheduled_at + interval '7 days',
+                      COALESCE((:scheduled_at::timestamptz + interval '7 days'),
                                now() + interval '24 hours')
                     )
                     """
