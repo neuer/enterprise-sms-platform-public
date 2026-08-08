@@ -140,13 +140,13 @@ def _https_request(
     return response.status, result_headers, data
 
 
-def _gateway(project: str) -> str:
+def _gateway(project: str, network: str) -> str:
     output = subprocess.check_output(
         [
             "docker",
             "network",
             "inspect",
-            f"{project}_default",
+            f"{project}_{network}",
             "--format",
             "{{(index .IPAM.Config 0).Gateway}}",
         ],
@@ -194,7 +194,10 @@ def main() -> int:
     mock_password = Path(arguments.mock_password_file).read_text(
         encoding="utf-8"
     ).strip()
-    gateway = _gateway(arguments.project)
+    try:
+        gateway = _gateway(arguments.project, "ingress")
+    except subprocess.CalledProcessError:
+        gateway = _gateway(arguments.project, "default")
     proxy_thread: threading.Thread | None = None
     proxy_port = 0
     try:
