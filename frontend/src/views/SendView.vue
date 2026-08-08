@@ -177,6 +177,7 @@ async function submit(): Promise<void> {
   busy.value = true
   const payload: WebMessagePayload = {
     category: form.category,
+    biz_id: crypto.randomUUID(),
     ...contentPayload(),
     sign_name: form.signName || undefined,
     scheduled_at: form.scheduledAt ? new Date(form.scheduledAt).toISOString() : undefined,

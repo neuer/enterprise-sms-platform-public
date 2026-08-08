@@ -305,12 +305,13 @@ def test_send_reserves_import_and_decrypts_only_for_pipeline(
     response = make_client(repository=repository).post(
         "/api/v1/web/messages/send",
         headers={"Authorization": "Bearer jwt"},
-        json={
-            "category": "notice",
-            "import_id": "11111111-1111-1111-1111-111111111111",
-            "content": "维护通知",
-            "remark": "变更窗口",
-        },
+            json={
+                "category": "notice",
+                "import_id": "11111111-1111-1111-1111-111111111111",
+                "content": "维护通知",
+                "remark": "变更窗口",
+                "biz_id": "biz-1",
+            },
     )
     assert response.status_code == 200
     assert repository.reserved == (
@@ -361,11 +362,12 @@ def test_import_validation_failure_releases_reservation(
     response = make_client(repository=repository).post(
         "/api/v1/web/messages/send",
         headers={"Authorization": "Bearer jwt"},
-        json={
-            "category": "notice",
-            "import_id": "11111111-1111-1111-1111-111111111111",
-            "content": "维护通知",
-        },
+            json={
+                "category": "notice",
+                "import_id": "11111111-1111-1111-1111-111111111111",
+                "content": "维护通知",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 400
@@ -409,11 +411,12 @@ def test_consumed_import_retry_returns_same_batch_without_decryption(
     response = make_client(repository=repository).post(
         "/api/v1/web/messages/send",
         headers={"Authorization": "Bearer jwt"},
-        json={
-            "category": "notice",
-            "import_id": "11111111-1111-1111-1111-111111111111",
-            "content": "维护通知",
-        },
+            json={
+                "category": "notice",
+                "import_id": "11111111-1111-1111-1111-111111111111",
+                "content": "维护通知",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 200
@@ -437,11 +440,12 @@ def test_web_send_maps_live_test_recipient_denial_without_sensitive_detail(
     response = make_client().post(
         "/api/v1/web/messages/send",
         headers={"Authorization": "Bearer jwt"},
-        json={
-            "category": "notice",
-            "mobiles": ["13800138000"],
-            "content": "维护通知",
-        },
+            json={
+                "category": "notice",
+                "mobiles": ["13800138000"],
+                "content": "维护通知",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 403
@@ -466,11 +470,12 @@ def test_live_test_ordinary_web_send_is_console_only(monkeypatch: MonkeyPatch) -
     response = make_client().post(
         "/api/v1/web/messages/send",
         headers={"Authorization": "Bearer jwt"},
-        json={
-            "category": "notice",
-            "mobiles": ["13800138000"],
-            "content": "维护通知",
-        },
+            json={
+                "category": "notice",
+                "mobiles": ["13800138000"],
+                "content": "维护通知",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 403

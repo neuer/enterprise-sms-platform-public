@@ -99,7 +99,7 @@ class SendRequestModel(BaseModel):
     template_params: list[str] | None = None
     sign_name: str | None = None
     scheduled_at: datetime | None = None
-    biz_id: str | None = Field(default=None, max_length=32)
+    biz_id: str = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def content_or_template(self) -> SendRequestModel:

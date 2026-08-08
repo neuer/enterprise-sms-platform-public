@@ -213,7 +213,12 @@ def test_send_api_returns_rate_limited_429(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-        json={"category": "verify", "mobiles": ["13800138000"], "content": "测试"},
+            json={
+                "category": "verify",
+                "mobiles": ["13800138000"],
+                "content": "测试",
+                "biz_id": "biz-1",
+            },
     )
     assert response.status_code == 429
     assert response.json()["code"] == "RATE_LIMITED"
@@ -233,11 +238,12 @@ def test_send_api_maps_live_test_recipient_denial_without_sensitive_detail(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-        json={
-            "category": "verify",
-            "mobiles": ["13800138000"],
-            "content": "验证码123456",
-        },
+            json={
+                "category": "verify",
+                "mobiles": ["13800138000"],
+                "content": "验证码123456",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 403
@@ -263,7 +269,12 @@ def test_live_test_ordinary_api_send_is_console_only(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-        json={"category": "verify", "mobiles": ["13800138000"], "content": "测试"},
+            json={
+                "category": "verify",
+                "mobiles": ["13800138000"],
+                "content": "测试",
+                "biz_id": "biz-1",
+            },
     )
 
     assert response.status_code == 403
@@ -326,7 +337,12 @@ def test_send_api_blocks_source_ip_outside_app_allowlist_without_consuming_limit
     blocked = TestClient(app, client=("198.51.100.7", 12345)).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-        json={"category": "verify", "mobiles": ["13800138000"], "content": "验证码123456"},
+            json={
+                "category": "verify",
+                "mobiles": ["13800138000"],
+                "content": "验证码123456",
+                "biz_id": "biz-1",
+            },
     )
     assert blocked.status_code == 403
     assert blocked.json()["code"] == "IP_NOT_ALLOWED"
@@ -335,7 +351,12 @@ def test_send_api_blocks_source_ip_outside_app_allowlist_without_consuming_limit
     allowed = TestClient(app, client=("203.0.113.7", 12345)).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-        json={"category": "verify", "mobiles": ["13800138000"], "content": "验证码123456"},
+            json={
+                "category": "verify",
+                "mobiles": ["13800138000"],
+                "content": "验证码123456",
+                "biz_id": "biz-1",
+            },
     )
     assert allowed.status_code == 200
     assert pipeline.calls == 1
