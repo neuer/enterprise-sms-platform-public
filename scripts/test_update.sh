@@ -78,6 +78,7 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/test_secure_access_contract.py"
   "deploy/scripts/test_secure_access_runtime.py"
   "deploy/scripts/test_secure_access_manager.py"
+  "deploy/scripts/render_trusted_proxy_conf.py"
   "deploy/scripts/vendor_test_files.py"
   "deploy/scripts/check_test_update_migration.py"
   "deploy/scripts/public_baseline_activation.py"
@@ -95,6 +96,7 @@ HOST_CONTROL_PATHS=(
   "scripts/export_public_snapshot.py"
   "scripts/verify_public_snapshot_cutover.py"
   "deploy/sms-compose"
+  "deploy/trusted-proxies.conf"
   "deploy/systemd/sms-platform-test-secure-access.service"
 )
 REMOTE_CONTROL_ENV=(
