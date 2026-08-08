@@ -197,9 +197,6 @@ def main() -> int:
     gateway = _gateway(arguments.project)
     proxy_thread: threading.Thread | None = None
     proxy_port = 0
-    original_proxy_conf = (ROOT / "deploy/trusted-proxies.conf").read_text(
-        encoding="utf-8"
-    )
     try:
         _render_and_restart_web(arguments.project, "1", f"{gateway}/32")
         proxy_thread, proxy_port = _start_proxy(web_port)
@@ -268,7 +265,11 @@ def main() -> int:
             proxy_thread.join(timeout=1)
         try:
             target = ROOT / "deploy/trusted-proxies.conf"
-            target.write_text(original_proxy_conf, encoding="utf-8")
+            canonical = subprocess.check_output(
+                ["git", "show", "HEAD:deploy/trusted-proxies.conf"],
+                text=True,
+            )
+            target.write_text(canonical, encoding="utf-8")
             subprocess.run(
                 ["docker", "restart", f"{arguments.project}-web-1"],
                 check=True,
