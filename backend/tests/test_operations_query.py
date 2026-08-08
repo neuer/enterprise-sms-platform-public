@@ -7,6 +7,7 @@ from typing import Any, TypedDict
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.batch_query import BatchAccessScope
 from app.services.crypto import CryptoService
 from app.services.operations_query import (
@@ -52,9 +53,10 @@ class FakeRepository:
         message_id: int,
         *,
         scope: BatchAccessScope,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
     ) -> tuple[bytes, int, str] | None:
-        self.calls.append(("decrypt", message_id, scope, actor))
+        self.calls.append(("decrypt", message_id, scope, principal, ip))
         return self.protected if message_id == 9 else None
 
 
@@ -140,13 +142,24 @@ async def test_timeline_uses_hmac_candidates_and_authorized_decrypt_is_ephemeral
         end=None,
         scope=scope,
     )
-    phone = await service.decrypt_phone(9, scope=scope, actor="approver-a")
+    principal = SecurityPrincipal(11, 101, "approver-a", "平台部", "approver")
+    phone = await service.decrypt_phone(
+        9,
+        scope=scope,
+        principal=principal,
+        ip="127.0.0.1",
+    )
 
     assert timeline.badge.recv_30d == 0
     assert phone == "13800138000"
-    assert repository.calls[-1] == ("decrypt", 9, scope, "approver-a")
+    assert repository.calls[-1] == ("decrypt", 9, scope, principal, "127.0.0.1")
     with pytest.raises(QueryNotFound):
-        await service.decrypt_phone(10, scope=scope, actor="approver-a")
+        await service.decrypt_phone(
+            10,
+            scope=scope,
+            principal=principal,
+            ip="127.0.0.1",
+        )
 
 
 class FakeResult:
@@ -368,11 +381,13 @@ async def test_authorized_phone_audits_reference_only_in_same_transaction() -> N
         ]
     )
     bind(repository, connection)
+    principal = SecurityPrincipal(11, 101, "approver-a", "平台部", "approver")
 
     material = await repository.authorized_phone(
         9,
         scope=BatchAccessScope(dept="平台部"),
-        actor="approver-a",
+        principal=principal,
+        ip="127.0.0.1",
     )
 
     assert material == (
@@ -382,12 +397,11 @@ async def test_authorized_phone_audits_reference_only_in_same_transaction() -> N
     )
     audit_sql = " ".join(connection.calls[1][0].split())
     assert "INSERT INTO audit_log" in audit_sql
-    assert "CAST(:actor AS varchar(128))" in audit_sql
-    assert "CAST(:batch_no AS text)" in audit_sql
     audit_params = connection.calls[1][1]
-    assert "phone" not in repr(audit_params).casefold()
-    assert audit_params == {
-        "actor": "approver-a",
-        "message_id": 9,
-        "batch_no": "BATCH-1",
-    }
+    assert "13800138000" not in repr(audit_params)
+    assert "phone_enc" not in repr(audit_params).casefold()
+    assert "phone_hmac" not in repr(audit_params).casefold()
+    assert int(audit_params["account_id"]) == 11
+    assert int(audit_params["identity_id"]) == 101
+    assert audit_params["ip"] == "127.0.0.1"
+    assert audit_params["action"] == "message_phone_decrypt"

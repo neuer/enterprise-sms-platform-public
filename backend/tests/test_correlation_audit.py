@@ -163,6 +163,28 @@ async def test_transactional_audit_uses_caller_connection_and_propagates_failure
 
 
 @pytest.mark.asyncio
+async def test_numeric_audit_object_id_binds_as_bigint_before_text() -> None:
+    connection = RecordingConnection()
+    with correlation_scope(CORRELATION_ID):
+        await insert_audit(
+            connection,
+            AuditEvent(
+                principal=ADMIN,
+                role="admin",
+                action="callback_retry",
+                object_type="callback_task",
+                object_id="12345",
+                after={"status": "pending"},
+            ),
+        )
+
+    sql, params = connection.calls[0]
+    assert "CAST(CAST(:object_id AS bigint) AS text)" in sql
+    assert isinstance(params["object_id"], int)
+    assert params["object_id"] == 12345
+
+
+@pytest.mark.asyncio
 async def test_outbox_claim_restores_durable_correlation_for_effect() -> None:
     claim = OutboxClaim(
         UUID("10000000-0000-4000-8000-000000000009"),
