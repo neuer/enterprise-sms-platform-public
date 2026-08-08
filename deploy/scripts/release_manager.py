@@ -1543,9 +1543,7 @@ class ReleaseManager:
                         ReleaseState.FAILED,
                         failure_type=type(exc).__name__,
                     )
-            raise ReleaseManagerError(
-                f"release prepare failed ({type(exc).__name__}): {exc}"
-            ) from exc
+            raise ReleaseManagerError(f"release prepare failed ({type(exc).__name__})") from exc
         finally:
             self._active_store = None
 
