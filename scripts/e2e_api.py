@@ -401,10 +401,7 @@ class UatSuite:
         actual_code = self._code(response)
         if response.status != status or (code is not None and actual_code != code):
             suffix = f" code={actual_code}" if actual_code is not None else ""
-            raise UatFailure(
-                f"UAT-{case_id} expected HTTP {status}, got {response.status}"
-                f"{suffix} body={response.data!r}"
-            )
+            raise UatFailure(f"UAT-{case_id} expected HTTP {status}, got {response.status}{suffix}")
         if response.data is None:
             return {}
         return self._object(response.data, case_id)
