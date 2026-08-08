@@ -11,8 +11,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # schema.sql 基线（0001）已包含该列，这里必须幂等，与既有 add-column 迁移惯例一致。
     op.execute(
-        "ALTER TABLE idempotency_record ADD COLUMN request_hash VARCHAR(64)"
+        "ALTER TABLE idempotency_record "
+        "ADD COLUMN IF NOT EXISTS request_hash VARCHAR(64)"
     )
     op.execute(
         "ALTER TABLE idempotency_record ALTER COLUMN app_id DROP NOT NULL"
