@@ -752,6 +752,15 @@ def test_github_metadata_does_not_block_mixed_application_change() -> None:
     assert change.risk == "backend-safe"
 
 
+def test_docker_compose_change_marks_api_and_web() -> None:
+    change = classify_changed_paths(["deploy/docker-compose.yml"])
+
+    assert change.components == frozenset({"api", "web"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("deploy/docker-compose.yml",)
+
+
 def test_rejects_unclassified_path_mixed_with_known_application_change() -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_changed_paths(

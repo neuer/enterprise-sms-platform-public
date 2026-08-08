@@ -388,6 +388,9 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
         )
         for volume in web_volumes
     )
+    assert compose["services"]["web"]["group_add"] == ["${SMS_WEB_HOST_GID:-1000}"]
+    example = (ROOT / "deploy/.env.example").read_text(encoding="utf-8")
+    assert "SMS_WEB_HOST_GID=1000" in example
 
 
 def test_phone_query_strings_are_excluded_from_access_logs() -> None:

@@ -306,6 +306,13 @@ _WEB_HIGH_RISK_EXACT = frozenset(
         "deploy/nginx-security-headers.conf",
     }
 )
+_WEB_RUNTIME_DEPLOY_EXACT = frozenset(
+    {
+        # Compose 定义 web 服务的挂载/运行身份；变更必须同时重建 web。
+        "deploy/docker-compose.yml",
+        "deploy/nginx.conf",
+    }
+)
 _MAILER_HIGH_RISK_EXACT = frozenset(
     {
         # 安全日报 mailer 模板：随独立 mailer 镜像发布，不参与 api/web 快速更新构建。
@@ -684,6 +691,8 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
             or path.startswith(".github/")
         ):
             continue
+        if path in _WEB_RUNTIME_DEPLOY_EXACT:
+            components.add("web")
         if _is_high_risk(path):
             high_risk_paths.add(path)
             if path in _WEB_HIGH_RISK_EXACT:
