@@ -194,7 +194,7 @@ class JwtService:
         secret: str,
         store: AsyncKeyValue,
         *,
-        accept_legacy: bool = True,
+        accept_legacy: bool = False,
         clock: Callable[[], datetime] = utc_now,
         ttl: timedelta = ACCESS_TOKEN_TTL,
         refresh_ttl: timedelta = REFRESH_TOKEN_TTL,
@@ -411,9 +411,7 @@ class JwtService:
             )
         except jwt.PyJWTError:
             raise InvalidCredentials("无效或已吊销的令牌") from None
-        if kid is not None and (
-            payload.get("iss") != JWT_ISSUER or payload.get("aud") != JWT_AUDIENCE
-        ):
+        if payload.get("iss") != JWT_ISSUER or payload.get("aud") != JWT_AUDIENCE:
             raise InvalidCredentials("无效或已吊销的令牌")
         if not {"sub", "token_type", "jti", "iat", "exp"}.issubset(payload):
             raise InvalidCredentials("无效或已吊销的令牌")

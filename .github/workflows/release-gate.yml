@@ -37,6 +37,12 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             test "$GITHUB_REF_NAME" = "v$(tr -d '\n' < VERSION)"
           fi
+      - name: Verify release SHA is descendant of protected main
+        run: |
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          test -n "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          echo "$GITHUB_SHA" > "$RUNNER_TEMP/release-sha.txt"
       - name: Set up Python and uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:

@@ -872,3 +872,42 @@ async def test_jwt_legacy_token_rejected_when_compat_window_closed() -> None:
 
     with pytest.raises(InvalidCredentials):
         await strict.verify(legacy)
+
+
+@pytest.mark.asyncio
+async def test_legacy_jwt_still_requires_issuer_and_audience() -> None:
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    secret = "a-jwt-secret-that-is-long-enough-for-hs256-tests"
+    compatible = JwtService(
+        secret,
+        FakeKeyValue(),
+        clock=lambda: now,
+        accept_legacy=True,
+    )
+    base = {
+        "sub": "8",
+        "identity_id": 18,
+        "provider_code": "local",
+        "login_name": "operator01",
+        "display_name": "操作员",
+        "dept": "平台部",
+        "role": "operator",
+        "security_version": 1,
+        "token_type": "access",
+        "sid": "session",
+        "jti": "legacy-token",
+        "iat": now.timestamp(),
+        "exp": int((now + timedelta(minutes=5)).timestamp()),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+    }
+    valid_legacy = jwt.encode(base, secret, algorithm="HS256")
+    assert (await compatible.verify(valid_legacy)).account_id == 8
+
+    wrong_aud = jwt.encode({**base, "aud": "other-service"}, secret, algorithm="HS256")
+    with pytest.raises(InvalidCredentials):
+        await compatible.verify(wrong_aud)
+
+    wrong_iss = jwt.encode({**base, "iss": "other-issuer"}, secret, algorithm="HS256")
+    with pytest.raises(InvalidCredentials):
+        await compatible.verify(wrong_iss)

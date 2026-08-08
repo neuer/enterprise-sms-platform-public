@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 import app.api.auth as auth_api
@@ -12,6 +15,7 @@ from app.core.auth.runtime import (
 from app.core.errors import ApiError
 from app.main import create_app
 from app.services.auth_provider import ProviderSummary
+from app.settings import Settings
 
 
 def user() -> PlatformAccount:
@@ -230,6 +234,33 @@ def test_cookie_refresh_rejects_cross_origin_request() -> None:
     assert denied.status_code == 403
     assert denied.json()["code"] == "FORBIDDEN"
 
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://testserver:99999",
+        "http://testserver:not-a-port",
+        "http://user:pass@testserver",
+        "javascript:alert(1)",
+        "http://",
+    ],
+)
+def test_cookie_refresh_rejects_malformed_origin_with_stable_403(origin: str) -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+    response_client.post(
+        "/api/v1/web/auth/login",
+        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+    )
+
+    denied = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": origin},
+        json={},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "FORBIDDEN"
+
     initial = response_client.post(
         "/api/v1/web/auth/password/initial",
         json={"change_token": "change.jwt", "new_password": "New@Password123"},
@@ -305,3 +336,31 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     )
     assert response.status_code == 404
     assert facade.force_calls == []
+
+
+def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test-ca", encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        debug=False,
+        auth_mock=False,
+        vendor_mock=False,
+        redis_ha_mode="managed",
+        vendor_base_url="https://vendor.example.test",
+        ldap_ca_certs_file=ca_file,
+    )
+    app = create_app(settings)
+    app.state.settings = settings
+    app.dependency_overrides[get_auth_facade] = lambda: FakeAuthFacade()
+    response_client = TestClient(app)
+
+    login = response_client.post(
+        "/api/v1/web/auth/login",
+        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+    )
+    assert login.status_code == 200
+    assert "Secure" in login.headers.get("set-cookie", "")
+    assert "HttpOnly" in login.headers.get("set-cookie", "")
+    assert "SameSite=lax" in login.headers.get("set-cookie", "")

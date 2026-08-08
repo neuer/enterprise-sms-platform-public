@@ -87,6 +87,10 @@ python3 scripts/verify_web_transport.py \
 
 ## 安装受控包装器与 systemd
 
+### Security-sensitive boundary
+
+认证、API Key、加密、幂等、短信发送任务、迁移、部署和 CI workflow 属于安全敏感边界，目录与文件见 `.github/CODEOWNERS`。这些区域的变更应经过独立 Code Review，owner 自动合并不得绕过 required reviews 或 ruleset。
+
 生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 18 件 secret 名或值。
 
 ```bash
@@ -601,7 +605,7 @@ bash scripts/verify_data_images.sh
 
 1. 冻结发布版本，记录 Git commit、镜像 digest、变更单、执行人和回退决策人。
 2. 按 `secrets.md` 从受控密钥系统落盘恰好 18 件权威源，确认目录 `0700`、文件 `0600`；不得从聊天、工单或 shell 历史复制值。
-3. 从 `.env.example` 创建根目录 `.env`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile，并填写 LDAP CA 文件、`LDAP_ALLOWED_HOSTS` 部署允许列表与厂商 URL。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于旧无 `kid` 令牌的观察窗口。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理，不能通过环境变量覆盖；外部 TLS 终结器必须删除客户端提交的 `Forwarded`/`X-Forwarded-For`/`X-Real-IP` 后写入自己的规范化值，内部 Nginx 只透传这些值；若调整网段，必须在同一提交同步修改 Web 静态 IP、API 的 `--forwarded-allow-ips` 和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
+3. 从 `.env.example` 创建根目录 `.env`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile，并填写 LDAP CA 文件、`LDAP_ALLOWED_HOSTS` 部署允许列表与厂商 URL。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于旧无 `kid` 令牌的观察窗口。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理，不能通过环境变量覆盖；内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`，前方有受信 TLS 终结器时必须挂载 `/etc/nginx/trusted-proxies.conf`（`set_real_ip_from` + `real_ip_header` + `real_ip_recursive`）后再转发；若调整网段，必须在同一提交同步修改 Web 静态 IP、API 的 `--forwarded-allow-ips` 和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
 4. 按 `vendor-egress.md` 完成主出口 IP、备出口 IP 同单报备，取得 QPS、单次号码上限和生效时间的书面回执。
 5. 按 `backup-restore.md` 对当前生产库做一次加密备份并在隔离库恢复验证；未验证的备份不得作为回退点。
 6. 执行 `sudo /usr/local/sbin/sms-compose config --quiet`，再核对 `sms_owner` secret 不会挂载到 api/worker/outbox-dispatcher/beat。

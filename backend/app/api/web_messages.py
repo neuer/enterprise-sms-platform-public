@@ -72,6 +72,7 @@ Phone = Annotated[str, Field(pattern=r"^1\d{10}$")]
 
 class WebContentModel(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "oneOf": [
                 {"required": ["content"], "not": {"required": ["template_id"]}},
