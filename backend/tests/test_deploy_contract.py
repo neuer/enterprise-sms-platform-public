@@ -369,11 +369,25 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
     config = (ROOT / "deploy/nginx.conf").read_text(encoding="utf-8")
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in config
     assert "proxy_set_header X-Real-IP $remote_addr;" in config
+    assert "proxy_set_header X-Forwarded-Proto $forwarded_proto;" in config
+    assert "map \"$sms_trusted_proxy|$http_x_forwarded_proto\" $forwarded_proto" in config
     assert "$http_x_forwarded_for" not in config
     assert "include /etc/nginx/trusted-proxies.conf;" in config
     assert "$proxy_add_x_forwarded_for" not in config
     dockerfile = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
-    assert ": > /etc/nginx/trusted-proxies.conf" in dockerfile
+    assert (
+        "COPY deploy/trusted-proxies.conf /etc/nginx/trusted-proxies.conf" in dockerfile
+    )
+    trusted = (ROOT / "deploy/trusted-proxies.conf").read_text(encoding="utf-8")
+    assert "geo $realip_remote_addr $sms_trusted_proxy" in trusted
+    assert "default 0;" in trusted
+    web_volumes = compose["services"]["web"]["volumes"]
+    assert any(
+        str(volume).endswith(
+            "/etc/nginx/trusted-proxies.conf:ro"
+        )
+        for volume in web_volumes
+    )
 
 
 def test_phone_query_strings_are_excluded_from_access_logs() -> None:

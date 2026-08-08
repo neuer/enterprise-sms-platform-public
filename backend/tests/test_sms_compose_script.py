@@ -58,6 +58,21 @@ raise SystemExit(int(os.environ.get("FAKE_PYTHON_EXIT", "0")))
 """,
         encoding="utf-8",
     )
+    renderer = platform_root / "deploy" / "scripts" / "render_trusted_proxy_conf.py"
+    renderer.write_text(
+        """from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+target = Path(sys.argv[sys.argv.index("--output") + 1])
+target.write_text(
+    "geo $realip_remote_addr $sms_trusted_proxy {\\n    default 0;\\n}\\n",
+    encoding="utf-8",
+)
+""",
+        encoding="utf-8",
+    )
     if LOCK_RUNNER.is_file():
         (platform_root / "deploy" / "scripts" / LOCK_RUNNER.name).write_text(
             LOCK_RUNNER.read_text(encoding="utf-8"), encoding="utf-8"
