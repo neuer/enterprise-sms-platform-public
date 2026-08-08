@@ -44,6 +44,7 @@ def test_import_source_is_framed_encrypted_and_round_trips_in_memory(
     assert relative == f"import-{import_id}.smsx"
     temporary = codec.decrypt_to_memory(
         relative,
+        expected_import_id=import_id,
         expected_size=len(plaintext),
         max_bytes=len(plaintext),
     )
@@ -70,7 +71,12 @@ def test_import_source_detects_tampering_and_rejects_uncontrolled_paths(
     path.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
 
     with pytest.raises((InvalidTag, ValueError)):
-        codec.decrypt_to_memory(relative, expected_size=12, max_bytes=12)
+        codec.decrypt_to_memory(
+            relative,
+            expected_import_id=import_id,
+            expected_size=12,
+            max_bytes=12,
+        )
     with pytest.raises(ValueError, match="不受控"):
         codec.remove("../outside.smsx")
 
@@ -135,7 +141,12 @@ def test_smsi2_rejects_reordered_frames(tmp_path: Path) -> None:
     (tmp_path / relative).write_bytes(bytes(raw))
 
     with pytest.raises(ValueError, match="认证失败"):
-        codec.decrypt_to_memory(relative, expected_size=len(plaintext), max_bytes=len(plaintext))
+        codec.decrypt_to_memory(
+            relative,
+            expected_import_id=import_id,
+            expected_size=len(plaintext),
+            max_bytes=len(plaintext),
+        )
 
 
 def test_smsi2_rejects_missing_terminal_frame(tmp_path: Path) -> None:
@@ -154,7 +165,12 @@ def test_smsi2_rejects_missing_terminal_frame(tmp_path: Path) -> None:
     (tmp_path / relative).write_bytes(raw[:terminal_start])
 
     with pytest.raises(ValueError, match="缺少终止帧"):
-        codec.decrypt_to_memory(relative, expected_size=12, max_bytes=12)
+        codec.decrypt_to_memory(
+            relative,
+            expected_import_id=import_id,
+            expected_size=12,
+            max_bytes=12,
+        )
 
 
 def test_smsi1_legacy_file_is_rejected_by_default(tmp_path: Path) -> None:
@@ -164,4 +180,59 @@ def test_smsi1_legacy_file_is_rejected_by_default(tmp_path: Path) -> None:
     path.write_bytes(b"SMSI1" + b"\x00\x01")
 
     with pytest.raises(ValueError, match="legacy import format rejected"):
-        codec.decrypt_to_memory(path.name, expected_size=0, max_bytes=1)
+        codec.decrypt_to_memory(
+            path.name,
+            expected_import_id=import_id,
+            expected_size=0,
+            max_bytes=1,
+        )
+
+
+def test_smsi2_rejects_cross_import_file_replacement(tmp_path: Path) -> None:
+    codec = ImportFileCodec(crypto(), tmp_path)
+    first = UUID("88888888-8888-4888-8888-888888888888")
+    second = UUID("99999999-9999-4999-9999-999999999999")
+    plaintext = b"13800138000\n"
+    first_relative = codec.stage(
+        first,
+        BytesIO(plaintext),
+        size=len(plaintext),
+        max_bytes=len(plaintext),
+    )
+    second_relative = codec.stage(
+        second,
+        BytesIO(plaintext),
+        size=len(plaintext),
+        max_bytes=len(plaintext),
+    )
+
+    # 把 B 的完整合法 SMSI2 密文放到 A 的受控文件名下。
+    (tmp_path / first_relative).write_bytes((tmp_path / second_relative).read_bytes())
+
+    with pytest.raises(ValueError, match="身份与任务不一致"):
+        codec.decrypt_to_memory(
+            first_relative,
+            expected_import_id=first,
+            expected_size=len(plaintext),
+            max_bytes=len(plaintext),
+        )
+
+
+def test_smsi2_rejects_filename_identity_mismatch(tmp_path: Path) -> None:
+    codec = ImportFileCodec(crypto(), tmp_path)
+    first = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    second = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    relative = codec.stage(
+        first,
+        BytesIO(b"13800138000\n"),
+        size=12,
+        max_bytes=12,
+    )
+
+    with pytest.raises(ValueError, match="文件名与任务身份不一致"):
+        codec.decrypt_to_memory(
+            relative,
+            expected_import_id=second,
+            expected_size=12,
+            max_bytes=12,
+        )
