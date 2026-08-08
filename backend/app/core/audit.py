@@ -69,11 +69,13 @@ async def insert_audit(connection: Any, event: AuditEvent) -> None:
     validate_audit_payload(event.after)
     correlation_id = current_correlation_id()
     assert correlation_id is not None
-    object_id_sql = (
-        "CAST(CAST(:object_id AS bigint) AS text)"
-        if event.object_id is not None and event.object_id.isdigit()
-        else ":object_id"
-    )
+    object_id_sql = ":object_id"
+    object_id_value: str | int | None = event.object_id
+    if event.object_id is not None and event.object_id.isdigit():
+        parsed = int(event.object_id)
+        if -(2**63) <= parsed < 2**63:
+            object_id_sql = "CAST(CAST(:object_id AS bigint) AS text)"
+            object_id_value = parsed
     await connection.execute(
         text(
             f"""
@@ -99,7 +101,7 @@ async def insert_audit(connection: Any, event: AuditEvent) -> None:
             "ip": event.ip,
             "action": event.action,
             "object_type": event.object_type,
-            "object_id": event.object_id,
+            "object_id": object_id_value,
             "before": (
                 json.dumps(event.before, ensure_ascii=False)
                 if event.before is not None
