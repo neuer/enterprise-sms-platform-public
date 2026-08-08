@@ -329,6 +329,21 @@ def test_send_reserves_import_and_decrypts_only_for_pipeline(
     assert "13800138000" not in response.text
 
 
+def test_web_send_rejects_unknown_fields_with_422() -> None:
+    response = make_client().post(
+        "/api/v1/web/messages/send",
+        headers={"Authorization": "Bearer jwt"},
+        json={
+            "category": "notice",
+            "mobiles": ["13800138000"],
+            "content": "维护通知",
+            "consent_typo": True,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"
+
+
 def test_import_validation_failure_releases_reservation(
     monkeypatch: MonkeyPatch,
 ) -> None:
