@@ -62,19 +62,22 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     session = read("frontend/src/stores/session.ts")
 
     for token in (
-        'const TOKEN_KEY = "sms_token"',
-        'const USER_KEY = "sms_user"',
         'const CHANGE_TOKEN_KEY = "sms_change_token"',
         'const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"',
-        "sessionStorage.setItem(TOKEN_KEY, token)",
     ):
         assert token in session
 
+    assert "sessionStorage.setItem(TOKEN_KEY" not in session
+    assert "sessionStorage.setItem(USER_KEY" not in session
     assert "sessionStorage.setItem(CHANGE_TOKEN_KEY" not in session
     assert "localStorage.setItem(TOKEN_KEY" not in session
     assert "localStorage.setItem(REFRESH_TOKEN_KEY" not in session
     assert "localStorage.setItem(USER_KEY" not in session
     assert "localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY" in session
+
+    session_tokens = read("frontend/src/api/sessionTokens.ts")
+    assert "setAccessSession" in session_tokens
+    assert "clearAccessSession" in session_tokens
 
 
 def test_authenticated_shell_has_no_frontend_version_switch() -> None:

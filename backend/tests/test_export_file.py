@@ -83,6 +83,15 @@ async def test_failed_write_removes_ciphertext_part_and_final_file(tmp_path: Pat
     assert os.listdir(tmp_path) == []
 
 
+def test_smsx1_legacy_file_is_rejected_by_default(tmp_path: Path) -> None:
+    codec = ExportFileCodec(crypto(), tmp_path)
+    path = tmp_path / f"export-1-{LEASE_ID}.smsx"
+    path.write_bytes(b"SMSX1" + b"\x00\x01")
+
+    with pytest.raises(ValueError, match="legacy export format rejected"):
+        list(codec.iter_decrypted(path))
+
+
 @pytest.mark.asyncio
 async def test_download_rejects_truncated_ciphertext_and_path_escape(tmp_path: Path) -> None:
     codec = ExportFileCodec(crypto(), tmp_path, frame_size=32)

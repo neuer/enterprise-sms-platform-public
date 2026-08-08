@@ -155,3 +155,13 @@ def test_smsi2_rejects_missing_terminal_frame(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="缺少终止帧"):
         codec.decrypt_to_memory(relative, expected_size=12, max_bytes=12)
+
+
+def test_smsi1_legacy_file_is_rejected_by_default(tmp_path: Path) -> None:
+    codec = ImportFileCodec(crypto(), tmp_path)
+    import_id = UUID("77777777-7777-4777-8777-777777777777")
+    path = tmp_path / f"import-{import_id}.smsx"
+    path.write_bytes(b"SMSI1" + b"\x00\x01")
+
+    with pytest.raises(ValueError, match="legacy import format rejected"):
+        codec.decrypt_to_memory(path.name, expected_size=0, max_bytes=1)
