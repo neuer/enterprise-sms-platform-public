@@ -19,6 +19,7 @@ from app.services.idempotency import (
     CLAIM_RELEASE_LUA,
     CLAIM_RENEW_LUA,
     IdempotencyCoordinator,
+    IdempotencyScope,
 )
 from app.services.pipeline import (
     AcceptancePreauthorization,
@@ -60,44 +61,56 @@ class FakeIdempotency:
     ) -> None:
         self.existing = existing
         self.stored_request_hash = stored_request_hash
-        self.remembered: list[tuple[int, str, str]] = []
+        self.remembered: list[tuple[IdempotencyScope, str, str]] = []
         self.released: list[str] = []
-        self.lookup_calls: list[tuple[int | None, str]] = []
+        self.lookup_calls: list[tuple[IdempotencyScope, str]] = []
 
-    async def lookup(self, app_id: int | None, biz_id: str) -> str | None:
-        self.lookup_calls.append((app_id, biz_id))
+    async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+        self.lookup_calls.append((scope, biz_id))
         return self.existing
 
-    async def request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+    async def request_hash(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None:
         return self.stored_request_hash
 
-    def claim_key(self, app_id: int | None, biz_id: str) -> str:
-        return f"idem:claim:{app_id}:{biz_id}"
+    def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str:
+        return f"idem:claim:{scope.key}:{biz_id}"
 
-    def frequency_result_key(self, app_id: int | None, biz_id: str) -> str:
-        return f"idem:freq:{app_id}:{biz_id}"
+    def frequency_result_key(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str:
+        return f"idem:freq:{scope.key}:{biz_id}"
 
-    def quota_result_key(self, app_id: int | None, biz_id: str, date_key: str) -> str:
-        return f"idem:quota:{app_id}:{biz_id}:{date_key}"
+    def quota_result_key(
+        self, scope: IdempotencyScope, biz_id: str, date_key: str
+    ) -> str:
+        return f"idem:quota:{scope.key}:{biz_id}:{date_key}"
 
-    async def remember(self, app_id: int | None, biz_id: str, batch_no: str) -> None:
-        self.remembered.append((app_id, biz_id, batch_no))
+    async def remember(
+        self, scope: IdempotencyScope, biz_id: str, batch_no: str
+    ) -> None:
+        self.remembered.append((scope, biz_id, batch_no))
 
-    async def claim(self, app_id: int | None, biz_id: str) -> str | None:
+    async def claim(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         return "claim-token"
 
-    async def wait(self, app_id: int | None, biz_id: str) -> str | None:
+    async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         return self.existing
 
-    async def release(self, app_id: int | None, biz_id: str, token: str) -> None:
+    async def release(
+        self, scope: IdempotencyScope, biz_id: str, token: str
+    ) -> None:
         self.released.append(token)
 
-    async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool:
+    async def renew(
+        self, scope: IdempotencyScope, biz_id: str, token: str
+    ) -> bool:
         return True
 
     async def heartbeat(
         self,
-        app_id: int | None,
+        scope: IdempotencyScope,
         biz_id: str,
         token: str,
         lost: asyncio.Event,
@@ -743,8 +756,58 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
     result = await pipeline.accept(app, request)
 
     assert result.idempotent is True
-    assert idempotency.lookup_calls == [(None, "web-biz-1")]
+    assert idempotency.lookup_calls == [
+        (IdempotencyScope("account", "1:10"), "web-biz-1")
+    ]
     assert store.commands == []
+
+
+@pytest.mark.asyncio
+async def test_web_idempotency_isolates_different_accounts_with_same_biz_id() -> None:
+    store = FakeStore()
+    idempotency = FakeIdempotency()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    app = ApiAppContext(0, "web", "平台部", frozenset({"notice"}))
+    other = SecurityPrincipal(2, 20, "operator01", "平台部", "operator")
+
+    first = await pipeline.accept(
+        app,
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="维护通知",
+            biz_id="shared-biz",
+            channel="web",
+            actor=ADMIN,
+        ),
+    )
+    second = await pipeline.accept(
+        app,
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="维护通知",
+            biz_id="shared-biz",
+            channel="web",
+            actor=other,
+        ),
+    )
+
+    assert first.idempotent is False and second.idempotent is False
+    assert store.commands[0].scope_id != store.commands[1].scope_id
+    assert {item[0] for item in idempotency.remembered} == {
+        IdempotencyScope("account", "1:10"),
+        IdempotencyScope("account", "2:20"),
+    }
+    assert len(store.commands) == 2
 
 
 @pytest.mark.asyncio
@@ -834,22 +897,28 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
     class ConcurrentStore(FakeStore):
         def __init__(self) -> None:
             super().__init__()
-            self.by_biz: dict[tuple[int, str], tuple[str, str]] = {}
+            self.by_biz: dict[str, tuple[str, str]] = {}
 
-        async def exists(self, app_id: int, biz_id: str, batch_no: str) -> bool:
-            return self.by_biz.get((app_id, biz_id), (None, None))[0] == batch_no
+        async def exists(
+            self, scope: IdempotencyScope, biz_id: str, batch_no: str
+        ) -> bool:
+            return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[0] == batch_no
 
-        async def find_existing(self, app_id: int, biz_id: str) -> str | None:
-            return self.by_biz.get((app_id, biz_id), (None, None))[0]
+        async def find_existing(
+            self, scope: IdempotencyScope, biz_id: str
+        ) -> str | None:
+            return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[0]
 
         async def find_request_hash(
-            self, app_id: int | None, biz_id: str
+            self, scope: IdempotencyScope, biz_id: str
         ) -> str | None:
-            return self.by_biz.get((app_id, biz_id), (None, None))[1]
+            return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[1]
 
         async def save(self, command: Any) -> StoredBatch:
             self.commands.append(command)
-            self.by_biz[(int(command.app_id), str(command.biz_id))] = (
+            self.by_biz[
+                f"{command.scope_kind}:{command.scope_id}:{command.biz_id}"
+            ] = (
                 "shared-batch",
                 command.request_hash,
             )
@@ -966,10 +1035,14 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
             return 1
 
     class RepositoryFailingStore(FailingStore):
-        async def exists(self, app_id: int, biz_id: str, batch_no: str) -> bool:
+        async def exists(
+            self, scope: IdempotencyScope, biz_id: str, batch_no: str
+        ) -> bool:
             return False
 
-        async def find_existing(self, app_id: int, biz_id: str) -> str | None:
+        async def find_existing(
+            self, scope: IdempotencyScope, biz_id: str
+        ) -> str | None:
             return None
 
     redis = ClaimRedis()
@@ -995,13 +1068,16 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
             request,
         )
     assert not any(key.startswith("idem:claim:") for key in redis.values)
-    assert await coordinator.claim(7, "retryable-biz") is not None
+    scope = IdempotencyScope("app", "7")
+    assert await coordinator.claim(scope, "retryable-biz") is not None
 
 
 @pytest.mark.asyncio
 async def test_lost_claim_fails_closed_before_business_side_effects() -> None:
     class LostClaimIdempotency(FakeIdempotency):
-        async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool:
+        async def renew(
+            self, scope: IdempotencyScope, biz_id: str, token: str
+        ) -> bool:
             return False
 
     store = FakeStore()
@@ -1045,8 +1121,8 @@ async def test_replaced_claim_stops_frequency_loop_before_quota_and_storage() ->
             self.writes = 0
 
         async def allow(self, category: str, **values: Any) -> bool:
-            assert values["claim_key"] == "idem:claim:7:freq-race"
-            assert values["result_key"] == "idem:freq:7:freq-race"
+            assert values["claim_key"] == "idem:claim:app:7:freq-race"
+            assert values["result_key"] == "idem:freq:app:7:freq-race"
             if ownership["token"] != values["claim_token"]:
                 raise FrequencyFenceLost("frequency fence lost")
             self.writes += 1
@@ -1126,7 +1202,9 @@ async def test_claim_loss_after_reserve_refunds_without_save_or_publish() -> Non
             super().__init__()
             self.lost = False
 
-        async def renew(self, app_id: int | None, biz_id: str, token: str) -> bool:
+        async def renew(
+            self, scope: IdempotencyScope, biz_id: str, token: str
+        ) -> bool:
             return not self.lost
 
     idem = LosingIdempotency()
@@ -1165,7 +1243,9 @@ async def test_release_failure_does_not_mask_successful_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class ReleaseFailureIdempotency(FakeIdempotency):
-        async def release(self, app_id: int | None, biz_id: str, token: str) -> None:
+        async def release(
+            self, scope: IdempotencyScope, biz_id: str, token: str
+        ) -> None:
             raise RuntimeError("redis unavailable")
 
     pipeline = SendPipeline(
@@ -1530,7 +1610,9 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
             super().__init__()
             self.lookups = 0
 
-        async def lookup(self, app_id: int | None, biz_id: str) -> str | None:
+        async def lookup(
+            self, scope: IdempotencyScope, biz_id: str
+        ) -> str | None:
             self.lookups += 1
             return "committed-batch" if self.lookups >= 3 else None
 

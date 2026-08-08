@@ -380,16 +380,19 @@ CREATE INDEX idx_batch_active   ON sms_batch(status)
 -- 幂等 DB 兜底：请求事务先删除同键 expires_at<=now() 的记录，再创建
 -- batch+record；唯一冲突时回查未过期 batch 返回 idempotent=true。
 -- request_hash 固化请求指纹，生命周期覆盖 scheduled_at + 安全窗口。
--- app_id 为 NULL 表示 Web 人工发送作用域（biz_id 为前端生成 UUID）。
+-- scope_kind/scope_id：app=<app_id>；account=<account_id>:<identity_id>；
+-- web-legacy/global 仅为迁移前 app_id IS NULL 旧记录的短期兼容作用域。
 CREATE TABLE idempotency_record (
     id         BIGSERIAL PRIMARY KEY,
     app_id     BIGINT       REFERENCES app(id),
+    scope_kind VARCHAR(16)  NOT NULL,
+    scope_id   VARCHAR(64)  NOT NULL,
     biz_id     VARCHAR(32)  NOT NULL,
     request_hash VARCHAR(64),
     batch_id   BIGINT       NOT NULL UNIQUE REFERENCES sms_batch(id),
     expires_at TIMESTAMPTZ  NOT NULL,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT uk_idem_app_biz UNIQUE NULLS NOT DISTINCT (app_id, biz_id)
+    CONSTRAINT uk_idem_app_biz UNIQUE (scope_kind, scope_id, biz_id)
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
 
