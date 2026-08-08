@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from "pinia"
 import { beforeEach, vi } from "vitest"
 
+import { clearAccessSession } from "../src/api/sessionTokens"
 import { useSessionStore } from "../src/stores/session"
 
 function response(body: unknown, status = 200) {
@@ -26,6 +27,7 @@ describe("Provider 与 JWT 会话", () => {
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
+    clearAccessSession()
     vi.unstubAllGlobals()
     setActivePinia(createPinia())
   })
@@ -79,7 +81,8 @@ describe("Provider 与 JWT 会话", () => {
     expect(session.accountId).toBe(8)
     expect(session.providerCode).toBe("local")
     expect(session.roleLabel).toBe("管理员")
-    expect(JSON.parse(sessionStorage.getItem("sms_user") || "null")).toEqual(admin)
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.getItem("sms_token")).toBeNull()
     expect(localStorage.getItem("sms_user")).toBeNull()

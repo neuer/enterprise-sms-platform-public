@@ -2,6 +2,11 @@ import { afterEach, beforeEach, vi } from "vitest"
 
 import { apiRequest, authorizedFetch } from "../src/api/webMessages"
 import {
+  clearAccessSession,
+  getAccessToken,
+  getSessionUser,
+} from "../src/api/sessionTokens"
+import {
   createLocalUser,
   listUsers,
   resetLocalPassword,
@@ -37,6 +42,7 @@ describe("统一 API 请求", () => {
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
+    clearAccessSession()
     vi.unstubAllGlobals()
     vi.useRealTimers()
   })
@@ -107,7 +113,8 @@ describe("统一 API 请求", () => {
     expect(fetch.mock.calls[2][1].headers).toMatchObject({
       Authorization: "Bearer access-2",
     })
-    expect(JSON.parse(sessionStorage.getItem("sms_user") || "null")).toEqual(updatedUser)
+    expect(getAccessToken()).toBe("access-2")
+    expect(getSessionUser()).toEqual(updatedUser)
     expect(sessionRefreshed).toHaveBeenCalledOnce()
     expect(refreshed).not.toHaveBeenCalled()
   })

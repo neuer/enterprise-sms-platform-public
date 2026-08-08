@@ -5,10 +5,17 @@ import {
   logoutRequest,
   passwordChangeRequest,
   providerRequest,
+  refreshRequest,
   type AuthProvider,
   type PlatformUser,
   type UserRole,
 } from "../api/auth"
+import {
+  clearAccessSession,
+  getAccessToken,
+  getSessionUser,
+  setAccessSession,
+} from "../api/sessionTokens"
 
 const TOKEN_KEY = "sms_token"
 const USER_KEY = "sms_user"
@@ -52,14 +59,14 @@ function isPlatformUser(value: unknown): value is PlatformUser {
 
 export const useSessionStore = defineStore("session", {
   state: () => ({
-    token: "",
-    accountId: 0,
-    identityId: 0,
-    providerCode: "",
-    username: "",
-    displayName: "",
-    dept: "",
-    role: null as UserRole | null,
+    token: getAccessToken() ?? "",
+    accountId: getSessionUser()?.account_id ?? 0,
+    identityId: getSessionUser()?.identity_id ?? 0,
+    providerCode: getSessionUser()?.provider_code ?? "",
+    username: getSessionUser()?.username ?? "",
+    displayName: getSessionUser()?.display_name ?? "",
+    dept: getSessionUser()?.dept ?? "",
+    role: (getSessionUser()?.role ?? null) as UserRole | null,
     providers: [] as AuthProvider[],
   }),
   getters: {
@@ -77,8 +84,7 @@ export const useSessionStore = defineStore("session", {
       this.displayName = ""
       this.dept = ""
       this.role = null
-      sessionStorage.removeItem(TOKEN_KEY)
-      sessionStorage.removeItem(USER_KEY)
+      clearAccessSession()
     },
     apply(token: string, user: PlatformUser) {
       clearLegacyPersistence()
@@ -90,8 +96,7 @@ export const useSessionStore = defineStore("session", {
       this.displayName = user.display_name
       this.dept = user.dept
       this.role = user.role
-      sessionStorage.setItem(TOKEN_KEY, token)
-      sessionStorage.setItem(USER_KEY, JSON.stringify(user))
+      setAccessSession(token, user)
     },
     clear() {
       clearLegacyPersistence()
@@ -111,19 +116,36 @@ export const useSessionStore = defineStore("session", {
       clearLegacyPersistence()
       const token = sessionStorage.getItem(TOKEN_KEY)
       const rawUser = sessionStorage.getItem(USER_KEY)
-      if (!token || !rawUser) {
+      const memoryToken = getAccessToken()
+      const memoryUser = getSessionUser()
+      if (!memoryToken && (!token || !rawUser)) {
         this.clear()
         return
       }
+      if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
+        this.apply(memoryToken, memoryUser)
+        return
+      }
       try {
-        const user: unknown = JSON.parse(rawUser)
-        if (!isPlatformUser(user)) {
+        const user: unknown = rawUser ? JSON.parse(rawUser) : null
+        if (!token || !isPlatformUser(user)) {
           this.clear()
           return
         }
-        this.apply(token, user)
+        this.apply(token, user as PlatformUser)
       } catch {
         this.clear()
+      }
+    },
+    async restoreFromCookie(): Promise<boolean> {
+      if (this.token) return true
+      try {
+        const result = await refreshRequest()
+        this.apply(result.token, result.user)
+        return true
+      } catch {
+        this.clear()
+        return false
       }
     },
     async loadProviders() {
