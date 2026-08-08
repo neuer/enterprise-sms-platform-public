@@ -99,6 +99,7 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_secure_access_contract.py",
         "deploy/scripts/test_secure_access_runtime.py",
         "deploy/scripts/test_secure_access_manager.py",
+        "deploy/scripts/render_trusted_proxy_conf.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/public_baseline_activation.py",
@@ -116,6 +117,7 @@ HOST_CONTROL_PATHS = frozenset(
         "scripts/export_public_snapshot.py",
         "scripts/verify_public_snapshot_cutover.py",
         "deploy/sms-compose",
+        "deploy/trusted-proxies.conf",
         "deploy/systemd/sms-platform-test-secure-access.service",
     }
 )
@@ -291,8 +293,11 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/verify_reproducible_build.sh",
         "scripts/verify_reproducible_release.py",
         "scripts/verify_redis_domains.sh",
+        "scripts/verify_tls_termination_e2e.py",
+        "scripts/verify_all.sh",
         "scripts/verify_vendor_live_test.sh",
         "scripts/verify_web_transport.py",
+        "scripts/verify_release_control.sh",
         "test-update.env.example",
     }
 )
