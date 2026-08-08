@@ -13,6 +13,7 @@ import argparse
 import http.client
 import http.server
 import json
+import os
 import socket
 import ssl
 import struct
@@ -157,7 +158,14 @@ def _gateway(project: str) -> str:
 
 def _render_and_restart_web(project: str, mode: str, cidrs: str) -> None:
     content = render(mode, cidrs)
-    target = ROOT / "deploy" / "trusted-proxies.conf"
+    target = Path(
+        os.environ.get(
+            "SMS_TRUSTED_PROXY_CONF",
+            "/usr/local/share/sms-platform/trusted-proxies.conf",
+        )
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.parent.chmod(0o755)
     target.write_text(content, encoding="utf-8")
     subprocess.run(
         ["docker", "restart", f"{project}-web-1"],
@@ -264,11 +272,18 @@ def main() -> int:
         if proxy_thread is not None:
             proxy_thread.join(timeout=1)
         try:
-            target = ROOT / "deploy/trusted-proxies.conf"
+            target = Path(
+                os.environ.get(
+                    "SMS_TRUSTED_PROXY_CONF",
+                    "/usr/local/share/sms-platform/trusted-proxies.conf",
+                )
+            )
             canonical = subprocess.check_output(
                 ["git", "show", "HEAD:deploy/trusted-proxies.conf"],
                 text=True,
             )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.chmod(0o755)
             target.write_text(canonical, encoding="utf-8")
             subprocess.run(
                 ["docker", "restart", f"{arguments.project}-web-1"],

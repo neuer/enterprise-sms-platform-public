@@ -85,6 +85,7 @@ def main() -> int:
         content = render(arguments.mode, arguments.cidrs)
         target = Path(arguments.output)
         target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.chmod(0o755)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.",
             dir=str(target.parent),

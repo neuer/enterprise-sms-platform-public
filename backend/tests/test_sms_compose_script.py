@@ -172,6 +172,7 @@ exit 0
             "SMS_PLATFORM_ROOT": str(platform_root),
             "SMS_RUNTIME_ROOT": str(runtime),
             "SMS_SECRETS_MODE": "development",
+            "SMS_TRUSTED_PROXY_CONF": str(tmp_path / "trusted-proxies.conf"),
         }
     )
     for name in (

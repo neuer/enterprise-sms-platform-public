@@ -1237,8 +1237,8 @@ def test_render_trusted_proxy_conf_defaults_to_direct_mode(tmp_path: Path) -> No
     command = calls[0]
     assert command[command.index("--mode") + 1] == "0"
     assert command[command.index("--cidrs") + 1] == ""
-    assert command[command.index("--output") + 1] == str(
-        tmp_path / "deploy/trusted-proxies.conf"
+    assert command[command.index("--output") + 1] == (
+        "/usr/local/share/sms-platform/trusted-proxies.conf"
     )
 
 
