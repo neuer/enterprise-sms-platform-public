@@ -1104,6 +1104,9 @@ def test_backend_public_cutover_activates_redis_before_services() -> None:
     operations._activate_source_and_image = lambda component: events.append(  # type: ignore[method-assign]
         ("activate", component)
     )
+    operations._render_trusted_proxy_conf = lambda: events.append(  # type: ignore[method-assign]
+        "render"
+    )
 
     operations.replace_backend_services(BACKEND_SERVICES)
 
@@ -1119,6 +1122,124 @@ def test_backend_public_cutover_activates_redis_before_services() -> None:
             *BACKEND_SERVICES,
         ),
     ]
+
+
+def test_replace_backend_renders_trusted_proxy_before_web_up() -> None:
+    events: list[object] = []
+
+    class Host:
+        def _run(self, *arguments: str) -> str:
+            events.append(arguments)
+            return ""
+
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(  # type: ignore[assignment]
+        components=frozenset({"api", "web"}),
+        public_cutover=None,
+    )
+    operations.host = Host()  # type: ignore[assignment]
+    operations._prepare_rollback_images = lambda components: events.append(  # type: ignore[method-assign]
+        ("rollback", components)
+    )
+    operations._activate_source_and_image = lambda component: events.append(  # type: ignore[method-assign]
+        ("activate", component)
+    )
+    operations._render_trusted_proxy_conf = lambda: events.append(  # type: ignore[method-assign]
+        "render"
+    )
+
+    operations.replace_backend_services(BACKEND_SERVICES)
+
+    assert events == [
+        ("rollback", frozenset({"api", "web"})),
+        ("activate", "api"),
+        (
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            *BACKEND_SERVICES,
+        ),
+        ("activate", "web"),
+        "render",
+        (
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            "--wait",
+            "--wait-timeout",
+            "120",
+            "web",
+        ),
+    ]
+
+
+def test_render_trusted_proxy_conf_uses_dotenv_values(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Runner:
+        def run(
+            self,
+            command: list[str] | tuple[str, ...],
+            **_kwargs: object,
+        ) -> bytes:
+            calls.append(list(command))
+            return b""
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "SMS_EXTERNAL_TLS_MODE=1\n"
+        "SMS_TRUSTED_PROXY_CIDRS=203.0.113.0/24\n"
+        "SMS_TRUSTED_PROXY_CONF=/tmp/trusted.conf\n",
+        encoding="utf-8",
+    )
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = tmp_path  # type: ignore[assignment]
+    operations.host = SimpleNamespace(runner=Runner())  # type: ignore[assignment]
+
+    operations._render_trusted_proxy_conf()
+
+    assert calls == [
+        [
+            "/usr/bin/python3",
+            str(tmp_path / "deploy/scripts/render_trusted_proxy_conf.py"),
+            "--mode",
+            "1",
+            "--cidrs",
+            "203.0.113.0/24",
+            "--output",
+            "/tmp/trusted.conf",
+        ]
+    ]
+
+
+def test_render_trusted_proxy_conf_defaults_to_direct_mode(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    class Runner:
+        def run(
+            self,
+            command: list[str] | tuple[str, ...],
+            **_kwargs: object,
+        ) -> bytes:
+            calls.append(list(command))
+            return b""
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("ENVIRONMENT=development\n", encoding="utf-8")
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = tmp_path  # type: ignore[assignment]
+    operations.host = SimpleNamespace(runner=Runner())  # type: ignore[assignment]
+
+    operations._render_trusted_proxy_conf()
+
+    command = calls[0]
+    assert command[command.index("--mode") + 1] == "0"
+    assert command[command.index("--cidrs") + 1] == ""
+    assert command[command.index("--output") + 1] == str(
+        tmp_path / "deploy/trusted-proxies.conf"
+    )
 
 
 def test_rollback_image_tags_are_idempotent_across_apply_resume() -> None:
