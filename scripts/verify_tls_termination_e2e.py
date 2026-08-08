@@ -15,6 +15,7 @@ import http.server
 import json
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -140,19 +141,18 @@ def _https_request(
     return response.status, result_headers, data
 
 
-def _gateway(project: str, network: str) -> str:
+def _gateway(project: str) -> str:
+    """读取 web 容器默认路由网关（宿主→容器发布端口的实际源地址）。"""
+
     output = subprocess.check_output(
-        [
-            "docker",
-            "network",
-            "inspect",
-            f"{project}_{network}",
-            "--format",
-            "{{(index .IPAM.Config 0).Gateway}}",
-        ],
+        ["docker", "exec", f"{project}-web-1", "cat", "/proc/net/route"],
         text=True,
     )
-    return output.strip()
+    for line in output.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == "00000000":
+            return socket.inet_ntoa(struct.pack("<L", int(fields[2], 16)))
+    raise RuntimeError("TLS E2E cannot resolve web default route gateway")
 
 
 def _render_and_restart_web(project: str, mode: str, cidrs: str) -> None:
@@ -194,10 +194,7 @@ def main() -> int:
     mock_password = Path(arguments.mock_password_file).read_text(
         encoding="utf-8"
     ).strip()
-    try:
-        gateway = _gateway(arguments.project, "ingress")
-    except subprocess.CalledProcessError:
-        gateway = _gateway(arguments.project, "default")
+    gateway = _gateway(arguments.project)
     proxy_thread: threading.Thread | None = None
     proxy_port = 0
     try:
