@@ -15,6 +15,7 @@ from app.core.runtime_resources import database_engine, redis_client
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.idempotency import IdempotencyScope
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -122,7 +123,9 @@ class SqlPipelineStore:
                 },
             )
 
-    async def exists(self, app_id: int | None, biz_id: str, batch_no: str) -> bool:
+    async def exists(
+        self, scope: IdempotencyScope, biz_id: str, batch_no: str
+    ) -> bool:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
@@ -130,44 +133,54 @@ class SqlPipelineStore:
                         SELECT EXISTS (
                           SELECT 1 FROM idempotency_record i
                           JOIN sms_batch b ON b.id=i.batch_id
-                          WHERE i.app_id IS NOT DISTINCT FROM :app_id
+                          WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                             AND i.biz_id=:biz_id
                             AND i.expires_at > now() AND b.batch_no=:batch_no
                         )
                         """
                 ),
-                {"app_id": app_id, "biz_id": biz_id, "batch_no": batch_no},
+                {
+                    "scope_kind": scope.kind,
+                    "scope_id": scope.id,
+                    "biz_id": biz_id,
+                    "batch_no": batch_no,
+                },
             )
             return bool(result.scalar_one())
 
-    async def find_existing(self, app_id: int | None, biz_id: str) -> str | None:
+    async def find_existing(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
                     """
                         SELECT b.batch_no FROM idempotency_record i
                         JOIN sms_batch b ON b.id=i.batch_id
-                        WHERE i.app_id IS NOT DISTINCT FROM :app_id
+                        WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                           AND i.biz_id=:biz_id
                           AND i.expires_at > now()
                         """
                 ),
-                {"app_id": app_id, "biz_id": biz_id},
+                {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
             )
             value = result.scalar_one_or_none()
             return str(value).strip() if value is not None else None
 
-    async def find_request_hash(self, app_id: int | None, biz_id: str) -> str | None:
+    async def find_request_hash(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> str | None:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
                     """
                     SELECT request_hash FROM idempotency_record
-                    WHERE app_id IS NOT DISTINCT FROM :app_id AND biz_id=:biz_id
+                    WHERE scope_kind=:scope_kind AND scope_id=:scope_id
+                      AND biz_id=:biz_id
                       AND expires_at > now()
                     """
                 ),
-                {"app_id": app_id, "biz_id": biz_id},
+                {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
             )
             value = result.scalar_one_or_none()
             return str(value).strip() if value is not None else None
@@ -179,11 +192,15 @@ class SqlPipelineStore:
                 text(
                     """
                     DELETE FROM idempotency_record
-                    WHERE app_id IS NOT DISTINCT FROM :app_id
+                    WHERE scope_kind=:scope_kind AND scope_id=:scope_id
                       AND biz_id=:biz_id AND expires_at <= now()
                     """
                 ),
-                {"app_id": command.app_id, "biz_id": command.biz_id},
+                {
+                    "scope_kind": command.scope_kind,
+                    "scope_id": command.scope_id,
+                    "biz_id": command.biz_id,
+                },
             )
         result = await connection.execute(
             text(
@@ -283,9 +300,11 @@ class SqlPipelineStore:
                 text(
                     """
                     INSERT INTO idempotency_record (
-                      app_id, biz_id, batch_id, request_hash, expires_at
+                      app_id, scope_kind, scope_id, biz_id, batch_id,
+                      request_hash, expires_at
                     ) VALUES (
-                      :app_id, :biz_id, :batch_id, :request_hash,
+                      :app_id, :scope_kind, :scope_id, :biz_id, :batch_id,
+                      :request_hash,
                       COALESCE((CAST(:scheduled_at AS timestamptz) + interval '7 days'),
                                now() + interval '24 hours')
                     )
@@ -293,6 +312,8 @@ class SqlPipelineStore:
                 ),
                 {
                     "app_id": command.app_id,
+                    "scope_kind": command.scope_kind,
+                    "scope_id": command.scope_id,
                     "biz_id": command.biz_id,
                     "batch_id": batch_id,
                     "request_hash": command.request_hash,
@@ -405,9 +426,8 @@ class SqlPipelineStore:
             )
         except IntegrityError:
             if command.biz_id:
-                if command.app_id is None:
-                    raise RuntimeError("Web 批次不得使用 API 幂等键") from None
-                existing = await self.find_existing(command.app_id, command.biz_id)
+                scope = IdempotencyScope(command.scope_kind, command.scope_id)
+                existing = await self.find_existing(scope, command.biz_id)
                 if existing is not None:
                     return StoredBatch(existing, True)
             raise

@@ -292,7 +292,7 @@ class FakePipeline:
 
 def test_uat_biz_id_is_deterministic_collision_resistant_and_within_contract() -> None:
     from app.services import vendor_test_operation as operation_module
-    from app.services.idempotency import IdempotencyCoordinator
+    from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope
 
     helper = getattr(operation_module, "vendor_test_uat_biz_id", None)
 
@@ -303,7 +303,9 @@ def test_uat_biz_id_is_deterministic_collision_resistant_and_within_contract() -
     assert first.startswith("vuat:")
     assert len(first) == 27
     assert len(first) <= 32
-    assert IdempotencyCoordinator.key(7, first) == f"idem:7:{first}"
+    assert IdempotencyCoordinator.key(IdempotencyScope("app", "7"), first) == (
+        f"idem:app:7:{first}"
+    )
 
 
 def service(

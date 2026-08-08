@@ -117,4 +117,4 @@ def test_idempotency_fingerprint_and_scheduled_retention_are_persisted() -> None
     assert "request_hash" in source
     assert "COALESCE((CAST(:scheduled_at AS timestamptz) + interval '7 days')," in source
     assert "now() + interval '24 hours')" in source
-    assert "app_id IS NOT DISTINCT FROM :app_id" in source
+    assert "scope_kind" in source and "scope_id" in source
