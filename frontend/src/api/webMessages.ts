@@ -38,6 +38,7 @@ export interface ImportResult {
 
 export interface WebMessagePayload {
   category: Category
+  biz_id: string
   mobiles?: string[]
   import_id?: string
   content?: string
@@ -284,7 +285,7 @@ export async function downloadImportInvalidFile(url: string): Promise<Blob> {
 }
 
 export async function previewBilling(
-  payload: Omit<WebMessagePayload, "mobiles" | "import_id" | "is_test" | "scheduled_at" | "remark"> & {
+  payload: Omit<WebMessagePayload, "mobiles" | "import_id" | "is_test" | "scheduled_at" | "remark" | "biz_id"> & {
     accepted_count: number
   },
 ): Promise<BillingPreview> {

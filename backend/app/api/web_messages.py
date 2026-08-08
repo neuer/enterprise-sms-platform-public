@@ -105,6 +105,7 @@ class BillingPreviewRequest(WebContentModel):
 class WebSendRequest(WebContentModel):
     mobiles: list[Phone] | None = Field(default=None, min_length=1, max_length=50_000)
     import_id: UUID | None = None
+    biz_id: str = Field(min_length=1, max_length=32)
     scheduled_at: datetime | None = None
     is_test: bool = False
     remark: str | None = Field(default=None, max_length=200)

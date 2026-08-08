@@ -498,6 +498,7 @@ class UatSuite:
                 "consent_confirmed": consent_confirmed,
                 "is_test": is_test,
                 "remark": f"uat-{self.run_id}",
+                "biz_id": f"uweb-{self.run_id}-{uuid4().hex}"[:32],
             },
             headers=self._bearer("operator01"),
         )
