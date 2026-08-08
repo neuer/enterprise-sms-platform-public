@@ -207,7 +207,8 @@ stage_7(){
 uv run --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml
 python3 scripts/verify_tls_termination_e2e.py \
   --project "$COMPOSE_PROJECT_NAME" \
-  --web-port "$web_port"
+  --web-port "$web_port" \
+  --mock-password-file deploy/secrets/ldap_bind_password
 }
 
 stage_8(){

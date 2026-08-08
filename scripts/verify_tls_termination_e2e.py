@@ -185,8 +185,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True)
     parser.add_argument("--web-port", type=int, required=True)
+    parser.add_argument(
+        "--mock-password-file",
+        default=str(ROOT / "deploy/secrets/ldap_bind_password"),
+    )
     arguments = parser.parse_args()
     web_port = arguments.web_port
+    mock_password = Path(arguments.mock_password_file).read_text(
+        encoding="utf-8"
+    ).strip()
     gateway = _gateway(arguments.project)
     proxy_thread: threading.Thread | None = None
     proxy_port = 0
@@ -204,7 +211,7 @@ def main() -> int:
             body={
                 "provider_code": "local",
                 "username": "operator01",
-                "password": "correct",
+                "password": mock_password,
             },
             headers=login_headers,
         )
