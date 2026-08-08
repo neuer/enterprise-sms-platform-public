@@ -379,6 +379,10 @@ services:
       context: ..
       dockerfile: frontend/Dockerfile  # 多阶段：node:24 构建 → nginx 托管静态资源
     user: "101:101"
+    # 挂载的 trusted-proxies.conf 位于 /opt/sms-platform（root:smsops 0770/0640），
+    # 通过宿主固定组 gid 1000 补充读取，避免 nginx uid 101 权限失败。
+    group_add:
+      - "${SMS_WEB_HOST_GID:-1000}"
     pids_limit: 128
     mem_limit: 256m
     cpus: 1
