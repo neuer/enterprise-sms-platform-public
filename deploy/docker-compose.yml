@@ -387,6 +387,8 @@ services:
     volumes:
       # 脱敏访问日志持久化：nginx(101) 写入独立目录，主机采集器(host root)只读聚合。
       - ${SMS_SECURITY_REPORT_NGINX_DIR:-./security-report-nginx}:/var/log/nginx:rw
+      # 受信 TLS 终结器部署合同由 sms-compose 在 up 前渲染；禁止运行时再人工覆盖。
+      - ${SMS_TRUSTED_PROXY_CONF:-./deploy/trusted-proxies.conf}:/etc/nginx/trusted-proxies.conf:ro
     ports: ["${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-18080}:8080"] # 明文 HTTP 上游；生产只允许本机或显式批准的 TLS 终结器访问
     depends_on:
       api: { condition: service_healthy }

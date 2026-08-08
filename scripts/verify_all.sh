@@ -44,6 +44,7 @@ case "$mode" in
 esac
 api_port="${API_PORT:-8000}"
 mock_vendor_port="${MOCK_VENDOR_PORT:-9028}"
+web_port="${WEB_PORT:-18080}"
 STEP(){ printf '\n\033[1;36m── %s ──\033[0m\n' "$*"; }
 timing_file="${G2_TIMING_FILE:-}"
 if [ -n "$timing_file" ]; then
@@ -204,6 +205,9 @@ python3 scripts/security_acceptance.py --base "http://localhost:${api_port}" --c
 
 stage_7(){
 uv run --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml
+python3 scripts/verify_tls_termination_e2e.py \
+  --project "$COMPOSE_PROJECT_NAME" \
+  --web-port "$web_port"
 }
 
 stage_8(){

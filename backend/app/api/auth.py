@@ -18,6 +18,7 @@ from app.core.auth.runtime import (
 )
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.origin import canonical_origin
 
 router = APIRouter(prefix="/api/v1/web", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
@@ -200,9 +201,7 @@ def _assert_same_origin(request: Request) -> None:
         or source.password is not None
     ):
         raise ApiError(403, "FORBIDDEN", "请求来源非同源", None)
-    expected_scheme = request.url.scheme
-    expected_host = (request.url.hostname or "").casefold()
-    expected_port = request.url.port or (443 if expected_scheme == "https" else 80)
+    expected_scheme, expected_host, expected_port = canonical_origin(request)
     source_effective_port = source_port or (443 if source.scheme == "https" else 80)
     if (
         source.scheme != expected_scheme
