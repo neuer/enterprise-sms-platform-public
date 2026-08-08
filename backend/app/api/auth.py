@@ -284,7 +284,11 @@ async def login(
     _set_refresh_cookie(
         response,
         result.refresh_token,
-        secure=request.url.scheme == "https",
+        secure=bool(
+            getattr(request.app.state, "settings", None)
+            and request.app.state.settings.is_production
+        )
+        or request.url.scheme == "https",
         max_age=result.refresh_expires_in,
     )
     return _login_response(result)
@@ -317,7 +321,11 @@ async def refresh(
     _set_refresh_cookie(
         response,
         result.refresh_token,
-        secure=request.url.scheme == "https",
+        secure=bool(
+            getattr(request.app.state, "settings", None)
+            and request.app.state.settings.is_production
+        )
+        or request.url.scheme == "https",
         max_age=result.refresh_expires_in,
     )
     return _login_response(result)
