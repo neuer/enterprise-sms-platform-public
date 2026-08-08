@@ -54,12 +54,14 @@ class ExportFileCodec:
         root: Path,
         *,
         frame_size: int = DEFAULT_FRAME_SIZE,
+        reject_legacy: bool = True,
     ) -> None:
         if frame_size < 16:
             raise ValueError("export frame_size must be at least 16")
         self.crypto = crypto
         self.root = root.resolve()
         self.frame_size = frame_size
+        self.reject_legacy = reject_legacy
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
 
@@ -197,6 +199,8 @@ class ExportFileCodec:
                 raise ValueError("truncated or invalid export header")
             version = int.from_bytes(header[len(MAGIC) :], "big")
             if header.startswith(LEGACY_MAGIC):
+                if self.reject_legacy:
+                    raise ValueError("legacy export format rejected")
                 yield from self._iter_legacy(source, version)
                 return
             frame_index = 0
