@@ -469,6 +469,27 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
             {"provider_code": "ad"},
         )
     )
+    commands.append(
+        (
+            """
+            WITH provider AS (
+              SELECT id FROM auth_provider WHERE code='ad' AND kind='ldap'
+            ), mappings(external_group,role) AS (
+              VALUES
+                ('mock:admin','admin'),
+                ('mock:approver','approver'),
+                ('mock:operator','operator'),
+                ('mock:viewer','viewer')
+            )
+            INSERT INTO external_role_mapping(provider_id,external_group,role)
+            SELECT p.id,m.external_group,m.role
+            FROM provider p CROSS JOIN mappings m
+            ON CONFLICT (provider_id,external_group) DO UPDATE
+            SET role=EXCLUDED.role
+            """,
+            {},
+        )
+    )
     user_sql = """
         WITH provider AS (
           SELECT id FROM auth_provider WHERE code='ad' AND kind='ldap'
@@ -635,7 +656,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
     accept_engine = create_async_engine(settings.database_url_for("accept"))
     try:
         commands = seed_commands(api_keys)
-        auth_command_count = 1 + len(DEV_USERS)
+        auth_command_count = 2 + len(DEV_USERS)
         async with auth_engine.begin() as connection:
             for sql, params in commands[:auth_command_count]:
                 await connection.execute(text(sql), params)
