@@ -4,10 +4,20 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 import app.services.alert_repository as alert_repository_module
 from app.services.alert_repository import SqlAlertRepository
+from app.services.sensitive_config import AlertCredentialCipher, encrypt_wecom_webhook
 from app.settings import Settings
+
+PRIVATE_KEY = X25519PrivateKey.from_private_bytes(b"w" * 32)
+PUBLIC_CIPHER = AlertCredentialCipher(public_key=PRIVATE_KEY.public_key())
+PRIVATE_CIPHER = AlertCredentialCipher(private_key=PRIVATE_KEY)
+
+
+def protected_webhook(value: str) -> str:
+    return encrypt_wecom_webhook(value, PUBLIC_CIPHER)
 
 
 class FakeResult:
@@ -25,6 +35,10 @@ class FakeResult:
 
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self.rows)
+
+    def one(self) -> dict[str, object]:
+        assert len(self.rows) == 1
+        return self.rows[0]
 
     def scalar_one_or_none(self) -> object:
         return self.scalar
@@ -73,6 +87,20 @@ def bind(repository: SqlAlertRepository, connection: FakeConnection) -> FakeEngi
 
 
 @pytest.mark.asyncio
+async def test_channel_availability_uses_boolean_security_boundary() -> None:
+    repository = SqlAlertRepository(credential_cipher=PRIVATE_CIPHER)
+    connection = FakeConnection(
+        [FakeResult(rows=[{"wecom_configured": True, "smtp_configured": False}])]
+    )
+    bind(repository, connection)
+
+    assert await repository.load_channel_availability() == (True, False)
+    sql, _params = connection.calls[0]
+    assert "alert_channel_availability()" in sql
+    assert "alert_wecom_webhook" not in sql
+
+
+@pytest.mark.asyncio
 async def test_routing_uses_empty_channels_as_log_sink_only() -> None:
     repository = SqlAlertRepository()
     connection = FakeConnection(
@@ -105,7 +133,8 @@ async def test_routing_parses_recipients_and_smtp_relay() -> None:
                 "auth_mock": True,
                 "alert_smtp_allowed_hosts": "mail.internal",
             }
-        )
+        ),
+        credential_cipher=PRIVATE_CIPHER,
     )
     connection = FakeConnection(
         [
@@ -113,7 +142,9 @@ async def test_routing_parses_recipients_and_smtp_relay() -> None:
                 rows=[
                     {
                         "key": "alert_wecom_webhook",
-                        "value": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=token",
+                        "value": protected_webhook(
+                            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=token"
+                        ),
                     },
                     {"key": "alert_mail_to", "value": "a@x, b@y"},
                     {"key": "alert_smtp_host", "value": "mail.internal"},
@@ -145,7 +176,8 @@ async def test_routing_rejects_historical_non_allowlisted_destinations() -> None
                 "auth_mock": True,
                 "alert_smtp_allowed_hosts": "mail.internal",
             }
-        )
+        ),
+        credential_cipher=PRIVATE_CIPHER,
     )
     connection = FakeConnection(
         [
@@ -170,7 +202,7 @@ async def test_routing_rejects_historical_non_allowlisted_destinations() -> None
 
 @pytest.mark.asyncio
 async def test_invalid_smtp_port_degrades_to_log_sink_routing() -> None:
-    repository = SqlAlertRepository()
+    repository = SqlAlertRepository(credential_cipher=PRIVATE_CIPHER)
     connection = FakeConnection(
         [
             FakeResult(
@@ -190,7 +222,7 @@ async def test_invalid_smtp_port_degrades_to_log_sink_routing() -> None:
 async def test_claim_is_atomic_four_hour_dedup_and_does_not_persist_webhook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = SqlAlertRepository()
+    repository = SqlAlertRepository(credential_cipher=PRIVATE_CIPHER)
     connection = FakeConnection([FakeResult(scalar=42)])
     engine = bind(repository, connection)
     outbox_events: list[Any] = []

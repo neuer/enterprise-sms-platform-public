@@ -11,6 +11,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.core.auth.principal_context import audit_principal_scope
+
 REQUEST_ID_HEADER = "X-Request-ID"
 TASK_HEADER = "correlation_id"
 _correlation_id: ContextVar[UUID | None] = ContextVar("correlation_id", default=None)
@@ -81,7 +83,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         requested = parse_correlation_id(request.headers.get(REQUEST_ID_HEADER))
-        with correlation_scope(requested) as correlation_id:
+        with audit_principal_scope(), correlation_scope(requested) as correlation_id:
             request.state.correlation_id = correlation_id
             response = await call_next(request)
             response.headers[REQUEST_ID_HEADER] = str(correlation_id)

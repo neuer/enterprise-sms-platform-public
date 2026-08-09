@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.bounded_executor import run_bounded
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.imports import ImportPhone, ImportResult
 from app.settings import Settings, get_settings
 
@@ -547,8 +547,7 @@ class SqlImportRepository:
                           AND parse_status='processing'
                           AND parse_lease_id=:lease_id
                           AND parse_lease_expires_at>now()
-                        RETURNING id,creator,creator_account_id,
-                          creator_identity_id
+                        RETURNING id
                         """
                     ),
                     {
@@ -564,15 +563,20 @@ class SqlImportRepository:
                 row = finished.mappings().one_or_none()
                 if row is None:
                     return False
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="import-parser",
+                    action="message_import",
+                )
                 await connection.execute(
                     text(
                         """
                         INSERT INTO audit_log(
-                          actor,actor_subject_kind,actor_account_id,
-                          actor_identity_id,role,action,object_type,object_id,
+                          actor,actor_subject_kind,role,action,object_type,object_id,
                           after_val
                         )
-                        SELECT :actor,'human',:account_id,:identity_id,u.role,
+                        VALUES(
+                          'import-parser','system','system',
                           'message_import','import_task',:object_id,
                           jsonb_build_object(
                             'valid',CAST(:valid AS integer),
@@ -580,13 +584,10 @@ class SqlImportRepository:
                             'duplicate',CAST(:duplicate AS integer),
                             'blacklisted',CAST(:blacklisted AS integer)
                           )
-                        FROM user_account u WHERE u.id=:account_id
+                        )
                         """
                     ),
                     {
-                        "actor": str(row["creator"]),
-                        "account_id": int(row["creator_account_id"]),
-                        "identity_id": int(row["creator_identity_id"]),
                         "object_id": str(claim.import_id),
                         "valid": valid,
                         "invalid": invalid,

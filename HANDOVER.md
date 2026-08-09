@@ -3,7 +3,7 @@
 > 本文件是 2026-07-15 的历史生产候选移交记录。当前日常流程以
 > `MAINTENANCE.md` 为准，当前阻塞以 `PROGRESS.md` 为准。
 
-2026-07-15 全库安全与前后端契约对齐、统一发布控制及远端 Mock 演练已合并并推送 `main`。仓库候选基线 `<redacted-commit>` 的 GitHub Actions run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 均退出 0；已归档的本地 Trivy 0.70.0 发布门禁扫描 API、Web、PostgreSQL、Redis 四个最终镜像，均为 0 HIGH / 0 CRITICAL，并退出 0。P0 合并后的最终不可变证据归档到生产变更单与 release manifest，不再通过额外文档提交回填 SHA/run ID。本文件中的外部 TLS、真实 AD、生产 18 件 secrets、24 小时压测、主备 RTO 与真人 UAT 必须由生产责任人继续完成。
+2026-07-15 全库安全与前后端契约对齐、统一发布控制及远端 Mock 演练已合并并推送 `main`。仓库候选基线 `<redacted-commit>` 的 GitHub Actions run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 均退出 0；已归档的本地 Trivy 0.70.0 发布门禁扫描 API、Web、PostgreSQL、Redis 四个最终镜像，均为 0 HIGH / 0 CRITICAL，并退出 0。P0 合并后的最终不可变证据归档到生产变更单与 release manifest，不再通过额外文档提交回填 SHA/run ID。本文件中的外部 TLS、真实 AD、生产 24 件 secrets、24 小时压测、主备 RTO 与真人 UAT 必须由生产责任人继续完成。
 
 > M4.1 前后端页面对齐补丁已在全新 Mock 卷重新执行 G2，并完成四角色、PRD 18 页面形态和 390px 真实浏览器验收。生产候选必须包含 M4.1 最终交付提交；旧 `m4` 镜像不含该补丁。
 
@@ -12,8 +12,8 @@
 - [x] 代码基线 `<redacted-commit>` 已执行 `bash scripts/verify_release.sh`：API 0、Web 0、PostgreSQL 0、Redis 0；当前仓库候选 `<redacted-commit>` 的 CI run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 全部成功。v1.6.14 四镜像/数据持久化候选 `<redacted-commit>` 的证据继续有效。生产仍须把四镜像推送到受控仓库并归档扫描报告、扫描器 digest 与最终镜像 digest（RepoDigest）；P0 最终 SHA 与 run ID 按本节开头的证据边界处理。
 - [ ] 配置外部 TLS 终结器的证书、HTTPS 重定向与 HSTS（`max-age>=31536000; includeSubDomains`），按部署手册归档 curl 结果；内部 HTTP Nginx 不设置 HSTS。真实浏览器确认 CSP/Permissions-Policy 生效且控制台无 CSP violation。
 - [ ] 数据库迁移后先执行 `sms-compose init-admin --show-temporary-password` 初始化本地管理员并完成首次改密；再在系统配置页保存、测试并启用 AD。在 AD 创建 admin、approver、operator、viewer 四类安全组，按审批结果配置角色映射；生产设置 `DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，以四种角色完成真实 LDAP 登录。禁止运行 `seed-dev`。
-- [ ] 由受控密钥系统分别向主、备节点落盘 18 件生产运行 secret：厂商两项、AES/HMAC、
-  JWT、LDAP、metrics、`db_owner_password`、七个 `db_<role>_password` 和三个 Redis ACL
+- [ ] 由受控密钥系统分别向主、备节点落盘 24 件生产运行 secret：厂商两项、AES/HMAC、
+  主体与自治事件两个审计 HMAC、企微 X25519 公私钥对、JWT、LDAP、metrics、`db_owner_password`、七个 `db_<role>_password` 和三个 Redis ACL
   密码；目录 0700、文件 0600，DB owner secret 只挂载 postgres/db-role-provision/migrate。
   按 [deploy/secrets.md](deploy/secrets.md) 双人复核，不复制 secret 值到 `.env`、工单、
   日志或聊天。
@@ -33,7 +33,7 @@
 具体部署顺序见 [deploy/README.md](deploy/README.md)。执行摘要：
 
 1. 冻结 tag/commit、镜像 digest、执行人和回退决策人；发布“停拉通知”，确保 T0 起旧直连系统不再调用 GetReport/GetReply。
-2. 完成 18 件 secrets、厂商主备出口、加密备份隔离恢复、真实 LDAP 四角色和内网 Prometheus 七组指标验收。
+2. 完成 24 件 secrets、厂商主备出口、加密备份隔离恢复、真实 LDAP 四角色和内网 Prometheus 七组指标验收。
 3. 仅启动 `postgres redis migrate` 并核验 Alembic、分区、owner/app 权限；再启动 api、三个 worker、beat、web。生产不得启用 dev profile。
 4. T0 起报告/回复拉取权唯一归平台；按 notice → verify → market 迁移，每个应用完成 API Key、回调/查询验证并观察 3 天。
 5. 全部应用收口后由厂商重置旧密钥并更新 Docker secrets。归档 UAT、备份 SHA-256、监控截图与厂商回执。

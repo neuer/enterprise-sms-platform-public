@@ -257,6 +257,8 @@ def test_vendor_control_agent_unit_is_root_only_uds_and_hardened() -> None:
         "deploy/scripts/vendor_control_agent.py",
         "--api-runtime-uid 10001",
         "--api-runtime-gid 10001",
+        "--worker-runtime-uid 10001",
+        "--worker-runtime-gid 10002",
         "NoNewPrivileges=yes",
         "PrivateTmp=yes",
         "ProtectSystem=strict",

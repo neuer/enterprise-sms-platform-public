@@ -6,7 +6,7 @@ import hashlib
 import ipaddress
 import secrets
 import socket
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -16,6 +16,7 @@ from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import (
     InvalidRuntimePolicy,
+    ensure_callback_cidrs_within_deployment,
     parse_private_callback_cidrs,
 )
 
@@ -115,6 +116,11 @@ class CallbackUrlValidator:
         self,
         allow_cidrs: str | Sequence[str],
         *,
+        deployment_allow_cidrs: Sequence[
+            ipaddress.IPv4Network | ipaddress.IPv6Network
+        ]
+        | None = None,
+        deployment_allow_ports: Collection[int] = (80, 443),
         resolver: Callable[[str], Sequence[str]] = _resolve_addresses,
         allow_http: bool = False,
     ) -> None:
@@ -122,9 +128,21 @@ class CallbackUrlValidator:
             allow_cidrs.split(",") if isinstance(allow_cidrs, str) else allow_cidrs
         )
         try:
-            self.networks = parse_private_callback_cidrs(",".join(raw_cidrs))
+            requested = ",".join(raw_cidrs)
+            if deployment_allow_cidrs is None:
+                self.networks = parse_private_callback_cidrs(requested)
+            else:
+                self.networks = ensure_callback_cidrs_within_deployment(
+                    requested,
+                    tuple(deployment_allow_cidrs),
+                )
         except InvalidRuntimePolicy as exc:
             raise InvalidAppConfig(str(exc)) from exc
+        self.allowed_ports = frozenset(deployment_allow_ports)
+        if not self.allowed_ports or any(
+            port < 1 or port > 65535 for port in self.allowed_ports
+        ):
+            raise InvalidAppConfig("callback 部署端口边界无效")
         self.resolver = resolver
         self.allow_http = allow_http
 
@@ -167,6 +185,9 @@ class CallbackUrlValidator:
             raise InvalidAppConfig("callback URL 禁止凭据或 fragment")
         if port is not None and not 1 <= port <= 65535:
             raise InvalidAppConfig("callback URL 端口无效")
+        effective_port = port or (443 if parsed.scheme == "https" else 80)
+        if effective_port not in self.allowed_ports:
+            raise InvalidAppConfig("callback URL 端口超出部署允许范围")
         try:
             addresses = self.resolver(parsed.hostname)
         except OSError as exc:

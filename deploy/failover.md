@@ -2,14 +2,14 @@
 
 ## 目标、边界与值班责任
 
-本手册用于 PostgreSQL 16 单主冷备。每日成功快照保证 **RPO≤24h**；从宣布切换到恢复受控业务的目标为 **RTO≤30min**。冷备节点平时只保存加密数据库、Git 归档、无密钥生产配置和校验清单，**不启动**任何平台容器。`sync_standby.py` **不传输 18 件运行 secrets**，也不会执行 Docker 启动命令。
+本手册用于 PostgreSQL 16 单主冷备。每日成功快照保证 **RPO≤24h**；从宣布切换到恢复受控业务的目标为 **RTO≤30min**。冷备节点平时只保存加密数据库、Git 归档、无密钥生产配置和校验清单，**不启动**任何平台容器。`sync_standby.py` **不传输 24 件运行 secrets**，也不会执行 Docker 启动命令。
 
 真实备机、DNS、厂商白名单和生产流量切换需要值班负责人、DBA、安全与网络人员共同执行，属于 `[HANDOVER]`。任何步骤不满足时以保持停服为最安全状态，禁止为了赶 RTO 绕过凭据、出口 IP、哈希或单主检查。
 
 ## 一次性准备
 
 1. 主、备节点安装 Docker Compose v2、Python 3.12、OpenSSL、rsync、SSH 和 PostgreSQL 16 客户端；创建无登录特权的 `smsdr` 同步账户，快照根目录权限 0700。
-2. 密钥系统在主、备节点分别落生产 18 件 secrets。首次部署和每次轮换均由两名不同人员逐项核对文件名、版本、属主与 0600 权限并登记；不得通过 rsync、Git、`.env` 或工单复制值。详见 [secrets.md](secrets.md)。
+2. 密钥系统在主、备节点分别落生产 24 件 secrets。首次部署和每次轮换均由两名不同人员逐项核对文件名、版本、属主与 0600 权限并登记；不得通过 rsync、Git、`.env` 或工单复制值。详见 [secrets.md](secrets.md)。
 3. 厂商工单书面确认主出口 IP、备出口 IP 属于同一账号白名单，QPS 和单次号码上限一致，并在两端执行 GetBalance。任一端返回 1010 时不得切换。详见 [vendor-egress.md](vendor-egress.md)。
 4. 为 API 域名预设低 TTL；准备仅供演练的 `/etc/hosts` 映射。DNS 变更前后均保留解析结果、TTL、变更单和回退值。
 5. 备机防火墙默认拒绝应用出站；只有切换审批完成后才开放厂商、LDAP、告警与回调所需目的地。
@@ -109,7 +109,7 @@ python3 deploy/scripts/restore_drill.py \
    `SHA256SUMS`、manifest、Git commit、Alembic version、最后演练报告 SHA-256、备份年龄、
    恢复耗时与 `data_gap_seconds`。超过 24 小时明确记录数据缺口与业务批准；完整性或演练
    证据失败则换上一份仍在保留期且已验证的快照，禁止直接使用 `current`。
-3. **恢复基础设施。** 解包同 commit 的 Git 归档，人工确认 18 件 secrets 版本，使用 [backup-restore.md](backup-restore.md) 的流式步骤恢复生产 `sms`。先只启动 `postgres`、`redis`、`redis-auth`、`redis-control`，执行 `migrate`，复核角色、audit 权限、表计数和 `/metrics` 所需事实源。
+3. **恢复基础设施。** 解包同 commit 的 Git 归档，人工确认 24 件 secrets 版本，使用 [backup-restore.md](backup-restore.md) 的流式步骤恢复生产 `sms`。先只启动 `postgres`、`redis`、`redis-auth`、`redis-control`，执行 `migrate`，复核角色、audit 权限、表计数和 `/metrics` 所需事实源。
 4. **启动无消费入口。** 启动 `api`，先验证 `/livez`，再等待 `/readyz`、`/metrics`、JWT 登录和只读列表；此时 DNS 仍指向维护页，禁止发送接口流量。
 5. **逐队列启动。** 先启动 `worker-callback`，再启动 `worker-realtime`、`worker-bulk`；worker 就绪后只启动一个 `outbox-dispatcher`，观察 pending/dead/最老事件年龄回落。确认队列深度、vendor 令牌桶、余额和暂停开关正确；不得手工重投 submitted 或 uncertain chunk。
 6. **恢复唯一调度。** 再次确认旧主 beat 和所有拉取进程已隔离，随后只在备机启动单实例 `beat`。观察 job_run 心跳至少两个最短任务周期，确认没有 `job_stalled`。

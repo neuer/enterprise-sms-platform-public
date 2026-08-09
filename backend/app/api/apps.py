@@ -141,6 +141,8 @@ async def get_app_management_service() -> AppManagementService:
         CryptoService.from_settings(settings),
         CallbackUrlValidator(
             allow_cidrs,
+            deployment_allow_cidrs=settings.callback_egress_networks,
+            deployment_allow_ports=settings.callback_egress_port_set,
             allow_http=settings.environment != "production",
         ),
         key_grace=timedelta(hours=grace_hours),

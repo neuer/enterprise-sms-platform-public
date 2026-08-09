@@ -52,6 +52,9 @@ def render(mode: str, cidrs: str) -> str:
             "geo $realip_remote_addr $sms_trusted_proxy {\n"
             "    default 0;\n"
             "}\n"
+            "geo $realip_remote_addr $sms_plaintext_client_allowed {\n"
+            "    default 1;\n"
+            "}\n"
         )
     networks = _parse_cidrs(cidrs)
     if not networks:
@@ -68,6 +71,15 @@ def render(mode: str, cidrs: str) -> str:
     for network in networks:
         lines.append(f"    {network} 1;")
     lines.append("}")
+    lines.extend(
+        [
+            "geo $realip_remote_addr $sms_plaintext_client_allowed {",
+            "    default 0;",
+        ]
+    )
+    for network in networks:
+        lines.append(f"    {network} 1;")
+    lines.append("}")
     for network in networks:
         lines.append(f"set_real_ip_from {network};")
     lines.append("real_ip_header X-Forwarded-For;")
@@ -79,10 +91,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", required=True)
     parser.add_argument("--cidrs", default="")
-    parser.add_argument("--output", required=True)
+    parser.add_argument("--output")
+    parser.add_argument("--validate-only", action="store_true")
     arguments = parser.parse_args()
     try:
         content = render(arguments.mode, arguments.cidrs)
+        if arguments.validate_only:
+            return 0
+        if arguments.output is None:
+            parser.error("--output is required unless --validate-only is used")
         target = Path(arguments.output)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.parent.chmod(0o755)

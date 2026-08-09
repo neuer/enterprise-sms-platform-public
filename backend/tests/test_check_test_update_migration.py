@@ -66,7 +66,39 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0051_security_daily_delivery_send",
         "0052_idempotency_request_hash",
         "0053_idempotency_scope",
+        "0054_sensitive_config_rls",
+        "0055_callback_revocation",
+        "0056_audit_attribution_context",
+        "0057_wecom_credential_encryption",
+        "0058_audit_writer_enforcement",
+        "0059_authenticated_audit_alert",
+        "0060_audit_producer_domains",
     ]
+
+
+def test_accepts_additive_row_security_controls(tmp_path: Path) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\n"
+        "down_revision=None\n"
+        "def upgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_rls.py").write_text(
+        "from alembic import op\n"
+        "revision='0002_rls'\n"
+        "down_revision='0001_base'\n"
+        "def upgrade():\n"
+        "    op.execute('ALTER TABLE sys_config ENABLE ROW LEVEL SECURITY')\n"
+        "    op.execute('CREATE POLICY config_read ON sys_config FOR SELECT USING (true)')\n"
+        "    op.execute('CREATE FUNCTION safe_config() RETURNS boolean "
+        "LANGUAGE sql AS $$ SELECT true $$')\n",
+        encoding="utf-8",
+    )
+
+    checked = check_expand_only(tmp_path, "0001_base", "0002_rls")
+
+    assert [item.revision for item in checked] == ["0002_rls"]
 
 
 def test_accepts_drop_not_null_as_expand_only(tmp_path: Path) -> None:

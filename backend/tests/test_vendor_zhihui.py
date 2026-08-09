@@ -131,8 +131,12 @@ async def test_all_eight_endpoints_use_exact_camel_case_payloads() -> None:
 async def test_vendor_error_exposes_complete_policy_without_secret_logging(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    reflected = (
+        "secretName=secret-name-value secretKey=secret-key-value "
+        "content=登录验证码 839204"
+    )
     transport = RecordingTransport(
-        {"/Sms/Api/Send": {"code": 5002, "msg": "号码13800138000过快", "data": None}}
+        {"/Sms/Api/Send": {"code": 5002, "msg": reflected, "data": None}}
     )
     client = make_client(transport)
 
@@ -142,10 +146,12 @@ async def test_vendor_error_exposes_complete_policy_without_secret_logging(
 
     assert captured.value.code == 5002
     assert captured.value.policy.retry_delays_s == (1, 2, 4, 8, 16)
+    assert captured.value.safe_message == ERROR_POLICIES[5002].description
+    assert reflected not in str(captured.value)
     logs = caplog.text
     assert "secret-name-value" not in logs
     assert "secret-key-value" not in logs
-    assert "13800138000" not in logs
+    assert "839204" not in logs
 
 
 @pytest.mark.asyncio

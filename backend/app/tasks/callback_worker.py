@@ -43,6 +43,8 @@ async def _deliver(task_id: int) -> int:
     repository = SqlCallbackRepository(settings)
     validator = CallbackUrlValidator(
         policy.callback_allow_cidrs,
+        deployment_allow_cidrs=settings.callback_egress_networks,
+        deployment_allow_ports=settings.callback_egress_port_set,
         allow_http=settings.environment != "production",
     )
     return await CallbackWorker(

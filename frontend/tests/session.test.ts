@@ -130,7 +130,8 @@ describe("Provider 与 JWT 会话", () => {
     expect(session.isAuthenticated).toBe(true)
     expect(sessionStorage.getItem("sms_change_token")).toBeNull()
     expect(sessionStorage.getItem("sms_change_token_expires_at")).toBeNull()
-    expect(sessionStorage.getItem("sms_token")).toBe("must-not-authenticate")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.length).toBe(0)
   })
@@ -164,7 +165,7 @@ describe("Provider 与 JWT 会话", () => {
     const session = useSessionStore()
     session.restore()
 
-    await session.logout()
+    await expect(session.logout()).rejects.toThrow("offline")
 
     expect(session.isAuthenticated).toBe(false)
     expect(sessionStorage.length).toBe(0)

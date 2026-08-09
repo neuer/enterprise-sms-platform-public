@@ -11,11 +11,13 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
+from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
 from app.services.admin import ConfigUpdate
 from app.services.admin_repository import SqlAdminRepository
@@ -63,6 +65,29 @@ class FakeStepUpStore:
         return 0
 
 
+def stable_admin() -> SecurityPrincipal:
+    return SecurityPrincipal(8, 18, "audit-admin", "平台部", "admin")
+
+
+@pytest.mark.asyncio
+async def test_live_audit_without_stable_principal_is_rejected() -> None:
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    try:
+        with pytest.raises(DBAPIError, match="authenticated actor context"):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(actor,action,object_type,object_id)
+                        VALUES('display-only','unattributed_probe','probe','1')
+                        """
+                    )
+                )
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_export_step_up_persists_real_audit_row() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
@@ -91,7 +116,9 @@ async def test_export_step_up_persists_real_audit_row() -> None:
         audit_sink=audit_sink,
     )
     try:
-        with correlation_scope(uuid4()):
+        principal = stable_admin()
+        correlation_id = uuid4()
+        with audit_principal_scope(principal), correlation_scope(correlation_id):
             token = await service.issue(
                 claims=claims,
                 password="correct-password",
@@ -137,7 +164,9 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
     app_name = f"audit-runtime-{uuid4().hex[:12]}"
     app_id: int | None = None
     try:
-        with correlation_scope(uuid4()):
+        principal = stable_admin()
+        correlation_id = uuid4()
+        with audit_principal_scope(principal), correlation_scope(correlation_id):
             app_id = await repository.create(
                 name=app_name,
                 dept="平台部",
@@ -169,7 +198,8 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
                 await connection.execute(
                     text(
                         """
-                        SELECT action, actor, object_type, object_id
+                        SELECT action, actor, actor_subject_kind,actor_account_id,
+                          actor_identity_id,correlation_id,object_type,object_id
                         FROM audit_log
                         WHERE object_type='app'
                           AND object_id=CAST(:app_id AS text)
@@ -182,6 +212,10 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
         actions = [str(row["action"]) for row in rows]
         assert actions == ["app_create", "app_rotate_key"]
         assert all(str(row["actor"]) == "audit-admin" for row in rows)
+        assert all(str(row["actor_subject_kind"]) == "human" for row in rows)
+        assert all(int(row["actor_account_id"]) == 8 for row in rows)
+        assert all(int(row["actor_identity_id"]) == 18 for row in rows)
+        assert all(row["correlation_id"] == correlation_id for row in rows)
         assert all(str(row["object_type"]) == "app" for row in rows)
     finally:
         async with engine.begin() as connection:
@@ -232,7 +266,7 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                 ),
                 {"code": code, "name": "审计测试 AD"},
             )
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             saved = await repository.save_draft(
                 code,
                 config,
@@ -295,7 +329,7 @@ async def test_local_account_create_persists_real_audit_row() -> None:
     account_id: int | None = None
     identity_id: int | None = None
     try:
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             record = await repository.create_local(
                 username=username,
                 display_name="审计测试账号",
@@ -361,11 +395,11 @@ async def test_sensitive_word_add_and_delete_persist_real_audit_rows() -> None:
     word = f"audit-word-{uuid4().hex[:8]}"
     word_id: int | None = None
     try:
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             result = await repository.add_many([word], actor="audit-admin")
         assert result.created
         word_id = result.created[0].id
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             await repository.delete(word_id, actor="audit-admin")
         async with engine.connect() as connection:
             rows = (
@@ -425,7 +459,7 @@ async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
         created_at=datetime.now(UTC),
     )
     try:
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             await repository.upsert_many([entry], actor="audit-admin", source="integration")
             await repository.delete(entry.phone_hmac, actor="audit-admin")
         async with engine.connect() as connection:
@@ -474,7 +508,7 @@ async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None
     template_name = f"audit-template-{uuid4().hex[:8]}"
     sign_name = f"【审计签名{uuid4().hex[:6]}】"
     try:
-        with correlation_scope(uuid4()):
+        with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
             template = await template_repository.create(
                 name=template_name,
                 content="验证码{1}",

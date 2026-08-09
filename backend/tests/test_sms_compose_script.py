@@ -60,17 +60,15 @@ raise SystemExit(int(os.environ.get("FAKE_PYTHON_EXIT", "0")))
     )
     renderer = platform_root / "deploy" / "scripts" / "render_trusted_proxy_conf.py"
     renderer.write_text(
-        """from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-target = Path(sys.argv[sys.argv.index("--output") + 1])
-target.write_text(
-    "geo $realip_remote_addr $sms_trusted_proxy {\\n    default 0;\\n}\\n",
-    encoding="utf-8",
-)
-""",
+        (ROOT / "deploy/scripts/render_trusted_proxy_conf.py").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    transport_verifier = platform_root / "scripts" / "verify_web_transport.py"
+    transport_verifier.parent.mkdir()
+    transport_verifier.write_text(
+        (ROOT / "scripts" / "verify_web_transport.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     if LOCK_RUNNER.is_file():
@@ -172,7 +170,9 @@ exit 0
             "SMS_PLATFORM_ROOT": str(platform_root),
             "SMS_RUNTIME_ROOT": str(runtime),
             "SMS_SECRETS_MODE": "development",
-            "SMS_TRUSTED_PROXY_CONF": str(tmp_path / "trusted-proxies.conf"),
+            "SMS_TRUSTED_PROXY_CONF": str(
+                tmp_path / "trusted-proxy-output" / "trusted-proxies.conf"
+            ),
         }
     )
     for name in (
@@ -186,6 +186,9 @@ exit 0
         "SMS_INGRESS_SUBNET",
         "SMS_API_INGRESS_IPV4",
         "SMS_WEB_INGRESS_IPV4",
+        "WEB_BIND_IP",
+        "SMS_EXTERNAL_TLS_MODE",
+        "SMS_TRUSTED_PROXY_CIDRS",
     ):
         environment.pop(name, None)
     return platform_root, log, environment
@@ -372,6 +375,9 @@ def write_non_secret_env(
     auth_mock: str = "0",
     vendor_mock: str = "0",
     compose_profiles: str | None = None,
+    web_bind_ip: str | None = None,
+    external_tls_mode: str | None = None,
+    trusted_proxy_cidrs: str | None = None,
 ) -> None:
     lines = [
         f"ENVIRONMENT={environment}",
@@ -381,6 +387,12 @@ def write_non_secret_env(
     ]
     if compose_profiles is not None:
         lines.append(f"COMPOSE_PROFILES={compose_profiles}")
+    if web_bind_ip is not None:
+        lines.append(f"WEB_BIND_IP={web_bind_ip}")
+    if external_tls_mode is not None:
+        lines.append(f"SMS_EXTERNAL_TLS_MODE={external_tls_mode}")
+    if trusted_proxy_cidrs is not None:
+        lines.append(f"SMS_TRUSTED_PROXY_CIDRS={trusted_proxy_cidrs}")
     (platform_root / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -1044,6 +1056,78 @@ def test_production_up_accepts_only_safe_non_secret_settings(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line([*prefix, "up", "-d", "--remove-orphans"], runtime=runtime),
     ]
+
+
+@pytest.mark.parametrize(
+    "bind_ip",
+    ["0.0.0.0", "::", ".".join(("8", "8", "8", "8")), "10.0.0.5"],
+)
+def test_production_direct_mode_rejects_remote_plaintext_bind_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]], bind_ip: str
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root, web_bind_ip=bind_ip)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+def test_production_external_tls_bind_requires_private_address_and_proxy_acl(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    write_non_secret_env(
+        platform_root,
+        web_bind_ip="10.0.0.5",
+        external_tls_mode="1",
+        trusted_proxy_cidrs="10.0.0.9/32",
+    )
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0
+    prefix = compose_prefix(platform_root)
+    assert command_lines(log) == [
+        expected_prepare(platform_root, runtime, mode="production"),
+        expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_line([*prefix, "up", "-d"], runtime=runtime),
+    ]
+
+
+@pytest.mark.parametrize("cidrs", ["", "10.0.0.0/16", "0.0.0.0/0"])
+def test_production_external_tls_rejects_missing_or_broad_proxy_acl_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]], cidrs: str
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(
+        platform_root,
+        web_bind_ip="10.0.0.5",
+        external_tls_mode="1",
+        trusted_proxy_cidrs=cidrs,
+    )
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
 
 
 @pytest.mark.parametrize(

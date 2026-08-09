@@ -18,7 +18,6 @@ from app.vendor.codes import VendorErrorPolicy, policy_for
 
 LOGGER = logging.getLogger(__name__)
 PHONE_PATTERN = re.compile(r"^1\d{10}$")
-PHONE_IN_TEXT = re.compile(r"(?<!\d)(1\d{10})(?!\d)")
 CUSTOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{0,36}$")
 VENDOR_TIMEOUT_S = 10.0
 VENDOR_MAX_RESPONSE_HEADER_BYTES = 64 * 1024
@@ -48,12 +47,12 @@ class VendorProtocolError(VendorError):
 
 
 class VendorApiError(VendorError):
-    """厂商返回非零 code，并携带后续 worker 所需处置策略。"""
+    """厂商返回非零 code；跨边界只携带本地 allowlist 描述。"""
 
-    def __init__(self, code: int, message: str | None) -> None:
+    def __init__(self, code: int, _unsafe_vendor_message: str | None = None) -> None:
         self.code = code
-        self.vendor_message = message
         self.policy: VendorErrorPolicy = policy_for(code)
+        self.safe_message = self.policy.description
         super().__init__(f"vendor error code={code}: {self.policy.description}")
 
 
@@ -77,14 +76,6 @@ class RawPulledPayload:
 
     raw_payload: bytes
     data: Any
-
-
-def _sanitize_text(value: object) -> str:
-    text = "" if value is None else str(value)
-    return PHONE_IN_TEXT.sub(
-        lambda match: f"{match.group(1)[:3]}****{match.group(1)[-4:]}",
-        text,
-    )
 
 
 def _strip_keys(value: Any) -> Any:
@@ -212,13 +203,13 @@ class ZhihuiClient:
             raise VendorProtocolError("vendor response msg is invalid")
         if code != 0:
             LOGGER.warning(
-                "vendor API error endpoint=%s code=%s msg=%s duration_ms=%s",
+                "vendor API error endpoint=%s code=%s classification=%s duration_ms=%s",
                 path,
                 code,
-                _sanitize_text(message),
+                policy_for(code).description,
                 duration_ms,
             )
-            raise VendorApiError(code, message)
+            raise VendorApiError(code)
         LOGGER.info("vendor API success endpoint=%s duration_ms=%s", path, duration_ms)
         return _VendorPayload(_strip_keys(envelope["data"]), content)
 

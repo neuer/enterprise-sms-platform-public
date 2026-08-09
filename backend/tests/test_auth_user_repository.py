@@ -14,6 +14,7 @@ from app.core.auth.accounts import (
 )
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.users import SqlUserRepository
+from app.services.admin_invariant import ADMIN_INVARIANT_LOCK_ID
 
 
 def account_row(**updates: object) -> dict[str, object]:
@@ -53,6 +54,10 @@ class FakeResult:
         assert len(self.rows) <= 1
         return self.rows[0] if self.rows else None
 
+    def one(self) -> dict[str, object]:
+        assert len(self.rows) == 1
+        return self.rows[0]
+
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self.rows)
 
@@ -69,7 +74,10 @@ class FakeConnection:
         self.calls: list[tuple[str, Any]] = []
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
-        self.calls.append((str(statement), params))
+        sql = str(statement)
+        if "txid_current()" in sql:
+            return FakeResult([{"database_user": "sms_auth", "txid": 42}])
+        self.calls.append((sql, params))
         return self.results.pop(0)
 
 
@@ -277,6 +285,8 @@ async def test_password_change_updates_hash_and_version_without_hash_in_audit() 
     assert "security_version=security_version+1" in connection.calls[1][0]
     audit_sql, audit_params = connection.calls[2]
     assert "local_password_change" in audit_sql
+    assert audit_params["account_id"] == 8
+    assert audit_params["identity_id"] == 18
     assert "$argon2id" not in str(audit_params)
     assert engine.disposed
 
@@ -321,6 +331,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
 
@@ -350,7 +361,10 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
         consume_sql
     )
     assert consume_params == {"token_id": 91, "account_id": 8}
-    audit_sql, audit_params = connection.calls[4]
+    context_sql, context_params = connection.calls[4]
+    assert "sms.audit_subject_kind" in context_sql
+    assert context_params["account_id"] == "8"
+    audit_sql, audit_params = connection.calls[5]
     assert "local_password_change" in audit_sql
     assert "$argon2id" not in str(audit_params)
     assert "b" * 64 not in str(audit_params)
@@ -379,7 +393,7 @@ async def test_initial_password_change_rejects_used_or_stale_token_without_updat
 
 @pytest.mark.asyncio
 async def test_login_audit_casts_json_provider_for_asyncpg() -> None:
-    connection = FakeConnection([FakeResult()])
+    connection = FakeConnection([FakeResult(), FakeResult()])
     account = PlatformAccount(
         8,
         18,
@@ -396,7 +410,8 @@ async def test_login_audit_casts_json_provider_for_asyncpg() -> None:
 
     await SqlUserRepository._audit_login(connection, account, "10.0.0.8")
 
-    sql, params = connection.calls[0]
+    assert "sms.audit_subject_kind" in connection.calls[0][0]
+    sql, params = connection.calls[1]
     assert "'provider_code',CAST(:provider_code AS text)" in sql
     assert params["provider_code"] == "ad"
 
@@ -405,9 +420,11 @@ async def test_login_audit_casts_json_provider_for_asyncpg() -> None:
 async def test_valid_external_identity_conflict_is_rejected_before_account_creation() -> None:
     repo, connection, engine = repository(
         [
+            FakeResult(),
             FakeResult(scalar=2),
             FakeResult(),
             FakeResult(scalar=88),
+            FakeResult(),
             FakeResult(),
         ]
     )
@@ -423,11 +440,70 @@ async def test_valid_external_identity_conflict_is_rejected_before_account_creat
     with pytest.raises(AccountSourceConflict):
         await repo.resolve_identity(identity, "10.0.0.8")
 
-    assert connection.calls[2][1] == {"normalized_login_name": "admin"}
+    assert connection.calls[0][1] == {"lock_id": ADMIN_INVARIANT_LOCK_ID}
+    assert connection.calls[3][1] == {"normalized_login_name": "admin"}
     assert all("INSERT INTO user_account" not in sql for sql, _ in connection.calls)
-    audit_sql, audit_params = connection.calls[3]
+    system_context_sql, system_context_params = connection.calls[4]
+    assert "sms.audit_action" in system_context_sql
+    assert system_context_params["actor_name"] == "auth-system"
+    assert system_context_params["action"] == "account_source_conflict"
+    audit_sql, audit_params = connection.calls[5]
     assert "account_source_conflict" in audit_sql
     assert "'provider_code',CAST(:provider_code AS text)" in audit_sql
     assert audit_params["provider_code"] == "ad"
     assert "guid-ad-admin" not in str(audit_params)
+    assert engine.disposed
+
+
+@pytest.mark.asyncio
+async def test_external_login_role_sync_preserves_effective_admin_invariant() -> None:
+    authoritative = account_row(
+        provider_code="ad",
+        login_name="admin",
+        normalized_login_name="admin",
+        display_name="目录管理员",
+        role="admin",
+        must_change_password=False,
+    )
+    repo, connection, engine = repository(
+        [
+            FakeResult(),
+            FakeResult(scalar=2),
+            FakeResult(
+                [
+                    {
+                        "account_id": 8,
+                        "identity_id": 18,
+                        "role": "admin",
+                        "role_override": False,
+                        "security_version": 3,
+                        "account_status": 1,
+                        "identity_status": 1,
+                    }
+                ]
+            ),
+            FakeResult([{"external_group": "CN=SMS-Admins", "role": "admin"}]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(scalar=8),
+            FakeResult([authoritative]),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+    identity = AuthenticatedIdentity(
+        provider_code="ad",
+        login_name="Admin",
+        external_subject="guid-ad-admin",
+        display_name="目录管理员",
+        dept="业务一部",
+        groups=("CN=SMS-Admins",),
+    )
+
+    resolved = await repo.resolve_identity(identity, "10.0.0.8")
+
+    assert resolved.role == "admin"
+    assert connection.calls[0][1] == {"lock_id": ADMIN_INVARIANT_LOCK_ID}
+    assert "SELECT ua.id" in connection.calls[6][0]
+    assert "external_role_mapping" in connection.calls[6][0]
     assert engine.disposed

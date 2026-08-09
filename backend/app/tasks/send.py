@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,7 +34,6 @@ from app.vendor.zhihui import (
     ZhihuiClient,
 )
 
-PHONE_IN_TEXT = re.compile(r"(?<!\d)(1\d{10})(?!\d)")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -151,14 +149,6 @@ class NoopVendorAlertMonitor:
 
     async def record_success(self) -> None:
         return None
-
-
-def _safe_message(message: str | None) -> str:
-    value = message or ""
-    return PHONE_IN_TEXT.sub(
-        lambda match: f"{match.group(1)[:3]}****{match.group(1)[-4:]}",
-        value,
-    )[:256]
 
 
 class SendWorker:
@@ -386,7 +376,7 @@ class SendWorker:
                 await self.store.mark_failed(
                     chunk.chunk_id,
                     error.code,
-                    _safe_message(error.vendor_message),
+                    error.safe_message,
                 )
                 await self._record_failure(chunk, error.code)
                 return

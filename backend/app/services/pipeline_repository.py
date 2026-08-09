@@ -111,13 +111,17 @@ class SqlPipelineStore:
             await connection.execute(
                 text(
                     """
-                        INSERT INTO audit_log(actor,action,object_type,object_id,after_val)
-                        VALUES(:actor,'sensitive_hit','app',:object_id,
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_app_id,action,object_type,
+                          object_id,after_val
+                        )
+                        VALUES(:actor,'api_app',:app_id,'sensitive_hit','app',:object_id,
                           jsonb_build_object('hit_count',:hit_count))
                         """
                 ),
                 {
-                    "actor": f"app:{app_id}",
+                        "actor": f"app:{app_id}",
+                        "app_id": app_id,
                     "object_id": str(app_id),
                     "hit_count": hit_count,
                 },

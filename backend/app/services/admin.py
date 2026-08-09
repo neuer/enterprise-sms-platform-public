@@ -14,6 +14,7 @@ from app.services.runtime_policy import (
     CONFIG_SPECS,
     InvalidRuntimePolicy,
     RuntimePolicy,
+    ensure_callback_cidrs_within_deployment,
 )
 
 
@@ -126,13 +127,19 @@ class AdminService:
         repository: AdminRepository,
         *,
         allowed_smtp_hosts: set[str] | frozenset[str] | None = None,
+        callback_egress_networks: tuple[Any, ...] | None = None,
     ) -> None:
         self.repository = repository
-        if allowed_smtp_hosts is None:
+        if allowed_smtp_hosts is None or callback_egress_networks is None:
             from app.settings import get_settings
 
-            allowed_smtp_hosts = get_settings().alert_smtp_allowed_host_set
+            settings = get_settings()
+            if allowed_smtp_hosts is None:
+                allowed_smtp_hosts = settings.alert_smtp_allowed_host_set
+            if callback_egress_networks is None:
+                callback_egress_networks = settings.callback_egress_networks
         self.allowed_smtp_hosts = frozenset(allowed_smtp_hosts)
+        self.callback_egress_networks = tuple(callback_egress_networks)
 
     @staticmethod
     def _item(row: ConfigRow) -> ConfigItem:
@@ -171,6 +178,9 @@ class AdminService:
 
     @staticmethod
     def _validate_value(row: ConfigRow, value: str) -> str:
+        # 上下文绑定 AES-GCM 信封经 base64 后仍必须容纳于 sys_config.value。
+        if row.key == "alert_wecom_webhook" and len(value.encode("utf-8")) > 320:
+            raise InvalidAdminQuery("配置 alert_wecom_webhook 超过最大长度")
         if len(value) > 512:
             raise InvalidAdminQuery(f"配置 {row.key} 超过最大长度")
         if row.value_type == "int":
@@ -225,6 +235,10 @@ class AdminService:
         effective.update({item.key: item.value or "" for item in normalized})
         try:
             RuntimePolicy.from_mapping(effective)
+            ensure_callback_cidrs_within_deployment(
+                effective["callback_allow_cidrs"],
+                self.callback_egress_networks,
+            )
             validate_alert_destinations(effective, self.allowed_smtp_hosts)
         except InvalidRuntimePolicy as error:
             raise InvalidAdminQuery(str(error)) from error

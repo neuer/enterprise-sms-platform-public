@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,8 @@ PHONE_KEYS = {"phone", "phones", "mobile", "mobiles"}
 ALERT_LEVELS = {"info", "warn", "crit"}
 WECOM_HOST = "qyapi.weixin.qq.com"
 WECOM_PATH = "/cgi-bin/webhook/send"
+WECOM_DEADLINE_S = 5.0
+WECOM_MAX_RESPONSE_BYTES = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,8 @@ class AlertEvent:
 
 class AlertRepository(Protocol):
     async def load_routing(self) -> AlertRouting: ...
+
+    async def load_channel_availability(self) -> tuple[bool, bool]: ...
 
     async def claim(
         self,
@@ -179,10 +184,33 @@ class WeComChannel:
             "msgtype": "markdown",
             "markdown": {"content": f"**[{event.level.upper()}] {event.title}**\n> {body}"},
         }
-        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
-            response = await client.post(webhook, json=payload)
+        async with (
+            asyncio.timeout(WECOM_DEADLINE_S),
+            httpx.AsyncClient(
+                timeout=httpx.Timeout(WECOM_DEADLINE_S),
+                trust_env=False,
+                follow_redirects=False,
+            ) as client,
+            client.stream("POST", webhook, json=payload) as response,
+        ):
             response.raise_for_status()
-            parsed = response.json()
+            raw_length = response.headers.get("content-length")
+            if raw_length is not None:
+                try:
+                    content_length = int(raw_length)
+                except ValueError as error:
+                    raise RuntimeError("invalid wecom response length") from error
+                if not 0 <= content_length <= WECOM_MAX_RESPONSE_BYTES:
+                    raise RuntimeError("wecom response is too large")
+            body_bytes = bytearray()
+            async for chunk in response.aiter_bytes():
+                body_bytes.extend(chunk)
+                if len(body_bytes) > WECOM_MAX_RESPONSE_BYTES:
+                    raise RuntimeError("wecom response is too large")
+            try:
+                parsed = json.loads(body_bytes)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise RuntimeError("invalid wecom response") from error
             if not isinstance(parsed, dict) or parsed.get("errcode") != 0:
                 raise RuntimeError("wecom alert rejected")
 
@@ -249,14 +277,22 @@ class AlertService:
             detail=detail,
             dedup_key=dedup_key,
         )
-        routing = safe_alert_routing(
-            await self.repository.load_routing(),
-            self.allowed_smtp_hosts,
-        )
+        routing: AlertRouting | None = None
+        if getattr(self.repository, "uses_outbox", False):
+            wecom_configured, smtp_configured = (
+                await self.repository.load_channel_availability()
+            )
+        else:
+            routing = safe_alert_routing(
+                await self.repository.load_routing(),
+                self.allowed_smtp_hosts,
+            )
+            wecom_configured = bool(routing.wecom_webhook)
+            smtp_configured = routing.smtp is not None
         channel_names = ["log-sink"]
-        if routing.wecom_webhook:
+        if wecom_configured:
             channel_names.append("wecom")
-        if routing.smtp is not None:
+        if smtp_configured:
             channel_names.append("smtp")
         alert_id = await self.repository.claim(
             alert_type=event.alert_type,
@@ -284,6 +320,7 @@ class AlertService:
         )
         if getattr(self.repository, "uses_outbox", False):
             return
+        assert routing is not None
         if routing.wecom_webhook:
             try:
                 await self.wecom.send(routing.wecom_webhook, event)

@@ -263,7 +263,9 @@ def _check_raw_sql(
             "CREATE INDEX ",
             "CREATE UNIQUE INDEX ",
             "CREATE SEQUENCE ",
+            "CREATE FUNCTION ",
             "CREATE OR REPLACE FUNCTION ",
+            "CREATE POLICY ",
             "CREATE TRIGGER ",
             "CREATE OR REPLACE VIEW ",
             "CREATE VIEW ",
@@ -279,6 +281,11 @@ def _check_raw_sql(
             f"{migration.revision}: trigger drop is not replaced in the same migration"
         )
     if normalized.startswith("ALTER TABLE "):
+        if re.fullmatch(
+            r"ALTER TABLE [A-Z_][A-Z0-9_]* ENABLE ROW LEVEL SECURITY",
+            normalized,
+        ):
+            return
         dropped_constraint = _DROP_CONSTRAINT_RE.fullmatch(sql.strip())
         if dropped_constraint is not None:
             key = (
@@ -310,6 +317,14 @@ def _check_raw_sql(
         ):
             return
     if normalized.startswith("DO "):
+        if (
+            "CREATE POLICY " in normalized
+            and not re.search(
+                r"\bDROP\b|\bRENAME\b|\bTRUNCATE\b|\bDELETE\s+FROM\b",
+                normalized,
+            )
+        ):
+            return
         if "ALTER TABLE " not in normalized:
             raise ExpandOnlyError(
                 f"{migration.revision}: cannot statically confirm raw SQL"

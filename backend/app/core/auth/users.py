@@ -17,7 +17,12 @@ from app.core.auth.accounts import (
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.identity import normalize_login_name, validate_local_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import (
+    bind_connection_audit_subject,
+    bind_connection_system_audit,
+    database_engine,
+)
+from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
 from app.settings import Settings, get_settings
 
 LOCAL_ACCOUNT_SELECT = """
@@ -167,6 +172,8 @@ class UserRepository(Protocol):
 
     async def audit_logout(self, actor: PlatformAccount, ip: str) -> None: ...
 
+    async def audit_refresh(self, actor: PlatformAccount, ip: str) -> None: ...
+
 
 class SqlUserRepository:
     """账号写入、版本失效与无敏感审计均使用稳定 account_id。"""
@@ -261,6 +268,7 @@ class SqlUserRepository:
         try:
             try:
                 async with engine.begin() as connection:
+                    await lock_admin_invariant(connection)
                     provider_result = await connection.execute(
                         text(
                             """
@@ -424,6 +432,7 @@ class SqlUserRepository:
                                 "source_groups": list(identity.groups),
                             },
                         )
+                        await ensure_effective_admin(connection)
                     authoritative = await connection.execute(
                         text(
                             f"""
@@ -439,13 +448,20 @@ class SqlUserRepository:
                     return account
             except (AccountSourceConflict, IntegrityError):
                 async with engine.begin() as audit_connection:
+                    await bind_connection_system_audit(
+                        audit_connection,
+                        actor_name="auth-system",
+                        action="account_source_conflict",
+                    )
                     await audit_connection.execute(
                         text(
                             """
                             INSERT INTO audit_log(
-                              actor,role,ip,action,object_type,object_id,after_val
+                              actor,actor_subject_kind,role,ip,action,object_type,
+                              object_id,after_val
                             ) VALUES(
-                              :actor,NULL,CAST(:ip AS inet),'account_source_conflict',
+                              'auth-system','system',NULL,CAST(:ip AS inet),
+                              'account_source_conflict',
                               'auth_identity',:object_id,
                               jsonb_build_object(
                                 'provider_code',CAST(:provider_code AS text),
@@ -455,7 +471,6 @@ class SqlUserRepository:
                             """
                         ),
                         {
-                            "actor": normalized,
                             "ip": ip,
                             "object_id": normalized,
                             "provider_code": identity.provider_code,
@@ -467,6 +482,13 @@ class SqlUserRepository:
 
     @staticmethod
     async def _audit_login(connection: Any, account: PlatformAccount, ip: str) -> None:
+        await bind_connection_audit_subject(
+            connection,
+            subject_kind="human",
+            actor_name=account.login_name,
+            account_id=account.account_id,
+            identity_id=account.identity_id,
+        )
         await connection.execute(
             text(
                 """
@@ -645,6 +667,13 @@ class SqlUserRepository:
                     ),
                     {"token_id": int(token_id), "account_id": account_id},
                 )
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=actor,
+                    account_id=account_id,
+                    identity_id=identity_id,
+                )
                 await connection.execute(
                     text(
                         """
@@ -735,6 +764,8 @@ class SqlUserRepository:
                     ),
                     {
                         "actor": actor,
+                        "account_id": account_id,
+                        "identity_id": identity_id,
                         "ip": ip,
                         "object_id": str(account_id),
                     },
@@ -943,6 +974,37 @@ class SqlUserRepository:
                         ) VALUES(
                           :actor,'human',:actor_account_id,:actor_identity_id,
                           :role,CAST(:ip AS inet),'logout',
+                          'user_account',:object_id
+                        )
+                        """
+                    ),
+                    {
+                        "actor": actor.login_name,
+                        "actor_account_id": actor.account_id,
+                        "actor_identity_id": actor.identity_id,
+                        "role": actor.role,
+                        "ip": ip,
+                        "object_id": str(actor.account_id),
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    async def audit_refresh(self, actor: PlatformAccount, ip: str) -> None:
+        """持久化成功 refresh 事件；失败必须由调用方吊销新会话。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_account_id,actor_identity_id,
+                          role,ip,action,object_type,object_id
+                        ) VALUES(
+                          :actor,'human',:actor_account_id,:actor_identity_id,
+                          :role,CAST(:ip AS inet),'session_refresh',
                           'user_account',:object_id
                         )
                         """

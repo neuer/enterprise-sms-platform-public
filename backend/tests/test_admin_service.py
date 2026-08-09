@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from ipaddress import ip_network
 
 import pytest
 
@@ -248,6 +249,23 @@ async def test_alert_egress_config_is_rejected_before_write(key: str, value: str
             allowed_smtp_hosts={"smtp", "mail.internal"},
         ).update_configs(
             (ConfigUpdate(key, value),),
+            principal=ADMIN,
+            ip="10.0.0.8",
+        )
+
+    assert repository.updates == []
+
+
+@pytest.mark.asyncio
+async def test_callback_admin_policy_cannot_expand_deployment_maximum() -> None:
+    repository = FakeRepository()
+
+    with pytest.raises(InvalidAdminQuery, match="部署允许"):
+        await AdminService(
+            repository,
+            callback_egress_networks=(ip_network("10.20.0.0/16"),),
+        ).update_configs(
+            (ConfigUpdate("callback_allow_cidrs", "10.0.0.0/8"),),
             principal=ADMIN,
             ip="10.0.0.8",
         )

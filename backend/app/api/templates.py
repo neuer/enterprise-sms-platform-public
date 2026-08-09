@@ -93,7 +93,7 @@ def _error(error: Exception) -> ApiError:
             502,
             "VENDOR_ERROR",
             "厂商模板接口返回错误",
-            {"vendor_code": error.code, "vendor_message": error.vendor_message},
+            {"vendor_code": error.code, "vendor_message": error.safe_message},
         )
     if isinstance(error, (VendorError, ValueError)):
         return ApiError(502, "VENDOR_ERROR", "厂商模板接口不可用", None)

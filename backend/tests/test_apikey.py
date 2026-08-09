@@ -16,6 +16,7 @@ from app.core.apikey import (
     get_api_key_authenticator,
     require_api_app,
 )
+from app.core.auth.principal_context import current_audit_principal
 from app.core.errors import ApiError, api_error_handler
 
 
@@ -108,7 +109,12 @@ def test_explicit_dependency_protects_route_and_returns_app_context() -> None:
     async def probe(
         context: Annotated[ApiAppContext, Depends(require_api_app)],
     ) -> dict[str, object]:
-        return {"app_id": context.app_id, "categories": sorted(context.allowed_categories)}
+        principal = current_audit_principal()
+        return {
+            "app_id": context.app_id,
+            "audit_app_id": principal.actor_app_id if principal is not None else None,
+            "categories": sorted(context.allowed_categories),
+        }
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:
@@ -123,7 +129,11 @@ def test_explicit_dependency_protects_route_and_returns_app_context() -> None:
         "/api/v1/messages/probe",
         headers={"X-Api-Key": "valid-key-value"},
     )
-    assert success.json() == {"app_id": 1, "categories": ["verify"]}
+    assert success.json() == {
+        "app_id": 1,
+        "audit_app_id": 1,
+        "categories": ["verify"],
+    }
 
 
 def _probe_app(candidates: list[ApiKeyCandidate]) -> FastAPI:

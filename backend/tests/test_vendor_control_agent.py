@@ -137,6 +137,37 @@ def test_agent_rejects_unapproved_peer_uid_or_gid() -> None:
         agent.handle(request, peer_uid=os.getuid(), peer_gid=os.getgid() + 1)
 
 
+def test_worker_peer_is_limited_to_status_only_operations() -> None:
+    import vendor_control_agent as agent_module
+
+    from vendor_control_protocol import ControlRequest
+
+    worker_uid = os.getuid() + 1
+    agent = agent_module.VendorControlAgent(
+        runner=FakeRunner(),
+        credential_store=FakeCredentialStore(),
+        seal_sessions=FakeSealSessions(),
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        status_only_uid=worker_uid,
+        status_only_gid=os.getgid(),
+    )
+
+    health = agent.handle(
+        ControlRequest("c0a80101-0000-4000-8000-000000000001", "health", {}),
+        peer_uid=worker_uid,
+        peer_gid=os.getgid(),
+    )
+    assert health.status == "ok"
+
+    with pytest.raises(agent_module.PeerDenied):
+        agent.handle(
+            ControlRequest("c0a80101-0000-4000-8000-000000000002", "activate", {}),
+            peer_uid=worker_uid,
+            peer_gid=os.getgid(),
+        )
+
+
 @pytest.mark.parametrize("operation", ("activate", "pause", "resume"))
 def test_agent_dispatches_only_fixed_wrapper_operations(operation: str) -> None:
     from vendor_control_protocol import ControlRequest

@@ -260,10 +260,13 @@ class ExportFileCodec:
                 raise ValueError("truncated export frame")
             yield self.crypto.decrypt_bytes(payload, version)
 
-    def validate(self, raw_path: str | Path) -> Path:
-        """在响应头发出前验证路径受控且文件存在。"""
+    def validate(self, raw_path: str | Path, *, expected_task_id: int) -> Path:
+        """在响应头发出前绑定授权任务、受控路径与密文文件身份。"""
 
         path = self._controlled_path(raw_path)
+        match = EXPORT_FILENAME.fullmatch(path.name)
+        if match is None or int(match.group("task_id")) != expected_task_id:
+            raise ValueError("export ciphertext does not belong to authorized export task")
         if not path.is_file():
             raise FileNotFoundError("export ciphertext file is unavailable")
         return path

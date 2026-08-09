@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -268,6 +269,10 @@ async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body
         "body" not in sql.casefold() and "payload" not in sql.casefold()
         for sql, _ in connection.calls
     )
+    task_sql = connection.calls[0][0]
+    assert "a.status=1" in task_sql
+    assert "a.callback_url=t.url" in task_sql
+    assert "a.callback_secret_enc=t.callback_secret_enc" in task_sql
 
 
 @pytest.mark.asyncio
@@ -382,6 +387,10 @@ async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
     success = FakeConnection([FakeResult(scalars=[9]), FakeResult(), FakeResult()])
     bind(repository, success)
     await repository.manual_retry(9, principal=ADMIN)
+    retry_sql = success.calls[0][0]
+    assert "FROM app" in retry_sql
+    assert "callback_url" in retry_sql and "callback_secret_enc" in retry_sql
+    assert "CallbackConfigRevoked" in retry_sql
     assert "INSERT INTO audit_log" in success.calls[1][0]
     assert "worker_lease_event" in success.calls[2][0]
     assert success.calls[1][1]["actor"] == "admin"
@@ -398,6 +407,25 @@ async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
     bind(repository, missing)
     with pytest.raises(CallbackTaskNotFound):
         await repository.manual_retry(11, principal=ADMIN)
+
+
+def test_callback_authority_mutations_trigger_transactional_task_revocation() -> None:
+    root = Path(__file__).parents[2]
+    schema = (root / "schema.sql").read_text(encoding="utf-8")
+    migration = (
+        root / "backend/migrations/versions/0055_callback_revocation.py"
+    ).read_text(encoding="utf-8")
+
+    for source in (schema, migration):
+        assert "revoke_callback_tasks_on_app_change" in source
+        assert "AFTER UPDATE OF callback_url,callback_secret_enc" in source
+        assert "status='dead'" in source
+        assert "last_error='CallbackConfigRevoked'" in source
+        assert "lease_id=NULL" in source and "lease_expires_at=NULL" in source
+        assert "status IN ('pending','retrying')" in source
+        assert "event='message.report'" in source
+        assert "SECURITY DEFINER" in source
+        assert "REVOKE ALL ON FUNCTION" in source
 
 
 @pytest.mark.asyncio

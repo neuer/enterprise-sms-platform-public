@@ -6,14 +6,18 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.admin import AuditQuery, ConfigUpdate, InvalidAdminQuery
 from app.services.admin_repository import SqlAdminRepository
+from app.services.sensitive_config import AlertCredentialCipher, encrypt_wecom_webhook
 
 NOW = datetime(2026, 7, 12, 8, tzinfo=UTC)
 CORRELATION_ID = UUID("30000000-0000-4000-8000-000000000009")
 ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+PRIVATE_KEY = X25519PrivateKey.from_private_bytes(b"w" * 32)
+PUBLIC_CIPHER = AlertCredentialCipher(public_key=PRIVATE_KEY.public_key())
 
 
 class FakeResult:
@@ -29,6 +33,10 @@ class FakeResult:
 
     def scalar_one(self) -> object:
         return self.scalar
+
+    def one(self) -> dict[str, object]:
+        assert len(self.rows) == 1
+        return self.rows[0]
 
 
 class FakeConnection:
@@ -68,12 +76,14 @@ class FakeEngine:
 
 def repository(results: list[FakeResult]) -> tuple[SqlAdminRepository, FakeConnection]:
     connection = FakeConnection(results)
-    repo = SqlAdminRepository()
+    repo = SqlAdminRepository(credential_cipher=PUBLIC_CIPHER)
     repo._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
     return repo, connection
 
 
 def config_row(key: str, value: str, value_type: str = "str") -> dict[str, object]:
+    if key == "alert_wecom_webhook":
+        value = encrypt_wecom_webhook(value, PUBLIC_CIPHER)
     return {
         "key": key,
         "value": value,
@@ -168,6 +178,8 @@ async def test_config_update_locks_rows_and_audits_safe_before_after() -> None:
     ]
     repo, connection = repository(
         [
+            FakeResult([{"database_user": "sms_accept", "txid": 77}]),
+            FakeResult(),
             FakeResult(),
             FakeResult(before),
             FakeResult(),
@@ -190,16 +202,25 @@ async def test_config_update_locks_rows_and_audits_safe_before_after() -> None:
     )
 
     assert result[0].value == "8"
-    assert "pg_advisory_xact_lock" in connection.calls[0][0]
-    assert "FROM sys_config" in connection.calls[1][0]
-    assert "WHERE key" not in connection.calls[1][0]
-    assert "FOR UPDATE" in connection.calls[1][0]
+    assert "txid_current" in connection.calls[0][0]
+    assert "sms.audit_subject_kind" in connection.calls[1][0]
+    assert "sms.audit_context_signature" in connection.calls[1][0]
+    assert "pg_advisory_xact_lock" in connection.calls[2][0]
+    assert "FROM sys_config" in connection.calls[3][0]
+    assert "WHERE key" not in connection.calls[3][0]
+    assert "FOR UPDATE" in connection.calls[3][0]
     audit_params = [params for sql, params in connection.calls if "INSERT INTO audit_log" in sql]
     assert audit_params[0]["before"] == '{"value": "5"}'
     assert audit_params[0]["after"] == '{"value": "8"}'
     assert audit_params[1]["before"] == '{"configured": true}'
     assert audit_params[1]["after"] == '{"configured": true}'
     assert "old" not in str(audit_params) and "new" not in str(audit_params)
+    update_params = next(
+        params for sql, params in connection.calls if "UPDATE sys_config" in sql
+    )
+    stored = next(item["value"] for item in update_params if item["key"] == "alert_wecom_webhook")
+    assert stored.startswith("sealed:v1:")
+    assert "key=new" not in stored
 
 
 @pytest.mark.asyncio
@@ -233,7 +254,14 @@ async def test_transaction_final_gate_rejects_public_callback_allowlist() -> Non
         config_row("reserved_realtime_qps", "2", "int"),
         config_row("callback_allow_cidrs", "10.0.0.0/8"),
     ]
-    repo, connection = repository([FakeResult(), FakeResult(before)])
+    repo, connection = repository(
+        [
+            FakeResult([{"database_user": "sms_accept", "txid": 78}]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(before),
+        ]
+    )
 
     with pytest.raises(ValueError, match="私网"):
         await repo.update_configs(
@@ -242,4 +270,4 @@ async def test_transaction_final_gate_rejects_public_callback_allowlist() -> Non
             ip="10.0.0.8",
         )
 
-    assert len(connection.calls) == 2
+    assert len(connection.calls) == 4

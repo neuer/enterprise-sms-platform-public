@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.freq import FrequencyLimits
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -1342,13 +1342,20 @@ class UsageLedgerService:
             )
         await self._apply_rows(rows)
         async with engine.begin() as connection:
+            await bind_connection_system_audit(
+                connection,
+                actor_name=actor,
+                action="usage_projection_rebuild",
+            )
             await connection.execute(
                 text(
                     """
                     INSERT INTO audit_log(
-                      actor,action,object_type,object_id,after_val
+                      actor,actor_subject_kind,role,action,object_type,object_id,
+                      after_val
                     ) VALUES(
-                      :actor,'usage_projection_rebuild','usage_projection','all',
+                      :actor,'system','system','usage_projection_rebuild',
+                      'usage_projection','all',
                       jsonb_build_object(
                         'dimension_count',CAST(:dimension_count AS integer),
                         'quota_dimensions',CAST(:quota_dimensions AS integer),

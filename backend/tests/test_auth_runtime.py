@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -13,6 +13,7 @@ from app.core.auth.backends import (
     ProviderUnavailable,
 )
 from app.core.auth.jwt import JwtClaims, JwtService
+from app.core.auth.principal_context import audit_principal_scope, current_audit_principal
 from app.core.auth.runtime import (
     AuthFacade,
     LoginSuccess,
@@ -64,12 +65,23 @@ class FakeKeyValue:
 
     async def eval(self, script: str, numkeys: int, *args: object) -> int:
         del script
-        assert numkeys == 1
-        key, expected, replacement, _ttl = args
+        if numkeys == 3:
+            revoked_jti, revoked_session, refresh_family, _jti_ttl, _session_ttl = args
+            self.values[str(revoked_jti)] = "1"
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(refresh_family), None)
+            return 1
+        assert numkeys == 2
+        key, revoked_session, expected, replacement, _ttl, session_ttl = args
         current = self.values.get(str(key))
         if current is None:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(key), None)
             return 0
         if current != expected:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
             self.values.pop(str(key), None)
             return -1
         self.values[str(key)] = replacement
@@ -97,15 +109,19 @@ class FakeAuthService:
 class FakeUserRepository:
     def __init__(self, value: PlatformAccount) -> None:
         self.value = value
+        self.resolved: list[tuple[AuthenticatedIdentity, str]] = []
         self.changed: list[dict[str, object]] = []
         self.password_change_tokens: dict[str, dict[str, object]] = {}
+        self.refresh_audits: list[tuple[PlatformAccount, str]] = []
+        self.logout_audits: list[tuple[PlatformAccount, str]] = []
+        self.fail_refresh_audit = False
 
     async def resolve_identity(
         self,
         identity: AuthenticatedIdentity,
         ip: str,
     ) -> PlatformAccount:
-        del identity, ip
+        self.resolved.append((identity, ip))
         return self.value
 
     async def find_local_account(
@@ -216,7 +232,12 @@ class FakeUserRepository:
         del actor, account_id, ip
 
     async def audit_logout(self, actor: PlatformAccount, ip: str) -> None:
-        del actor, ip
+        self.logout_audits.append((actor, ip))
+
+    async def audit_refresh(self, actor: PlatformAccount, ip: str) -> None:
+        if self.fail_refresh_audit:
+            raise RuntimeError("audit unavailable")
+        self.refresh_audits.append((actor, ip))
 
 
 class FakeHasher:
@@ -290,7 +311,7 @@ async def test_temporary_password_login_requires_one_time_initial_change() -> No
 
 @pytest.mark.asyncio
 async def test_normal_login_issues_account_based_access_token() -> None:
-    service, _, tokens, _ = facade(must_change_password=False)
+    service, users, tokens, _ = facade(must_change_password=False)
 
     result = await service.login("local", "Admin", "Valid@Password123", IP)
 
@@ -302,9 +323,41 @@ async def test_normal_login_issues_account_based_access_token() -> None:
     assert claims.login_name == "admin"
     assert result.expires_in == 900
     assert result.refresh_expires_in == 604800
-    refreshed = await service.refresh(result.refresh_token)
+    refreshed = await service.refresh(result.refresh_token, IP)
     assert refreshed.refresh_token != result.refresh_token
     assert (await tokens.verify(refreshed.token)).account_id == 8
+    assert users.refresh_audits == [(users.value, IP)]
+
+
+@pytest.mark.asyncio
+async def test_refresh_audit_failure_revokes_successor_session() -> None:
+    service, users, tokens, _ = facade(must_change_password=False)
+    login = await service.login("local", "admin", "Valid@Password123", IP)
+    assert isinstance(login, LoginSuccess)
+    users.fail_refresh_audit = True
+
+    with pytest.raises(ApiError) as raised:
+        await service.refresh(login.refresh_token, IP)
+
+    assert raised.value.code == "AUTH_SESSION_UNAVAILABLE"
+    with pytest.raises(InvalidCredentials):
+        await tokens.verify(login.token)
+
+
+@pytest.mark.asyncio
+async def test_facade_verify_binds_stable_audit_principal() -> None:
+    service, _, _, _ = facade(must_change_password=False)
+    login = await service.login("local", "admin", "Valid@Password123", IP)
+    assert isinstance(login, LoginSuccess)
+
+    with audit_principal_scope():
+        claims = await service.verify(login.token)
+        principal = current_audit_principal()
+
+    assert principal == claims.principal
+    assert principal is not None
+    assert principal.account_id == 8
+    assert principal.identity_id == 18
 
 
 @pytest.mark.asyncio
@@ -324,6 +377,137 @@ async def test_daily_password_change_checks_current_password_and_revokes_session
     assert users.changed[-1]["password_hash"] == "encoded:Daily@Password456"
     with pytest.raises(InvalidCredentials):
         await tokens.verify(login.token)
+
+
+@pytest.mark.asyncio
+async def test_logout_uses_refresh_family_when_access_token_has_expired() -> None:
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="admin",
+        external_subject="local:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    users = FakeUserRepository(value)
+    moments = [datetime(2026, 7, 16, 8, tzinfo=UTC)]
+    tokens = JwtService(
+        SECRET,
+        FakeKeyValue(),
+        clock=lambda: moments[0],
+        ttl=timedelta(minutes=15),
+        security_session_loader=users.load_security_session,
+    )
+    service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
+    login = await service.login("local", "admin", "Valid@Password123", IP)
+    assert isinstance(login, LoginSuccess)
+    moments[0] += timedelta(minutes=16)
+
+    await service.logout(login.token, IP, login.refresh_token)
+
+    assert users.logout_audits == [(value, IP)]
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(login.refresh_token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cookie_account_id", (8, 9))
+async def test_logout_revokes_bearer_and_mismatched_cookie_families(
+    cookie_account_id: int,
+) -> None:
+    """全局 refresh cookie 与标签页 bearer 错配时，两个 family 都必须失效。"""
+
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="admin",
+        external_subject="local:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    users = FakeUserRepository(value)
+    tokens = JwtService(SECRET, FakeKeyValue())
+    service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
+    bearer_family = await tokens.issue_pair(
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3)
+    )
+    cookie_family = await tokens.issue_pair(
+        JwtClaims(
+            cookie_account_id,
+            18 if cookie_account_id == 8 else 19,
+            "local",
+            "admin" if cookie_account_id == 8 else "viewer01",
+            "管理员" if cookie_account_id == 8 else "查看员",
+            "平台部",
+            "admin" if cookie_account_id == 8 else "viewer",
+            3,
+        )
+    )
+
+    await service.logout(bearer_family.token, IP, cookie_family.refresh_token)
+
+    with pytest.raises(InvalidCredentials):
+        await tokens.verify(bearer_family.token)
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(cookie_family.refresh_token)
+    assert users.logout_audits == [(value, IP)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cookie_account_id", (8, 9))
+async def test_logout_revokes_expired_bearer_and_mismatched_cookie_families(
+    cookie_account_id: int,
+) -> None:
+    """过期 bearer 只用于吊销自身 family，审计主体必须来自有效 cookie。"""
+
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="admin",
+        external_subject="local:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    users = FakeUserRepository(value)
+    moments = [datetime(2026, 7, 16, 8, tzinfo=UTC)]
+    tokens = JwtService(
+        SECRET,
+        FakeKeyValue(),
+        clock=lambda: moments[0],
+        ttl=timedelta(minutes=15),
+        security_session_loader=users.load_security_session,
+    )
+    service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
+    bearer_family = await tokens.issue_pair(
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3)
+    )
+    cookie_claims = JwtClaims(
+        cookie_account_id,
+        18 if cookie_account_id == 8 else 19,
+        "local",
+        "admin" if cookie_account_id == 8 else "viewer01",
+        "管理员" if cookie_account_id == 8 else "查看员",
+        "平台部",
+        "admin" if cookie_account_id == 8 else "viewer",
+        3,
+    )
+    cookie_family = await tokens.issue_pair(cookie_claims)
+    moments[0] += timedelta(minutes=16)
+
+    await service.logout(bearer_family.token, IP, cookie_family.refresh_token)
+
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(bearer_family.refresh_token)
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(cookie_family.refresh_token)
+    assert len(users.logout_audits) == 1
+    assert users.logout_audits[0][0].account_id == cookie_account_id
 
 
 @pytest.mark.parametrize(
@@ -400,6 +584,7 @@ async def test_reauthenticate_current_reuses_explicit_provider_and_normalized_lo
         identity_id=18,
         provider_code="ad",
         login_name="user01",
+        dept="平台部",
         role="admin",
         security_version=3,
         jti="session-1",
@@ -408,6 +593,86 @@ async def test_reauthenticate_current_reuses_explicit_provider_and_normalized_lo
     await service.reauthenticate_current(claims, "Current@Password123", IP)
 
     assert auth.calls == [("ad", "user01", "Current@Password123", IP)]
+
+
+@pytest.mark.asyncio
+async def test_reauthenticate_current_resolves_external_subject_and_current_role() -> None:
+    current = replace(
+        account(must_change_password=False),
+        provider_code="ad",
+        login_name="user01",
+        normalized_login_name="user01",
+    )
+    identity = AuthenticatedIdentity(
+        provider_code="ad",
+        login_name="user01",
+        external_subject="directory-guid-001",
+        display_name="用户一",
+        dept="平台部",
+        groups=("CN=SMS-Admins",),
+    )
+    users = FakeUserRepository(current)
+    service = AuthFacade(
+        FakeAuthService(identity),
+        users,
+        JwtService(SECRET, FakeKeyValue()),
+        FakeHasher(),
+    )
+    claims = JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="user01",
+        dept="平台部",
+        role="admin",
+        security_version=3,
+        jti="session-1",
+    )
+
+    await service.reauthenticate_current(claims, "Current@Password123", IP)
+
+    assert users.resolved == [(identity, IP)]
+
+
+@pytest.mark.asyncio
+async def test_reauthenticate_current_rejects_external_authority_change() -> None:
+    synchronized = replace(
+        account(must_change_password=False),
+        provider_code="ad",
+        login_name="user01",
+        normalized_login_name="user01",
+        role="operator",
+        security_version=4,
+    )
+    identity = AuthenticatedIdentity(
+        provider_code="ad",
+        login_name="user01",
+        external_subject="directory-guid-001",
+        display_name="用户一",
+        dept="平台部",
+        groups=("CN=SMS-Operators",),
+    )
+    service = AuthFacade(
+        FakeAuthService(identity),
+        FakeUserRepository(synchronized),
+        JwtService(SECRET, FakeKeyValue()),
+        FakeHasher(),
+    )
+    claims = JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="user01",
+        dept="平台部",
+        role="admin",
+        security_version=3,
+        jti="session-1",
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await service.reauthenticate_current(claims, "Current@Password123", IP)
+
+    assert raised.value.code == "STEP_UP_REQUIRED"
 
 
 @pytest.mark.parametrize(

@@ -182,8 +182,8 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 #### FR-07a 结果回调
 - 应用配置 callback_url（内网 CIDR 白名单，防 SSRF）+ callback_secret（**支持轮换端点，v1.2**）
 - 事件：batch.finished（终态汇总）；message.report（应用开关，分钟聚合 ≤500 条）。callback_task 只保存批次/消息引用和无 PII 元数据，worker 投递时临时解密手机号构造 body，任务表与日志不得保存明文 body
-- 生产 callback URL 只允许 HTTPS，可选加载受控 CA 与 mTLS 客户端证书/私钥文件；HTTP 只允许显式 development/test Mock。出站前重新解析 DNS 并固定已批准 IP，同时保留原 Host/SNI，禁止重定向，连接池、单地址连接预算、总超时、响应头与正文均有硬上限
-- 签名：X-Sms-Timestamp + X-Sms-Signature = HMAC-SHA256(secret, timestamp+"."+body)，时间戳偏差 ≤300s；event_id、callback secret 密文/密钥版本和签名协议版本在 callback_task 创建时固化，轮换不改变既有重试语义
+- 生产 callback URL 只允许 HTTPS，可选加载受控 CA 与 mTLS 客户端证书/私钥文件；HTTP 只允许显式 development/test Mock。出站前重新解析 DNS 并固定已批准 IP，同时保留原 Host/SNI，禁止重定向；固定 IP 请求禁用 keep-alive，避免共享 IP 上跨逻辑主机复用旧 TLS 会话；连接并发、单地址连接预算、总超时、响应头与正文均有硬上限。应用停用、关闭明细回调、修改 callback URL 或轮换 callback secret 时，必须在同一事务把尚未终结的旧回调隔离为不可重试；投递与人工重试还必须复验当前应用状态、URL、Secret 密文和明细开关完全匹配，配置撤销后不得继续解密或投递 PII
+- 签名：X-Sms-Timestamp + X-Sms-Signature = HMAC-SHA256(secret, timestamp+"."+body)，时间戳偏差 ≤300s；event_id、callback secret 密文/密钥版本和签名协议版本在 callback_task 创建时固化，但固化值仅在当前应用配置仍完全匹配时有效
 - 重试 60/300/900/3600/3600s 共5次 → dead 告警，可手动重推；独立 callback worker
 
 ### 5.4 内容与号码管控

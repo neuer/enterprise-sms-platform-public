@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -15,10 +16,12 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
+from app.core.audit_context import decode_audit_context_key
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import database_engine, redis_client
 from app.services.crypto import CryptoService
 from app.services.runtime_policy import DEFAULTS, RuntimePolicy
+from app.services.sensitive_config import AlertCredentialCipher
 from app.settings import Settings
 
 LOGGER = logging.getLogger(__name__)
@@ -150,6 +153,9 @@ def _validate_runtime_secrets(settings: Settings) -> None:
             "vendor_secret_key",
             "data_aes_key",
             "data_hmac_key",
+            "audit_context_key",
+            "audit_system_api_context_key",
+            "alert_credential_public_key",
             "jwt_secret",
             "ldap_bind_password",
         )
@@ -157,6 +163,15 @@ def _validate_runtime_secrets(settings: Settings) -> None:
     CryptoService.from_secret_values(
         secrets["data_aes_key"],
         secrets["data_hmac_key"],
+    )
+    principal_audit_key = decode_audit_context_key(secrets["audit_context_key"])
+    api_system_audit_key = decode_audit_context_key(
+        secrets["audit_system_api_context_key"]
+    )
+    if hmac.compare_digest(principal_audit_key, api_system_audit_key):
+        raise RuntimeError("audit context keys must be independent")
+    AlertCredentialCipher.from_public_file(
+        settings.alert_credential_public_key_file
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import importlib.util
@@ -9,6 +10,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "scripts" / "prepare_runtime_secrets.py"
@@ -18,6 +21,12 @@ SECRET_NAMES = frozenset(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+        "alert_credential_public_key",
+        "alert_credential_private_key",
         "jwt_secret",
         "ldap_bind_password",
         "metrics_scrape_token",
@@ -61,6 +70,18 @@ def make_source(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
     values = {
         name: f"fixture-value-for-{name}-never-log-this".encode() for name in SECRET_NAMES
     }
+    private = X25519PrivateKey.from_private_bytes(b"p" * 32)
+    values["audit_context_key"] = base64.b64encode(b"a" * 32)
+    values["audit_system_api_context_key"] = base64.b64encode(b"i" * 32)
+    values["audit_system_realtime_context_key"] = base64.b64encode(b"r" * 32)
+    values["audit_system_bulk_context_key"] = base64.b64encode(b"b" * 32)
+    values["alert_credential_private_key"] = base64.b64encode(b"p" * 32)
+    values["alert_credential_public_key"] = base64.b64encode(
+        private.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+    )
     for name, value in values.items():
         path = source / name
         path.write_bytes(value)
@@ -107,6 +128,12 @@ def test_prepare_creates_service_specific_0400_copies(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+        "alert_credential_public_key",
+        "alert_credential_private_key",
         "jwt_secret",
         "ldap_bind_password",
         "metrics_scrape_token",
@@ -132,7 +159,11 @@ def test_prepare_creates_service_specific_0400_copies(
         "db_metrics_password",
     }
     assert {path.name for path in (current / "migrate").iterdir()} == {
-        "db_owner_password"
+        "db_owner_password",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
     }
     assert {path.name for path in (current / "redis").iterdir()} == {
         "redis_broker_password",
@@ -189,6 +220,19 @@ def test_prepare_rejects_imprecise_source_modes(
         (source / "jwt_secret").chmod(0o640)
 
     with pytest.raises(module.RuntimeSecretsError, match="mode"):
+        prepare_portably(module, source, tmp_path / "runtime")
+
+
+def test_prepare_rejects_reused_audit_keys_across_producer_domains(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, values = make_source(tmp_path)
+    (source / "audit_system_bulk_context_key").write_bytes(
+        values["audit_system_realtime_context_key"]
+    )
+    (source / "audit_system_bulk_context_key").chmod(0o600)
+
+    with pytest.raises(module.RuntimeSecretsError, match="pairwise independent"):
         prepare_portably(module, source, tmp_path / "runtime")
 
 

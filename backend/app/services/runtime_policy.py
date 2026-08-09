@@ -181,6 +181,31 @@ def parse_private_callback_cidrs(raw: str) -> tuple[IPv4Network | IPv6Network, .
     return networks
 
 
+def ensure_callback_cidrs_within_deployment(
+    raw: str,
+    deployment_networks: tuple[IPv4Network | IPv6Network, ...],
+) -> tuple[IPv4Network | IPv6Network, ...]:
+    """运行时 callback 网段必须逐项落在部署者固定的最大边界内。"""
+
+    networks = parse_private_callback_cidrs(raw)
+    for network in networks:
+        if isinstance(network, IPv4Network):
+            approved = any(
+                network.subnet_of(limit)
+                for limit in deployment_networks
+                if isinstance(limit, IPv4Network)
+            )
+        else:
+            approved = any(
+                network.subnet_of(limit)
+                for limit in deployment_networks
+                if isinstance(limit, IPv6Network)
+            )
+        if not approved:
+            raise InvalidRuntimePolicy("callback_allow_cidrs 超出部署允许的最大网段")
+    return networks
+
+
 def _positive(values: Mapping[str, str], key: str, *, allow_zero: bool = False) -> int:
     raw = values[key].strip()
     try:

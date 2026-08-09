@@ -10,9 +10,18 @@ from time import monotonic
 from typing import Any, Protocol, cast
 
 from redis.asyncio import Redis
-from sqlalchemy.engine import URL
+from sqlalchemy import event, text
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.exc import TimeoutError as SqlAlchemyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from app.core.audit_context import (
+    decode_audit_context_key,
+    sign_audit_context,
+    sign_system_audit_context,
+)
+from app.core.auth.principal_context import current_audit_principal
+from app.core.correlation import current_correlation_id
 
 DatabaseUrl = str | URL
 DATABASE_COMPONENTS = ("api", "worker", "beat", "metrics", "background")
@@ -180,6 +189,233 @@ def runtime_component() -> str:
     return _RUNTIME_COMPONENT
 
 
+def _audit_context_key(name: str) -> bytes | None:
+    """生产缺失立即失败；测试 owner 连接可不配置独立 key。"""
+
+    from app.settings import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    try:
+        return decode_audit_context_key(settings.credential(name))
+    except RuntimeError:
+        if settings.is_production:
+            raise
+        return None
+
+
+def audit_transaction_settings(
+    *,
+    database_user: str = "",
+    txid: int = 0,
+    signing_key: bytes | None = None,
+) -> dict[str, str]:
+    """把关联 ID 与稳定主体拆分为事务局部 PostgreSQL 设置。"""
+
+    correlation_id = current_correlation_id()
+    assert correlation_id is not None
+    principal = current_audit_principal()
+    values = {
+        "correlation_id": str(correlation_id),
+        "subject_kind": principal.subject_kind if principal is not None else "",
+        "actor_name": principal.actor_name if principal is not None else "",
+        "account_id": (
+            str(principal.actor_account_id)
+            if principal is not None and principal.actor_account_id is not None
+            else ""
+        ),
+        "identity_id": (
+            str(principal.actor_identity_id)
+            if principal is not None and principal.actor_identity_id is not None
+            else ""
+        ),
+        "app_id": (
+            str(principal.actor_app_id)
+            if principal is not None and principal.actor_app_id is not None
+            else ""
+        ),
+    }
+    values["signature"] = (
+        sign_audit_context(
+            signing_key,
+            txid=txid,
+            database_user=database_user,
+            **values,
+        )
+        if signing_key is not None and values["subject_kind"]
+        else ""
+    )
+    return values
+
+
+def _set_audit_transaction_context(connection: Connection) -> None:
+    identity = connection.execute(
+        text("SELECT current_user AS database_user,txid_current() AS txid")
+    ).mappings().one()
+    values = audit_transaction_settings(
+        database_user=str(identity["database_user"]),
+        txid=int(identity["txid"]),
+        signing_key=(
+            _audit_context_key("audit_context_key")
+            if current_audit_principal() is not None
+            else None
+        ),
+    )
+    connection.execute(
+        text(
+            """
+            SELECT
+              set_config('sms.correlation_id',:correlation_id,TRUE),
+              set_config('sms.audit_subject_kind',:subject_kind,TRUE),
+              set_config('sms.audit_actor_name',:actor_name,TRUE),
+              set_config('sms.audit_account_id',:account_id,TRUE),
+              set_config('sms.audit_identity_id',:identity_id,TRUE),
+              set_config('sms.audit_app_id',:app_id,TRUE),
+              set_config('sms.audit_producer_domain','',TRUE),
+              set_config('sms.audit_action','',TRUE),
+              set_config('sms.audit_context_signature',:signature,TRUE)
+            """
+        ),
+        values,
+    )
+
+
+async def bind_connection_audit_subject(
+    connection: Any,
+    *,
+    subject_kind: str,
+    actor_name: str,
+    account_id: int | None = None,
+    identity_id: int | None = None,
+    app_id: int | None = None,
+) -> None:
+    """在已开始事务中绑定由权威业务记录解析出的稳定审计主体。"""
+
+    human = (
+        subject_kind == "human"
+        and account_id is not None
+        and identity_id is not None
+        and app_id is None
+    )
+    application = (
+        subject_kind == "api_app"
+        and account_id is None
+        and identity_id is None
+        and app_id is not None
+    )
+    if not actor_name or not (human or application):
+        raise ValueError("invalid stable audit subject")
+    identity = (
+        await connection.execute(
+            text("SELECT current_user AS database_user,txid_current() AS txid")
+        )
+    ).mappings().one()
+    correlation_id = current_correlation_id()
+    assert correlation_id is not None
+    values = {
+        "correlation_id": str(correlation_id),
+        "subject_kind": subject_kind,
+        "actor_name": actor_name,
+        "account_id": str(account_id) if account_id is not None else "",
+        "identity_id": str(identity_id) if identity_id is not None else "",
+        "app_id": str(app_id) if app_id is not None else "",
+    }
+    signing_key = _audit_context_key("audit_context_key")
+    signature = (
+        sign_audit_context(
+            signing_key,
+            txid=int(identity["txid"]),
+            database_user=str(identity["database_user"]),
+            **values,
+        )
+        if signing_key is not None
+        else ""
+    )
+    await connection.execute(
+        text(
+            """
+            SELECT
+              set_config('sms.audit_subject_kind',:subject_kind,TRUE),
+              set_config('sms.audit_actor_name',:actor_name,TRUE),
+              set_config('sms.audit_account_id',:account_id,TRUE),
+              set_config('sms.audit_identity_id',:identity_id,TRUE),
+              set_config('sms.audit_app_id',:app_id,TRUE),
+              set_config('sms.audit_producer_domain','',TRUE),
+              set_config('sms.audit_action','',TRUE),
+              set_config('sms.audit_context_signature',:signature,TRUE)
+            """
+        ),
+        {
+            **values,
+            "signature": signature,
+        },
+    )
+
+
+async def bind_connection_system_audit(
+    connection: Any,
+    *,
+    actor_name: str,
+    action: str,
+) -> None:
+    """为当前事务绑定由独立 system key 签名的自治审计生产者。"""
+
+    if not actor_name or not action:
+        raise ValueError("invalid system audit producer")
+    identity = (
+        await connection.execute(
+            text("SELECT current_user AS database_user,txid_current() AS txid")
+        )
+    ).mappings().one()
+    correlation_id = current_correlation_id()
+    assert correlation_id is not None
+    from app.settings import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    producer_domain = settings.audit_producer_domain
+    if producer_domain is None and not settings.is_production:
+        # 单元测试与本地直接运行缺省采用 API 域；生产必须由 Compose 显式声明。
+        producer_domain = "api"
+    if producer_domain not in {"api", "realtime", "bulk"}:
+        raise RuntimeError("audit producer domain is unavailable")
+    signing_key = _audit_context_key(
+        f"audit_system_{producer_domain}_context_key"
+    )
+    signature = (
+        sign_system_audit_context(
+            signing_key,
+            txid=int(identity["txid"]),
+            database_user=str(identity["database_user"]),
+            correlation_id=str(correlation_id),
+            producer_domain=producer_domain,
+            actor_name=actor_name,
+            action=action,
+        )
+        if signing_key is not None
+        else ""
+    )
+    await connection.execute(
+        text(
+            """
+            SELECT
+              set_config('sms.audit_subject_kind','system',TRUE),
+              set_config('sms.audit_actor_name',:actor_name,TRUE),
+              set_config('sms.audit_account_id','',TRUE),
+              set_config('sms.audit_identity_id','',TRUE),
+              set_config('sms.audit_app_id','',TRUE),
+              set_config('sms.audit_producer_domain',:producer_domain,TRUE),
+              set_config('sms.audit_action',:action,TRUE),
+              set_config('sms.audit_context_signature',:signature,TRUE)
+            """
+        ),
+        {
+            "producer_domain": producer_domain,
+            "actor_name": actor_name,
+            "action": action,
+            "signature": signature,
+        },
+    )
+
+
 def database_engine(
     database_url: DatabaseUrl,
     *,
@@ -211,6 +447,8 @@ def database_engine(
                     },
                 },
             )
+            if isinstance(engine, AsyncEngine):
+                event.listen(engine.sync_engine, "begin", _set_audit_transaction_context)
             managed = ManagedAsyncEngine(engine, selected, budget)
             _DATABASE_ENGINES[key] = managed
             _DATABASE_METRICS.setdefault(selected, _DatabaseMetrics())

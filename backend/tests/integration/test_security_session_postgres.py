@@ -49,12 +49,17 @@ class MemoryStore:
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> int:
         del script
-        assert numkeys == 1
-        key, expected, replacement, _ttl = args
+        assert numkeys == 2
+        key, revoked_session, expected, replacement, _ttl, session_ttl = args
         current = self.values.get(str(key))
         if current is None:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(key), None)
             return 0
         if current != expected:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
             self.values.pop(str(key), None)
             return -1
         self.values[str(key)] = replacement

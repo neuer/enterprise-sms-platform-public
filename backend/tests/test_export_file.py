@@ -127,6 +127,17 @@ async def test_each_lease_has_isolated_part_and_final_paths(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_download_path_must_belong_to_authorized_export_task(tmp_path: Path) -> None:
+    codec = ExportFileCodec(crypto(), tmp_path)
+    other_task_path = await codec.write_csv(10, LEASE_ID, ("phone",), rows())
+
+    with pytest.raises(ValueError, match="authorized export task"):
+        codec.validate(other_task_path, expected_task_id=9)
+
+    assert codec.validate(other_task_path, expected_task_id=10) == other_task_path
+
+
+@pytest.mark.asyncio
 async def test_export_detects_reordered_deleted_and_cross_file_frames(tmp_path: Path) -> None:
     codec = ExportFileCodec(crypto(), tmp_path, frame_size=32)
     first = await codec.write_csv(9, LEASE_ID, ("phone", "content", "status"), rows())

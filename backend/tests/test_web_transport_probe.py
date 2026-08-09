@@ -98,7 +98,12 @@ def test_production_web_bind_rejects_unsafe_interfaces(bind_ip: str) -> None:
 def test_production_web_bind_accepts_loopback_and_explicit_private_address() -> None:
     assert validate_web_bind_ip("127.0.0.1") == "127.0.0.1"
     assert validate_web_bind_ip("::1") == "::1"
-    assert validate_web_bind_ip("10.0.0.5") == "10.0.0.5"
+    assert validate_web_bind_ip("10.0.0.5", external_tls_mode=True) == "10.0.0.5"
+
+
+def test_production_direct_mode_rejects_private_remote_bind() -> None:
+    with pytest.raises(TransportProbeError):
+        validate_web_bind_ip("10.0.0.5")
 
 
 def test_production_web_bind_rejects_public_interface() -> None:

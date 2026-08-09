@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.admin import (
     SENSITIVE_CONFIG_KEYS,
     AuditQuery,
@@ -20,6 +20,11 @@ from app.services.admin import (
 )
 from app.services.alert import validate_alert_destinations
 from app.services.runtime_policy import InvalidRuntimePolicy, RuntimePolicy
+from app.services.sensitive_config import (
+    WECOM_WEBHOOK_KEY,
+    AlertCredentialCipher,
+    encrypt_wecom_webhook,
+)
 from app.settings import Settings, get_settings
 
 CONFIG_SELECT = """
@@ -30,9 +35,11 @@ CONFIG_UPDATE_LOCK_ID = 7_260_202_607_13
 
 
 def _config(row: Any) -> ConfigRow:
+    key = str(row["key"])
+    value = str(row["value"])
     return ConfigRow(
-        str(row["key"]),
-        str(row["value"]),
+        key,
+        value,
         str(row["value_type"]),
         str(row["description"]) if row["description"] is not None else None,
         str(row["updated_by"]) if row["updated_by"] is not None else None,
@@ -43,8 +50,24 @@ def _config(row: Any) -> ConfigRow:
 class SqlAdminRepository:
     """系统配置更新和 config_update 审计在同一事务提交。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        credential_cipher: AlertCredentialCipher | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.credential_cipher = credential_cipher
+
+    def _credential_cipher(self) -> AlertCredentialCipher:
+        if self.credential_cipher is None:
+            self.credential_cipher = AlertCredentialCipher.from_public_file(
+                self.settings.alert_credential_public_key_file
+            )
+        return self.credential_cipher
+
+    def _config(self, row: Any) -> ConfigRow:
+        return _config(row)
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -54,7 +77,7 @@ class SqlAdminRepository:
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(text(CONFIG_SELECT))
-                return tuple(_config(row) for row in result.mappings())
+                return tuple(self._config(row) for row in result.mappings())
         finally:
             await engine.dispose()
 
@@ -71,6 +94,13 @@ class SqlAdminRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
                 await connection.execute(
                     text("SELECT pg_advisory_xact_lock(:lock_id)"),
                     {"lock_id": CONFIG_UPDATE_LOCK_ID},
@@ -84,7 +114,7 @@ class SqlAdminRepository:
                         """
                     )
                 )
-                before = {str(row["key"]): _config(row) for row in locked.mappings()}
+                before = {str(row["key"]): self._config(row) for row in locked.mappings()}
                 if any(key not in before for key in keys):
                     raise InvalidAdminQuery("配置项不存在或已被删除")
                 effective = {key: row.value for key, row in before.items()}
@@ -92,6 +122,10 @@ class SqlAdminRepository:
                     if item.value is None:
                         raise InvalidAdminQuery(f"配置 {item.key} 缺少值")
                     effective[item.key] = item.value
+                # 既有凭据只以密文存在，API 不持有解密能力。未轮换该项时，
+                # 目标已在首次保存时校验，其他配置更新不得尝试解封。
+                if WECOM_WEBHOOK_KEY not in keys:
+                    effective[WECOM_WEBHOOK_KEY] = ""
                 try:
                     RuntimePolicy.from_mapping(effective)
                     validate_alert_destinations(
@@ -102,6 +136,16 @@ class SqlAdminRepository:
                     raise InvalidAdminQuery(str(error)) from error
                 except ValueError as error:
                     raise InvalidAdminQuery(str(error)) from error
+                stored_values = {
+                    item.key: (
+                        encrypt_wecom_webhook(
+                            item.value or "", self._credential_cipher()
+                        )
+                        if item.key == WECOM_WEBHOOK_KEY
+                        else item.value
+                    )
+                    for item in updates
+                }
                 await connection.execute(
                     text(
                         """
@@ -112,7 +156,7 @@ class SqlAdminRepository:
                     [
                         {
                             "key": item.key,
-                            "value": item.value,
+                            "value": stored_values[item.key],
                             "actor": principal.login_name,
                         }
                         for item in updates
@@ -152,7 +196,7 @@ class SqlAdminRepository:
                         },
                     )
                 result = await connection.execute(text(CONFIG_SELECT))
-                return tuple(_config(row) for row in result.mappings())
+                return tuple(self._config(row) for row in result.mappings())
         finally:
             await engine.dispose()
 

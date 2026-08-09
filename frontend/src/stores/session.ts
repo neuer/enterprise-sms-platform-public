@@ -32,6 +32,8 @@ function clearLegacyPersistence(): void {
   sessionStorage.removeItem(CHANGE_TOKEN_KEY)
   sessionStorage.removeItem(CHANGE_TOKEN_EXPIRES_AT_KEY)
   sessionStorage.removeItem("sms_refresh_token")
+  sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(USER_KEY)
 }
 
 const roleLabels: Record<UserRole, string> = {
@@ -113,9 +115,12 @@ export const useSessionStore = defineStore("session", {
       }
     },
     restore() {
-      clearLegacyPersistence()
       const token = sessionStorage.getItem(TOKEN_KEY)
       const rawUser = sessionStorage.getItem(USER_KEY)
+      // 历史版本凭据只允许同步读取一次；解析或任何异步操作前立即销毁。
+      sessionStorage.removeItem(TOKEN_KEY)
+      sessionStorage.removeItem(USER_KEY)
+      clearLegacyPersistence()
       const memoryToken = getAccessToken()
       const memoryUser = getSessionUser()
       if (!memoryToken && (!token || !rawUser)) {
@@ -183,9 +188,8 @@ export const useSessionStore = defineStore("session", {
       const token = this.token
       try {
         if (token) await logoutRequest(token)
-      } catch {
-        // 服务不可达或令牌已失效时仍必须清除浏览器会话。
       } finally {
+        // 无论服务端是否确认撤销，本地凭据都必须先销毁。
         this.clearAllTabs()
       }
     },

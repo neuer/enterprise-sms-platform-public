@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 from uuid import UUID
 
 import pytest
 
+from app.api.reports import get_export_step_up_service
 from app.core.auth.jwt import JwtClaims
 from app.services.export_step_up import (
     EXPORT_STEP_UP_TTL_SECONDS,
@@ -15,6 +17,13 @@ from app.services.export_step_up import (
 
 PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000134")
 OTHER_PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000135")
+
+
+def test_production_audit_sink_uses_committing_transaction() -> None:
+    source = inspect.getsource(get_export_step_up_service)
+
+    assert ".begin() as connection" in source
+    assert ".connect() as connection" not in source
 
 
 def claims(*, account_id: int = 11, jti: str = "session-jti") -> JwtClaims:
@@ -62,6 +71,13 @@ class AtomicStore:
                 return 0
             return 1 if stored == expected else -1
 
+    async def delete(self, *keys: str) -> int:
+        deleted = 0
+        for key in keys:
+            if self.values.pop(key, None) is not None:
+                deleted += 1
+        return deleted
+
 
 @pytest.mark.asyncio
 async def test_issue_binds_stable_subject_session_ip_and_exact_task() -> None:
@@ -87,6 +103,26 @@ async def test_issue_binds_stable_subject_session_ip_and_exact_task() -> None:
     assert '"ip":"10.0.0.8"' in persisted
     assert f'"public_id":"{PUBLIC_ID}"' in persisted
     assert "current-password" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_issue_revokes_capability_when_audit_persistence_fails() -> None:
+    store = AtomicStore()
+
+    async def fail_audit(_event: object) -> None:
+        raise RuntimeError("audit unavailable")
+
+    service = ExportStepUpService(FakeAuth(), store, audit_sink=fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await service.issue(
+            claims=claims(),
+            password="current-password",
+            ip="10.0.0.8",
+            public_id=PUBLIC_ID,
+        )
+
+    assert store.values == {}
 
 
 @pytest.mark.asyncio

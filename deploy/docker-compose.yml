@@ -190,9 +190,13 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
     secrets:
       - { source: db_owner_password, target: db_owner_password }
+      - { source: migrate_audit_context_key, target: audit_context_key }
+      - { source: migrate_audit_system_api_context_key, target: audit_system_api_context_key }
+      - { source: migrate_audit_system_realtime_context_key, target: audit_system_realtime_context_key }
+      - { source: migrate_audit_system_bulk_context_key, target: audit_system_bulk_context_key }
     depends_on:
       db-role-provision: { condition: service_completed_successfully }
-    command: ["sh", "-ec", "alembic upgrade head && python -m scripts_support.maintain_partitions"]
+    command: ["sh", "-ec", "alembic upgrade head && python -m scripts_support.provision_audit_context_key && python -m scripts_support.maintain_partitions"]
     restart: "no"
 
   api:
@@ -201,12 +205,16 @@ services:
       <<: *backend-environment
       SMS_COMPONENT: api
       DB_RUNTIME_ROLE: accept
+      AUDIT_PRODUCER_DOMAIN: api
       METRICS_ALLOWED_CIDRS: ${METRICS_ALLOWED_CIDRS:-127.0.0.1/32,172.16.0.0/12}
     secrets:
       - { source: vendor_secret_name, target: vendor_secret_name }
       - { source: vendor_secret_key, target: vendor_secret_key }
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
+      - { source: audit_context_key, target: audit_context_key }
+      - { source: audit_system_api_context_key, target: audit_system_api_context_key }
+      - { source: alert_credential_public_key, target: alert_credential_public_key }
       - { source: jwt_secret, target: jwt_secret }
       - { source: ldap_bind_password, target: ldap_bind_password }
       - { source: metrics_scrape_token, target: metrics_scrape_token }
@@ -245,15 +253,23 @@ services:
 
   worker-realtime:
     <<: *backend
+    # 同 UID 保持 0400 backend secret 可读；不同主 GID 供 SO_PEERCRED 区分能力，
+    # 补充组 10001 仅用于读取 root:10001 的 agent socket 与状态投影。
+    user: "10001:10002"
+    group_add: ["10001"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10002,mode=0700
     environment:
       <<: *backend-environment
       SMS_COMPONENT: worker
       DB_RUNTIME_ROLE: send
+      AUDIT_PRODUCER_DOMAIN: realtime
     secrets:
       - { source: vendor_secret_name, target: vendor_secret_name }
       - { source: vendor_secret_key, target: vendor_secret_key }
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
+      - { source: audit_system_realtime_context_key, target: audit_system_realtime_context_key }
       - { source: db_send_password, target: db_send_password }
       - { source: db_callback_password, target: db_callback_password }
       - { source: redis_broker_client_password, target: redis_broker_password }
@@ -275,11 +291,13 @@ services:
       <<: *backend-environment
       SMS_COMPONENT: worker
       DB_RUNTIME_ROLE: send
+      AUDIT_PRODUCER_DOMAIN: bulk
     secrets:
       - { source: vendor_secret_name, target: vendor_secret_name }
       - { source: vendor_secret_key, target: vendor_secret_key }
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
+      - { source: audit_system_bulk_context_key, target: audit_system_bulk_context_key }
       - { source: db_send_password, target: db_send_password }
       - { source: db_export_password, target: db_export_password }
       - { source: redis_broker_client_password, target: redis_broker_password }
@@ -306,6 +324,7 @@ services:
     secrets:
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
+      - { source: alert_credential_private_key, target: alert_credential_private_key }
       - { source: db_callback_password, target: db_callback_password }
       - { source: redis_broker_client_password, target: redis_broker_password }
       - { source: redis_control_client_password, target: redis_control_password }
@@ -430,6 +449,26 @@ secrets:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/data_aes_key
   data_hmac_key:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/data_hmac_key
+  audit_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/audit_context_key
+  audit_system_api_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/audit_system_api_context_key
+  audit_system_realtime_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/audit_system_realtime_context_key
+  audit_system_bulk_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/audit_system_bulk_context_key
+  migrate_audit_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/migrate/audit_context_key
+  migrate_audit_system_api_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/migrate/audit_system_api_context_key
+  migrate_audit_system_realtime_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/migrate/audit_system_realtime_context_key
+  migrate_audit_system_bulk_context_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/migrate/audit_system_bulk_context_key
+  alert_credential_public_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/alert_credential_public_key
+  alert_credential_private_key:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/alert_credential_private_key
   jwt_secret:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/jwt_secret
   ldap_bind_password:

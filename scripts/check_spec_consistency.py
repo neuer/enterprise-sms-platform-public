@@ -153,6 +153,12 @@ for token in ("AUTH_MOCK=1", "DEBUG=1", "ENVIRONMENT=development"):
 for token in (
     "migrate:",
     "db-role-provision:",
+    "audit_context_key",
+    "audit_system_api_context_key",
+    "audit_system_realtime_context_key",
+    "audit_system_bulk_context_key",
+    "alert_credential_public_key",
+    "alert_credential_private_key",
     "db_owner_password",
     "db_auth_password",
     "db_accept_password",

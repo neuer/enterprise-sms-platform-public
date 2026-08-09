@@ -205,7 +205,7 @@ def get_export_step_up_service(
     settings = get_settings()
 
     async def audit_step_up(event: AuditEvent) -> None:
-        async with database_engine(settings.database_url).connect() as connection:
+        async with database_engine(settings.database_url).begin() as connection:
             await insert_audit(connection, event)
 
     return ExportStepUpService(
@@ -523,7 +523,7 @@ async def download_export(
         )
         if task.file_path is None:
             raise ExportNotFound("导出文件不存在或已过期")
-        path = codec.validate(task.file_path)
+        path = codec.validate(task.file_path, expected_task_id=task.id)
     except ExportStepUpExpired as error:
         raise ApiError(401, "STEP_UP_REQUIRED", str(error), None) from None
     except (ExportNotFound, FileNotFoundError, ValueError) as error:

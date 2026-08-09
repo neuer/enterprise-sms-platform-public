@@ -366,6 +366,317 @@ def verify_audit_payload_guard(container: str, database: str) -> None:
     )
 
 
+def verify_audit_context_forgery_rejected(container: str, database: str) -> None:
+    """业务角色即使可写自定义 GUC，也不能伪造认证主体。"""
+
+    docker_psql(
+        container,
+        database,
+        """
+        INSERT INTO audit_context_signing_key(key_kind,key_material)
+        VALUES
+          ('principal',decode(repeat('11',32),'hex')),
+          ('system:api',decode(repeat('33',32),'hex')),
+          ('system:realtime',decode(repeat('22',32),'hex')),
+          ('system:bulk',decode(repeat('44',32),'hex'))
+        ON CONFLICT(key_kind) DO UPDATE SET key_material=EXCLUDED.key_material;
+        INSERT INTO app(name,dept,api_key_hash,api_key_prefix,created_by)
+        VALUES(
+          'audit-forgery-probe','security',repeat('a',64),'forgery0','migration-check'
+        ) ON CONFLICT(name) DO NOTHING;
+        """,
+    )
+    statement = """
+BEGIN;
+SET SESSION AUTHORIZATION sms_accept;
+SELECT set_config('sms.correlation_id','30000000-0000-4000-8000-000000000099',true);
+SELECT set_config('sms.audit_subject_kind','api_app',true);
+SELECT set_config('sms.audit_actor_name','forged-application',true);
+SELECT set_config('sms.audit_account_id','',true);
+SELECT set_config('sms.audit_identity_id','',true);
+SELECT set_config(
+  'sms.audit_app_id',
+  (SELECT id::text FROM app WHERE name='audit-forgery-probe'),
+  true
+);
+SELECT set_config('sms.audit_context_signature',repeat('0',64),true);
+INSERT INTO audit_log(
+  actor,actor_subject_kind,actor_app_id,action,object_type,object_id
+) SELECT
+  'forged-application','api_app',id,'config_update','sys_config','vendor_qps'
+FROM app WHERE name='audit-forgery-probe';
+COMMIT;
+"""
+    result = run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-U",
+            "sms_owner",
+            "-d",
+            database,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            statement,
+        ],
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if result.returncode == 0 or "audit context signature is invalid" not in output:
+        raise RuntimeError("runtime role forged authenticated audit attribution")
+
+    system_statement = """
+BEGIN;
+SET SESSION AUTHORIZATION sms_send;
+SELECT set_config('sms.correlation_id','30000000-0000-4000-8000-000000000098',true);
+SELECT set_config('sms.audit_subject_kind','system',true);
+SELECT set_config('sms.audit_actor_name','vendor-state-sync',true);
+SELECT set_config('sms.audit_account_id','',true);
+SELECT set_config('sms.audit_identity_id','',true);
+SELECT set_config('sms.audit_app_id','',true);
+SELECT set_config('sms.audit_producer_domain','realtime',true);
+SELECT set_config('sms.audit_action','template_sync',true);
+SELECT set_config('sms.audit_context_signature',repeat('0',64),true);
+INSERT INTO audit_log(
+  actor,actor_subject_kind,role,action,object_type,object_id
+) VALUES(
+  'vendor-state-sync','system','system','template_sync','template','1'
+);
+COMMIT;
+"""
+    result = run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-U",
+            "sms_owner",
+            "-d",
+            database,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            system_statement,
+        ],
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if result.returncode == 0 or "system audit context signature is invalid" not in output:
+        raise RuntimeError("runtime role forged authenticated system audit event")
+
+
+def verify_legitimate_audit_signatures(port: int, database: str) -> None:
+    """真实 PostgreSQL 必须与 Python 的长主体/系统动作规范化逐字一致。"""
+
+    async def verify() -> None:
+        from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy.engine import URL  # noqa: PLC0415
+        from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
+
+        from app.core.audit_context import (  # noqa: PLC0415
+            sign_audit_context,
+            sign_system_audit_context,
+        )
+
+        password = OWNER_SECRET.read_text(encoding="utf-8").rstrip("\r\n")
+        database_url = URL.create(
+            "postgresql+asyncpg",
+            username="sms_owner",
+            password=password,
+            host="127.0.0.1",
+            port=port,
+            database=database,
+        )
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("SET SESSION AUTHORIZATION sms_accept"))
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT current_user AS database_user,"
+                            "txid_current() AS txid"
+                        )
+                    )
+                ).mappings().one()
+                app_id = int(
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT id FROM app "
+                                "WHERE name='audit-forgery-probe'"
+                            )
+                        )
+                    ).scalar_one()
+                )
+                correlation_id = "30000000-0000-4000-8000-000000000097"
+                actor_name = "中" * 64
+                signature = sign_audit_context(
+                    bytes.fromhex("11" * 32),
+                    txid=int(identity["txid"]),
+                    database_user=str(identity["database_user"]),
+                    correlation_id=correlation_id,
+                    subject_kind="api_app",
+                    actor_name=actor_name,
+                    account_id="",
+                    identity_id="",
+                    app_id=str(app_id),
+                )
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                          set_config('sms.correlation_id',:correlation,TRUE),
+                          set_config('sms.audit_subject_kind','api_app',TRUE),
+                          set_config('sms.audit_actor_name',:actor,TRUE),
+                          set_config('sms.audit_account_id','',TRUE),
+                          set_config('sms.audit_identity_id','',TRUE),
+                          set_config('sms.audit_app_id',:app_id,TRUE),
+                          set_config('sms.audit_action','',TRUE),
+                          set_config('sms.audit_context_signature',:signature,TRUE)
+                        """
+                    ),
+                    {
+                        "correlation": correlation_id,
+                        "actor": actor_name,
+                        "app_id": str(app_id),
+                        "signature": signature,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_app_id,action,
+                          object_type,object_id
+                        ) VALUES(
+                          :actor,'api_app',:app_id,'config_update',
+                          'sys_config','long-actor-probe'
+                        )
+                        """
+                    ),
+                    {"actor": actor_name, "app_id": app_id},
+                )
+                await connection.execute(text("RESET SESSION AUTHORIZATION"))
+
+            async with engine.begin() as connection:
+                await connection.execute(text("SET SESSION AUTHORIZATION sms_send"))
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT current_user AS database_user,"
+                            "txid_current() AS txid"
+                        )
+                    )
+                ).mappings().one()
+                correlation_id = "30000000-0000-4000-8000-000000000096"
+                signature = sign_system_audit_context(
+                    bytes.fromhex("22" * 32),
+                    txid=int(identity["txid"]),
+                    database_user=str(identity["database_user"]),
+                    correlation_id=correlation_id,
+                    producer_domain="realtime",
+                    actor_name="vendor-state-sync",
+                    action="template_sync",
+                )
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                          set_config('sms.correlation_id',:correlation,TRUE),
+                          set_config('sms.audit_subject_kind','system',TRUE),
+                          set_config('sms.audit_actor_name','vendor-state-sync',TRUE),
+                          set_config('sms.audit_account_id','',TRUE),
+                          set_config('sms.audit_identity_id','',TRUE),
+                          set_config('sms.audit_app_id','',TRUE),
+                          set_config('sms.audit_producer_domain','realtime',TRUE),
+                          set_config('sms.audit_action','template_sync',TRUE),
+                          set_config('sms.audit_context_signature',:signature,TRUE)
+                        """
+                    ),
+                    {"correlation": correlation_id, "signature": signature},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,action,object_type,object_id
+                        ) VALUES(
+                          'vendor-state-sync','system','system','template_sync',
+                          'template','signed-system-probe'
+                        )
+                        """
+                    )
+                )
+                await connection.execute(text("RESET SESSION AUTHORIZATION"))
+
+            cross_domain_rejected = False
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(text("SET SESSION AUTHORIZATION sms_send"))
+                    identity = (
+                        await connection.execute(
+                            text(
+                                "SELECT current_user AS database_user,"
+                                "txid_current() AS txid"
+                            )
+                        )
+                    ).mappings().one()
+                    correlation_id = "30000000-0000-4000-8000-000000000095"
+                    signature = sign_system_audit_context(
+                        bytes.fromhex("22" * 32),
+                        txid=int(identity["txid"]),
+                        database_user=str(identity["database_user"]),
+                        correlation_id=correlation_id,
+                        producer_domain="bulk",
+                        actor_name="import-parser",
+                        action="message_import",
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT
+                              set_config('sms.correlation_id',:correlation,TRUE),
+                              set_config('sms.audit_subject_kind','system',TRUE),
+                              set_config('sms.audit_actor_name','import-parser',TRUE),
+                              set_config('sms.audit_account_id','',TRUE),
+                              set_config('sms.audit_identity_id','',TRUE),
+                              set_config('sms.audit_app_id','',TRUE),
+                              set_config('sms.audit_producer_domain','bulk',TRUE),
+                              set_config('sms.audit_action','message_import',TRUE),
+                              set_config('sms.audit_context_signature',:signature,TRUE)
+                            """
+                        ),
+                        {"correlation": correlation_id, "signature": signature},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(
+                              actor,actor_subject_kind,role,action,object_type,object_id
+                            ) VALUES(
+                              'import-parser','system','system','message_import',
+                              'import_task','cross-domain-probe'
+                            )
+                            """
+                        )
+                    )
+            except Exception as error:
+                if "system audit context signature is invalid" not in str(error):
+                    raise
+                cross_domain_rejected = True
+            if not cross_domain_rejected:
+                raise RuntimeError("realtime audit key forged a bulk producer event")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify())
+
+
 def verify_worker_lease_privileges(container: str, database: str) -> None:
     """租约事实只允许发送角色读取/追加，禁止篡改或清空。"""
 
@@ -429,6 +740,91 @@ def verify_vendor_event_privileges(container: str, database: str) -> None:
         raise RuntimeError("vendor event fact privileges are unsafe")
 
 
+def verify_callback_revocation_boundary(container: str, database: str) -> None:
+    """API 角色不能改回调任务，但 app 撤销触发器必须同事务生效。"""
+
+    function_boundary = docker_psql(
+        container,
+        database,
+        """
+        SELECT
+          (owner.rolname='sms_owner')::int,
+          proc.prosecdef::int,
+          (NOT has_function_privilege(
+            'sms_accept',
+            'revoke_callback_tasks_on_app_change()',
+            'EXECUTE'
+          ))::int
+        FROM pg_proc proc
+        JOIN pg_roles owner ON owner.oid=proc.proowner
+        WHERE proc.oid='revoke_callback_tasks_on_app_change()'::regprocedure
+        """,
+    ).strip()
+    if function_boundary != "1|1|1":
+        raise RuntimeError(
+            f"callback revocation function boundary is unsafe: {function_boundary}"
+        )
+    docker_psql(
+        container,
+        database,
+        """
+        INSERT INTO app(
+          name,dept,api_key_hash,api_key_prefix,callback_url,
+          callback_secret_enc,callback_report_enabled,created_by
+        ) VALUES(
+          'migration-callback-revoke','migration',repeat('a',64),'aaaaaaaa',
+          'https://callback-old.internal/hook',decode('0001aa','hex'),true,
+          'migration-check'
+        );
+        INSERT INTO callback_task(
+          app_id,event,url,callback_secret_enc,callback_secret_key_version
+        ) SELECT
+          id,'message.report',callback_url,callback_secret_enc,1
+        FROM app WHERE name='migration-callback-revoke';
+        """,
+    )
+    assert_role_sql_denied(
+        container,
+        database,
+        "sms_accept",
+        "UPDATE callback_task SET status=status",
+    )
+    docker_psql(
+        container,
+        database,
+        """
+        SET ROLE sms_accept;
+        UPDATE app SET callback_url='https://callback-new.internal/hook'
+        WHERE name='migration-callback-revoke';
+        RESET ROLE;
+        """,
+    )
+    revoked = docker_psql(
+        container,
+        database,
+        """
+        SELECT status||'|'||last_error||'|'||
+          (lease_id IS NULL)::int||'|'||(lease_expires_at IS NULL)::int
+        FROM callback_task
+        WHERE app_id=(
+          SELECT id FROM app WHERE name='migration-callback-revoke'
+        )
+        """,
+    ).strip()
+    if revoked != "dead|CallbackConfigRevoked|1|1":
+        raise RuntimeError(f"callback revocation trigger is unsafe: {revoked}")
+    docker_psql(
+        container,
+        database,
+        """
+        DELETE FROM callback_task WHERE app_id=(
+          SELECT id FROM app WHERE name='migration-callback-revoke'
+        );
+        DELETE FROM app WHERE name='migration-callback-revoke';
+        """,
+    )
+
+
 def assert_role_sql_denied(
     container: str,
     database: str,
@@ -490,6 +886,11 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
           (NOT has_table_privilege('sms_callback','auth_provider','UPDATE'))::int,
           (NOT has_table_privilege('sms_callback','app','UPDATE'))::int,
           (NOT has_table_privilege('sms_callback','sys_config','UPDATE'))::int,
+          (SELECT bool_and(
+             NOT has_table_privilege(
+               role_name,'audit_context_signing_key','SELECT'
+             )
+           ) FROM runtime)::int,
           (has_table_privilege('sms_auth','password_change_token','SELECT')
            AND has_table_privilege('sms_auth','password_change_token','INSERT')
            AND has_table_privilege('sms_auth','password_change_token','UPDATE')
@@ -502,7 +903,24 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            AND has_table_privilege('sms_send','callback_task','UPDATE')
            AND has_table_privilege('sms_send','callback_report_event','INSERT')
            AND has_sequence_privilege('sms_send','callback_task_id_seq','USAGE'))::int,
-          has_table_privilege('sms_export','export_task','UPDATE')::int,
+          (has_column_privilege('sms_export','export_task','status','UPDATE')
+           AND has_column_privilege('sms_export','export_task','file_path','UPDATE')
+           AND has_column_privilege('sms_export','export_task','lease_id','UPDATE')
+           AND has_column_privilege(
+             'sms_export','export_task','lease_expires_at','UPDATE'
+           )
+           AND NOT has_column_privilege(
+             'sms_export','export_task','creator_account_id','UPDATE'
+           )
+           AND NOT has_column_privilege(
+             'sms_export','export_task','creator_identity_id','UPDATE'
+           )
+           AND NOT has_column_privilege(
+             'sms_export','export_task','scope_dept','UPDATE'
+           )
+           AND NOT has_column_privilege(
+             'sms_export','export_task','scope_resolved','UPDATE'
+           ))::int,
           has_table_privilege('sms_scheduler','job_run','UPDATE')::int,
           (has_column_privilege('sms_metrics','sms_batch','category','SELECT')
            AND has_column_privilege('sms_metrics','sms_chunk','status','SELECT')
@@ -540,7 +958,7 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            ))::int
         """,
     ).strip()
-    if result != "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1":
+    if result != "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1":
         raise RuntimeError(f"database runtime role matrix is unsafe: {result}")
 
     docker_psql(
@@ -599,6 +1017,12 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
         database,
         "sms_metrics",
         "SELECT batch_no FROM sms_batch LIMIT 1",
+    )
+    assert_role_sql_denied(
+        container,
+        database,
+        "sms_export",
+        "UPDATE export_task SET creator_account_id=creator_account_id",
     )
     for role in (
         "sms_auth",
@@ -668,6 +1092,10 @@ def run_check() -> None:
         compare_catalogs(catalog(container, "schema_build"), catalog(container, "alembic_build"))
         verify_audit_payload_guard(container, "schema_build")
         verify_audit_payload_guard(container, "alembic_build")
+        verify_audit_context_forgery_rejected(container, "schema_build")
+        verify_audit_context_forgery_rejected(container, "alembic_build")
+        verify_legitimate_audit_signatures(port, "schema_build")
+        verify_legitimate_audit_signatures(port, "alembic_build")
         verify_runtime_role_matrix(container, "schema_build")
         verify_runtime_role_matrix(container, "alembic_build")
         for database in ("schema_build", "alembic_build"):
@@ -676,6 +1104,7 @@ def run_check() -> None:
             verify_outbox_privileges(container, database)
             verify_worker_lease_privileges(container, database)
             verify_vendor_event_privileges(container, database)
+            verify_callback_revocation_boundary(container, database)
         docker_psql(
             container,
             "alembic_build",
@@ -914,11 +1343,20 @@ def run_check() -> None:
         async def verify_concurrent_config_updates() -> None:
             from sqlalchemy import text  # noqa: PLC0415
             from sqlalchemy.engine import URL  # noqa: PLC0415
+            from sqlalchemy.exc import DBAPIError  # noqa: PLC0415
             from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
             from app.core.auth.accounts import SecurityPrincipal  # noqa: PLC0415
+            from app.core.auth.principal_context import (  # noqa: PLC0415
+                audit_principal_scope,
+            )
+            from app.core.auth.users import SqlUserRepository  # noqa: PLC0415
+            from app.core.correlation import correlation_scope  # noqa: PLC0415
             from app.services.admin import ConfigUpdate, InvalidAdminQuery  # noqa: PLC0415
             from app.services.admin_repository import SqlAdminRepository  # noqa: PLC0415
+            from app.services.sensitive_repository import (  # noqa: PLC0415
+                SqlSensitiveWordRepository,
+            )
 
             password = OWNER_SECRET.read_text(encoding="utf-8").rstrip("\r\n")
             database_url = URL.create(
@@ -995,7 +1433,65 @@ def run_check() -> None:
                             "admin",
                         )
                     )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO local_credential(
+                          identity_id,password_hash,must_change_password
+                        ) VALUES(:identity_id,'old-audit-probe-hash',FALSE)
+                        """
+                    ),
+                    {"identity_id": principals[0].identity_id},
+                )
             await engine.dispose()
+
+            password_correlation = uuid4()
+            user_repository = SqlUserRepository(
+                cast(
+                    Any,
+                    SimpleNamespace(database_url_for=lambda _role: database_url),
+                )
+            )
+            with (
+                audit_principal_scope(principals[0]),
+                correlation_scope(password_correlation),
+            ):
+                await user_repository.change_local_password(
+                    account_id=principals[0].account_id,
+                    identity_id=principals[0].identity_id,
+                    password_hash="new-audit-probe-hash",
+                    actor=principals[0].login_name,
+                    ip="127.0.0.1",
+                )
+            password_engine = create_async_engine(database_url)
+            async with password_engine.connect() as connection:
+                password_row = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT lc.password_hash,ua.security_version,
+                              al.actor_account_id,al.actor_identity_id,al.correlation_id
+                            FROM local_credential lc
+                            JOIN auth_identity ai ON ai.id=lc.identity_id
+                            JOIN user_account ua ON ua.id=ai.account_id
+                            JOIN audit_log al ON al.object_id=ua.id::text
+                              AND al.action='local_password_change'
+                            WHERE lc.identity_id=:identity_id
+                            ORDER BY al.id DESC LIMIT 1
+                            """
+                        ),
+                        {"identity_id": principals[0].identity_id},
+                    )
+                ).mappings().one()
+            await password_engine.dispose()
+            if (
+                password_row["password_hash"] != "new-audit-probe-hash"
+                or int(password_row["security_version"]) != 2
+                or int(password_row["actor_account_id"]) != principals[0].account_id
+                or int(password_row["actor_identity_id"]) != principals[0].identity_id
+                or password_row["correlation_id"] != password_correlation
+            ):
+                raise RuntimeError("normal local password change was not committed atomically")
             results = await asyncio.gather(
                 repository.update_configs(
                     (ConfigUpdate("vendor_qps", "3"),),
@@ -1034,6 +1530,57 @@ def run_check() -> None:
             else:
                 raise RuntimeError("public callback CIDR bypassed transaction policy gate")
 
+            audit_correlation = uuid4()
+            audit_repository = SqlSensitiveWordRepository(
+                cast(Any, SimpleNamespace(database_url=database_url))
+            )
+            with audit_principal_scope(principals[0]), correlation_scope(audit_correlation):
+                created = await audit_repository.add_many(
+                    ["migration-audit-attribution-probe"],
+                    actor="display-only-must-not-win",
+                )
+            if not created.created:
+                raise RuntimeError("audit attribution probe did not create a word")
+            audit_engine = create_async_engine(database_url)
+            async with audit_engine.connect() as connection:
+                attributed = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT actor,actor_subject_kind,actor_account_id,
+                              actor_identity_id,correlation_id
+                            FROM audit_log
+                            WHERE action='sensitive_word_add'
+                              AND after_val->>'count'='1'
+                            ORDER BY id DESC LIMIT 1
+                            """
+                        )
+                    )
+                ).mappings().one()
+            if (
+                attributed["actor"] != principals[0].login_name
+                or attributed["actor_subject_kind"] != "human"
+                or int(attributed["actor_account_id"]) != principals[0].account_id
+                or int(attributed["actor_identity_id"]) != principals[0].identity_id
+                or attributed["correlation_id"] != audit_correlation
+            ):
+                raise RuntimeError("live audit was not bound to the stable principal context")
+            try:
+                async with audit_engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(actor,action,object_type,object_id)
+                            VALUES('display-only','unattributed_probe','probe','1')
+                            """
+                        )
+                    )
+            except DBAPIError:
+                pass
+            else:
+                raise RuntimeError("unattributed live audit event was accepted")
+            await audit_engine.dispose()
+
         run_async_check(verify_concurrent_config_updates())
         final_qps = (
             docker_psql(
@@ -1050,7 +1597,10 @@ def run_check() -> None:
 
         from sqlalchemy.engine import URL  # noqa: PLC0415
 
-        from app.services.runtime_policy import SqlRuntimePolicyLoader  # noqa: PLC0415
+        from app.services.runtime_policy import (  # noqa: PLC0415
+            SqlRuntimePolicyLoader,
+            parse_private_callback_cidrs,
+        )
 
         task_database_url = URL.create(
             "postgresql+asyncpg",
@@ -1070,6 +1620,10 @@ def run_check() -> None:
                 callback_ca_certs_file=None,
                 callback_mtls_cert_file=None,
                 callback_mtls_key_file=None,
+                callback_egress_networks=parse_private_callback_cidrs(
+                    "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+                ),
+                callback_egress_port_set=frozenset({80, 443}),
             ),
         )
         task_loader = SqlRuntimePolicyLoader(task_settings)

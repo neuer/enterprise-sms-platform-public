@@ -385,8 +385,9 @@
 ## D049 回调传输与敏感密文使用版本化上下文边界
 
 - 决策：生产 callback 只接受 HTTPS，可选受控 CA/mTLS；每次投递重新解析 DNS 后固定
-  已批准 IP，保留原 Host/SNI，禁止重定向，并复用带连接数、超时、响应头和正文硬上限的
-  连接池。callback task 创建时固化 event ID、secret 密文/密钥版本与签名协议版本。
+  已批准 IP，保留原 Host/SNI，禁止重定向。固定 IP 请求禁用 keep-alive，确保共享 IP 上
+  每个逻辑主机重新完成证书/SNI 校验；连接并发、超时、响应头和正文仍有硬上限。
+  callback task 创建时固化 event ID、secret 密文/密钥版本与签名协议版本。
 - 密文边界：新 AES-GCM envelope 把 schema/key version、domain、table、column 与不可变
   object ID 编入规范 AAD；phone、短信正文、callback secret、vendor raw 与 export frame
   分域。SMSX2 导出帧另绑定 task、lease、frame index 和 data/terminal 类型，拒绝重排、
@@ -513,7 +514,7 @@
   已安装的兼容资产只为保留既有运行态恢复能力，不构成新的可执行授权。
 - 迁移边界：无共同历史的测试服务器基线必须另立变更单，在不属于公开工作区的隔离临时
   证据仓库和受控维护窗口中完成。评审必须覆盖逐文件公开快照验真、PostgreSQL/volume
-  保留与回退、18 件 secrets、三域 Redis、七职责数据库角色和证据清理；最终服务器
+  保留与回退、24 件 secrets、三域 Redis、七职责数据库角色和证据清理；最终服务器
   HEAD/origin 直接绑定公开 commit，任何私有 URL、ref、commit 或对象不得回流公开工作区。
 - 原因：即使最小 pack 不含完整提交历史，把私有来源 commit/tree 对象导入公开工作区仍会
   扩大误推送、对象残留和后续开发误用风险，也与 `PUBLICATION.md` 的无私有对象边界冲突。

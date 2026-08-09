@@ -12,8 +12,8 @@ from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.runtime_resources import database_engine
+from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
 from app.services.user_management import (
-    LastAdminProtected,
     ProviderActionUnsupported,
     RoleMappingConflict,
     SelfDisableDenied,
@@ -273,6 +273,7 @@ class SqlUserManagementRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 row = await self._locked(connection, account_id)
                 current = _record(row)
                 if current.provider_code == "local" and not role_override:
@@ -315,8 +316,6 @@ class SqlUserManagementRepository:
                         )
                     except InvalidCredentials:
                         raise RoleMappingConflict("最近目录来源组无法按当前映射恢复角色") from None
-                if current.role == "admin" and target_role != "admin":
-                    await self._protect_last_admin(connection)
                 await connection.execute(
                     text(
                         """
@@ -332,6 +331,7 @@ class SqlUserManagementRepository:
                         "role_override": role_override,
                     },
                 )
+                await ensure_effective_admin(connection)
                 await connection.execute(
                     text(
                         """
@@ -383,12 +383,11 @@ class SqlUserManagementRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 row = await self._locked(connection, account_id)
                 current = _record(row)
                 if status == 0 and account_id == actor_account_id:
                     raise SelfDisableDenied("管理员不能禁用自己")
-                if status == 0 and current.status == 1 and current.role == "admin":
-                    await self._protect_last_admin(connection)
                 await connection.execute(
                     text(
                         """
@@ -399,6 +398,7 @@ class SqlUserManagementRepository:
                     ),
                     {"account_id": account_id, "status": status},
                 )
+                await ensure_effective_admin(connection)
                 await connection.execute(
                     text(
                         """
@@ -505,16 +505,3 @@ class SqlUserManagementRepository:
         if row is None:
             raise UserNotFound(account_id)
         return row
-
-    @staticmethod
-    async def _protect_last_admin(connection: Any) -> None:
-        result = await connection.execute(
-            text(
-                """
-                SELECT id FROM user_account
-                WHERE role='admin' AND status=1 FOR UPDATE
-                """
-            )
-        )
-        if len(tuple(result.mappings())) <= 1:
-            raise LastAdminProtected("不能禁用或降级最后一个有效管理员")

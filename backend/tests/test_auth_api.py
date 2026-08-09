@@ -40,7 +40,9 @@ class FakeAuthFacade:
         self.initial_changes: list[tuple[str, str, str]] = []
         self.daily_changes: list[tuple[str, str, str, str]] = []
         self.logout_tokens: list[str] = []
+        self.logout_calls: list[tuple[str, str, str | None]] = []
         self.force_calls: list[tuple[str, str, str]] = []
+        self.refresh_calls: list[tuple[str, str]] = []
 
     async def list_providers(self) -> tuple[ProviderSummary, ...]:
         return (
@@ -79,7 +81,8 @@ class FakeAuthFacade:
             user(),
         )
 
-    async def refresh(self, refresh_token: str) -> LoginSuccess:
+    async def refresh(self, refresh_token: str, ip: str) -> LoginSuccess:
+        self.refresh_calls.append((refresh_token, ip))
         if refresh_token != "refresh.jwt":
             raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None)
         return LoginSuccess(
@@ -107,8 +110,14 @@ class FakeAuthFacade:
     ) -> None:
         self.daily_changes.append((token, current_password, new_password, ip))
 
-    async def logout(self, token: str, ip: str) -> None:
+    async def logout(
+        self,
+        token: str,
+        ip: str,
+        refresh_token: str | None = None,
+    ) -> None:
         self.logout_tokens.append(token)
+        self.logout_calls.append((token, ip, refresh_token))
 
     async def force_logout(self, token: str, username: str, ip: str) -> None:
         self.force_calls.append((token, username, ip))
@@ -316,6 +325,7 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     response_client = client(facade)
 
     assert response_client.post("/api/v1/web/auth/logout").status_code == 401
+    response_client.cookies.set("sms_refresh_token", "refresh.jwt")
     logged_out = response_client.post(
         "/api/v1/web/auth/logout",
         headers={
@@ -329,6 +339,7 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     assert "Max-Age=0" in cleared
     assert "Path=/api/v1/web/auth" in cleared
     assert facade.logout_tokens == ["current.jwt"]
+    assert facade.logout_calls == [("current.jwt", "0.0.0.0", "refresh.jwt")]
 
     response = response_client.post(
         "/api/v1/web/admin/sessions/viewer01/revoke",
@@ -336,6 +347,33 @@ def test_logout_requires_authorization_and_legacy_revoke_route_is_removed() -> N
     )
     assert response.status_code == 404
     assert facade.force_calls == []
+
+
+def test_logout_failure_still_expires_browser_refresh_cookie() -> None:
+    class FailingLogoutFacade(FakeAuthFacade):
+        async def logout(
+            self,
+            token: str,
+            ip: str,
+            refresh_token: str | None = None,
+        ) -> None:
+            raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "会话撤销暂不可用", None)
+
+    response_client = client(FailingLogoutFacade())
+    response_client.cookies.set("sms_refresh_token", "refresh.jwt")
+    response = response_client.post(
+        "/api/v1/web/auth/logout",
+        headers={
+            "Authorization": "Bearer expired.jwt",
+            "Origin": "http://testserver",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "AUTH_SESSION_UNAVAILABLE"
+    cleared = response.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in cleared
+    assert "Max-Age=0" in cleared
 
 
 def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:

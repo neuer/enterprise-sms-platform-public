@@ -48,6 +48,7 @@ class TokenWaitObserved(RuntimeError):
 class FakeStore:
     def __init__(self) -> None:
         self.events: list[tuple[str, Any]] = []
+        self.failed_messages: list[str] = []
         self.split_chunks: list[ChunkPayload] = []
         self.claimed = True
         self.claim_counts: list[int] = []
@@ -78,6 +79,7 @@ class FakeStore:
         self.events.append(("submitted", (chunk_id, task_id)))
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
+        self.failed_messages.append(message)
         self.events.append(("failed", (chunk_id, code)))
 
     async def mark_uncertain(self, chunk_id: int) -> None:
@@ -647,6 +649,21 @@ async def test_unknown_vendor_code_fails_closed_without_retry() -> None:
     assert gateway.calls == 1
     assert ("failed", (3, 987654)) in store.events
     assert not any(event[0] in {"retrying", "delay", "split"} for event in store.events)
+
+
+@pytest.mark.asyncio
+async def test_vendor_reflection_is_replaced_before_chunk_persistence() -> None:
+    reflected = "secretKey=credential-value content=验证码839204"
+    store = FakeStore()
+
+    await SendWorker(
+        FakeGateway([VendorApiError(1002, reflected)]),
+        store,
+        FakeBucket(),
+    ).submit(chunk(), lane="realtime")
+
+    assert store.failed_messages == ["内容格式错误"]
+    assert reflected not in "".join(store.failed_messages)
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,8 @@ def test_direct_mode_never_trusts_client_proxy_headers(tmp_path: Path) -> None:
     assert "geo $realip_remote_addr $sms_trusted_proxy" in content
     assert "default 0;" in content
     assert "set_real_ip_from" not in content
+    assert "geo $realip_remote_addr $sms_plaintext_client_allowed" in content
+    assert "default 1;" in content
 
 
 def test_external_tls_mode_renders_exact_cidr_trust_contract(tmp_path: Path) -> None:
@@ -28,6 +30,8 @@ def test_external_tls_mode_renders_exact_cidr_trust_contract(tmp_path: Path) -> 
     assert "set_real_ip_from 198.51.100.0/28;" in content
     assert "real_ip_header X-Forwarded-For;" in content
     assert "real_ip_recursive on;" in content
+    assert "geo $realip_remote_addr $sms_plaintext_client_allowed" in content
+    assert "default 0;" in content
 
 
 @pytest.mark.parametrize(

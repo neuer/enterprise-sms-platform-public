@@ -13,6 +13,7 @@ from app.services.auth_provider import (
     UntestedProviderConfig,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from app.services.user_management import LastAdminProtected
 
 NOW = datetime(2026, 7, 16, 8, tzinfo=UTC)
 
@@ -240,20 +241,43 @@ async def test_disable_preserves_both_draft_and_active_configuration() -> None:
     active = {"base_dn": "DC=example,DC=com"}
     repo, connection = repository(
         [
+            FakeResult(),
             FakeResult([provider_row(enabled=True, draft_config=draft, active_config=active)]),
             FakeResult([provider_row(enabled=False, draft_config=draft, active_config=active)]),
+            FakeResult(scalar=1),
             FakeResult(),
         ]
     )
 
     disabled = await repo.disable("ad", actor="admin", ip="10.0.0.8")
 
-    assert "FOR UPDATE" in connection.calls[0][0]
-    assert "SET enabled=FALSE" in connection.calls[1][0]
-    assert "draft_config" not in connection.calls[1][0].split("RETURNING", maxsplit=1)[0]
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "FOR UPDATE" in connection.calls[1][0]
+    assert "SET enabled=FALSE" in connection.calls[2][0]
+    assert "draft_config" not in connection.calls[2][0].split("RETURNING", maxsplit=1)[0]
     assert disabled.draft_config == draft and disabled.active_config == active
-    audit = json.loads(connection.calls[2][1]["audit"])
+    audit = json.loads(connection.calls[-1][1]["audit"])
     assert audit["provider_code"] == "ad" and audit["action"] == "disable"
+
+
+@pytest.mark.asyncio
+async def test_disable_rejects_removing_last_effective_admin() -> None:
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult([provider_row(enabled=True)]),
+            FakeResult([provider_row(enabled=False)]),
+            FakeResult(),
+        ]
+    )
+
+    with pytest.raises(LastAdminProtected):
+        await repo.disable("ad", actor="admin", ip="10.0.0.8")
+
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "external_role_mapping" in connection.calls[-1][0]
+    assert "ap.enabled=TRUE" in connection.calls[-1][0]
+    assert all("INSERT INTO audit_log" not in sql for sql, _ in connection.calls)
 
 
 @pytest.mark.asyncio
@@ -264,10 +288,12 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
     )
     repo, connection = repository(
         [
+            FakeResult(),
             FakeResult(scalar=2),
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(scalar=8),
             FakeResult(),
         ]
     )
@@ -280,10 +306,11 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
     )
 
     assert saved == mappings
-    assert "FOR UPDATE" in connection.calls[0][0]
-    assert "DELETE FROM external_role_mapping" in connection.calls[1][0]
-    assert "INSERT INTO external_role_mapping" in connection.calls[2][0]
-    assert connection.calls[2][1]["provider_id"] == 2
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "FOR UPDATE" in connection.calls[1][0]
+    assert "DELETE FROM external_role_mapping" in connection.calls[2][0]
+    assert "INSERT INTO external_role_mapping" in connection.calls[3][0]
+    assert connection.calls[3][1]["provider_id"] == 2
     audit_sql, audit_params = connection.calls[-1]
     assert "INSERT INTO audit_log" in audit_sql
     assert json.loads(audit_params["audit"]) == {
@@ -293,6 +320,31 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
             {"external_group": mappings[1].external_group, "role": "operator"},
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_role_mapping_replace_rejects_removing_last_effective_admin() -> None:
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(scalar=2),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+
+    with pytest.raises(LastAdminProtected):
+        await repo.replace_role_mappings(
+            "ad",
+            (),
+            actor="admin",
+            ip="10.0.0.8",
+        )
+
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "DELETE FROM external_role_mapping" in connection.calls[2][0]
+    assert "external_role_mapping" in connection.calls[-1][0]
+    assert all("INSERT INTO audit_log" not in sql for sql, _ in connection.calls)
 
 
 @pytest.mark.asyncio

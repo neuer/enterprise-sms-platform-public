@@ -26,6 +26,10 @@ class FakeMappings:
         assert len(self.rows) <= 1
         return self.rows[0] if self.rows else None
 
+    def one(self) -> dict[str, object]:
+        assert len(self.rows) == 1
+        return self.rows[0]
+
 
 class FakeResult:
     def __init__(
@@ -52,7 +56,12 @@ class FakeConnection:
         self.begin_calls = 0
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
-        self.calls.append((str(statement), params))
+        sql = str(statement)
+        if "txid_current()" in sql:
+            return FakeResult([{"database_user": "sms_accept", "txid": 42}])
+        if "sms.audit_subject_kind" in sql:
+            return FakeResult()
+        self.calls.append((sql, params))
         return self.results.pop(0)
 
 

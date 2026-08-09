@@ -2,11 +2,11 @@
 
 API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
-`deploy/docker-compose.yml` 是服务名、队列名、volume 与 18 件运行 secrets 名称的唯一部署契约。生产变更必须先在同版本冷备或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`，它始终显式读取项目根 `.env`、先准备运行密钥并 fail-closed 校验 Compose。
+`deploy/docker-compose.yml` 是服务名、队列名、volume 与 24 件运行 secrets 名称的唯一部署契约。生产变更必须先在同版本冷备或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`，它始终显式读取项目根 `.env`、先准备运行密钥并 fail-closed 校验 Compose。
 
 ## 权威手册
 
-- [secrets.md](secrets.md)：生产 18 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
+- [secrets.md](secrets.md)：生产 24 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
 - [database-roles.md](database-roles.md)：七个运行职责、显式授权与 fail-closed 回滚。
 - [dba.md](dba.md)：`sms_owner` 边界、审计不可变与分区生命周期。
 - [backup-restore.md](backup-restore.md)：无明文落盘的加密备份、校验与隔离恢复。
@@ -25,7 +25,7 @@ API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需�
 
 ## 公网端口
 
-- Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；需要隔离测试时可通过 `WEB_PORT` 覆盖宿主端口，远程 TLS 终结器场景必须显式设置 `WEB_BIND_IP` 为专用私网接口。
+- Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；direct 模式生产强制回环。远程 TLS 终结器场景必须显式设置 `SMS_EXTERNAL_TLS_MODE=1`、将 `WEB_BIND_IP` 设为专用私网接口，并用精确 `SMS_TRUSTED_PROXY_CIDRS` 同时限制代理头信任与明文 listener 来源；其余来源由 Nginx 返回 444。
 - `18443` 预留给配置证书后的 TLS 终结服务；未配置证书前不得作为 HTTPS 对外宣称可用。
 - API `8000` 与 dev profile 的 Mock `9028` 只绑定宿主机回环地址，不得直接暴露到公网。
 - 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；云主机防火墙与 Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的公网入站，公开入口只允许经审批的 `18443`。
@@ -85,13 +85,15 @@ python3 scripts/verify_web_transport.py \
 
 企微告警只接受 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` 官方机器人地址。SMTP relay 的精确允许列表由根 `.env` 的非敏感变量 `ALERT_SMTP_ALLOWED_HOSTS` 提供，例如 `smtp,mail-relay.internal`；管理员页面中的 `alert_smtp_host` 只能选择该集合内主机，不能扩大部署出站范围。保存配置和实际发送会分别复验；历史非法值只保留 `alert_log` 与安全日志，不发起网络连接。修改允许列表必须走部署变更并重启后端服务，不得把密码、token 或 webhook 写入 `.env`。
 
+Callback 同样实行双层边界：根 `.env` 的 `CALLBACK_EGRESS_ALLOWED_CIDRS` 与 `CALLBACK_EGRESS_ALLOWED_PORTS` 是部署者不可变最大集合，管理员 `callback_allow_cidrs` 只能配置其子网。生产 CIDR 为空时拒绝全部 callback，端口缺省仅 443；保存 URL 与实际投递都会复验网段和端口。扩大部署上限必须走受控部署并重启 API 与 callback worker，不能通过系统配置页完成。
+
 ## 安装受控包装器与 systemd
 
 ### Security-sensitive boundary
 
 认证、API Key、加密、幂等、短信发送任务、迁移、部署和 CI workflow 属于安全敏感边界，目录与文件见 `.github/CODEOWNERS`。这些区域的变更应经过独立 Code Review，owner 自动合并不得绕过 required reviews 或 ruleset。
 
-生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 18 件 secret 名或值。
+生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 24 件 secret 名或值。
 
 ```bash
 sudo install -d -m 0700 /etc/sms-platform
@@ -289,7 +291,7 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 `--public-snapshot-cutover`。
 
 一次性基线迁移必须另立变更单，在不属于公开工作区的隔离临时证据仓库中完成逐文件验真，
-并单独评审 PostgreSQL/volume 保留、18 件 secrets、三域 Redis、七职责数据库角色、回退与
+并单独评审 PostgreSQL/volume 保留、24 件 secrets、三域 Redis、七职责数据库角色、回退与
 证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
 任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
 按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
@@ -401,7 +403,7 @@ AD 默认禁用，初始化本地管理员并完成首次改密后，由管理�
 3. **启用配置**：只有当前草稿版本测试成功后才能激活。启用后登录页才显示 AD；登录请求只调用用户明确选择的认证源，失败时不回退本地账号。
 4. **禁用 AD**：立即从登录页移除 AD 入口，但配置与角色映射均保留；再次启用前应按变更后的当前草稿重新测试。
 
-目录组到平台角色的映射也在该区域维护。AD 账号首次成功登录后进入用户台账；登录名若已被本地身份先占用，将拒绝该次 AD 登录并记录来源冲突审计。生产部署仍必须提供 18 件 secrets，其中 LDAP bind 密码固定为 `ldap_bind_password`，CA 为只读受控文件而非 secret；未来 IAM Provider 仅预留扩展能力，本期不配置、不启用。
+目录组到平台角色的映射也在该区域维护。AD 账号首次成功登录后进入用户台账；登录名若已被本地身份先占用，将拒绝该次 AD 登录并记录来源冲突审计。生产部署仍必须提供 24 件 secrets，其中 LDAP bind 密码固定为 `ldap_bind_password`，CA 为只读受控文件而非 secret；未来 IAM Provider 仅预留扩展能力，本期不配置、不启用。
 
 ## 四镜像统一发布
 
@@ -604,13 +606,13 @@ bash scripts/verify_data_images.sh
 密码环境变量。脚本通过不替代备份隔离恢复和 RTO 验证。
 
 1. 冻结发布版本，记录 Git commit、镜像 digest、变更单、执行人和回退决策人。
-2. 按 `secrets.md` 从受控密钥系统落盘恰好 18 件权威源，确认目录 `0700`、文件 `0600`；不得从聊天、工单或 shell 历史复制值。
-3. 从 `.env.example` 创建根目录 `.env`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile，并填写 LDAP CA 文件、`LDAP_ALLOWED_HOSTS` 部署允许列表与厂商 URL。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于旧无 `kid` 令牌的观察窗口。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理。内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`（`X-Real-IP`/`X-Forwarded-For`），`X-Forwarded-Proto` 仅在 `$sms_trusted_proxy=1`（连接来自精确受信 TLS 终结器）时接受 `http|https`。外部 TLS 终结拓扑必须设置 `SMS_EXTERNAL_TLS_MODE=1` 与精确的 `SMS_TRUSTED_PROXY_CIDRS`（IPv4 >= /24、IPv6 >= /120，禁止 `0.0.0.0/0`、整个云 VPC 或客户端可达网段）；`sms-compose up` 启动前由 `deploy/scripts/render_trusted_proxy_conf.py` 渲染 `/usr/local/share/sms-platform/trusted-proxies.conf`（Git 工作树之外，目录 0755、文件 0644），配置缺失、非法或过宽时失败关闭。直连模式（`SMS_EXTERNAL_TLS_MODE=0`）保持 geo 信任标志为 0，任何客户端代理头都不会被接受。若调整网段，必须在同一提交同步修改 Web 静态 IP、API 的 `--forwarded-allow-ips` 和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
+2. 按 `secrets.md` 从受控密钥系统落盘恰好 24 件权威源，确认目录 `0700`、文件 `0600`；主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key 必须是四个两两独立的 32 字节 base64 key，企微公私钥必须是匹配的 X25519 对。不得从聊天、工单或 shell 历史复制值。
+3. 从 `.env.example` 创建根目录 `.env`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile，并填写 LDAP CA 文件、`LDAP_ALLOWED_HOSTS` 部署允许列表与厂商 URL。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于旧无 `kid` 令牌的观察窗口。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理。内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`（`X-Real-IP`/`X-Forwarded-For`），`X-Forwarded-Proto` 仅在 `$sms_trusted_proxy=1`（连接来自精确受信 TLS 终结器）时接受 `http|https`。direct 模式强制 `WEB_BIND_IP` 为回环。外部 TLS 终结拓扑必须设置 `SMS_EXTERNAL_TLS_MODE=1` 与精确的 `SMS_TRUSTED_PROXY_CIDRS`（IPv4 >= /24、IPv6 >= /120，禁止 `0.0.0.0/0`、整个云 VPC 或客户端可达网段）；这些 CIDR 同时控制 Nginx 明文 listener allowlist，非受信来源在进入页面或 API 前返回 444。`sms-compose up` 启动前由 `deploy/scripts/render_trusted_proxy_conf.py` 渲染 `/usr/local/share/sms-platform/trusted-proxies.conf`（Git 工作树之外，目录 0755、文件 0644），配置缺失、非法或过宽时失败关闭。直连模式（`SMS_EXTERNAL_TLS_MODE=0`）保持代理头信任标志为 0，任何客户端代理头都不会被接受。若调整网段，必须在同一提交同步修改 Web 静态 IP、API 的 `--forwarded-allow-ips` 和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
 4. 按 `vendor-egress.md` 完成主出口 IP、备出口 IP 同单报备，取得 QPS、单次号码上限和生效时间的书面回执。
 5. 按 `backup-restore.md` 对当前生产库做一次加密备份并在隔离库恢复验证；未验证的备份不得作为回退点。
 6. 执行 `sudo /usr/local/sbin/sms-compose config --quiet`，再核对 `sms_owner` secret 不会挂载到 api/worker/outbox-dispatcher/beat。
    PostgreSQL 的 `log_error_verbosity=terse`、`log_min_error_statement=panic`、`log_parameter_max_length_on_error=0` 是 PII 日志边界，禁止覆盖；错误类型仍保留，但失败 SQL、绑定参数与 DETAIL 不写容器日志。
-7. 通过 systemd 或受控包装器启动栈，确认 postgres、migrate、api、三个 worker、Outbox dispatcher、beat、web 的健康与运行密钥 owner；生产不得启用 `dev` profile。
+7. 通过 systemd 或受控包装器启动栈；migrate 会把主体与自治事件两个审计 key 同步进仅 owner 可读的验证表。确认 postgres、migrate、api、三个 worker、Outbox dispatcher、beat、web 的健康与运行密钥 owner；生产不得启用 `dev` profile。升级到 v1.6.50 会清空旧企微 webhook 密文，必须在新 X25519 密钥对生效后由管理员重新配置并测试，禁止尝试回读或迁移旧明文。
    API 发布端口固定只绑定宿主 `127.0.0.1`，外部业务流量必须经 Web/Nginx 入口；不得把 API 端口改为全网监听。
 8. 使用已初始化的本地管理员进入系统配置页，保存并测试 AD 草稿后启用，导入经审批的目录组角色映射并完成真实 LDAP 四角色登录。禁止生产运行 mock seed。
 9. 生产阶段让独立监控网段按 `prometheus.example.yml` 使用只读 `metrics_scrape_token` 抓取 `api:8000/metrics`，验证 `up == 1`；配置 `up == 0` 告警。端点同时校验来源 CIDR 与独立 Bearer secret，不得经公网入口开放。开发测试阶段按当前范围不执行生产监控或故障切换验收。
@@ -629,7 +631,7 @@ bash scripts/verify_data_images.sh
 
 每次必须自动重建 `current` generation 并恢复健康，且公网仍只允许经审批的 `18443`，`80/443/8080/8443/8000/9028` 与明文上游端口继续禁用。失败时禁止手工 chmod `0644`、改 root 容器、绕过预处理器或部分启动新容器。
 
-代码回退先停止 unit，恢复上一已审核版本的 Compose、包装器、预处理器和 unit，再执行 `systemctl daemon-reload` 与受控启动。`rotate backend` 在共享 lifecycle flock 内执行整个 current-target→prepare→重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控清理旧 generation。代码回退不删除 18 件权威源、数据库卷或旧 generation。若彻底撤销 systemd 托管，执行 `sudo systemctl disable --now sms-platform.service`，但不得把后续生产操作切回 raw Compose。
+代码回退先停止 unit，恢复上一已审核版本的 Compose、包装器、预处理器和 unit，再执行 `systemctl daemon-reload` 与受控启动。`rotate backend` 在共享 lifecycle flock 内执行整个 current-target→prepare→重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控清理旧 generation。代码回退不删除 24 件权威源、数据库卷或旧 generation。若彻底撤销 systemd 托管，执行 `sudo systemctl disable --now sms-platform.service`，但不得把后续生产操作切回 raw Compose。
 
 ### v1.6.11 回调事件迁移前置检查
 
@@ -668,10 +670,11 @@ Prometheus 仅从 `METRICS_ALLOWED_CIDRS` 指定的监控网段访问 API 内网
 
 生产 callback URL 强制 HTTPS；HTTP 只允许显式 development/test Mock。每次投递都会重新
 解析 DNS、校验 `callback_allow_cidrs`、固定当次已批准 IP，并以原域名作为 Host 与 SNI；
-不跟随重定向。连接池、5 秒总预算、单地址连接预算以及响应头/正文上限由代码固定，禁止
-通过部署参数放宽。
+不跟随重定向。固定 IP 请求禁用 keep-alive，避免两个逻辑主机共享 IP/端口时复用首个
+主机已认证的 TLS 连接；连接并发、5 秒总预算、单地址连接预算以及响应头/正文上限由代码
+固定，禁止通过部署参数放宽。
 
-标准生产 18 件 secret 契约不因默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
+标准生产 24 件 secret 契约不因默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
 变更：只有在安全评审同步扩展凭据清单和 Compose 只读挂载、且私钥仅对
 `worker-callback` 可见后，才可在 `.env` 配置
 `CALLBACK_CA_CERTS_FILE`、`CALLBACK_MTLS_CERT_FILE` 与

@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.security_daily import (
     MAX_RESEND_RECIPIENTS,
     SHANGHAI_TZ,
@@ -376,6 +376,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 if row is None:
                     return False
                 record_id = int(row["id"])
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="security-report-collector",
+                    action="security_daily_generated",
+                )
                 await connection.execute(
                     text(
                         """
@@ -463,6 +468,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 if row is None:
                     return False
                 record_id = int(row["id"])
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="security-report-collector",
+                    action="security_daily_generation_unavailable",
+                )
                 await connection.execute(
                     text(
                         """
@@ -795,6 +805,12 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     ),
                     {"id": report.id, "retry_count": next_retry},
                 )
+                if system:
+                    await bind_connection_system_audit(
+                        connection,
+                        actor_name=actor,
+                        action=f"security_daily_{action}",
+                    )
                 await connection.execute(
                     text(
                         """
@@ -897,6 +913,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "error": result.error,
                     },
                 )
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="security-report-mailer",
+                    action="security_daily_delivery_result",
+                )
                 await connection.execute(
                     text(
                         """
@@ -946,6 +967,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="security-report-mailer",
+                    action="security_daily_delivery_result",
+                )
                 await connection.execute(
                     text(
                         """

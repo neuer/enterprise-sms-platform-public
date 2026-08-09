@@ -122,6 +122,23 @@ class Settings(BaseSettings):
     vendor_secret_key_file: Path = Path("/run/secrets/vendor_secret_key")
     data_aes_key_file: Path = Path("/run/secrets/data_aes_key")
     data_hmac_key_file: Path = Path("/run/secrets/data_hmac_key")
+    audit_context_key_file: Path = Path("/run/secrets/audit_context_key")
+    audit_system_api_context_key_file: Path = Path(
+        "/run/secrets/audit_system_api_context_key"
+    )
+    audit_system_realtime_context_key_file: Path = Path(
+        "/run/secrets/audit_system_realtime_context_key"
+    )
+    audit_system_bulk_context_key_file: Path = Path(
+        "/run/secrets/audit_system_bulk_context_key"
+    )
+    audit_producer_domain: Literal["api", "realtime", "bulk"] | None = None
+    alert_credential_public_key_file: Path = Path(
+        "/run/secrets/alert_credential_public_key"
+    )
+    alert_credential_private_key_file: Path = Path(
+        "/run/secrets/alert_credential_private_key"
+    )
     jwt_secret_file: Path = Path("/run/secrets/jwt_secret")
     jwt_accept_legacy: bool = False
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
@@ -130,6 +147,8 @@ class Settings(BaseSettings):
     callback_mtls_cert_file: Path | None = None
     callback_mtls_key_file: Path | None = None
     callback_ca_certs_file: Path | None = None
+    callback_egress_allowed_cidrs: str = ""
+    callback_egress_allowed_ports: str = ""
     alert_smtp_allowed_hosts: str = "smtp"
     ldap_allowed_hosts: str = ""
 
@@ -196,6 +215,9 @@ class Settings(BaseSettings):
         ):
             if path is not None and not path.is_file():
                 raise ValueError(f"{label} must be a readable mounted file")
+        # 解析部署侧不可变上限；生产空 CIDR 表示默认拒绝全部 callback 出站。
+        _ = self.callback_egress_networks
+        _ = self.callback_egress_port_set
         live_vendor_url = urlsplit(self.vendor_live_test_origin)
         if (
             live_vendor_url.scheme != "https"
@@ -421,6 +443,12 @@ class Settings(BaseSettings):
             "vendor_secret_key": self.vendor_secret_key_file,
             "data_aes_key": self.data_aes_key_file,
             "data_hmac_key": self.data_hmac_key_file,
+            "audit_context_key": self.audit_context_key_file,
+            "audit_system_api_context_key": self.audit_system_api_context_key_file,
+            "audit_system_realtime_context_key": self.audit_system_realtime_context_key_file,
+            "audit_system_bulk_context_key": self.audit_system_bulk_context_key_file,
+            "alert_credential_public_key": self.alert_credential_public_key_file,
+            "alert_credential_private_key": self.alert_credential_private_key_file,
             "jwt_secret": self.jwt_secret_file,
             "ldap_bind_password": self.ldap_bind_password_file,
             "metrics_scrape_token": self.metrics_scrape_token_file,
@@ -465,6 +493,55 @@ class Settings(BaseSettings):
         ):
             raise ValueError("ALERT_SMTP_ALLOWED_HOSTS contains an invalid host")
         return hosts
+
+    @property
+    def callback_egress_networks(self) -> tuple[IPv4Network | IPv6Network, ...]:
+        """部署侧 callback 最大网段；管理员运行配置只能进一步收窄。"""
+
+        raw = self.callback_egress_allowed_cidrs.strip()
+        if not raw and not self.is_production:
+            raw = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+        if not raw:
+            return ()
+        try:
+            networks = tuple(
+                ip_network(item.strip(), strict=False)
+                for item in raw.split(",")
+                if item.strip()
+            )
+        except ValueError as exc:
+            raise ValueError("CALLBACK_EGRESS_ALLOWED_CIDRS contains an invalid network") from exc
+        approved_v4 = (
+            IPv4Network("10.0.0.0/8"),
+            IPv4Network("172.16.0.0/12"),
+            IPv4Network("192.168.0.0/16"),
+        )
+        approved_v6 = (IPv6Network("fc00::/7"),)
+        for network in networks:
+            if isinstance(network, IPv4Network):
+                approved = any(network.subnet_of(root) for root in approved_v4)
+            else:
+                approved = any(network.subnet_of(root) for root in approved_v6)
+            if not approved:
+                raise ValueError(
+                    "CALLBACK_EGRESS_ALLOWED_CIDRS must contain only approved private subnets"
+                )
+        return networks
+
+    @property
+    def callback_egress_port_set(self) -> frozenset[int]:
+        """部署侧 callback 最大端口集合；开发缺省兼容本地 HTTP mock。"""
+
+        raw = self.callback_egress_allowed_ports.strip()
+        if not raw:
+            raw = "443" if self.is_production else "80,443"
+        try:
+            ports = frozenset(int(item.strip()) for item in raw.split(",") if item.strip())
+        except ValueError as exc:
+            raise ValueError("CALLBACK_EGRESS_ALLOWED_PORTS contains an invalid port") from exc
+        if not ports or any(port < 1 or port > 65535 for port in ports):
+            raise ValueError("CALLBACK_EGRESS_ALLOWED_PORTS contains an invalid port")
+        return ports
 
     @property
     def ldap_allowed_host_set(self) -> frozenset[str]:
@@ -515,6 +592,7 @@ def reject_unknown_runtime_environment(environ: Mapping[str, str]) -> None:
         "LDAP_",
         "ALERT_",
         "CALLBACK_",
+        "AUDIT_",
     )
     exact_names = {"ENVIRONMENT", "DEBUG"}
     allowed = {name.upper() for name in Settings.model_fields}

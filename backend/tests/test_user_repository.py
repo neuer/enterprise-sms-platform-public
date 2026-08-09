@@ -133,7 +133,9 @@ async def test_user_list_filters_joined_account_identity_and_credential_projecti
 @pytest.mark.asyncio
 async def test_last_active_admin_cannot_be_demoted_and_rows_are_locked() -> None:
     current = row(role="admin", account_id=1, identity_id=11)
-    repo, connection = repository([FakeResult([current]), FakeResult([{"id": 1}])])
+    repo, connection = repository(
+        [FakeResult(), FakeResult([current]), FakeResult(), FakeResult()]
+    )
 
     with pytest.raises(LastAdminProtected):
         await repo.set_role(
@@ -144,18 +146,18 @@ async def test_last_active_admin_cannot_be_demoted_and_rows_are_locked() -> None
             ip="10.0.0.8",
         )
 
-    assert "FOR UPDATE OF ua" in connection.calls[0][0]
-    assert "WHERE ua.id=:account_id FOR UPDATE\n" not in connection.calls[0][0]
-    assert "role='admin'" in connection.calls[1][0]
-    assert "FOR UPDATE" in connection.calls[1][0]
-    assert len(connection.calls) == 2
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "FOR UPDATE OF ua" in connection.calls[1][0]
+    assert "external_role_mapping" in connection.calls[3][0]
+    assert "FOR UPDATE OF ua,ai,ap" in connection.calls[3][0]
+    assert len(connection.calls) == 4
 
 
 @pytest.mark.asyncio
 async def test_ad_role_follow_uses_external_mapping_and_increments_security_version() -> None:
-    updated = row(role="approver", security_version=5)
     repo, connection = repository(
         [
+            FakeResult(),
             FakeResult([row()]),
             FakeResult(
                 [
@@ -163,7 +165,8 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
                     {"external_group": "sms-approvers", "role": "approver"},
                 ]
             ),
-            FakeResult([updated]),
+            FakeResult(),
+            FakeResult(scalar=8),
             FakeResult(),
         ]
     )
@@ -177,11 +180,11 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
     )
 
     assert changed.role == "approver" and changed.security_version == 5
-    update_sql, update_params = connection.calls[2]
+    update_sql, update_params = connection.calls[3]
     assert "security_version=security_version+1" in update_sql.replace(" ", "")
     assert update_params["account_id"] == 8
     assert update_params["role"] == "approver"
-    audit_params = connection.calls[3][1]
+    audit_params = connection.calls[5][1]
     assert audit_params["object_id"] == "8"
     assert set(audit_params) == {
         "actor",
@@ -196,7 +199,9 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
 
 @pytest.mark.asyncio
 async def test_repository_rejects_self_disable_before_update() -> None:
-    repo, connection = repository([FakeResult([row(account_id=1, role="admin")])])
+    repo, connection = repository(
+        [FakeResult(), FakeResult([row(account_id=1, role="admin")])]
+    )
 
     with pytest.raises(SelfDisableDenied):
         await repo.set_status(
@@ -207,16 +212,19 @@ async def test_repository_rejects_self_disable_before_update() -> None:
             ip="10.0.0.8",
         )
 
-    assert len(connection.calls) == 1
-    assert "FOR UPDATE" in connection.calls[0][0]
+    assert len(connection.calls) == 2
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "FOR UPDATE" in connection.calls[1][0]
 
 
 @pytest.mark.asyncio
 async def test_repository_rejects_disabling_last_active_admin() -> None:
     repo, connection = repository(
         [
+            FakeResult(),
             FakeResult([row(account_id=2, role="admin")]),
-            FakeResult([{"id": 2}]),
+            FakeResult(),
+            FakeResult(),
         ]
     )
 
@@ -229,8 +237,10 @@ async def test_repository_rejects_disabling_last_active_admin() -> None:
             ip="10.0.0.8",
         )
 
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
     assert "FOR UPDATE" in connection.calls[1][0]
-    assert len(connection.calls) == 2
+    assert "external_role_mapping" in connection.calls[3][0]
+    assert len(connection.calls) == 4
 
 
 @pytest.mark.asyncio

@@ -136,7 +136,12 @@ def validate_browser_headers(headers: Mapping[str, str]) -> int:
     return max_age
 
 
-def validate_web_bind_ip(bind_ip: str, *, production: bool = True) -> str:
+def validate_web_bind_ip(
+    bind_ip: str,
+    *,
+    production: bool = True,
+    external_tls_mode: bool = False,
+) -> str:
     """校验 Web 明文上游宿主绑定；生产模式禁止全网卡绑定。"""
 
     value = bind_ip.strip()
@@ -152,6 +157,8 @@ def validate_web_bind_ip(bind_ip: str, *, production: bool = True) -> str:
         raise TransportProbeError("WEB_BIND_IP is not a valid IPv4/IPv6 address") from error
     if production and not (address.is_loopback or address.is_private):
         raise TransportProbeError("WEB_BIND_IP must be loopback or a private network address")
+    if production and not external_tls_mode and not address.is_loopback:
+        raise TransportProbeError("WEB_BIND_IP must be loopback in direct TLS mode")
     return bind_ip.strip()
 
 
@@ -232,8 +239,8 @@ def run_probe(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--http-base", required=True)
-    parser.add_argument("--https-base", required=True)
+    parser.add_argument("--http-base")
+    parser.add_argument("--https-base")
     parser.add_argument(
         "--web-bind-ip",
         default=None,
@@ -241,7 +248,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--min-certificate-days", type=int, default=14)
     parser.add_argument("--timeout-s", type=float, default=10)
+    parser.add_argument("--validate-bind-only", action="store_true")
+    parser.add_argument("--external-tls-mode", choices=("0", "1"), default="0")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
+    if args.validate_bind_only:
+        if args.web_bind_ip is None:
+            parser.error("--validate-bind-only requires --web-bind-ip")
+        bind_ip = validate_web_bind_ip(
+            args.web_bind_ip,
+            external_tls_mode=args.external_tls_mode == "1",
+        )
+        if not args.quiet:
+            print(json.dumps({"status": "verified", "web_bind_ip": bind_ip}, sort_keys=True))
+        return 0
+    if args.http_base is None or args.https_base is None:
+        parser.error("transport probe requires --http-base and --https-base")
     evidence = run_probe(
         http_base=args.http_base,
         https_base=args.https_base,
@@ -249,20 +271,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_s=args.timeout_s,
     )
     if args.web_bind_ip is not None:
-        validate_web_bind_ip(args.web_bind_ip)
-    print(
-        json.dumps(
-            {
-                "status": "verified",
-                "redirect_status": evidence.redirect_status,
-                "tls_version": evidence.tls_version,
-                "certificate_days_remaining": evidence.certificate_days_remaining,
-                "hsts_max_age": evidence.hsts_max_age,
-                "web_bind_ip": args.web_bind_ip,
-            },
-            sort_keys=True,
+        validate_web_bind_ip(
+            args.web_bind_ip,
+            external_tls_mode=args.external_tls_mode == "1",
         )
-    )
+    if not args.quiet:
+        print(
+            json.dumps(
+                {
+                    "status": "verified",
+                    "redirect_status": evidence.redirect_status,
+                    "tls_version": evidence.tls_version,
+                    "certificate_days_remaining": evidence.certificate_days_remaining,
+                    "hsts_max_age": evidence.hsts_max_age,
+                    "web_bind_ip": args.web_bind_ip,
+                },
+                sort_keys=True,
+            )
+        )
     return 0
 
 

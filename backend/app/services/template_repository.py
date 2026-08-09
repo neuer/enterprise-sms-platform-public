@@ -7,7 +7,9 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.audit import AuditEvent, insert_audit
+from app.core.auth.principal_context import current_audit_principal
+from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.template_management import TemplateRecord
 from app.settings import Settings, get_settings
 
@@ -156,18 +158,61 @@ class SqlTemplateRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                applied = 0
                 for template_id, state, reason in states:
-                    await connection.execute(
+                    changed = await connection.execute(
                         text(
                             """
                             UPDATE sms_template SET vendor_state=:state,
                               vendor_reject_reason=:reason,updated_at=now()
                             WHERE id=:id AND vendor_state='pending'
+                            RETURNING id
                             """
                         ),
                         {"id": template_id, "state": state, "reason": reason},
                     )
-                return len(states)
+                    if changed.scalar_one_or_none() is None:
+                        continue
+                    principal = current_audit_principal()
+                    if principal is None:
+                        await bind_connection_system_audit(
+                            connection,
+                            actor_name="vendor-state-sync",
+                            action="template_sync",
+                        )
+                        await connection.execute(
+                            text(
+                                """
+                                INSERT INTO audit_log(
+                                  actor,actor_subject_kind,role,action,object_type,
+                                  object_id,after_val
+                                ) VALUES(
+                                  'vendor-state-sync','system','system','template_sync',
+                                  'template',CAST(CAST(:id AS bigint) AS text),
+                                  jsonb_build_object('vendor_state',CAST(:state AS text))
+                                )
+                                """
+                            ),
+                            {"id": template_id, "state": state},
+                        )
+                    else:
+                        await insert_audit(
+                            connection,
+                            AuditEvent(
+                                principal=principal,
+                                action="template_sync",
+                                object_type="template",
+                                object_id=str(template_id),
+                                role=(
+                                    principal.role
+                                    if hasattr(principal, "role")
+                                    else None
+                                ),
+                                after={"vendor_state": state},
+                            ),
+                        )
+                    applied += 1
+                return applied
         finally:
             await engine.dispose()
 

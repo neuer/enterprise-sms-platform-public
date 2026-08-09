@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_network
 from typing import Any
 
 import pytest
@@ -80,7 +81,6 @@ async def test_production_callback_validator_rejects_http_but_dev_can_opt_in() -
         resolver=resolver,
         allow_http=True,
     )
-
     with pytest.raises(InvalidAppConfig, match="HTTPS"):
         await production.validate_for_save("http://callback.internal/hook")
     assert (
@@ -88,6 +88,26 @@ async def test_production_callback_validator_rejects_http_but_dev_can_opt_in() -
         == "http://callback.internal/hook"
     )
 
+
+@pytest.mark.asyncio
+async def test_callback_validator_enforces_deployment_cidr_and_port_ceiling() -> None:
+    with pytest.raises(InvalidAppConfig, match="部署允许"):
+        CallbackUrlValidator(
+            "10.0.0.0/8",
+            deployment_allow_cidrs=(ip_network("10.20.0.0/16"),),
+            deployment_allow_ports=(443,),
+            resolver=lambda _: ["10.20.1.7"],
+        )
+
+    validator = CallbackUrlValidator(
+        "10.20.0.0/16",
+        deployment_allow_cidrs=(ip_network("10.20.0.0/16"),),
+        deployment_allow_ports=(443,),
+        resolver=lambda _: ["10.20.1.7"],
+    )
+    with pytest.raises(InvalidAppConfig, match="端口超出"):
+        await validator.validate_for_save("https://callback.internal:8443/hook")
+    assert await validator.validate_for_save("https://callback.internal/hook")
 
 @pytest.mark.asyncio
 async def test_create_returns_secrets_once_but_repository_only_gets_hash_and_ciphertext() -> None:

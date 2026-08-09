@@ -197,6 +197,8 @@ async def enqueue_message_report(
                   SELECT 1 FROM app a WHERE a.id=callback_task.app_id
                     AND a.status=1 AND a.callback_report_enabled=true
                     AND a.callback_url IS NOT NULL
+                    AND a.callback_url=callback_task.url
+                    AND a.callback_secret_enc=callback_task.callback_secret_enc
                 )
               ORDER BY id DESC LIMIT 1 FOR UPDATE
             ) RETURNING id
@@ -394,11 +396,20 @@ class SqlCallbackRepository:
                 result = await connection.execute(
                     text(
                         """
-                        UPDATE callback_task SET status='pending',retry_count=0,
+                        UPDATE callback_task t SET status='pending',retry_count=0,
                           next_retry_at=NULL,last_http_code=NULL,last_error=NULL,
                           lease_id=NULL,lease_expires_at=NULL,finished_at=NULL
-                        WHERE id=:task_id AND status='dead'
-                        RETURNING id
+                        FROM app a
+                        WHERE t.id=:task_id AND t.status='dead'
+                          AND t.last_error IS DISTINCT FROM 'CallbackConfigRevoked'
+                          AND a.id=t.app_id AND a.status=1
+                          AND a.callback_url=t.url
+                          AND a.callback_secret_enc=t.callback_secret_enc
+                          AND (
+                            t.event<>'message.report'
+                            OR a.callback_report_enabled=true
+                          )
+                        RETURNING t.id
                         """
                     ),
                     {"task_id": task_id},
@@ -747,6 +758,12 @@ class SqlCallbackRepository:
                         FROM callback_task t JOIN app a ON a.id=t.app_id
                         WHERE t.id=:task_id AND t.status='retrying'
                           AND t.lease_id=:lease_id AND t.lease_expires_at>now()
+                          AND a.status=1 AND a.callback_url=t.url
+                          AND a.callback_secret_enc=t.callback_secret_enc
+                          AND (
+                            t.event<>'message.report'
+                            OR a.callback_report_enabled=true
+                          )
                         """
                     ),
                     {"task_id": task_id, "lease_id": lease_id},

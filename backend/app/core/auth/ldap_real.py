@@ -93,6 +93,7 @@ class LdapPasswordProvider:
             use_ssl=True,
             tls=tls,
             connect_timeout=self.config.connect_timeout_s,
+            allowed_referral_hosts=[],
         )
 
     def _service_connection(self, server: Any) -> Connection:
@@ -101,6 +102,7 @@ class LdapPasswordProvider:
             user=self.config.bind_dn,
             password=self.config.bind_password,
             auto_bind=True,
+            auto_referrals=False,
             raise_exceptions=True,
             receive_timeout=self.config.receive_timeout_s,
         )
@@ -168,6 +170,7 @@ class LdapPasswordProvider:
                     user=entry.entry_dn,
                     password=password,
                     auto_bind=True,
+                    auto_referrals=False,
                     raise_exceptions=True,
                     receive_timeout=self.config.receive_timeout_s,
                 )

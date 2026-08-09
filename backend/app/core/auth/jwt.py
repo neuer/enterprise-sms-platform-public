@@ -26,7 +26,6 @@ PASSWORD_CHANGE_TOKEN_TYPE = "password_change"
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
 REFRESH_TOKEN_TTL = timedelta(days=7)
 PASSWORD_CHANGE_TTL = timedelta(minutes=10)
-REFRESH_GRACE_SECONDS = 5
 JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
@@ -35,14 +34,26 @@ LOGGER = logging.getLogger(__name__)
 
 _ROTATE_REFRESH_LUA = """
 local current = redis.call('GET', KEYS[1])
-if not current then return 0 end
+if not current then
+  redis.call('SET', KEYS[2], '1', 'EX', ARGV[4])
+  redis.call('DEL', KEYS[1])
+  return 0
+end
 if current ~= ARGV[1] then
+  redis.call('SET', KEYS[2], '1', 'EX', ARGV[4])
+  redis.call('DEL', KEYS[1])
   return -1
 end
 redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
 return 1
 """
 
+_REVOKE_SESSION_LUA = """
+redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+redis.call('DEL', KEYS[3])
+return 1
+"""
 
 @dataclass(frozen=True, slots=True, init=False)
 class JwtClaims:
@@ -308,11 +319,6 @@ class JwtService:
         return f"auth:jwt:refresh-family:{session_id}"
 
     @staticmethod
-    def _refresh_grace_key(token: str) -> str:
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        return f"auth:jwt:refresh-grace:{digest}"
-
-    @staticmethod
     def _refresh_binding(payload: dict[str, Any]) -> str:
         return json.dumps(
             {
@@ -381,7 +387,12 @@ class JwtService:
             headers={"kid": str(self._keyring.active_version)},
         )
 
-    def _decode(self, token: str) -> dict[str, Any]:
+    def _decode(
+        self,
+        token: str,
+        *,
+        allow_expired: bool = False,
+    ) -> dict[str, Any]:
         try:
             header = jwt.get_unverified_header(token)
         except jwt.PyJWTError:
@@ -424,7 +435,7 @@ class JwtService:
             expires_at = int(payload["exp"])
         except (TypeError, ValueError):
             raise InvalidCredentials("无效或已吊销的令牌") from None
-        if expires_at <= int(self.clock().timestamp()):
+        if not allow_expired and expires_at <= int(self.clock().timestamp()):
             raise InvalidCredentials("无效或已吊销的令牌")
         return payload
 
@@ -530,6 +541,16 @@ class JwtService:
         if revoked_at is not None and issued_at <= revoked_at:
             raise InvalidCredentials("无效或已吊销的令牌")
 
+    async def _ensure_session_not_revoked(self, claims: JwtClaims) -> None:
+        try:
+            revoked = await self.store.get(
+                f"auth:jwt:session-revoked:{claims.session_id}"
+            )
+        except Exception:
+            raise SessionStateUnavailable("JWT revocation state unavailable") from None
+        if revoked is not None:
+            raise InvalidCredentials("无效或已吊销的令牌")
+
     async def verify(self, token: str) -> JwtClaims:
         payload = self._decode(token)
         if payload["token_type"] != ACCESS_TOKEN_TYPE:
@@ -542,6 +563,7 @@ class JwtService:
             raise
         except Exception:
             raise SessionStateUnavailable("JWT revocation state unavailable") from None
+        await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
         return await self._authoritative(claims)
 
@@ -557,6 +579,7 @@ class JwtService:
         if family_expires_at != int(payload["exp"]) or remaining < 1:
             raise InvalidCredentials("无效或已使用的刷新令牌")
         claims = self._claims(payload)
+        await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
         claims = await self._authoritative(claims)
         session_id = claims.session_id
@@ -569,45 +592,18 @@ class JwtService:
         try:
             result = await self.store.eval(
                 _ROTATE_REFRESH_LUA,
-                1,
+                2,
                 self._refresh_key(session_id),
+                f"auth:jwt:session-revoked:{session_id}",
                 self._refresh_binding(payload),
                 self._refresh_binding(new_payload),
                 str(remaining),
+                str(max(1, int(self.ttl.total_seconds()))),
             )
         except Exception:
             raise SessionStateUnavailable("refresh token state unavailable") from None
         if int(result) != 1:
-            if int(result) == -1:
-                try:
-                    grace_token = await self.store.get(
-                        self._refresh_grace_key(token)
-                    )
-                except Exception:
-                    raise SessionStateUnavailable(
-                        "refresh token state unavailable"
-                    ) from None
-                if grace_token:
-                    return IssuedTokenPair(
-                        self._encode_access(claims, session_id),
-                        str(grace_token),
-                        refresh_expires_in=remaining,
-                    )
-            try:
-                await self.store.delete(self._refresh_key(session_id))
-            except Exception:
-                raise SessionStateUnavailable(
-                    "refresh token state unavailable"
-                ) from None
             raise InvalidCredentials("无效或已使用的刷新令牌")
-        try:
-            await self.store.set(
-                self._refresh_grace_key(token),
-                new_refresh,
-                ex=REFRESH_GRACE_SECONDS,
-            )
-        except Exception:
-            raise SessionStateUnavailable("refresh token state unavailable") from None
         return IssuedTokenPair(
             new_access,
             new_refresh,
@@ -638,20 +634,47 @@ class JwtService:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     async def revoke_token(self, token: str) -> None:
-        payload = self._decode(token)
+        """仅用经签名的 access sid 吊销 family，过期令牌不因此获得认证能力。"""
+
+        payload = self._decode(token, allow_expired=True)
         if payload["token_type"] != ACCESS_TOKEN_TYPE:
             raise InvalidCredentials("无效或已吊销的令牌")
         claims = self._claims(payload)
         remaining = max(1, int(payload["exp"]) - int(self.clock().timestamp()))
         try:
-            await self.store.set(
+            await self.store.eval(
+                _REVOKE_SESSION_LUA,
+                3,
                 f"auth:jwt:revoked:{claims.jti}",
-                "1",
-                ex=remaining,
+                f"auth:jwt:session-revoked:{claims.session_id}",
+                self._refresh_key(claims.session_id),
+                str(remaining),
+                str(max(1, int(self.ttl.total_seconds()))),
             )
-            await self.store.delete(self._refresh_key(claims.session_id))
         except Exception:
             raise SessionStateUnavailable("JWT revocation state unavailable") from None
+
+    async def revoke_refresh_token(self, token: str) -> JwtClaims:
+        """用仍可验证的 refresh token 吊销整个 family，支持 access 已过期的登出。"""
+
+        payload = self._decode(token)
+        if payload["token_type"] != REFRESH_TOKEN_TYPE:
+            raise InvalidCredentials("无效或已使用的刷新令牌")
+        claims = self._claims(payload)
+        remaining = max(1, int(payload["exp"]) - int(self.clock().timestamp()))
+        try:
+            await self.store.eval(
+                _REVOKE_SESSION_LUA,
+                3,
+                f"auth:jwt:revoked:{claims.jti}",
+                f"auth:jwt:session-revoked:{claims.session_id}",
+                self._refresh_key(claims.session_id),
+                str(remaining),
+                str(remaining),
+            )
+        except Exception:
+            raise SessionStateUnavailable("JWT revocation state unavailable") from None
+        return claims
 
     async def revoke_user(self, account_id: int) -> None:
         try:

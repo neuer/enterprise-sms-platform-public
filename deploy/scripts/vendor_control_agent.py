@@ -379,6 +379,8 @@ class VendorControlAgent:
         seal_sessions: SealSessions,
         expected_uid: int,
         expected_gid: int,
+        status_only_uid: int | None = None,
+        status_only_gid: int | None = None,
         journal: ControlJournal | None = None,
         state_path: Path | None = None,
         state_expected_uid: int = 0,
@@ -389,6 +391,15 @@ class VendorControlAgent:
         self.seal_sessions = seal_sessions
         self.expected_uid = expected_uid
         self.expected_gid = expected_gid
+        if (status_only_uid is None) != (status_only_gid is None):
+            raise ValueError("status-only peer identity must be complete")
+        if status_only_uid is not None and (status_only_uid, status_only_gid) == (
+            expected_uid,
+            expected_gid,
+        ):
+            raise ValueError("status-only peer identity must be distinct")
+        self.status_only_uid = status_only_uid
+        self.status_only_gid = status_only_gid
         self.journal = journal
         self.state_path = state_path
         self.state_expected_uid = state_expected_uid
@@ -518,9 +529,15 @@ class VendorControlAgent:
             )
         return response
 
-    def _require_peer(self, peer_uid: int, peer_gid: int) -> None:
-        if (peer_uid, peer_gid) != (self.expected_uid, self.expected_gid):
-            raise PeerDenied("控制调用方身份无效")
+    def _require_peer(self, peer_uid: int, peer_gid: int, operation: str) -> None:
+        if (peer_uid, peer_gid) == (self.expected_uid, self.expected_gid):
+            return
+        if (
+            (peer_uid, peer_gid) == (self.status_only_uid, self.status_only_gid)
+            and operation in {"health", "status"}
+        ):
+            return
+        raise PeerDenied("控制调用方身份或操作无效")
 
     @staticmethod
     def _credential_body(request: ControlRequest) -> SealedCredentialEnvelope:
@@ -874,7 +891,7 @@ class VendorControlAgent:
         peer_uid: int,
         peer_gid: int,
     ) -> ControlResponse:
-        self._require_peer(peer_uid, peer_gid)
+        self._require_peer(peer_uid, peer_gid, request.operation)
         if request.operation == "status" and self.journal is not None:
             try:
                 recorded = self.journal.get(request.operation_id)
@@ -1137,6 +1154,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the fixed vendor control agent")
     parser.add_argument("--api-runtime-uid", type=int, required=True)
     parser.add_argument("--api-runtime-gid", type=int, required=True)
+    parser.add_argument("--worker-runtime-uid", type=int, required=True)
+    parser.add_argument("--worker-runtime-gid", type=int, required=True)
     return parser
 
 
@@ -1147,7 +1166,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     configured_root = os.environ.get("SMS_VENDOR_CREDENTIAL_ROOT", str(CREDENTIAL_ROOT))
     if Path(configured_root) != CREDENTIAL_ROOT:
         return 1
-    if args.api_runtime_uid != 10001 or args.api_runtime_gid != 10001:
+    if (
+        args.api_runtime_uid != 10001
+        or args.api_runtime_gid != 10001
+        or args.worker_runtime_uid != 10001
+        or args.worker_runtime_gid != 10002
+    ):
         return 1
     agent = VendorControlAgent(
         runner=FixedWrapperRunner(),
@@ -1155,6 +1179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         seal_sessions=SealSessionManager(),
         expected_uid=args.api_runtime_uid,
         expected_gid=args.api_runtime_gid,
+        status_only_uid=args.worker_runtime_uid,
+        status_only_gid=args.worker_runtime_gid,
         journal=VendorControlJournal(JOURNAL_ROOT),
         state_path=CONTROL_STATE,
     )

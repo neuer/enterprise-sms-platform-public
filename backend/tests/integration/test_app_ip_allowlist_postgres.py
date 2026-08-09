@@ -136,3 +136,119 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
                     {"app_id": app_id},
                 )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_callback_url_change_quarantines_queued_task_in_same_transaction() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = cast(
+        Any,
+        SimpleNamespace(
+            database_url=database_url,
+            database_url_for=lambda _role: database_url,
+        ),
+    )
+    engine = create_async_engine(database_url)
+    repository = SqlAppRepository(settings)
+    nonce = uuid4().hex
+    key = f"callback-{nonce}-with-enough-entropy"
+    secret = b"\x00\x01encrypted-callback-secret"
+    app_id: int | None = None
+    task_id: int | None = None
+
+    try:
+        app_id = await repository.create(
+            name=f"callback-revoke-{nonce}",
+            dept="测试部",
+            api_key_hash=digest(key),
+            api_key_prefix=key[:8],
+            allowed_categories="notice",
+            default_sign=None,
+            daily_quota=0,
+            rate_limit_per_min=60,
+            blacklist_check=True,
+            freq_override=None,
+            allowed_ips=(),
+            callback_url="https://callback-old.internal/hook",
+            callback_secret_enc=secret,
+            callback_report_enabled=True,
+            actor="integration",
+            ip="127.0.0.1",
+        )
+        async with engine.begin() as connection:
+            task_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO callback_task(
+                              app_id,event,url,callback_secret_enc,
+                              callback_secret_key_version
+                            ) VALUES (
+                              :app_id,'message.report',:url,:secret,1
+                            ) RETURNING id
+                            """
+                        ),
+                        {
+                            "app_id": app_id,
+                            "url": "https://callback-old.internal/hook",
+                            "secret": secret,
+                        },
+                    )
+                ).scalar_one()
+            )
+
+        await repository.update(
+            app_id,
+            dept="测试部",
+            allowed_categories="notice",
+            default_sign=None,
+            daily_quota=0,
+            rate_limit_per_min=60,
+            blacklist_check=True,
+            freq_override=None,
+            allowed_ips=(),
+            callback_url="https://callback-new.internal/hook",
+            callback_report_enabled=True,
+            status=1,
+            actor="integration",
+            ip="127.0.0.1",
+        )
+
+        async with engine.connect() as connection:
+            task = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT status,last_error,lease_id,lease_expires_at
+                        FROM callback_task WHERE id=:task_id
+                        """
+                    ),
+                    {"task_id": task_id},
+                )
+            ).mappings().one()
+        assert dict(task) == {
+            "status": "dead",
+            "last_error": "CallbackConfigRevoked",
+            "lease_id": None,
+            "lease_expires_at": None,
+        }
+    finally:
+        if app_id is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM callback_task WHERE app_id=:app_id"),
+                    {"app_id": app_id},
+                )
+                await connection.execute(
+                    text(
+                        "DELETE FROM audit_log WHERE object_type='app' "
+                        "AND object_id=CAST(:app_id AS text)"
+                    ),
+                    {"app_id": str(app_id)},
+                )
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+        await engine.dispose()

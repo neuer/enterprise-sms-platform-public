@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.core.auth.roles import Role
 from app.core.runtime_resources import database_engine
+from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
 from app.services.auth_provider import (
     ExternalRoleMapping,
     ProviderNotFound,
@@ -236,6 +237,7 @@ class SqlAuthProviderRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 locked = await connection.execute(
                     text(
                         f"""
@@ -262,6 +264,7 @@ class SqlAuthProviderRepository:
                 if row is None:
                     raise ProviderNotFound("认证源不存在")
                 saved = _provider(row)
+                await ensure_effective_admin(connection)
                 await self._audit(
                     connection,
                     code=code,
@@ -321,6 +324,7 @@ class SqlAuthProviderRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 provider = await connection.execute(
                     text(
                         """
@@ -351,6 +355,7 @@ class SqlAuthProviderRepository:
                             "role": mapping.role,
                         },
                     )
+                await ensure_effective_admin(connection)
                 await self._audit_role_mappings(
                     connection,
                     code=code,

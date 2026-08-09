@@ -109,6 +109,34 @@ ensure_random_login_secret() {
   mv "$temporary" "$target"
 }
 
+ensure_alert_credential_keypair() {
+  local public_target="$SECRETS_DIR/alert_credential_public_key"
+  local private_target="$SECRETS_DIR/alert_credential_private_key"
+  if [[ -f "$public_target" && -f "$private_target" ]]; then
+    chmod 0600 "$public_target" "$private_target"
+    return
+  fi
+
+  local temporary_pem="$SECRETS_DIR/.alert-credential-private.$$.pem"
+  local temporary_private_der="$SECRETS_DIR/.alert-credential-private.$$.der"
+  local temporary_public_der="$SECRETS_DIR/.alert-credential-public.$$.der"
+  local temporary_private="$SECRETS_DIR/.alert_credential_private_key.$$"
+  local temporary_public="$SECRETS_DIR/.alert_credential_public_key.$$"
+  trap 'rm -f -- "$temporary_pem" "$temporary_private_der" "$temporary_public_der" "$temporary_private" "$temporary_public"' RETURN
+  openssl genpkey -algorithm X25519 -out "$temporary_pem"
+  openssl pkey -in "$temporary_pem" -outform DER -out "$temporary_private_der"
+  openssl pkey -in "$temporary_pem" -pubout -outform DER -out "$temporary_public_der"
+  tail -c 32 "$temporary_private_der" | openssl base64 -A > "$temporary_private"
+  tail -c 32 "$temporary_public_der" | openssl base64 -A > "$temporary_public"
+  printf '\n' >> "$temporary_private"
+  printf '\n' >> "$temporary_public"
+  chmod 0600 "$temporary_private" "$temporary_public"
+  mv "$temporary_private" "$private_target"
+  mv "$temporary_public" "$public_target"
+  rm -f -- "$temporary_pem" "$temporary_private_der" "$temporary_public_der"
+  trap - RETURN
+}
+
 ensure_dev_secrets() {
   install -d -m 0700 "$SECRETS_DIR"
   umask 077
@@ -116,6 +144,11 @@ ensure_dev_secrets() {
   create_text_secret vendor_secret_key mock
   create_random_secret data_aes_key 32
   create_random_secret data_hmac_key 32
+  create_random_secret audit_context_key 32
+  create_random_secret audit_system_api_context_key 32
+  create_random_secret audit_system_realtime_context_key 32
+  create_random_secret audit_system_bulk_context_key 32
+  ensure_alert_credential_keypair
   create_random_secret jwt_secret 48
   ensure_random_login_secret
   create_random_secret metrics_scrape_token 48
@@ -143,7 +176,7 @@ compose() {
 
 require_commands() {
   local command_name
-  for command_name in docker curl openssl awk install; do
+  for command_name in docker curl openssl awk install tail; do
     command -v "$command_name" >/dev/null || fail "缺少主机命令：$command_name"
   done
   docker compose version >/dev/null
@@ -151,7 +184,7 @@ require_commands() {
 
 require_prepare_commands() {
   local command_name
-  for command_name in openssl awk install; do
+  for command_name in openssl awk install tail; do
     command -v "$command_name" >/dev/null || fail "缺少主机命令：$command_name"
   done
 }

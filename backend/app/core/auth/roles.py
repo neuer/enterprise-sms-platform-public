@@ -37,8 +37,11 @@ class RoleResolver:
             return RoleDecision(existing.role)
 
         roles = [mappings[group] for group in identity.groups if group in mappings]
-        if identity.groups and all(group.startswith("mock:") for group in identity.groups):
-            roles.extend(group.removeprefix("mock:") for group in identity.groups)
+        if (
+            isinstance(identity, AuthenticatedIdentity)
+            and identity.development_role is not None
+        ):
+            roles.append(identity.development_role)
         valid_roles = [role for role in roles if role in ROLE_PRIORITY]
         if valid_roles:
             selected = max(valid_roles, key=ROLE_PRIORITY.__getitem__)

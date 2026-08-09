@@ -1060,7 +1060,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(wrapper.text()).toContain("未激活")
     expect(wrapper.text()).toContain("尚未登记测试号码")
     expect(wrapper.text()).not.toContain("139****0001")
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
     expect(JSON.stringify(sessionStorage)).not.toContain("single-use-reset-token")
     expect(JSON.stringify(sessionStorage)).not.toContain("current-password")
@@ -1186,8 +1186,8 @@ describe("系统配置页真实联调控制台", () => {
 
     expect(error).toHaveBeenCalledWith("二次认证已失效，请重新输入当前账号密码")
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/vendor-test/reset"))).toBe(false)
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
-    expect(sessionStorage.getItem("sms_user")).toBe("{\"username\":\"admin\"}")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
     expect((document.querySelector(
       "[data-testid='vendor-reset-password']",
@@ -1234,8 +1234,8 @@ describe("系统配置页真实联调控制台", () => {
 
     expect(error).toHaveBeenCalledWith("二次认证已过期或已使用，请重新认证后重试")
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/vendor-test/reset"))).toBe(true)
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
-    expect(sessionStorage.getItem("sms_user")).toBe("{\"username\":\"admin\"}")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
     expect((document.querySelector(
       "[data-testid='vendor-reset-password']",
@@ -1298,7 +1298,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(JSON.parse(String(resumeCall?.[1].body))).toEqual({
       step_up_token: "resume-critical-token",
     })
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(JSON.stringify(sessionStorage)).not.toContain("resume-password")
     expect(JSON.stringify(sessionStorage)).not.toContain("resume-critical-token")
     wrapper.unmount()

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import os
 import stat
 import subprocess
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "local_test.sh"
@@ -12,6 +16,12 @@ SECRET_NAMES = {
     "vendor_secret_key",
     "data_aes_key",
     "data_hmac_key",
+    "audit_context_key",
+    "audit_system_api_context_key",
+    "audit_system_realtime_context_key",
+    "audit_system_bulk_context_key",
+    "alert_credential_public_key",
+    "alert_credential_private_key",
     "jwt_secret",
     "ldap_bind_password",
     "metrics_scrape_token",
@@ -109,6 +119,18 @@ def test_prepare_creates_only_dev_configuration_and_secrets(tmp_path: Path) -> N
     for secret in secrets_dir.iterdir():
         assert secret.read_text(encoding="utf-8").strip() not in result.stdout
         assert secret.read_text(encoding="utf-8").strip() not in result.stderr
+    private = X25519PrivateKey.from_private_bytes(
+        base64.b64decode(
+            (secrets_dir / "alert_credential_private_key").read_text().strip()
+        )
+    )
+    expected_public = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    assert base64.b64decode(
+        (secrets_dir / "alert_credential_public_key").read_text().strip()
+    ) == expected_public
 
 
 def test_invalid_command_is_rejected() -> None:

@@ -27,6 +27,7 @@ from app.core.auth.passwords import (
     generate_temporary_password,
 )
 from app.core.bounded_executor import run_bounded
+from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.crypto import PHONE_PATTERN, CryptoService, get_crypto_service
 from app.services.usage_ledger import UsageLedgerService
 from app.services.vendor_event_audit import SqlVendorEventAuditRepository
@@ -293,13 +294,22 @@ class SqlInitAdminRepository:
                     ),
                     {"identity_id": identity_id, "password_hash": password_hash},
                 )
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=username,
+                    account_id=account_id,
+                    identity_id=identity_id,
+                )
                 await connection.execute(
                     text(
                         """
                         INSERT INTO audit_log(
-                          actor,role,action,object_type,object_id,after_val
+                          actor,actor_subject_kind,actor_account_id,actor_identity_id,
+                          role,action,object_type,object_id,after_val
                         ) VALUES(
-                          :actor,'admin','initial_local_admin_create',
+                          :actor,'human',:account_id,:identity_id,
+                          'admin','initial_local_admin_create',
                           'user_account',:object_id,
                           jsonb_build_object(
                             'provider_code','local',
@@ -311,6 +321,8 @@ class SqlInitAdminRepository:
                     ),
                     {
                         "actor": username,
+                        "account_id": account_id,
+                        "identity_id": identity_id,
                         "audit_username": username,
                         "object_id": str(account_id),
                     },

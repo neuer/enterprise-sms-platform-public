@@ -63,7 +63,7 @@ CI、G2、故障注入、魔法号、Mock Send 计数和本文其余 Mock 用例
 - 不受控制台/窄化 UAT API 约束的真实短信发送、生产流量和真实送达率；
 - HTTPS/TLS/HSTS、生产域名和 WAF；
 - 24 小时十万条长稳压测、真实主备切换和生产 RTO；
-- 生产 18 件 secrets、正式告警渠道和发布审批。
+- 生产 24 件 secrets、正式告警渠道和发布审批。
 
 上述项目必须在隔离预生产或生产演练中另行验收，不得用 Mock 或 controlled UAT 结果代替。
 
@@ -837,7 +837,7 @@ Web 地址：${TEST_BASE_URL}
 | 非法状态流转 | 409 `STATE_CONFLICT` | 原状态不变 |
 | 敏感词/模板/同意 | 422 对应业务 code | 不下发、不扣错配额 |
 | 配额/限流 | 429 对应业务 code | 错误语义可区分 |
-| 厂商明确错误 | 502 `VENDOR_ERROR` | 只含安全 code/msg 摘要 |
+| 厂商明确错误 | 502 `VENDOR_ERROR` | 只含数值 code 与平台本地映射描述；不得出现厂商原始 msg |
 | 余额阻断 | 503 `BALANCE_BLOCKED` | 双队列安全暂停 |
 
 额外检查：Bearer JWT 只走 `Authorization` 请求头，不使用 cookie；新增/变更字段必须与 OpenAPI 一致；幂等命中为 200 而非错误。

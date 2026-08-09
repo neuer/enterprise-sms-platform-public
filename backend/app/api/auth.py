@@ -6,6 +6,7 @@ from typing import Annotated, Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -315,7 +316,7 @@ async def refresh(
     ) or request.cookies.get(REFRESH_COOKIE_NAME)
     if not refresh_token:
         raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
-    result = await facade.refresh(refresh_token)
+    result = await facade.refresh(refresh_token, _client_ip(request))
     response.headers["Cache-Control"] = "no-store"
     _set_refresh_cookie(
         response,
@@ -399,7 +400,22 @@ async def logout(
 ) -> Response:
     token = _bearer(credentials)
     _assert_same_origin(request)
-    await facade.logout(token, _client_ip(request))
-    outcome = Response(status_code=200)
+    try:
+        await facade.logout(
+            token,
+            _client_ip(request),
+            request.cookies.get(REFRESH_COOKIE_NAME),
+        )
+        outcome: Response = Response(status_code=200)
+    except ApiError as error:
+        # HttpOnly cookie 无法由前端删除；即使服务端撤销失败也必须终止当前浏览器会话。
+        outcome = JSONResponse(
+            status_code=error.status_code,
+            content={
+                "code": error.code,
+                "message": error.message,
+                "detail": error.detail,
+            },
+        )
     _clear_refresh_cookie(outcome)
     return outcome

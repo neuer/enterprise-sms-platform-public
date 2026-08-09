@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElConfigProvider } from "element-plus"
+import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
@@ -166,8 +166,13 @@ onBeforeUnmount(() => {
 })
 
 async function logout() {
-  await session.logout()
-  await router.replace("/login")
+  try {
+    await session.logout()
+  } catch {
+    ElMessage.warning("本地会话已清除，但服务端撤销未确认；请勿继续使用当前浏览器")
+  } finally {
+    await router.replace("/login")
+  }
 }
 
 async function handlePasswordChanged(): Promise<void> {

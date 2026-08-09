@@ -27,7 +27,7 @@
 | 加密备份配置 | `/etc/sms-platform/test-update-backup.json` | root，`0400` 或 `0600` |
 | 加密备份密钥 | `/etc/sms-platform/test-update-backup-key` | root，`0400` 或 `0600` |
 
-测试号码不再写宿主 allowlist 文件。PostgreSQL 的 `vendor_test_recipient` 是唯一号码事实源，每个号码只持久化 `phone_enc`、`phone_hmac`、`phone_mask` 与 `key_version`；`vendor_test_recipient_hmac_alias` 只保存不可解密的 `hmac_key_version/hmac_digest` 索引投影。页面列表只返回备注和掩码。API 与发送 worker 的 UID/GID 10001 只能读取 agent 的无敏感状态投影，不能读取 root 凭据 generation 或获得 Docker Socket。
+测试号码不再写宿主 allowlist 文件。PostgreSQL 的 `vendor_test_recipient` 是唯一号码事实源，每个号码只持久化 `phone_enc`、`phone_hmac`、`phone_mask` 与 `key_version`；`vendor_test_recipient_hmac_alias` 只保存不可解密的 `hmac_key_version/hmac_digest` 索引投影。页面列表只返回备注和掩码。API 使用 `10001:10001`，realtime worker 使用主身份 `10001:10002` 并仅以补充组 10001 读取 socket/状态文件；agent 按主 UID/GID 与 operation 校验，worker 只允许 `health/status`，不能执行安装、轮换、激活、暂停或恢复。两者均不能读取 root 凭据 generation 或获得 Docker Socket。
 
 主机需预先配置固定 HTTPS 厂商 origin、可验证的 TLS/DNS、加密 checkpoint 目录和数据库连接。出口 IP **默认按已报备处理**；不为了验证报备而发探测短信。收到 1010 时按下文停发并报告。
 

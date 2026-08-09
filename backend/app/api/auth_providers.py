@@ -32,6 +32,7 @@ from app.services.auth_provider import (
     UntestedProviderConfig,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from app.services.user_management import LastAdminProtected
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/admin/auth-providers", tags=["admin"])
@@ -189,6 +190,13 @@ def _raise_provider_error(error: Exception) -> NoReturn:
         raise ApiError(422, "INVALID_PROVIDER_CONFIG", str(error), None) from None
     if isinstance(error, DuplicateRoleMapping):
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    if isinstance(error, LastAdminProtected):
+        raise ApiError(
+            409,
+            "LAST_ADMIN_PROTECTED",
+            "不能禁用或降级最后一个有效管理员",
+            None,
+        ) from None
     if isinstance(error, UntestedProviderConfig):
         raise ApiError(
             409,
@@ -211,6 +219,7 @@ PROVIDER_ERRORS = (
     ImmutableProvider,
     InvalidProviderConfig,
     DuplicateRoleMapping,
+    LastAdminProtected,
     UntestedProviderConfig,
     StaleProviderDraft,
 )

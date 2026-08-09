@@ -1,5 +1,18 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.51  2026-08-09
+-- v1.6.51：自治审计 HMAC 按 API/realtime/bulk 部署生产者域隔离
+-- v1.6.50  2026-08-09
+-- v1.6.50：审计事务上下文 HMAC 绑定；WeCom 使用 API 公钥/callback 私钥信封
+-- v1.6.49  2026-08-09
+-- v1.6.49：审计主体必须匹配事务上下文；系统事件绑定数据库角色与动作白名单
+-- v1.6.48  2026-08-09
+-- v1.6.48：企业微信 webhook 使用上下文绑定 AES-GCM 密文，历史明文升级时失效
+-- v1.6.47  2026-08-09
+-- v1.6.47：实时审计从事务上下文绑定稳定主体与关联 ID，拒绝新增 legacy_unknown
+-- v1.6.46  2026-08-09
+-- v1.6.46：敏感 sys_config 行启用 RLS；export 授权元数据禁止运行角色更新；
+--           回调目标、Secret、明细开关或应用状态撤销时同事务隔离旧任务
 -- v1.6.45  2026-08-05
 -- v1.6.45：安全日报自动投递请求表补充 sms_send 最小读写授权（bulk worker 自动路径）
 -- v1.6.44  2026-08-05
@@ -77,6 +90,8 @@
 -- deploy/initdb/01-create-app-role.sh 先创建 NOLOGIN 占位角色；
 -- provision-db-roles 再从独立 Docker secrets 设置 LOGIN 密码。
 -- 本文件末尾显式授权，且永久禁用历史广权限 sms_app。
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ─────────────── 用户与权限 ───────────────
 CREATE TABLE user_account (
@@ -982,7 +997,7 @@ CREATE TABLE callback_task (
     message_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}', -- 消息分区created_at，与message_ids复合定位
     event_keys    CHAR(64)[] NOT NULL DEFAULT '{}', -- 无PII报告事件SHA-256，与message_ids等长
     url           VARCHAR(256) NOT NULL,
-    callback_secret_enc BYTEA NOT NULL, -- 创建时固化，轮换不改变既有重试签名
+    callback_secret_enc BYTEA NOT NULL, -- 创建时固化；仅当前配置仍匹配时允许重试
     callback_secret_key_version SMALLINT NOT NULL
       CONSTRAINT chk_callback_secret_key_version CHECK (callback_secret_key_version > 0),
     signature_version SMALLINT NOT NULL DEFAULT 1
@@ -1026,6 +1041,49 @@ CREATE INDEX idx_cb_pending ON callback_task(status, next_retry_at)
 CREATE INDEX idx_cb_lease_expiry ON callback_task(lease_expires_at,id)
     WHERE lease_id IS NOT NULL;
 CREATE INDEX idx_cb_event_keys ON callback_task USING GIN(event_keys);
+
+-- 回调配置撤销与旧任务隔离必须和 app 更新处于同一数据库事务；
+-- SECURITY DEFINER 只由触发器调用，避免给 sms_accept callback_task UPDATE 权限。
+CREATE OR REPLACE FUNCTION revoke_callback_tasks_on_app_change()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF OLD.callback_url IS DISTINCT FROM NEW.callback_url
+     OR OLD.callback_secret_enc IS DISTINCT FROM NEW.callback_secret_enc
+     OR (
+       OLD.callback_report_enabled=true
+       AND NEW.callback_report_enabled=false
+     )
+     OR (OLD.status=1 AND NEW.status<>1)
+  THEN
+    UPDATE public.callback_task SET status='dead',retry_count=0,
+      next_retry_at=NULL,lease_id=NULL,lease_expires_at=NULL,
+      last_http_code=NULL,last_error='CallbackConfigRevoked',
+      finished_at=now()
+    WHERE app_id=NEW.id AND status IN ('pending','retrying')
+      AND (
+        OLD.callback_url IS DISTINCT FROM NEW.callback_url
+        OR OLD.callback_secret_enc IS DISTINCT FROM NEW.callback_secret_enc
+        OR (OLD.status=1 AND NEW.status<>1)
+        OR (
+          OLD.callback_report_enabled=true
+          AND NEW.callback_report_enabled=false
+          AND event='message.report'
+        )
+      );
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION revoke_callback_tasks_on_app_change() FROM PUBLIC;
+
+CREATE TRIGGER trg_app_revoke_callback_tasks
+AFTER UPDATE OF callback_url,callback_secret_enc,
+  callback_report_enabled,status ON app
+FOR EACH ROW EXECUTE FUNCTION revoke_callback_tasks_on_app_change();
 
 -- callback/export worker 的无 PII 租约事实；只追加，用于停滞/接管/CAS 观测。
 CREATE TABLE worker_lease_event (
@@ -1537,9 +1595,52 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 -- v1.6.40 新增：安全日报配置页允许管理员维护 Resend Key。
 ('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）');
 
+-- v1.6.49：API 只持公钥封装，只有 callback worker 持私钥解封。
+ALTER TABLE sys_config ADD CONSTRAINT ck_sys_config_wecom_ciphertext
+CHECK (
+  key<>'alert_wecom_webhook'
+  OR btrim(value)=''
+  OR value LIKE 'sealed:v1:%'
+);
+
+-- v1.6.46：两类 reusable notification credential 不再随 sys_config 全表权限横向暴露。
+ALTER TABLE sys_config ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sys_config_accept_all ON sys_config
+    FOR ALL TO sms_accept USING (true) WITH CHECK (true);
+CREATE POLICY sys_config_callback_select ON sys_config
+    FOR SELECT TO sms_callback
+    USING (key <> 'security_daily_resend_api_key');
+CREATE POLICY sys_config_nonsecret_select ON sys_config
+    FOR SELECT TO sms_auth, sms_send, sms_export, sms_scheduler
+    USING (key NOT IN ('alert_wecom_webhook','security_daily_resend_api_key'));
+
+CREATE FUNCTION alert_channel_availability()
+RETURNS TABLE(wecom_configured boolean, smtp_configured boolean)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT
+    EXISTS(
+      SELECT 1 FROM public.sys_config
+      WHERE key='alert_wecom_webhook' AND btrim(value)<>''
+    ),
+    EXISTS(
+      SELECT 1 FROM public.sys_config
+      WHERE key='alert_mail_to' AND btrim(value)<>''
+    )
+$$;
+REVOKE ALL ON FUNCTION alert_channel_availability() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION alert_channel_availability() TO
+    sms_auth, sms_accept, sms_send, sms_callback, sms_export, sms_scheduler;
+
 CREATE TABLE audit_log (
     id          BIGSERIAL PRIMARY KEY,
-    correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    correlation_id UUID NOT NULL DEFAULT COALESCE(
+                NULLIF(current_setting('sms.correlation_id', TRUE),'')::uuid,
+                gen_random_uuid()
+              ),
     actor       VARCHAR(64)  NOT NULL,
     actor_subject_kind VARCHAR(16) NOT NULL DEFAULT 'legacy_unknown'
                 CHECK (actor_subject_kind IN ('human','api_app','system','legacy_unknown')),
@@ -1592,6 +1693,214 @@ CREATE INDEX idx_audit_actor_account ON audit_log(actor_account_id, created_at D
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id, created_at DESC);
 CREATE INDEX idx_audit_action ON audit_log(action, created_at);
 CREATE INDEX idx_audit_time   ON audit_log(created_at);
+
+-- 仅 sms_owner 可读；业务角色只提交绑定 txid/session_user 的 HMAC，不能读取 key。
+CREATE TABLE audit_context_signing_key (
+    key_kind text PRIMARY KEY CHECK (key_kind IN (
+      'principal','system:api','system:realtime','system:bulk',
+      'legacy-system-disabled'
+    )),
+    key_material bytea NOT NULL CHECK (octet_length(key_material)=32),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+REVOKE ALL ON audit_context_signing_key FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION enforce_live_audit_principal()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  context_kind text := NULLIF(current_setting('sms.audit_subject_kind', TRUE),'');
+  context_actor text := NULLIF(current_setting('sms.audit_actor_name', TRUE),'');
+  context_account bigint := NULLIF(
+    current_setting('sms.audit_account_id', TRUE),''
+  )::bigint;
+  context_identity bigint := NULLIF(
+    current_setting('sms.audit_identity_id', TRUE),''
+  )::bigint;
+  context_app bigint := NULLIF(current_setting('sms.audit_app_id', TRUE),'')::bigint;
+  context_correlation text := NULLIF(
+    current_setting('sms.correlation_id', TRUE),''
+  );
+  context_signature text := NULLIF(
+    current_setting('sms.audit_context_signature', TRUE),''
+  );
+  context_action text := NULLIF(current_setting('sms.audit_action', TRUE),'');
+  context_domain text := NULLIF(
+    current_setting('sms.audit_producer_domain', TRUE),''
+  );
+  audit_key bytea;
+  expected_signature text;
+  signature_payload text;
+  stable_context boolean := FALSE;
+  system_allowed boolean := FALSE;
+BEGIN
+  stable_context := (
+    context_actor IS NOT NULL
+    AND context_correlation IS NOT NULL
+    AND (
+      (context_kind='human' AND context_account IS NOT NULL
+       AND context_identity IS NOT NULL AND context_app IS NULL)
+      OR
+      (context_kind='api_app' AND context_account IS NULL
+       AND context_identity IS NULL AND context_app IS NOT NULL)
+    )
+  );
+
+  IF stable_context THEN
+    IF session_user<>'sms_owner' THEN
+      SELECT key_material INTO audit_key
+      FROM public.audit_context_signing_key WHERE key_kind='principal';
+      IF audit_key IS NULL THEN
+        RAISE EXCEPTION 'audit context signing key is unavailable'
+          USING ERRCODE='23514';
+      END IF;
+      signature_payload := concat_ws(E'\n',
+        'v2',txid_current()::text,
+        encode(convert_to(session_user,'UTF8'),'hex'),
+        encode(convert_to(context_correlation,'UTF8'),'hex'),
+        encode(convert_to(context_kind,'UTF8'),'hex'),
+        encode(convert_to(context_actor,'UTF8'),'hex'),
+        coalesce(context_account::text,''),
+        coalesce(context_identity::text,''),
+        coalesce(context_app::text,'')
+      );
+      expected_signature := encode(
+        public.hmac(convert_to(signature_payload,'UTF8'),audit_key,'sha256'),
+        'hex'
+      );
+      IF context_signature IS NULL
+         OR length(context_signature)<>64
+         OR context_signature IS DISTINCT FROM expected_signature
+      THEN
+        RAISE EXCEPTION 'audit context signature is invalid'
+          USING ERRCODE='23514';
+      END IF;
+    END IF;
+    IF NEW.actor_subject_kind<>'legacy_unknown'
+       AND (
+         NEW.actor_subject_kind IS DISTINCT FROM context_kind
+         OR NEW.actor IS DISTINCT FROM context_actor
+         OR NEW.actor_account_id IS DISTINCT FROM context_account
+         OR NEW.actor_identity_id IS DISTINCT FROM context_identity
+         OR NEW.actor_app_id IS DISTINCT FROM context_app
+       )
+    THEN
+      RAISE EXCEPTION 'audit subject does not match authenticated context'
+        USING ERRCODE='23514';
+    END IF;
+    NEW.correlation_id := context_correlation::uuid;
+    NEW.actor_subject_kind := context_kind;
+    NEW.actor := context_actor;
+    NEW.actor_account_id := context_account;
+    NEW.actor_identity_id := context_identity;
+    NEW.actor_app_id := context_app;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.actor_subject_kind IN ('human','api_app','legacy_unknown') THEN
+    RAISE EXCEPTION 'live audit event has no authenticated actor context'
+      USING ERRCODE='23514';
+  END IF;
+
+  IF NEW.actor_subject_kind='system' THEN
+    IF NEW.actor_account_id IS NOT NULL OR NEW.actor_identity_id IS NOT NULL
+       OR NEW.actor_app_id IS NOT NULL
+    THEN
+      RAISE EXCEPTION 'system audit event cannot name a stable user or app'
+        USING ERRCODE='23514';
+    END IF;
+
+    IF context_kind IS DISTINCT FROM 'system'
+       OR context_actor IS DISTINCT FROM NEW.actor
+       OR context_action IS DISTINCT FROM NEW.action
+       OR context_domain NOT IN ('api','realtime','bulk')
+       OR context_correlation IS NULL
+    THEN
+      RAISE EXCEPTION 'system audit event has no authenticated producer context'
+        USING ERRCODE='23514';
+    END IF;
+
+    IF session_user<>'sms_owner' THEN
+      SELECT key_material INTO audit_key
+      FROM public.audit_context_signing_key
+      WHERE key_kind='system:' || context_domain;
+      IF audit_key IS NULL THEN
+        RAISE EXCEPTION 'system audit signing key is unavailable'
+          USING ERRCODE='23514';
+      END IF;
+      signature_payload := concat_ws(E'\n',
+        'system-v2',txid_current()::text,
+        encode(convert_to(session_user,'UTF8'),'hex'),
+        encode(convert_to(context_correlation,'UTF8'),'hex'),
+        encode(convert_to(context_domain,'UTF8'),'hex'),
+        encode(convert_to(context_actor,'UTF8'),'hex'),
+        encode(convert_to(context_action,'UTF8'),'hex')
+      );
+      expected_signature := encode(
+        public.hmac(convert_to(signature_payload,'UTF8'),audit_key,'sha256'),
+        'hex'
+      );
+      IF context_signature IS NULL
+         OR length(context_signature)<>64
+         OR context_signature IS DISTINCT FROM expected_signature
+      THEN
+        RAISE EXCEPTION 'system audit context signature is invalid'
+          USING ERRCODE='23514';
+      END IF;
+    END IF;
+
+    system_allowed := session_user='sms_owner'
+      OR (context_domain='api' AND (
+          (session_user='sms_auth' AND NEW.actor='auth-system'
+           AND NEW.action='account_source_conflict')
+          OR (session_user='sms_accept' AND (
+            (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
+              'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
+            OR (NEW.actor='security-report-collector' AND NEW.action IN (
+              'security_daily_generated','security_daily_generation_unavailable'))
+            OR (NEW.actor='security-report-mailer'
+                AND NEW.action='security_daily_delivery_result')
+            OR (NEW.actor IN (
+                  'system:usage-projection','system:usage-projection-auto',
+                  'operator:usage-projection-cli')
+                AND NEW.action='usage_projection_rebuild')))))
+      OR (context_domain='realtime' AND session_user='sms_send' AND (
+          (NEW.actor='vendor-state-sync'
+           AND NEW.action IN ('template_sync','sign_sync'))
+          OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
+            'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
+          OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
+              AND NEW.action='usage_projection_rebuild')))
+      OR (context_domain='bulk' AND session_user='sms_send' AND (
+          (NEW.actor='security-report-collector' AND NEW.action IN (
+            'security_daily_generated','security_daily_generation_unavailable'))
+          OR (NEW.actor='import-parser' AND NEW.action='message_import')
+          OR (NEW.actor='security-report-scheduler'
+              AND NEW.action IN ('security_daily_send','security_daily_retry'))
+          OR (NEW.actor='security-report-mailer'
+              AND NEW.action='security_daily_delivery_result')
+          OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
+              AND NEW.action='usage_projection_rebuild')));
+
+    IF NOT system_allowed THEN
+      RAISE EXCEPTION 'system audit producer/action is not authorized for database role'
+        USING ERRCODE='23514';
+    END IF;
+    NEW.correlation_id := context_correlation::uuid;
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'unsupported live audit subject kind'
+    USING ERRCODE='23514';
+END
+$$;
+REVOKE ALL ON FUNCTION enforce_live_audit_principal() FROM PUBLIC;
+CREATE TRIGGER trg_audit_require_live_principal
+BEFORE INSERT ON audit_log
+FOR EACH ROW EXECUTE FUNCTION enforce_live_audit_principal();
 
 -- v1.6.41：日报采集器不获得审计主表访问权；只读视图只暴露非载荷列，
 -- 且仅对生成日报的 sms_send 角色授 SELECT。
@@ -1769,7 +2078,11 @@ GRANT SELECT ON
     unmatched_report,
     export_task, sys_config, outbox_event, worker_lease_event
 TO sms_export;
-GRANT INSERT, UPDATE, DELETE ON export_task TO sms_export;
+GRANT INSERT, DELETE ON export_task TO sms_export;
+GRANT UPDATE (
+    status,file_path,row_count,started_at,lease_id,lease_expires_at,
+    takeover_count,finished_at
+) ON export_task TO sms_export;
 GRANT INSERT, UPDATE ON outbox_event TO sms_export;
 GRANT INSERT ON worker_lease_event, audit_log TO sms_export;
 GRANT USAGE, SELECT ON SEQUENCE

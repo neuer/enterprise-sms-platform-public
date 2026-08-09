@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import fcntl
 import os
@@ -22,6 +24,12 @@ CANONICAL_SECRET_NAMES = frozenset(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+        "alert_credential_public_key",
+        "alert_credential_private_key",
         "jwt_secret",
         "ldap_bind_password",
         "metrics_scrape_token",
@@ -53,7 +61,15 @@ POSTGRES_SECRET_NAMES = frozenset(
         "db_metrics_password",
     }
 )
-MIGRATE_SECRET_NAMES = frozenset({"db_owner_password"})
+MIGRATE_SECRET_NAMES = frozenset(
+    {
+        "db_owner_password",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+    }
+)
 REDIS_SECRET_NAMES = frozenset(
     {
         "redis_broker_password",
@@ -150,11 +166,84 @@ def _validate_source_inventory(source_dir: Path, mode: str) -> None:
 
 def _validate_source(source_dir: Path, mode: str) -> dict[str, bytes]:
     _validate_source_inventory(source_dir, mode)
-
-    return {
+    values = {
         name: _read_source_file(source_dir / name, name)
         for name in sorted(CANONICAL_SECRET_NAMES)
     }
+    _validate_security_key_material(values)
+    return values
+
+
+def _x25519_public(private_value: bytes) -> bytes:
+    scalar = bytearray(private_value)
+    scalar[0] &= 248
+    scalar[31] &= 127
+    scalar[31] |= 64
+    number = int.from_bytes(scalar, "little")
+    modulus = 2**255 - 19
+    x_1 = 9
+    x_2, z_2 = 1, 0
+    x_3, z_3 = x_1, 1
+    swap = 0
+    for position in range(254, -1, -1):
+        bit = (number >> position) & 1
+        swap ^= bit
+        if swap:
+            x_2, x_3 = x_3, x_2
+            z_2, z_3 = z_3, z_2
+        swap = bit
+        a = (x_2 + z_2) % modulus
+        aa = (a * a) % modulus
+        b = (x_2 - z_2) % modulus
+        bb = (b * b) % modulus
+        e = (aa - bb) % modulus
+        c = (x_3 + z_3) % modulus
+        d = (x_3 - z_3) % modulus
+        da = (d * a) % modulus
+        cb = (c * b) % modulus
+        x_3 = ((da + cb) ** 2) % modulus
+        z_3 = (x_1 * ((da - cb) ** 2)) % modulus
+        x_2 = (aa * bb) % modulus
+        z_2 = (e * (aa + 121665 * e)) % modulus
+    if swap:
+        x_2, x_3 = x_3, x_2
+        z_2, z_3 = z_3, z_2
+    public_value = (x_2 * pow(z_2, modulus - 2, modulus)) % modulus
+    return public_value.to_bytes(32, "little")
+
+
+def _decode_base64_key(value: bytes, label: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value.strip(), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise RuntimeSecretsError(f"{label} is invalid") from error
+    if len(decoded) != 32:
+        raise RuntimeSecretsError(f"{label} is invalid")
+    return decoded
+
+
+def _validate_security_key_material(values: dict[str, bytes]) -> None:
+    principal_audit_key = _decode_base64_key(
+        values["audit_context_key"], "audit context key"
+    )
+    audit_keys = [principal_audit_key]
+    for domain in ("api", "realtime", "bulk"):
+        audit_keys.append(
+            _decode_base64_key(
+                values[f"audit_system_{domain}_context_key"],
+                f"audit system {domain} context key",
+            )
+        )
+    if len({key for key in audit_keys}) != len(audit_keys):
+        raise RuntimeSecretsError("audit context keys must be pairwise independent")
+    private_value = _decode_base64_key(
+        values["alert_credential_private_key"], "alert credential private key"
+    )
+    public_value = _decode_base64_key(
+        values["alert_credential_public_key"], "alert credential public key"
+    )
+    if not secrets.compare_digest(_x25519_public(private_value), public_value):
+        raise RuntimeSecretsError("alert credential keypair is invalid")
 
 
 def _ensure_directory(path: Path, expected_mode: int, label: str) -> None:
@@ -501,6 +590,7 @@ def revoke_vendor(
             name: _read_source_file(source_dir / name, name)
             for name in sorted(CANONICAL_SECRET_NAMES - VENDOR_SECRET_NAMES)
         }
+        _validate_security_key_material(values)
         for name in VENDOR_SECRET_NAMES:
             values[name] = VENDOR_REVOCATION_TOMBSTONE
         _materialize_generation(

@@ -2,7 +2,7 @@
 
 ## 硬性边界
 
-所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 18 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
+所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 24 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
 
 生产根目录 `.env` 必须显式且唯一设置 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，不得通过 shell 或 `.env` 激活任何 `COMPOSE_PROFILES`/`dev` profile。production 的启动与轮换会 fail-closed 校验这些明确的非密钥键。唯一生产 Compose 入口是 `sudo /usr/local/sbin/sms-compose ...`；动作必须是第一个参数，包装器拒绝 `--profile`、额外 `--env-file` 等全局参数作为首参，固定注入项目根 `.env` 与 Compose 文件，禁止绕过包装器直接运行 Compose。production `up` 只允许文档化的安全选项和固定生产服务，拒绝 `mock-vendor`、未知服务、`--scale`、构建、拉取及其他参数；development Mock 路径不受此生产参数白名单限制。
 
@@ -16,14 +16,14 @@
 
 | 运行目录 | 文件 owner | 精确内容 | Compose 消费者 |
 |---|---:|---|---|
-| `current/backend/` | UID 10001 | 厂商两项、AES/HMAC、JWT、LDAP、metrics 抓取 token、七个 `db_<role>_password`、三个 Redis ACL 密码 | 由 Compose 按职责最小挂载到 api、workers、outbox-dispatcher、beat |
+| `current/backend/` | UID 10001 | 厂商两项、AES/HMAC、主体与 API/realtime/bulk 四个审计 HMAC、企微公私钥对、JWT、LDAP、metrics 抓取 token、七个 `db_<role>_password`、三个 Redis ACL 密码 | 由 Compose 按职责最小挂载；企微私钥只挂 callback，自治审计 key 只挂对应生产者域 |
 | `current/postgres/` | UID 70 | `db_owner_password`、七个 `db_<role>_password` | postgres 只消费 owner；db-role-provision 消费全部 DB 密码 |
-| `current/migrate/` | UID 10001 | `db_owner_password` | migrate |
+| `current/migrate/` | UID 10001 | `db_owner_password`、`audit_context_key`、三个 `audit_system_<domain>_context_key` | migrate 将四个审计 key 写入 owner-only 验证表 |
 | `current/redis/` | UID 999/GID 1000 | 三个 Redis ACL 密码 | redis broker、redis-auth、redis-control |
 
 generation 与四个服务目录均只允许 root 遍历。Compose 的 source 可以使用内部别名，但容器内 target 始终保持 `/run/secrets/<权威名称>`；运行态后端绝不能看到 `db_owner_password`，API 绝不能看到 broker 密码，worker-callback 绝不能看到 auth 密码。旧 generation 至少保留到新容器健康确认，只有受控清理才可删除。
 
-## 18 件清单与挂载矩阵
+## 24 件清单与挂载矩阵
 
 | secret 名 | 内容格式与生产来源 | Compose 挂载服务 | 轮换后动作 |
 |---|---|---|---|
@@ -31,6 +31,12 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | api、worker-realtime、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
 | `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
 | `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
+| `audit_context_key` | 稳定 human/api_app 主体专用 32 随机字节 base64；不得复用其他 key | 仅 api、migrate | 与自治事件 key 同窗轮换；先运行 migrate 同步 owner-only 验证表，再重建 api，禁止挂载到 worker/beat/outbox |
+| `audit_system_api_context_key` | API 自治事件专用 32 随机字节 base64 | 仅 api、migrate | 只签 `AUDIT_PRODUCER_DOMAIN=api`，不得复用任何审计 key |
+| `audit_system_realtime_context_key` | realtime worker 自治事件专用 32 随机字节 base64 | 仅 worker-realtime、migrate | 只签 realtime 域；不得挂给其他 worker |
+| `audit_system_bulk_context_key` | bulk worker 自治事件专用 32 随机字节 base64 | 仅 worker-bulk、migrate | 只签 bulk 域；不得挂给其他 worker |
+| `alert_credential_public_key` | X25519 原始 32 字节公钥的 base64；必须与私钥配对 | 仅 api | 与私钥同窗轮换；旧企微配置会清空，轮换后由管理员重新配置并测试 |
+| `alert_credential_private_key` | X25519 原始 32 字节私钥的 base64；仅 callback 可解封 | 仅 worker-callback | 与公钥同窗轮换并重建 callback；绝不挂载 api 或其他 worker |
 | `jwt_secret` | 裸 v1 key 或版本化 JSON keyring（`active_version` + base64 keys）；由内部密钥系统生成 | 仅 api | 新签发令牌带 `kid/iss/aud`；旧无 `kid` 令牌仅在 `JWT_ACCEPT_LEGACY=true` 观察窗口接受，关闭后必须完成 keyring 迁移 |
 | `ldap_bind_password` | 专用最小权限 AD bind 账号密码 | 仅 api | 先在 AD 更新，再原子替换文件并重启 api；用四角色登录验证 |
 | `metrics_scrape_token` | 至少 48 随机字节的独立抓取凭据 | 仅 api；Prometheus 使用仓库外只读副本 | 原子替换两端文件并重启 api；旧值立即失效 |
@@ -50,10 +56,10 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 
 | 服务 | 容器内 secrets |
 |---|---|
-| api | 厂商两项、AES/HMAC、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password` |
-| worker-realtime | 厂商两项、AES/HMAC、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
-| worker-bulk | 厂商两项、AES/HMAC、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |
-| worker-callback | AES/HMAC、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
+| api | 厂商两项、AES/HMAC、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password` |
+| worker-realtime | 厂商两项、AES/HMAC、`audit_system_realtime_context_key`、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
+| worker-bulk | 厂商两项、AES/HMAC、`audit_system_bulk_context_key`、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |
+| worker-callback | AES/HMAC、`alert_credential_private_key`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
 | outbox-dispatcher | `db_scheduler_password`、`redis_broker_password` |
 | beat | `db_scheduler_password`、`redis_broker_password`、`redis_control_password` |
 
@@ -68,7 +74,7 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 install -d -m 0700 deploy/secrets
 umask 077
 install -m 0600 /secure/staging/vendor_secret_name deploy/secrets/vendor_secret_name
-# 其余 17 项逐一 install；完成后立即安全删除仓库外暂存副本
+# 其余 21 项逐一 install；完成后立即安全删除仓库外暂存副本
 ```
 
 禁止使用 `echo "$SECRET"`、命令行参数、shell history 或剪贴板落盘。两个数据密钥必须独立生成，禁止复用；八个数据库密码必须全部不同。

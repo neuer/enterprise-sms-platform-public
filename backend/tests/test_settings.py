@@ -423,6 +423,51 @@ def test_callback_tls_files_are_optional_paired_and_readable(tmp_path: Path) -> 
     assert settings.callback_ca_certs_file == ca_file
 
 
+def test_callback_deployment_egress_boundary_is_private_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    module = load_settings_module()
+    development = module.Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+    )
+    assert {str(network) for network in development.callback_egress_networks} == {
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+    }
+    assert development.callback_egress_port_set == {80, 443}
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test-ca", encoding="utf-8")
+    production = module.Settings(
+        _env_file=None,
+        environment="production",
+        debug=False,
+        auth_mock=False,
+        vendor_mock=False,
+        redis_ha_mode="managed",
+        ldap_ca_certs_file=ca_file,
+        vendor_base_url="https://vendor.example.invalid",
+    )
+    assert production.callback_egress_networks == ()
+    assert production.callback_egress_port_set == {443}
+
+    with pytest.raises(ValueError, match="CALLBACK_EGRESS_ALLOWED_CIDRS"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            callback_egress_allowed_cidrs="0.0.0.0/0",
+        )
+
+
 def test_redis_failure_domains_use_distinct_secret_backed_endpoints(
     tmp_path: Path,
 ) -> None:

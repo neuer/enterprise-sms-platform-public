@@ -12,7 +12,12 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.auth.principal_context import current_audit_principal
+from app.core.runtime_resources import (
+    bind_connection_audit_subject,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.vendor_test_lifecycle import lock_vendor_test_lifecycle
 from app.services.vendor_test_operation import (
     CONTROL_OPERATION_TYPES,
@@ -831,6 +836,24 @@ class SqlVendorTestOperationRepository:
             payload["checkpoint_id"] = record.checkpoint_id
         if record.vendor_code is not None:
             payload["vendor_code"] = record.vendor_code
+        principal = current_audit_principal()
+        stable_actor = record.actor_account_id is not None and principal is not None
+        if stable_actor:
+            if record.actor_identity_id is None:
+                raise ValueError("vendor test audit identity is incomplete")
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=record.actor,
+                account_id=record.actor_account_id,
+                identity_id=record.actor_identity_id,
+            )
+        else:
+            await bind_connection_system_audit(
+                connection,
+                actor_name="vendor-test-reconciler",
+                action=action,
+            )
         await connection.execute(
             text(
                 """
@@ -845,12 +868,14 @@ class SqlVendorTestOperationRepository:
                 """
             ),
             {
-                "actor": record.actor,
-                "actor_subject_kind": (
-                    "human" if record.actor_account_id is not None else "legacy_unknown"
+                "actor": (
+                    record.actor if stable_actor else "vendor-test-reconciler"
                 ),
-                "actor_account_id": record.actor_account_id,
-                "actor_identity_id": record.actor_identity_id,
+                "actor_subject_kind": (
+                    "human" if stable_actor else "system"
+                ),
+                "actor_account_id": record.actor_account_id if stable_actor else None,
+                "actor_identity_id": record.actor_identity_id if stable_actor else None,
                 "action": action,
                 "object_id": record.operation_id,
                 "after": json.dumps(payload, sort_keys=True, separators=(",", ":")),

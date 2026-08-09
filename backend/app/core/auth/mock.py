@@ -5,14 +5,14 @@ from __future__ import annotations
 import hmac
 from dataclasses import dataclass
 
-from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
+from app.core.auth.backends import AuthenticatedIdentity, DevelopmentRole, InvalidCredentials
 
 
 @dataclass(frozen=True, slots=True)
 class _MockUser:
     display_name: str
     dept: str
-    role: str
+    role: DevelopmentRole
 
 
 MOCK_USERS = {
@@ -47,6 +47,7 @@ class MockLdapProvider:
             display_name=user.display_name,
             dept=user.dept,
             groups=(f"mock:{user.role}",),
+            development_role=user.role,
         )
 
 

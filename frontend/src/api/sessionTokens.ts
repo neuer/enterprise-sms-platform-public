@@ -8,20 +8,31 @@ const USER_KEY = "sms_user"
 let accessToken: string | null = null
 let sessionUser: PlatformUser | null = null
 
+function migrateLegacyStorage(): void {
+  const legacyToken = sessionStorage.getItem(TOKEN_KEY)
+  const rawUser = sessionStorage.getItem(USER_KEY)
+  // 先销毁持久化凭据，再解析；任何异常都不能延长 Bearer 暴露窗口。
+  sessionStorage.removeItem(TOKEN_KEY)
+  sessionStorage.removeItem(USER_KEY)
+  if (!accessToken && legacyToken) accessToken = legacyToken
+  if (!sessionUser && rawUser) {
+    try {
+      sessionUser = JSON.parse(rawUser) as PlatformUser
+    } catch {
+      sessionUser = null
+    }
+  }
+}
+
 
 export function getAccessToken(): string | null {
-  return accessToken ?? sessionStorage.getItem(TOKEN_KEY)
+  migrateLegacyStorage()
+  return accessToken
 }
 
 export function getSessionUser(): PlatformUser | null {
-  if (sessionUser) return sessionUser
-  const raw = sessionStorage.getItem(USER_KEY)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw) as PlatformUser
-  } catch {
-    return null
-  }
+  migrateLegacyStorage()
+  return sessionUser
 }
 
 export function setAccessSession(token: string, user: PlatformUser): void {

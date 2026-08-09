@@ -125,6 +125,29 @@ def test_callback_transport_explicitly_disables_environment_proxies() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pinned_callback_transport_disables_cross_hostname_keepalive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def ok(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204, request=request)
+
+    def transport_factory(**kwargs: Any) -> httpx.AsyncBaseTransport:
+        captured.update(kwargs)
+        return httpx.MockTransport(ok)
+
+    monkeypatch.setattr(callback_module.httpx, "AsyncHTTPTransport", transport_factory)
+    transport = HttpxCallbackTransport()
+
+    limits = captured["limits"]
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+    assert captured["http2"] is False
+    await transport.aclose()
+
+
+@pytest.mark.asyncio
 async def test_batch_finished_body_is_canonical_and_signed_over_exact_raw_bytes() -> None:
     secret = "callback-secret"
     material = CallbackMaterial(

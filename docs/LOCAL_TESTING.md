@@ -14,7 +14,7 @@ cd <repository-root>
 scripts/local_test.sh reset
 ```
 
-脚本会创建缺失的开发 `.env` 和 18 件 mock secrets，使用 dev profile 构建全栈，等待 API/mock 健康并执行幂等 `seed-dev`。已有 secret 内容不会被覆盖或打印。默认端口为：
+脚本会创建缺失的开发 `.env` 和 24 件 mock secrets，使用 dev profile 构建全栈，等待 API/mock 健康并执行幂等 `seed-dev`。已有 secret 内容不会被覆盖或打印。默认端口为：
 
 - Web 登录：<http://localhost:18180/login>
 - API 存活：<http://localhost:18100/livez>
@@ -66,7 +66,7 @@ docker compose -f deploy/docker-compose.yml logs --since=10m api worker-realtime
 
 - 本地脚本只接受 `DEBUG=1`、`AUTH_MOCK=1`、`VENDOR_MOCK=1` 和 `http://mock-vendor:9028`；检测到其他值会拒绝启动。
 - 测试不会请求真实 LDAP、厂商、企业微信或 SMTP；告警只写 `alert_log` 与结构化日志。
-- `.env`、18 件本地测试 secrets、开发 API Key、数据库卷均是本机测试资产，已被 Git
+- `.env`、24 件本地测试 secrets、开发 API Key、数据库卷均是本机测试资产，已被 Git
   忽略；已有安全随机值会复用，旧式固定开发凭据会自动轮换；仍不得上传、复制到聊天或
   用于生产。
 - 若要验证真实 LDAP/厂商，请按 `HANDOVER.md` 在隔离预生产执行，不能通过修改本地脚本绕过 mock-only 断言。

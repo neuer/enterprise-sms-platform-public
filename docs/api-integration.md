@@ -353,7 +353,7 @@ const data = await response.json();
 | `RATE_LIMITED` | 429 | 请求频率超限 |
 | `USAGE_PROJECTION_UNAVAILABLE` | 503 | 配额账本暂不可用，请稍后重试（不要立即重试） |
 | `BALANCE_BLOCKED` | 503 | 余额不足，平台队列暂停 |
-| `VENDOR_ERROR` | 502 | 厂商侧错误（detail 含厂商 code/msg） |
+| `VENDOR_ERROR` | 502 | 厂商侧错误（detail 仅含数值 code 与平台本地映射描述，不回传厂商原始 msg） |
 
 ## 10. 上线清单
 

@@ -163,8 +163,9 @@ class FakeStepUp:
 
 
 class FakeCodec:
-    def validate(self, raw_path: str | Path) -> Path:
+    def validate(self, raw_path: str | Path, *, expected_task_id: int) -> Path:
         assert str(raw_path) == "/safe/export-9.smsx"
+        assert expected_task_id == 9
         return Path(str(raw_path))
 
     def iter_decrypted(self, _path: str | Path) -> Iterator[bytes]:

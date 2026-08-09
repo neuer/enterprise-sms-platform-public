@@ -64,6 +64,13 @@ def test_vendor_control_socket_directory_is_read_only_and_least_privilege() -> N
             assert "/run/sms-platform/secrets" not in volume
             assert "docker.sock" not in volume
 
+    assert services["api"]["user"] == "10001:10001"
+    assert services["worker-realtime"]["user"] == "10001:10002"
+    assert services["worker-realtime"]["group_add"] == ["10001"]
+    assert services["worker-realtime"]["tmpfs"] == [
+        "/tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10002,mode=0700"
+    ]
+
 
 def test_live_profile_does_not_auto_start_mock_and_default_state_dir_has_no_allowlist() -> None:
     compose = _compose()

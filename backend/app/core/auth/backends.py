@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from app.core.auth.accounts import PlatformAccount
@@ -28,6 +28,8 @@ class SessionStateUnavailable(RuntimeError):
 # 旧名称只用于重构期间尚未迁移的调用方，不改变新 API 错误语义。
 DirectoryUnavailable = ProviderUnavailable
 
+DevelopmentRole = Literal["admin", "approver", "operator", "viewer"]
+
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedIdentity:
@@ -39,6 +41,7 @@ class AuthenticatedIdentity:
     display_name: str
     dept: str
     groups: tuple[str, ...]
+    development_role: DevelopmentRole | None = None
     account: PlatformAccount | None = None
 
 

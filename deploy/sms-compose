@@ -135,9 +135,12 @@ validate_production_launch() {
   local env_file="$ROOT/.env"
   local line key raw value shell_value
   local seen_environment=0 seen_debug=0 seen_auth_mock=0 seen_vendor_mock=0
-  local seen_compose_profiles=0
+  local seen_compose_profiles=0 seen_web_bind_ip=0 seen_external_tls_mode=0
+  local seen_trusted_proxy_cidrs=0
   local env_environment='' env_debug='' env_auth_mock='' env_vendor_mock=''
-  local env_compose_profiles=''
+  local env_compose_profiles='' env_web_bind_ip='127.0.0.1'
+  local env_external_tls_mode='0' env_trusted_proxy_cidrs=''
+  local effective_web_bind_ip effective_external_tls_mode effective_trusted_proxy_cidrs
 
   if [[ ! -f "$env_file" ]]; then
     echo "sms-compose: production requires the root .env file" >&2
@@ -149,7 +152,7 @@ validate_production_launch() {
       echo "sms-compose: production ingress overrides are forbidden" >&2
       return 1
     fi
-    if [[ "$line" =~ ^[[:space:]]*(ENVIRONMENT|DEBUG|AUTH_MOCK|VENDOR_MOCK|COMPOSE_PROFILES)[[:space:]]*=(.*)$ ]]; then
+    if [[ "$line" =~ ^[[:space:]]*(ENVIRONMENT|DEBUG|AUTH_MOCK|VENDOR_MOCK|COMPOSE_PROFILES|WEB_BIND_IP|SMS_EXTERNAL_TLS_MODE|SMS_TRUSTED_PROXY_CIDRS)[[:space:]]*=(.*)$ ]]; then
       key="${BASH_REMATCH[1]}"
       raw="${BASH_REMATCH[2]}"
       value="$(trim_non_secret_value "$raw")"
@@ -194,6 +197,30 @@ validate_production_launch() {
           seen_compose_profiles=1
           env_compose_profiles="$value"
           ;;
+        WEB_BIND_IP)
+          [[ "$seen_web_bind_ip" == 0 ]] || {
+            echo "sms-compose: duplicate production Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_web_bind_ip=1
+          env_web_bind_ip="$value"
+          ;;
+        SMS_EXTERNAL_TLS_MODE)
+          [[ "$seen_external_tls_mode" == 0 ]] || {
+            echo "sms-compose: duplicate production Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_external_tls_mode=1
+          env_external_tls_mode="$value"
+          ;;
+        SMS_TRUSTED_PROXY_CIDRS)
+          [[ "$seen_trusted_proxy_cidrs" == 0 ]] || {
+            echo "sms-compose: duplicate production Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_trusted_proxy_cidrs=1
+          env_trusted_proxy_cidrs="$value"
+          ;;
       esac
     fi
   done < "$env_file"
@@ -232,6 +259,27 @@ validate_production_launch() {
     echo "sms-compose: shell COMPOSE_PROFILES is forbidden in production" >&2
     return 1
   fi
+
+  effective_web_bind_ip="${WEB_BIND_IP-$env_web_bind_ip}"
+  effective_external_tls_mode="${SMS_EXTERNAL_TLS_MODE-$env_external_tls_mode}"
+  effective_trusted_proxy_cidrs="${SMS_TRUSTED_PROXY_CIDRS-$env_trusted_proxy_cidrs}"
+  if ! python3 "$ROOT/scripts/verify_web_transport.py" \
+    --validate-bind-only \
+    --web-bind-ip "$effective_web_bind_ip" \
+    --external-tls-mode "$effective_external_tls_mode" \
+    --quiet; then
+    echo "sms-compose: production Web plaintext bind is unsafe" >&2
+    return 1
+  fi
+  if ! python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
+    --mode "$effective_external_tls_mode" \
+    --cidrs "$effective_trusted_proxy_cidrs" \
+    --validate-only; then
+    echo "sms-compose: production TLS terminator allowlist is unsafe" >&2
+    return 1
+  fi
+  PRODUCTION_EXTERNAL_TLS_MODE="$effective_external_tls_mode"
+  PRODUCTION_TRUSTED_PROXY_CIDRS="$effective_trusted_proxy_cidrs"
 }
 
 validate_down_args() {
@@ -344,10 +392,16 @@ rotate_backend() {
 }
 
 start_stack() {
+  local external_tls_mode="${SMS_EXTERNAL_TLS_MODE:-0}"
+  local trusted_proxy_cidrs="${SMS_TRUSTED_PROXY_CIDRS:-}"
+  if [[ "$SECRETS_MODE" == production ]]; then
+    external_tls_mode="$PRODUCTION_EXTERNAL_TLS_MODE"
+    trusted_proxy_cidrs="$PRODUCTION_TRUSTED_PROXY_CIDRS"
+  fi
   prepare_runtime_secrets
   python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
-    --mode "${SMS_EXTERNAL_TLS_MODE:-0}" \
-    --cidrs "${SMS_TRUSTED_PROXY_CIDRS:-}" \
+    --mode "$external_tls_mode" \
+    --cidrs "$trusted_proxy_cidrs" \
     --output "${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
   "${COMPOSE[@]}" config --quiet
   "${COMPOSE[@]}" up "$@"

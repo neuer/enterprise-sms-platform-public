@@ -128,7 +128,7 @@ class CallbackTransport(Protocol):
 
 
 class HttpxCallbackTransport:
-    """复用有界连接池、固定单截止时间且禁重定向的 callback HTTP 边界。"""
+    """固定单截止时间且禁重定向；固定 IP 请求禁止跨逻辑主机复用 TLS。"""
 
     def __init__(
         self,
@@ -137,16 +137,14 @@ class HttpxCallbackTransport:
         clock: Callable[[], float] = time.monotonic,
         ssl_context: ssl.SSLContext | None = None,
         max_connections: int = 20,
-        max_keepalive_connections: int = 10,
         max_response_header_bytes: int = 16 * 1024,
         max_response_body_bytes: int = 4 * 1024,
     ) -> None:
-        if min(
-            max_connections,
-            max_keepalive_connections,
-            max_response_header_bytes,
-            max_response_body_bytes,
-        ) < 1:
+        if (
+            max_connections < 1
+            or max_response_header_bytes < 1
+            or max_response_body_bytes < 1
+        ):
             raise ValueError("callback transport limits must be positive")
         self.transport = transport
         self.clock = clock
@@ -154,13 +152,14 @@ class HttpxCallbackTransport:
         self.max_response_body_bytes = max_response_body_bytes
         limits = httpx.Limits(
             max_connections=max_connections,
-            max_keepalive_connections=min(max_keepalive_connections, max_connections),
+            max_keepalive_connections=0,
             keepalive_expiry=30,
         )
         owned_transport = transport or httpx.AsyncHTTPTransport(
             verify=ssl_context or True,
             limits=limits,
             retries=0,
+            http2=False,
         )
         self._client = httpx.AsyncClient(
             timeout=None,

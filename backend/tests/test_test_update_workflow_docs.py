@@ -258,4 +258,4 @@ def test_active_docs_use_18_secrets_and_do_not_link_private_evidence() -> None:
         assert "八件套" not in document
         for link in forbidden_links:
             assert link not in document
-    assert "18 件" in read("deploy/secrets.md")
+    assert "24 件" in read("deploy/secrets.md")

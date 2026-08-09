@@ -199,12 +199,16 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
     tmp_path: Path,
 ) -> None:
     encoded_key = base64.b64encode(b"k" * 32).decode()
+    encoded_system_key = base64.b64encode(b"s" * 32).decode()
     values = {
         "db_accept_password": "db-password",
         "vendor_secret_name": "vendor-name",
         "vendor_secret_key": "vendor-key",
         "data_aes_key": encoded_key,
         "data_hmac_key": encoded_key,
+        "audit_context_key": encoded_key,
+        "audit_system_api_context_key": encoded_system_key,
+        "alert_credential_public_key": encoded_key,
         "jwt_secret": "jwt-key",
         "ldap_bind_password": "ldap-password",
     }
@@ -225,6 +229,9 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
         vendor_secret_key_file=paths["vendor_secret_key"],
         data_aes_key_file=paths["data_aes_key"],
         data_hmac_key_file=paths["data_hmac_key"],
+        audit_context_key_file=paths["audit_context_key"],
+        audit_system_api_context_key_file=paths["audit_system_api_context_key"],
+        alert_credential_public_key_file=paths["alert_credential_public_key"],
         jwt_secret_file=paths["jwt_secret"],
         ldap_bind_password_file=paths["ldap_bind_password"],
     )

@@ -165,7 +165,20 @@ def test_runtime_services_never_mount_owner_password() -> None:
         "/run/secrets/db_owner_password"
     )
     assert migrate["secrets"] == [
-        {"source": "db_owner_password", "target": "db_owner_password"}
+        {"source": "db_owner_password", "target": "db_owner_password"},
+        {"source": "migrate_audit_context_key", "target": "audit_context_key"},
+        {
+            "source": "migrate_audit_system_api_context_key",
+            "target": "audit_system_api_context_key",
+        },
+        {
+            "source": "migrate_audit_system_realtime_context_key",
+            "target": "audit_system_realtime_context_key",
+        },
+        {
+            "source": "migrate_audit_system_bulk_context_key",
+            "target": "audit_system_bulk_context_key",
+        },
     ]
 
     expected_roles = {
@@ -224,6 +237,9 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "alert_credential_public_key",
         "jwt_secret",
         "ldap_bind_password",
         "metrics_scrape_token",
@@ -240,6 +256,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_system_realtime_context_key",
         "db_send_password",
         "db_callback_password",
         "redis_broker_password",
@@ -250,6 +267,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_system_bulk_context_key",
         "db_send_password",
         "db_export_password",
         "redis_broker_password",
@@ -258,6 +276,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
     assert targets("worker-callback") == {
         "data_aes_key",
         "data_hmac_key",
+        "alert_credential_private_key",
         "db_callback_password",
         "redis_broker_password",
         "redis_control_password",
@@ -373,6 +392,7 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
     assert "map \"$sms_trusted_proxy|$http_x_forwarded_proto\" $forwarded_proto" in config
     assert "$http_x_forwarded_for" not in config
     assert "include /etc/nginx/trusted-proxies.conf;" in config
+    assert "if ($sms_plaintext_client_allowed = 0)" in config
     assert "$proxy_add_x_forwarded_for" not in config
     dockerfile = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
     assert (
@@ -447,7 +467,9 @@ def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> No
     assert migrate["command"] == [
         "sh",
         "-ec",
-        "alembic upgrade head && python -m scripts_support.maintain_partitions",
+        "alembic upgrade head && "
+        "python -m scripts_support.provision_audit_context_key && "
+        "python -m scripts_support.maintain_partitions",
     ]
     assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
         "/run/secrets/db_owner_password"

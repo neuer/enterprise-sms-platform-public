@@ -16,6 +16,8 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import text
 from starlette.requests import Request
 
+from app.core.auth.accounts import ApplicationPrincipal
+from app.core.auth.principal_context import bind_audit_principal
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
@@ -170,6 +172,10 @@ def _enforce_ip_allowlist(request: Request, context: ApiAppContext) -> None:
         raise ApiError(403, "IP_NOT_ALLOWED", "来源 IP 不在应用白名单", None)
 
 
+def _bind_app_principal(context: ApiAppContext) -> None:
+    bind_audit_principal(ApplicationPrincipal(context.app_id, context.name, context.dept))
+
+
 class ApiKeyAuthenticator:
     """以常量时间哈希比较验证当前 Key 或仍在宽限期的旧 Key。"""
 
@@ -234,6 +240,7 @@ async def optional_api_app(
     existing = getattr(request.state, "sms_app", None)
     if isinstance(existing, ApiAppContext):
         _enforce_ip_allowlist(request, existing)
+        _bind_app_principal(existing)
         return existing
     if not key:
         return None
@@ -243,6 +250,7 @@ async def optional_api_app(
         raise _unauthorized() from None
     _enforce_ip_allowlist(request, context)
     request.state.sms_app = context
+    _bind_app_principal(context)
     return context
 
 
@@ -256,6 +264,7 @@ async def require_api_app(
     existing = getattr(request.state, "sms_app", None)
     if isinstance(existing, ApiAppContext):
         _enforce_ip_allowlist(request, existing)
+        _bind_app_principal(existing)
         return existing
     if not key:
         raise _unauthorized()
@@ -265,6 +274,7 @@ async def require_api_app(
         raise _unauthorized() from None
     _enforce_ip_allowlist(request, context)
     request.state.sms_app = context
+    _bind_app_principal(context)
     return context
 
 

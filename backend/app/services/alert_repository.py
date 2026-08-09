@@ -11,6 +11,7 @@ from app.core.runtime_resources import database_engine
 from app.services.alert import AlertRouting, AlertService, SmtpRouting, safe_alert_routing
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
+from app.services.sensitive_config import AlertCredentialCipher, decrypt_wecom_webhook
 from app.settings import Settings, get_settings
 
 
@@ -19,11 +20,41 @@ class SqlAlertRepository:
 
     uses_outbox = True
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        credential_cipher: AlertCredentialCipher | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.credential_cipher = credential_cipher
+
+    def _credential_cipher(self) -> AlertCredentialCipher:
+        if self.credential_cipher is None:
+            self.credential_cipher = AlertCredentialCipher.from_private_file(
+                self.settings.alert_credential_private_key_file
+            )
+        return self.credential_cipher
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
+
+    async def load_channel_availability(self) -> tuple[bool, bool]:
+        """只读取渠道是否配置，不向告警生产者暴露 reusable credential。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT wecom_configured,smtp_configured "
+                        "FROM alert_channel_availability()"
+                    )
+                )
+                row = result.mappings().one()
+                return bool(row["wecom_configured"]), bool(row["smtp_configured"])
+        finally:
+            await engine.dispose()
 
     async def load_routing(self) -> AlertRouting:
         engine = self._engine()
@@ -42,6 +73,17 @@ class SqlAlertRepository:
                 values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         finally:
             await engine.dispose()
+        stored_webhook = values.get("alert_wecom_webhook", "").strip()
+        if stored_webhook:
+            try:
+                wecom_webhook = decrypt_wecom_webhook(
+                    stored_webhook,
+                    self._credential_cipher(),
+                )
+            except ValueError:
+                wecom_webhook = ""
+        else:
+            wecom_webhook = ""
         recipients = tuple(
             address.strip()
             for address in values.get("alert_mail_to", "").split(",")
@@ -63,7 +105,7 @@ class SqlAlertRepository:
                 )
         return safe_alert_routing(
             AlertRouting(
-                wecom_webhook=values.get("alert_wecom_webhook", "").strip(),
+                wecom_webhook=wecom_webhook,
                 smtp=smtp,
             ),
             self.settings.alert_smtp_allowed_host_set,

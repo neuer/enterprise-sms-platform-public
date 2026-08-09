@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -44,6 +45,12 @@ _NEW_SECRET_NAMES = frozenset(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+        "alert_credential_public_key",
+        "alert_credential_private_key",
         "jwt_secret",
         "ldap_bind_password",
         "metrics_scrape_token",
@@ -62,10 +69,64 @@ _NEW_SECRET_NAMES = frozenset(
 )
 _GENERATED_SECRET_NAMES = _NEW_SECRET_NAMES - _OLD_SECRET_NAMES
 _DEV_SECRET = "dev-apikeys.txt"
+_CRYPTO_KEY_NAMES = frozenset(
+    {
+        "audit_context_key",
+        "audit_system_api_context_key",
+        "audit_system_realtime_context_key",
+        "audit_system_bulk_context_key",
+        "alert_credential_public_key",
+        "alert_credential_private_key",
+    }
+)
 
 
 class PublicCutoverBootstrapError(RuntimeError):
     """一次性基础设施准备未满足安全合同。"""
+
+
+def _generate_alert_keypair() -> tuple[str, str]:
+    """使用 RFC 7748 Montgomery ladder 生成 X25519 原始 keypair。"""
+
+    private_value = bytearray(secrets.token_bytes(32))
+    scalar = bytearray(private_value)
+    scalar[0] &= 248
+    scalar[31] &= 127
+    scalar[31] |= 64
+    number = int.from_bytes(scalar, "little")
+    modulus = 2**255 - 19
+    x_1 = 9
+    x_2, z_2 = 1, 0
+    x_3, z_3 = x_1, 1
+    swap = 0
+    for position in range(254, -1, -1):
+        bit = (number >> position) & 1
+        swap ^= bit
+        if swap:
+            x_2, x_3 = x_3, x_2
+            z_2, z_3 = z_3, z_2
+        swap = bit
+        a = (x_2 + z_2) % modulus
+        aa = (a * a) % modulus
+        b = (x_2 - z_2) % modulus
+        bb = (b * b) % modulus
+        e = (aa - bb) % modulus
+        c = (x_3 + z_3) % modulus
+        d = (x_3 - z_3) % modulus
+        da = (d * a) % modulus
+        cb = (c * b) % modulus
+        x_3 = ((da + cb) ** 2) % modulus
+        z_3 = (x_1 * ((da - cb) ** 2)) % modulus
+        x_2 = (aa * bb) % modulus
+        z_2 = (e * (aa + 121665 * e)) % modulus
+    if swap:
+        x_2, x_3 = x_3, x_2
+        z_2, z_3 = z_3, z_2
+    public_value = (x_2 * pow(z_2, modulus - 2, modulus)) % modulus
+    return (
+        base64.b64encode(public_value.to_bytes(32, "little")).decode("ascii"),
+        base64.b64encode(private_value).decode("ascii"),
+    )
 
 
 class CommandRunner(Protocol):
@@ -535,7 +596,7 @@ class PublicCutoverBootstrap:
         if (source_secrets / _DEV_SECRET).exists():
             shutil.copy2(source_secrets / _DEV_SECRET, new_secrets / _DEV_SECRET)
         generated_values: set[str] = set()
-        for name in sorted(_GENERATED_SECRET_NAMES):
+        for name in sorted(_GENERATED_SECRET_NAMES - _CRYPTO_KEY_NAMES):
             value = self.secret_factory()
             if (
                 type(value) is not str
@@ -547,6 +608,18 @@ class PublicCutoverBootstrap:
                 )
             generated_values.add(value)
             _write_secret(new_secrets / name, value)
+        _write_secret(
+            new_secrets / "audit_context_key",
+            base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
+        )
+        for domain in ("api", "realtime", "bulk"):
+            _write_secret(
+                new_secrets / f"audit_system_{domain}_context_key",
+                base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
+            )
+        public_key, private_key = _generate_alert_keypair()
+        _write_secret(new_secrets / "alert_credential_public_key", public_key)
+        _write_secret(new_secrets / "alert_credential_private_key", private_key)
         _safe_secret_directory(
             new_secrets,
             _NEW_SECRET_NAMES,
@@ -778,7 +851,7 @@ class PublicCutoverBootstrap:
             )
 
     def run(self) -> dict[str, object]:
-        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 11:
+        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 17:
             raise PublicCutoverBootstrapError(
                 "public cutover bootstrap is not explicitly confirmed"
             )

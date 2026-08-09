@@ -74,6 +74,65 @@ esac
   DB_OWNER_PASSWORD_FILE="$owner_password_file" \
     uv run alembic upgrade head
 
+  role_boundary_result="$(
+    docker exec -i "$container" psql -qAt \
+      -U sms_owner -d "$database" -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+UPDATE sys_config
+SET value=CASE key
+  WHEN 'alert_wecom_webhook' THEN 'https://synthetic.invalid/hook'
+  WHEN 'security_daily_resend_api_key' THEN 'synthetic-resend-key'
+  WHEN 'alert_mail_to' THEN 'security@example.invalid'
+  ELSE value
+END
+WHERE key IN (
+  'alert_wecom_webhook','security_daily_resend_api_key','alert_mail_to'
+);
+SET ROLE sms_auth;
+SELECT
+  EXISTS(SELECT 1 FROM sys_config WHERE key='alert_wecom_webhook'),
+  EXISTS(SELECT 1 FROM sys_config WHERE key='security_daily_resend_api_key'),
+  (SELECT wecom_configured FROM alert_channel_availability()),
+  (SELECT smtp_configured FROM alert_channel_availability());
+RESET ROLE;
+SET ROLE sms_callback;
+SELECT
+  EXISTS(SELECT 1 FROM sys_config WHERE key='alert_wecom_webhook'),
+  EXISTS(SELECT 1 FROM sys_config WHERE key='security_daily_resend_api_key'),
+  (SELECT wecom_configured FROM alert_channel_availability()),
+  (SELECT smtp_configured FROM alert_channel_availability());
+RESET ROLE;
+SET ROLE sms_accept;
+SELECT
+  EXISTS(SELECT 1 FROM sys_config WHERE key='alert_wecom_webhook'),
+  EXISTS(SELECT 1 FROM sys_config WHERE key='security_daily_resend_api_key');
+RESET ROLE;
+ROLLBACK;
+SQL
+  )"
+  expected_role_boundary=$'f|f|t|t\nt|f|t|t\nt|t'
+  if [[ "$role_boundary_result" != "$expected_role_boundary" ]]; then
+    printf 'sys_config 敏感行运行角色隔离异常\n' >&2
+    exit 1
+  fi
+  export_boundary_result="$(
+    docker exec "$container" psql -qAt \
+      -U sms_owner -d "$database" -v ON_ERROR_STOP=1 -c "
+      SELECT
+        has_column_privilege('sms_export','export_task','status','UPDATE'),
+        has_column_privilege('sms_export','export_task','file_path','UPDATE'),
+        NOT has_column_privilege('sms_export','export_task','decrypted','UPDATE'),
+        NOT has_column_privilege('sms_export','export_task','filters','UPDATE'),
+        NOT has_column_privilege('sms_export','export_task','scope_dept','UPDATE'),
+        NOT has_column_privilege(
+          'sms_export','export_task','creator_account_id','UPDATE'
+        );"
+  )"
+  if [[ "$export_boundary_result" != "t|t|t|t|t|t" ]]; then
+    printf 'export_task 授权元数据更新边界异常\n' >&2
+    exit 1
+  fi
+
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
   VENDOR_UAT_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   EXPORT_AUTH_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \

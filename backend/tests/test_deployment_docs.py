@@ -13,6 +13,12 @@ PRODUCTION_SECRETS = {
     "vendor_secret_key",
     "data_aes_key",
     "data_hmac_key",
+    "audit_context_key",
+    "audit_system_api_context_key",
+    "audit_system_realtime_context_key",
+    "audit_system_bulk_context_key",
+    "alert_credential_public_key",
+    "alert_credential_private_key",
     "jwt_secret",
     "ldap_bind_password",
     "metrics_scrape_token",
@@ -34,6 +40,10 @@ REDIS_SECRET_NAMES = {
     "redis_control_password",
 }
 COMPOSE_INTERNAL_SECRET_ALIASES = {
+    "migrate_audit_context_key",
+    "migrate_audit_system_api_context_key",
+    "migrate_audit_system_realtime_context_key",
+    "migrate_audit_system_bulk_context_key",
     "postgres_db_owner_password",
     "postgres_db_auth_password",
     "postgres_db_accept_password",
@@ -97,7 +107,7 @@ def test_secret_runbook_documents_canonical_and_runtime_copy_boundaries() -> Non
     runbook = read_required("secrets.md")
 
     for token in (
-        "18 个",
+        "24 个",
         "0700",
         "0600",
         "/run/sms-platform/secrets/current",
@@ -588,7 +598,7 @@ def test_public_handover_redacts_evidence_and_acceptance_stays_live() -> None:
     for token in (
         "外部 TLS",
         "真实 AD",
-        "生产 18 件 secrets",
+        "生产 24 件 secrets",
         "24 小时",
         "RTO",
         "真人 UAT",

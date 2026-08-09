@@ -186,7 +186,8 @@ describe("统一 API 请求", () => {
       "会话权威状态暂不可用",
     )
 
-    expect(sessionStorage.getItem("sms_token")).toBe("expired")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
@@ -198,8 +199,8 @@ describe("统一 API 请求", () => {
 
     await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow(code)
 
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
-    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
@@ -214,8 +215,8 @@ describe("统一 API 请求", () => {
 
     await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow()
 
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
-    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
@@ -231,8 +232,8 @@ describe("统一 API 请求", () => {
 
     await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
 
-    expect(sessionStorage.getItem("sms_token")).toBe("admin.jwt")
-    expect(sessionStorage.getItem("sms_user")).toBe("{}")
+    expect(sessionStorage.getItem("sms_token")).toBeNull()
+    expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
   })
 

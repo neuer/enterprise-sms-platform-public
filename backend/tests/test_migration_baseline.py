@@ -961,6 +961,37 @@ def test_database_role_matrix_covers_report_callback_producer_path() -> None:
     assert module.down_revision == "0033_correlation_audit_chain"
 
 
+def test_sensitive_sys_config_rows_are_hidden_by_runtime_role_policy() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0054_sensitive_config_rls.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "ALTER TABLE sys_config ENABLE ROW LEVEL SECURITY",
+        "CREATE POLICY sys_config_accept_all",
+        "CREATE POLICY sys_config_callback_select",
+        "CREATE POLICY sys_config_nonsecret_select",
+        "security_daily_resend_api_key",
+        "alert_wecom_webhook",
+        "FUNCTION alert_channel_availability()",
+        "SECURITY DEFINER",
+        "REVOKE ALL ON FUNCTION alert_channel_availability() FROM PUBLIC",
+        "status,file_path,row_count,started_at,lease_id,lease_expires_at",
+    ):
+        assert fragment in schema
+        assert fragment in source
+
+    assert "GRANT UPDATE (" in schema
+    assert "REVOKE UPDATE ON export_task FROM sms_export" in source
+
+    spec = importlib.util.spec_from_file_location("sensitive_config_rls_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0054_sensitive_config_rls"
+    assert module.down_revision == "0053_idempotency_scope"
+
+
 def test_atomic_password_change_is_in_schema_and_followup_migration() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0035_atomic_password_change.py"

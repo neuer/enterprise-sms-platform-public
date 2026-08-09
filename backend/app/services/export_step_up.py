@@ -38,6 +38,8 @@ class ReauthenticationFacade(Protocol):
 class StepUpStore(Protocol):
     async def set(self, key: str, value: str, *, ex: int) -> Any: ...
 
+    async def delete(self, *keys: str) -> Any: ...
+
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any: ...
 
 
@@ -97,22 +99,27 @@ class ExportStepUpService:
             raise ExportStepUpExpired("二次认证上下文无效")
         await self.auth.reauthenticate_current(claims, password, ip)
         token = secrets.token_urlsafe(32)
+        token_key = _key(token)
         await self.store.set(
-            _key(token),
+            token_key,
             _binding(claims, ip, public_id),
             ex=EXPORT_STEP_UP_TTL_SECONDS,
         )
         if self.audit_sink is not None:
-            await self.audit_sink(
-                AuditEvent(
-                    principal=claims.principal,
-                    action="export_step_up",
-                    object_type="export_task",
-                    object_id=str(public_id),
-                    role=claims.role,
-                    ip=ip,
+            try:
+                await self.audit_sink(
+                    AuditEvent(
+                        principal=claims.principal,
+                        action="export_step_up",
+                        object_type="export_task",
+                        object_id=str(public_id),
+                        role=claims.role,
+                        ip=ip,
+                    )
                 )
-            )
+            except Exception:
+                await self.store.delete(token_key)
+                raise
         return token
 
     async def consume(

@@ -113,6 +113,9 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "test_worker_fencing_postgres.py" in postgres_gate
     assert "OUTBOX_POSTGRES_DSN" in postgres_gate
     assert "EXPORT_AUTH_POSTGRES_DSN" in postgres_gate
+    assert "alert_channel_availability()" in postgres_gate
+    assert "security_daily_resend_api_key" in postgres_gate
+    assert "SET ROLE sms_callback" in postgres_gate
     assert 'if [[ "${SMS_COVERAGE:-0}" == "1" ]]' in postgres_gate
     assert "pytest_args+=(--cov=app --cov-report= --cov-append)" in postgres_gate
     assert "postgres:16-alpine" in postgres_gate

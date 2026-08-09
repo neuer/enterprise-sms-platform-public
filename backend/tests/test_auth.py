@@ -50,12 +50,25 @@ class FakeKeyValue:
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> int:
         del script
-        assert numkeys == 1
-        key, expected, replacement, _ttl = args
+        if numkeys == 3:
+            revoked_jti, revoked_session, refresh_family, jti_ttl, session_ttl = args
+            assert int(jti_ttl) > 0 and int(session_ttl) > 0
+            self.values[str(revoked_jti)] = "1"
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(refresh_family), None)
+            return 1
+        assert numkeys == 2
+        key, revoked_session, expected, replacement, _ttl, session_ttl = args
         current = self.values.get(str(key))
         if current is None:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(key), None)
             return 0
         if current != expected:
+            assert int(session_ttl) > 0
+            self.values[str(revoked_session)] = "1"
+            self.values.pop(str(key), None)
             return -1
         self.values[str(key)] = replacement
         return 1
@@ -180,6 +193,7 @@ async def test_mock_backend_only_accepts_seed_users_and_injected_password() -> N
     assert identity.display_name == "开发管理员"
     assert identity.dept == "平台技术部"
     assert identity.groups == ("mock:admin",)
+    assert identity.development_role == "admin"
 
     with pytest.raises(InvalidCredentials):
         await backend.authenticate("admin01", "wrong")
@@ -264,9 +278,12 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
     assert tls_calls[0]["validate"] != 0
     assert tls_calls[0]["ca_certs_file"] == "/etc/ssl/certs/ca-certificates.crt"
     assert calls[0]["connect_timeout"] == 3
+    assert calls[0]["allowed_referral_hosts"] == []
     assert calls[1]["receive_timeout"] == 4
     assert calls[1]["user"] == "CN=svc,DC=xtc,DC=com"
+    assert calls[1]["auto_referrals"] is False
     assert calls[3]["user"] == Entry.entry_dn
+    assert calls[3]["auto_referrals"] is False
 
 
 @pytest.mark.asyncio
@@ -459,6 +476,31 @@ def test_role_resolver_honors_override_and_mapping_without_hidden_bootstrap() ->
             {},
         )
 
+    with pytest.raises(InvalidCredentials):
+        resolver.resolve(
+            AuthenticatedIdentity(
+                "ad",
+                "directory-controlled",
+                "guid-directory-controlled",
+                "目录用户",
+                "研发部",
+                ("mock:admin",),
+            ),
+            None,
+            {},
+        )
+
+    mock_identity = AuthenticatedIdentity(
+        "ad",
+        "admin01",
+        "mock:admin01",
+        "开发管理员",
+        "平台技术部",
+        ("mock:admin",),
+        development_role="admin",
+    )
+    assert resolver.resolve(mock_identity, None, {}).role == "admin"
+
 
 @pytest.mark.asyncio
 async def test_jwt_jti_logout_and_force_user_revoke() -> None:
@@ -486,6 +528,44 @@ async def test_jwt_jti_logout_and_force_user_revoke() -> None:
     await service.revoke_user(8)
     with pytest.raises(InvalidCredentials):
         await service.verify(second)
+
+
+@pytest.mark.asyncio
+async def test_logout_revokes_every_access_token_in_the_same_session() -> None:
+    store = FakeKeyValue()
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        store,
+    )
+    first = await service.issue_pair(access_claims())
+    second = await service.rotate_refresh(first.refresh_token)
+
+    await service.revoke_token(second.token)
+
+    with pytest.raises(InvalidCredentials):
+        await service.verify(first.token)
+    with pytest.raises(InvalidCredentials):
+        await service.verify(second.token)
+
+
+@pytest.mark.asyncio
+async def test_logout_by_refresh_token_revokes_family_when_access_is_expired() -> None:
+    store = FakeKeyValue()
+    moments = [datetime(2026, 7, 11, 8, 0, tzinfo=UTC)]
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        store,
+        clock=lambda: moments[0],
+        ttl=timedelta(minutes=15),
+    )
+    pair = await service.issue_pair(access_claims())
+    moments[0] += timedelta(minutes=16)
+
+    claims = await service.revoke_refresh_token(pair.refresh_token)
+
+    assert claims.account_id == 8
+    with pytest.raises(InvalidCredentials):
+        await service.rotate_refresh(pair.refresh_token)
 
 
 @pytest.mark.asyncio
@@ -612,7 +692,7 @@ async def test_jwt_rejects_disabled_or_changed_authoritative_projection(
 
 @pytest.mark.asyncio
 @pytest.mark.authorization
-async def test_refresh_rotates_once_and_out_of_grace_reuse_revokes_the_family() -> None:
+async def test_refresh_replay_revokes_family_with_authoritative_projection() -> None:
     store = FakeKeyValue()
 
     async def load_security_session(
@@ -632,12 +712,10 @@ async def test_refresh_rotates_once_and_out_of_grace_reuse_revokes_the_family() 
     second = await service.rotate_refresh(first.refresh_token)
     assert (await service.verify(second.token)).account_id == 8
 
-    grace = await service.rotate_refresh(first.refresh_token)
-    assert grace.refresh_token == second.refresh_token
-    store.values.pop(service._refresh_grace_key(first.refresh_token))
-
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token)
+    with pytest.raises(InvalidCredentials):
+        await service.verify(second.token)
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(second.refresh_token)
 
@@ -681,7 +759,7 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_old_refresh_token_gets_bounded_grace_without_destroying_family() -> None:
+async def test_old_refresh_token_replay_immediately_destroys_family() -> None:
     store = FakeKeyValue()
     service = JwtService(
         "a-jwt-secret-that-is-long-enough-for-hs256-tests",
@@ -689,30 +767,35 @@ async def test_old_refresh_token_gets_bounded_grace_without_destroying_family() 
     )
     first = await service.issue_pair(access_claims())
     second = await service.rotate_refresh(first.refresh_token)
-
-    grace = await service.rotate_refresh(first.refresh_token)
-
-    assert grace.refresh_token == second.refresh_token
-    assert (await service.verify(grace.token)).account_id == 8
-    # 新 family 仍然有效，可以在 grace 之外继续正常轮换。
-    assert (await service.rotate_refresh(second.refresh_token)).token
-
-
-@pytest.mark.asyncio
-async def test_out_of_grace_refresh_replay_still_destroys_family() -> None:
-    store = FakeKeyValue()
-    service = JwtService(
-        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
-        store,
-    )
-    first = await service.issue_pair(access_claims())
-    second = await service.rotate_refresh(first.refresh_token)
-    store.values.pop(service._refresh_grace_key(first.refresh_token))
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token)
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(second.refresh_token)
+
+
+@pytest.mark.asyncio
+async def test_refresh_replay_revocation_failure_is_fail_closed() -> None:
+    class RevocationUnavailable(FakeKeyValue):
+        calls = 0
+
+        async def eval(self, script: str, numkeys: int, *args: Any) -> int:
+            if numkeys == 2:
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("redis unavailable")
+            return await super().eval(script, numkeys, *args)
+
+    store = RevocationUnavailable()
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        store,
+    )
+    first = await service.issue_pair(access_claims())
+    await service.rotate_refresh(first.refresh_token)
+
+    with pytest.raises(SessionStateUnavailable):
+        await service.rotate_refresh(first.refresh_token)
 
 
 @pytest.mark.asyncio

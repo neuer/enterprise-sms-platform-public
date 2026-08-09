@@ -50,7 +50,7 @@ def _bootstrap(
     )
 
 
-def test_secret_transition_generates_exactly_eleven_and_keeps_backup(
+def test_secret_transition_generates_crypto_keys_and_keeps_backup(
     tmp_path: Path,
 ) -> None:
     bootstrap = _bootstrap(tmp_path)
@@ -68,7 +68,14 @@ def test_secret_transition_generates_exactly_eleven_and_keeps_backup(
     assert module._NEW_SECRET_NAMES - module._OLD_SECRET_NAMES == (
         module._GENERATED_SECRET_NAMES
     )
-    assert len(module._GENERATED_SECRET_NAMES) == 11
+    assert len(module._GENERATED_SECRET_NAMES) == 17
+    assert len((active / "audit_context_key").read_text().strip()) == 44
+    for domain in ("api", "realtime", "bulk"):
+        assert len(
+            (active / f"audit_system_{domain}_context_key").read_text().strip()
+        ) == 44
+    assert len((active / "alert_credential_public_key").read_text().strip()) == 44
+    assert len((active / "alert_credential_private_key").read_text().strip()) == 44
     assert "db_app_password" not in {entry.name for entry in active.iterdir()}
     assert all(
         entry.stat().st_mode & 0o777 == 0o600

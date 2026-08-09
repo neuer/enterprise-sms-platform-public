@@ -19,9 +19,13 @@ NOREPLICATION`：
 | `sms_scheduler` | beat 与 Outbox dispatcher | job 追踪、Outbox 投递和调度告警 |
 | `sms_metrics` | `/metrics` 聚合 | 迁移 0035 指定的非敏感列级 `SELECT`，无批次号、自定义 ID、手机号、正文或任何写权限 |
 
-所有表、列、序列和操作都在 `schema.sql` 与迁移 0034/0035/0040 中显式列出。`sms_owner` 的
+所有表、列、序列和操作都在 `schema.sql` 与迁移 0034/0035/0040/0054 中显式列出。`sms_owner` 的
 default privileges 明确不向运行角色授权，因此新增表或序列必须在同一迁移中更新
 矩阵；不得使用 `GRANT ... ON ALL TABLES` 或 `ON ALL SEQUENCES` 给运行角色补权限。
+
+`sms_export` 对 `export_task` 的 UPDATE 只覆盖租约、运行状态、完成文件路径、行数与时间；
+不得更新 `public_id/decrypted/filters/scope_dept/scope_resolved` 或创建者稳定主体字段。
+下载入口仍必须把授权 task id 与密文文件名/AAD 绑定，数据库角色收窄不是文件身份校验的替代。
 
 `sms_send` 对异步导入只允许读取并更新/删除 `import_task`、读取并插入/删除
 `import_phone`，另有 `user_account SELECT` 用于固化导入完成审计；对生命周期清理只补充
