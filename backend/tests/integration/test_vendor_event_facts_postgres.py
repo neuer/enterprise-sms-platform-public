@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.core.runtime_resources import bind_connection_system_audit
 from app.services.crypto import CryptoService
 from app.services.reply_ingest import ReplyIngestService
 from app.services.reply_repository import SqlReplyRepository
@@ -85,6 +86,12 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
     # keep this integration test deterministic across month rollovers by using
     # the same owner-scoped partition maintenance entrypoint as production.
     async with engine.begin() as connection:
+        await bind_connection_system_audit(
+            connection,
+            actor_name="partition-maintenance",
+            action="partition.maintenance",
+            producer_domain="api",
+        )
         await maintain(connection, future_months=3)
 
     async def create_message(index: int) -> tuple[int, str, datetime]:

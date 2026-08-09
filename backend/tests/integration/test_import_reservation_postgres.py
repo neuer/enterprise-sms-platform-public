@@ -12,6 +12,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.principal_context import audit_principal_scope
+from app.core.correlation import correlation_scope
 from app.services.housekeeping import LifecyclePolicy
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.services.import_repository import (
@@ -138,15 +140,16 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
             "平台部",
             "operator",
         )
-        stored = await repository.persist(
-            ImportResult(
-                [ImportPhone(b"ciphertext-only", "a" * 64, "138****8000", 1, 2)],
-                [],
-            ),
-            principal=principal,
-            filename="phones.csv",
-            expire_hours=6,
-        )
+        with audit_principal_scope(principal), correlation_scope(uuid4()):
+            stored = await repository.persist(
+                ImportResult(
+                    [ImportPhone(b"ciphertext-only", "a" * 64, "138****8000", 1, 2)],
+                    [],
+                ),
+                principal=principal,
+                filename="phones.csv",
+                expire_hours=6,
+            )
         import_id = stored.import_id
 
         first = await repository.reserve(import_id, principal=principal)

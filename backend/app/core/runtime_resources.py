@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from redis.asyncio import Redis
 from sqlalchemy import event, text
@@ -334,6 +334,7 @@ async def bind_connection_audit_subject(
         text(
             """
             SELECT
+              set_config('sms.correlation_id',:correlation_id,TRUE),
               set_config('sms.audit_subject_kind',:subject_kind,TRUE),
               set_config('sms.audit_actor_name',:actor_name,TRUE),
               set_config('sms.audit_account_id',:account_id,TRUE),
@@ -356,6 +357,7 @@ async def bind_connection_system_audit(
     *,
     actor_name: str,
     action: str,
+    producer_domain: Literal["api", "realtime", "bulk"] | None = None,
 ) -> None:
     """为当前事务绑定由独立 system key 签名的自治审计生产者。"""
 
@@ -371,14 +373,14 @@ async def bind_connection_system_audit(
     from app.settings import get_settings  # noqa: PLC0415
 
     settings = get_settings()
-    producer_domain = settings.audit_producer_domain
-    if producer_domain is None and not settings.is_production:
+    selected_domain = producer_domain or settings.audit_producer_domain
+    if selected_domain is None and not settings.is_production:
         # 单元测试与本地直接运行缺省采用 API 域；生产必须由 Compose 显式声明。
-        producer_domain = "api"
-    if producer_domain not in {"api", "realtime", "bulk"}:
+        selected_domain = "api"
+    if selected_domain not in {"api", "realtime", "bulk"}:
         raise RuntimeError("audit producer domain is unavailable")
     signing_key = _audit_context_key(
-        f"audit_system_{producer_domain}_context_key"
+        f"audit_system_{selected_domain}_context_key"
     )
     signature = (
         sign_system_audit_context(
@@ -386,7 +388,7 @@ async def bind_connection_system_audit(
             txid=int(identity["txid"]),
             database_user=str(identity["database_user"]),
             correlation_id=str(correlation_id),
-            producer_domain=producer_domain,
+            producer_domain=selected_domain,
             actor_name=actor_name,
             action=action,
         )
@@ -397,6 +399,7 @@ async def bind_connection_system_audit(
         text(
             """
             SELECT
+              set_config('sms.correlation_id',:correlation_id,TRUE),
               set_config('sms.audit_subject_kind','system',TRUE),
               set_config('sms.audit_actor_name',:actor_name,TRUE),
               set_config('sms.audit_account_id','',TRUE),
@@ -408,7 +411,8 @@ async def bind_connection_system_audit(
             """
         ),
         {
-            "producer_domain": producer_domain,
+            "correlation_id": str(correlation_id),
+            "producer_domain": selected_domain,
             "actor_name": actor_name,
             "action": action,
             "signature": signature,

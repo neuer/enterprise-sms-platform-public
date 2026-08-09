@@ -13,6 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.principal_context import audit_principal_scope
+from app.core.correlation import correlation_scope
 from app.core.runtime_resources import close_runtime_resources
 from app.services.outbox import (
     OutboxClaim,
@@ -331,7 +333,8 @@ async def test_outbox_concurrency_fencing_recovery_and_privileges() -> None:
             "平台部",
             "admin",
         )
-        assert await repository.retry_dead(retry_event_id, principal=principal)
+        with audit_principal_scope(principal), correlation_scope(uuid4()):
+            assert await repository.retry_dead(retry_event_id, principal=principal)
         async with engine.connect() as connection:
             audit_row = (
                 await connection.execute(

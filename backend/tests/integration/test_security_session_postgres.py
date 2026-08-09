@@ -202,6 +202,7 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                     )
                 ).scalar_one()
             )
+            # 保留独立的 override admin，避免目录同步测试触发最后管理员保护。
             account_other = int(
                 (
                     await connection.execute(
@@ -210,7 +211,7 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                             INSERT INTO user_account(
                               display_name,dept,role,role_override
                             ) VALUES(
-                              'security-session-other','财务部','viewer',FALSE
+                              'security-session-other','财务部','admin',TRUE
                             ) RETURNING id
                             """
                         )
@@ -248,6 +249,16 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                         ).scalar_one()
                     )
                 )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO external_role_mapping(
+                      provider_id,external_group,role
+                    ) VALUES(:provider_id,'mock:operator','operator')
+                    """
+                ),
+                {"provider_id": provider_ids[0]},
+            )
 
         synchronized = await repository.resolve_identity(
             AuthenticatedIdentity(
