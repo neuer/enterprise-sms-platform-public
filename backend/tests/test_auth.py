@@ -12,6 +12,7 @@ from app.core.auth.accounts import PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
+    ProviderCapacityUnavailable,
     ProviderDisabled,
     SessionStateUnavailable,
 )
@@ -183,6 +184,17 @@ class RecordingProviderKind:
         )
 
 
+class CapacityUnavailableProviderKind(RecordingProviderKind):
+    async def authenticate(
+        self,
+        record: ProviderRecord,
+        login_name: str,
+        password: str,
+    ) -> AuthenticatedIdentity:
+        self.calls.append((login_name, password))
+        raise ProviderCapacityUnavailable("capacity unavailable")
+
+
 @pytest.mark.asyncio
 async def test_mock_backend_only_accepts_seed_users_and_injected_password() -> None:
     password = "in-memory-test-password"
@@ -341,6 +353,55 @@ async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError(), Exception("backpressure")])
+async def test_ldap_capacity_failure_uses_isolated_pool_and_aligned_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    import app.core.auth.ldap_real as ldap_module
+
+    if not isinstance(failure, TimeoutError):
+        failure = ldap_module.ExecutorBackpressure("full")
+    observed: dict[str, object] = {}
+
+    async def fail_bounded(
+        function: object,
+        *args: object,
+        timeout_s: float,
+        pool: str,
+        **kwargs: object,
+    ) -> object:
+        del function, args, kwargs
+        observed.update(timeout_s=timeout_s, pool=pool)
+        raise failure
+
+    monkeypatch.setattr(ldap_module, "run_bounded", fail_bounded)
+    provider = LdapPasswordProvider(
+        LdapConfig(
+            provider_code="ad",
+            server="ldaps://dc.example:636",
+            base_dn="DC=example,DC=com",
+            bind_dn="CN=svc,DC=example,DC=com",
+            bind_password="service-secret",
+            user_search_filter="(uid={username})",
+            username_attribute="uid",
+            display_name_attribute="displayName",
+            dept_attribute="department",
+            subject_attribute="entryUUID",
+            group_attribute="memberOf",
+            ca_certs_file="/ca.pem",
+            connect_timeout_s=3,
+            receive_timeout_s=4,
+        )
+    )
+
+    with pytest.raises(ProviderCapacityUnavailable):
+        await provider.authenticate("user01", "password")
+
+    assert observed == {"timeout_s": 19, "pool": "ldap"}
+
+
+@pytest.mark.asyncio
 async def test_registry_never_falls_back_to_another_provider() -> None:
     local = RecordingProviderKind("local", fails=True)
     ad = RecordingProviderKind("ad", fails=False)
@@ -424,6 +485,68 @@ async def test_shared_guard_bans_ip_after_twenty_failures() -> None:
             "correct",
             "10.0.0.1",
         )
+
+
+@pytest.mark.asyncio
+async def test_provider_capacity_failure_is_admitted_before_scheduling_without_user_lock(
+) -> None:
+    store = FakeKeyValue()
+    overloaded = CapacityUnavailableProviderKind("ad")
+    local = RecordingProviderKind("local")
+    registry = AuthProviderRegistry(
+        FakeProviderRepository(
+            provider_record(code="local", kind="local"),
+            provider_record(code="ad", kind="ldap"),
+        ),
+        {"local": local, "ldap": overloaded},
+    )
+    service = AuthService(registry, LoginGuard(store))
+
+    with pytest.raises(ProviderCapacityUnavailable):
+        await service.authenticate("ad", "target-admin", "pw", "10.0.0.1")
+    with pytest.raises(ProviderCapacityUnavailable):
+        await service.authenticate("ad", "another-user", "pw", "10.0.0.1")
+    local_identity = await service.authenticate(
+        "local",
+        "local-admin",
+        "pw",
+        "10.0.0.1",
+    )
+
+    assert overloaded.calls == [("target-admin", "pw")]
+    assert local_identity.provider_code == "local"
+    assert store.values["auth:capacity-fail:ip:10.0.0.1"] == 1
+    assert "auth:lock:user:target-admin" not in store.values
+    assert "auth:lock:user:another-user" not in store.values
+
+
+@pytest.mark.asyncio
+async def test_repeated_provider_capacity_failures_advance_ip_ban() -> None:
+    store = FakeKeyValue()
+    overloaded = CapacityUnavailableProviderKind("ad")
+    registry = AuthProviderRegistry(
+        FakeProviderRepository(provider_record(code="ad", kind="ldap")),
+        {"ldap": overloaded},
+    )
+
+    async def load_policy() -> RuntimePolicy:
+        return RuntimePolicy.from_mapping(
+            {
+                "login_ip_fail_limit": "2",
+                "login_ip_ban_minutes": "3",
+            }
+        )
+
+    service = AuthService(registry, LoginGuard(store, policy_loader=load_policy))
+    with pytest.raises(ProviderCapacityUnavailable):
+        await service.authenticate("ad", "first", "pw", "10.0.0.2")
+    store.values.pop("auth:capacity:provider:ad")
+    with pytest.raises(RateLimited):
+        await service.authenticate("ad", "second", "pw", "10.0.0.2")
+
+    assert store.values["auth:ban:ip:10.0.0.2"] == "1"
+    assert "auth:lock:user:first" not in store.values
+    assert "auth:lock:user:second" not in store.values
 
 
 @pytest.mark.asyncio

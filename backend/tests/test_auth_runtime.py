@@ -9,6 +9,7 @@ from app.core.auth.accounts import LocalAccountRecord, PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
+    ProviderCapacityUnavailable,
     ProviderDisabled,
     ProviderUnavailable,
 )
@@ -558,6 +559,31 @@ async def test_reauthenticate_current_maps_account_lock_to_explicit_423() -> Non
     assert raised.value.status_code == 423
     assert raised.value.code == "ACCOUNT_LOCKED"
     assert "wrong-password" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_reauthenticate_current_maps_provider_capacity_to_safe_503() -> None:
+    service = AuthFacade(
+        FakeAuthService(ProviderCapacityUnavailable("busy")),
+        FakeUserRepository(account(must_change_password=False)),
+        JwtService(SECRET, FakeKeyValue()),
+        FakeHasher(),
+    )
+    claims = JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="admin",
+        role="admin",
+        security_version=3,
+        jti="session-1",
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await service.reauthenticate_current(claims, "password", IP)
+
+    assert raised.value.status_code == 503
+    assert raised.value.code == "AUTH_PROVIDER_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
