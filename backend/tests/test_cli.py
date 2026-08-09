@@ -73,17 +73,24 @@ def test_database_seed_commands_only_contain_key_hashes() -> None:
     commands = module.seed_commands(keys)
     serialized_params = json.dumps([params for _, params in commands], ensure_ascii=False)
 
-    assert len(commands) == 10
+    assert len(commands) == 11
     assert "UPDATE auth_provider" in commands[0][0]
     assert commands[0][1] == {"provider_code": "ad"}
-    for sql, params in commands[1:5]:
+    mapping_sql, mapping_params = commands[1]
+    assert "INSERT INTO external_role_mapping" in mapping_sql
+    assert all(
+        f"('mock:{role}','{role}')" in mapping_sql
+        for role in ("admin", "approver", "operator", "viewer")
+    )
+    assert mapping_params == {}
+    for sql, params in commands[2:6]:
         assert "sys_user" not in sql
         assert "user_account" in sql and "auth_identity" in sql
         assert params["external_subject"] == f"mock:{params['username']}"
     for app in module.DEV_APPS:
         assert keys[app.name] not in serialized_params
         assert hashlib.sha256(keys[app.name].encode()).hexdigest() in serialized_params
-    app_sql, app_params = commands[5]
+    app_sql, app_params = commands[6]
     assert "rate_limit_per_min" in app_sql
     assert "rate_limit_per_min = EXCLUDED.rate_limit_per_min" in app_sql
     assert app_params["rate_limit_per_min"] == 10_000

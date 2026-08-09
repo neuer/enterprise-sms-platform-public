@@ -4,6 +4,7 @@ import asyncio
 import os
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -11,6 +12,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.principal_context import audit_principal_scope
+from app.core.correlation import correlation_scope
 from app.services.export import ExportFilterSet
 from app.services.export_repository import SqlExportRepository
 
@@ -153,11 +156,12 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
                 strict=True,
             )
         ]
-        task = await repository.create(
-            principal=principals[0],
-            filters=filters(),
-            decrypted=True,
-        )
+        with audit_principal_scope(principals[0]), correlation_scope(uuid4()):
+            task = await repository.create(
+                principal=principals[0],
+                filters=filters(),
+                decrypted=True,
+            )
         public_ids.append(str(task.public_id))
         async with engine.begin() as connection:
             await connection.execute(
@@ -218,20 +222,20 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
         assert admin is not None
         assert unresolved_admin is None
 
-        allowed_download, denied_download = await asyncio.gather(
-            repository.get_downloadable_and_audit(
+        with audit_principal_scope(principals[1]), correlation_scope(uuid4()):
+            allowed_download = await repository.get_downloadable_and_audit(
                 task.public_id,
                 principal=principals[1],
                 ip="10.0.0.8",
                 retention_days=7,
-            ),
-            repository.get_downloadable_and_audit(
+            )
+        with audit_principal_scope(principals[2]), correlation_scope(uuid4()):
+            denied_download = await repository.get_downloadable_and_audit(
                 task.public_id,
                 principal=principals[2],
                 ip="10.0.0.9",
                 retention_days=7,
-            ),
-        )
+            )
         assert allowed_download is not None
         assert denied_download is None
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -10,6 +11,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.principal_context import audit_principal_scope
+from app.core.correlation import correlation_scope
 from app.services.admin import AuditQuery
 from app.services.admin_repository import SqlAdminRepository
 from app.services.approval import ApprovalService, SelfApprovalDenied
@@ -213,28 +216,33 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
             "operator",
         )
 
-        export_task = await export_repository.create(
-            principal=old_principal,
-            filters=_filters(),
-            decrypted=False,
-        )
-        export_public_id = str(export_task.public_id)
-        stored_import = await import_repository.persist(
-            ImportResult(
-                [ImportPhone(b"ciphertext-only", "a" * 64, "138****8000", 1, 2)],
-                [],
-            ),
-            principal=old_principal,
-            filename="phones.csv",
-            expire_hours=6,
-        )
-        import_id = stored_import.import_id
-        await operation_repository.reserve_start(
-            OPERATION_ID,
-            "pause",
-            principal=old_principal,
-            conflicting_types=frozenset({"pause", "reset_configuration"}),
-        )
+        with audit_principal_scope(old_principal), correlation_scope(uuid4()):
+            export_task = await export_repository.create(
+                principal=old_principal,
+                filters=_filters(),
+                decrypted=False,
+            )
+            export_public_id = str(export_task.public_id)
+            stored_import = await import_repository.persist(
+                ImportResult(
+                    [
+                        ImportPhone(
+                            b"ciphertext-only", "a" * 64, "138****8000", 1, 2
+                        )
+                    ],
+                    [],
+                ),
+                principal=old_principal,
+                filename="phones.csv",
+                expire_hours=6,
+            )
+            import_id = stored_import.import_id
+            await operation_repository.reserve_start(
+                OPERATION_ID,
+                "pause",
+                principal=old_principal,
+                conflicting_types=frozenset({"pause", "reset_configuration"}),
+            )
         async with engine.begin() as connection:
             batch_id = int(
                 (
@@ -364,12 +372,13 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
             principal=renamed_principal,
         )
 
-        replay = await operation_repository.reserve_start(
-            OPERATION_ID,
-            "pause",
-            principal=renamed_principal,
-            conflicting_types=frozenset({"pause", "reset_configuration"}),
-        )
+        with audit_principal_scope(renamed_principal), correlation_scope(uuid4()):
+            replay = await operation_repository.reserve_start(
+                OPERATION_ID,
+                "pause",
+                principal=renamed_principal,
+                conflicting_types=frozenset({"pause", "reset_configuration"}),
+            )
         assert replay.actor_account_id == owner_account_id
         with pytest.raises(VendorTestOperationConflict):
             await operation_repository.reserve_start(
@@ -379,7 +388,11 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 conflicting_types=frozenset({"pause", "reset_configuration"}),
             )
 
-        with pytest.raises(SelfApprovalDenied):
+        with (
+            audit_principal_scope(ad_principal),
+            correlation_scope(uuid4()),
+            pytest.raises(SelfApprovalDenied),
+        ):
             await ApprovalService(
                 approval_repository,
                 cast(Any, _UnusedPort()),
@@ -404,15 +417,14 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 ),
                 {"public_id": export_public_id},
             )
-        assert (
-            await export_repository.get_downloadable_and_audit(
+        with audit_principal_scope(renamed_principal), correlation_scope(uuid4()):
+            downloadable = await export_repository.get_downloadable_and_audit(
                 export_task.public_id,
                 principal=renamed_principal,
                 ip="10.0.0.8",
                 retention_days=7,
             )
-            is not None
-        )
+        assert downloadable is not None
         audits, total = await admin_repository.list_audits(
             AuditQuery(
                 None,

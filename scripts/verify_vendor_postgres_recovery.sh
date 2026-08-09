@@ -80,7 +80,9 @@ esac
 BEGIN;
 UPDATE sys_config
 SET value=CASE key
-  WHEN 'alert_wecom_webhook' THEN 'https://synthetic.invalid/hook'
+  -- 本测试只验证 RLS/SECURITY DEFINER 可见性，不解密凭据；使用非敏感的
+  -- 合成信封标记，避免绕过生产中禁止 Webhook 明文落库的约束。
+  WHEN 'alert_wecom_webhook' THEN 'sealed:v1:synthetic-non-secret'
   WHEN 'security_daily_resend_api_key' THEN 'synthetic-resend-key'
   WHEN 'alert_mail_to' THEN 'security@example.invalid'
   ELSE value

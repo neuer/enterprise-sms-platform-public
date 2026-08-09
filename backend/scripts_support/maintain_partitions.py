@@ -17,6 +17,7 @@ from sqlalchemy import DDL, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.core.runtime_resources import bind_connection_system_audit
 from app.settings import get_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -246,6 +247,14 @@ async def _run_once(
     engine = create_async_engine(settings.database_owner_url, poolclass=NullPool)
     try:
         async with engine.begin() as connection:
+            # migrate 是 sms_owner；显式绑定受认证的 system 上下文后再写审计。
+            # owner 由数据库单独授权，api 仅用于选择隔离的签名域格式。
+            await bind_connection_system_audit(
+                connection,
+                actor_name="partition-maintenance",
+                action="partition.maintenance",
+                producer_domain="api",
+            )
             return await maintain(
                 connection,
                 dry_run=dry_run,
