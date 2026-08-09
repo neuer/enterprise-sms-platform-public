@@ -319,6 +319,14 @@ def test_host_ports_are_overridable_without_changing_container_contract() -> Non
     assert services["mock-vendor"]["ports"] == ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
 
 
+def test_development_callback_boundary_explicitly_allows_only_the_mock_port_extension() -> None:
+    env_example = (ROOT / "deploy/.env.example").read_text(encoding="utf-8")
+
+    assert "CALLBACK_EGRESS_ALLOWED_PORTS=80,443,9028" in env_example
+    assert "# CALLBACK_EGRESS_ALLOWED_PORTS=443" in env_example
+    assert "生产必须删除 9028" in env_example
+
+
 def test_production_docs_use_reserved_public_ports() -> None:
     env_example = (ROOT / "deploy/.env.example").read_text(encoding="utf-8")
     runbook = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
