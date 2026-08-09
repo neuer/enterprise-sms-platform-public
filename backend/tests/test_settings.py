@@ -506,6 +506,84 @@ def test_redis_failure_domains_use_distinct_secret_backed_endpoints(
     ) == 3
 
 
+def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
+    module = load_settings_module()
+    from redis.asyncio.connection import SSLConnection, parse_url
+    broker = tmp_path / "broker"
+    auth = tmp_path / "auth"
+    control = tmp_path / "control"
+    ca_file = tmp_path / "redis-ca.pem"
+    ldap_ca_file = tmp_path / "ldap-ca.pem"
+    for secret_file, value in (
+        (broker, "broker-pass"),
+        (auth, "auth-pass"),
+        (control, "control-pass"),
+        (ca_file, "redis-ca"),
+        (ldap_ca_file, "ldap-ca"),
+    ):
+        secret_file.write_text(value, encoding="utf-8")
+
+    settings = module.Settings(
+        _env_file=None,
+        environment="production",
+        sms_component="worker",
+        debug=False,
+        auth_mock=False,
+        vendor_mock=False,
+        redis_ha_mode="managed",
+        redis_broker_password_file=broker,
+        redis_auth_password_file=auth,
+        redis_control_password_file=control,
+        redis_ca_certs_file=ca_file,
+        ldap_ca_certs_file=ldap_ca_file,
+        vendor_base_url="https://vendor.example.test",
+    )
+
+    expected_query = (
+        "?ssl_ca_certs="
+        f"{str(ca_file).replace('/', '%2F')}"
+        "&ssl_cert_reqs=required&ssl_check_hostname=true"
+    )
+    assert settings.redis_broker_url == (
+        "rediss://sms_broker:broker-pass@redis:6379/0" + expected_query
+    )
+    assert settings.redis_auth_url == (
+        "rediss://sms_auth:auth-pass@redis-auth:6379/0" + expected_query
+    )
+    assert settings.redis_control_url == (
+        "rediss://sms_control:control-pass@redis-control:6379/0" + expected_query
+    )
+    assert settings.redis_tls_options == {
+        "ssl_ca_certs": str(ca_file),
+        "ssl_cert_reqs": module.ssl.CERT_REQUIRED,
+        "ssl_check_hostname": True,
+    }
+    parsed = parse_url(settings.redis_auth_url)
+    assert parsed["connection_class"] is SSLConnection
+    assert parsed["ssl_ca_certs"] == str(ca_file)
+    assert parsed["ssl_cert_reqs"] == "required"
+    assert parsed["ssl_check_hostname"] is True
+
+
+def test_production_rejects_missing_redis_ca(tmp_path: Path) -> None:
+    module = load_settings_module()
+    ldap_ca_file = tmp_path / "ldap-ca.pem"
+    ldap_ca_file.write_text("ldap-ca", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="REDIS_CA_CERTS_FILE"):
+        module.Settings(
+            _env_file=None,
+            environment="production",
+            debug=False,
+            auth_mock=False,
+            vendor_mock=False,
+            redis_ha_mode="managed",
+            redis_ca_certs_file=tmp_path / "missing-redis-ca.pem",
+            ldap_ca_certs_file=ldap_ca_file,
+            vendor_base_url="https://vendor.example.test",
+        )
+
+
 def test_redis_domains_reject_single_host_and_production_standalone(
     tmp_path: Path,
 ) -> None:

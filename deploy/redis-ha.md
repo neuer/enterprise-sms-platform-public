@@ -12,7 +12,7 @@
 
 API 容器不挂载 `redis_broker_password`，worker-callback 不挂载 `redis_auth_password`。三个 Redis 服务关闭 default 用户，且不用 `~*` 或 `+@all`：broker 只允许 Celery 的三个业务队列及 `_kombu`/Celery 内部键，auth 只允许 `auth:*`、`export:step-up:*`、`vendor-test:step-up:*`，control 只允许已登记的配额、频控、幂等、锁和投影前缀。应用 ACL 不允许 `KEYS`，并拒绝 `ACL`、`CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 等管理命令。管理账号不进入应用 Compose；托管平台管理操作只能走受控运维身份和双人审批。
 
-本仓库 Compose 中的三个单节点服务只用于 development/test 和镜像契约验证。生产应用连接由 `REDIS_BROKER_HOST`、`REDIS_AUTH_HOST`、`REDIS_CONTROL_HOST` 指向托管端点，密码仅由三个同名 Docker secrets 提供；禁止配置 `REDIS_URL` 或把 URI/密码写入 `.env`、Compose environment、日志、镜像层和工单。
+本仓库 Compose 中的三个单节点服务只用于 development/test 和镜像契约验证。生产应用连接由 `REDIS_BROKER_HOST`、`REDIS_AUTH_HOST`、`REDIS_CONTROL_HOST` 指向托管端点，密码仅由三个同名 Docker secrets 提供；禁止配置 `REDIS_URL` 或把 URI/密码写入 `.env`、Compose environment、日志、镜像层和工单。生产运行时强制生成 `rediss://` 连接，并从 `REDIS_CA_CERTS_FILE` 读取可信 CA，对 redis-py、Celery broker 和 result backend 同时启用证书链与主机名校验；CA 不可读时启动失败。私有 CA 必须以只读文件挂载到所有 Redis 消费容器的同一容器内路径。
 
 ## 托管服务基线
 
