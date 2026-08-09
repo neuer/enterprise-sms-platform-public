@@ -63,6 +63,7 @@ broker_url = (
     if settings.sms_component in {"worker", "beat", "background"}
     else None
 )
+redis_ssl_options = settings.redis_tls_options if broker_url is not None else None
 app = Celery("sms_platform", broker=broker_url, backend=broker_url)
 app.conf.update(
     timezone="Asia/Shanghai",
@@ -80,6 +81,8 @@ app.conf.update(
     task_soft_time_limit=570,
     task_time_limit=600,
     broker_transport_options={"visibility_timeout": 3600},
+    broker_use_ssl=redis_ssl_options or False,
+    redis_backend_use_ssl=redis_ssl_options,
 )
 
 # 只重试可合理恢复的连接/超时故障；ProgrammingError、权限错误和业务错误必须

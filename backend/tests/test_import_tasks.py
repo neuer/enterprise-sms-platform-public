@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import os
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +52,8 @@ def test_import_tasks_have_crash_recovery_and_bounded_worker_settings() -> None:
     assert celery_app.conf.worker_prefetch_multiplier == 1
     assert celery_app.conf.worker_max_tasks_per_child == 200
     assert celery_app.conf.worker_max_memory_per_child == 512_000
+    assert celery_app.conf.broker_use_ssl is False
+    assert celery_app.conf.redis_backend_use_ssl is None
     task = celery_app.tasks["app.tasks.process_import"]
     assert task.soft_time_limit == 120
     assert task.time_limit == 150
@@ -57,6 +62,64 @@ def test_import_tasks_have_crash_recovery_and_bounded_worker_settings() -> None:
         "schedule": 30,
         "options": {"queue": "bulk"},
     }
+
+
+def test_production_celery_redis_transport_requires_verified_tls(
+    tmp_path: Path,
+) -> None:
+    ca_file = tmp_path / "redis-ca.pem"
+    ldap_ca_file = tmp_path / "ldap-ca.pem"
+    broker_secret = tmp_path / "broker"
+    auth_secret = tmp_path / "auth"
+    control_secret = tmp_path / "control"
+    for path, value in (
+        (ca_file, "redis-ca"),
+        (ldap_ca_file, "ldap-ca"),
+        (broker_secret, "broker-pass"),
+        (auth_secret, "auth-pass"),
+        (control_secret, "control-pass"),
+    ):
+        path.write_text(value, encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ENVIRONMENT": "production",
+            "SMS_COMPONENT": "worker",
+            "DEBUG": "0",
+            "AUTH_MOCK": "0",
+            "VENDOR_MOCK": "0",
+            "VENDOR_BASE_URL": "https://vendor.example.test",
+            "REDIS_HA_MODE": "managed",
+            "REDIS_CA_CERTS_FILE": str(ca_file),
+            "LDAP_CA_CERTS_FILE": str(ldap_ca_file),
+            "REDIS_BROKER_PASSWORD_FILE": str(broker_secret),
+            "REDIS_AUTH_PASSWORD_FILE": str(auth_secret),
+            "REDIS_CONTROL_PASSWORD_FILE": str(control_secret),
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import ssl; from app.tasks import celery_app; "
+                "expected={'ssl_ca_certs':r'"
+                + str(ca_file)
+                + "','ssl_cert_reqs':ssl.CERT_REQUIRED,'ssl_check_hostname':True}; "
+                "assert celery_app.conf.broker_use_ssl == expected; "
+                "assert celery_app.conf.redis_backend_use_ssl == expected"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        cwd=Path(__file__).parents[1],
+        env=env,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_background_tasks_retry_only_transient_failures_with_hard_bounds() -> None:
