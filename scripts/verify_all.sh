@@ -87,6 +87,7 @@ compose(){
   SMS_PLATFORM_ROOT="$ROOT" \
   SMS_SECRETS_MODE=development \
   SMS_RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-${TMPDIR:-/tmp}/sms-platform-${UID}/secrets}" \
+  CALLBACK_EGRESS_ALLOWED_PORTS="${CALLBACK_EGRESS_ALLOWED_PORTS:-80,443,9028}" \
   COMPOSE_PROFILES=dev \
     "$ROOT/deploy/sms-compose" "$@"
 }

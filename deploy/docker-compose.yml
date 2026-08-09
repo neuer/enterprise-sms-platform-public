@@ -10,6 +10,7 @@ x-runtime-security: &runtime-security
 x-backend-environment: &backend-environment
   TZ: Asia/Shanghai
   IMAGE_DIGEST: ${SMS_API_IMAGE:-sms-platform-api:local}
+  CALLBACK_EGRESS_ALLOWED_PORTS: ${CALLBACK_EGRESS_ALLOWED_PORTS:-}
 
 x-backend: &backend
   <<: *runtime-security

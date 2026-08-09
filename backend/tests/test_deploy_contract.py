@@ -319,12 +319,21 @@ def test_host_ports_are_overridable_without_changing_container_contract() -> Non
     assert services["mock-vendor"]["ports"] == ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
 
 
-def test_development_callback_boundary_explicitly_allows_only_the_mock_port_extension() -> None:
+def test_g2_callback_mock_port_extension_is_not_a_deployment_default() -> None:
+    compose = load_compose()
     env_example = (ROOT / "deploy/.env.example").read_text(encoding="utf-8")
+    verify_all = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
-    assert "CALLBACK_EGRESS_ALLOWED_PORTS=80,443,9028" in env_example
+    backend_environment = compose["x-backend-environment"]
+    assert backend_environment["CALLBACK_EGRESS_ALLOWED_PORTS"] == (
+        "${CALLBACK_EGRESS_ALLOWED_PORTS:-}"
+    )
     assert "# CALLBACK_EGRESS_ALLOWED_PORTS=443" in env_example
-    assert "生产必须删除 9028" in env_example
+    assert "\nCALLBACK_EGRESS_ALLOWED_PORTS=80,443,9028\n" not in env_example
+    assert (
+        'CALLBACK_EGRESS_ALLOWED_PORTS="${CALLBACK_EGRESS_ALLOWED_PORTS:-80,443,9028}"'
+        in verify_all
+    )
 
 
 def test_production_docs_use_reserved_public_ports() -> None:
