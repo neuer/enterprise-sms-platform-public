@@ -353,9 +353,47 @@ def test_nginx_serves_spa_and_proxies_api() -> None:
     assert "try_files $uri $uri/ /index.html" in config
     assert "livez|readyz|healthz" in config
     assert "location /api/" in config
+    assert "location = /api/v1/web/messages/import" in config
     assert "proxy_pass http://api:8000;" in config
-    assert config.count("proxy_pass http://api:8000;") == 2
+    assert config.count("proxy_pass http://api:8000;") == 3
     assert "proxy_pass http://api:8000/;" not in config
+
+
+def test_nginx_bounds_pre_authentication_body_storage() -> None:
+    config = (ROOT / "deploy/nginx.conf").read_text(encoding="utf-8")
+    compose = load_compose()
+    web_tmpfs = compose["services"]["web"]["tmpfs"]
+
+    assert "client_max_body_size 1m;" in config
+    assert "location ~ ^/(?:livez|readyz|healthz)$" in config
+    assert "client_max_body_size 1k;" in config
+    assert "location = /api/v1/web/messages/import" in config
+    assert "client_max_body_size 12m;" in config
+    assert "limit_conn_zone $server_addr zone=sms_api_concurrency:1m;" in config
+    assert "limit_conn_zone $server_addr zone=sms_import_concurrency:1m;" in config
+    assert (
+        "limit_conn_zone $binary_remote_addr zone=sms_client_concurrency:10m;"
+        in config
+    )
+    assert config.count("limit_conn sms_api_concurrency 16;") == 2
+    assert config.count("limit_conn sms_client_concurrency 4;") == 2
+    assert "limit_conn sms_import_concurrency 2;" in config
+    assert (
+        "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"
+        "uid=101,gid=101,mode=0700"
+    ) in web_tmpfs
+
+    ordinary_mib = 1
+    import_mib = 12
+    api_concurrency = 16
+    import_concurrency = 2
+    client_body_tmpfs_mib = 64
+    worst_case_mib = (
+        import_concurrency * import_mib
+        + (api_concurrency - import_concurrency) * ordinary_mib
+    )
+    assert worst_case_mib == 38
+    assert worst_case_mib < client_body_tmpfs_mib
 
 
 def test_nginx_enforces_browser_policies_without_internal_hsts() -> None:
