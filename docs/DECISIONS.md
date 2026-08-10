@@ -677,7 +677,8 @@
 - 决策：日常 `classify-nul` 与 `apply` 的禁止路径保持不变；只为“服务器 commit 是目标
   `origin/main` 的祖先、存在真实 expand 迁移前移”的旧测试基线提供一次性
   `rebaseline`。它只额外接受两个固定运行控制脚本和枚举的非运行态文件，要求两脚本同时
-  出现在差异中，并强制 API/Web 双镜像与 high-risk 路径。
+  出现在差异中，并强制 API/Web 双镜像与 high-risk 路径。性能门禁脚本及其权威说明
+  `docs/PERFORMANCE.md` 只在该一次性入口按非运行态证据枚举，日常 `apply` 仍拒绝二者。
 - 证据：目标 commit 必须已有 GitHub Actions 应用产生的 `backend`、`frontend`、
   `security`、`g2`、`ci-gate` 五项精确 success；`ci-gate` 单项成功不足以执行本入口。
   host-control 资产发生变化时，必须先按同一目标 commit 重装 root-owned 不可变快照。
