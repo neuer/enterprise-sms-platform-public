@@ -7,9 +7,10 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from threading import BoundedSemaphore, Lock
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 T = TypeVar("T")
+ExecutorPool = Literal["default", "ldap"]
 
 
 class ExecutorBackpressure(RuntimeError):
@@ -19,12 +20,18 @@ class ExecutorBackpressure(RuntimeError):
 class BoundedExecutor:
     """用线程信号量限制运行中与已排队工作，防止请求无界堆积。"""
 
-    def __init__(self, *, max_workers: int = 4, max_pending: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        max_workers: int = 4,
+        max_pending: int = 8,
+        thread_name_prefix: str = "sms-bounded",
+    ) -> None:
         if max_workers < 1 or max_pending < max_workers:
             raise ValueError("executor bounds are invalid")
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix="sms-bounded",
+            thread_name_prefix=thread_name_prefix,
         )
         self._slots = BoundedSemaphore(max_pending)
         self._closed = False
@@ -68,16 +75,17 @@ class BoundedExecutor:
         self._executor.shutdown(wait=True, cancel_futures=True)
 
 
-_BOUNDED_EXECUTOR: BoundedExecutor | None = None
+_BOUNDED_EXECUTORS: dict[ExecutorPool, BoundedExecutor] = {}
 _GLOBAL_LOCK = Lock()
 
 
-def _current_executor() -> BoundedExecutor:
-    global _BOUNDED_EXECUTOR
+def _current_executor(pool: ExecutorPool) -> BoundedExecutor:
     with _GLOBAL_LOCK:
-        if _BOUNDED_EXECUTOR is None:
-            _BOUNDED_EXECUTOR = BoundedExecutor()
-        return _BOUNDED_EXECUTOR
+        executor = _BOUNDED_EXECUTORS.get(pool)
+        if executor is None:
+            executor = BoundedExecutor(thread_name_prefix=f"sms-{pool}")
+            _BOUNDED_EXECUTORS[pool] = executor
+        return executor
 
 
 async def run_bounded[T](
@@ -85,18 +93,18 @@ async def run_bounded[T](
     /,
     *args: object,
     timeout_s: float,
+    pool: ExecutorPool = "default",
     **kwargs: object,
 ) -> T:
-    return await _current_executor().run(
+    return await _current_executor(pool).run(
         partial(function, *args, **kwargs),
         timeout_s=timeout_s,
     )
 
 
 def close_bounded_executor() -> None:
-    global _BOUNDED_EXECUTOR
     with _GLOBAL_LOCK:
-        executor = _BOUNDED_EXECUTOR
-        _BOUNDED_EXECUTOR = None
-    if executor is not None:
+        executors = tuple(_BOUNDED_EXECUTORS.values())
+        _BOUNDED_EXECUTORS.clear()
+    for executor in executors:
         executor.close()

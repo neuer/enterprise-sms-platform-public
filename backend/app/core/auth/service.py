@@ -7,7 +7,11 @@ from typing import Any, Protocol, cast
 
 from redis.asyncio import Redis
 
-from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
+from app.core.auth.backends import (
+    AuthenticatedIdentity,
+    InvalidCredentials,
+    ProviderCapacityUnavailable,
+)
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.providers import AuthProviderRegistry
 from app.core.runtime_resources import redis_client
@@ -15,6 +19,7 @@ from app.services.runtime_policy import RuntimePolicy
 
 ACCOUNT_WINDOW_S = 15 * 60
 IP_WINDOW_S = 5 * 60
+PROVIDER_CAPACITY_BACKOFF_S = 2
 
 
 class AccountLocked(RuntimeError):
@@ -103,6 +108,39 @@ class LoginGuard:
         if await self.store.get(self._user_key("lock", username)) is not None:
             raise AccountLocked("登录账号已临时锁定")
 
+    async def check_provider_capacity(self, provider_code: str) -> None:
+        """在调度同步 Provider 工作前拒绝仍处于容量退避期的请求。"""
+
+        if await self.store.get(
+            self._provider_capacity_key(provider_code)
+        ) is not None:
+            raise ProviderCapacityUnavailable("认证源容量暂不可用")
+
+    @staticmethod
+    def _provider_capacity_key(provider_code: str) -> str:
+        return f"auth:capacity:provider:{provider_code.casefold()}"
+
+    async def record_capacity_failure(self, provider_code: str, ip: str) -> None:
+        """容量故障只累计来源与 Provider，不允许锁定攻击者指定的用户名。"""
+
+        policy = await self._policy()
+        await self.store.set(
+            self._provider_capacity_key(provider_code),
+            "1",
+            ex=PROVIDER_CAPACITY_BACKOFF_S,
+        )
+        ip_failures = await self.store.increment(
+            self._ip_key("capacity-fail", ip),
+            window_s=IP_WINDOW_S,
+        )
+        if ip_failures >= policy.login_ip_fail_limit:
+            await self.store.set(
+                self._ip_key("ban", ip),
+                "1",
+                ex=policy.login_ip_ban_minutes * 60,
+            )
+            raise RateLimited("登录来源 IP 已临时封禁")
+
     async def record_failure(self, username: str, ip: str) -> None:
         policy = await self._policy()
         user_failures = await self.store.increment(
@@ -128,9 +166,11 @@ class LoginGuard:
             )
             raise AccountLocked("登录账号已临时锁定")
 
-    async def record_success(self, username: str) -> None:
+    async def record_success(self, username: str, provider_code: str | None = None) -> None:
         await self.store.delete(self._user_key("fail", username))
         await self.store.delete(self._user_key("lock", username))
+        if provider_code is not None:
+            await self.store.delete(self._provider_capacity_key(provider_code))
 
 
 class AuthService:
@@ -149,6 +189,7 @@ class AuthService:
     ) -> AuthenticatedIdentity:
         normalized = normalize_login_name(login_name)
         await self.guard.check(normalized, ip)
+        await self.guard.check_provider_capacity(provider_code)
         try:
             identity = await self.providers.authenticate(
                 provider_code,
@@ -158,5 +199,8 @@ class AuthService:
         except InvalidCredentials:
             await self.guard.record_failure(normalized, ip)
             raise
-        await self.guard.record_success(normalized)
+        except ProviderCapacityUnavailable:
+            await self.guard.record_capacity_failure(provider_code, ip)
+            raise
+        await self.guard.record_success(normalized, provider_code)
         return identity

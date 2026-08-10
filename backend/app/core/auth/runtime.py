@@ -12,6 +12,7 @@ from app.core.auth.accounts import AccountNotFound, AccountSourceConflict, Platf
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
+    ProviderCapacityUnavailable,
     ProviderDisabled,
     ProviderUnavailable,
     SessionStateUnavailable,
@@ -126,6 +127,13 @@ class AuthFacade:
             )
         except AccountLocked:
             raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
+        except ProviderCapacityUnavailable:
+            raise ApiError(
+                503,
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "认证源容量暂不可用，请稍后重试",
+                None,
+            ) from None
         except (
             RateLimited,
             InvalidCredentials,

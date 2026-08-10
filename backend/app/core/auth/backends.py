@@ -21,6 +21,10 @@ class ProviderUnavailable(RuntimeError):
     """认证源基础设施或实现暂不可用。"""
 
 
+class ProviderCapacityUnavailable(ProviderUnavailable):
+    """认证源同步容量已满或超过完整底层 I/O 时限。"""
+
+
 class SessionStateUnavailable(RuntimeError):
     """数据库或 Redis 会话权威状态不可用；所有鉴权路径必须 fail closed。"""
 

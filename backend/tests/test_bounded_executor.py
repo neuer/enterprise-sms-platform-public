@@ -6,7 +6,12 @@ from threading import Event as ThreadEvent
 
 import pytest
 
-from app.core.bounded_executor import BoundedExecutor, ExecutorBackpressure
+from app.core.bounded_executor import (
+    BoundedExecutor,
+    ExecutorBackpressure,
+    close_bounded_executor,
+    run_bounded,
+)
 
 
 @pytest.mark.asyncio
@@ -50,3 +55,30 @@ async def test_executor_timeout_does_not_release_slot_before_thread_finishes() -
     await asyncio.sleep(0.06)
     assert await executor.run(lambda: 7, timeout_s=1) == 7
     executor.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_ldap_pool_cannot_consume_local_auth_capacity() -> None:
+    started = 0
+    all_workers_started = asyncio.Event()
+    release = ThreadEvent()
+    loop = asyncio.get_running_loop()
+
+    def blocking_ldap() -> None:
+        nonlocal started
+        started += 1
+        if started == 4:
+            loop.call_soon_threadsafe(all_workers_started.set)
+        release.wait(timeout=1)
+
+    ldap_tasks = [
+        asyncio.create_task(run_bounded(blocking_ldap, timeout_s=0.1, pool="ldap"))
+        for _ in range(8)
+    ]
+    try:
+        await asyncio.wait_for(all_workers_started.wait(), timeout=1)
+        assert await run_bounded(lambda: 7, timeout_s=0.1) == 7
+    finally:
+        release.set()
+        await asyncio.gather(*ldap_tasks, return_exceptions=True)
+        close_bounded_executor()

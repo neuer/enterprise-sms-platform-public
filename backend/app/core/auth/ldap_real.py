@@ -14,9 +14,10 @@ from ldap3.utils.conv import escape_filter_chars
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
+    ProviderCapacityUnavailable,
     ProviderUnavailable,
 )
-from app.core.bounded_executor import run_bounded
+from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +68,44 @@ class LdapPasswordProvider:
     ) -> AuthenticatedIdentity:
         if not login_name or not password:
             raise InvalidCredentials("用户名或密码错误")
-        return await run_bounded(
-            self._authenticate_sync,
-            login_name,
-            password,
-            timeout_s=12,
-        )
+        try:
+            return await run_bounded(
+                self._authenticate_sync,
+                login_name,
+                password,
+                timeout_s=self._authentication_deadline_s,
+                pool="ldap",
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ProviderCapacityUnavailable("LDAP 认证容量暂不可用") from None
 
     async def test_connection(self) -> None:
         """仅验证服务绑定；不接收也不记录任何用户密码。"""
 
-        await run_bounded(self._test_connection_sync, timeout_s=12)
+        try:
+            await run_bounded(
+                self._test_connection_sync,
+                timeout_s=self._connection_test_deadline_s,
+                pool="ldap",
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ProviderCapacityUnavailable("LDAP 认证容量暂不可用") from None
+
+    @property
+    def _authentication_deadline_s(self) -> float:
+        """覆盖服务/用户两次连接和三次响应，避免外层先于 ldap3 超时。"""
+
+        return (
+            2 * self.config.connect_timeout_s
+            + 3 * self.config.receive_timeout_s
+            + 1
+        )
+
+    @property
+    def _connection_test_deadline_s(self) -> float:
+        """覆盖服务连接、bind 与一次有界查询。"""
+
+        return self.config.connect_timeout_s + 2 * self.config.receive_timeout_s + 1
 
     def _server(self) -> Any:
         parsed = urlsplit(self.config.server)
