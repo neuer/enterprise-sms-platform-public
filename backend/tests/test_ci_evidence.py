@@ -14,7 +14,12 @@ sys.path.insert(0, str(SCRIPTS))
 import reuse_pr_ci_evidence as reuse_module  # noqa: E402
 import verify_ci_commit as verify_module  # noqa: E402
 from reuse_pr_ci_evidence import commit_tree, merged_pr_head, write_outputs  # noqa: E402
-from verify_ci_commit import CiEvidenceError, ci_gate_status, github_token  # noqa: E402
+from verify_ci_commit import (  # noqa: E402
+    CiEvidenceError,
+    ci_gate_status,
+    full_ci_status,
+    github_token,
+)
 
 COMMIT = "1" * 40
 HEAD = "2" * 40
@@ -23,6 +28,9 @@ TREE = "3" * 40
 
 def check_run(
     *,
+    name: str = "ci-gate",
+    run_id: int = 42,
+    suite_id: int = 7,
     head_sha: str = COMMIT,
     status: str = "completed",
     conclusion: str | None = "success",
@@ -30,12 +38,13 @@ def check_run(
     app_slug: str = "github-actions",
 ) -> dict[str, object]:
     return {
-        "id": 42,
-        "name": "ci-gate",
+        "id": run_id,
+        "name": name,
         "head_sha": head_sha,
         "status": status,
         "conclusion": conclusion,
         "app": {"id": app_id, "slug": app_slug},
+        "check_suite": {"id": suite_id},
     }
 
 
@@ -62,6 +71,74 @@ def test_ci_gate_accepts_only_exact_success_from_github_actions() -> None:
         )
         == "failure"
     )
+
+
+def test_ci_gate_uses_the_latest_exact_matching_check_run() -> None:
+    document = {
+        "check_runs": [
+            check_run(run_id=41, conclusion="success"),
+            check_run(run_id=43, conclusion="failure"),
+            check_run(run_id=44, head_sha=HEAD, conclusion="success"),
+        ]
+    }
+
+    assert ci_gate_status(document, commit=COMMIT) == "failure"
+
+
+def test_full_ci_requires_all_five_exact_successful_checks() -> None:
+    names = ("backend", "frontend", "security", "g2", "ci-gate")
+    document = {
+        "check_runs": [
+            check_run(name=name, run_id=index)
+            for index, name in enumerate(names, 1)
+        ]
+    }
+
+    assert full_ci_status(document, commit=COMMIT) == "success"
+
+
+def test_full_ci_does_not_mix_checks_from_different_workflow_suites() -> None:
+    older = [
+        check_run(name=name, run_id=index, suite_id=7)
+        for index, name in enumerate(
+            ("backend", "frontend", "security", "g2"), 1
+        )
+    ]
+    older.append(check_run(name="ci-gate", run_id=5, suite_id=7))
+    latest = check_run(name="backend", run_id=100, suite_id=8)
+
+    assert full_ci_status({"check_runs": [*older, latest]}, commit=COMMIT) == "missing"
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [
+        (check_run(name="g2", run_id=100, conclusion="failure"), "failure"),
+        (
+            check_run(
+                name="g2",
+                run_id=100,
+                status="in_progress",
+                conclusion=None,
+            ),
+            "pending",
+        ),
+        (None, "missing"),
+    ],
+)
+def test_full_ci_fails_closed_for_incomplete_or_unsuccessful_checks(
+    replacement: dict[str, object] | None,
+    expected: str,
+) -> None:
+    names = ("backend", "frontend", "security", "ci-gate")
+    runs = [
+        check_run(name=name, run_id=index)
+        for index, name in enumerate(names, 1)
+    ]
+    if replacement is not None:
+        runs.append(replacement)
+
+    assert full_ci_status({"check_runs": runs}, commit=COMMIT) == expected
 
 
 @pytest.mark.parametrize("document", [None, {}, {"check_runs": [None]}])

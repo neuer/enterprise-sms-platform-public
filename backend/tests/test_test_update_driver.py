@@ -83,7 +83,7 @@ def test_driver_accepts_no_secret_or_phone_arguments_and_uses_fixed_remote_comma
 def test_driver_requires_exact_ci_for_high_risk_and_keeps_host_control_binding() -> None:
     source = DRIVER.read_text(encoding="utf-8")
     high_risk_control = source.split(
-        'if [[ "$RISK" == high-risk && "$COMMAND" == apply ]]; then',
+        'if [[ "$RISK" == high-risk &&',
         maxsplit=1,
     )[1].split(
         "fi",
@@ -373,13 +373,16 @@ def test_driver_rejects_public_snapshot_cutover_without_private_object_work() ->
     assert "不得向公开工作区导入私有 Git 对象" in result.stderr
 
 
-def test_driver_preflights_github_auth_before_apply_or_promote_mutation() -> None:
+def test_driver_preflights_github_auth_before_mutation() -> None:
     source = DRIVER.read_text(encoding="utf-8")
     preflight = source.split("github_write_preflight() {", maxsplit=1)[1].split(
         "\n}", maxsplit=1
     )[0]
 
-    assert '"$COMMAND" != apply && "$COMMAND" != promote' in preflight
+    assert (
+        '"$COMMAND" != apply && "$COMMAND" != rebaseline && '
+        '"$COMMAND" != promote'
+    ) in preflight
     assert "gh auth status --hostname github.com" in preflight
     assert 'gh api "repos/$LOCAL_REPOSITORY" --jq .full_name' in preflight
     assert "auth token" not in preflight
@@ -389,6 +392,35 @@ def test_driver_preflights_github_auth_before_apply_or_promote_mutation() -> Non
     assert source.index("github_write_preflight\n") < source.index(
         "# 固定远端阶段: sms-compose test-update prepare"
     )
+
+
+def test_rebaseline_is_narrower_than_daily_apply_and_requires_full_ci() -> None:
+    source = DRIVER.read_text(encoding="utf-8")
+
+    assert "[plan|build|apply|rebaseline|status|promote]" in source
+    assert "rebaseline 只允许 origin/main" in source
+    assert "merge-base --is-ancestor" in source
+    assert "classify-rebaseline-nul" in source
+    assert 'CLASSIFY_ACTION="classify-nul"' in source
+    assert "--require-full" in source
+    assert "rebaseline 要求服务器迁移头真实前移" in source
+    assert 'components=${PLANNED_COMPONENTS[*]}' in source
+
+    result = subprocess.run(
+        ["bash", str(DRIVER), "rebaseline", "--ref", "origin/feature"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "SMS_DOCKER_PUBLIC_SESSION": "1",
+            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
+            "SMS_TEST_UPDATE_PORT": "22",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "rebaseline 只允许 origin/main" in result.stderr
 
 
 def test_driver_classifier_accepts_g2_api_acceptance_as_non_runtime() -> None:

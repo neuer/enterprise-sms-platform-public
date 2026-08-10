@@ -16,6 +16,7 @@ from test_update_contract import (  # noqa: E402
     HOST_CONTROL_PATHS,
     classify_changed_paths,
     classify_public_cutover_paths,
+    classify_rebaseline_paths,
     parse_test_update_request,
     validate_verified_status,
 )
@@ -495,6 +496,7 @@ def test_ci_and_test_update_share_backend_critical_paths(path: str) -> None:
         "deploy/systemd/sms-platform.service",
         "deploy/scripts/release_manager.py",
         "deploy/scripts/prepare_runtime_secrets.py",
+        "deploy/scripts/vendor_runtime_reset.py",
         "deploy/unknown-runtime.conf",
     ],
 )
@@ -771,6 +773,61 @@ def test_rejects_unclassified_path_mixed_with_known_application_change() -> None
         )
 
 
+def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None:
+    paths = [
+        "README.md",
+        "scripts/verify_ci_commit.py",
+        "deploy/scripts/prepare_runtime_secrets.py",
+        "deploy/scripts/vendor_runtime_reset.py",
+        "backend/migrations/versions/0061_vendor_binding_outbox.py",
+        "frontend/src/views/SignView.vue",
+    ]
+
+    change = classify_rebaseline_paths(paths)
+
+    assert change.components == frozenset({"api", "web"})
+    assert change.migration_changed is True
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == (
+        "deploy/scripts/prepare_runtime_secrets.py",
+        "deploy/scripts/vendor_runtime_reset.py",
+    )
+
+
+def test_rebaseline_requires_a_migration_change() -> None:
+    with pytest.raises(ContractError, match="migration change"):
+        classify_rebaseline_paths(
+            [
+                "deploy/scripts/prepare_runtime_secrets.py",
+                "deploy/scripts/vendor_runtime_reset.py",
+                "backend/app/main.py",
+            ]
+        )
+
+
+def test_rebaseline_requires_the_exact_runtime_control_path_set() -> None:
+    with pytest.raises(ContractError, match="exact approved runtime-control"):
+        classify_rebaseline_paths(
+            [
+                "deploy/scripts/prepare_runtime_secrets.py",
+                "backend/migrations/versions/0061_vendor_binding_outbox.py",
+            ]
+        )
+
+
+def test_rebaseline_still_rejects_unknown_runtime_paths() -> None:
+    with pytest.raises(ContractError, match="fast update forbidden"):
+        classify_rebaseline_paths(
+            [
+                "deploy/scripts/prepare_runtime_secrets.py",
+                "deploy/scripts/vendor_runtime_reset.py",
+                "backend/migrations/versions/0061_vendor_binding_outbox.py",
+                "deploy/scripts/future.py",
+            ]
+        )
+
+
 def test_nul_cli_is_the_single_driver_classification_source() -> None:
     classifier = ROOT / "deploy/scripts/test_update_contract.py"
     result = subprocess.run(
@@ -793,6 +850,34 @@ def test_nul_cli_is_the_single_driver_classification_source() -> None:
             "frontend/src/components/VendorCredentialDialog.vue",
         ],
         "migration_changed": False,
+        "risk": "high-risk",
+        "runtime_changed": True,
+    }
+
+
+def test_rebaseline_nul_cli_uses_the_strict_rebaseline_classifier() -> None:
+    classifier = ROOT / "deploy/scripts/test_update_contract.py"
+    result = subprocess.run(
+        [sys.executable, str(classifier), "classify-rebaseline-nul"],
+        input=(
+            b"scripts/verify_ci_commit.py\0"
+            b"deploy/scripts/prepare_runtime_secrets.py\0"
+            b"deploy/scripts/vendor_runtime_reset.py\0"
+            b"backend/migrations/versions/0061_vendor_binding_outbox.py\0"
+            b"frontend/src/views/SignView.vue\0"
+        ),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert json.loads(result.stdout) == {
+        "components": ["api", "web"],
+        "high_risk_paths": [
+            "deploy/scripts/prepare_runtime_secrets.py",
+            "deploy/scripts/vendor_runtime_reset.py",
+        ],
+        "migration_changed": True,
         "risk": "high-risk",
         "runtime_changed": True,
     }

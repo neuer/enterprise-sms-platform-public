@@ -671,3 +671,19 @@
   环境变量或中间件；未来接 CDN/WAF 时必须同步调整外部代理头重写与部署契约测试。
 - 影响：schema/migration、`core/apikey.py`、应用管理 API 与前端、openapi/PRD/AGENTS
   错误码表、单元/API/集成/E2E 与 UAT-29 用例；轮换后新旧 Key 受同一白名单约束。
+
+## D063 同历史测试基线重对齐使用独立严格入口
+
+- 决策：日常 `classify-nul` 与 `apply` 的禁止路径保持不变；只为“服务器 commit 是目标
+  `origin/main` 的祖先、存在真实 expand 迁移前移”的旧测试基线提供一次性
+  `rebaseline`。它只额外接受两个固定运行控制脚本和枚举的非运行态文件，要求两脚本同时
+  出现在差异中，并强制 API/Web 双镜像与 high-risk 路径。
+- 证据：目标 commit 必须已有 GitHub Actions 应用产生的 `backend`、`frontend`、
+  `security`、`g2`、`ci-gate` 五项精确 success；`ci-gate` 单项成功不足以执行本入口。
+  host-control 资产发生变化时，必须先按同一目标 commit 重装 root-owned 不可变快照。
+- 运行边界：服务器既有状态机继续负责两条 lane 暂停、submitting/retrying/uncertain 拦截、
+  AES-GCM 数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 与 operator Git
+  读路径复核。跨历史、无迁移、分支 ref、未知禁止路径或任一证据缺失均失败关闭；不清库、
+  不删卷、不重建或轮换 secrets，不修改正式 Key、加密测试号码和真实联调控制状态。
+- 原因：历史积累差异不能通过扩大日常白名单消解；把已知基线修复单独建模，既能完成测试
+  环境追平，又让未来普通更新继续对运行凭据和发布控制改动保持拒绝默认。

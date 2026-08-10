@@ -147,6 +147,26 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 快速更新始终保留 PostgreSQL 数据库、Docker volume、运行态目录和真实联调控制状态。任何初始化必须事先取得操作者明确确认；管理员初始化是独立管理流程，不得作为更新步骤自动执行。正式厂商 Key 的安装或轮换、真实测试号码管理及真实联调激活也不属于快速更新输入，只能走各自受控入口。
 
+### 同历史基线重对齐例外
+
+服务器 commit 是目标 `origin/main` 的祖先、服务器迁移头落后，且普通 `apply` 只被合同中
+固定的旧运行凭据准备/撤销脚本与非运行态文件阻断时，可另行评审后执行一次：
+
+```bash
+scripts/test_update.sh rebaseline --ref origin/main
+```
+
+执行前必须按 `deploy/README.md` 的“一次性主机安装”重装目标 commit 的 root-owned
+host-control 快照，并确认该 commit 的 `backend`、`frontend`、`security`、`g2`、
+`ci-gate` 五个 check 全部由 GitHub Actions 成功完成。入口使用独立严格分类器，要求两个
+固定运行控制路径和至少一个迁移路径同时存在、迁移头真实前移，并强制 API/Web 双镜像；
+随后完整复用 high-risk 的暂停、`uncertain` 拦截、密文 checkpoint、expand-only 检查、
+prepare/apply/verify/status 和 operator Git 复核。
+
+无共同历史继续使用独立 public baseline 流程；无迁移、非 `origin/main`、缺少完整 CI、
+host-control commit 不一致或出现任意额外禁止路径时，`rebaseline` 必须失败关闭。完成本次
+重对齐后恢复日常 `apply`，不得把该入口用于普通分类器拒绝的未来变更。
+
 ## 服务端固定阶段
 
 `sudo` 不继承 systemd 的 `/etc/sms-platform/compose.env`。本地 driver 因此会以固定

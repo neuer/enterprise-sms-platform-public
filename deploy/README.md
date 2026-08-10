@@ -379,6 +379,18 @@ commit 间的 host-control 字节未变可复用既有快照，发生变化则�
 不执行管理员初始化，也不初始化数据库。始终保留 PostgreSQL 数据库、Docker volume、
 凭据 generation、测试号码和运行态数据；任何初始化仍须操作者明确确认。
 
+同历史旧测试基线若仍是目标 `origin/main` 的祖先、包含真实迁移前移，且普通 `apply` 仅被
+合同枚举的旧运行凭据准备/撤销脚本与固定非运行态文件阻断，可在重装同一目标 commit 的
+host-control 快照、确认完整五项 CI check 成功后执行：
+
+```bash
+scripts/test_update.sh rebaseline --ref origin/main
+```
+
+这是一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
+密文 checkpoint、expand-only 迁移、verify 与 operator Git 复核；不接受分支、无迁移、
+跨历史或任意未枚举路径。日常更新继续只使用 `apply`，不得用 `rebaseline` 绕过分类失败。
+
 页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
 
 production `up` 白名单只接受 `-d`/`--detach`、`--remove-orphans`、`--no-deps`、`--force-recreate`，以及显式服务 `postgres`、`redis`、`migrate`、`api`、`worker-realtime`、`worker-bulk`、`worker-callback`、`outbox-dispatcher`、`beat`、`web`。`mock-vendor`、未知服务、所有 `--scale`、`--profile`、`--env-file`、`--build`、`--pull` 和其他未列出的参数均在 Python/Docker 调用前退出 2；development 仍可使用 Mock 调试参数。所有 `up/down/run --rm migrate/rotate backend` 由 `run_with_lifecycle_lock.py` 使用 Python `fcntl.flock` 共用非阻塞 lifecycle lock。helper 以 `Popen(..., pass_fds=...)` 让受控子 wrapper 继承锁 FD；私有 `__locked` 在 dispatch 前调用 `verify-held` 核对 FD 类型、mode、euid 与 dev/ino，独立 probe 只确认该 inode 已有锁，再对传入 FD 本身执行幂等 `LOCK_EX|LOCK_NB`：只有继承的同一 open-file-description 成功，指向同 inode 但未加锁的 FD 会在另一个 holder 存在时失败。单独伪造 marker 或 FD 均无效。helper 对 TERM/INT/HUP 转发给子进程并继续等待；即使 helper 遭 SIGKILL，继承锁 FD 仍由子进程及其后代持有，到最后一个持有者退出才由内核释放。`SMS_RUNTIME_ROOT` 必须是无 `..` 的绝对路径，词法规范化会去除尾斜杠，因此等价写法使用同一 `${SMS_RUNTIME_ROOT}.lifecycle.lock`。首次启动/reboot 时 helper 安全创建最终锁父目录，要求 mode `0700`、当前 euid、非符号链接；锁文件以 `O_NOFOLLOW` 创建为 `0600` 普通常规文件。诊断命令不取得该锁，runtime cleanup 也不删除锁 inode。

@@ -92,6 +92,23 @@ gh auth status --hostname github.com
 `state=verified` 且表面验收完成才运行 cleanup；cleanup 删除旧 root 与
 bundle/API/Web 三个大产物，但保留 manifest/request、test-update store 和 core journal。
 
+### 同历史测试基线重对齐
+
+当服务器 commit 仍是目标 `origin/main` 的祖先，但跨越多个已审核迁移，且日常 `apply`
+只因固定的旧运行凭据准备/撤销脚本与操作文档差异失败关闭时，允许一次性执行：
+
+```bash
+scripts/test_update.sh rebaseline --ref origin/main
+```
+
+该入口不放宽日常分类器，只接受合同中枚举的两个运行控制脚本、固定非运行态文件和普通
+快速更新路径；必须同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
+[`deploy/README.md`](deploy/README.md) 的“一次性主机安装”把 root-owned host-control
+快照绑定到同一目标 commit，且目标 commit 的 `backend`、`frontend`、`security`、`g2`
+与 `ci-gate` 五个 GitHub Actions check 必须全部成功。后续仍走 high-risk 的暂停、
+`uncertain` 拦截、密文数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 和
+operator Git 复核；无共同历史、无迁移、任意新增禁止路径或非 `origin/main` 一律拒绝。
+
 owner PR 的精确 push CI 成功后会自动改为 Ready 并请求 squash merge。此自动化只完成
 仓库集成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
 服务器基线或保护状态异常时仍失败关闭。分支部署只作为明确的合并前验收例外；若分支已经

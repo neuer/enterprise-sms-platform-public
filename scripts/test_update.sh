@@ -115,7 +115,7 @@ if [[ -n "$VENDOR_ORIGIN" ]]; then
 fi
 
 usage() {
-  echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|status|promote] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -191,11 +191,11 @@ verify_operator_git_after_switch() {
 
 github_write_preflight() {
   local authenticated_repository
-  if [[ "$COMMAND" != apply && "$COMMAND" != promote ]]; then
+  if [[ "$COMMAND" != apply && "$COMMAND" != rebaseline && "$COMMAND" != promote ]]; then
     return 0
   fi
   command -v gh >/dev/null 2>&1 || {
-    echo "test-update: apply/promote 需要 GitHub CLI" >&2
+    echo "test-update: apply/rebaseline/promote 需要 GitHub CLI" >&2
     return 1
   }
   gh auth status --hostname github.com >/dev/null 2>&1 || {
@@ -221,7 +221,7 @@ github_write_preflight() {
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    plan | build | apply | status | promote)
+    plan | build | apply | rebaseline | status | promote)
       COMMAND="$1"
       shift
       ;;
@@ -272,6 +272,10 @@ done
 }
 if [[ "$COMMAND" == promote && "$REF" != origin/main ]]; then
   echo "test-update: promote 只允许 origin/main" >&2
+  exit 2
+fi
+if [[ "$COMMAND" == rebaseline && "$REF" != origin/main ]]; then
+  echo "test-update: rebaseline 只允许 origin/main" >&2
   exit 2
 fi
 
@@ -331,6 +335,12 @@ if ! git -C "$ROOT" cat-file -e "$REMOTE_COMMIT^{commit}" 2>/dev/null; then
   exit 1
 fi
 echo "test-update: preflight root=$REMOTE_ROOT base=$REMOTE_COMMIT target=$TARGET_COMMIT ref=$REF"
+
+if [[ "$COMMAND" == rebaseline ]] &&
+  ! git -C "$ROOT" merge-base --is-ancestor "$REMOTE_COMMIT" "$TARGET_COMMIT"; then
+  echo "test-update: rebaseline 只允许服务器基线为目标 main 的祖先" >&2
+  exit 1
+fi
 
 if [[ "$COMMAND" == promote ]]; then
   BASE_TREE="$(git -C "$ROOT" rev-parse "$REMOTE_COMMIT^{tree}")"
@@ -401,10 +411,14 @@ if [[ ${#CHANGED_PATHS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+CLASSIFY_ACTION="classify-nul"
+if [[ "$COMMAND" == rebaseline ]]; then
+  CLASSIFY_ACTION="classify-rebaseline-nul"
+fi
 SCOPE_JSON="$(
   git -C "$ROOT" diff --name-only --no-renames -z \
     "$REMOTE_COMMIT" "$TARGET_COMMIT" |
-    python3 "$ROOT/deploy/scripts/test_update_contract.py" classify-nul
+    python3 "$ROOT/deploy/scripts/test_update_contract.py" "$CLASSIFY_ACTION"
 )" || {
   echo "test-update: 差异分类失败 root=$REMOTE_ROOT base=${REMOTE_COMMIT:0:12} target=${TARGET_COMMIT:0:12} changed=${#CHANGED_PATHS[@]}" >&2
   exit 1
@@ -442,8 +456,14 @@ elif [[ "$COMMAND" == apply && "$CI_REQUIRED" == 1 ]]; then
   python3 "$ROOT/scripts/verify_ci_commit.py" \
     --repository "$LOCAL_REPOSITORY" \
     --commit "$TARGET_COMMIT"
+elif [[ "$COMMAND" == rebaseline ]]; then
+  python3 "$ROOT/scripts/verify_ci_commit.py" \
+    --repository "$LOCAL_REPOSITORY" \
+    --commit "$TARGET_COMMIT" \
+    --require-full
 fi
-if [[ "$RISK" == high-risk && "$COMMAND" == apply ]]; then
+if [[ "$RISK" == high-risk &&
+      ("$COMMAND" == apply || "$COMMAND" == rebaseline) ]]; then
   REMOTE_SMS_COMPOSE="$BOOTSTRAP_SMS_COMPOSE"
   if ! CAPABILITY_JSON="$(remote_sms_compose test-update capability 2>/dev/null)" ||
     ! python3 -c 'import json,sys
@@ -523,6 +543,10 @@ if [[ "$MIGRATION_FROM" == "$MIGRATION_TARGET" ]]; then
   MIGRATION_COMPATIBILITY="none"
 else
   MIGRATION_COMPATIBILITY="expand"
+fi
+if [[ "$COMMAND" == rebaseline && "$MIGRATION_COMPATIBILITY" != expand ]]; then
+  echo "test-update: rebaseline 要求服务器迁移头真实前移" >&2
+  exit 1
 fi
 
 PLANNED_COMPONENTS=()
@@ -705,7 +729,7 @@ remote_sms_compose test-update apply
 # 固定远端阶段: sms-compose test-update verify
 remote_sms_compose test-update verify
 # verify 后再次以日常更新用户核对 origin、HEAD 和工作树读路径；root 控制面通过不代表 operator 可用。
-verify_operator_git_after_switch apply
+verify_operator_git_after_switch "$COMMAND"
 # 固定远端阶段: sms-compose test-update status
 FINAL_STATUS="$(remote_sms_compose test-update status)"
 if ! printf '%s' "$FINAL_STATUS" |
@@ -715,5 +739,5 @@ if ! printf '%s' "$FINAL_STATUS" |
   exit 1
 fi
 bash "$ROOT/scripts/record_test_deployment.sh" \
-  "$LOCAL_REPOSITORY" "$TARGET_COMMIT" "$REF" "Verified fast update on test server"
+  "$LOCAL_REPOSITORY" "$TARGET_COMMIT" "$REF" "Verified $COMMAND on test server"
 echo "test-update: state=verified commit=$TARGET_COMMIT"
