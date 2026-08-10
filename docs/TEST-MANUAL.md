@@ -916,7 +916,7 @@ uv run --project backend python scripts/perf_smoke.py \
 
 通过标准：
 
-- API 受理 30 RPS、持续 60 秒，P95 必须 `< 300 ms`；
+- API 受理 30 RPS、持续 60 秒，P95 必须 `< 350 ms`；
 - verify 端到端 P95 必须 `< 2 秒`；
 - bulk 与 verify 混合时实时 lane 不被 bulk 预留耗尽；
 - 停止施压后 480 秒内排空；

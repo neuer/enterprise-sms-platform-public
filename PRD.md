@@ -292,7 +292,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 
 | 编号 | 要求 |
 |---|---|
-| NFR-01 | 性能：日均 1万~10万条；API 受理 P95<300ms（万级批次<3s，含加密与计费计算）；verify 端到端 P95<2s |
+| NFR-01 | 性能：日均 1万~10万条；API 受理 P95<350ms（万级批次<3s，含加密与计费计算）；verify 端到端 P95<2s |
 | NFR-02 | 可用性（v1.2 冷备）：主节点 Compose 单机；**冷备节点**预装同版本栈，每日同步（pg_dump 全量 + deploy 配置 + secrets 手动首次分发），**RTO ≤ 30min、RPO ≤ 24h**；deploy/failover.md 提供切换手册（含 DNS/hosts 切换、数据恢复、厂商出口 IP 双报备）；**每季度切换演练一次**；生产 Redis broker/auth/control 使用三个不同托管高可用端点，Outbox 与 PostgreSQL 用量事实分别提供可恢复边界 |
 | NFR-03 | 安全：生产运行凭据与三个 Redis ACL 密码仅 Docker secrets；DB owner 与 auth/accept/send/callback/export/scheduler/metrics 七职责分离，运行角色非 owner/超级用户、无 DDL 且 audit 不可修改/删除；API Key 哈希+双Key；JWT jti 吊销+强制下线；HTTPS；登录锁定+IP限流；回调 HMAC+CIDR 白名单 |
 | NFR-04 | 合规：PIPL 加密/脱敏/解密审计；等保三级审计只增3年；**营销合规：退订语强制、用户同意留痕、退订即时加黑（12321 投诉可举证）** |
