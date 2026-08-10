@@ -548,6 +548,7 @@ class PerformanceSuite:
                     "category": "market",
                     "mobiles": [self._phone(3, event.index)],
                     "content": "性能验收活动回T退订",
+                    "biz_id": f"pfw-{self.run_id}-{event.index}",
                     "consent_confirmed": True,
                     "is_test": True,
                     "remark": f"perf-{self.run_id}",

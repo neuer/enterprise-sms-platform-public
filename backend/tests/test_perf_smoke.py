@@ -319,6 +319,16 @@ def test_performance_suite_runs_three_isolated_phases_with_safe_results() -> Non
         "notice": 3,
         "market": 5,
     }
+    web_sends = [
+        payload
+        for _method, path, payload, _headers in api.calls
+        if path == "/api/v1/web/messages/send" and payload is not None
+    ]
+    assert [item["biz_id"] for item in web_sends] == [
+        "pfw-fixed-1",
+        "pfw-fixed-2",
+        "pfw-fixed-3",
+    ]
     assert len(api.cancelled) == 10
     for path, headers in api.cancelled:
         batch_no = path.removeprefix("/api/v1/messages/batches/").removesuffix("/cancel")
