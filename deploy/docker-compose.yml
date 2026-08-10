@@ -406,6 +406,8 @@ services:
     cpus: 1
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=0700
+      # 与 Nginx API/import 并发预算对齐：2*12MiB + 14*1MiB < 64MiB。
+      - /tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,uid=101,gid=101,mode=0700
     volumes:
       # 脱敏访问日志持久化：nginx(101) 写入独立目录，主机采集器(host root)只读聚合。
       - ${SMS_SECURITY_REPORT_NGINX_DIR:-./security-report-nginx}:/var/log/nginx:rw
