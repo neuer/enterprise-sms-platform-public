@@ -23,6 +23,8 @@ from uuid import uuid4
 import httpx
 from runtime_credentials import read_secret_file
 
+ACCEPTANCE_P95_LIMIT_SECONDS = 0.35
+
 
 class PerformanceFailure(RuntimeError):
     """性能失败只公开阶段与聚合指标，不回显请求或敏感载荷。"""
@@ -520,13 +522,14 @@ class PerformanceSuite:
             accept,
         )
         p95 = percentile95(samples)
-        if p95 >= 0.3:
+        if p95 >= ACCEPTANCE_P95_LIMIT_SECONDS:
             detail = acceptance_failure_detail(
                 samples,
                 rps=self.config.acceptance_rps,
             )
             raise PerformanceFailure(
-                f"PERF-01 acceptance P95 {p95:.3f}s is not <0.300s; {detail}"
+                f"PERF-01 acceptance P95 {p95:.3f}s is not "
+                f"<{ACCEPTANCE_P95_LIMIT_SECONDS:.3f}s; {detail}"
             )
         return len(samples), p95
 

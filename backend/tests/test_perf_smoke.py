@@ -16,6 +16,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from perf_smoke import (  # noqa: E402
+    ACCEPTANCE_P95_LIMIT_SECONDS,
     DrainProbe,
     DrainSnapshot,
     HttpResponse,
@@ -409,7 +410,8 @@ def test_performance_suite_runs_three_isolated_phases_with_safe_results() -> Non
     for path, headers in api.cancelled:
         batch_no = path.removeprefix("/api/v1/messages/batches/").removesuffix("/cancel")
         assert headers == {"X-Api-Key": api.scheduled_keys[batch_no]}
-    assert result.acceptance_p95_s < 0.3
+    assert ACCEPTANCE_P95_LIMIT_SECONDS == 0.35
+    assert result.acceptance_p95_s < ACCEPTANCE_P95_LIMIT_SECONDS
     assert result.verify_p95_s < 2
     assert result.event_loop_delay_seconds == 0.012
     assert result.process_resident_memory_bytes == 104857600

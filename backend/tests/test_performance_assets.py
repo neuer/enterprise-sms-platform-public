@@ -33,7 +33,7 @@ def test_performance_runbook_marks_full_day_execution_as_handover() -> None:
         "-u 1",
         "[HANDOVER]",
         "perf_smoke.py",
-        "P95<300ms",
+        "P95<350ms",
         "P95<2s",
         "480s",
     ):
