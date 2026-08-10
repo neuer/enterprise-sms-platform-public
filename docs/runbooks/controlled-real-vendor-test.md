@@ -178,7 +178,7 @@ agent 每次接收新的凭据 envelope 前都会先通过固定 wrapper 执行�
 
 凭据 configured、至少一个 active recipient、agent heartbeat 新鲜并且所有安全检查满足时，页面显示 `status=inactive`。管理员通过二次认证后点击激活，API 返回 `operation_id`；刷新页面只按 operation id 恢复非敏感进度。
 
-`vendor-control-agent` 在同一 lifecycle lock 内严格执行：暂停 realtime/bulk → 停止发送 worker → 确认活跃分片为零 → 创建只含密文的 checkpoint → 校验凭据和 active recipient 数 → 写 marker 与 live dotenv → 移除 mock-vendor → 校验 Compose → 启动所需基础服务 → agent 自身执行 GetBalance → 确认上海自然日账本为零 → 启动发送 worker → 仅清除本次 activation 自己持有的 pause → 写无 PII 证据。API 不挂载或读取正式厂商凭据。成功后页面显示 `status=controlled`。
+`vendor-control-agent` 在同一 lifecycle lock 内严格执行：暂停 realtime/bulk → 停止发送 worker → 确认活跃分片为零 → 创建只含密文的 checkpoint → 校验凭据和 active recipient 数 → 写 marker 与 live dotenv → 移除 mock-vendor → 校验 Compose → 启动所需基础服务 → agent 以 `run --rm --no-deps` 创建一次性 realtime worker 且只执行 GetBalance → 确认上海自然日账本为零 → 启动发送 worker → 仅清除本次 activation 自己持有的 pause → 写无 PII 证据。一次性容器结束即删除；API 不挂载或读取正式厂商凭据。成功后页面显示 `status=controlled`。
 
 任何一步失败都保持发送暂停，不自动 restore、不回退 Mock，也不清库、不删除 volume。checkpoint 是恢复前的人工决策依据，不是自动回滚开关。agent 每 10 秒写安全状态投影；API/worker 发现 heartbeat 超过 30 秒即 fail closed，并设置独立 critical pause。
 

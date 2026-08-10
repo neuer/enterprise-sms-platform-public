@@ -983,6 +983,33 @@ def test_host_control_managers_use_authenticated_control_redis(
         assert "manual" not in script
 
 
+def test_host_update_balance_probe_uses_ephemeral_authorized_worker() -> None:
+    import test_update_manager as update_module
+
+    calls: list[tuple[str, ...]] = []
+    host = object.__new__(update_module.HostUpdateOperations)
+
+    def run(*args: str, **_kwargs: object) -> str:
+        calls.append(args)
+        return ""
+
+    host._run = run  # type: ignore[method-assign]
+    host.probe_balance()
+
+    assert calls[0][:7] == (
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        "worker-realtime",
+        "python",
+        "-c",
+    )
+    assert "get_balance" in calls[0][7]
+    assert "get_report" not in calls[0][7]
+    assert "get_reply" not in calls[0][7]
+
+
 def _write_public_cutover_state(
     path: Path,
     *,

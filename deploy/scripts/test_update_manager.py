@@ -873,7 +873,16 @@ async def probe():
 
 asyncio.run(probe())
 """
-        self._run("exec", "-T", "api", "python", "-c", program)
+        self._run(
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "worker-realtime",
+            "python",
+            "-c",
+            program,
+        )
 
 
 class StateStore(Protocol):

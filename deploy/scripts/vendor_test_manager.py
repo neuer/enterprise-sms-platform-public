@@ -473,7 +473,16 @@ async def probe():
 
 asyncio.run(probe())
 """
-        raw = self._run("exec", "-T", "api", "python", "-c", program)
+        raw = self._run(
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "worker-realtime",
+            "python",
+            "-c",
+            program,
+        )
         try:
             decoded = json.loads(raw.splitlines()[-1])
         except (IndexError, json.JSONDecodeError) as exc:
