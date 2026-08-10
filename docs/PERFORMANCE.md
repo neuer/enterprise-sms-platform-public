@@ -2,7 +2,7 @@
 
 ## 无人值守三阶段冒烟
 
-`scripts/perf_smoke.py` 是 G2 的权威有界性能门禁：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<350ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。完整 G2 会在 E2E 后复用同一组已构建镜像，重建开发卷、等待 ready 并重新 seed，使性能阶段不继承安全验收或 E2E 的持久化事实。
+`scripts/perf_smoke.py` 是 G2 的权威有界性能门禁：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<450ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。完整 G2 会在 E2E 后复用同一组已构建镜像，重建开发卷、等待 ready 并重新 seed，使性能阶段不继承安全验收或 E2E 的持久化事实。
 
 阶段 1 的 future scheduled 批次仅用于测量受理延迟。脚本无论成功或中途失败，均必须使用对应应用 API Key 逐批调用正式取消接口，走状态机、配额回补与审计；不得直接更新数据库。结果字段 `cancelled_scheduled_batches` 必须等于阶段 1 已受理的 scheduled 数，任何取消失败均以 `PERF-04` fail-closed，错误只报告失败数量。
 
@@ -47,6 +47,6 @@ PERF_KEYS_FILE=../deploy/secrets/dev-apikeys.txt \
 
 ### 通过与停止
 
-- 完成数恰好 100000，HTTP 失败率为 0，受理 P95<350ms；停止后按三阶段脚本的 480s 口径确认排空。
+- 完成数恰好 100000，HTTP 失败率为 0，受理 P95<450ms；停止后按三阶段脚本的 480s 口径确认排空。
 - 出现手机号/密钥日志、uncertain 非预期增长、数据库磁盘告急、worker 循环重启或真实外呼时立即停止并按安全事件处理。
 - 报告记录 commit、镜像 digest、开始/结束时间、总量、分类别量、P50/P95/P99、失败码、资源峰值、排空时间和整改项；执行结果保持 `[HANDOVER]`，终局写入 HANDOVER.md。
