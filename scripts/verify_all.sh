@@ -128,6 +128,17 @@ seed_dev(){
   mv "$temporary" "$destination"
   chmod 600 "$destination"
 }
+wait_api_ready(){
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -sf "http://localhost:${api_port}/readyz"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "readyz 超时" >&2
+  return 1
+}
 metrics_gate(){
   metrics_token="$(tr -d '\r\n' < deploy/secrets/metrics_scrape_token)"
   metrics_body="$(curl -sf -H "Authorization: Bearer ${metrics_token}" \
@@ -187,11 +198,7 @@ else
   compose up -d --build
 fi
 bash scripts/verify_redis_domains.sh
-for i in $(seq 1 30); do
-  curl -sf "http://localhost:${api_port}/readyz" && break
-  sleep 2
-  [ "$i" = 30 ] && { echo "readyz 超时"; exit 1; }
-done
+wait_api_ready
 metrics_gate
 compose exec -T api test ! -e /run/secrets/db_owner_password
 bash scripts/verify_database_roles.sh
@@ -213,6 +220,12 @@ python3 scripts/verify_tls_termination_e2e.py \
 }
 
 stage_8(){
+# E2E creates durable facts by design. Recreate only the G2 development volumes so
+# the authoritative performance profile measures the same images from a clean DB.
+compose down -v
+compose up -d
+wait_api_ready
+seed_dev
 uv run --project backend python scripts/perf_smoke.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt
 }
 

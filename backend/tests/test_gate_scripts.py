@@ -322,12 +322,16 @@ def test_g2_gate_scrapes_required_prometheus_families() -> None:
 
 def test_g2_runs_security_acceptance_after_seed_and_before_uat() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
+    stage_five = all_gate.split("stage_5(){", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
     security = (
         'python3 scripts/security_acceptance.py --base "http://localhost:${api_port}" '
         "--compose-file deploy/docker-compose.yml --secrets-dir deploy/secrets"
     )
     assert security in all_gate
-    assert all_gate.rindex("\nseed_dev\n") < all_gate.index(security)
+    assert stage_five.rstrip().endswith("seed_dev")
+    assert all_gate.index("stage_5(){") < all_gate.index(security)
     assert all_gate.index(security) < all_gate.index(
         "uv run --project backend python scripts/e2e_api.py"
     )
@@ -368,6 +372,23 @@ def test_g2_performance_gate_uses_authoritative_default_durations() -> None:
         "--drain-timeout",
     ):
         assert forbidden not in line
+
+
+def test_g2_performance_gate_recreates_clean_volumes_without_rebuilding() -> None:
+    all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
+    stage_eight = all_gate.split("stage_8(){", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+
+    down = stage_eight.index("compose down -v")
+    up = stage_eight.index("compose up -d")
+    ready = stage_eight.index("wait_api_ready")
+    seed = stage_eight.index("seed_dev")
+    performance = stage_eight.index(
+        "uv run --project backend python scripts/perf_smoke.py"
+    )
+    assert down < up < ready < seed < performance
+    assert "--build" not in stage_eight
 
 
 def test_release_gate_is_pinned_fail_closed_and_scans_all_release_images() -> None:

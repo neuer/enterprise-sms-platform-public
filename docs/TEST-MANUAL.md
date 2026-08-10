@@ -904,6 +904,8 @@ python3 scripts/security_acceptance.py \
 
 性能测试必须独占环境并得到测试负责人批准。禁止从公网无节制压测；推荐在服务器回环或同内网压测机执行现有脚本：
 
+仓库完整 G2 会在 E2E 后复用已构建镜像并重建开发卷，再等待 ready、执行 seed-dev 后运行性能冒烟；手工独立运行下列脚本时，执行人仍须自行提供同等的干净、独占环境。
+
 ```bash
 uv run --project backend python scripts/perf_smoke.py \
   --base http://127.0.0.1:<API回环端口> \
