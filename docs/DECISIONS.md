@@ -761,9 +761,11 @@
   普通 apply、其他 blocked step 或其他迁移均不接受。
 - 状态机：恢复先原子记录 `blocked → verifying/recover_verify`，随后完整重跑环境模式、预算、
   pause 所有权、真实 GetBalance、服务健康和迁移头验收。成功进入 `verified` 并按既有流程
-  清理 pause；失败则 `verifying → blocked`，不释放 pause。中断后可从 `verifying` 重放，
-  已 verified 时只复核精确身份并幂等返回，事件历史不改写。
+  清理 pause；失败则 `verifying → blocked`，不释放 pause。中断后可从 `verifying` 重放；
+  若事件链能证明该 blocked 紧邻同一入口的 `recover_verify`，且 step 属于固定 verify 集合，
+  也允许再次重放。已 verified 时只复核精确身份并幂等返回，事件历史不改写。
 - 边界：入口不重跑或回退 schema，不切换镜像，不修改正式厂商 Key、测试号码、数据库、
   volume 或 runtime secret；仍必须持有同一 lifecycle lock，也不能以手工状态编辑、直接
-  Compose 或跳过 GetBalance 代替。原因是迁移后 schema 不允许自动回退，而一次外部探测
-  抖动也不应迫使操作者破坏状态账本或清空环境。
+  Compose 或跳过 GetBalance 代替。本地固定入口负责校验并传递 `.env.test-update` 中的厂商
+  origin，避免手工远端调用造成 marker 合同漂移。原因是迁移后 schema 不允许自动回退，
+  而一次外部探测或受控调用中断也不应迫使操作者破坏状态账本或清空环境。

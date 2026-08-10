@@ -204,21 +204,20 @@ head 全部精确一致，原请求确为上述 rebaseline，状态错误类型�
 update pause 仍由原 update id 持有时，才可执行：
 
 ```bash
-sudo /usr/bin/env \
-  SMS_PLATFORM_ROOT=/opt/sms-platform \
-  SMS_SECRETS_MODE=development \
-  SMS_RUNTIME_ROOT=/run/sms-platform/secrets \
-  SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials \
-  /usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap \
-  test-update recover-rebaseline-verify
+scripts/test_update.sh recover-rebaseline-verify
 ```
+
+本地入口会从权限收紧的 `.env.test-update` 读取并校验测试服务器、端口和
+`SMS_VENDOR_LIVE_TEST_ORIGIN`，再把固定运行目录与厂商 origin 一并传给不可变 host
+bootstrap；不得手工拼接缺少 origin 的远端命令。
 
 入口先把原状态原子推进到 `verifying/recover_verify`，再从环境模式、预算守恒、pause 所有权、
 真实 GetBalance、服务健康与 migration head 开始完整重跑 verify；不重跑迁移、不切换镜像、
 不更换凭据。GetBalance 或任一后续不变量再次失败会重新进入 `blocked` 并保持 fail closed。
-若命令在恢复中断，可原样重放；`verifying/recover_verify` 会继续完整 verify，已 `verified`
-则只复核精确身份后幂等返回。其他 blocked step、其他迁移、普通 apply 或非 host bootstrap
-调用一律拒绝。
+若命令在恢复中断，可原样重放；`verifying/recover_verify` 会继续完整 verify。若完整 verify
+再次阻断，只有不可变事件链能证明紧邻的 `blocked → verifying/recover_verify → blocked` 且
+失败 step 属于固定 verify 步骤时才可重放；已 `verified` 则只复核精确身份后幂等返回。缺少
+上述来源证明的其他 blocked step、其他迁移、普通 apply 或非 host bootstrap 调用一律拒绝。
 
 ## 服务端固定阶段
 

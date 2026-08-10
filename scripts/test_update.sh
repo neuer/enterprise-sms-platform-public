@@ -115,7 +115,7 @@ if [[ -n "$VENDOR_ORIGIN" ]]; then
 fi
 
 usage() {
-  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|status|promote] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|recover-rebaseline-verify|status|promote] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -145,6 +145,11 @@ print(path.lower())' "$1"
 remote_sms_compose() {
   ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
     "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$REMOTE_SMS_COMPOSE" "$@"
+}
+
+remote_bootstrap_sms_compose() {
+  ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$BOOTSTRAP_SMS_COMPOSE" "$@"
 }
 
 remote_git_read() {
@@ -221,7 +226,7 @@ github_write_preflight() {
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    plan | build | apply | rebaseline | status | promote)
+    plan | build | apply | rebaseline | recover-rebaseline-verify | status | promote)
       COMMAND="$1"
       shift
       ;;
@@ -277,6 +282,16 @@ fi
 if [[ "$COMMAND" == rebaseline && "$REF" != origin/main ]]; then
   echo "test-update: rebaseline 只允许 origin/main" >&2
   exit 2
+fi
+
+if [[ "$COMMAND" == recover-rebaseline-verify ]]; then
+  [[ "$REF" == origin/main ]] || { usage; exit 2; }
+  [[ -n "$VENDOR_ORIGIN" ]] || {
+    echo "test-update: recover-rebaseline-verify 要求配置 SMS_VENDOR_LIVE_TEST_ORIGIN" >&2
+    exit 2
+  }
+  remote_bootstrap_sms_compose test-update recover-rebaseline-verify
+  exit 0
 fi
 
 if [[ "$COMMAND" == status ]]; then

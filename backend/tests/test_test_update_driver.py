@@ -397,7 +397,10 @@ def test_driver_preflights_github_auth_before_mutation() -> None:
 def test_rebaseline_is_narrower_than_daily_apply_and_requires_full_ci() -> None:
     source = DRIVER.read_text(encoding="utf-8")
 
-    assert "[plan|build|apply|rebaseline|status|promote]" in source
+    assert (
+        "[plan|build|apply|rebaseline|recover-rebaseline-verify|status|promote]"
+        in source
+    )
     assert "rebaseline 只允许 origin/main" in source
     assert "merge-base --is-ancestor" in source
     assert "classify-rebaseline-nul" in source
@@ -476,6 +479,75 @@ def test_driver_explicitly_propagates_fixed_host_control_environment_to_sudo() -
     )
     assert "sudo /usr/local/sbin/sms-compose vendor-test status" not in source
     assert "sudo /usr/local/sbin/sms-compose test-update prepare" not in source
+
+
+def test_rebaseline_verify_recovery_uses_bootstrap_with_configured_origin(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+printf '%s\n' "$*"
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(DRIVER), "recover-rebaseline-verify"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SMS_DOCKER_PUBLIC_SESSION": "1",
+            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
+            "SMS_TEST_UPDATE_PORT": "2222",
+            "SMS_VENDOR_LIVE_TEST_ORIGIN": "https://vendor.example.invalid",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "-p 2222" in result.stdout
+    assert "SMS_VENDOR_LIVE_TEST_ORIGIN=https://vendor.example.invalid" in result.stdout
+    assert (
+        "/usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap "
+        "test-update recover-rebaseline-verify"
+    ) in result.stdout
+
+
+def test_rebaseline_verify_recovery_requires_vendor_origin_before_network(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+exit 99
+""",
+    )
+
+    result = subprocess.run(
+        ["bash", str(DRIVER), "recover-rebaseline-verify"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SMS_DOCKER_PUBLIC_SESSION": "1",
+            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
+            "SMS_TEST_UPDATE_PORT": "22",
+            "SMS_VENDOR_LIVE_TEST_ORIGIN": "",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "要求配置 SMS_VENDOR_LIVE_TEST_ORIGIN" in result.stderr
 
 
 def test_driver_rejects_invalid_vendor_origin_before_network() -> None:
