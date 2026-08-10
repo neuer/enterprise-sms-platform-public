@@ -171,17 +171,29 @@ SHA-256: ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd
 
 主机还必须有固定 `/usr/bin/python3`（Python 3.11 以上）和该解释器可导入的
 `cryptography`。源码不能由客户端随意上传，也不能从尚未更新的工作树直接执行：先让服务器
-取得目标 Git object，再由该 object 生成 root-owned 固定 staging。以下命令中的 commit
-必须是已审核并已推送目标分支解析出的完整 40 位 SHA：
+在 operator 自有的临时 Git 仓库中从活动 checkout 的同一 `origin` 取得目标 object，再由
+该 object 生成 root-owned 固定 staging。活动 checkout 的 `.git` 按部署合同保持 group
+只读；不得为此临时放宽权限，也不得改用 root 在活动 checkout 中 fetch。以下命令中的
+commit 必须是已审核并已推送目标分支解析出的完整 40 位 SHA：
 
 ```bash
+set -euo pipefail
 TARGET_COMMIT=<40位目标SHA>
+TARGET_BRANCH=<目标分支>
 SOURCE_ROOT="/var/lib/sms-platform/test-secure-access-bootstrap/source-$TARGET_COMMIT"
-git -C /opt/sms-platform fetch --no-tags origin \
-  refs/heads/<目标分支>:refs/test-secure-access/bootstrap
-test "$(git -C /opt/sms-platform rev-parse \
+SOURCE_GIT="$(mktemp -d /tmp/sms-test-host-source.XXXXXX)"
+cleanup_source_git() {
+  rm -rf -- "$SOURCE_GIT"
+}
+trap cleanup_source_git EXIT
+ORIGIN_URL="$(git -C /opt/sms-platform remote get-url origin)"
+git init --bare "$SOURCE_GIT"
+git -C "$SOURCE_GIT" remote add origin "$ORIGIN_URL"
+git -C "$SOURCE_GIT" fetch --no-tags --depth=1 origin \
+  "refs/heads/$TARGET_BRANCH:refs/test-secure-access/bootstrap"
+test "$(git -C "$SOURCE_GIT" rev-parse \
   refs/test-secure-access/bootstrap^{commit})" = "$TARGET_COMMIT"
-git -C /opt/sms-platform cat-file -e "$TARGET_COMMIT^{commit}"
+git -C "$SOURCE_GIT" cat-file -e "$TARGET_COMMIT^{commit}"
 sudo install -d -o root -g root -m 0700 \
   /var/lib/sms-platform/test-secure-access-bootstrap
 if sudo test -e "$SOURCE_ROOT"; then
@@ -189,7 +201,7 @@ if sudo test -e "$SOURCE_ROOT"; then
     "$SOURCE_ROOT.previous.$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 sudo install -d -o root -g root -m 0700 "$SOURCE_ROOT"
-git -C /opt/sms-platform archive "$TARGET_COMMIT" -- \
+git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/install_test_secure_access.py \
   deploy/scripts/test_secure_access_contract.py \
   deploy/scripts/test_secure_access_runtime.py \
@@ -240,6 +252,7 @@ sudo install -o root -g root -m 0644 \
   /tmp/cloudflared-linux-amd64 \
   /var/lib/sms-platform/test-secure-access-bootstrap/cloudflared-linux-amd64
 sudo /usr/bin/env \
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES=$SOURCE_GIT/objects" \
   PYTHONNOUSERSITE=1 \
   "PYTHONPATH=$SOURCE_ROOT/deploy/scripts" \
   /usr/bin/python3 \
@@ -257,10 +270,14 @@ sudo /usr/bin/env \
   PYTHONPATH=/usr/local/libexec/sms-platform/test-secure-access \
   /usr/bin/python3 \
   /usr/local/libexec/sms-platform/test-secure-access/test_secure_access_manager.py status
+rm -- /tmp/cloudflared-linux-amd64
 ```
 
-每次使用新的 commit 专属 source 目录，旧目录只改名保留，不在其上覆盖解包；Git archive
-也只枚举 installer 实际允许的固定资产，未枚举文件不会进入启动 `PYTHONPATH`。由于
+每次使用新的 commit 专属 source 目录，旧目录只改名保留，不在其上覆盖解包；临时 Git
+仓库只用于本次服务端 fetch/archive，并通过
+`GIT_ALTERNATE_OBJECT_DIRECTORIES` 让安装器把 staged 字节绑定到同一目标 object；成功或
+失败退出都会清理它，不向活动 `.git` 写对象或 ref。Git archive 只枚举 installer 实际
+允许的固定资产，未枚举文件不会进入启动 `PYTHONPATH`。由于
 `git archive` 的 tar 记录可能受 umask 影响解包为 `0664/0775`，必须在安装前把枚举的
 Python/unit 文件逐项归一为 `0644`、`sms-compose` 归一为 `0755`，不得通过放宽安装器权限
 校验绕过。安装器先把

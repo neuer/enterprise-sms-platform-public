@@ -687,3 +687,17 @@
   不删卷、不重建或轮换 secrets，不修改正式 Key、加密测试号码和真实联调控制状态。
 - 原因：历史积累差异不能通过扩大日常白名单消解；把已知基线修复单独建模，既能完成测试
   环境追平，又让未来普通更新继续对运行凭据和发布控制改动保持拒绝默认。
+
+## D064 主机快照从服务端临时 Git 仓库绑定目标 object
+
+- 决策：一次性主机快照安装不得向活动 `/opt/sms-platform/.git` fetch，也不得临时给其
+  group 写权限或改用 root Git。operator 从该 checkout 只读取得既有 `origin`，在服务器
+  `mktemp` 目录初始化临时 bare 仓库并只 fetch 审核过的目标分支；目标 ref 必须解析为外部
+  已绑定完整 CI 证据的 40 位 SHA，归档也只能从该临时仓库生成。
+- 验真：root 安装器继续以 staged 文件逐字节对照目标 Git object；安装期间仅通过固定临时
+  仓库的 objects 目录提供 `GIT_ALTERNATE_OBJECT_DIRECTORIES`，不把对象、ref 或 remote
+  写回活动 checkout。安装完成或失败退出都删除临时 Git 仓库；上传的锁定 cloudflared
+  二进制只在完整安装和 status 验证成功后删除。
+- 原因：受控更新会有意把活动 Git 元数据恢复为 operator group 只读，原安装命令却要求同一
+  operator 在其中 fetch，合同互相矛盾。隔离服务端取证仓库既保留“源码不是客户端上传”的
+  信任边界，也不扩大日常更新用户对活动 Git 元数据的权限。

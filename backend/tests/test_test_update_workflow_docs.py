@@ -185,6 +185,27 @@ def test_fast_update_docs_keep_temporary_https_host_install_independent() -> Non
         assert phrase in combined
 
 
+def test_host_bootstrap_fetch_keeps_active_git_metadata_read_only() -> None:
+    deployment = read("deploy/README.md")
+    install = deployment.split("### 一次性主机安装", maxsplit=1)[1].split(
+        "### 手机操作者日常流程", maxsplit=1
+    )[0]
+
+    for phrase in (
+        'SOURCE_GIT="$(mktemp -d /tmp/sms-test-host-source.XXXXXX)"',
+        'ORIGIN_URL="$(git -C /opt/sms-platform remote get-url origin)"',
+        'git init --bare "$SOURCE_GIT"',
+        'git -C "$SOURCE_GIT" fetch --no-tags --depth=1 origin',
+        'git -C "$SOURCE_GIT" archive "$TARGET_COMMIT"',
+        '"GIT_ALTERNATE_OBJECT_DIRECTORIES=$SOURCE_GIT/objects"',
+        'rm -- /tmp/cloudflared-linux-amd64',
+        "不得为此临时放宽权限",
+        "不得改用 root 在活动 checkout 中 fetch",
+    ):
+        assert phrase in install
+    assert "git -C /opt/sms-platform fetch" not in install
+
+
 def test_public_workspace_docs_forbid_private_object_cutover() -> None:
     publication = read("PUBLICATION.md")
     maintenance = read("MAINTENANCE.md")
