@@ -413,6 +413,7 @@ _REBASELINE_SAFE_NON_RUNTIME_EXACT = frozenset(
         "deploy/failover.md",
         "docs/LOCAL_TESTING.md",
         "scripts/check_spec_consistency.py",
+        "scripts/perf_smoke.py",
         "scripts/verify_ci_commit.py",
         "scripts/verify_vendor_postgres_recovery.sh",
     }
