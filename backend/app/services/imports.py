@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 from io import StringIO, TextIOWrapper
@@ -14,6 +15,13 @@ from openpyxl import load_workbook
 
 from app.services.crypto import CryptoService
 from app.services.runtime_policy import RuntimePolicy
+
+_EOCD_SIGNATURE = b"PK\x05\x06"
+_ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_CENTRAL_DIRECTORY_SIGNATURE = b"PK\x01\x02"
+_EOCD = struct.Struct("<4s4H2LH")
+_EOCD_MAX_COMMENT_BYTES = 65_535
+_CENTRAL_DIRECTORY_HEADER_BYTES = 46
 
 
 class ImportTooLarge(ValueError):
@@ -33,6 +41,7 @@ class ImportLimits:
     max_entry_uncompressed_bytes: int = 32 * 1024 * 1024
     max_total_uncompressed_bytes: int = 64 * 1024 * 1024
     max_compression_ratio: int = 200
+    max_archive_metadata_bytes: int = 1024 * 1024
 
     @classmethod
     def from_policy(cls, policy: RuntimePolicy) -> ImportLimits:
@@ -41,6 +50,103 @@ class ImportLimits:
             policy.import_max_rows,
             policy.import_expire_hours,
         )
+
+
+def _find_eocd(source: BinaryIO, archive_size: int) -> tuple[int, tuple[int, ...]]:
+    """在 ZIP 尾部有界查找 EOCD，并拒绝截断或伪造的尾记录。"""
+
+    tail_size = min(archive_size, _EOCD.size + _EOCD_MAX_COMMENT_BYTES)
+    source.seek(archive_size - tail_size)
+    tail = source.read(tail_size)
+    if len(tail) != tail_size:
+        raise ImportFormatError("XLSX 压缩包尾记录不完整")
+    search_end = len(tail)
+    while search_end > 0:
+        relative_offset = tail.rfind(_EOCD_SIGNATURE, 0, search_end)
+        if relative_offset < 0:
+            break
+        if relative_offset + _EOCD.size <= len(tail):
+            fields = _EOCD.unpack_from(tail, relative_offset)
+            comment_size = int(fields[-1])
+            if relative_offset + _EOCD.size + comment_size == len(tail):
+                absolute_offset = archive_size - tail_size + relative_offset
+                return absolute_offset, tuple(int(value) for value in fields[1:])
+        search_end = relative_offset
+    raise ImportFormatError("XLSX 压缩包缺少有效尾记录")
+
+
+def _preflight_central_directory(source: BinaryIO, limits: ImportLimits) -> None:
+    """在构造 ZipInfo 前有界校验中央目录大小、条目数与结构。"""
+
+    source.seek(0, 2)
+    archive_size = source.tell()
+    if archive_size > limits.max_bytes:
+        raise ImportTooLarge("导入文件超过大小限制")
+    if archive_size < _EOCD.size:
+        raise ImportFormatError("XLSX 压缩包格式无效")
+
+    eocd_offset, fields = _find_eocd(source, archive_size)
+    (
+        disk_number,
+        central_disk_number,
+        entries_on_disk,
+        declared_entries,
+        central_size,
+        central_offset,
+        _comment_size,
+    ) = fields
+    if eocd_offset >= 20:
+        source.seek(eocd_offset - 20)
+        if source.read(4) == _ZIP64_LOCATOR_SIGNATURE:
+            raise ImportFormatError("XLSX 不支持 ZIP64 元数据")
+    if (
+        entries_on_disk == 0xFFFF
+        or declared_entries == 0xFFFF
+        or central_size == 0xFFFFFFFF
+        or central_offset == 0xFFFFFFFF
+    ):
+        raise ImportFormatError("XLSX 不支持 ZIP64 元数据")
+    if disk_number != 0 or central_disk_number != 0 or entries_on_disk != declared_entries:
+        raise ImportFormatError("XLSX 不支持多盘压缩包")
+    if declared_entries > limits.max_archive_entries:
+        raise ImportTooLarge("XLSX 压缩包条目过多")
+    if central_size > limits.max_archive_metadata_bytes:
+        raise ImportTooLarge("XLSX 中央目录元数据过大")
+    if central_offset + central_size != eocd_offset:
+        raise ImportFormatError("XLSX 中央目录边界无效")
+
+    source.seek(central_offset)
+    central = source.read(central_size)
+    if len(central) != central_size:
+        raise ImportFormatError("XLSX 中央目录不完整")
+    cursor = 0
+    actual_entries = 0
+    while cursor < len(central):
+        remaining = len(central) - cursor
+        if (
+            remaining < _CENTRAL_DIRECTORY_HEADER_BYTES
+            or central[cursor : cursor + 4] != _CENTRAL_DIRECTORY_SIGNATURE
+        ):
+            raise ImportFormatError("XLSX 中央目录记录无效")
+        filename_size, extra_size, comment_size = struct.unpack_from(
+            "<HHH",
+            central,
+            cursor + 28,
+        )
+        record_size = (
+            _CENTRAL_DIRECTORY_HEADER_BYTES
+            + filename_size
+            + extra_size
+            + comment_size
+        )
+        if record_size > remaining:
+            raise ImportFormatError("XLSX 中央目录记录被截断")
+        actual_entries += 1
+        if actual_entries > limits.max_archive_entries:
+            raise ImportTooLarge("XLSX 压缩包条目过多")
+        cursor += record_size
+    if actual_entries != declared_entries:
+        raise ImportFormatError("XLSX 中央目录条目计数不一致")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +258,8 @@ class ImportParser:
 
         try:
             source.seek(0)
+            _preflight_central_directory(source, self.limits)
+            source.seek(0)
             with ZipFile(source) as archive:
                 entries = archive.infolist()
                 if len(entries) > self.limits.max_archive_entries:
@@ -190,7 +298,7 @@ class ImportParser:
                     raise ImportTooLarge("XLSX 总压缩比过高")
         except (ImportFormatError, ImportTooLarge):
             raise
-        except (BadZipFile, OSError, RuntimeError) as error:
+        except (BadZipFile, OSError, RuntimeError, struct.error) as error:
             raise ImportFormatError("XLSX 压缩包格式无效") from error
         finally:
             source.seek(0)

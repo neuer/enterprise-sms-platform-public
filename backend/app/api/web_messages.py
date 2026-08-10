@@ -567,6 +567,7 @@ async def import_messages(
             file.file,
             size=size,
             timeout_s=3,
+            pool="archive",
         )
         stored = await repository.register(
             principal=claims.principal,
