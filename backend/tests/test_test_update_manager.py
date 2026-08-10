@@ -1886,9 +1886,11 @@ def test_rebaseline_runtime_secret_generation_uses_target_fixed_preprocessor(
     ]
 
 
+@pytest.mark.parametrize("already_recovered", [False, True])
 def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    already_recovered: bool,
 ) -> None:
     operations = _rebaseline_operations(tmp_path)
     update_id = "test-20260810T102724Z-efc49767103e"
@@ -1912,7 +1914,7 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
     dotenv.chmod(0o600)
     old_api = f"sha256:{'1' * 64}"
     old_web = f"sha256:{'2' * 64}"
-    head = target_commit
+    head = base_commit if already_recovered else target_commit
     calls: list[tuple[str, ...]] = []
 
     class Host:
@@ -1957,7 +1959,7 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
     monkeypatch.setattr(
         update_manager_module,
         "_restore_operator_git_read_access",
-        lambda root: None,
+        lambda root: calls.append(("restore-operator-git", str(root))),
     )
 
     operations.recover_blocked_rebaseline_before_migration(Store())  # type: ignore[arg-type]
@@ -1968,6 +1970,19 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
         f"SMS_WEB_IMAGE={old_web}",
     ]
     assert not any(call and call[0] in {"up", "run"} for call in calls)
+    checkout_calls = [call for call in calls if "checkout" in call]
+    assert len(checkout_calls) == (0 if already_recovered else 1)
+    status_positions = [
+        index
+        for index, call in enumerate(calls)
+        if call[-2:] == ("status", "--porcelain")
+    ]
+    assert len(status_positions) == 2
+    assert all(
+        calls[status + 1] == ("restore-operator-git", str(tmp_path))
+        for status in status_positions
+    )
+    assert calls[-1] == ("restore-operator-git", str(tmp_path))
 
 
 def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(

@@ -2276,7 +2276,7 @@ class HostTestUpdateOperations:
         self,
         store: TestUpdateStore,
     ) -> None:
-        """只恢复尚未迁移的 rebaseline checkout/image 指针，保持暂停与日志。"""
+        """幂等恢复尚未迁移的 rebaseline checkout/image 指针，保持暂停与日志。"""
 
         self._require_exact_rebaseline_migration()
         self.require_lifecycle_lock()
@@ -2291,11 +2291,16 @@ class HostTestUpdateOperations:
             raise TestUpdateManagerError(
                 "blocked rebaseline recovery state is invalid"
             )
+        migration_head = self.current_migration_head()
+        head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
+        git_status = self._command(
+            "git", "-C", str(self.root), "status", "--porcelain"
+        )
+        _restore_operator_git_read_access(self.root)
         if (
-            self.current_migration_head() != self.request.migration_from
-            or self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
-            != self.request.commit
-            or self._command("git", "-C", str(self.root), "status", "--porcelain")
+            migration_head != self.request.migration_from
+            or head not in {self.request.commit, self.request.base_commit}
+            or git_status
         ):
             raise TestUpdateManagerError(
                 "blocked rebaseline recovery identity is invalid"
@@ -2338,20 +2343,30 @@ class HostTestUpdateOperations:
                 image_id,
                 expected_uid=self.expected_uid,
             )
-        self._command(
-            "git",
-            "-C",
-            str(self.root),
-            "checkout",
-            "--detach",
-            self.request.base_commit,
+        if head == self.request.commit:
+            try:
+                self._command(
+                    "git",
+                    "-C",
+                    str(self.root),
+                    "checkout",
+                    "--detach",
+                    self.request.base_commit,
+                )
+            finally:
+                _restore_operator_git_read_access(self.root)
+        final_head = self._command(
+            "git", "-C", str(self.root), "rev-parse", "HEAD"
+        )
+        final_status = self._command(
+            "git", "-C", str(self.root), "status", "--porcelain"
         )
         _restore_operator_git_read_access(self.root)
+        final_migration_head = self.current_migration_head()
         if (
-            self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
-            != self.request.base_commit
-            or self._command("git", "-C", str(self.root), "status", "--porcelain")
-            or self.current_migration_head() != self.request.migration_from
+            final_head != self.request.base_commit
+            or final_status
+            or final_migration_head != self.request.migration_from
         ):
             raise TestUpdateManagerError(
                 "blocked rebaseline recovery verification failed"
