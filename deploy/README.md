@@ -406,7 +406,14 @@ scripts/test_update.sh rebaseline --ref origin/main
 
 这是一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
 密文 checkpoint、expand-only 迁移、verify 与 operator Git 复核；不接受分支、无迁移、
-跨历史或任意未枚举路径。日常更新继续只使用 `apply`，不得用 `rebaseline` 绕过分类失败。
+跨历史或任意未枚举路径。当前批准的 `0053_idempotency_scope →
+0061_vendor_binding_outbox` 路径还会在 checkpoint 后由服务器本机把精确旧 18 件权威密钥
+清单可恢复地扩展为 24 件，再用目标预处理器生成 runtime generation；只追加四个独立审计
+key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
+若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
+按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
+指针并保持 pause，然后重新执行完整 rebaseline。日常更新继续只使用 `apply`，不得用
+`rebaseline` 或该恢复入口绕过分类失败。
 
 页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
 
