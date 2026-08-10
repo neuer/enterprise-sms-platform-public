@@ -776,6 +776,7 @@ def test_rejects_unclassified_path_mixed_with_known_application_change() -> None
 def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None:
     paths = [
         "README.md",
+        "docs/PERFORMANCE.md",
         "scripts/perf_smoke.py",
         "scripts/verify_ci_commit.py",
         "deploy/scripts/prepare_runtime_secrets.py",
@@ -796,9 +797,12 @@ def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None
     )
 
 
-def test_rebaseline_perf_smoke_exception_does_not_relax_daily_apply() -> None:
+@pytest.mark.parametrize("path", ["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
+def test_rebaseline_performance_evidence_does_not_relax_daily_apply(
+    path: str,
+) -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths(["scripts/perf_smoke.py"])
+        classify_changed_paths([path])
 
 
 def test_rebaseline_requires_a_migration_change() -> None:
