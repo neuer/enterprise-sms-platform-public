@@ -202,7 +202,6 @@ services:
 
   api:
     <<: *backend
-    cpus: 2
     environment:
       <<: *backend-environment
       SMS_COMPONENT: api

@@ -905,7 +905,7 @@ python3 scripts/security_acceptance.py \
 性能测试必须独占环境并得到测试负责人批准。禁止从公网无节制压测；推荐在服务器回环或同内网压测机执行现有脚本：
 
 ```bash
-python3 scripts/perf_smoke.py \
+uv run --project backend python scripts/perf_smoke.py \
   --base http://127.0.0.1:<API回环端口> \
   --mock-base http://127.0.0.1:<MOCK回环端口> \
   --keys <受控临时Key文件> \

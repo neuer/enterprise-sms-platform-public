@@ -9,9 +9,7 @@ import json
 import math
 import subprocess
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +20,7 @@ from threading import Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
+import httpx
 from runtime_credentials import read_secret_file
 
 
@@ -64,9 +63,20 @@ class HttpClient(Protocol):
 
 
 class JsonHttpClient:
-    def __init__(self, base_url: str, *, timeout_s: float = 10) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.timeout_s = timeout_s
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_s: float = 10,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._client = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            timeout=timeout_s,
+            limits=httpx.Limits(max_connections=64, max_keepalive_connections=64),
+            transport=transport,
+            trust_env=False,
+        )
 
     def request(
         self,
@@ -81,31 +91,33 @@ class JsonHttpClient:
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode()
             request_headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            self.base_url + path,
-            data=body,
-            headers=request_headers,
-            method=method,
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-                raw = response.read()
-                if not raw:
-                    data: object = None
-                elif response.headers.get_content_type() == "application/json":
-                    data = json.loads(raw)
-                else:
-                    data = raw.decode("utf-8")
-                return HttpResponse(response.status, data)
-        except urllib.error.HTTPError as error:
-            raw = error.read()
+            response = self._client.request(
+                method,
+                path,
+                content=body,
+                headers=request_headers,
+            )
+        except httpx.RequestError as error:
+            raise PerformanceFailure("performance HTTP dependency unavailable") from error
+        raw = response.content
+        content_type = response.headers.get("content-type", "").partition(";")[0].strip()
+        data: object
+        if response.status_code >= 400:
             try:
                 data = json.loads(raw) if raw else None
             except (json.JSONDecodeError, UnicodeDecodeError):
                 data = None
-            return HttpResponse(error.code, data)
-        except urllib.error.URLError as error:
-            raise PerformanceFailure("performance HTTP dependency unavailable") from error
+        elif not raw:
+            data = None
+        elif content_type.casefold() == "application/json":
+            data = json.loads(raw)
+        else:
+            data = raw.decode("utf-8")
+        return HttpResponse(response.status_code, data)
+
+    def close(self) -> None:
+        self._client.close()
 
 
 def percentile95(samples: Sequence[float]) -> float:
@@ -793,10 +805,12 @@ def main() -> int:
     parser.add_argument("--drain-timeout", type=int, default=480)
     parser.add_argument("--cleanup-workers", type=int, default=64)
     args = parser.parse_args()
+    api_client = JsonHttpClient(args.base)
+    mock_client = JsonHttpClient(args.mock_base)
     try:
         result = PerformanceSuite(
-            JsonHttpClient(args.base),
-            JsonHttpClient(args.mock_base),
+            api_client,
+            mock_client,
             DrainProbe(
                 CommandRunner(),
                 compose_file=args.compose_file,
@@ -822,6 +836,9 @@ def main() -> int:
     except (OSError, UnicodeError, ValueError, PerformanceFailure) as error:
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False))
         return 1
+    finally:
+        api_client.close()
+        mock_client.close()
     print(
         json.dumps(
             {"status": "success", **asdict(result)},

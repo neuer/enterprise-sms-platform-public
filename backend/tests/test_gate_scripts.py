@@ -346,13 +346,17 @@ def test_g2_uat_runs_full_default_registry_with_runtime_ports() -> None:
     assert "--keys deploy/secrets/dev-apikeys.txt" in line
     assert "--compose-file deploy/docker-compose.yml" in line
     assert "--cases" not in line
-    assert all_gate.index(line) < all_gate.index("python3 scripts/perf_smoke.py")
+    assert all_gate.index(line) < all_gate.index(
+        "uv run --project backend python scripts/perf_smoke.py"
+    )
 
 
 def test_g2_performance_gate_uses_authoritative_default_durations() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
     line = next(
-        line for line in all_gate.splitlines() if line.startswith("python3 scripts/perf_smoke.py")
+        line
+        for line in all_gate.splitlines()
+        if line.startswith("uv run --project backend python scripts/perf_smoke.py")
     )
     assert '--base "http://localhost:${api_port}"' in line
     assert '--mock-base "http://localhost:${mock_vendor_port}"' in line

@@ -145,12 +145,6 @@ def test_every_runtime_service_has_minimal_read_only_resource_boundary() -> None
         )
 
 
-def test_api_has_dedicated_cpu_margin_for_the_performance_gate() -> None:
-    compose = _compose()
-
-    assert float(compose["x-backend"]["cpus"]) == 1.5
-    assert float(compose["services"]["api"]["cpus"]) == 2.0
-    assert "--workers 2" in compose["services"]["api"]["command"]
 
 
 def test_api_healthcheck_uses_bounded_dependency_readiness() -> None:

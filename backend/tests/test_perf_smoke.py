@@ -4,10 +4,12 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import Any
 
+import httpx
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
@@ -17,6 +19,7 @@ from perf_smoke import (  # noqa: E402
     DrainProbe,
     DrainSnapshot,
     HttpResponse,
+    JsonHttpClient,
     LoadEvent,
     PerformanceConfig,
     PerformanceFailure,
@@ -26,6 +29,67 @@ from perf_smoke import (  # noqa: E402
     build_mixed_events,
     percentile95,
 )
+
+
+class CountingHttpServer(ThreadingHTTPServer):
+    connection_count = 0
+
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        self.connection_count += 1
+        return request, client_address
+
+
+class JsonHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:  # noqa: N802
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *args: object) -> None:
+        return
+
+
+def test_json_http_client_reuses_a_bounded_keepalive_connection() -> None:
+    server = CountingHttpServer(("127.0.0.1", 0), JsonHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = JsonHttpClient(f"http://127.0.0.1:{server.server_port}")
+    try:
+        responses = [client.request("GET", "/readyz") for _ in range(3)]
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert responses == [HttpResponse(200, {"status": "ok"})] * 3
+    assert server.connection_count == 1
+
+
+def test_json_http_client_preserves_safe_http_error_parsing() -> None:
+    responses = iter(
+        (
+            httpx.Response(422, content=b'{"code":"INVALID_PARAM"}'),
+            httpx.Response(500, content=b"not-json"),
+        )
+    )
+    client = JsonHttpClient(
+        "http://performance.test",
+        transport=httpx.MockTransport(lambda _request: next(responses)),
+    )
+    try:
+        assert client.request("POST", "/send", payload={}) == HttpResponse(
+            422, {"code": "INVALID_PARAM"}
+        )
+        assert client.request("GET", "/readyz") == HttpResponse(500, None)
+    finally:
+        client.close()
 
 
 class FakeRunner:
