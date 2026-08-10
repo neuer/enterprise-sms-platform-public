@@ -161,11 +161,38 @@ host-control 快照，并确认该 commit 的 `backend`、`frontend`、`security
 `ci-gate` 五个 check 全部由 GitHub Actions 成功完成。入口使用独立严格分类器，要求两个
 固定运行控制路径和至少一个迁移路径同时存在、迁移头真实前移，并强制 API/Web 双镜像；
 随后完整复用 high-risk 的暂停、`uncertain` 拦截、密文 checkpoint、expand-only 检查、
-prepare/apply/verify/status 和 operator Git 复核。
+prepare/apply/verify/status 和 operator Git 复核。当前唯一批准的
+`0053_idempotency_scope → 0061_vendor_binding_outbox` 重对齐还会在 lifecycle lock 内把
+权威运行密钥从精确旧 18 件合同扩展到 24 件：仅追加四个两两独立的审计 context key 和
+一对匹配的 X25519 告警凭据 key，由服务器本机生成并逐文件 `O_EXCL`/`fsync` 提交；不会
+输出值、长度、摘要或派生信息，不会替换既有 18 件密钥或厂商凭据。完整 24 件清单时幂等
+复核，合法的 private-first 中断可续写公钥；缺件、额外文件、错误权限、重复审计 key、
+public-only 或不匹配 keypair 一律失败关闭。密文 checkpoint 完成后才扩展权威清单，切换
+目标源码后再由目标提交的固定预处理器原子生成新 runtime generation，然后才允许迁移。
 
 无共同历史继续使用独立 public baseline 流程；无迁移、非 `origin/main`、缺少完整 CI、
 host-control commit 不一致或出现任意额外禁止路径时，`rebaseline` 必须失败关闭。完成本次
 重对齐后恢复日常 `apply`，不得把该入口用于普通分类器拒绝的未来变更。
+
+如果这一唯一重对齐在目标 checkout 已激活、但数据库迁移尚未开始时阻断，状态必须是
+`blocked/migrate`，实际 migration head 仍为 `0053_idempotency_scope`，两条 update pause
+继续由该 update id 持有。只有同时验证这组状态、目标 HEAD、旧 API/Web 运行镜像标签和旧
+migration head 后，才可用同一目标 commit 的 host bootstrap 执行一次：
+
+```bash
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  SMS_RUNTIME_ROOT=/run/sms-platform/secrets \
+  SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials \
+  /usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap \
+  test-update recover-rebaseline
+```
+
+该恢复只把 `.env` 的 API/Web 镜像指针重新绑定到仍在运行且标签匹配的旧镜像，并把 tracked
+checkout 恢复到请求 base；不启动容器、不迁移/回退 schema、不释放 pause、不删除旧状态
+日志。成功后必须重新执行完整 `scripts/test_update.sh rebaseline --ref origin/main`，由新
+update id 原子接管旧 blocked pause；任何身份不一致都停止并保留 fail-closed 状态。
 
 ## 服务端固定阶段
 

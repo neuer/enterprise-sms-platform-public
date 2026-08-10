@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -200,6 +201,9 @@ class FakePrepareOperations:
     def check_expand_migration(self, migration_from: str, target: str) -> None:
         self.events.append(("migration_check", migration_from, target))
 
+    def expand_rebaseline_secrets(self) -> None:
+        self.events.append("secret_expansion")
+
     def hold_fail_closed(self, update_id: str) -> None:
         self.events.append(("hold", update_id))
 
@@ -238,6 +242,36 @@ def test_backend_prepare_pauses_checks_unsafe_states_and_checkpoints() -> None:
         ("checkpoint", "test-1"),
         ("migration_check", "0015", "0016"),
         ("pause_owner", "test-1"),
+    ]
+    assert store.state is State.CHECKPOINTED
+
+
+def test_rebaseline_expands_secrets_after_checkpoint_and_migration_check() -> None:
+    store = FakeStore()
+    operations = FakePrepareOperations()
+
+    UpdateManager(store, operations).prepare(
+        _scope("high-risk", frozenset({"api", "web"})),
+        update_id="test-rebaseline",
+        commit="0" * 40,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        operation="rebaseline",
+    )
+
+    assert operations.events == [
+        "lock",
+        ("mode", "live"),
+        ("pause", "test-rebaseline"),
+        "counts",
+        ("checkpoint", "test-rebaseline"),
+        (
+            "migration_check",
+            "0053_idempotency_scope",
+            "0061_vendor_binding_outbox",
+        ),
+        "secret_expansion",
+        ("pause_owner", "test-rebaseline"),
     ]
     assert store.state is State.CHECKPOINTED
 
@@ -1687,6 +1721,253 @@ def test_host_source_scope_rejects_rebaseline_for_unrelated_histories() -> None:
 
     with pytest.raises(ManagerError, match="descendant"):
         operations.verify_source_scope()
+
+
+def _old_rebaseline_secret_root(root: Path) -> Path:
+    source = root / "deploy/secrets"
+    source.mkdir(parents=True, mode=0o700)
+    source.chmod(0o700)
+    for name in sorted(update_manager_module._REBASELINE_OLD_SECRET_NAMES):
+        path = source / name
+        path.write_bytes(b"existing-secret\n")
+        path.chmod(0o600)
+    development = source / update_manager_module._REBASELINE_DEV_SECRET
+    development.write_bytes(b"development-only\n")
+    development.chmod(0o600)
+    return source
+
+
+def _rebaseline_operations(root: Path) -> HostTestUpdateOperations:
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = root
+    operations.runtime_root = root / "runtime"
+    operations.expected_uid = os.geteuid()
+    operations.request = SimpleNamespace(
+        operation="rebaseline",
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+        environment_mode="live",
+    )
+    return operations
+
+
+def test_rebaseline_secret_expansion_is_exact_idempotent_and_pairwise_valid(
+    tmp_path: Path,
+) -> None:
+    source = _old_rebaseline_secret_root(tmp_path)
+    operations = _rebaseline_operations(tmp_path)
+
+    operations.expand_rebaseline_secrets()
+
+    expected = (
+        update_manager_module._REBASELINE_OLD_SECRET_NAMES
+        | update_manager_module._REBASELINE_NEW_SECRET_NAMES
+        | {update_manager_module._REBASELINE_DEV_SECRET}
+    )
+    assert {path.name for path in source.iterdir()} == expected
+    first = {
+        name: (source / name).read_bytes()
+        for name in update_manager_module._REBASELINE_NEW_SECRET_NAMES
+    }
+    assert all(
+        stat.S_IMODE((source / name).stat().st_mode) == 0o600
+        for name in first
+    )
+    audit_values = {
+        base64.b64decode(first[name].strip(), validate=True)
+        for name in update_manager_module._REBASELINE_AUDIT_SECRET_NAMES
+    }
+    assert len(audit_values) == 4
+    assert all(len(value) == 32 for value in audit_values)
+    private_value = base64.b64decode(
+        first[update_manager_module._REBASELINE_ALERT_PRIVATE_KEY].strip(),
+        validate=True,
+    )
+    public_value = base64.b64decode(
+        first[update_manager_module._REBASELINE_ALERT_PUBLIC_KEY].strip(),
+        validate=True,
+    )
+    assert update_manager_module._x25519_public_key(private_value) == public_value
+
+    operations.expand_rebaseline_secrets()
+
+    assert {
+        name: (source / name).read_bytes()
+        for name in update_manager_module._REBASELINE_NEW_SECRET_NAMES
+    } == first
+
+
+def test_rebaseline_secret_expansion_recovers_private_first_keypair(
+    tmp_path: Path,
+) -> None:
+    source = _old_rebaseline_secret_root(tmp_path)
+    operations = _rebaseline_operations(tmp_path)
+    private_value = b"p" * 32
+    update_manager_module._write_rebaseline_key(
+        source / update_manager_module._REBASELINE_ALERT_PRIVATE_KEY,
+        private_value,
+        expected_uid=os.geteuid(),
+    )
+
+    operations.expand_rebaseline_secrets()
+
+    public_value = base64.b64decode(
+        (source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY)
+        .read_bytes()
+        .strip(),
+        validate=True,
+    )
+    assert public_value == update_manager_module._x25519_public_key(private_value)
+
+
+def test_rebaseline_secret_expansion_rejects_public_only_or_extra_inventory(
+    tmp_path: Path,
+) -> None:
+    source = _old_rebaseline_secret_root(tmp_path)
+    operations = _rebaseline_operations(tmp_path)
+    update_manager_module._write_rebaseline_key(
+        source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY,
+        b"q" * 32,
+        expected_uid=os.geteuid(),
+    )
+
+    with pytest.raises(ManagerError, match="incomplete"):
+        operations.expand_rebaseline_secrets()
+
+    (source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY).unlink()
+    extra = source / "unexpected"
+    extra.write_bytes(b"value\n")
+    extra.chmod(0o600)
+    with pytest.raises(ManagerError, match="inventory"):
+        operations.expand_rebaseline_secrets()
+
+
+def test_rebaseline_exclusive_secret_write_never_removes_an_existing_file(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "existing-key"
+    path.write_bytes(b"existing\n")
+    path.chmod(0o600)
+
+    with pytest.raises(ManagerError, match="could not be committed"):
+        update_manager_module._write_rebaseline_key(
+            path,
+            b"n" * 32,
+            expected_uid=os.geteuid(),
+        )
+
+    assert path.read_bytes() == b"existing\n"
+
+
+def test_rebaseline_runtime_secret_generation_uses_target_fixed_preprocessor(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    calls: list[tuple[str, ...]] = []
+    operations._command = lambda *argv: calls.append(argv) or ""  # type: ignore[method-assign]
+
+    operations._prepare_rebaseline_runtime_secrets()
+
+    assert calls == [
+        (
+            "/usr/bin/python3",
+            str(tmp_path / "deploy/scripts/prepare_runtime_secrets.py"),
+            "prepare",
+            "--source-dir",
+            str(tmp_path / "deploy/secrets"),
+            "--runtime-root",
+            str(tmp_path / "runtime"),
+            "--mode",
+            "development",
+            "--vendor-credential-root",
+            "/var/lib/sms-platform/vendor-test/credentials",
+        )
+    ]
+
+
+def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    update_id = "test-20260810T102724Z-efc49767103e"
+    base_commit = "a" * 40
+    target_commit = "b" * 40
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        operation="rebaseline",
+        base_commit=base_commit,
+        commit=target_commit,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        f"SMS_API_IMAGE=sha256:{'9' * 64}\n"
+        f"SMS_WEB_IMAGE=sha256:{'8' * 64}\n",
+        encoding="utf-8",
+    )
+    dotenv.chmod(0o600)
+    old_api = f"sha256:{'1' * 64}"
+    old_web = f"sha256:{'2' * 64}"
+    head = target_commit
+    calls: list[tuple[str, ...]] = []
+
+    class Host:
+        def _run(self, *argv: str) -> str:
+            calls.append(argv)
+            if argv == ("ps", "-q", "api"):
+                return "a" * 12
+            if argv == ("ps", "-q", "web"):
+                return "b" * 12
+            raise AssertionError(argv)
+
+    class Store:
+        def read_consistent_state(self) -> dict[str, object]:
+            return {
+                "state": "blocked",
+                "step": "migrate",
+                "error_type": "step_failed",
+                "actual_commit": target_commit,
+                "actual_migration_head": "0053_idempotency_scope",
+            }
+
+    def command(*argv: str) -> str:
+        nonlocal head
+        calls.append(argv)
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return head
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[:3] == ("git", "-C", str(tmp_path)) and "checkout" in argv:
+            head = base_commit
+            return ""
+        if argv[:2] == ("docker", "inspect"):
+            image_id = old_api if argv[-1] == "a" * 12 else old_web
+            return f"{image_id}|{base_commit}|0053_idempotency_scope"
+        raise AssertionError(argv)
+
+    operations.host = Host()  # type: ignore[assignment]
+    operations._command = command  # type: ignore[method-assign]
+    operations.current_migration_head = lambda: "0053_idempotency_scope"  # type: ignore[method-assign]
+    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
+    operations.require_owned_update_pauses = lambda value: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        update_manager_module,
+        "_restore_operator_git_read_access",
+        lambda root: None,
+    )
+
+    operations.recover_blocked_rebaseline_before_migration(Store())  # type: ignore[arg-type]
+
+    assert head == base_commit
+    assert dotenv.read_text(encoding="utf-8").splitlines() == [
+        f"SMS_API_IMAGE={old_api}",
+        f"SMS_WEB_IMAGE={old_web}",
+    ]
+    assert not any(call and call[0] in {"up", "run"} for call in calls)
 
 
 def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(

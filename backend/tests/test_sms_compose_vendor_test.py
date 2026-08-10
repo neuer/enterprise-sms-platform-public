@@ -306,7 +306,7 @@ def test_host_baseline_rejects_all_extra_arguments_before_asset_verification(
     assert not log.exists()
 
 
-def test_vendor_mutations_and_test_update_prepare_inherit_the_verified_lock(
+def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
     control_environment: tuple[dict[str, str], Path],
 ) -> None:
     environment, log = control_environment
@@ -315,15 +315,22 @@ def test_vendor_mutations_and_test_update_prepare_inherit_the_verified_lock(
         _run(environment, "vendor-test", command)
         for command in ("activate", "pause", "resume", "rotate", "recover-rotation")
     ]
-    update = _run(environment, "test-update", "prepare")
+    updates = [
+        _run(environment, "test-update", command)
+        for command in ("prepare", "recover-rebaseline")
+    ]
 
     assert all(result.returncode == 0 for result in mutations)
-    assert update.returncode == 0, update.stderr
+    assert all(result.returncode == 0 for result in updates)
     lines = log.read_text(encoding="utf-8").splitlines()
     managers = [line for line in lines if "manager.py|" in line]
     for command in ("activate", "pause", "resume", "rotate", "recover-rotation"):
         assert any(f"vendor_test_manager.py|{command}|" in line for line in managers)
     assert any("test_update_manager.py|prepare|" in line for line in managers)
+    assert any(
+        "test_update_manager.py|recover-rebaseline|" in line
+        for line in managers
+    )
     assert all("|locked=1|fd=" in line for line in managers)
     assert all(line.rsplit("|fd=", 1)[1].isdigit() for line in managers)
 

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import hashlib
 import json
@@ -23,6 +25,8 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 from check_test_update_migration import check_expand_only
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from test_secure_access_contract import HOST_CONTROL_SOURCE_PATHS
 from test_secure_access_manager import require_test_host_marker
 from test_update_apply import BACKEND_SERVICES, TestUpdateApply
@@ -94,10 +98,174 @@ _PUBLIC_CUTOVER_RESULT_FIELDS = frozenset(
     }
 )
 _SOURCE_FETCH_BACKOFF_SECONDS = (1.0, 2.0)
+_REBASELINE_MIGRATION_FROM = "0053_idempotency_scope"
+_REBASELINE_MIGRATION_TARGET = "0061_vendor_binding_outbox"
+_REBASELINE_OLD_SECRET_NAMES = frozenset(
+    {
+        "vendor_secret_name",
+        "vendor_secret_key",
+        "data_aes_key",
+        "data_hmac_key",
+        "jwt_secret",
+        "ldap_bind_password",
+        "metrics_scrape_token",
+        "db_owner_password",
+        "db_auth_password",
+        "db_accept_password",
+        "db_send_password",
+        "db_callback_password",
+        "db_export_password",
+        "db_scheduler_password",
+        "db_metrics_password",
+        "redis_broker_password",
+        "redis_auth_password",
+        "redis_control_password",
+    }
+)
+_REBASELINE_AUDIT_SECRET_NAMES = (
+    "audit_context_key",
+    "audit_system_api_context_key",
+    "audit_system_realtime_context_key",
+    "audit_system_bulk_context_key",
+)
+_REBASELINE_ALERT_PUBLIC_KEY = "alert_credential_public_key"
+_REBASELINE_ALERT_PRIVATE_KEY = "alert_credential_private_key"
+_REBASELINE_NEW_SECRET_NAMES = frozenset(
+    {
+        *_REBASELINE_AUDIT_SECRET_NAMES,
+        _REBASELINE_ALERT_PUBLIC_KEY,
+        _REBASELINE_ALERT_PRIVATE_KEY,
+    }
+)
+_REBASELINE_DEV_SECRET = "dev-apikeys.txt"
+_MAX_SECRET_BYTES = 1024 * 1024
 
 
 class TestUpdateManagerError(RuntimeError):
     """快速更新准备阶段被安全门禁阻断。"""
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_rebaseline_secret_file(
+    path: Path,
+    *,
+    expected_uid: int,
+) -> os.stat_result:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise TestUpdateManagerError(
+            "rebaseline authoritative secret inventory is unsafe"
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != expected_uid
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or not 1 <= metadata.st_size <= _MAX_SECRET_BYTES
+    ):
+        raise TestUpdateManagerError(
+            "rebaseline authoritative secret inventory is unsafe"
+        )
+    return metadata
+
+
+def _read_rebaseline_key(path: Path, *, expected_uid: int) -> bytes:
+    before = _validate_rebaseline_secret_file(path, expected_uid=expected_uid)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (
+            (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or opened.st_uid != expected_uid
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+        ):
+            raise OSError("secret identity changed")
+        raw = os.read(descriptor, 129)
+    except OSError as exc:
+        raise TestUpdateManagerError(
+            "rebaseline generated secret is unsafe"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        decoded = base64.b64decode(raw.strip(), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise TestUpdateManagerError(
+            "rebaseline generated secret is invalid"
+        ) from exc
+    if len(decoded) != 32 or raw != base64.b64encode(decoded) + b"\n":
+        raise TestUpdateManagerError("rebaseline generated secret is invalid")
+    return decoded
+
+
+def _write_rebaseline_key(
+    path: Path,
+    value: bytes,
+    *,
+    expected_uid: int,
+) -> None:
+    if len(value) != 32:
+        raise TestUpdateManagerError("rebaseline generated secret is invalid")
+    descriptor = -1
+    created = False
+    try:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        created = True
+        os.fchmod(descriptor, 0o600)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != expected_uid
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+        ):
+            raise OSError("generated secret identity is unsafe")
+        payload = base64.b64encode(value) + b"\n"
+        if os.write(descriptor, payload) != len(payload):
+            raise OSError("generated secret write was incomplete")
+        os.fsync(descriptor)
+    except OSError as exc:
+        if created:
+            with contextlib.suppress(OSError):
+                path.unlink()
+        raise TestUpdateManagerError(
+            "rebaseline generated secret could not be committed"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _x25519_public_key(private_value: bytes) -> bytes:
+    try:
+        return X25519PrivateKey.from_private_bytes(private_value).public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+    except (TypeError, ValueError) as exc:
+        raise TestUpdateManagerError(
+            "rebaseline alert credential keypair is invalid"
+        ) from exc
 
 
 class FixedCommandRunner:
@@ -736,6 +904,8 @@ class PrepareOperations(Protocol):
 
     def check_expand_migration(self, migration_from: str, target: str) -> None: ...
 
+    def expand_rebaseline_secrets(self) -> None: ...
+
     def hold_fail_closed(self, update_id: str) -> None: ...
 
 
@@ -780,7 +950,10 @@ class TestUpdateManager:
         commit: str,
         migration_from: str,
         migration_target: str,
+        operation: Literal["apply", "rebaseline"] = "apply",
     ) -> PreparedUpdate:
+        if operation not in {"apply", "rebaseline"}:
+            raise TestUpdateManagerError("update operation is invalid")
         if scope.risk not in {"web-only", "backend-safe", "high-risk"}:
             raise TestUpdateManagerError("update has no supported runtime scope")
         effective_risk = (
@@ -819,6 +992,9 @@ class TestUpdateManager:
                 raise TestUpdateManagerError("encrypted checkpoint is invalid")
             step = "migration_check"
             self.operations.check_expand_migration(migration_from, migration_target)
+            if operation == "rebaseline":
+                step = "secret_expansion"
+                self.operations.expand_rebaseline_secrets()
             step = "pause_owner"
             self.operations.finalize_pause_ownership(update_id)
             self.store.transition(
@@ -869,6 +1045,7 @@ def _prepare_from_source(
             commit=request.commit,
             migration_from=request.migration_from,
             migration_target=request.migration_target,
+            operation=request.operation,
         )
     except Exception as error:
         prepare_error = error
@@ -1368,6 +1545,129 @@ class HostTestUpdateOperations:
                 )
             shutil.rmtree(temporary_root, ignore_errors=True)
 
+    def _require_exact_rebaseline_migration(self) -> None:
+        if (
+            self.request.operation != "rebaseline"
+            or self.request.migration_from != _REBASELINE_MIGRATION_FROM
+            or self.request.migration_target != _REBASELINE_MIGRATION_TARGET
+            or self.request.migration_compatibility != "expand"
+        ):
+            raise TestUpdateManagerError(
+                "rebaseline secret expansion scope is invalid"
+            )
+
+    def expand_rebaseline_secrets(self) -> None:
+        """在精确 18 件旧清单上可恢复地追加本次所需的六件随机密钥。"""
+
+        self._require_exact_rebaseline_migration()
+        source = self.root / "deploy/secrets"
+        try:
+            metadata = source.lstat()
+            names = {entry.name for entry in source.iterdir()}
+        except OSError as exc:
+            raise TestUpdateManagerError(
+                "rebaseline authoritative secret inventory is unavailable"
+            ) from exc
+        allowed = (
+            _REBASELINE_OLD_SECRET_NAMES
+            | _REBASELINE_NEW_SECRET_NAMES
+            | {_REBASELINE_DEV_SECRET}
+        )
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != self.expected_uid
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+            or not _REBASELINE_OLD_SECRET_NAMES.issubset(names)
+            or not names.issubset(allowed)
+        ):
+            raise TestUpdateManagerError(
+                "rebaseline authoritative secret inventory is unsafe"
+            )
+        for name in sorted(_REBASELINE_OLD_SECRET_NAMES):
+            _validate_rebaseline_secret_file(
+                source / name,
+                expected_uid=self.expected_uid,
+            )
+        if _REBASELINE_DEV_SECRET in names:
+            _validate_rebaseline_secret_file(
+                source / _REBASELINE_DEV_SECRET,
+                expected_uid=self.expected_uid,
+            )
+
+        audit_values: dict[str, bytes] = {}
+        for name in _REBASELINE_AUDIT_SECRET_NAMES:
+            path = source / name
+            if name in names:
+                value = _read_rebaseline_key(path, expected_uid=self.expected_uid)
+            else:
+                value = os.urandom(32)
+                while value in audit_values.values():
+                    value = os.urandom(32)
+                _write_rebaseline_key(
+                    path,
+                    value,
+                    expected_uid=self.expected_uid,
+                )
+                names.add(name)
+            if value in audit_values.values():
+                raise TestUpdateManagerError(
+                    "rebaseline audit context keys are not independent"
+                )
+            audit_values[name] = value
+
+        private_path = source / _REBASELINE_ALERT_PRIVATE_KEY
+        public_path = source / _REBASELINE_ALERT_PUBLIC_KEY
+        if _REBASELINE_ALERT_PRIVATE_KEY in names:
+            private_value = _read_rebaseline_key(
+                private_path,
+                expected_uid=self.expected_uid,
+            )
+        elif _REBASELINE_ALERT_PUBLIC_KEY in names:
+            raise TestUpdateManagerError(
+                "rebaseline alert credential keypair is incomplete"
+            )
+        else:
+            private_key = X25519PrivateKey.generate()
+            private_value = private_key.private_bytes(
+                serialization.Encoding.Raw,
+                serialization.PrivateFormat.Raw,
+                serialization.NoEncryption(),
+            )
+            _write_rebaseline_key(
+                private_path,
+                private_value,
+                expected_uid=self.expected_uid,
+            )
+            names.add(_REBASELINE_ALERT_PRIVATE_KEY)
+
+        expected_public = _x25519_public_key(private_value)
+        if _REBASELINE_ALERT_PUBLIC_KEY in names:
+            public_value = _read_rebaseline_key(
+                public_path,
+                expected_uid=self.expected_uid,
+            )
+            if public_value != expected_public:
+                raise TestUpdateManagerError(
+                    "rebaseline alert credential keypair is invalid"
+                )
+        else:
+            _write_rebaseline_key(
+                public_path,
+                expected_public,
+                expected_uid=self.expected_uid,
+            )
+            names.add(_REBASELINE_ALERT_PUBLIC_KEY)
+
+        expected_names = _REBASELINE_OLD_SECRET_NAMES | _REBASELINE_NEW_SECRET_NAMES
+        if _REBASELINE_DEV_SECRET in names:
+            expected_names = expected_names | {_REBASELINE_DEV_SECRET}
+        if names != expected_names:
+            raise TestUpdateManagerError(
+                "rebaseline authoritative secret inventory is incomplete"
+            )
+        _fsync_directory(source)
+
     def hold_fail_closed(self, update_id: str) -> None:
         if update_id != self.request.update_id:
             return
@@ -1625,6 +1925,46 @@ class HostTestUpdateOperations:
             expected_uid=self.expected_uid,
         )
 
+    def _prepare_rebaseline_runtime_secrets(self) -> None:
+        if self.request.operation != "rebaseline":
+            return
+        self._require_exact_rebaseline_migration()
+        command = [
+            "/usr/bin/python3",
+            str(self.root / "deploy/scripts/prepare_runtime_secrets.py"),
+        ]
+        if self.request.environment_mode == "live":
+            command.extend(
+                [
+                    "prepare",
+                    "--source-dir",
+                    str(self.root / "deploy/secrets"),
+                    "--runtime-root",
+                    str(self.runtime_root),
+                    "--mode",
+                    "development",
+                    "--vendor-credential-root",
+                    "/var/lib/sms-platform/vendor-test/credentials",
+                ]
+            )
+        elif self.request.environment_mode == "pre-live":
+            command.extend(
+                [
+                    "revoke-vendor",
+                    "--source-dir",
+                    str(self.root / "deploy/secrets"),
+                    "--runtime-root",
+                    str(self.runtime_root),
+                    "--mode",
+                    "development",
+                ]
+            )
+        else:
+            raise TestUpdateManagerError(
+                "rebaseline runtime secret mode is invalid"
+            )
+        self._command(*command)
+
     def _rollback_ref(self, component: str) -> str:
         if component not in _IMAGE_ENV_KEYS:
             raise TestUpdateManagerError("rollback component is invalid")
@@ -1699,6 +2039,7 @@ class HostTestUpdateOperations:
 
     def run_expand_migration(self, source: str, target: str) -> str:
         self._activate_source_and_image("api")
+        self._prepare_rebaseline_runtime_secrets()
         check_expand_only(self.root / "backend/migrations/versions", source, target)
         if source != target:
             self.host._run("run", "--rm", "migrate")
@@ -1931,6 +2272,91 @@ class HostTestUpdateOperations:
                     "rollback image cleanup did not verify"
                 )
 
+    def recover_blocked_rebaseline_before_migration(
+        self,
+        store: TestUpdateStore,
+    ) -> None:
+        """只恢复尚未迁移的 rebaseline checkout/image 指针，保持暂停与日志。"""
+
+        self._require_exact_rebaseline_migration()
+        self.require_lifecycle_lock()
+        state = store.read_consistent_state()
+        if (
+            state.get("state") != TestUpdateState.BLOCKED.value
+            or state.get("step") != "migrate"
+            or state.get("error_type") != "step_failed"
+            or state.get("actual_commit") != self.request.commit
+            or state.get("actual_migration_head") != self.request.migration_from
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline recovery state is invalid"
+            )
+        if (
+            self.current_migration_head() != self.request.migration_from
+            or self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
+            != self.request.commit
+            or self._command("git", "-C", str(self.root), "status", "--porcelain")
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline recovery identity is invalid"
+            )
+        self.require_owned_update_pauses(self.request.update_id)
+
+        running_images: dict[str, str] = {}
+        for component in ("api", "web"):
+            container_id = self.host._run("ps", "-q", component)
+            if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
+                raise TestUpdateManagerError(
+                    "blocked rebaseline running service is unavailable"
+                )
+            observed = self._command(
+                "docker",
+                "inspect",
+                "--format",
+                (
+                    "{{.Image}}|"
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                ),
+                container_id,
+            ).split("|")
+            if (
+                len(observed) != 3
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", observed[0]) is None
+                or observed[1] != self.request.base_commit
+                or observed[2] != self.request.migration_from
+            ):
+                raise TestUpdateManagerError(
+                    "blocked rebaseline running image identity is invalid"
+                )
+            running_images[component] = observed[0]
+
+        for component, image_id in running_images.items():
+            _atomic_update_image_env(
+                self.root / ".env",
+                _IMAGE_ENV_KEYS[component],
+                image_id,
+                expected_uid=self.expected_uid,
+            )
+        self._command(
+            "git",
+            "-C",
+            str(self.root),
+            "checkout",
+            "--detach",
+            self.request.base_commit,
+        )
+        _restore_operator_git_read_access(self.root)
+        if (
+            self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
+            != self.request.base_commit
+            or self._command("git", "-C", str(self.root), "status", "--porcelain")
+            or self.current_migration_head() != self.request.migration_from
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline recovery verification failed"
+            )
+
     def verify_web(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if "web" not in running:
@@ -1981,7 +2407,14 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="test_update_manager.py")
     parser.add_argument(
         "command",
-        choices=("prepare", "apply", "verify", "status", "capability"),
+        choices=(
+            "prepare",
+            "apply",
+            "verify",
+            "status",
+            "capability",
+            "recover-rebaseline",
+        ),
     )
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--runtime-root", required=True, type=Path)
@@ -2068,6 +2501,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         operations.require_lifecycle_lock()
+        if args.command == "recover-rebaseline":
+            operations.recover_blocked_rebaseline_before_migration(store)
+            print(
+                json.dumps(
+                    {
+                        "status": "recovered",
+                        "update_id": request.update_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            return 0
         kind = _kind(request)
         if kind not in _UPDATE_KINDS:
             raise TestUpdateManagerError("update kind is invalid")
