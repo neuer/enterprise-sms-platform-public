@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -92,6 +93,7 @@ _PUBLIC_CUTOVER_RESULT_FIELDS = frozenset(
         "source_commit",
     }
 )
+_SOURCE_FETCH_BACKOFF_SECONDS = (1.0, 2.0)
 
 
 class TestUpdateManagerError(RuntimeError):
@@ -1406,7 +1408,7 @@ class HostTestUpdateOperations:
         source_branch = self.request.source_ref.removeprefix("origin/")
         fetched_ref = f"refs/test-updates/{self.request.update_id}/source"
         source_refspec = f"+refs/heads/{source_branch}:{fetched_ref}"
-        self._command(
+        fetch_command = (
             "git",
             "-C",
             str(self.root),
@@ -1416,6 +1418,14 @@ class HostTestUpdateOperations:
             "origin",
             source_refspec,
         )
+        for attempt in range(len(_SOURCE_FETCH_BACKOFF_SECONDS) + 1):
+            try:
+                self._command(*fetch_command)
+                break
+            except TestUpdateManagerError:
+                if attempt == len(_SOURCE_FETCH_BACKOFF_SECONDS):
+                    raise
+                time.sleep(_SOURCE_FETCH_BACKOFF_SECONDS[attempt])
         resolved = self._command(
             "git",
             "-C",
