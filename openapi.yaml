@@ -999,6 +999,7 @@ paths:
     post:
       tags: [templates]
       summary: 排队手动同步厂商审核状态（GetTemplateState）
+      description: 仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }

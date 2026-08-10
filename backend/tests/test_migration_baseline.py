@@ -519,6 +519,16 @@ def test_manual_job_outbox_is_in_schema_and_followup_migration() -> None:
     assert "DROP CONSTRAINT IF EXISTS ck_outbox_task_name" in source
 
 
+def test_template_sync_outbox_contract_is_in_schema_and_current_migration() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0061_vendor_binding_outbox.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for contract in (schema, source):
+        assert contract.count("'app.tasks.sync_template'") >= 3
+        assert "template[.]sync[:][1-9][0-9]*[:][1-9][0-9]*" in contract
+
+
 def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"

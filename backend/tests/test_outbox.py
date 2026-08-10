@@ -116,6 +116,31 @@ def test_outbox_contract_allows_only_exact_vendor_binding_references(
         validate_spec(replace(spec, queue="bulk"))
 
 
+def test_outbox_contract_allows_only_exact_template_sync_references() -> None:
+    spec = event_spec(
+        event_type="template.sync",
+        aggregate_type="sms_template",
+        aggregate_id="13800138000",
+        task_name="app.tasks.sync_template",
+        queue="realtime",
+        args=(13800138000,),
+        dedup_key="template.sync:13800138000:29772480",
+        max_attempts=3,
+    )
+
+    validate_spec(spec)
+    for malformed in (
+        replace(spec, event_type="job.trigger"),
+        replace(spec, aggregate_id="13800138001"),
+        replace(spec, args=(13800138001,)),
+        replace(spec, queue="bulk"),
+        replace(spec, max_attempts=12),
+        replace(spec, dedup_key="template.sync:13800138000:0"),
+    ):
+        with pytest.raises(ValueError, match="template sync"):
+            validate_spec(malformed)
+
+
 def test_outbox_contract_accepts_phone_shaped_digits_inside_opaque_batch_id() -> None:
     batch_no = "13800138000" + "a" * 21
 

@@ -52,10 +52,10 @@ class FakeService:
 
 class FakeSender:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
+        self.sent: list[int] = []
 
-    async def send(self, task_name: str, queue: str) -> None:
-        self.sent.append((task_name, queue))
+    async def send_template(self, template_id: int) -> None:
+        self.sent.append(template_id)
 
 
 def test_operator_can_list_and_create_template() -> None:
@@ -81,7 +81,7 @@ def test_operator_can_list_and_create_template() -> None:
     assert service.created
 
 
-def test_manual_template_sync_only_enqueues_fixed_worker_job() -> None:
+def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None:
     service = FakeService()
     sender = FakeSender()
     app = FastAPI()
@@ -96,4 +96,4 @@ def test_manual_template_sync_only_enqueues_fixed_worker_job() -> None:
     )
 
     assert response.status_code == 202
-    assert sender.sent == [("app.tasks.sync_templates", "realtime")]
+    assert sender.sent == [1]

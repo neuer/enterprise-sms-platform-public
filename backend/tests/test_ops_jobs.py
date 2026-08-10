@@ -9,7 +9,7 @@ import pytest
 from app.core.jobtrack import JobSpec
 from app.services import ops_dispatch as ops_dispatch_module
 from app.services.ops import JobNotFound, JobOpsService, JobRecord, JobRoute
-from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender
+from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender, TemplateSyncSender
 from app.services.ops_repository import SqlOpsRepository
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
@@ -178,12 +178,22 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     settings = type("SettingsStub", (), {"database_url": "postgresql://test"})()
 
     await OutboxJobSender(settings).send("app.tasks.expire_approvals", "realtime")
+    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
+    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
     await OutboxBatchSender(settings).send_batch("a" * 32, "realtime")
 
-    job, batch = specs
+    job, template_sync, repeated_template_sync, batch = specs
     assert job.task_name == "app.tasks.outbox.trigger_job"
     assert job.args == ("app.tasks.expire_approvals",)
     assert job.dedup_key.startswith("job.trigger:expire_approvals:")
+    assert template_sync.event_type == "template.sync"
+    assert template_sync.aggregate_type == "sms_template"
+    assert template_sync.aggregate_id == "7"
+    assert template_sync.task_name == "app.tasks.sync_template"
+    assert template_sync.queue == "realtime"
+    assert template_sync.args == (7,)
+    assert template_sync.max_attempts == 3
+    assert repeated_template_sync.dedup_key == template_sync.dedup_key
     assert batch.task_name == "app.tasks.send.process_batch"
     assert batch.args == ("a" * 32,)
     assert batch.dedup_key.startswith("batch.ready:")

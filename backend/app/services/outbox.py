@@ -30,6 +30,7 @@ STRUCTURED_REFERENCE = re.compile(
     r"approval:[1-9][0-9]*:(?:approved|rejected|expired)|"
     r"callback:[1-9][0-9]*:attempt:[0-9]+|"
     r"alert:[1-9][0-9]*:(?:wecom|smtp)|"
+    r"template[.]sync:[1-9][0-9]*:[1-9][0-9]*|"
     r"usage[.]release:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}"
     r")$"
@@ -37,6 +38,7 @@ STRUCTURED_REFERENCE = re.compile(
 TASK_NAMES = {
     "app.tasks.bind_sign",
     "app.tasks.bind_template",
+    "app.tasks.sync_template",
     "app.tasks.send.process_batch",
     "app.tasks.deliver_callback",
     "app.tasks.outbox.compensate_quota",
@@ -236,6 +238,19 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.dedup_key.startswith(f"{spec.event_type}:{spec.aggregate_id}:")
         and UUID_REFERENCE.fullmatch(spec.dedup_key.rsplit(":", 1)[-1]) is not None
     )
+    template_sync_reference = (
+        spec.task_name == "app.tasks.sync_template"
+        and spec.event_type == "template.sync"
+        and spec.aggregate_type == "sms_template"
+        and spec.queue == "realtime"
+        and spec.max_attempts == 3
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and spec.args == (int(spec.aggregate_id),)
+        and spec.dedup_key.startswith(f"template.sync:{spec.aggregate_id}:")
+        and spec.dedup_key.rsplit(":", 1)[-1].isdecimal()
+        and not spec.dedup_key.rsplit(":", 1)[-1].startswith("0")
+    )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
     if spec.task_name == "app.tasks.outbox.trigger_job" and not manual_job_reference:
@@ -244,7 +259,14 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         vendor_binding_reference
     ):
         raise ValueError("invalid vendor binding outbox contract")
-    if not usage_release_reference and not manual_job_reference and not vendor_binding_reference:
+    if spec.task_name == "app.tasks.sync_template" and not template_sync_reference:
+        raise ValueError("invalid template sync outbox contract")
+    if (
+        not usage_release_reference
+        and not manual_job_reference
+        and not vendor_binding_reference
+        and not template_sync_reference
+    ):
         _assert_safe(spec.aggregate_id)
         _assert_safe(spec.args)
         _assert_safe(spec.dedup_key)

@@ -13,7 +13,7 @@ from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
-from app.services.ops_dispatch import OutboxJobSender
+from app.services.ops_dispatch import TemplateSyncSender
 from app.services.template import TemplateParamMismatch
 from app.services.template_management import (
     TemplateManagementService,
@@ -60,8 +60,8 @@ def get_template_service() -> TemplateManagementService:
     return TemplateManagementService(SqlTemplateRepository(settings))
 
 
-def get_template_job_sender() -> OutboxJobSender:
-    return OutboxJobSender(get_settings())
+def get_template_job_sender() -> TemplateSyncSender:
+    return TemplateSyncSender(get_settings())
 
 
 async def _user(
@@ -195,7 +195,7 @@ async def delete_template(
 async def sync_template(
     id: int,
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    sender: Annotated[OutboxJobSender, Depends(get_template_job_sender)],
+    sender: Annotated[TemplateSyncSender, Depends(get_template_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
@@ -204,7 +204,7 @@ async def sync_template(
         current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
         if current.vendor_state != "pending":
             raise TemplateStateConflict("仅待审核模板可同步")
-        await sender.send("app.tasks.sync_templates", "realtime")
+        await sender.send_template(current.id)
         return Response(status_code=202)
     except Exception as error:
         raise _error(error) from None

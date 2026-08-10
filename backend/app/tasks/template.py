@@ -24,6 +24,25 @@ async def _sync() -> int:
         ).sync_pending()
 
 
+async def _sync_one(template_id: int, event_id: str) -> int:
+    settings = get_settings()
+
+    async def effect(claim: OutboxClaim) -> int:
+        if claim.args != (template_id,):
+            raise ValueError("template sync outbox args mismatch")
+        async with ZhihuiClient.from_settings(settings) as vendor:
+            return await TemplateManagementService(
+                SqlTemplateRepository(settings),
+                vendor,
+            ).sync_pending(template_id)
+
+    return await OutboxExecutor(SqlOutboxRepository(settings)).run(
+        UUID(event_id),
+        expected_type="template.sync",
+        effect=effect,
+    )
+
+
 async def _bind(template_id: int, event_id: str) -> int:
     settings = get_settings()
 
@@ -47,6 +66,13 @@ async def _bind(template_id: int, event_id: str) -> int:
 @tracked_job("sync_templates", expect_interval_s=600)
 def sync_templates() -> int:
     return run_worker_async(_sync())
+
+
+@celery_app.task(name="app.tasks.sync_template")  # type: ignore[untyped-decorator]
+def sync_template(template_id: int, outbox_event_id: str) -> int:
+    """只同步 Outbox 合同绑定的单个模板主键。"""
+
+    return run_worker_async(_sync_one(template_id, outbox_event_id))
 
 
 @celery_app.task(name="app.tasks.bind_template")  # type: ignore[untyped-decorator]

@@ -1,7 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
 -- v1.6.52  2026-08-10
--- v1.6.52：厂商签名/模板 Bind 改由 realtime worker 消费事务性 Outbox；API 不持凭据
+-- v1.6.52：厂商签名/模板 Bind 与单模板同步改由 realtime worker 消费精确 Outbox；API 不持凭据
 -- v1.6.51  2026-08-09
 -- v1.6.51：自治审计 HMAC 按 API/realtime/bulk 部署生产者域隔离
 -- v1.6.50  2026-08-09
@@ -1138,6 +1138,7 @@ CREATE TABLE outbox_event (
                    CHECK (task_name IN (
                      'app.tasks.bind_sign',
                      'app.tasks.bind_template',
+                     'app.tasks.sync_template',
                      'app.tasks.send.process_batch',
                      'app.tasks.deliver_callback',
                      'app.tasks.outbox.compensate_quota',
@@ -1180,7 +1181,11 @@ CREATE TABLE outbox_event (
       (
         args::text !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
         OR (
-          task_name IN ('app.tasks.bind_sign','app.tasks.bind_template')
+          task_name IN (
+            'app.tasks.bind_sign',
+            'app.tasks.bind_template',
+            'app.tasks.sync_template'
+          )
           AND jsonb_array_length(args)=1
           AND jsonb_typeof(args->0)='number'
           AND args->>0 ~ '^[1-9][0-9]*$'
@@ -1239,7 +1244,11 @@ CREATE TABLE outbox_event (
       (
         aggregate_id !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
         OR (
-          task_name IN ('app.tasks.bind_sign','app.tasks.bind_template')
+          task_name IN (
+            'app.tasks.bind_sign',
+            'app.tasks.bind_template',
+            'app.tasks.sync_template'
+          )
           AND aggregate_id ~ '^[1-9][0-9]*$'
         )
         OR (
@@ -1274,6 +1283,7 @@ CREATE TABLE outbox_event (
           || 'approval[:][1-9][0-9]*[:](approved|rejected|expired)|'
           || 'callback[:][1-9][0-9]*[:]attempt[:][0-9]+|'
           || 'alert[:][1-9][0-9]*[:](wecom|smtp)|'
+          || 'template[.]sync[:][1-9][0-9]*[:][1-9][0-9]*|'
           || '(template[.]bind|sign[.]bind)[:][1-9][0-9]*[:]'
           || '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
           || '[89ab][0-9a-f]{3}-[0-9a-f]{12}|'
