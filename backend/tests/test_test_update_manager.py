@@ -1190,7 +1190,7 @@ def test_render_trusted_proxy_conf_uses_dotenv_values(tmp_path: Path) -> None:
     dotenv = tmp_path / ".env"
     dotenv.write_text(
         "SMS_EXTERNAL_TLS_MODE=1\n"
-        "SMS_TRUSTED_PROXY_CIDRS=203.0.113.0/24\n"
+        "SMS_TRUSTED_PROXY_CIDRS=203.0.113.9/32\n"
         "SMS_TRUSTED_PROXY_CONF=/tmp/trusted.conf\n",
         encoding="utf-8",
     )
@@ -1207,7 +1207,7 @@ def test_render_trusted_proxy_conf_uses_dotenv_values(tmp_path: Path) -> None:
             "--mode",
             "1",
             "--cidrs",
-            "203.0.113.0/24",
+            "203.0.113.9/32",
             "--output",
             "/tmp/trusted.conf",
         ]
