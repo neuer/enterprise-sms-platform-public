@@ -65,6 +65,7 @@ class TestUpdateRequest:
     migration_from: str
     migration_target: str
     migration_compatibility: Literal["none", "expand"]
+    operation: Literal["apply", "rebaseline"] = "apply"
 
 
 _TOP_LEVEL_FIELDS = frozenset(
@@ -80,7 +81,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "migration",
     }
 )
-_OPTIONAL_TOP_LEVEL_FIELDS = frozenset({"public_cutover"})
+_OPTIONAL_TOP_LEVEL_FIELDS = frozenset({"operation", "public_cutover"})
 _IMAGE_FIELDS = frozenset({"ref", "id", "archive_file", "archive_sha256"})
 _PUBLIC_CUTOVER_FIELDS = frozenset(
     {"source_commit", "private_merge_base", "pack_file", "pack_sha256"}
@@ -616,6 +617,9 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
         or environment_mode not in {"pre-live", "live"}
     ):
         raise TestUpdateContractError("environment_mode has an invalid value")
+    operation = payload.get("operation", "apply")
+    if type(operation) is not str or operation not in {"apply", "rebaseline"}:
+        raise TestUpdateContractError("operation has an invalid value")
     components = _require_components(payload["components"])
     images = _parse_images(payload["images"], components=components, commit=commit)
     public_cutover = _parse_public_cutover(payload.get("public_cutover"))
@@ -639,6 +643,15 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
         raise TestUpdateContractError("migration compatibility none requires equal heads")
     if compatibility == "expand" and migration_from == migration_target:
         raise TestUpdateContractError("migration compatibility expand requires different heads")
+    if operation == "rebaseline":
+        if source_ref != "origin/main":
+            raise TestUpdateContractError("rebaseline requires source_ref origin/main")
+        if public_cutover is not None:
+            raise TestUpdateContractError("rebaseline must not carry public_cutover")
+        if components != _COMPONENTS:
+            raise TestUpdateContractError("rebaseline requires api and web components")
+        if compatibility != "expand":
+            raise TestUpdateContractError("rebaseline requires expand migration")
 
     return TestUpdateRequest(
         update_id=update_id,
@@ -652,6 +665,7 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
         migration_from=migration_from,
         migration_target=migration_target,
         migration_compatibility=cast(Literal["none", "expand"], compatibility),
+        operation=cast(Literal["apply", "rebaseline"], operation),
     )
 
 

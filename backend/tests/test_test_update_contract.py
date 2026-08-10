@@ -84,6 +84,7 @@ def test_parses_exact_request_into_immutable_values() -> None:
     assert request.migration_from == "0015_account_provider_model"
     assert request.migration_target == "0016_example"
     assert request.migration_compatibility == "expand"
+    assert request.operation == "apply"
 
     with pytest.raises(TypeError):
         request.images["api"] = request.images["web"]  # type: ignore[index]
@@ -106,6 +107,69 @@ def test_parses_public_cutover_source_pack_binding() -> None:
     assert request.public_cutover.private_merge_base == "d" * 40
     assert request.public_cutover.pack_file == "cutover-source.pack"
     assert request.public_cutover.pack_sha256 == "e" * 64
+
+
+def test_parses_explicit_rebaseline_operation() -> None:
+    payload = _request()
+    payload["operation"] = "rebaseline"
+    payload["source_ref"] = "origin/main"
+
+    assert _parse(payload).operation == "rebaseline"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"operation": "publish"}, "operation"),
+        ({"operation": True}, "operation"),
+        (
+            {"operation": "rebaseline", "source_ref": "origin/feature/example"},
+            "origin/main",
+        ),
+        (
+            {
+                "operation": "rebaseline",
+                "source_ref": "origin/main",
+                "components": ["api"],
+            },
+            "api and web",
+        ),
+    ],
+)
+def test_rejects_invalid_rebaseline_request_scope(
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    payload = _request()
+    payload.update(mutation)
+    if payload["components"] == ["api"]:
+        del payload["images"]["web"]
+
+    with pytest.raises(ContractError, match=message):
+        _parse(payload)
+
+
+def test_rebaseline_rejects_cutover_and_requires_expand_migration() -> None:
+    payload = _request()
+    payload["operation"] = "rebaseline"
+    payload["source_ref"] = "origin/main"
+    payload["public_cutover"] = {
+        "source_commit": "c" * 40,
+        "private_merge_base": "d" * 40,
+        "pack_file": "cutover-source.pack",
+        "pack_sha256": "e" * 64,
+    }
+    with pytest.raises(ContractError, match="must not carry public_cutover"):
+        _parse(payload)
+
+    del payload["public_cutover"]
+    payload["migration"] = {
+        "from": "0015_account_provider_model",
+        "target": "0015_account_provider_model",
+        "compatibility": "none",
+    }
+    with pytest.raises(ContractError, match="requires expand migration"):
+        _parse(payload)
 
 
 @pytest.mark.parametrize(

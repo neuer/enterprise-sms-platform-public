@@ -1495,6 +1495,107 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
     assert "-z" in diff_call
 
 
+def test_host_source_scope_revalidates_explicit_rebaseline_with_strict_classifier() -> None:
+    calls: list[tuple[str, ...]] = []
+    base = "a" * 40
+    commit = "b" * 40
+    update_id = "test-20260810T070301Z-bbbbbbbbbbbb"
+    fetched_ref = f"refs/test-updates/{update_id}/source"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        base_commit=base,
+        commit=commit,
+        source_ref="origin/main",
+        components=frozenset({"api", "web"}),
+        public_cutover=None,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+        operation="rebaseline",
+    )  # type: ignore[assignment]
+
+    changed = "\0".join(
+        (
+            "deploy/scripts/prepare_runtime_secrets.py",
+            "deploy/scripts/vendor_runtime_reset.py",
+            "backend/migrations/versions/0061_vendor_binding_outbox.py",
+            "frontend/src/views/SignView.vue",
+            "",
+        )
+    )
+
+    def command(*argv: str) -> str:
+        calls.append(argv)
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return base
+        if "fetch" in argv:
+            return ""
+        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
+            return commit
+        if "merge-base" in argv:
+            return base
+        if "diff" in argv:
+            return changed
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    scope = operations.verify_source_scope()
+
+    assert scope.components == frozenset({"api", "web"})
+    assert scope.migration_changed is True
+    assert scope.risk == "high-risk"
+    assert scope.high_risk_paths == (
+        "deploy/scripts/prepare_runtime_secrets.py",
+        "deploy/scripts/vendor_runtime_reset.py",
+    )
+    fetch_call = next(call for call in calls if "fetch" in call)
+    assert "+refs/heads/main:" in fetch_call[-1]
+
+
+def test_host_source_scope_rejects_rebaseline_for_unrelated_histories() -> None:
+    base = "a" * 40
+    commit = "b" * 40
+    update_id = "test-20260810T070301Z-bbbbbbbbbbbb"
+    fetched_ref = f"refs/test-updates/{update_id}/source"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        base_commit=base,
+        commit=commit,
+        source_ref="origin/main",
+        components=frozenset({"api", "web"}),
+        public_cutover=None,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+        operation="rebaseline",
+    )  # type: ignore[assignment]
+
+    def command(*argv: str) -> str:
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return base
+        if "fetch" in argv:
+            return ""
+        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
+            return commit
+        if "merge-base" in argv:
+            raise ManagerError("unrelated histories")
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="descendant"):
+        operations.verify_source_scope()
+
+
 def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(
     tmp_path: Path,
 ) -> None:

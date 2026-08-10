@@ -682,6 +682,10 @@
 - 证据：目标 commit 必须已有 GitHub Actions 应用产生的 `backend`、`frontend`、
   `security`、`g2`、`ci-gate` 五项精确 success；`ci-gate` 单项成功不足以执行本入口。
   host-control 资产发生变化时，必须先按同一目标 commit 重装 root-owned 不可变快照。
+- 双端验证：driver 必须把 `apply` 或 `rebaseline` 写入最后上传的不可变请求；服务器不信任
+  本地分类结果，而是重新确认 `origin/main`、同历史祖先、API/Web、expand 迁移且无 cutover
+  证据，再以独立的严格 rebaseline 分类器复验完整差异。旧请求缺少该字段时只按 `apply`
+  处理，不能隐式获得一次性重基线权限。
 - 运行边界：服务器既有状态机继续负责两条 lane 暂停、submitting/retrying/uncertain 拦截、
   AES-GCM 数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 与 operator Git
   读路径复核。跨历史、无迁移、分支 ref、未知禁止路径或任一证据缺失均失败关闭；不清库、
