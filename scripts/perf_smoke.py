@@ -129,6 +129,37 @@ def percentile95(samples: Sequence[float]) -> float:
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
+def percentile(samples: Sequence[float], percentage: float) -> float:
+    """使用 nearest-rank 计算指定分位数，供失败诊断复用。"""
+
+    if not samples:
+        raise PerformanceFailure("performance samples are empty")
+    if not 0 < percentage <= 1:
+        raise ValueError("percentage must be in (0, 1]")
+    ordered = sorted(samples)
+    return ordered[math.ceil(percentage * len(ordered)) - 1]
+
+
+def acceptance_failure_detail(samples: Sequence[float], *, rps: int) -> str:
+    """输出无请求内容的聚合延迟，区分全程慢与短时宿主抖动。"""
+
+    if rps < 1:
+        raise ValueError("acceptance rate must be positive")
+    window_size = rps * 10
+    window_p95 = [
+        percentile95(samples[index : index + window_size])
+        for index in range(0, len(samples), window_size)
+    ]
+    windows = ",".join(f"{value:.3f}" for value in window_p95)
+    return (
+        f"p50={percentile(samples, 0.50):.3f}s "
+        f"p90={percentile(samples, 0.90):.3f}s "
+        f"p95={percentile95(samples):.3f}s "
+        f"p99={percentile(samples, 0.99):.3f}s "
+        f"max={max(samples):.3f}s window_p95=[{windows}]"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LoadEvent:
     index: int
@@ -490,7 +521,13 @@ class PerformanceSuite:
         )
         p95 = percentile95(samples)
         if p95 >= 0.3:
-            raise PerformanceFailure(f"PERF-01 acceptance P95 {p95:.3f}s is not <0.300s")
+            detail = acceptance_failure_detail(
+                samples,
+                rps=self.config.acceptance_rps,
+            )
+            raise PerformanceFailure(
+                f"PERF-01 acceptance P95 {p95:.3f}s is not <0.300s; {detail}"
+            )
         return len(samples), p95
 
     def _login_operator(self) -> str:

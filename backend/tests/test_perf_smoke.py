@@ -25,6 +25,7 @@ from perf_smoke import (  # noqa: E402
     PerformanceFailure,
     PerformanceSuite,
     _prometheus_value,
+    acceptance_failure_detail,
     build_acceptance_events,
     build_mixed_events,
     percentile95,
@@ -109,6 +110,17 @@ def test_nearest_rank_p95_requires_samples_and_uses_95th_value() -> None:
     assert percentile95([0.2]) == 0.2
     with pytest.raises(PerformanceFailure, match="samples"):
         percentile95([])
+
+
+def test_acceptance_failure_detail_reports_only_aggregate_latency_windows() -> None:
+    samples = [value / 1000 for value in range(1, 61)]
+
+    assert acceptance_failure_detail(samples, rps=1) == (
+        "p50=0.030s p90=0.054s p95=0.057s p99=0.060s max=0.060s "
+        "window_p95=[0.010,0.020,0.030,0.040,0.050,0.060]"
+    )
+    with pytest.raises(ValueError, match="rate"):
+        acceptance_failure_detail(samples, rps=0)
 
 
 def test_acceptance_events_are_open_loop_30rps_for_60s_with_235_mix() -> None:
