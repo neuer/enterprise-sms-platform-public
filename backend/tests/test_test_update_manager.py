@@ -2012,7 +2012,7 @@ def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
         migration_target="0061_vendor_binding_outbox",
         migration_compatibility="expand",
     )
-    operations.host_source_commit = target_commit
+    operations.host_source_commit = "c" * 40
     events: list[object] = []
 
     class Store:
@@ -2108,6 +2108,25 @@ def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(
 
     with pytest.raises(ManagerError, match="state is invalid"):
         operations.recover_blocked_rebaseline_verify(Store())  # type: ignore[arg-type]
+
+
+def test_blocked_rebaseline_verify_recovery_requires_immutable_snapshot(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    operations.request = SimpleNamespace(
+        update_id="test-20260810T125640Z-5488823a73ef",
+        operation="rebaseline",
+        commit="b" * 40,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    operations.host_source_commit = None
+    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="snapshot is invalid"):
+        operations.recover_blocked_rebaseline_verify(object())  # type: ignore[arg-type]
 
 
 def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(

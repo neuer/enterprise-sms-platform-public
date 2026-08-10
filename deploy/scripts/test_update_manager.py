@@ -2380,7 +2380,7 @@ class HostTestUpdateOperations:
 
         self._require_exact_rebaseline_migration()
         self.require_lifecycle_lock()
-        if self.host_source_commit != self.request.commit:
+        if self.host_source_commit is None:
             raise TestUpdateManagerError(
                 "blocked rebaseline verify recovery snapshot is invalid"
             )

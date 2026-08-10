@@ -416,9 +416,11 @@ key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不�
 operator 读路径，然后重新执行完整 rebaseline。日常更新继续只使用 `apply`，不得用
 `rebaseline` 或该恢复入口绕过分类失败。
 若迁移和应用切换已完成，唯一失败点为 `blocked/get_balance`，只可按同一手册使用
-`recover-rebaseline-verify`：它要求新安装的 host-control 快照与原请求 target、当前 HEAD、
-`0061_vendor_binding_outbox` 完全一致，且原 update 仍持有两条 pause；随后完整重跑 verify，
-不会重跑迁移或绕过真实厂商探测。其他 blocked step 或身份漂移继续失败关闭。
+`recover-rebaseline-verify`：它要求从已审核提交新安装且自校验通过的不可变 host-control
+快照；该快照提供恢复入口，身份独立于被恢复的应用提交。原请求 target 与当前 HEAD 必须
+完全一致，migration head 必须为 `0061_vendor_binding_outbox`，且原 update 仍持有两条
+pause；随后完整重跑 verify，不会重跑迁移或绕过真实厂商探测。其他 blocked step 或身份
+漂移继续失败关闭。
 
 页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
 
