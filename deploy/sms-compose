@@ -91,7 +91,7 @@ usage() {
   echo "release prepare|activate|status|resume|rollback: use the documented exact arguments" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
   echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
-  echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup" >&2
+  echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
   echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
@@ -814,8 +814,12 @@ run_locked_test_update() {
       /usr/bin/python3 "$PUBLIC_CUTOVER_BOOTSTRAP"
     return
   fi
+  if [[ "$command" == recover-rebaseline-verify ]]; then
+    [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
+  fi
   [[ "$command" == prepare || "$command" == apply || "$command" == verify ||
-      "$command" == recover-rebaseline ]] || return 2
+      "$command" == recover-rebaseline ||
+      "$command" == recover-rebaseline-verify ]] || return 2
   export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
   export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
   if [[ "$HOST_BOOTSTRAP" != 1 ]]; then
@@ -845,6 +849,10 @@ dispatch_test_update() {
       ;;
     bootstrap-public-cutover | prepare | apply | verify | recover-rebaseline)
       [[ $# -eq 0 ]] || return 2
+      run_with_lifecycle_lock test-update "$command"
+      ;;
+    recover-rebaseline-verify)
+      [[ $# -eq 0 && "$HOST_BOOTSTRAP" == 1 ]] || return 2
       run_with_lifecycle_lock test-update "$command"
       ;;
     promote)

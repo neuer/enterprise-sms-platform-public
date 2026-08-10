@@ -1985,6 +1985,131 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
     assert calls[-1] == ("restore-operator-git", str(tmp_path))
 
 
+@pytest.mark.parametrize(
+    ("initial_state", "initial_step", "verify_calls"),
+    [
+        (State.BLOCKED, "get_balance", 1),
+        (State.VERIFYING, "recover_verify", 1),
+        (State.VERIFIED, "verify", 0),
+    ],
+)
+def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: State,
+    initial_step: str,
+    verify_calls: int,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    update_id = "test-20260810T125640Z-5488823a73ef"
+    target_commit = "b" * 40
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        operation="rebaseline",
+        base_commit="a" * 40,
+        commit=target_commit,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    operations.host_source_commit = target_commit
+    events: list[object] = []
+
+    class Store:
+        state = initial_state
+
+        def read_consistent_state(self) -> dict[str, object]:
+            return {
+                "state": self.state.value,
+                "step": initial_step,
+                "error_type": (
+                    "invariant_failed" if self.state is State.BLOCKED else None
+                ),
+                "actual_commit": target_commit,
+                "actual_migration_head": "0061_vendor_binding_outbox",
+            }
+
+        def transition(
+            self,
+            expected: State,
+            target: State,
+            *,
+            step: str,
+            **_: object,
+        ) -> None:
+            assert self.state is expected
+            events.append((expected, target, step))
+            self.state = target
+
+    store = Store()
+
+    class Verify:
+        def __init__(self, received_store: object, received_operations: object) -> None:
+            assert received_store is store
+            assert received_operations is operations
+
+        def verify(self, kind: str, **kwargs: object) -> None:
+            events.append(("verify", kind, kwargs["expected_state"]))
+            store.transition(State.VERIFYING, State.VERIFIED, step="verify")
+
+    def command(*argv: str) -> str:
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return target_commit
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+    operations.current_migration_head = lambda: "0061_vendor_binding_outbox"  # type: ignore[method-assign]
+    operations.require_lifecycle_lock = lambda: events.append("lock")  # type: ignore[method-assign]
+    operations.require_owned_update_pauses = lambda value: events.append(("pause", value))  # type: ignore[method-assign]
+    monkeypatch.setattr(update_manager_module, "TestUpdateVerify", Verify)
+    monkeypatch.setattr(
+        update_manager_module,
+        "_restore_operator_git_read_access",
+        lambda root: events.append(("restore-operator-git", root)),
+    )
+
+    assert operations.recover_blocked_rebaseline_verify(store) == "verified"  # type: ignore[arg-type]
+    assert store.state is State.VERIFIED
+    assert sum(event[0] == "verify" for event in events if isinstance(event, tuple)) == verify_calls
+    if initial_state is State.BLOCKED:
+        assert (State.BLOCKED, State.VERIFYING, "recover_verify") in events
+    if initial_state is State.VERIFIED:
+        assert not any(
+            isinstance(event, tuple) and event[0] == "pause" for event in events
+        )
+
+
+def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    operations.request = SimpleNamespace(
+        update_id="test-20260810T125640Z-5488823a73ef",
+        operation="rebaseline",
+        commit="b" * 40,
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    operations.host_source_commit = "b" * 40
+    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
+
+    class Store:
+        def read_consistent_state(self) -> dict[str, object]:
+            return {
+                "state": "blocked",
+                "step": "services",
+                "error_type": "invariant_failed",
+                "actual_commit": "b" * 40,
+                "actual_migration_head": "0061_vendor_binding_outbox",
+            }
+
+    with pytest.raises(ManagerError, match="state is invalid"):
+        operations.recover_blocked_rebaseline_verify(Store())  # type: ignore[arg-type]
+
+
 def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(
     tmp_path: Path,
 ) -> None:

@@ -78,7 +78,13 @@ class TestUpdateVerify:
         commit: str,
         migration_from: str,
         migration_target: str,
+        expected_state: TestUpdateState = TestUpdateState.APPLIED,
     ) -> None:
+        if expected_state not in {
+            TestUpdateState.APPLIED,
+            TestUpdateState.VERIFYING,
+        }:
+            raise TestUpdateVerifyError("verify start state is invalid")
         step = "lock"
         locked = False
         try:
@@ -105,7 +111,7 @@ class TestUpdateVerify:
                 self.operations.restore_owned_update_pauses(update_id)
             self.operations.cleanup_rollback_images(update_id)
             self.store.transition(
-                TestUpdateState.APPLIED,
+                expected_state,
                 TestUpdateState.VERIFIED,
                 step="verify",
                 actual_commit=commit,
@@ -113,7 +119,11 @@ class TestUpdateVerify:
             )
         except Exception:
             rolled_back = False
-            if locked and migration_from == migration_target:
+            if (
+                locked
+                and expected_state is TestUpdateState.APPLIED
+                and migration_from == migration_target
+            ):
                 try:
                     actual_commit, actual_head = (
                         self.operations.rollback_no_migration(kind, update_id)
@@ -135,7 +145,7 @@ class TestUpdateVerify:
             if locked:
                 with contextlib.suppress(Exception):
                     self.store.block(
-                        TestUpdateState.APPLIED,
+                        expected_state,
                         step=step,
                         error_type="invariant_failed",
                         actual_commit=commit,

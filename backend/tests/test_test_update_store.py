@@ -592,6 +592,7 @@ def test_only_declared_fix_forward_state_transitions_are_accepted(tmp_path: Path
         "checkpointed",
         "migrated",
         "applied",
+        "verifying",
         "verified",
         "rolled_back",
         "blocked",
@@ -645,8 +646,19 @@ def test_only_declared_fix_forward_state_transitions_are_accepted(tmp_path: Path
     failed = _store(tmp_path, FAILED_ID)
     failed.create(_request(FAILED_ID))
     failed.fail(UpdateState.PREPARED, step="prepare")
-    with pytest.raises(StoreError, match="terminal"):
+    with pytest.raises(StoreError, match="illegal state transition"):
         failed.transition(UpdateState.BLOCKED, UpdateState.APPLIED, step="again")
+    failed.transition(
+        UpdateState.BLOCKED,
+        UpdateState.VERIFYING,
+        step="recover_verify",
+    )
+    failed.transition(
+        UpdateState.VERIFYING,
+        UpdateState.VERIFIED,
+        step="verify",
+    )
+    assert failed.read_state()["state"] == "verified"
 
     illegal = _store(tmp_path, ILLEGAL_ID)
     illegal.create(_request(ILLEGAL_ID))
