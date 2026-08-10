@@ -17,6 +17,7 @@ from typing import Any
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 GITHUB_ACTIONS_APP_ID = 15368
+FULL_CI_CHECK_NAMES = ("backend", "frontend", "security", "g2", "ci-gate")
 
 
 class CiEvidenceError(RuntimeError):
@@ -57,6 +58,58 @@ def ci_gate_status(
     if run.get("conclusion") == "success":
         return "success"
     return "failure"
+
+
+def full_ci_status(document: object, *, commit: str) -> str:
+    """要求同一最新 check suite 的五个精确 Actions check 全部成功。"""
+
+    if type(document) is not dict:
+        raise CiEvidenceError("check-runs response is invalid")
+    runs = document.get("check_runs")
+    if type(runs) is not list:
+        raise CiEvidenceError("check-runs response is invalid")
+    anchors: list[Mapping[str, Any]] = []
+    for raw in runs:
+        if type(raw) is not dict:
+            raise CiEvidenceError("check-runs response is invalid")
+        app = raw.get("app")
+        suite = raw.get("check_suite")
+        if (
+            raw.get("name") in FULL_CI_CHECK_NAMES
+            and raw.get("head_sha") == commit
+            and type(raw.get("id")) is int
+            and raw["id"] > 0
+            and type(app) is dict
+            and app.get("id") == GITHUB_ACTIONS_APP_ID
+            and app.get("slug") == "github-actions"
+            and type(suite) is dict
+            and type(suite.get("id")) is int
+            and suite["id"] > 0
+        ):
+            anchors.append(raw)
+    if not anchors:
+        return "missing"
+    latest_check = max(anchors, key=lambda item: item["id"])
+    latest_suite = latest_check["check_suite"]["id"]
+    suite_document = {
+        "check_runs": [
+            raw
+            for raw in runs
+            if type(raw.get("check_suite")) is dict
+            and raw["check_suite"].get("id") == latest_suite
+        ]
+    }
+    statuses = {
+        name: ci_gate_status(suite_document, commit=commit, check_name=name)
+        for name in FULL_CI_CHECK_NAMES
+    }
+    if all(status == "success" for status in statuses.values()):
+        return "success"
+    if any(status == "failure" for status in statuses.values()):
+        return "failure"
+    if any(status == "pending" for status in statuses.values()):
+        return "pending"
+    return "missing"
 
 
 def github_json(url: str, *, token: str | None) -> object:
@@ -108,6 +161,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--check-name", default="ci-gate")
+    parser.add_argument("--require-full", action="store_true")
     parser.add_argument("--status-only", action="store_true")
     return parser.parse_args(argv)
 
@@ -126,24 +180,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{args.commit}/check-runs?filter=latest&per_page=100"
     )
     try:
+        document = github_json(
+            url,
+            token=github_token(),
+        )
         status = ci_gate_status(
-            github_json(
-                url,
-                token=github_token(),
-            ),
+            document,
             commit=args.commit,
             check_name=args.check_name,
+        )
+        full_status = (
+            full_ci_status(document, commit=args.commit)
+            if args.require_full
+            else None
         )
     except CiEvidenceError as error:
         if args.status_only:
             print("ci_gate=unavailable")
+            if args.require_full:
+                print("full_ci=unavailable")
             return 0
         print(f"ci-evidence: {error}", file=sys.stderr)
         return 1
     print(f"ci_gate={status}")
-    if args.status_only or status == "success":
+    if full_status is not None:
+        print(f"full_ci={full_status}")
+    if args.status_only or (
+        status == "success" and (full_status is None or full_status == "success")
+    ):
         return 0
-    print("ci-evidence: exact commit ci-gate is not successful", file=sys.stderr)
+    if full_status is not None:
+        print(
+            "ci-evidence: exact commit full CI is not successful",
+            file=sys.stderr,
+        )
+    else:
+        print("ci-evidence: exact commit ci-gate is not successful", file=sys.stderr)
     return 1
 
 

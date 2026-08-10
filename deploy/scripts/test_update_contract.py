@@ -404,6 +404,26 @@ _PUBLIC_CUTOVER_HIGH_RISK_EXACT = frozenset(
         "deploy/systemd/security-report-collector.timer",
     }
 )
+_REBASELINE_SAFE_NON_RUNTIME_EXACT = frozenset(
+    {
+        # 旧测试基线到当前公开 main 的已审核操作文档与门禁脚本差异。
+        "HANDOVER.md",
+        "README.md",
+        "SECURITY.md",
+        "deploy/failover.md",
+        "docs/LOCAL_TESTING.md",
+        "scripts/check_spec_consistency.py",
+        "scripts/verify_ci_commit.py",
+        "scripts/verify_vendor_postgres_recovery.sh",
+    }
+)
+_REBASELINE_HIGH_RISK_EXACT = frozenset(
+    {
+        # 只为同历史、带真实迁移前移的既有测试基线重对齐开放。
+        "deploy/scripts/prepare_runtime_secrets.py",
+        "deploy/scripts/vendor_runtime_reset.py",
+    }
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -788,11 +808,51 @@ def classify_public_cutover_paths(paths: Iterable[str]) -> ChangedScope:
     )
 
 
-def _classify_nul_stream(raw: bytes) -> str:
+def classify_rebaseline_paths(paths: Iterable[str]) -> ChangedScope:
+    """严格分类同历史测试基线重对齐，不放宽日常快速更新。"""
+
+    regular_paths: list[str] = []
+    rebaseline_high_risk_paths: set[str] = set()
+    for raw_path in paths:
+        path = _require_safe_changed_path(raw_path)
+        if path in _REBASELINE_SAFE_NON_RUNTIME_EXACT:
+            continue
+        if path in _REBASELINE_HIGH_RISK_EXACT:
+            rebaseline_high_risk_paths.add(path)
+            continue
+        regular_paths.append(path)
+
+    if rebaseline_high_risk_paths != set(_REBASELINE_HIGH_RISK_EXACT):
+        raise TestUpdateContractError(
+            "rebaseline requires the exact approved runtime-control path set"
+        )
+
+    regular = classify_changed_paths(regular_paths)
+    if not regular.migration_changed:
+        raise TestUpdateContractError("rebaseline requires a migration change")
+
+    high_risk_paths = set(regular.high_risk_paths)
+    high_risk_paths.update(rebaseline_high_risk_paths)
+    return ChangedScope(
+        components=frozenset({"api", "web"}),
+        migration_changed=True,
+        backend_tests=regular.backend_tests,
+        frontend_tests=regular.frontend_tests,
+        runtime_changed=True,
+        risk="high-risk",
+        high_risk_paths=tuple(sorted(high_risk_paths)),
+    )
+
+
+def _classify_nul_stream(raw: bytes, *, rebaseline: bool = False) -> str:
     if len(raw) > 1_048_576:
         raise TestUpdateContractError("changed path input is too large")
     paths = [os.fsdecode(item) for item in raw.split(b"\0") if item]
-    scope = classify_changed_paths(paths)
+    scope = (
+        classify_rebaseline_paths(paths)
+        if rebaseline
+        else classify_changed_paths(paths)
+    )
     return json.dumps(
         {
             "components": sorted(scope.components),
@@ -849,6 +909,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments == ["classify-nul"]:
             print(_classify_nul_stream(sys.stdin.buffer.read()))
+            return 0
+        if arguments == ["classify-rebaseline-nul"]:
+            print(_classify_nul_stream(sys.stdin.buffer.read(), rebaseline=True))
             return 0
         if len(arguments) == 4 and arguments[0] == "verify-status":
             validate_verified_status(
