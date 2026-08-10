@@ -193,6 +193,9 @@ sudo /usr/bin/env \
 checkout 恢复到请求 base；不启动容器、不迁移/回退 schema、不释放 pause、不删除旧状态
 日志。成功后必须重新执行完整 `scripts/test_update.sh rebaseline --ref origin/main`，由新
 update id 原子接管旧 blocked pause；任何身份不一致都停止并保留 fail-closed 状态。
+若首次恢复已返回 `recovered`，但随后的 operator Git 读路径复核被中断，可原样重放同一
+`recover-rebaseline` 命令。入口仅接受 checkout 仍在请求 target 或已经回到请求 base 的两种
+精确身份，并在最后一次 root Git 校验之后重新恢复 `.git` 与 tracked 工作树的 group 读权限。
 
 ## 服务端固定阶段
 

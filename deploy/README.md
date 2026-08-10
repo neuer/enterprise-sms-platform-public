@@ -412,7 +412,8 @@ scripts/test_update.sh rebaseline --ref origin/main
 key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
 若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
 按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
-指针并保持 pause，然后重新执行完整 rebaseline。日常更新继续只使用 `apply`，不得用
+指针并保持 pause；该入口可在已回到请求 base 后幂等重放，并在最终 root Git 校验后恢复
+operator 读路径，然后重新执行完整 rebaseline。日常更新继续只使用 `apply`，不得用
 `rebaseline` 或该恢复入口绕过分类失败。
 
 页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
