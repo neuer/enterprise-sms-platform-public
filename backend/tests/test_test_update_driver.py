@@ -405,6 +405,9 @@ def test_rebaseline_is_narrower_than_daily_apply_and_requires_full_ci() -> None:
     assert "--require-full" in source
     assert "rebaseline 要求服务器迁移头真实前移" in source
     assert 'components=${PLANNED_COMPONENTS[*]}' in source
+    assert 'REQUEST_OPERATION="apply"' in source
+    assert 'REQUEST_OPERATION="rebaseline"' in source
+    assert '"operation":operation' in source
 
     result = subprocess.run(
         ["bash", str(DRIVER), "rebaseline", "--ref", "origin/feature"],

@@ -34,6 +34,7 @@ from test_update_contract import (
     ChangedScope,
     TestUpdateRequest,
     classify_changed_paths,
+    classify_rebaseline_paths,
     parse_test_update_request,
 )
 from test_update_store import TestUpdateState, TestUpdateStore
@@ -1386,6 +1387,17 @@ class HostTestUpdateOperations:
         return head
 
     def verify_source_scope(self) -> ChangedScope:
+        operation = getattr(self.request, "operation", "apply")
+        if operation not in {"apply", "rebaseline"}:
+            raise TestUpdateManagerError("request operation is invalid")
+        if operation == "rebaseline" and (
+            self.request.source_ref != "origin/main"
+            or self.request.public_cutover is not None
+            or self.request.components != frozenset({"api", "web"})
+            or self.request.migration_compatibility != "expand"
+            or self.request.migration_from == self.request.migration_target
+        ):
+            raise TestUpdateManagerError("rebaseline request scope is invalid")
         if self._command("git", "-C", str(self.root), "status", "--porcelain"):
             raise TestUpdateManagerError("server checkout must be clean")
         actual = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
@@ -1461,8 +1473,16 @@ class HostTestUpdateOperations:
                 self.request.commit,
             )
             changed = [path for path in changed_raw.split("\0") if path]
-            scope = classify_changed_paths(changed)
+            scope = (
+                classify_rebaseline_paths(changed)
+                if operation == "rebaseline"
+                else classify_changed_paths(changed)
+            )
         else:
+            if operation == "rebaseline":
+                raise TestUpdateManagerError(
+                    "rebaseline requires a descendant of the server baseline"
+                )
             if self.request.source_ref != "origin/main":
                 raise TestUpdateManagerError(
                     "unrelated source history requires public main cutover"
