@@ -14,8 +14,8 @@ from test_update_verify import TestUpdateVerifyError as VerifyError  # noqa: E40
 
 
 class FakeStore:
-    def __init__(self) -> None:
-        self.state = State.APPLIED
+    def __init__(self, state: State = State.APPLIED) -> None:
+        self.state = state
 
     def transition(self, expected: State, target: State, **_: object) -> None:
         assert self.state is expected
@@ -102,6 +102,32 @@ def test_backend_verify_checks_all_live_invariants_before_owned_pause_restore() 
     assert store.state is State.VERIFIED
 
 
+def test_recovered_backend_verify_uses_verifying_state_and_rechecks_all_invariants() -> None:
+    store = FakeStore(State.VERIFYING)
+    operations = FakeVerifyOperations()
+
+    UpdateVerify(store, operations).verify(
+        "backend-safe",
+        update_id="test-recovery",
+        commit="0" * 40,
+        migration_from="0015",
+        migration_target="0016",
+        expected_state=State.VERIFYING,
+    )
+
+    assert operations.events == [
+        "lock",
+        ("mode", "live"),
+        "budget",
+        "pauses",
+        "get_balance",
+        "services",
+        ("restore_owned_pauses", "test-recovery"),
+        ("cleanup_rollback", "test-recovery"),
+    ]
+    assert store.state is State.VERIFIED
+
+
 def test_pre_live_backend_verify_never_calls_real_vendor_balance() -> None:
     store = FakeStore()
     operations = FakeVerifyOperations(mode="pre-live")
@@ -158,6 +184,25 @@ def test_backend_verify_failure_remains_paused_and_blocked() -> None:
 
     assert ("restore_owned_pauses", "test-api") not in operations.events
     assert operations.events[-1] == ("hold", "test-api")
+    assert store.state is State.BLOCKED
+
+
+def test_recovered_verify_failure_returns_to_blocked_without_pause_release() -> None:
+    store = FakeStore(State.VERIFYING)
+    operations = FakeVerifyOperations(fail_at="get_balance")
+
+    with pytest.raises(VerifyError, match="blocked"):
+        UpdateVerify(store, operations).verify(
+            "backend-safe",
+            update_id="test-recovery",
+            commit="0" * 40,
+            migration_from="0015",
+            migration_target="0016",
+            expected_state=State.VERIFYING,
+        )
+
+    assert ("restore_owned_pauses", "test-recovery") not in operations.events
+    assert operations.events[-1] == ("hold", "test-recovery")
     assert store.state is State.BLOCKED
 
 

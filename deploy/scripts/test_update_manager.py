@@ -2372,6 +2372,83 @@ class HostTestUpdateOperations:
                 "blocked rebaseline recovery verification failed"
             )
 
+    def recover_blocked_rebaseline_verify(
+        self,
+        store: TestUpdateStore,
+    ) -> str:
+        """仅为迁移后 GetBalance 阻断重开同一 update 的完整 verify。"""
+
+        self._require_exact_rebaseline_migration()
+        self.require_lifecycle_lock()
+        if self.host_source_commit is None:
+            raise TestUpdateManagerError(
+                "blocked rebaseline verify recovery snapshot is invalid"
+            )
+        state = store.read_consistent_state()
+        state_value = state.get("state")
+        blocked_state = (
+            state_value == TestUpdateState.BLOCKED.value
+            and state.get("step") == "get_balance"
+            and state.get("error_type") == "invariant_failed"
+            and state.get("actual_commit") == self.request.commit
+            and state.get("actual_migration_head") == self.request.migration_target
+        )
+        recovering_state = (
+            state_value == TestUpdateState.VERIFYING.value
+            and state.get("step") == "recover_verify"
+            and state.get("error_type") is None
+            and state.get("actual_commit") == self.request.commit
+            and state.get("actual_migration_head") == self.request.migration_target
+        )
+        verified_state = (
+            state_value == TestUpdateState.VERIFIED.value
+            and state.get("step") == "verify"
+            and state.get("error_type") is None
+            and state.get("actual_commit") == self.request.commit
+            and state.get("actual_migration_head") == self.request.migration_target
+        )
+        if not (blocked_state or recovering_state or verified_state):
+            raise TestUpdateManagerError(
+                "blocked rebaseline verify recovery state is invalid"
+            )
+
+        try:
+            head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
+            git_status = self._command(
+                "git", "-C", str(self.root), "status", "--porcelain"
+            )
+        finally:
+            _restore_operator_git_read_access(self.root)
+        if (
+            head != self.request.commit
+            or git_status
+            or self.current_migration_head() != self.request.migration_target
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline verify recovery identity is invalid"
+            )
+        if verified_state:
+            return "verified"
+
+        self.require_owned_update_pauses(self.request.update_id)
+        if blocked_state:
+            store.transition(
+                TestUpdateState.BLOCKED,
+                TestUpdateState.VERIFYING,
+                step="recover_verify",
+                actual_commit=self.request.commit,
+                actual_migration_head=self.request.migration_target,
+            )
+        TestUpdateVerify(store, self).verify(
+            "backend-safe",
+            update_id=self.request.update_id,
+            commit=self.request.commit,
+            migration_from=self.request.migration_from,
+            migration_target=self.request.migration_target,
+            expected_state=TestUpdateState.VERIFYING,
+        )
+        return "verified"
+
     def verify_web(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if "web" not in running:
@@ -2429,6 +2506,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "status",
             "capability",
             "recover-rebaseline",
+            "recover-rebaseline-verify",
         ),
     )
     parser.add_argument("--root", required=True, type=Path)
@@ -2522,6 +2600,19 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "status": "recovered",
+                        "update_id": request.update_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "recover-rebaseline-verify":
+            recovery_status = operations.recover_blocked_rebaseline_verify(store)
+            print(
+                json.dumps(
+                    {
+                        "status": recovery_status,
                         "update_id": request.update_id,
                     },
                     separators=(",", ":"),

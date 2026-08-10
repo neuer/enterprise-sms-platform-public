@@ -750,3 +750,20 @@
   形成不足 3% 的新边界余量。
 - 影响：相对原 300ms 预算总计放宽 150ms，但仍保持亚半秒、固定代码常量和等值失败；
   PRD、脚本、测试与手册继续同提交同步，禁止环境变量覆盖或削弱其他性能门禁。
+
+## D068 迁移后 GetBalance 阻断使用原 update 的受控 verify 恢复
+
+- 决策：仅为精确 `0053_idempotency_scope → 0061_vendor_binding_outbox` rebaseline 在迁移、
+  checkout 和双镜像切换完成后发生的 `blocked/get_balance` 提供 host-bootstrap-only 的
+  `recover-rebaseline-verify`。入口要求从已审核提交新安装且自校验通过的不可变控制面快照；
+  快照身份与被恢复的应用提交分开校验，请求 target 必须与实际 HEAD 一致，实际 migration
+  head 必须为目标版本，错误类型为 `invariant_failed`，且两条 pause 仍由原 update id 持有；
+  普通 apply、其他 blocked step 或其他迁移均不接受。
+- 状态机：恢复先原子记录 `blocked → verifying/recover_verify`，随后完整重跑环境模式、预算、
+  pause 所有权、真实 GetBalance、服务健康和迁移头验收。成功进入 `verified` 并按既有流程
+  清理 pause；失败则 `verifying → blocked`，不释放 pause。中断后可从 `verifying` 重放，
+  已 verified 时只复核精确身份并幂等返回，事件历史不改写。
+- 边界：入口不重跑或回退 schema，不切换镜像，不修改正式厂商 Key、测试号码、数据库、
+  volume 或 runtime secret；仍必须持有同一 lifecycle lock，也不能以手工状态编辑、直接
+  Compose 或跳过 GetBalance 代替。原因是迁移后 schema 不允许自动回退，而一次外部探测
+  抖动也不应迫使操作者破坏状态账本或清空环境。
