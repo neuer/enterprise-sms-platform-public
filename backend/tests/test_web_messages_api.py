@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import inspect
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -225,6 +226,19 @@ def test_import_returns_pending_reference_without_phone_data(
     monkeypatch: MonkeyPatch,
 ) -> None:
     staged: list[str] = []
+    bounded_calls: list[tuple[str, str]] = []
+
+    async def run_inline(
+        function: Callable[..., object],
+        *args: object,
+        timeout_s: float,
+        pool: str = "default",
+        **kwargs: object,
+    ) -> object:
+        assert timeout_s > 0
+        bounded_calls.append((getattr(function, "__name__", ""), pool))
+        result = function(*args, **kwargs)
+        return await result if inspect.isawaitable(result) else result
 
     class FakeCodec:
         def __init__(self, *_: object) -> None:
@@ -239,6 +253,7 @@ def test_import_returns_pending_reference_without_phone_data(
     monkeypatch.setattr(api, "ImportFileCodec", FakeCodec)
     monkeypatch.setattr(api.CryptoService, "from_settings", lambda _settings: object())
     monkeypatch.setattr(api, "_enqueue_import", lambda import_id: None)
+    monkeypatch.setattr(api, "run_bounded", run_inline)
     repository = FakeImportRepository()
     client = make_client(repository=repository)
     response = client.post(
@@ -253,6 +268,7 @@ def test_import_returns_pending_reference_without_phone_data(
     assert "13800138000" not in response.text
     assert "cipher" not in response.text
     assert staged == ["import-11111111-1111-1111-1111-111111111111.smsx"]
+    assert ("preflight", "archive") in bounded_calls
     assert (
         repository.source_file
         == "import-11111111-1111-1111-1111-111111111111.smsx"

@@ -82,3 +82,30 @@ async def test_slow_ldap_pool_cannot_consume_local_auth_capacity() -> None:
         release.set()
         await asyncio.gather(*ldap_tasks, return_exceptions=True)
         close_bounded_executor()
+
+
+@pytest.mark.asyncio
+async def test_slow_archive_pool_cannot_consume_local_auth_capacity() -> None:
+    started = 0
+    all_workers_started = asyncio.Event()
+    release = ThreadEvent()
+    loop = asyncio.get_running_loop()
+
+    def blocking_archive() -> None:
+        nonlocal started
+        started += 1
+        if started == 4:
+            loop.call_soon_threadsafe(all_workers_started.set)
+        release.wait(timeout=1)
+
+    archive_tasks = [
+        asyncio.create_task(run_bounded(blocking_archive, timeout_s=0.1, pool="archive"))
+        for _ in range(8)
+    ]
+    try:
+        await asyncio.wait_for(all_workers_started.wait(), timeout=1)
+        assert await run_bounded(lambda: 7, timeout_s=0.1) == 7
+    finally:
+        release.set()
+        await asyncio.gather(*archive_tasks, return_exceptions=True)
+        close_bounded_executor()

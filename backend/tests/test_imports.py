@@ -52,6 +52,33 @@ def xlsx_archive(entries: list[tuple[str, bytes]]) -> bytes:
     return output.getvalue()
 
 
+def synthetic_central_directory(
+    actual_entries: int,
+    *,
+    declared_entries: int,
+    comment_bytes: int = 0,
+) -> bytes:
+    records: list[bytes] = []
+    for _ in range(actual_entries):
+        record = bytearray(46 + comment_bytes)
+        record[:4] = b"PK\x01\x02"
+        struct.pack_into("<H", record, 32, comment_bytes)
+        records.append(bytes(record))
+    central = b"".join(records)
+    end = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        declared_entries,
+        declared_entries,
+        len(central),
+        0,
+        0,
+    )
+    return central + end
+
+
 def mark_first_zip_entry_encrypted(payload: bytes) -> bytes:
     mutated = bytearray(payload)
     local = mutated.find(b"PK\x03\x04")
@@ -219,6 +246,110 @@ async def test_xlsx_preflight_rejects_archive_resource_amplification(
         )
 
     assert calls == []
+
+
+def test_xlsx_preflight_counts_central_records_before_zipfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = synthetic_central_directory(257, declared_entries=1)
+    monkeypatch.setattr(
+        imports_module,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile must not be constructed"),
+    )
+
+    with pytest.raises(ImportTooLarge, match="条目过多"):
+        ImportParser(crypto(), FakeBlacklist()).preflight(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+
+
+def test_xlsx_preflight_bounds_central_metadata_before_zipfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = synthetic_central_directory(
+        2,
+        declared_entries=2,
+        comment_bytes=32,
+    )
+    monkeypatch.setattr(
+        imports_module,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile must not be constructed"),
+    )
+
+    with pytest.raises(ImportTooLarge, match="元数据过大"):
+        ImportParser(
+            crypto(),
+            FakeBlacklist(),
+            limits=ImportLimits(max_archive_metadata_bytes=100),
+        ).preflight(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+
+
+def test_xlsx_preflight_rejects_forged_declared_entry_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = synthetic_central_directory(2, declared_entries=1)
+    monkeypatch.setattr(
+        imports_module,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile must not be constructed"),
+    )
+
+    with pytest.raises(ImportFormatError, match="条目计数不一致"):
+        ImportParser(crypto(), FakeBlacklist()).preflight(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+
+
+def test_xlsx_preflight_rejects_zip64_before_zipfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0xFFFF,
+        0xFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0,
+    )
+    monkeypatch.setattr(
+        imports_module,
+        "ZipFile",
+        lambda *_args, **_kwargs: pytest.fail("ZipFile must not be constructed"),
+    )
+
+    with pytest.raises(ImportFormatError, match="ZIP64"):
+        ImportParser(crypto(), FakeBlacklist()).preflight(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+
+
+def test_xlsx_preflight_preserves_bounded_zip_comments() -> None:
+    source = BytesIO()
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("xl/workbook.xml", b"workbook")
+        archive.comment = b"bounded comment"
+    payload = source.getvalue()
+
+    ImportParser(crypto(), FakeBlacklist()).preflight(
+        "phones.xlsx",
+        BytesIO(payload),
+        size=len(payload),
+    )
 
 
 @pytest.mark.asyncio
