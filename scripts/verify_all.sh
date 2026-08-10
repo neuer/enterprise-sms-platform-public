@@ -213,7 +213,7 @@ python3 scripts/verify_tls_termination_e2e.py \
 }
 
 stage_8(){
-python3 scripts/perf_smoke.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt
+uv run --project backend python scripts/perf_smoke.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt
 }
 
 stage_9(){

@@ -9,7 +9,7 @@
 G2 使用默认参数，禁止通过 CLI 缩短时间或降低阈值：
 
 ```bash
-python3 scripts/perf_smoke.py \
+uv run --project backend python scripts/perf_smoke.py \
   --base http://localhost:8000 \
   --mock-base http://localhost:9028 \
   --keys deploy/secrets/dev-apikeys.txt
