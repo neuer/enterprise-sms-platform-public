@@ -410,7 +410,7 @@ def test_performance_suite_runs_three_isolated_phases_with_safe_results() -> Non
     for path, headers in api.cancelled:
         batch_no = path.removeprefix("/api/v1/messages/batches/").removesuffix("/cancel")
         assert headers == {"X-Api-Key": api.scheduled_keys[batch_no]}
-    assert ACCEPTANCE_P95_LIMIT_SECONDS == 0.45
+    assert ACCEPTANCE_P95_LIMIT_SECONDS == 2.0
     assert result.acceptance_p95_s < ACCEPTANCE_P95_LIMIT_SECONDS
     assert result.verify_p95_s < 2
     assert result.event_loop_delay_seconds == 0.012

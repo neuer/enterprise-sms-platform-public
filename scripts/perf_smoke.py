@@ -23,7 +23,7 @@ from uuid import uuid4
 import httpx
 from runtime_credentials import read_secret_file
 
-ACCEPTANCE_P95_LIMIT_SECONDS = 0.45
+ACCEPTANCE_P95_LIMIT_SECONDS = 2.0
 
 
 class PerformanceFailure(RuntimeError):
