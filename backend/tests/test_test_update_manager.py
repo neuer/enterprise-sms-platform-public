@@ -1495,6 +1495,99 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
     assert "-z" in diff_call
 
 
+def test_host_source_scope_retries_only_the_fixed_fetch_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    sleeps: list[float] = []
+    base = "a" * 40
+    commit = "b" * 40
+    update_id = "test-20260810T091621Z-bbbbbbbbbbbb"
+    fetched_ref = f"refs/test-updates/{update_id}/source"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        base_commit=base,
+        commit=commit,
+        source_ref="origin/main",
+        components=frozenset({"web"}),
+        public_cutover=None,
+    )  # type: ignore[assignment]
+    fetch_attempts = 0
+
+    def command(*argv: str) -> str:
+        nonlocal fetch_attempts
+        calls.append(argv)
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return base
+        if "fetch" in argv:
+            fetch_attempts += 1
+            if fetch_attempts < 3:
+                raise ManagerError("controlled command failed")
+            return ""
+        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
+            return commit
+        if "merge-base" in argv:
+            return base
+        if "diff" in argv:
+            return "frontend/src/App.vue\0"
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+    monkeypatch.setattr(update_manager_module.time, "sleep", sleeps.append)
+
+    scope = operations.verify_source_scope()
+
+    fetch_calls = [call for call in calls if "fetch" in call]
+    assert len(fetch_calls) == 3
+    assert len(set(fetch_calls)) == 1
+    assert sleeps == [1.0, 2.0]
+    assert scope.risk == "web-only"
+
+
+def test_host_source_scope_fails_closed_after_fetch_retries_are_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    update_id = "test-20260810T091621Z-bbbbbbbbbbbb"
+    fetched_ref = f"refs/test-updates/{update_id}/source"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        base_commit="a" * 40,
+        commit="b" * 40,
+        source_ref="origin/main",
+        components=frozenset({"web"}),
+        public_cutover=None,
+    )  # type: ignore[assignment]
+
+    def command(*argv: str) -> str:
+        calls.append(argv)
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if "fetch" in argv:
+            raise ManagerError("controlled command failed")
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+    monkeypatch.setattr(update_manager_module.time, "sleep", lambda _: None)
+
+    with pytest.raises(ManagerError, match="controlled command failed"):
+        operations.verify_source_scope()
+
+    assert len([call for call in calls if "fetch" in call]) == 3
+    assert not any(
+        call[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}")
+        for call in calls
+    )
+
+
 def test_host_source_scope_revalidates_explicit_rebaseline_with_strict_classifier() -> None:
     calls: list[tuple[str, ...]] = []
     base = "a" * 40

@@ -703,6 +703,9 @@
   仓库的 objects 目录提供 `GIT_ALTERNATE_OBJECT_DIRECTORIES`，不把对象、ref 或 remote
   写回活动 checkout。安装完成或失败退出都删除临时 Git 仓库；上传的锁定 cloudflared
   二进制只在完整安装和 status 验证成功后删除。
+- 可靠性：快速更新 manager 对同一个固定 source refspec 最多执行 3 次 fetch，失败间隔
+  固定为 1/2 秒；每次 argv 完全相同，不改变 origin、ref 或 commit。全部失败时仍在发送
+  暂停、checkpoint、迁移和应用切换前阻断，不能降级为客户端源码上传或手工 Git。
 - 原因：受控更新会有意把活动 Git 元数据恢复为 operator group 只读，原安装命令却要求同一
   operator 在其中 fetch，合同互相矛盾。隔离服务端取证仓库既保留“源码不是客户端上传”的
   信任边界，也不扩大日常更新用户对活动 Git 元数据的权限。
