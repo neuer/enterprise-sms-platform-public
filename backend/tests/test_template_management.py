@@ -37,7 +37,7 @@ class FakeRepository:
             str(values["content"]),
             values["var_specs"],  # type: ignore[arg-type]
             str(values["dept"]),
-            str(values["vendor_template_id"]),
+            None,
             "pending",
             None,
         )
@@ -62,6 +62,22 @@ class FakeRepository:
         self.states.extend(states)
         return len(states)
 
+    async def apply_binding(self, template_id: int, vendor_template_id: str) -> bool:
+        current = self.records.get(template_id)
+        if current is None or current.vendor_template_id is not None:
+            return False
+        self.records[template_id] = TemplateRecord(
+            current.id,
+            current.name,
+            current.content,
+            current.var_specs,
+            current.dept,
+            vendor_template_id,
+            current.vendor_state,
+            current.vendor_reject_reason,
+        )
+        return True
+
     async def update(self, template_id: int, **values: object) -> TemplateRecord | None:
         current = self.records[template_id]
         if current.vendor_state not in {"draft", "rejected"}:
@@ -72,7 +88,7 @@ class FakeRepository:
             str(values["content"]),
             values["var_specs"],  # type: ignore[arg-type]
             current.dept,
-            str(values["vendor_template_id"]),
+            None,
             "pending",
             None,
         )
@@ -97,7 +113,7 @@ class FakeVendor:
 
 
 @pytest.mark.asyncio
-async def test_create_converts_platform_placeholders_before_vendor_submit() -> None:
+async def test_create_validates_placeholders_without_using_vendor_client() -> None:
     repository = FakeRepository()
     vendor = FakeVendor()
     record = await TemplateManagementService(repository, vendor).create(
@@ -107,9 +123,28 @@ async def test_create_converts_platform_placeholders_before_vendor_submit() -> N
         dept="平台部",
         actor="operator01",
     )
-    assert vendor.bound == ["尊敬的{s10}，验证码{s6}"]
-    assert record.vendor_template_id == "22"
+    assert vendor.bound == []
+    assert record.vendor_template_id is None
     assert record.vendor_state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_bind_worker_converts_placeholders_and_applies_vendor_id() -> None:
+    repository = FakeRepository()
+    repository.records[1] = TemplateRecord(
+        1,
+        "验证码",
+        "验证码{1}",
+        [{"pos": 1, "max_len": 6}],
+        "平台部",
+        None,
+        "pending",
+        None,
+    )
+    vendor = FakeVendor()
+    assert await TemplateManagementService(repository, vendor).bind(1) == 1
+    assert vendor.bound == ["验证码{s6}"]
+    assert repository.records[1].vendor_template_id == "22"
 
 
 @pytest.mark.asyncio

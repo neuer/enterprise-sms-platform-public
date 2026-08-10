@@ -142,7 +142,7 @@ async function submit(): Promise<void> {
     if (editingId.value === null) await createTemplate(payload)
     else await updateTemplate(editingId.value, payload)
     editorOpen.value = false
-    ElMessage.success("模板已提交厂商审核")
+    ElMessage.success("模板已加入厂商审核队列")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "模板提交失败")
@@ -156,7 +156,7 @@ async function sync(item: SmsTemplate): Promise<void> {
   syncingId.value = item.id
   try {
     await syncTemplate(item.id)
-    ElMessage.success("审核状态已同步")
+    ElMessage.success("审核状态同步请求已入队")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "审核状态同步失败")

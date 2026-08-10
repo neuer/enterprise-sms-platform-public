@@ -202,8 +202,6 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
     encoded_system_key = base64.b64encode(b"s" * 32).decode()
     values = {
         "db_accept_password": "db-password",
-        "vendor_secret_name": "vendor-name",
-        "vendor_secret_key": "vendor-key",
         "data_aes_key": encoded_key,
         "data_hmac_key": encoded_key,
         "audit_context_key": encoded_key,
@@ -225,8 +223,6 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
         vendor_mock=True,
         vendor_base_url="http://vendor-mock:9028",
         db_accept_password_file=paths["db_accept_password"],
-        vendor_secret_name_file=paths["vendor_secret_name"],
-        vendor_secret_key_file=paths["vendor_secret_key"],
         data_aes_key_file=paths["data_aes_key"],
         data_hmac_key_file=paths["data_hmac_key"],
         audit_context_key_file=paths["audit_context_key"],

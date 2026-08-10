@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.52  2026-08-10
+-- v1.6.52：厂商签名/模板 Bind 改由 realtime worker 消费事务性 Outbox；API 不持凭据
 -- v1.6.51  2026-08-09
 -- v1.6.51：自治审计 HMAC 按 API/realtime/bulk 部署生产者域隔离
 -- v1.6.50  2026-08-09
@@ -1134,6 +1136,8 @@ CREATE TABLE outbox_event (
     task_name      VARCHAR(128) NOT NULL
                    CONSTRAINT ck_outbox_task_name
                    CHECK (task_name IN (
+                     'app.tasks.bind_sign',
+                     'app.tasks.bind_template',
                      'app.tasks.send.process_batch',
                      'app.tasks.deliver_callback',
                      'app.tasks.outbox.compensate_quota',
@@ -1175,6 +1179,12 @@ CREATE TABLE outbox_event (
     CONSTRAINT ck_outbox_args_no_pii CHECK (
       (
         args::text !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
+        OR (
+          task_name IN ('app.tasks.bind_sign','app.tasks.bind_template')
+          AND jsonb_array_length(args)=1
+          AND jsonb_typeof(args->0)='number'
+          AND args->>0 ~ '^[1-9][0-9]*$'
+        )
         OR (
           task_name='app.tasks.send.process_batch'
           AND jsonb_array_length(args)=1
@@ -1229,6 +1239,10 @@ CREATE TABLE outbox_event (
       (
         aggregate_id !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
         OR (
+          task_name IN ('app.tasks.bind_sign','app.tasks.bind_template')
+          AND aggregate_id ~ '^[1-9][0-9]*$'
+        )
+        OR (
           task_name='app.tasks.send.process_batch'
           AND aggregate_id ~ '^[0-9a-f]{32}$'
         )
@@ -1260,6 +1274,9 @@ CREATE TABLE outbox_event (
           || 'approval[:][1-9][0-9]*[:](approved|rejected|expired)|'
           || 'callback[:][1-9][0-9]*[:]attempt[:][0-9]+|'
           || 'alert[:][1-9][0-9]*[:](wecom|smtp)|'
+          || '(template[.]bind|sign[.]bind)[:][1-9][0-9]*[:]'
+          || '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
+          || '[89ab][0-9a-f]{3}-[0-9a-f]{12}|'
           || 'usage[.]release[:][0-9a-f]{8}-[0-9a-f]{4}-'
           || '[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-'
           || '[0-9a-f]{12})$'
@@ -2030,6 +2047,10 @@ GRANT SELECT ON
     security_daily_recipient,
     vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation
 TO sms_send;
+GRANT UPDATE (vendor_template_id,vendor_state,vendor_reject_reason,updated_at)
+ON sms_template TO sms_send;
+GRANT UPDATE (vendor_sign_id,vendor_state,vendor_reject_reason)
+ON sms_sign TO sms_send;
 GRANT INSERT, UPDATE, DELETE ON
     sms_batch, sms_chunk, sms_message, sms_reply, raw_vendor_log,
     unmatched_report, job_run, approval, balance_snapshot, alert_log,

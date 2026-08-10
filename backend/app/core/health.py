@@ -149,8 +149,6 @@ def _validate_runtime_secrets(settings: Settings) -> None:
     secrets = {
         name: settings.credential(name)
         for name in (
-            "vendor_secret_name",
-            "vendor_secret_key",
             "data_aes_key",
             "data_hmac_key",
             "audit_context_key",

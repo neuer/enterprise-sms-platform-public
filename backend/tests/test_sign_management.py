@@ -18,7 +18,7 @@ class FakeRepository:
         self.states: list[tuple[int, str, str | None]] = []
 
     async def create(self, **values: object) -> SignRecord:
-        return SignRecord(2, str(values["name"]), str(values["vendor_sign_id"]), "pending", None)
+        return SignRecord(2, str(values["name"]), None, "pending", None)
 
     async def list_all(self) -> list[SignRecord]:
         return [self.record]
@@ -35,13 +35,25 @@ class FakeRepository:
         self.states.extend(states)
         return len(states)
 
+    async def apply_binding(self, sign_id: int, vendor_sign_id: str) -> bool:
+        if sign_id != self.record.id or self.record.vendor_sign_id is not None:
+            return False
+        self.record = SignRecord(
+            self.record.id,
+            self.record.name,
+            vendor_sign_id,
+            self.record.vendor_state,
+            self.record.vendor_reject_reason,
+        )
+        return True
+
     async def update(self, sign_id: int, **values: object) -> SignRecord | None:
         if sign_id != self.record.id:
             return None
         self.record = SignRecord(
             sign_id,
             str(values["name"]),
-            str(values["vendor_sign_id"]),
+            None,
             "pending",
             None,
         )
@@ -65,14 +77,24 @@ class FakeVendor:
 
 
 @pytest.mark.asyncio
-async def test_create_binds_formatted_sign_and_stores_plain_name() -> None:
+async def test_create_formats_and_persists_without_using_vendor_client() -> None:
     vendor = FakeVendor()
     created = await SignManagementService(FakeRepository(), vendor).create(
         name="青鸾平台", actor="admin01"
     )
-    assert vendor.bound == ["【青鸾平台】"]
+    assert vendor.bound == []
     assert created.name == "青鸾平台"
-    assert created.vendor_sign_id == "22"
+    assert created.vendor_sign_id is None
+
+
+@pytest.mark.asyncio
+async def test_bind_worker_submits_formatted_sign_and_applies_vendor_id() -> None:
+    repository = FakeRepository()
+    repository.record = SignRecord(1, "青鸾平台", None, "pending", None)
+    vendor = FakeVendor()
+    assert await SignManagementService(repository, vendor).bind(1) == 1
+    assert vendor.bound == ["【青鸾平台】"]
+    assert repository.record.vendor_sign_id == "22"
 
 
 @pytest.mark.asyncio

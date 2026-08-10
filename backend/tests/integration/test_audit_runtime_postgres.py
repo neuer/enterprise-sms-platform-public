@@ -514,13 +514,11 @@ async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None
                 content="验证码{1}",
                 var_specs=[{"index": 1, "max_len": 6}],
                 dept="平台部",
-                vendor_template_id=0,
                 actor="audit-admin",
             )
             template_id = template.id
             sign = await sign_repository.create(
                 name=sign_name,
-                vendor_sign_id="0",
                 actor="audit-admin",
             )
             sign_id = sign.id

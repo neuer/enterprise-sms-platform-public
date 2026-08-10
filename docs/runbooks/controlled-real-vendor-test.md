@@ -178,7 +178,7 @@ agent 每次接收新的凭据 envelope 前都会先通过固定 wrapper 执行�
 
 凭据 configured、至少一个 active recipient、agent heartbeat 新鲜并且所有安全检查满足时，页面显示 `status=inactive`。管理员通过二次认证后点击激活，API 返回 `operation_id`；刷新页面只按 operation id 恢复非敏感进度。
 
-`vendor-control-agent` 在同一 lifecycle lock 内严格执行：暂停 realtime/bulk → 停止发送 worker → 确认活跃分片为零 → 创建只含密文的 checkpoint → 校验凭据和 active recipient 数 → 写 marker 与 live dotenv → 移除 mock-vendor → 校验 Compose → 只启动 postgres/redis/migrate/api → 执行 GetBalance → 确认上海自然日账本为零 → 启动发送 worker → 仅清除本次 activation 自己持有的 pause → 写无 PII 证据。成功后页面显示 `status=controlled`。
+`vendor-control-agent` 在同一 lifecycle lock 内严格执行：暂停 realtime/bulk → 停止发送 worker → 确认活跃分片为零 → 创建只含密文的 checkpoint → 校验凭据和 active recipient 数 → 写 marker 与 live dotenv → 移除 mock-vendor → 校验 Compose → 启动所需基础服务 → agent 自身执行 GetBalance → 确认上海自然日账本为零 → 启动发送 worker → 仅清除本次 activation 自己持有的 pause → 写无 PII 证据。API 不挂载或读取正式厂商凭据。成功后页面显示 `status=controlled`。
 
 任何一步失败都保持发送暂停，不自动 restore、不回退 Mock，也不清库、不删除 volume。checkpoint 是恢复前的人工决策依据，不是自动回滚开关。agent 每 10 秒写安全状态投影；API/worker 发现 heartbeat 超过 30 秒即 fail closed，并设置独立 critical pause。
 
@@ -194,7 +194,7 @@ GetBalance 是唯一允许的无消费预检。GetReport 与 GetReply 具有“�
 
 reset 只删除全部凭据 generation（包含 root credential store 与 runtime generations 中的正式厂商凭据副本）与全部加密测试收件人，包括相关安全索引投影。它保留管理员账号、短信业务数据和审计记录，保留当日 UAT 用量与 uncertain 占额，并保留数据库、Docker volume 和运行态目录。受保护的持久对象明确包括 PostgreSQL、Docker volume 和非厂商 secret，运行态根目录本身也不删除。它不是系统初始化，不得重建数据库、清理 volume、删除运行态目录或重置当日安全账本。
 
-root agent 在持久化 `reset_authorized` 后先幂等清空 credential store，再通过零参数固定 wrapper `vendor-test reset-runtime` 进入与 release 相同的 lifecycle lock。编排器生成只含固定 revocation tombstone 的新 runtime generation；tombstone 不读取、不包含也不派生自旧 Key。随后固定停止并删除 api、worker-realtime、worker-bulk 三个 vendor-secret reader，再从新 generation 重建并执行无输出内容探测；只有三个 reader 全部通过后才清理 stale generations。切换撤销 generation 后不得回切旧 runtime generation，也不得让已删除的旧 reader 在失败重放中复活。
+root agent 在持久化 `reset_authorized` 后先幂等清空 credential store，再通过零参数固定 wrapper `vendor-test reset-runtime` 进入与 release 相同的 lifecycle lock。编排器生成只含固定 revocation tombstone 的新 runtime generation；tombstone 不读取、不包含也不派生自旧 Key。随后固定停止并删除 worker-realtime、worker-bulk 两个 vendor-secret reader，再从新 generation 重建并执行无输出内容探测；只有两个 reader 全部通过后才清理 stale generations。API 不再是 vendor-secret reader。切换撤销 generation 后不得回切旧 runtime generation，也不得让已删除的旧 reader 在失败重放中复活。
 
 只有 credential store 已未配置、runtime 与三个 reader 的当次探测均已通过、旧 generations 已清理，agent 才把 root journal 推进到 durable `runtime_revoked` 并最终成功。任一步失败或进程中断都保持 journal `running`，不把失败缓存成不可恢复终态；只允许原 operation id 重放并从实际文件/容器状态继续。锁与 release 冲突时在 Docker 和 runtime 修改前 fail closed。错误只返回固定安全状态，不输出 Key 值、长度、前缀、摘要、哈希、generation 名称或子进程输出。
 

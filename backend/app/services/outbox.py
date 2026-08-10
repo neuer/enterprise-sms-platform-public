@@ -35,6 +35,8 @@ STRUCTURED_REFERENCE = re.compile(
     r")$"
 )
 TASK_NAMES = {
+    "app.tasks.bind_sign",
+    "app.tasks.bind_template",
     "app.tasks.send.process_batch",
     "app.tasks.deliver_callback",
     "app.tasks.outbox.compensate_quota",
@@ -220,11 +222,29 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.args[0] in MANUAL_JOB_TASK_NAMES
         else False
     )
+    vendor_binding_reference = (
+        spec.task_name in {"app.tasks.bind_template", "app.tasks.bind_sign"}
+        and spec.event_type
+        == ("template.bind" if spec.task_name.endswith("bind_template") else "sign.bind")
+        and spec.aggregate_type
+        == ("sms_template" if spec.task_name.endswith("bind_template") else "sms_sign")
+        and spec.queue == "realtime"
+        and spec.max_attempts == 1
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and spec.args == (int(spec.aggregate_id),)
+        and spec.dedup_key.startswith(f"{spec.event_type}:{spec.aggregate_id}:")
+        and UUID_REFERENCE.fullmatch(spec.dedup_key.rsplit(":", 1)[-1]) is not None
+    )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
     if spec.task_name == "app.tasks.outbox.trigger_job" and not manual_job_reference:
         raise ValueError("invalid manual job outbox contract")
-    if not usage_release_reference and not manual_job_reference:
+    if spec.task_name in {"app.tasks.bind_template", "app.tasks.bind_sign"} and not (
+        vendor_binding_reference
+    ):
+        raise ValueError("invalid vendor binding outbox contract")
+    if not usage_release_reference and not manual_job_reference and not vendor_binding_reference:
         _assert_safe(spec.aggregate_id)
         _assert_safe(spec.args)
         _assert_safe(spec.dedup_key)

@@ -622,6 +622,7 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
     kwargs: dict[str, object] = {
         "_env_file": None,
         "environment": "test",
+        "sms_component": "worker",
         "debug": True,
         "auth_mock": True,
         "vendor_mock": True,
@@ -637,3 +638,25 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         assert settings.credential(name) == f"{name}-value"
     with pytest.raises(KeyError):
         settings.credential("unknown")
+
+
+def test_api_component_cannot_read_vendor_credentials(tmp_path: Path) -> None:
+    module = load_settings_module()
+    vendor_name = tmp_path / "vendor_secret_name"
+    vendor_key = tmp_path / "vendor_secret_key"
+    vendor_name.write_text("name\n", encoding="utf-8")
+    vendor_key.write_text("key\n", encoding="utf-8")
+    settings = module.Settings(
+        _env_file=None,
+        environment="test",
+        sms_component="api",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        vendor_secret_name_file=vendor_name,
+        vendor_secret_key_file=vendor_key,
+    )
+
+    for credential_name in ("vendor_secret_name", "vendor_secret_key"):
+        with pytest.raises(RuntimeError, match="unavailable to the API"):
+            settings.credential(credential_name)

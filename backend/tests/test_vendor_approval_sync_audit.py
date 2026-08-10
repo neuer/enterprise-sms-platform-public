@@ -93,6 +93,42 @@ async def test_automatic_approval_sync_audits_only_effective_transition(
 
 
 @pytest.mark.parametrize(
+    ("repository", "object_type", "repository_module"),
+    (
+        (SqlTemplateRepository(), "template", template_repository_module),
+        (SqlSignRepository(), "sign", sign_repository_module),
+    ),
+)
+@pytest.mark.asyncio
+async def test_vendor_binding_result_is_system_audited_without_vendor_id_in_payload(
+    repository: SqlTemplateRepository | SqlSignRepository,
+    object_type: str,
+    repository_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult(7), FakeResult()])
+    repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+    bindings: list[tuple[str, str]] = []
+
+    async def bind_system(
+        _connection: object, *, actor_name: str, action: str
+    ) -> None:
+        bindings.append((actor_name, action))
+
+    monkeypatch.setattr(repository_module, "bind_connection_system_audit", bind_system)
+
+    applied = await repository.apply_binding(7, "private-vendor-reference")
+
+    assert applied is True
+    assert bindings == [("vendor-state-sync", f"{object_type}_sync")]
+    audit_sql, audit_params = connection.calls[1]
+    assert "'vendor-state-sync','system','system'" in audit_sql
+    assert audit_params == {"id": 7}
+    assert "private-vendor-reference" not in audit_sql
+    assert "private-vendor-reference" not in str(audit_params)
+
+
+@pytest.mark.parametrize(
     ("repository", "action"),
     (
         (SqlTemplateRepository(), "template_sync"),

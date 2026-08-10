@@ -233,8 +233,6 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
 
     assert "secrets" not in compose["x-backend"]
     assert targets("api") == {
-        "vendor_secret_name",
-        "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
         "audit_context_key",
@@ -262,6 +260,8 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
         "redis_broker_password",
         "redis_control_password",
     }
+    assert {"vendor_secret_name", "vendor_secret_key"}.isdisjoint(targets("api"))
+    assert {"vendor_secret_name", "vendor_secret_key"} <= targets("worker-realtime")
     assert targets("worker-bulk") == {
         "vendor_secret_name",
         "vendor_secret_key",

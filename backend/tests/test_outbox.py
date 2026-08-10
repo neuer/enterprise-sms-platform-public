@@ -21,6 +21,8 @@ from app.services.outbox import (
 )
 from app.services.outbox_queue import CeleryOutboxPublisher
 from app.services.outbox_repository import SqlOutboxRepository
+from app.services.sign_repository import SqlSignRepository
+from app.services.template_repository import SqlTemplateRepository
 from app.tasks import celery_app
 from app.tasks import outbox as outbox_task_module
 
@@ -84,6 +86,36 @@ def test_outbox_contract_allows_only_fixed_manual_job_references() -> None:
         validate_spec(replace(spec, args=("app.tasks.send.process_chunk",)))
 
 
+@pytest.mark.parametrize(
+    ("task_name", "event_type", "aggregate_type"),
+    [
+        ("app.tasks.bind_template", "template.bind", "sms_template"),
+        ("app.tasks.bind_sign", "sign.bind", "sms_sign"),
+    ],
+)
+def test_outbox_contract_allows_only_exact_vendor_binding_references(
+    task_name: str,
+    event_type: str,
+    aggregate_type: str,
+) -> None:
+    request_id = "c0a80101-0000-4000-8000-000000000139"
+    spec = event_spec(
+        event_type=event_type,
+        aggregate_type=aggregate_type,
+        aggregate_id="13800138000",
+        task_name=task_name,
+        args=(13800138000,),
+        dedup_key=f"{event_type}:13800138000:{request_id}",
+        max_attempts=1,
+    )
+
+    validate_spec(spec)
+    with pytest.raises(ValueError, match="vendor binding"):
+        validate_spec(replace(spec, args=(13800138001,)))
+    with pytest.raises(ValueError, match="vendor binding"):
+        validate_spec(replace(spec, queue="bulk"))
+
+
 def test_outbox_contract_accepts_phone_shaped_digits_inside_opaque_batch_id() -> None:
     batch_no = "13800138000" + "a" * 21
 
@@ -125,6 +157,53 @@ def test_outbox_contract_accepts_phone_shaped_digits_inside_usage_uuid() -> None
             dedup_key=f"usage.release:{reservation_id}",
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("helper", "module_name", "event_type", "task_name"),
+    [
+        (
+            SqlTemplateRepository._enqueue_binding,
+            "app.services.template_repository",
+            "template.bind",
+            "app.tasks.bind_template",
+        ),
+        (
+            SqlSignRepository._enqueue_binding,
+            "app.services.sign_repository",
+            "sign.bind",
+            "app.tasks.bind_sign",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_vendor_repository_emits_only_stable_id_binding_intent(
+    helper: Any,
+    module_name: str,
+    event_type: str,
+    task_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[OutboxEventSpec] = []
+
+    async def capture(_connection: object, spec: OutboxEventSpec) -> UUID:
+        captured.append(spec)
+        return uuid4()
+
+    module = __import__(module_name, fromlist=["enqueue_outbox"])
+    monkeypatch.setattr(module, "enqueue_outbox", capture)
+
+    await helper(object(), 7)
+
+    assert len(captured) == 1
+    spec = captured[0]
+    assert spec.event_type == event_type
+    assert spec.task_name == task_name
+    assert spec.queue == "realtime"
+    assert spec.aggregate_id == "7"
+    assert spec.args == (7,)
+    assert spec.max_attempts == 1
+    validate_spec(spec)
 
 
 @pytest.mark.parametrize(

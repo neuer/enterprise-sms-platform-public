@@ -28,13 +28,14 @@ class SignRecord:
 class SignRepository(Protocol):
     async def list_all(self) -> list[SignRecord]: ...
     async def get(self, sign_id: int) -> SignRecord | None: ...
-    async def create(self, *, name: str, vendor_sign_id: str, actor: str) -> SignRecord: ...
+    async def create(self, *, name: str, actor: str) -> SignRecord: ...
     async def update(
-        self, sign_id: int, *, name: str, vendor_sign_id: str, actor: str
+        self, sign_id: int, *, name: str, actor: str
     ) -> SignRecord | None: ...
     async def delete(self, sign_id: int, *, actor: str) -> bool: ...
     async def pending(self, sign_id: int | None = None) -> list[SignRecord]: ...
     async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int: ...
+    async def apply_binding(self, sign_id: int, vendor_sign_id: str) -> bool: ...
 
 
 class SignVendor(Protocol):
@@ -50,9 +51,14 @@ def map_vendor_sign_state(check_type: int) -> str:
 
 
 class SignManagementService:
-    def __init__(self, repository: SignRepository, vendor: SignVendor) -> None:
+    def __init__(self, repository: SignRepository, vendor: SignVendor | None = None) -> None:
         self.repository = repository
         self.vendor = vendor
+
+    def _vendor(self) -> SignVendor:
+        if self.vendor is None:
+            raise RuntimeError("vendor client is unavailable in this component")
+        return self.vendor
 
     async def list_all(self) -> list[SignRecord]:
         return await self.repository.list_all()
@@ -65,21 +71,16 @@ class SignManagementService:
 
     async def create(self, *, name: str, actor: str) -> SignRecord:
         formatted = format_sign_name(name)
-        vendor_id = await self.vendor.bind_sign(formatted)
-        return await self.repository.create(
-            name=formatted[1:-1], vendor_sign_id=str(vendor_id), actor=actor
-        )
+        return await self.repository.create(name=formatted[1:-1], actor=actor)
 
     async def update(self, sign_id: int, *, name: str, actor: str) -> SignRecord:
         current = await self.get(sign_id)
         if current.vendor_state != "rejected":
             raise SignStateConflict("仅已拒绝签名可修改")
         formatted = format_sign_name(name)
-        vendor_id = await self.vendor.bind_sign(formatted)
         updated = await self.repository.update(
             sign_id,
             name=formatted[1:-1],
-            vendor_sign_id=str(vendor_id),
             actor=actor,
         )
         if updated is None:
@@ -103,7 +104,7 @@ class SignManagementService:
         }
         if not vendor_to_local:
             return 0
-        response = await self.vendor.get_sign_state(list(vendor_to_local))
+        response = await self._vendor().get_sign_state(list(vendor_to_local))
         states: list[tuple[int, str, str | None]] = []
         for item in response:
             vendor_id = item.get("id")
@@ -121,3 +122,14 @@ class SignManagementService:
             if local_id is not None:
                 states.append((local_id, map_vendor_sign_state(check_type), reason))
         return await self.repository.apply_states(states)
+
+    async def bind(self, sign_id: int) -> int:
+        """仅凭据型 worker 可把持久化签名意图提交给厂商。"""
+
+        record = await self.repository.get(sign_id)
+        if record is None or record.vendor_state != "pending":
+            return 0
+        if record.vendor_sign_id is not None:
+            return 0
+        vendor_id = await self._vendor().bind_sign(format_sign_name(record.name))
+        return int(await self.repository.apply_binding(sign_id, str(vendor_id)))
