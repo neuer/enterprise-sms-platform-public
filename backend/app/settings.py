@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 from collections.abc import Mapping
 from functools import lru_cache
 from ipaddress import IPv4Network, IPv6Network, ip_network
@@ -89,6 +90,7 @@ class Settings(BaseSettings):
     redis_control_port: int = 6379
     redis_control_db: int = 0
     redis_control_password_file: Path = Path("/run/secrets/redis_control_password")
+    redis_ca_certs_file: Path | None = None
     db_api_pool_size: int = 8
     db_api_max_overflow: int = 2
     db_worker_pool_size: int = 3
@@ -169,6 +171,12 @@ class Settings(BaseSettings):
 
         return self.environment == "production"
 
+    @property
+    def redis_ca_bundle_file(self) -> Path:
+        """Redis 默认复用平台 CA；部署可为私有 Redis 单独挂载信任根。"""
+
+        return self.redis_ca_certs_file or self.ldap_ca_certs_file
+
     @model_validator(mode="after")
     def reject_auth_mock_in_production(self) -> Self:
         """生产环境禁止启用认证 mock。"""
@@ -202,6 +210,14 @@ class Settings(BaseSettings):
                     pass
             except OSError as exc:
                 raise ValueError("LDAP_CA_CERTS_FILE must be a readable CA file") from exc
+            redis_ca_file = self.redis_ca_bundle_file
+            if not redis_ca_file.is_file():
+                raise ValueError("REDIS_CA_CERTS_FILE must be a readable CA file")
+            try:
+                with redis_ca_file.open("rb"):
+                    pass
+            except OSError as exc:
+                raise ValueError("REDIS_CA_CERTS_FILE must be a readable CA file") from exc
         if (self.callback_mtls_cert_file is None) != (
             self.callback_mtls_key_file is None
         ):
@@ -414,6 +430,18 @@ class Settings(BaseSettings):
             password_file=self.redis_control_password_file,
         )
 
+    @property
+    def redis_tls_options(self) -> dict[str, object] | None:
+        """生产 Redis 客户端统一使用受信 CA、证书链与主机名校验。"""
+
+        if not self.is_production:
+            return None
+        return {
+            "ssl_ca_certs": str(self.redis_ca_bundle_file),
+            "ssl_cert_reqs": ssl.CERT_REQUIRED,
+            "ssl_check_hostname": True,
+        }
+
     def _redis_url(
         self,
         *,
@@ -433,7 +461,15 @@ class Settings(BaseSettings):
             return f"redis://{host}:{port}/{database}"
         user = quote(username, safe="")
         secret = quote(password, safe="")
-        return f"redis://{user}:{secret}@{host}:{port}/{database}"
+        scheme = "rediss" if self.is_production else "redis"
+        url = f"{scheme}://{user}:{secret}@{host}:{port}/{database}"
+        if not self.is_production:
+            return url
+        ca_file = quote(str(self.redis_ca_bundle_file), safe="")
+        return (
+            f"{url}?ssl_ca_certs={ca_file}"
+            "&ssl_cert_reqs=required&ssl_check_hostname=true"
+        )
 
     def credential(self, name: str) -> str:
         """按白名单名称读取运行凭据，不接受任意文件路径。"""
