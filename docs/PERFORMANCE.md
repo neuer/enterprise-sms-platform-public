@@ -2,7 +2,7 @@
 
 ## 无人值守三阶段冒烟
 
-`scripts/perf_smoke.py` 是 G2 的权威有界性能门禁：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<300ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。
+`scripts/perf_smoke.py` 是 G2 的权威有界性能门禁：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<300ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。完整 G2 会在 E2E 后复用同一组已构建镜像，重建开发卷、等待 ready 并重新 seed，使性能阶段不继承安全验收或 E2E 的持久化事实。
 
 阶段 1 的 future scheduled 批次仅用于测量受理延迟。脚本无论成功或中途失败，均必须使用对应应用 API Key 逐批调用正式取消接口，走状态机、配额回补与审计；不得直接更新数据库。结果字段 `cancelled_scheduled_batches` 必须等于阶段 1 已受理的 scheduled 数，任何取消失败均以 `PERF-04` fail-closed，错误只报告失败数量。
 
@@ -15,7 +15,7 @@ uv run --project backend python scripts/perf_smoke.py \
   --keys deploy/secrets/dev-apikeys.txt
 ```
 
-短参数只用于开发诊断，不构成交付证据。执行前必须是干净 dev profile、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2。结果只归档请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
+短参数只用于开发诊断，不构成交付证据。独立执行脚本前必须是干净 dev profile、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2；完整 G2 由 `verify_all.sh` 自动完成这项隔离。结果只归档请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
 
 ## `[HANDOVER]` 全日 Locust 10 万条
 
