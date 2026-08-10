@@ -830,13 +830,31 @@ def test_preflight_helper_only_invokes_zhihui_get_balance() -> None:
 def test_host_balance_probe_exposes_only_integer_vendor_error_code() -> None:
     operations = object.__new__(manager_module.HostActivationOperations)
     operations.correlation_id = "activation-safe"
-    operations._run = lambda *_args, **_kwargs: '{"code":1010}'  # type: ignore[method-assign]
+    calls: list[tuple[str, ...]] = []
+
+    def run(*args: str, **_kwargs: object) -> str:
+        calls.append(args)
+        return '{"code":1010}'
+
+    operations._run = run  # type: ignore[method-assign]
 
     with pytest.raises(manager_module.VendorTestProbeRejected) as captured:
         operations.probe_balance()
 
     assert captured.value.vendor_code == 1010
     assert str(captured.value) == "vendor probe rejected: code=1010"
+    assert calls[0][:7] == (
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        "worker-realtime",
+        "python",
+        "-c",
+    )
+    assert "get_balance" in calls[0][7]
+    assert "get_report" not in calls[0][7]
+    assert "get_reply" not in calls[0][7]
 
 
 def test_vendor_probe_rejection_writes_safe_code_and_keeps_senders_stopped(
