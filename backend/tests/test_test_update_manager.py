@@ -1986,11 +1986,12 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
 
 
 @pytest.mark.parametrize(
-    ("initial_state", "initial_step", "verify_calls"),
+    ("initial_state", "initial_step", "recovery_proven", "verify_calls"),
     [
-        (State.BLOCKED, "get_balance", 1),
-        (State.VERIFYING, "recover_verify", 1),
-        (State.VERIFIED, "verify", 0),
+        (State.BLOCKED, "get_balance", False, 1),
+        (State.BLOCKED, "environment_mode", True, 1),
+        (State.VERIFYING, "recover_verify", False, 1),
+        (State.VERIFIED, "verify", False, 0),
     ],
 )
 def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
@@ -1998,6 +1999,7 @@ def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     initial_state: State,
     initial_step: str,
+    recovery_proven: bool,
     verify_calls: int,
 ) -> None:
     operations = _rebaseline_operations(tmp_path)
@@ -2028,6 +2030,27 @@ def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
                 "actual_commit": target_commit,
                 "actual_migration_head": "0061_vendor_binding_outbox",
             }
+
+        def read_events(self) -> list[dict[str, object]]:
+            assert recovery_proven
+            return [
+                {
+                    "from_state": "blocked",
+                    "to_state": "verifying",
+                    "step": "recover_verify",
+                    "error_type": None,
+                    "actual_commit": target_commit,
+                    "actual_migration_head": "0061_vendor_binding_outbox",
+                },
+                {
+                    "from_state": "verifying",
+                    "to_state": "blocked",
+                    "step": initial_step,
+                    "error_type": "invariant_failed",
+                    "actual_commit": target_commit,
+                    "actual_migration_head": "0061_vendor_binding_outbox",
+                },
+            ]
 
         def transition(
             self,
@@ -2105,6 +2128,9 @@ def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(
                 "actual_commit": "b" * 40,
                 "actual_migration_head": "0061_vendor_binding_outbox",
             }
+
+        def read_events(self) -> list[dict[str, object]]:
+            return []
 
     with pytest.raises(ManagerError, match="state is invalid"):
         operations.recover_blocked_rebaseline_verify(Store())  # type: ignore[arg-type]

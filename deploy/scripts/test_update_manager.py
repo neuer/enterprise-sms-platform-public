@@ -100,6 +100,16 @@ _PUBLIC_CUTOVER_RESULT_FIELDS = frozenset(
 _SOURCE_FETCH_BACKOFF_SECONDS = (1.0, 2.0)
 _REBASELINE_MIGRATION_FROM = "0053_idempotency_scope"
 _REBASELINE_MIGRATION_TARGET = "0061_vendor_binding_outbox"
+_REBASELINE_VERIFY_STEPS = frozenset(
+    {
+        "environment_mode",
+        "budget",
+        "pauses",
+        "get_balance",
+        "services",
+        "restore_owned_pauses",
+    }
+)
 _REBASELINE_OLD_SECRET_NAMES = frozenset(
     {
         "vendor_secret_name",
@@ -2386,13 +2396,43 @@ class HostTestUpdateOperations:
             )
         state = store.read_consistent_state()
         state_value = state.get("state")
-        blocked_state = (
+        blocked_identity = (
             state_value == TestUpdateState.BLOCKED.value
-            and state.get("step") == "get_balance"
             and state.get("error_type") == "invariant_failed"
             and state.get("actual_commit") == self.request.commit
             and state.get("actual_migration_head") == self.request.migration_target
         )
+        initial_blocked_state = blocked_identity and state.get("step") == "get_balance"
+        retry_blocked_state = False
+        if (
+            not initial_blocked_state
+            and blocked_identity
+            and state.get("step") in _REBASELINE_VERIFY_STEPS
+        ):
+            events = store.read_events()
+            if len(events) >= 2:
+                recovering_event, blocked_event = events[-2:]
+                retry_blocked_state = (
+                    recovering_event.get("from_state")
+                    == TestUpdateState.BLOCKED.value
+                    and recovering_event.get("to_state")
+                    == TestUpdateState.VERIFYING.value
+                    and recovering_event.get("step") == "recover_verify"
+                    and recovering_event.get("error_type") is None
+                    and recovering_event.get("actual_commit") == self.request.commit
+                    and recovering_event.get("actual_migration_head")
+                    == self.request.migration_target
+                    and blocked_event.get("from_state")
+                    == TestUpdateState.VERIFYING.value
+                    and blocked_event.get("to_state")
+                    == TestUpdateState.BLOCKED.value
+                    and blocked_event.get("step") == state.get("step")
+                    and blocked_event.get("error_type") == "invariant_failed"
+                    and blocked_event.get("actual_commit") == self.request.commit
+                    and blocked_event.get("actual_migration_head")
+                    == self.request.migration_target
+                )
+        blocked_state = initial_blocked_state or retry_blocked_state
         recovering_state = (
             state_value == TestUpdateState.VERIFYING.value
             and state.get("step") == "recover_verify"
