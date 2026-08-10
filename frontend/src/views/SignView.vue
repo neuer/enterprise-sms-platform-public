@@ -77,7 +77,7 @@ async function submit(): Promise<void> {
     if (editing.value) await updateSign(editing.value.id, name.value.trim())
     else await createSign(name.value.trim())
     editorOpen.value = false
-    ElMessage.success("签名已提交厂商审核")
+    ElMessage.success("签名已加入厂商审核队列")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "签名提交失败")
@@ -91,7 +91,7 @@ async function sync(item: SmsSign): Promise<void> {
   syncingId.value = item.id
   try {
     await syncSign(item.id)
-    ElMessage.success("签名状态已同步")
+    ElMessage.success("签名状态同步请求已入队")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "签名状态同步失败")

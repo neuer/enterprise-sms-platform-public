@@ -180,6 +180,22 @@ def test_api_and_workers_never_mount_the_host_docker_socket() -> None:
     ) == 2
 
 
+def test_template_and_sign_apis_have_no_vendor_credential_or_http_client_path() -> None:
+    for relative_path in ("backend/app/api/templates.py", "backend/app/api/signs.py"):
+        source = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "ZhihuiClient" not in source
+        assert "VendorApiError" not in source
+        assert "vendor_secret_name" not in source
+        assert "vendor_secret_key" not in source
+
+    compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+    api_block = compose.split("  api:\n", maxsplit=1)[1].split(
+        "\n  worker-realtime:\n", maxsplit=1
+    )[0]
+    assert "vendor_secret_name" not in api_block
+    assert "vendor_secret_key" not in api_block
+
+
 def _schema_block(source: str, schema_name: str) -> str:
     marker = f"    {schema_name}:\n"
     block = source.split(marker, maxsplit=1)[1]

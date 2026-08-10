@@ -38,7 +38,6 @@ class TemplateRepository(Protocol):
         var_specs: list[dict[str, int]],
         dept: str,
         actor: str,
-        vendor_template_id: str,
     ) -> TemplateRecord: ...
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]: ...
@@ -52,7 +51,6 @@ class TemplateRepository(Protocol):
         name: str,
         content: str,
         var_specs: list[dict[str, int]],
-        vendor_template_id: str,
         actor: str,
     ) -> TemplateRecord | None: ...
 
@@ -61,6 +59,8 @@ class TemplateRepository(Protocol):
     async def pending(self, template_id: int | None = None) -> list[TemplateRecord]: ...
 
     async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int: ...
+
+    async def apply_binding(self, template_id: int, vendor_template_id: str) -> bool: ...
 
 
 class TemplateVendor(Protocol):
@@ -94,9 +94,18 @@ def _normalized_specs(values: list[VarSpecInput]) -> list[dict[str, int]]:
 
 
 class TemplateManagementService:
-    def __init__(self, repository: TemplateRepository, vendor: TemplateVendor) -> None:
+    def __init__(
+        self,
+        repository: TemplateRepository,
+        vendor: TemplateVendor | None = None,
+    ) -> None:
         self.repository = repository
         self.vendor = vendor
+
+    def _vendor(self) -> TemplateVendor:
+        if self.vendor is None:
+            raise RuntimeError("vendor client is unavailable in this component")
+        return self.vendor
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
         return await self.repository.list_all(dept=dept)
@@ -116,15 +125,13 @@ class TemplateManagementService:
         dept: str,
         actor: str,
     ) -> TemplateRecord:
-        vendor_content = to_vendor_template(content, var_specs)
-        vendor_id = await self.vendor.bind_template(vendor_content)
+        to_vendor_template(content, var_specs)
         return await self.repository.create(
             name=name,
             content=content,
             var_specs=_normalized_specs(var_specs),
             dept=dept,
             actor=actor,
-            vendor_template_id=str(vendor_id),
         )
 
     async def update(
@@ -141,13 +148,12 @@ class TemplateManagementService:
             raise TemplateNotFound("模板不存在")
         if current.vendor_state not in {"draft", "rejected"}:
             raise TemplateStateConflict("仅草稿或已拒绝模板可修改")
-        vendor_id = await self.vendor.bind_template(to_vendor_template(content, var_specs))
+        to_vendor_template(content, var_specs)
         updated = await self.repository.update(
             template_id,
             name=name,
             content=content,
             var_specs=_normalized_specs(var_specs),
-            vendor_template_id=str(vendor_id),
             actor=actor,
         )
         if updated is None:
@@ -171,7 +177,7 @@ class TemplateManagementService:
         }
         if not vendor_to_local:
             return 0
-        response = await self.vendor.get_template_state(list(vendor_to_local))
+        response = await self._vendor().get_template_state(list(vendor_to_local))
         states: list[tuple[int, str, str | None]] = []
         for item in response:
             vendor_id = item.get("id")
@@ -189,3 +195,15 @@ class TemplateManagementService:
             if local_id is not None:
                 states.append((local_id, map_vendor_template_state(check_type), remark))
         return await self.repository.apply_states(states)
+
+    async def bind(self, template_id: int) -> int:
+        """仅凭据型 worker 可把持久化模板意图提交给厂商。"""
+
+        record = await self.repository.get(template_id)
+        if record is None or record.vendor_state != "pending":
+            return 0
+        if record.vendor_template_id is not None:
+            return 0
+        vendor_content = to_vendor_template(record.content, record.var_specs)
+        vendor_id = await self._vendor().bind_template(vendor_content)
+        return int(await self.repository.apply_binding(template_id, str(vendor_id)))

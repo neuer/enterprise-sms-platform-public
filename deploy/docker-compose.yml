@@ -209,8 +209,6 @@ services:
       AUDIT_PRODUCER_DOMAIN: api
       METRICS_ALLOWED_CIDRS: ${METRICS_ALLOWED_CIDRS:-127.0.0.1/32,172.16.0.0/12}
     secrets:
-      - { source: vendor_secret_name, target: vendor_secret_name }
-      - { source: vendor_secret_key, target: vendor_secret_key }
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
       - { source: audit_context_key, target: audit_context_key }

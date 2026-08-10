@@ -301,24 +301,24 @@ def test_host_operations_use_only_fixed_preprocessor_and_reader_service_argv(
         "-f",
         str(root / "deploy/docker-compose.yml"),
     ]
-    readers = ["api", "worker-realtime", "worker-bulk"]
+    readers = ["worker-realtime", "worker-bulk"]
     assert runner.commands[0][-3:] == [
         "verify-vendor-revoked",
         "--runtime-root",
         str(runtime),
     ]
-    assert [command[len(compose) : len(compose) + 3] for command in runner.commands[1:4]] == [
+    assert [command[len(compose) : len(compose) + 3] for command in runner.commands[1:3]] == [
         ["exec", "-T", service] for service in readers
     ]
-    assert runner.commands[4][-3:] == [
+    assert runner.commands[3][-3:] == [
         "verify-only-current",
         "--runtime-root",
         str(runtime),
     ]
-    assert runner.commands[6] == [*compose, "config", "--quiet"]
-    assert runner.commands[7] == [*compose, "stop", *readers]
-    assert runner.commands[8] == [*compose, "rm", "-sf", *readers]
-    assert runner.commands[9] == [
+    assert runner.commands[5] == [*compose, "config", "--quiet"]
+    assert runner.commands[6] == [*compose, "stop", *readers]
+    assert runner.commands[7] == [*compose, "rm", "-sf", *readers]
+    assert runner.commands[8] == [
         *compose,
         "up",
         "-d",
@@ -329,7 +329,7 @@ def test_host_operations_use_only_fixed_preprocessor_and_reader_service_argv(
         "120",
         *readers,
     ]
-    assert runner.commands[10][-4:] == [
+    assert runner.commands[9][-4:] == [
         "cleanup",
         "--runtime-root",
         str(runtime),

@@ -49,6 +49,29 @@ result="$(
        AND has_table_privilege('sms_send','callback_task','UPDATE')
        AND has_table_privilege('sms_send','callback_report_event','INSERT')
        AND has_sequence_privilege('sms_send','callback_task_id_seq','USAGE')),
+      (has_column_privilege(
+         'sms_send','sms_template','vendor_template_id','UPDATE')
+       AND has_column_privilege(
+         'sms_send','sms_template','vendor_state','UPDATE')
+       AND has_column_privilege(
+         'sms_send','sms_template','vendor_reject_reason','UPDATE')
+       AND has_column_privilege(
+         'sms_send','sms_template','updated_at','UPDATE')
+       AND NOT has_column_privilege(
+         'sms_send','sms_template','content','UPDATE')
+       AND NOT has_column_privilege(
+         'sms_send','sms_template','var_specs','UPDATE')
+       AND has_column_privilege('sms_send','sms_sign','vendor_sign_id','UPDATE')
+       AND has_column_privilege('sms_send','sms_sign','vendor_state','UPDATE')
+       AND has_column_privilege(
+         'sms_send','sms_sign','vendor_reject_reason','UPDATE')
+       AND NOT has_column_privilege('sms_send','sms_sign','name','UPDATE')
+       AND NOT has_table_privilege('sms_send','sms_template','INSERT')
+       AND NOT has_table_privilege('sms_send','sms_template','DELETE')
+       AND NOT has_table_privilege('sms_send','sms_template','TRUNCATE')
+       AND NOT has_table_privilege('sms_send','sms_sign','INSERT')
+       AND NOT has_table_privilege('sms_send','sms_sign','DELETE')
+       AND NOT has_table_privilege('sms_send','sms_sign','TRUNCATE')),
       (has_table_privilege('sms_send','user_account','SELECT')
        AND has_table_privilege('sms_send','import_task','SELECT')
        AND has_table_privilege('sms_send','import_task','UPDATE')
@@ -98,7 +121,7 @@ result="$(
       ));
   "
 )"
-  [ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
+  [ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
   echo "数据库运行角色矩阵异常: $result" >&2
   exit 1
 }
@@ -129,6 +152,18 @@ if compose exec -T postgres psql -U sms_owner -d sms -v ON_ERROR_STOP=1 \
   -c "SET ROLE sms_metrics; SELECT batch_no FROM sms_batch LIMIT 1" \
   >/dev/null 2>&1; then
   echo "sms_metrics 不得读取批次号等非聚合列" >&2
+  exit 1
+fi
+if compose exec -T postgres psql -U sms_owner -d sms -v ON_ERROR_STOP=1 \
+  -c "SET ROLE sms_send; UPDATE sms_template SET content=content" \
+  >/dev/null 2>&1; then
+  echo "sms_send 不得修改模板正文" >&2
+  exit 1
+fi
+if compose exec -T postgres psql -U sms_owner -d sms -v ON_ERROR_STOP=1 \
+  -c "SET ROLE sms_send; UPDATE sms_sign SET name=name" \
+  >/dev/null 2>&1; then
+  echo "sms_send 不得修改签名名称" >&2
   exit 1
 fi
 

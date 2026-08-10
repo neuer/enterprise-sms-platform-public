@@ -923,7 +923,7 @@ paths:
                 items: { $ref: '#/components/schemas/Template' }
     post:
       tags: [templates]
-      summary: 新建模板并提交厂商审核（BindTemplate）
+      summary: 新建模板并排队提交厂商审核（BindTemplate）
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -945,9 +945,8 @@ paths:
                       pos: { type: integer, minimum: 1 }
                       max_len: { type: integer, minimum: 1, maximum: 100 }
       responses:
-        '200': { description: 已提交，vendor_state=pending, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
+        '200': { description: 已持久化并排队，vendor_state=pending；worker 提交前 vendor_template_id 可为空, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
         '422': { description: TEMPLATE_PARAM_MISMATCH, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '502': { description: VENDOR_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/templates/{id}:
     get:
@@ -961,7 +960,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [templates]
-      summary: 修改草稿或被拒模板并重新提交审核
+      summary: 修改草稿或被拒模板并重新排队提交审核
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -984,7 +983,7 @@ paths:
                       pos: { type: integer, minimum: 1 }
                       max_len: { type: integer, minimum: 1, maximum: 100 }
       responses:
-        '200': { description: 已更新并重新提交, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
+        '200': { description: 已更新并写入事务性提交意图, content: { application/json: { schema: { $ref: '#/components/schemas/Template' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
     delete:
       tags: [templates]
@@ -999,12 +998,14 @@ paths:
   /api/v1/web/templates/{id}/sync:
     post:
       tags: [templates]
-      summary: 手动同步厂商审核状态（GetTemplateState）
+      summary: 排队手动同步厂商审核状态（GetTemplateState）
+      description: 仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
-        '200': { description: 已同步 }
+        '202': { description: 已写入事务性任务队列 }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
   /api/v1/web/signs:
@@ -1022,7 +1023,7 @@ paths:
                 items: { $ref: '#/components/schemas/Sign' }
     post:
       tags: [signs]
-      summary: 新建签名并提交厂商审核（BindSign）
+      summary: 新建签名并排队提交厂商审核（BindSign）
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -1034,9 +1035,8 @@ paths:
               properties:
                 name: { type: string, minLength: 1, maxLength: 20 }
       responses:
-        '200': { description: 已提交, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
+        '200': { description: 已持久化并排队；worker 提交前 vendor_sign_id 可为空, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '502': { description: VENDOR_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/signs/{id}:
     get:
@@ -1050,7 +1050,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [signs]
-      summary: 修改被拒签名并重新提交审核（admin）
+      summary: 修改被拒签名并重新排队提交审核（admin）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1064,7 +1064,7 @@ paths:
               properties:
                 name: { type: string, minLength: 1, maxLength: 20 }
       responses:
-        '200': { description: 已更新并重新提交, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
+        '200': { description: 已更新并写入事务性提交意图, content: { application/json: { schema: { $ref: '#/components/schemas/Sign' } } } }
         '409': { $ref: '#/components/responses/Conflict' }
     delete:
       tags: [signs]
@@ -1079,13 +1079,14 @@ paths:
   /api/v1/web/signs/{id}/sync:
     post:
       tags: [signs]
-      summary: 手动同步厂商签名审核状态（GetSignState）
+      summary: 排队手动同步厂商签名审核状态（GetSignState）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
-        '200': { description: 已同步 }
+        '202': { description: 已写入事务性任务队列 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   # ───────────────────────── 回复 ─────────────────────────
   /api/v1/web/replies:

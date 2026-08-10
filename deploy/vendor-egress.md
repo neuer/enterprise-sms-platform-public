@@ -37,19 +37,19 @@ SecretName、SecretKey 均按平台 secrets 管理。报备工单使用合同客
 
 ## 主备逐点验证
 
-两个节点使用同一发布版本和各自本地 0600 secrets，生产必须 `ENVIRONMENT=production DEBUG=0 AUTH_MOCK=0 VENDOR_MOCK=0 REDIS_HA_MODE=managed`。每次只启动 postgres/redis/redis-auth/redis-control/migrate/api；不要在备节点启动 outbox-dispatcher、beat 或轮询 worker。
+两个节点使用同一发布版本和各自本地 0600 secrets，生产必须 `ENVIRONMENT=production DEBUG=0 AUTH_MOCK=0 VENDOR_MOCK=0 REDIS_HA_MODE=managed`。验证窗口只额外启动单个 `worker-realtime`，不要在备节点启动 outbox-dispatcher、beat 或其他轮询 worker；API 不挂载厂商凭据，也不得作为出站探针。
 
 在主节点执行一次平台内置 GetBalance 链路：
 
 ```bash
-sudo /usr/local/sbin/sms-compose exec -T api \
+sudo /usr/local/sbin/sms-compose exec -T worker-realtime \
   python -c 'from app.tasks.poll_balance import poll_balance; raise SystemExit(0 if poll_balance() == 1 else 1)'
 sudo /usr/local/sbin/sms-compose exec -T postgres \
   psql -U sms_owner -d sms -Atc \
   "SELECT status FROM job_run WHERE job_name='poll_balance' ORDER BY id DESC LIMIT 1"
 ```
 
-期望命令退出 0 且最新状态为 success。按同一命令在备节点执行，再停止备节点 api。GetBalance 不消费报告；禁止把命令替换成 GetReport/GetReply。
+期望命令退出 0 且最新状态为 success。按同一命令在备节点执行，再停止备节点 `worker-realtime`。GetBalance 不消费报告；禁止把命令替换成 GetReport/GetReply。
 
 在经审批的厂商测试窗口，可从主、备各发送一条到专用测试号码，确认没有 1010；测试号码和正文不得写入执行日志。真实发送前必须确认短信签名、模板和合规审批，不以网络验收为由绕过业务规则。
 

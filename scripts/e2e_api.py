@@ -1450,9 +1450,14 @@ class UatSuite:
         template_id = created.get("id")
         if not isinstance(template_id, int):
             raise UatFailure("UAT-19 template id missing")
-        contents = self.mock_state().get("template_contents")
-        if not isinstance(contents, list) or "尊敬的{s10}，验证码{s6}" not in contents:
-            raise UatFailure("UAT-19 vendor template conversion mismatch")
+
+        def template_bound() -> bool | None:
+            contents = self.mock_state().get("template_contents")
+            if not isinstance(contents, list):
+                raise UatFailure("UAT-19 mock template state missing")
+            return True if "尊敬的{s10}，验证码{s6}" in contents else None
+
+        wait_until("19", template_bound, timeout_s=15, interval_s=0.25)
         self._expect(
             "19",
             self._request(
@@ -1461,8 +1466,23 @@ class UatSuite:
                 f"/api/v1/web/templates/{template_id}/sync",
                 headers=self._bearer("operator01"),
             ),
-            200,
+            202,
         )
+
+        def template_approved() -> bool | None:
+            current = self._expect(
+                "19",
+                self._request(
+                    self.api,
+                    "GET",
+                    f"/api/v1/web/templates/{template_id}",
+                    headers=self._bearer("operator01"),
+                ),
+                200,
+            )
+            return True if current.get("vendor_state") == "approved" else None
+
+        wait_until("19", template_approved, timeout_s=15, interval_s=0.25)
         valid = self._request(
             self.api,
             "POST",

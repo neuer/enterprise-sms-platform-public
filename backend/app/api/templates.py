@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Response
@@ -14,6 +13,7 @@ from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
+from app.services.ops_dispatch import TemplateSyncSender
 from app.services.template import TemplateParamMismatch
 from app.services.template_management import (
     TemplateManagementService,
@@ -23,7 +23,6 @@ from app.services.template_management import (
 )
 from app.services.template_repository import SqlTemplateRepository
 from app.settings import get_settings
-from app.vendor.zhihui import VendorApiError, VendorError, ZhihuiClient
 
 router = APIRouter(prefix="/api/v1/web/templates", tags=["templates"])
 
@@ -56,10 +55,13 @@ class TemplateModel(BaseModel):
     vendor_reject_reason: str | None
 
 
-async def get_template_service() -> AsyncIterator[TemplateManagementService]:
+def get_template_service() -> TemplateManagementService:
     settings = get_settings()
-    async with ZhihuiClient.from_settings(settings) as vendor:
-        yield TemplateManagementService(SqlTemplateRepository(settings), vendor)
+    return TemplateManagementService(SqlTemplateRepository(settings))
+
+
+def get_template_job_sender() -> TemplateSyncSender:
+    return TemplateSyncSender(get_settings())
 
 
 async def _user(
@@ -88,15 +90,8 @@ def _error(error: Exception) -> ApiError:
         return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(error, TemplateParamMismatch):
         return ApiError(422, error.code, str(error), error.detail)
-    if isinstance(error, VendorApiError):
-        return ApiError(
-            502,
-            "VENDOR_ERROR",
-            "厂商模板接口返回错误",
-            {"vendor_code": error.code, "vendor_message": error.safe_message},
-        )
-    if isinstance(error, (VendorError, ValueError)):
-        return ApiError(502, "VENDOR_ERROR", "厂商模板接口不可用", None)
+    if isinstance(error, ValueError):
+        return ApiError(400, "INVALID_PARAM", str(error), None)
     return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
 
 
@@ -111,7 +106,7 @@ async def list_templates(
     return [_model(record) for record in records]
 
 
-@router.post("", response_model=TemplateModel, responses={422: ERROR_RESPONSE, 502: ERROR_RESPONSE})
+@router.post("", response_model=TemplateModel, responses={422: ERROR_RESPONSE})
 @audited("template_create")
 async def create_template(
     payload: TemplatePayload,
@@ -190,18 +185,26 @@ async def delete_template(
     return Response(status_code=204)
 
 
-@router.post("/{id}/sync", response_class=Response, responses={409: ERROR_RESPONSE})
+@router.post(
+    "/{id}/sync",
+    status_code=202,
+    response_class=Response,
+    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+)
 @audited("template_sync")
 async def sync_template(
     id: int,
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
+    sender: Annotated[TemplateSyncSender, Depends(get_template_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
     claims = await _user(facade, credentials, write=True)
     try:
         current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
-        await service.sync_pending(current.id)
-        return Response(status_code=200)
+        if current.vendor_state != "pending":
+            raise TemplateStateConflict("仅待审核模板可同步")
+        await sender.send_template(current.id)
+        return Response(status_code=202)
     except Exception as error:
         raise _error(error) from None

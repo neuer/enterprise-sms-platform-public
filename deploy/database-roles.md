@@ -13,13 +13,13 @@ NOREPLICATION`：
 |---|---|---|
 | `sms_auth` | API 认证、账号与 Provider 仓储 | 账号、身份、Provider、凭据、角色映射；只读应用 Key |
 | `sms_accept` | API 消息受理与管理接口 | 批次、导入、审批、模板、签名、策略和受控联调受理 |
-| `sms_send` | realtime/bulk worker | 分片、消息、厂商事实、用量账本、发送恢复、统计、异步导入和生命周期清理 |
+| `sms_send` | realtime/bulk worker | 分片、消息、厂商事实、用量账本、发送恢复、统计、异步导入、生命周期清理，以及签名/模板厂商绑定结果更新 |
 | `sms_callback` | callback worker 与回调管理接口 | 回调事件、任务、租约、相关 Outbox 和告警 |
 | `sms_export` | 导出 API 与 bulk export worker | 固化范围内的消息/回执读取和导出任务租约 |
 | `sms_scheduler` | beat 与 Outbox dispatcher | job 追踪、Outbox 投递和调度告警 |
 | `sms_metrics` | `/metrics` 聚合 | 迁移 0035 指定的非敏感列级 `SELECT`，无批次号、自定义 ID、手机号、正文或任何写权限 |
 
-所有表、列、序列和操作都在 `schema.sql` 与迁移 0034/0035/0040/0054 中显式列出。`sms_owner` 的
+所有表、列、序列和操作都在 `schema.sql` 与迁移 0034/0035/0040/0054/0061 中显式列出。`sms_owner` 的
 default privileges 明确不向运行角色授权，因此新增表或序列必须在同一迁移中更新
 矩阵；不得使用 `GRANT ... ON ALL TABLES` 或 `ON ALL SEQUENCES` 给运行角色补权限。
 
@@ -31,6 +31,13 @@ default privileges 明确不向运行角色授权，因此新增表或序列必�
 `import_phone`，另有 `user_account SELECT` 用于固化导入完成审计；对生命周期清理只补充
 `idempotency_record`、终态 `callback_task` 和无主引用 `callback_report_event` 的删除权限。
 导入任务 INSERT、导入号码 UPDATE 及审计 UPDATE/DELETE 均明确禁止。
+
+签名和模板的创建、正文修改及删除仍只属于 `sms_accept`。`sms_send` 仅取得列级 UPDATE：
+模板的厂商引用、审核状态、拒绝原因和更新时间，以及签名的厂商引用、审核状态和拒绝原因；
+用于 realtime worker 把 Outbox 中的稳定主键提交给厂商后写回结果。它不能修改模板正文、变量声明、
+部门或签名名称，也没有这两张表的表级 UPDATE、INSERT、DELETE 或 TRUNCATE 权限。
+Bind Outbox 事件只自动尝试一次：超时或 worker 丢失时进入 dead-letter，必须先在厂商侧核对是否已受理，
+再由受控运维流程决定是否重试，避免网络结果未知时自动创建重复签名或模板。
 
 除纯只读 `sms_metrics` 外，需要写审计的六个角色只拥有 `audit_log INSERT`；
 所有运行角色在 `audit_log` 上都没有 `UPDATE`、`DELETE` 或 `TRUNCATE`。callback 角色没有账号、

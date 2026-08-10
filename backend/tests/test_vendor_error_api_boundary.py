@@ -10,8 +10,7 @@ def test_vendor_raw_message_never_crosses_template_or_sign_api_boundary() -> Non
     vendor_error = VendorApiError(1002, reflected)
 
     for error in (sign_error(vendor_error), template_error(vendor_error)):
-        assert error.detail == {
-            "vendor_code": 1002,
-            "vendor_message": "内容格式错误",
-        }
+        assert error.status_code == 500
+        assert error.code == "INTERNAL_ERROR"
+        assert error.detail is None
         assert reflected not in str(error.detail)

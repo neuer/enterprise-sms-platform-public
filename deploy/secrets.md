@@ -27,8 +27,8 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 
 | secret 名 | 内容格式与生产来源 | Compose 挂载服务 | 轮换后动作 |
 |---|---|---|---|
-| `vendor_secret_name` | 厂商控制台签发的非空文本；从受控密钥系统下发 | api、worker-realtime、worker-bulk | 与 SecretKey 同窗原子替换，滚动重启使用方，先 GetBalance 验证 |
-| `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | api、worker-realtime、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
+| `vendor_secret_name` | 厂商控制台签发的非空文本；从受控密钥系统下发 | worker-realtime、worker-bulk | 与 SecretKey 同窗原子替换，滚动重启使用方，先 GetBalance 验证 |
+| `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | worker-realtime、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
 | `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
 | `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
 | `audit_context_key` | 稳定 human/api_app 主体专用 32 随机字节 base64；不得复用其他 key | 仅 api、migrate | 与自治事件 key 同窗轮换；先运行 migrate 同步 owner-only 验证表，再重建 api，禁止挂载到 worker/beat/outbox |
@@ -56,7 +56,7 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 
 | 服务 | 容器内 secrets |
 |---|---|
-| api | 厂商两项、AES/HMAC、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password` |
+| api | AES/HMAC、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
 | worker-realtime | 厂商两项、AES/HMAC、`audit_system_realtime_context_key`、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
 | worker-bulk | 厂商两项、AES/HMAC、`audit_system_bulk_context_key`、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |
 | worker-callback | AES/HMAC、`alert_credential_private_key`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
