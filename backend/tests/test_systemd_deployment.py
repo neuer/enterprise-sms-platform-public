@@ -426,7 +426,8 @@ def test_vendor_reset_runbook_covers_runtime_revocation_and_replay_boundary() ->
 
     for token in (
         "credential store 与 runtime generations",
-        "api、worker-realtime、worker-bulk",
+        "worker-realtime、worker-bulk 两个 vendor-secret reader",
+        "API 不再是 vendor-secret reader",
         "runtime_revoked",
         "journal `running`",
         "同一 lifecycle lock",

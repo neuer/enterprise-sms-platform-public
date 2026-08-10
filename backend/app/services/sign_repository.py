@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.services.outbox import OutboxEventSpec
+from app.services.outbox_repository import enqueue_outbox
 from app.services.sign import format_sign_name
 from app.services.sign_management import SignRecord
 from app.settings import Settings, get_settings
@@ -71,7 +74,7 @@ class SqlSignRepository:
         finally:
             await engine.dispose()
 
-    async def create(self, *, name: str, vendor_sign_id: str, actor: str) -> SignRecord:
+    async def create(self, *, name: str, actor: str) -> SignRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -79,13 +82,14 @@ class SqlSignRepository:
                     text(
                         """
                         INSERT INTO sms_sign(name,vendor_sign_id,vendor_state,created_by)
-                        VALUES(:name,:vendor_sign_id,'pending',:actor) RETURNING id
+                        VALUES(:name,NULL,'pending',:actor) RETURNING id
                         """
                     ),
-                    {"name": name, "vendor_sign_id": vendor_sign_id, "actor": actor},
+                    {"name": name, "actor": actor},
                 )
                 sign_id = int(result.scalar_one())
                 await self._audit(connection, actor, "sign_create", sign_id)
+                await self._enqueue_binding(connection, sign_id)
                 current = await connection.execute(
                     text(f"SELECT {FIELDS} FROM sms_sign WHERE id=:id"), {"id": sign_id}
                 )
@@ -94,7 +98,7 @@ class SqlSignRepository:
             await engine.dispose()
 
     async def update(
-        self, sign_id: int, *, name: str, vendor_sign_id: str, actor: str
+        self, sign_id: int, *, name: str, actor: str
     ) -> SignRecord | None:
         engine = self._engine()
         try:
@@ -102,16 +106,17 @@ class SqlSignRepository:
                 changed = await connection.execute(
                     text(
                         """
-                        UPDATE sms_sign SET name=:name,vendor_sign_id=:vendor_sign_id,
+                        UPDATE sms_sign SET name=:name,vendor_sign_id=NULL,
                           vendor_state='pending',vendor_reject_reason=NULL
                         WHERE id=:id AND vendor_state='rejected' RETURNING id
                         """
                     ),
-                    {"id": sign_id, "name": name, "vendor_sign_id": vendor_sign_id},
+                    {"id": sign_id, "name": name},
                 )
                 if changed.scalar_one_or_none() is None:
                     return None
                 await self._audit(connection, actor, "sign_update", sign_id)
+                await self._enqueue_binding(connection, sign_id)
                 current = await connection.execute(
                     text(f"SELECT {FIELDS} FROM sms_sign WHERE id=:id"), {"id": sign_id}
                 )
@@ -223,6 +228,66 @@ class SqlSignRepository:
                 return applied
         finally:
             await engine.dispose()
+
+    async def apply_binding(self, sign_id: int, vendor_sign_id: str) -> bool:
+        """仅在仍待提交且尚无厂商 ID 时落绑定结果，并记录系统审计。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                changed = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_sign SET vendor_sign_id=:vendor_sign_id
+                        WHERE id=:id AND vendor_state='pending'
+                          AND vendor_sign_id IS NULL
+                        RETURNING id
+                        """
+                    ),
+                    {"id": sign_id, "vendor_sign_id": vendor_sign_id},
+                )
+                if changed.scalar_one_or_none() is None:
+                    return False
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="vendor-state-sync",
+                    action="sign_sync",
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,action,object_type,
+                          object_id,after_val
+                        ) VALUES(
+                          'vendor-state-sync','system','system','sign_sync',
+                          'sign',CAST(CAST(:id AS bigint) AS text),
+                          jsonb_build_object('vendor_binding','submitted')
+                        )
+                        """
+                    ),
+                    {"id": sign_id},
+                )
+                return True
+        finally:
+            await engine.dispose()
+
+    @staticmethod
+    async def _enqueue_binding(connection: Any, sign_id: int) -> None:
+        request_id = uuid4()
+        await enqueue_outbox(
+            connection,
+            OutboxEventSpec(
+                event_type="sign.bind",
+                aggregate_type="sms_sign",
+                aggregate_id=str(sign_id),
+                task_name="app.tasks.bind_sign",
+                queue="realtime",
+                args=(sign_id,),
+                dedup_key=f"sign.bind:{sign_id}:{request_id}",
+                max_attempts=1,
+            ),
+        )
 
     @staticmethod
     async def _audit(connection: Any, actor: str, action: str, sign_id: int) -> None:

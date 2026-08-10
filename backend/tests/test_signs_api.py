@@ -29,7 +29,19 @@ class FakeService:
     async def create(self, *, name: str, actor: str) -> SignRecord:
         assert name == "新签名" and actor == "admin01"
         self.created = True
-        return SignRecord(2, name, "22", "pending", None)
+        return SignRecord(2, name, None, "pending", None)
+
+    async def get(self, sign_id: int) -> SignRecord:
+        assert sign_id == 1
+        return SignRecord(1, "青鸾平台", None, "pending", None)
+
+
+class FakeSender:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def send(self, task_name: str, queue: str) -> None:
+        self.sent.append((task_name, queue))
 
 
 def client(service: FakeService, role: str = "admin") -> TestClient:
@@ -53,5 +65,20 @@ def test_operator_plus_can_list_but_only_admin_can_create() -> None:
     )
     assert forbidden.status_code == 403
     assert created.status_code == 200
-    assert created.json()["vendor_sign_id"] == "22"
+    assert created.json()["vendor_sign_id"] is None
     assert service.created
+
+
+def test_manual_sign_sync_only_enqueues_fixed_worker_job() -> None:
+    service = FakeService()
+    sender = FakeSender()
+    app_client = client(service)
+    app_client.app.dependency_overrides[api.get_sign_job_sender] = lambda: sender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 202
+    assert sender.sent == [("app.tasks.sync_signs", "realtime")]

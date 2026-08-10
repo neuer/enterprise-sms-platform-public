@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Response
@@ -14,6 +13,7 @@ from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
+from app.services.ops_dispatch import OutboxJobSender
 from app.services.sign_management import (
     SignManagementService,
     SignNotFound,
@@ -22,7 +22,6 @@ from app.services.sign_management import (
 )
 from app.services.sign_repository import SqlSignRepository
 from app.settings import get_settings
-from app.vendor.zhihui import VendorApiError, VendorError, ZhihuiClient
 
 router = APIRouter(prefix="/api/v1/web/signs", tags=["signs"])
 
@@ -39,10 +38,13 @@ class SignModel(BaseModel):
     vendor_reject_reason: str | None
 
 
-async def get_sign_service() -> AsyncIterator[SignManagementService]:
+def get_sign_service() -> SignManagementService:
     settings = get_settings()
-    async with ZhihuiClient.from_settings(settings) as vendor:
-        yield SignManagementService(SqlSignRepository(settings), vendor)
+    return SignManagementService(SqlSignRepository(settings))
+
+
+def get_sign_job_sender() -> OutboxJobSender:
+    return OutboxJobSender(get_settings())
 
 
 async def _user(
@@ -69,15 +71,6 @@ def _error(error: Exception) -> ApiError:
         return ApiError(404, "NOT_FOUND", str(error), None)
     if isinstance(error, SignStateConflict):
         return ApiError(409, "STATE_CONFLICT", str(error), None)
-    if isinstance(error, VendorApiError):
-        return ApiError(
-            502,
-            "VENDOR_ERROR",
-            "厂商签名接口返回错误",
-            {"vendor_code": error.code, "vendor_message": error.safe_message},
-        )
-    if isinstance(error, VendorError):
-        return ApiError(502, "VENDOR_ERROR", "厂商签名接口不可用", None)
     if isinstance(error, ValueError):
         return ApiError(400, "INVALID_PARAM", str(error), None)
     return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
@@ -93,7 +86,7 @@ async def list_signs(
     return [_model(record) for record in await service.list_all()]
 
 
-@router.post("", response_model=SignModel, responses={400: ERROR_RESPONSE, 502: ERROR_RESPONSE})
+@router.post("", response_model=SignModel, responses={400: ERROR_RESPONSE})
 @audited("sign_create")
 async def create_sign(
     payload: SignPayload,
@@ -154,17 +147,26 @@ async def delete_sign(
     return Response(status_code=204)
 
 
-@router.post("/{id}/sync", response_class=Response, responses={404: ERROR_RESPONSE})
+@router.post(
+    "/{id}/sync",
+    status_code=202,
+    response_class=Response,
+    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+)
 @audited("sign_sync")
 async def sync_sign(
     id: int,
     service: Annotated[SignManagementService, Depends(get_sign_service)],
+    sender: Annotated[OutboxJobSender, Depends(get_sign_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
     await _user(facade, credentials, admin=True)
     try:
-        await service.sync_pending(id)
+        current = await service.get(id)
+        if current.vendor_state != "pending":
+            raise SignStateConflict("仅待审核签名可同步")
+        await sender.send("app.tasks.sync_signs", "realtime")
     except Exception as error:
         raise _error(error) from None
-    return Response(status_code=200)
+    return Response(status_code=202)

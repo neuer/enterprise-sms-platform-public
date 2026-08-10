@@ -903,6 +903,32 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            AND has_table_privilege('sms_send','callback_task','UPDATE')
            AND has_table_privilege('sms_send','callback_report_event','INSERT')
            AND has_sequence_privilege('sms_send','callback_task_id_seq','USAGE'))::int,
+          (has_column_privilege(
+             'sms_send','sms_template','vendor_template_id','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_template','vendor_state','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_template','vendor_reject_reason','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_template','updated_at','UPDATE')
+           AND NOT has_column_privilege(
+             'sms_send','sms_template','content','UPDATE')
+           AND NOT has_column_privilege(
+             'sms_send','sms_template','var_specs','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_sign','vendor_sign_id','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_sign','vendor_state','UPDATE')
+           AND has_column_privilege(
+             'sms_send','sms_sign','vendor_reject_reason','UPDATE')
+           AND NOT has_column_privilege(
+             'sms_send','sms_sign','name','UPDATE')
+           AND NOT has_table_privilege('sms_send','sms_template','INSERT')
+           AND NOT has_table_privilege('sms_send','sms_template','DELETE')
+           AND NOT has_table_privilege('sms_send','sms_template','TRUNCATE')
+           AND NOT has_table_privilege('sms_send','sms_sign','INSERT')
+           AND NOT has_table_privilege('sms_send','sms_sign','DELETE')
+           AND NOT has_table_privilege('sms_send','sms_sign','TRUNCATE'))::int,
           (has_column_privilege('sms_export','export_task','status','UPDATE')
            AND has_column_privilege('sms_export','export_task','file_path','UPDATE')
            AND has_column_privilege('sms_export','export_task','lease_id','UPDATE')
@@ -958,7 +984,7 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            ))::int
         """,
     ).strip()
-    if result != "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1":
+    if result != "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1":
         raise RuntimeError(f"database runtime role matrix is unsafe: {result}")
 
     docker_psql(
@@ -1023,6 +1049,18 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
         database,
         "sms_export",
         "UPDATE export_task SET creator_account_id=creator_account_id",
+    )
+    assert_role_sql_denied(
+        container,
+        database,
+        "sms_send",
+        "UPDATE sms_template SET content=content",
+    )
+    assert_role_sql_denied(
+        container,
+        database,
+        "sms_send",
+        "UPDATE sms_sign SET name=name",
     )
     for role in (
         "sms_auth",

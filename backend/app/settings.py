@@ -474,6 +474,12 @@ class Settings(BaseSettings):
     def credential(self, name: str) -> str:
         """按白名单名称读取运行凭据，不接受任意文件路径。"""
 
+        if self.sms_component == "api" and name in {
+            "vendor_secret_name",
+            "vendor_secret_key",
+        }:
+            raise RuntimeError("vendor credentials are unavailable to the API component")
+
         credential_files = {
             "vendor_secret_name": self.vendor_secret_name_file,
             "vendor_secret_key": self.vendor_secret_key_file,

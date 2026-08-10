@@ -203,8 +203,8 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 
 ### 5.5 模板与签名管理
 
-#### FR-12 模板：CRUD + `{n}` 占位规范（每变量登记最大长度 var_specs）+ BindTemplate/GetTemplateState 同步；**提交厂商时按序转换为厂商 `{s最大长度}` 格式（v1.3）**；仅厂商通过可用；渲染时校验参数个数与各参数长度 ≤ max_len，见 FR-01 与 docs/vendor-api.md 1.5 节
-#### FR-13 签名：CRUD + BindSign/GetSignState；应用默认签名；自动拼接与一致性校验
+#### FR-12 模板：CRUD + `{n}` 占位规范（每变量登记最大长度 var_specs）+ BindTemplate/GetTemplateState 同步；**提交厂商时按序转换为厂商 `{s最大长度}` 格式（v1.3）**；Bind 意图必须与模板变更同事务进入 PostgreSQL Outbox，由持有厂商凭据的 realtime worker 执行，API 不挂载厂商凭据且不直接出站；仅厂商通过可用；渲染时校验参数个数与各参数长度 ≤ max_len，见 FR-01 与 docs/vendor-api.md 1.5 节
+#### FR-13 签名：CRUD + BindSign/GetSignState；Bind 意图同样经事务性 Outbox 交给 realtime worker，API 仅返回 pending；应用默认签名；自动拼接与一致性校验
 
 ### 5.6 告警与监控
 

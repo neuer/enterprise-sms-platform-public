@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.services.outbox import OutboxEventSpec
+from app.services.outbox_repository import enqueue_outbox
 from app.services.template_management import TemplateRecord
 from app.settings import Settings, get_settings
 
@@ -66,7 +69,22 @@ class SqlTemplateRepository:
         finally:
             await engine.dispose()
 
-    async def create(self, **values: Any) -> TemplateRecord:
+    async def create(
+        self,
+        *,
+        name: str,
+        content: str,
+        var_specs: list[dict[str, int]],
+        dept: str,
+        actor: str,
+    ) -> TemplateRecord:
+        values: dict[str, Any] = {
+            "name": name,
+            "content": content,
+            "var_specs": var_specs,
+            "dept": dept,
+            "actor": actor,
+        }
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -76,7 +94,7 @@ class SqlTemplateRepository:
                         INSERT INTO sms_template(
                           name,content,var_specs,dept,vendor_template_id,vendor_state,created_by
                         ) VALUES(:name,:content,CAST(:var_specs AS jsonb),:dept,
-                          :vendor_template_id,'pending',:actor)
+                          NULL,'pending',:actor)
                         RETURNING id
                         """
                     ),
@@ -84,6 +102,7 @@ class SqlTemplateRepository:
                 )
                 template_id = int(result.scalar_one())
                 await self._audit(connection, values["actor"], "template_create", template_id)
+                await self._enqueue_binding(connection, template_id)
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
                 )
@@ -91,7 +110,21 @@ class SqlTemplateRepository:
         finally:
             await engine.dispose()
 
-    async def update(self, template_id: int, **values: Any) -> TemplateRecord | None:
+    async def update(
+        self,
+        template_id: int,
+        *,
+        name: str,
+        content: str,
+        var_specs: list[dict[str, int]],
+        actor: str,
+    ) -> TemplateRecord | None:
+        values: dict[str, Any] = {
+            "name": name,
+            "content": content,
+            "var_specs": var_specs,
+            "actor": actor,
+        }
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -100,7 +133,7 @@ class SqlTemplateRepository:
                         """
                         UPDATE sms_template SET name=:name,content=:content,
                           var_specs=CAST(:var_specs AS jsonb),
-                          vendor_template_id=:vendor_template_id,
+                          vendor_template_id=NULL,
                           vendor_state='pending',vendor_reject_reason=NULL,updated_at=now()
                         WHERE id=:id AND vendor_state IN ('draft','rejected') RETURNING id
                         """
@@ -110,6 +143,7 @@ class SqlTemplateRepository:
                 if changed.scalar_one_or_none() is None:
                     return None
                 await self._audit(connection, values["actor"], "template_update", template_id)
+                await self._enqueue_binding(connection, template_id)
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
                 )
@@ -215,6 +249,67 @@ class SqlTemplateRepository:
                 return applied
         finally:
             await engine.dispose()
+
+    async def apply_binding(self, template_id: int, vendor_template_id: str) -> bool:
+        """仅在仍待提交且尚无厂商 ID 时落绑定结果，并记录系统审计。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                changed = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_template SET vendor_template_id=:vendor_template_id,
+                          updated_at=now()
+                        WHERE id=:id AND vendor_state='pending'
+                          AND vendor_template_id IS NULL
+                        RETURNING id
+                        """
+                    ),
+                    {"id": template_id, "vendor_template_id": vendor_template_id},
+                )
+                if changed.scalar_one_or_none() is None:
+                    return False
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="vendor-state-sync",
+                    action="template_sync",
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,action,object_type,
+                          object_id,after_val
+                        ) VALUES(
+                          'vendor-state-sync','system','system','template_sync',
+                          'template',CAST(CAST(:id AS bigint) AS text),
+                          jsonb_build_object('vendor_binding','submitted')
+                        )
+                        """
+                    ),
+                    {"id": template_id},
+                )
+                return True
+        finally:
+            await engine.dispose()
+
+    @staticmethod
+    async def _enqueue_binding(connection: Any, template_id: int) -> None:
+        request_id = uuid4()
+        await enqueue_outbox(
+            connection,
+            OutboxEventSpec(
+                event_type="template.bind",
+                aggregate_type="sms_template",
+                aggregate_id=str(template_id),
+                task_name="app.tasks.bind_template",
+                queue="realtime",
+                args=(template_id,),
+                dedup_key=f"template.bind:{template_id}:{request_id}",
+                max_attempts=1,
+            ),
+        )
 
     @staticmethod
     async def _audit(connection: Any, actor: str, action: str, template_id: int) -> None:
