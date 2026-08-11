@@ -280,6 +280,7 @@ def test_callback_dead_case_waits_for_alert_after_dead_state_is_visible() -> Non
 
     assert 'lambda: self._alerts("20", "callback_dead") or None' in case_20
     assert 'if not self._alerts("20", "callback_dead")' not in case_20
+    assert "return callback_task(task_id)" in case_20
 
 
 def test_approval_expiration_case_waits_for_alert_after_expired_state_is_visible() -> None:

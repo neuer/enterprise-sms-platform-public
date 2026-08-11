@@ -1602,7 +1602,7 @@ class UatSuite:
         time.sleep(2.2)
         self._trigger_job("20", "poll_report")
 
-        def callback_task() -> dict[str, Any] | None:
+        def callback_task(expected_task_id: int | None = None) -> dict[str, Any] | None:
             page = self._expect(
                 "20",
                 self._request(
@@ -1616,7 +1616,11 @@ class UatSuite:
             items = page.get("items")
             if isinstance(items, list):
                 for item in items:
-                    if isinstance(item, dict) and item.get("batch_no") == batch_no:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("batch_no") == batch_no
+                        and (expected_task_id is None or item.get("id") == expected_task_id)
+                    ):
                         return item
             return None
 
@@ -1626,7 +1630,7 @@ class UatSuite:
             raise UatFailure("UAT-20 callback task id missing")
 
         def callback_state() -> dict[str, Any] | None:
-            return callback_task()
+            return callback_task(task_id)
 
         def retry_ready(expected_retry_count: int) -> Callable[[], dict[str, Any] | None]:
             def predicate() -> dict[str, Any] | None:
