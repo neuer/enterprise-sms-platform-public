@@ -1740,6 +1740,8 @@ def run_check() -> None:
             DROP TABLE callback_report_event;
             ALTER TABLE callback_task ADD CONSTRAINT chk_cb_message_refs CHECK (
               cardinality(message_ids)=cardinality(message_times));
+            ALTER TABLE sms_chunk
+              DROP CONSTRAINT IF EXISTS ck_sms_chunk_vendor_task_pseudonym;
             INSERT INTO app(id,name,dept,api_key_hash,api_key_prefix,created_by)
               VALUES(1,'legacy','dept',repeat('a',64),'12345678','test');
             INSERT INTO sms_batch(
@@ -1802,6 +1804,16 @@ def run_check() -> None:
             DROP TABLE callback_report_event;
             ALTER TABLE callback_task ADD CONSTRAINT chk_cb_message_refs CHECK (
               cardinality(message_ids)=cardinality(message_times));
+            ALTER TABLE sms_chunk
+              DROP CONSTRAINT IF EXISTS ck_sms_chunk_vendor_task_pseudonym;
+            ALTER TABLE sms_reply
+              DROP CONSTRAINT IF EXISTS ck_sms_reply_vendor_task_pseudonym;
+            ALTER TABLE sms_reply
+              DROP CONSTRAINT IF EXISTS ck_sms_reply_ext_code_redacted;
+            ALTER TABLE unmatched_report
+              DROP CONSTRAINT IF EXISTS ck_unmatched_vendor_task_pseudonym;
+            ALTER TABLE unmatched_report
+              DROP CONSTRAINT IF EXISTS ck_unmatched_custom_pseudonym;
             INSERT INTO app(id,name,dept,api_key_hash,api_key_prefix,created_by)
               VALUES(1,'legacy-single','dept',repeat('a',64),'12345678','test');
             INSERT INTO sms_batch(

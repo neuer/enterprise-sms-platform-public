@@ -1620,7 +1620,7 @@ class UatSuite:
                         return item
             return None
 
-        task = wait_until("20", callback_task, timeout_s=15, interval_s=0.5)
+        task = wait_until("20-callback-task", callback_task, timeout_s=15, interval_s=0.5)
         task_id = task.get("id")
         if not isinstance(task_id, int):
             raise UatFailure("UAT-20 callback task id missing")
@@ -1640,7 +1640,7 @@ class UatSuite:
         self._trigger_job("20", "dispatch_callbacks")
         for retry_count in range(1, 6):
             wait_until(
-                "20",
+                f"20-retry-{retry_count}",
                 retry_ready(retry_count),
                 timeout_s=15,
                 interval_s=0.25,
@@ -1661,7 +1661,7 @@ class UatSuite:
         )
         self._trigger_job("20", "dispatch_callbacks")
         wait_until(
-            "20",
+            "20-dead",
             lambda: (
                 current
                 if (current := callback_state()) is not None and current.get("status") == "dead"
@@ -1671,7 +1671,7 @@ class UatSuite:
             interval_s=0.25,
         )
         wait_until(
-            "20",
+            "20-alert",
             lambda: self._alerts("20", "callback_dead") or None,
             timeout_s=15,
             interval_s=0.25,
@@ -1688,7 +1688,7 @@ class UatSuite:
         )
         self._trigger_job("20", "dispatch_callbacks")
         wait_until(
-            "20",
+            "20-done",
             lambda: (
                 current
                 if (current := callback_state()) is not None and current.get("status") == "done"
