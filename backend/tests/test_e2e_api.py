@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import sys
 import time
@@ -71,6 +72,15 @@ def test_case_registry_is_exact_autopilot_subset() -> None:
 def test_all_autopilot_cases_have_concrete_methods() -> None:
     suite = UatSuite.stub(run_id="fixed-run")
     assert all(callable(getattr(suite, f"case_{case_id}", None)) for case_id in CASE_IDS)
+
+
+def test_unmatched_uat_uses_vendor_contract_and_pseudonym_assertions() -> None:
+    source = inspect.getsource(UatSuite.case_25)
+
+    assert 'custom_id = f"legacy{self.run_id}"' in source
+    assert "custom_id ~ '^[0-9a-f]{64}$'" in source
+    assert "vendor_task_id ~ '^[0-9a-f]{64}$'" in source
+    assert "WHERE custom_id=CAST" not in source
 
 
 def test_rollback_stack_runs_lifo_and_reports_only_safe_error_types() -> None:

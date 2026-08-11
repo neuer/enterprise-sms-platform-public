@@ -1803,7 +1803,7 @@ class UatSuite:
 
     def case_25(self) -> None:
         phone = self.phone(25, 0)
-        custom_id = f"legacy-{self.run_id}"
+        custom_id = f"legacy{self.run_id}"
         self._mock_config(
             "25",
             {
@@ -1843,10 +1843,12 @@ class UatSuite:
         if (
             self._probe().psql_count(
                 "SELECT count(*) FROM unmatched_report "
-                "WHERE custom_id=CAST(:'custom_id' AS varchar(64)) "
+                "WHERE phone_mask=CAST(:'phone_mask' AS varchar(11)) "
+                "AND vendor_task_id ~ '^[0-9a-f]{64}$' "
+                "AND custom_id ~ '^[0-9a-f]{64}$' "
                 "AND phone_enc IS NOT NULL AND phone_hmac IS NOT NULL "
                 "AND phone_mask IS NOT NULL AND key_version IS NOT NULL",
-                custom_id=custom_id,
+                phone_mask=expected_mask,
             )
             != 1
         ):
