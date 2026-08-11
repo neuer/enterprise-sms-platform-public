@@ -156,6 +156,13 @@ def test_cli_contract_rejects_arbitrary_or_secret_arguments(argv: list[str]) -> 
         module.parse_manager_action(argv, euid=0, mode="development")
 
 
+def test_token_contract_accepts_standard_and_url_safe_base64_characters() -> None:
+    module = manager_module()
+    token = "eyJ" + "a" * 38 + "+/_-="
+
+    assert module.parse_token(token) == token
+
+
 def test_persistent_tunnel_lifecycle_keeps_token_out_of_process_arguments(
     tmp_path: Path,
 ) -> None:

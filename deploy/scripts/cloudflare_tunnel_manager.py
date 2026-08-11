@@ -44,7 +44,7 @@ _HOSTNAME_RE = re.compile(
     r"(?=.{4,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
 )
-_TOKEN_RE = re.compile(r"[A-Za-z0-9._~-]{40,4096}={0,2}")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/-]{40,4096}={0,2}")
 
 
 class CloudflareTunnelManagerError(RuntimeError):
