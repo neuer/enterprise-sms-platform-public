@@ -72,6 +72,7 @@ class ControlRequest:
     request_id: UUID
     report_date: str
     action: str
+    config_version: int
     report: renderer.SecurityDailyReport
 
 
@@ -81,6 +82,7 @@ class MailerConfiguration:
 
     api_key: str
     recipients: tuple[str, ...]
+    config_version: int
 
 
 class ResendHttpsTransport:
@@ -171,17 +173,23 @@ def read_mailer_configuration(path: str | Path) -> MailerConfiguration:
         value = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
         raise ResendConfigurationError("mailer configuration is unavailable") from exc
-    if not isinstance(value, dict) or set(value) != {"api_key", "recipients"}:
+    if not isinstance(value, dict) or set(value) != {
+        "api_key",
+        "recipients",
+        "config_version",
+    }:
         raise ResendConfigurationError("mailer configuration has invalid fields")
     api_key = value.get("api_key")
     recipients = value.get("recipients")
+    config_version = value.get("config_version")
     if not isinstance(api_key, str) or not isinstance(recipients, list) or not all(
         isinstance(item, str) for item in recipients
-    ):
+    ) or not isinstance(config_version, int) or isinstance(config_version, bool) or config_version < 1:
         raise ResendConfigurationError("mailer configuration has invalid values")
     return MailerConfiguration(
         api_key=_validate_api_key(api_key),
         recipients=_validate_recipients(recipients),
+        config_version=config_version,
     )
 
 
@@ -298,6 +306,7 @@ def _control_request(path: Path) -> ControlRequest:
             "request_id",
             "report_date",
             "action",
+            "config_version",
             "payload",
         }:
             raise ResendConfigurationError("control request has invalid fields")
@@ -308,6 +317,13 @@ def _control_request(path: Path) -> ControlRequest:
         action = str(value["action"])
         if action not in {"send", "retry"}:
             raise ResendConfigurationError("control request action is invalid")
+        config_version = value["config_version"]
+        if (
+            not isinstance(config_version, int)
+            or isinstance(config_version, bool)
+            or config_version < 1
+        ):
+            raise ResendConfigurationError("control request configuration version is invalid")
         report = renderer.parse_report(value["payload"])
     except ResendConfigurationError:
         raise
@@ -315,7 +331,7 @@ def _control_request(path: Path) -> ControlRequest:
         raise ResendConfigurationError("control request is invalid") from None
     if report.report_date != report_date:
         raise ResendConfigurationError("control request date does not match report")
-    return ControlRequest(request_id, report_date, action, report)
+    return ControlRequest(request_id, report_date, action, config_version, report)
 
 
 def _write_control_result(
@@ -366,6 +382,8 @@ def process_control_request(
     request = _control_request(path)
     try:
         configuration = read_mailer_configuration(config_file)
+        if configuration.config_version != request.config_version:
+            raise ResendConfigurationError("mailer configuration version mismatch")
         receipt = ResendClient(
             api_key=configuration.api_key,
             transport=transport,

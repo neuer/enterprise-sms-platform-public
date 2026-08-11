@@ -15,7 +15,7 @@ from app.core.runtime_resources import database_engine, redis_client
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
-from app.services.idempotency import IdempotencyScope
+from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -139,7 +139,14 @@ class SqlPipelineStore:
                           JOIN sms_batch b ON b.id=i.batch_id
                           WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                             AND i.biz_id=:biz_id
-                            AND i.expires_at > now() AND b.batch_no=:batch_no
+                            AND (
+                              i.expires_at > now()
+                              OR b.status IN (
+                                'pending_approval','scheduled','queued',
+                                'sending','balance_blocked'
+                              )
+                            )
+                            AND b.batch_no=:batch_no
                         )
                         """
                 ),
@@ -163,7 +170,13 @@ class SqlPipelineStore:
                         JOIN sms_batch b ON b.id=i.batch_id
                         WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                           AND i.biz_id=:biz_id
-                          AND i.expires_at > now()
+                          AND (
+                            i.expires_at > now()
+                            OR b.status IN (
+                              'pending_approval','scheduled','queued',
+                              'sending','balance_blocked'
+                            )
+                          )
                         """
                 ),
                 {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
@@ -171,23 +184,40 @@ class SqlPipelineStore:
             value = result.scalar_one_or_none()
             return str(value).strip() if value is not None else None
 
-    async def find_request_hash(
+    async def find_request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None:
+    ) -> IdempotencyFingerprint | None:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
                     """
-                    SELECT request_hash FROM idempotency_record
-                    WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                      AND biz_id=:biz_id
-                      AND expires_at > now()
+                    SELECT i.request_hash,i.request_hash_key_version
+                    FROM idempotency_record i
+                    JOIN sms_batch b ON b.id=i.batch_id
+                    WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
+                      AND i.biz_id=:biz_id
+                      AND (
+                        i.expires_at > now()
+                        OR b.status IN (
+                          'pending_approval','scheduled','queued',
+                          'sending','balance_blocked'
+                        )
+                      )
                     """
                 ),
                 {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
             )
-            value = result.scalar_one_or_none()
-            return str(value).strip() if value is not None else None
+            row = result.mappings().one_or_none()
+            if (
+                row is None
+                or row["request_hash"] is None
+                or row["request_hash_key_version"] is None
+            ):
+                return None
+            return IdempotencyFingerprint(
+                str(row["request_hash"]).strip(),
+                int(row["request_hash_key_version"]),
+            )
 
     @staticmethod
     async def _insert(connection: AsyncConnection, command: BatchCommand, batch_no: str) -> int:
@@ -198,6 +228,14 @@ class SqlPipelineStore:
                     DELETE FROM idempotency_record
                     WHERE scope_kind=:scope_kind AND scope_id=:scope_id
                       AND biz_id=:biz_id AND expires_at <= now()
+                      AND NOT EXISTS (
+                        SELECT 1 FROM sms_batch b
+                        WHERE b.id=idempotency_record.batch_id
+                          AND b.status IN (
+                            'pending_approval','scheduled','queued',
+                            'sending','balance_blocked'
+                          )
+                      )
                     """
                 ),
                 {
@@ -272,6 +310,20 @@ class SqlPipelineStore:
             },
         )
         batch_id = int(result.scalar_one())
+        if command.resend_of is not None:
+            action = await connection.execute(
+                text(
+                    """
+                    INSERT INTO sms_resend_action(source_batch_id,child_batch_id)
+                    SELECT resend_of,id FROM sms_batch
+                    WHERE id=:batch_id AND resend_of IS NOT NULL
+                    RETURNING source_batch_id
+                    """
+                ),
+                {"batch_id": batch_id},
+            )
+            if action.scalar_one_or_none() is None:
+                raise ValueError("失败重发源批次不存在")
         if command.usage_reservation_id is not None:
             await commit_usage_reservation(
                 connection,
@@ -305,10 +357,10 @@ class SqlPipelineStore:
                     """
                     INSERT INTO idempotency_record (
                       app_id, scope_kind, scope_id, biz_id, batch_id,
-                      request_hash, expires_at
+                      request_hash, request_hash_key_version, expires_at
                     ) VALUES (
                       :app_id, :scope_kind, :scope_id, :biz_id, :batch_id,
-                      :request_hash,
+                      :request_hash, :request_hash_key_version,
                       COALESCE((CAST(:scheduled_at AS timestamptz) + interval '7 days'),
                                now() + interval '24 hours')
                     )
@@ -321,6 +373,7 @@ class SqlPipelineStore:
                     "biz_id": command.biz_id,
                     "batch_id": batch_id,
                     "request_hash": command.request_hash,
+                    "request_hash_key_version": command.request_hash_key_version,
                     "scheduled_at": command.scheduled_at,
                 },
             )
@@ -434,7 +487,30 @@ class SqlPipelineStore:
                 existing = await self.find_existing(scope, command.biz_id)
                 if existing is not None:
                     return StoredBatch(existing, True)
+            if command.resend_of:
+                existing_resend = await self.find_resend_child(command.resend_of)
+                if existing_resend is not None:
+                    return StoredBatch(existing_resend, True)
             raise
+
+    async def find_resend_child(self, source_batch_no: str) -> str | None:
+        """按唯一 resend_of 事实返回已创建的失败重发子批次。"""
+
+        async with self._engine().connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT trim(child.batch_no)
+                    FROM sms_resend_action action
+                    JOIN sms_batch source ON source.id=action.source_batch_id
+                    JOIN sms_batch child ON child.id=action.child_batch_id
+                    WHERE source.batch_no=CAST(:source_batch_no AS char(32))
+                    """
+                ),
+                {"source_batch_no": source_batch_no},
+            )
+            value = result.scalar_one_or_none()
+            return str(value) if value is not None else None
 
 
 class SqlTemplateRenderer:
@@ -443,16 +519,22 @@ class SqlTemplateRenderer:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    async def render(self, template_id: int, params: Sequence[str]) -> str:
+    async def render(
+        self,
+        template_id: int,
+        params: Sequence[str],
+        dept: str,
+    ) -> str:
         async with database_engine(self.settings.database_url).connect() as connection:
             result = await connection.execute(
                 text(
                     """
                         SELECT content, var_specs FROM sms_template
-                        WHERE id=:template_id AND vendor_state='approved'
+                        WHERE id=:template_id AND dept=:dept
+                          AND vendor_state='approved'
                         """
                 ),
-                {"template_id": template_id},
+                {"template_id": template_id, "dept": dept},
             )
             row = result.mappings().one_or_none()
             if row is None:

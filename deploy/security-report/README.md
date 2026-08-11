@@ -11,7 +11,9 @@
 3. 填写 1–3 个收件人，每行一个或用逗号分隔。
 4. 点击保存，页面显示配置状态和收件人数，不回显 Key。
 
-页面保存会更新 `security_daily_resend_api_key` 与 `security_daily_recipient`，并将 `resend.json` 原子同步到 `deploy/security-report-config`。该目录已加入 Git 和 Docker build context 忽略规则。
+页面保存会更新 `security_daily_resend_api_key` 与 `security_daily_recipient`，递增数据库中的配置版本，并将同一版本写入 `deploy/security-report-config/resend.json`。每个投递请求也绑定其创建事务读取到的配置版本；mailer 在建立任何网络连接前拒绝版本不一致的请求，避免数据库已删除的旧收件人因文件同步失败而继续收信。该目录已加入 Git 和 Docker build context 忽略规则。
+
+从不含配置版本的旧版本升级后，现有 `resend.json` 会被安全拒绝。管理员必须在“配置邮件”中重新保存一次（Key 留空表示保持当前 Key），使文件获得当前版本；完成前日报投递会显式失败，不会退回使用无法证明新鲜的旧收件人配置。
 
 首次部署只需准备两个共享目录（不写入 Key）：
 

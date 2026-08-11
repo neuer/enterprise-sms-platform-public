@@ -401,6 +401,7 @@ async def test_reschedule_uses_runtime_approval_expiry(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
@@ -413,7 +414,10 @@ async def test_reschedule_uses_runtime_approval_expiry(
     )
 
     assert changed is True
-    approval_sql, approval_params = connection.calls[2]
+    expiry_sql, expiry_params = connection.calls[2]
+    assert "GREATEST" in expiry_sql
+    assert expiry_params["id"] == 9  # type: ignore[index]
+    approval_sql, approval_params = connection.calls[3]
     assert "make_interval" in approval_sql
     assert approval_params["expire_hours"] == 6  # type: ignore[index]
 

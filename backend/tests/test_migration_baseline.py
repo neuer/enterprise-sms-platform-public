@@ -703,6 +703,38 @@ def test_security_daily_delivery_request_grants_send_role_for_auto_path() -> Non
     assert module.down_revision == "0050_beat_scan_config"
 
 
+def test_security_scan_remediation_migration_is_fail_closed_and_idempotent() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0062_security_scan_remediations.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "request_hash_key_version",
+        "ck_idem_request_fingerprint",
+        "CREATE TABLE IF NOT EXISTS sms_resend_action",
+        "INSERT INTO sms_resend_action",
+        "REVOKE SELECT ON sms_batch FROM sms_callback",
+        "security_daily_config_version",
+        "config_version",
+    ):
+        assert fragment in source
+    for fragment in (
+        "CREATE TABLE sms_resend_action",
+        "request_hash_key_version SMALLINT",
+        "ck_idem_request_fingerprint",
+        "ck_security_daily_request_config_version",
+        "security_daily_config_version",
+    ):
+        assert fragment in schema
+
+    spec = importlib.util.spec_from_file_location("security_scan_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0062_security_scan_remediations"
+    assert module.down_revision == "0061_vendor_binding_outbox"
+
+
 def test_security_daily_generation_source_migration_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0045_security_daily_source.py"

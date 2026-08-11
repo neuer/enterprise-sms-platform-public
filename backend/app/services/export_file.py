@@ -183,7 +183,7 @@ class ExportFileCodec:
         return path
 
     def iter_decrypted(self, raw_path: str | Path) -> Iterator[bytes]:
-        """校验帧上下文、顺序和终止帧后才 yield；迁移期兼容 SMSX1。"""
+        """先完整校验终止帧，再从同一已打开文件描述符流式解密。"""
 
         path = self._controlled_path(raw_path)
         match = EXPORT_FILENAME.fullmatch(path.name)
@@ -203,44 +203,60 @@ class ExportFileCodec:
                     raise ValueError("legacy export format rejected")
                 yield from self._iter_legacy(source, version)
                 return
-            frame_index = 0
-            while True:
-                raw_kind = source.read(FRAME_KIND_SIZE)
-                if not raw_kind:
-                    raise ValueError("export terminal frame is missing")
-                if raw_kind == b"d":
-                    kind = "data"
-                elif raw_kind == b"t":
-                    kind = "terminal"
-                else:
-                    raise ValueError("invalid export frame kind")
-                encoded_length = source.read(LENGTH_SIZE)
-                if len(encoded_length) != LENGTH_SIZE:
-                    raise ValueError("truncated export frame length")
-                length = struct.unpack(">I", encoded_length)[0]
-                maximum = self.frame_size + len(BOUND_ENVELOPE_MAGIC) + NONCE_SIZE + TAG_SIZE
-                if length < len(BOUND_ENVELOPE_MAGIC) + NONCE_SIZE + TAG_SIZE or length > maximum:
-                    raise ValueError("invalid export frame length")
-                payload = source.read(length)
-                if len(payload) != length:
-                    raise ValueError("truncated export frame")
-                plaintext = self.crypto.decrypt_bound_bytes(
-                    payload,
-                    version,
-                    self._frame_context(
-                        task_id,
-                        lease_id,
-                        frame_index,
-                        kind,
-                    ),
-                    allow_legacy=False,
-                )
-                if kind == "terminal":
-                    if plaintext or source.read(1):
-                        raise ValueError("invalid export terminal frame")
-                    return
-                yield plaintext
-                frame_index += 1
+            frames_offset = source.tell()
+            # 第一遍必须读到并认证 terminal；任何截断都发生在首个明文字节交付前。
+            for _ in self._iter_v2(source, version, task_id, lease_id):
+                pass
+            source.seek(frames_offset)
+            yield from self._iter_v2(source, version, task_id, lease_id)
+
+    def _iter_v2(
+        self,
+        source: BinaryIO,
+        version: int,
+        task_id: int,
+        lease_id: UUID,
+    ) -> Iterator[bytes]:
+        """从当前偏移严格读取一个完整 SMSX2 帧序列。"""
+
+        frame_index = 0
+        while True:
+            raw_kind = source.read(FRAME_KIND_SIZE)
+            if not raw_kind:
+                raise ValueError("export terminal frame is missing")
+            if raw_kind == b"d":
+                kind = "data"
+            elif raw_kind == b"t":
+                kind = "terminal"
+            else:
+                raise ValueError("invalid export frame kind")
+            encoded_length = source.read(LENGTH_SIZE)
+            if len(encoded_length) != LENGTH_SIZE:
+                raise ValueError("truncated export frame length")
+            length = struct.unpack(">I", encoded_length)[0]
+            maximum = self.frame_size + len(BOUND_ENVELOPE_MAGIC) + NONCE_SIZE + TAG_SIZE
+            if length < len(BOUND_ENVELOPE_MAGIC) + NONCE_SIZE + TAG_SIZE or length > maximum:
+                raise ValueError("invalid export frame length")
+            payload = source.read(length)
+            if len(payload) != length:
+                raise ValueError("truncated export frame")
+            plaintext = self.crypto.decrypt_bound_bytes(
+                payload,
+                version,
+                self._frame_context(
+                    task_id,
+                    lease_id,
+                    frame_index,
+                    kind,
+                ),
+                allow_legacy=False,
+            )
+            if kind == "terminal":
+                if plaintext or source.read(1):
+                    raise ValueError("invalid export terminal frame")
+                return
+            yield plaintext
+            frame_index += 1
 
     def _iter_legacy(self, source: BinaryIO, version: int) -> Iterator[bytes]:
         """只读历史 SMSX1；所有新文件均写入带终止认证的 SMSX2。"""

@@ -190,6 +190,19 @@ class SqlSchedulingRepository:
                     ),
                     {"id": row["id"], "scheduled_at": scheduled_at, "status": status},
                 )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE idempotency_record
+                        SET expires_at=GREATEST(
+                          expires_at,
+                          CAST(:scheduled_at AS timestamptz) + interval '7 days'
+                        )
+                        WHERE batch_id=:id
+                        """
+                    ),
+                    {"id": row["id"], "scheduled_at": scheduled_at},
+                )
                 if needs_reapproval:
                     await connection.execute(
                         text(

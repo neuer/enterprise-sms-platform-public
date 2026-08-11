@@ -19,6 +19,7 @@ from app.services.idempotency import (
     CLAIM_RELEASE_LUA,
     CLAIM_RENEW_LUA,
     IdempotencyCoordinator,
+    IdempotencyFingerprint,
     IdempotencyScope,
 )
 from app.services.pipeline import (
@@ -69,10 +70,12 @@ class FakeIdempotency:
         self.lookup_calls.append((scope, biz_id))
         return self.existing
 
-    async def request_hash(
+    async def request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None:
-        return self.stored_request_hash
+    ) -> IdempotencyFingerprint | None:
+        if self.stored_request_hash is None:
+            return None
+        return IdempotencyFingerprint(self.stored_request_hash, 1)
 
     def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str:
         return f"idem:claim:{scope.key}:{biz_id}"
@@ -740,18 +743,20 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
         app.allowed_categories,
         notice_blacklist=app.blacklist_check,
     )
-    expected_hash = SendPipeline._request_hash(request, app, policy)
-    idempotency = FakeIdempotency("existing", stored_request_hash=expected_hash)
     store = FakeStore()
+    crypto_service = crypto()
     pipeline = SendPipeline(
         store=store,
-        idempotency=idempotency,
-        crypto=crypto(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto_service,
         frequency=FakeFrequency(),
         quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
+    expected_hash = pipeline._request_hash(request, app, policy, key_version=1)
+    idempotency = FakeIdempotency("existing", stored_request_hash=expected_hash)
+    pipeline.idempotency = idempotency
 
     result = await pipeline.accept(app, request)
 
@@ -909,10 +914,11 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         ) -> str | None:
             return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[0]
 
-        async def find_request_hash(
+        async def find_request_fingerprint(
             self, scope: IdempotencyScope, biz_id: str
-        ) -> str | None:
-            return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[1]
+        ) -> IdempotencyFingerprint | None:
+            value = self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[1]
+            return IdempotencyFingerprint(value, 1) if value is not None else None
 
         async def save(self, command: Any) -> StoredBatch:
             self.commands.append(command)

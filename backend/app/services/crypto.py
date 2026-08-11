@@ -424,6 +424,24 @@ class CryptoService:
         self._validate_phone(phone)
         return {version: self.phone_hmac(phone, version) for version in sorted(self._hmac_keys)}
 
+    def idempotency_fingerprint(
+        self,
+        canonical_request: bytes,
+        *,
+        key_version: int | None = None,
+    ) -> str:
+        """用版本化 HMAC 固化请求等价性，避免数据库摘要成为离线枚举 oracle。"""
+
+        if not isinstance(canonical_request, bytes) or not canonical_request:
+            raise ValueError("canonical request must be non-empty bytes")
+        version = self.active_version if key_version is None else key_version
+        domain = f"sms-platform:idempotency-request:v1:key:{version}\0".encode("ascii")
+        return hmac.new(
+            self._hmac_key(version),
+            domain + canonical_request,
+            hashlib.sha256,
+        ).hexdigest()
+
     @property
     def hmac_versions(self) -> frozenset[int]:
         """只暴露索引版本集合，供持久化投影做完整性校验。"""

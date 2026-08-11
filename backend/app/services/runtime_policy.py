@@ -130,6 +130,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "security_daily_recipient_count": ConfigSpec(
         "0", "int", GROUP_SECURITY, maximum=3, allow_zero=True
     ),
+    "security_daily_config_version": ConfigSpec(
+        "1", "int", GROUP_SECURITY, maximum=9_223_372_036_854_775_807
+    ),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
 }

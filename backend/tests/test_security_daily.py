@@ -99,6 +99,7 @@ async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_pa
     assert json.loads(config_path.read_text(encoding="utf-8")) == {
         "api_key": "re_test_value",
         "recipients": ["security-owner@example.com"],
+        "config_version": 1,
     }
 
     await control.submit(request, payload())
@@ -108,6 +109,7 @@ async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_pa
     assert "recipient" not in encoded.casefold()
     assert "13800138000" not in encoded
     assert json.loads(encoded)["request_id"] == str(request.request_id)
+    assert json.loads(encoded)["config_version"] == 1
 
     result_path = control_dir / "results" / f"{request.request_id}.json"
     result_path.write_text(

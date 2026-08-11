@@ -263,10 +263,10 @@ class FakePreviewConfig:
 
 class FakePreviewRenderer:
     def __init__(self) -> None:
-        self.calls: list[tuple[int, tuple[str, ...]]] = []
+        self.calls: list[tuple[int, tuple[str, ...], str]] = []
 
-    async def render(self, template_id: int, params: tuple[str, ...]) -> str:
-        self.calls.append((template_id, params))
+    async def render(self, template_id: int, params: tuple[str, ...], dept: str) -> str:
+        self.calls.append((template_id, params, dept))
         return f"模板内容{params[0]}"
 
 
@@ -549,7 +549,7 @@ async def test_uat_preview_reads_selected_app_department_and_covers_verify() -> 
     assert result.quota_cost == 1
     assert result.final_length == len("【测试签名】模板内容123456")
     assert config.depts == ["平台部"]
-    assert renderer.calls == [(9, ("123456",))]
+    assert renderer.calls == [(9, ("123456",), "平台部")]
     assert signs.calls == ["测试签名"]
 
 

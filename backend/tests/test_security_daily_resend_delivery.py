@@ -345,9 +345,10 @@ def test_mailer_config_reader_and_control_loop_use_ui_synced_config(
         json.dumps(
             {
                 "request_id": str(request_id),
-                "report_date": payload["report_date"],
-                "action": "send",
-                "payload": payload,
+                    "report_date": payload["report_date"],
+                    "action": "send",
+                    "config_version": 1,
+                    "payload": payload,
             }
         ),
         encoding="utf-8",
@@ -355,7 +356,11 @@ def test_mailer_config_reader_and_control_loop_use_ui_synced_config(
     config_file = tmp_path / "resend.json"
     config_file.write_text(
         json.dumps(
-            {"api_key": "re_test_value", "recipients": ["security-owner@example.com"]}
+                {
+                    "api_key": "re_test_value",
+                    "recipients": ["security-owner@example.com"],
+                    "config_version": 1,
+                }
         ),
         encoding="utf-8",
     )
