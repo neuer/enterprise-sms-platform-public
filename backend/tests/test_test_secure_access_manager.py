@@ -108,6 +108,7 @@ def fixture(tmp_path: Path):
         "test_secure_access_contract.py",
         "test_secure_access_runtime.py",
         "test_secure_access_manager.py",
+        "cloudflare_tunnel_manager.py",
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
@@ -124,10 +125,14 @@ def fixture(tmp_path: Path):
         "check_public_readiness.py",
         "export_public_snapshot.py",
         "verify_public_snapshot_cutover.py",
+        "verify_web_transport.py",
     ):
         path = root / name
         path.write_text(f"# fixed {name}\n", encoding="utf-8")
         path.chmod(0o644)
+    persistent_unit = root / "sms-platform-cloudflare-tunnel.service"
+    persistent_unit.write_text("[Service]\nExecStart=persistent\n", encoding="utf-8")
+    persistent_unit.chmod(0o644)
     bootstrap_wrapper = root / "sms-compose-bootstrap"
     bootstrap_wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     bootstrap_wrapper.chmod(0o755)
@@ -140,12 +145,7 @@ def fixture(tmp_path: Path):
     from test_secure_access_contract import HOST_ASSET_NAMES, serialize_host_manifest
 
     installed_assets = {
-        name: (
-            binary
-            if name == "cloudflared"
-            else root / name
-        )
-        for name in HOST_ASSET_NAMES
+        name: (binary if name == "cloudflared" else root / name) for name in HOST_ASSET_NAMES
     }
     manifest = root / "manifest.json"
     manifest.write_text(
@@ -212,9 +212,7 @@ def write_expired_state(module: ModuleType, path: Path, now: datetime) -> None:
 def test_start_checks_fixed_platform_and_origin_then_returns_ready(
     tmp_path: Path,
 ) -> None:
-    module, secure_manager, runner, probe, public_probe, status_path, now = fixture(
-        tmp_path
-    )
+    module, secure_manager, runner, probe, public_probe, status_path, now = fixture(tmp_path)
     runner.on_start = lambda: write_state(module, status_path, now)
 
     result = secure_manager.start()
@@ -240,9 +238,7 @@ def test_start_checks_fixed_platform_and_origin_then_returns_ready(
 def test_repeated_start_is_idempotent_and_never_starts_a_second_tunnel(
     tmp_path: Path,
 ) -> None:
-    module, secure_manager, runner, probe, public_probe, status_path, now = fixture(
-        tmp_path
-    )
+    module, secure_manager, runner, probe, public_probe, status_path, now = fixture(tmp_path)
     runner.states["sms-platform-test-secure-access.service"] = "active"
     write_state(module, status_path, now)
 
@@ -482,9 +478,7 @@ def test_recent_timeout_without_state_is_failed_not_assumed_expired(
     module, secure_manager, runner, _, _, _, _ = fixture(tmp_path)
     runner.states["sms-platform-test-secure-access.service"] = "failed"
     runner.results["sms-platform-test-secure-access.service"] = "timeout"
-    runner.started_monotonic_us["sms-platform-test-secure-access.service"] = (
-        9_990_000_000
-    )
+    runner.started_monotonic_us["sms-platform-test-secure-access.service"] = 9_990_000_000
 
     assert secure_manager.status().status == "failed"
     with pytest.raises(module.SecureAccessManagerError, match="unavailable"):
@@ -498,9 +492,7 @@ def test_recent_timeout_without_state_is_failed_not_assumed_expired(
 def test_start_waits_for_public_https_reachability_before_returning_url(
     tmp_path: Path,
 ) -> None:
-    module, secure_manager, runner, _, public_probe, status_path, now = fixture(
-        tmp_path
-    )
+    module, secure_manager, runner, _, public_probe, status_path, now = fixture(tmp_path)
     public_probe.results = [False, True]
     runner.on_start = lambda: write_state(module, status_path, now)
 
@@ -516,9 +508,7 @@ def test_start_waits_for_public_https_reachability_before_returning_url(
 def test_fresh_start_allows_public_dns_propagation_before_first_probe(
     tmp_path: Path,
 ) -> None:
-    module, secure_manager, runner, _, public_probe, status_path, now = fixture(
-        tmp_path
-    )
+    module, secure_manager, runner, _, public_probe, status_path, now = fixture(tmp_path)
     sleeps: list[float] = []
     secure_manager.sleeper = sleeps.append
     runner.on_start = lambda: write_state(module, status_path, now)
@@ -535,9 +525,7 @@ def test_fresh_start_allows_public_dns_propagation_before_first_probe(
 def test_start_fails_closed_when_public_https_never_becomes_reachable(
     tmp_path: Path,
 ) -> None:
-    module, secure_manager, runner, _, public_probe, status_path, now = fixture(
-        tmp_path
-    )
+    module, secure_manager, runner, _, public_probe, status_path, now = fixture(tmp_path)
     public_probe.results = [False]
     runner.on_start = lambda: write_state(module, status_path, now)
 

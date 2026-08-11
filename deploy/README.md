@@ -206,6 +206,7 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/test_secure_access_contract.py \
   deploy/scripts/test_secure_access_runtime.py \
   deploy/scripts/test_secure_access_manager.py \
+  deploy/scripts/cloudflare_tunnel_manager.py \
   deploy/scripts/vendor_test_files.py \
   deploy/scripts/check_test_update_migration.py \
   deploy/scripts/run_with_lifecycle_lock.py \
@@ -222,14 +223,17 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   scripts/check_public_readiness.py \
   scripts/export_public_snapshot.py \
   scripts/verify_public_snapshot_cutover.py \
+  scripts/verify_web_transport.py \
   deploy/sms-compose \
-  deploy/systemd/sms-platform-test-secure-access.service |
+  deploy/systemd/sms-platform-test-secure-access.service \
+  deploy/systemd/sms-platform-cloudflare-tunnel.service |
   sudo /bin/tar -x -C "$SOURCE_ROOT"
 sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/install_test_secure_access.py" \
   "$SOURCE_ROOT/deploy/scripts/test_secure_access_contract.py" \
   "$SOURCE_ROOT/deploy/scripts/test_secure_access_runtime.py" \
   "$SOURCE_ROOT/deploy/scripts/test_secure_access_manager.py" \
+  "$SOURCE_ROOT/deploy/scripts/cloudflare_tunnel_manager.py" \
   "$SOURCE_ROOT/deploy/scripts/vendor_test_files.py" \
   "$SOURCE_ROOT/deploy/scripts/check_test_update_migration.py" \
   "$SOURCE_ROOT/deploy/scripts/run_with_lifecycle_lock.py" \
@@ -246,7 +250,9 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/scripts/check_public_readiness.py" \
   "$SOURCE_ROOT/scripts/export_public_snapshot.py" \
   "$SOURCE_ROOT/scripts/verify_public_snapshot_cutover.py" \
-  "$SOURCE_ROOT/deploy/systemd/sms-platform-test-secure-access.service"
+  "$SOURCE_ROOT/scripts/verify_web_transport.py" \
+  "$SOURCE_ROOT/deploy/systemd/sms-platform-test-secure-access.service" \
+  "$SOURCE_ROOT/deploy/systemd/sms-platform-cloudflare-tunnel.service"
 sudo chmod 0755 "$SOURCE_ROOT/deploy/sms-compose"
 sudo install -o root -g root -m 0644 \
   /tmp/cloudflared-linux-amd64 \
@@ -373,6 +379,59 @@ sudo /usr/bin/env \
 
 停止后应为 `inactive`，旧 URL 不可用，无 cloudflared 进程、额外监听或 `/run` 状态残留。
 临时 URL 不写数据库、Git、浏览器存储或长期配置。
+
+### 持久 Cloudflare Named Tunnel
+
+云服务商不能开放 80/443 时，长期入口使用 Cloudflare 远程管理的 Named Tunnel；Quick
+Tunnel 仍只用于 15 分钟临时入口，不能替代本节。Cloudflare 侧先创建 Named Tunnel 和一条
+公开主机名路由（例如 `sms.example.com -> http://127.0.0.1:18080`）。源站继续只监听回环，
+`.env` 必须保持 `WEB_BIND_IP=127.0.0.1`、`SMS_EXTERNAL_TLS_MODE=1` 与
+`SMS_TRUSTED_PROXY_CIDRS=127.0.0.1/32`；不得开放宿主机 80/443，也不得把任意公网或整段
+Cloudflare 地址加入 Nginx trusted proxy。
+
+主机资产随上节的固定安装器完成 commit/digest 绑定，但持久 unit 不会自动安装、启动或
+enable。操作者在 Cloudflare 控制台复制 Tunnel token 后，只能在服务器控制 TTY 中运行
+`install-token` 并盲输；token 禁止进入命令参数、环境变量、shell history、Git、数据库、
+日志或工单：
+
+```bash
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  /usr/local/sbin/sms-compose cloudflare-tunnel install
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  /usr/local/sbin/sms-compose cloudflare-tunnel configure \
+    --hostname sms.example.com
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  /usr/local/sbin/sms-compose cloudflare-tunnel install-token
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  /usr/local/sbin/sms-compose cloudflare-tunnel start
+```
+
+systemd 通过 `LoadCredential` 把 root `0600` token-file 暂时挂给 DynamicUser；进程列表中只
+出现 credential 文件路径，不出现 token。`start` 先验证主机 manifest、unit、token 文件、
+平台 service 与 `127.0.0.1:18080/login`，再执行 `enable --now`；任一步失败都关闭 Tunnel。
+Cloudflare zone、权威 NS、Universal SSL、HTTP→HTTPS 与公开主机名就绪后执行无凭据探针：
+
+```bash
+sudo /usr/bin/env \
+  SMS_PLATFORM_ROOT=/opt/sms-platform \
+  SMS_SECRETS_MODE=development \
+  /usr/local/sbin/sms-compose cloudflare-tunnel verify
+```
+
+只有 `status=verified`、TLS 1.2/1.3、证书剩余至少 14 天、HTTP 精确跳转 HTTPS、HSTS
+`max-age>=31536000; includeSubDomains` 和 CSP/浏览器安全头全部通过，才可宣告长期 HTTPS
+入口完成。回退时先恢复原权威 NS，再执行 `cloudflare-tunnel stop`；`stop` 会
+`disable --now` 且确认 unit inactive，但保留 root-only 配置和 token 供受控恢复。DNSSEC
+只能在 Cloudflare 激活稳定后单独启用并向注册商写入 Cloudflare 提供的 DS，切换 NS 前后
+都不得遗留旧 DS。
 
 ### 与快速更新和数据的边界
 

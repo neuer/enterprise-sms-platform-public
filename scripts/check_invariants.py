@@ -194,9 +194,9 @@ def check_vendor_live_invariants() -> None:
         "UNIQUE (hmac_key_version, hmac_digest)",
     )
     for table in ("vendor_test_daily_usage", "vendor_test_send_attempt"):
-        table_body = schema_source.split(
-            f"CREATE TABLE {table}", maxsplit=1
-        )[-1].split(";", maxsplit=1)[0]
+        table_body = schema_source.split(f"CREATE TABLE {table}", maxsplit=1)[-1].split(
+            ";", maxsplit=1
+        )[0]
         for forbidden_field in (
             "phone_enc",
             "phone_hmac",
@@ -211,9 +211,9 @@ def check_vendor_live_invariants() -> None:
                     f"{table} 禁止控制面 PII/凭据字段 {forbidden_field}",
                 )
 
-    operation_table = schema_source.split(
-        "CREATE TABLE vendor_test_operation", maxsplit=1
-    )[-1].split(");", maxsplit=1)[0]
+    operation_table = schema_source.split("CREATE TABLE vendor_test_operation", maxsplit=1)[
+        -1
+    ].split(");", maxsplit=1)[0]
     for forbidden_field in (
         "phone",
         "mobile",
@@ -400,9 +400,9 @@ def check_vendor_live_invariants() -> None:
         "UatMessageRequestModel:",
         "VendorTestOperationModel:",
     )
-    credential_schema = openapi.split("    CredentialEnvelopeModel:\n", maxsplit=1)[
-        -1
-    ].split("\n    VendorTestOperationModel:\n", maxsplit=1)[0]
+    credential_schema = openapi.split("    CredentialEnvelopeModel:\n", maxsplit=1)[-1].split(
+        "\n    VendorTestOperationModel:\n", maxsplit=1
+    )[0]
     for forbidden_field in ("secret_name", "secret_key", "secretName", "secretKey"):
         if forbidden_field in credential_schema:
             fail(ROOT / "openapi.yaml", "凭据接口禁止接收明文 SecretName/SecretKey")
@@ -500,18 +500,50 @@ def check_vendor_live_invariants() -> None:
                 ROOT / "deploy/systemd/sms-platform-test-secure-access.service",
                 "临时 HTTPS unit 必须保持 static 且无密钥环境",
             )
+    cloudflare_manager = require_fragments(
+        ROOT / "deploy/scripts/cloudflare_tunnel_manager.py",
+        "install-token",
+        "getpass.getpass",
+        '"enable"',
+        '"--now"',
+        "run_probe",
+        "127.0.0.1",
+        "CLOUDFLARED_SHA256",
+    )
+    for forbidden_manager_fragment in (
+        "shell=True",
+        "TUNNEL_TOKEN",
+        '--token"',
+    ):
+        if forbidden_manager_fragment in cloudflare_manager:
+            fail(
+                ROOT / "deploy/scripts/cloudflare_tunnel_manager.py",
+                "持久 Tunnel 管理器禁止通过命令行或环境传递 token",
+            )
+    cloudflare_unit = require_fragments(
+        ROOT / "deploy/systemd/sms-platform-cloudflare-tunnel.service",
+        "DynamicUser=yes",
+        "LoadCredential=tunnel-token:/etc/sms-platform/cloudflare-tunnel-token",
+        "run --token-file %d/tunnel-token",
+        "Restart=on-failure",
+        "NoNewPrivileges=yes",
+        "CapabilityBoundingSet=",
+        "WantedBy=multi-user.target",
+    )
+    for forbidden_tunnel_unit_fragment in ("EnvironmentFile=", "TUNNEL_TOKEN="):
+        if forbidden_tunnel_unit_fragment in cloudflare_unit:
+            fail(
+                ROOT / "deploy/systemd/sms-platform-cloudflare-tunnel.service",
+                "持久 Tunnel unit 禁止把 token 放入环境",
+            )
     vendor_seal = require_fragments(
         ROOT / "frontend/src/lib/vendorSeal.ts",
         "globalThis.isSecureContext === true",
         "globalThis.crypto.subtle",
         "VENDOR_CREDENTIAL_SECURE_CONTEXT_ERROR",
     )
-    seal_function = vendor_seal.split(
-        "export async function sealVendorCredentials", maxsplit=1
-    )[-1]
-    secure_context_position = seal_function.find(
-        "isVendorCredentialSecureContext()"
-    )
+    seal_function = vendor_seal.split("export async function sealVendorCredentials", maxsplit=1)[-1]
+    secure_context_position = seal_function.find("isVendorCredentialSecureContext()")
     credential_position = seal_function.find("credentials.secretName")
     if (
         secure_context_position < 0
@@ -527,7 +559,7 @@ def check_vendor_live_invariants() -> None:
         "isVendorCredentialSecureContext",
         "当前入口不支持正式凭据安全加密。",
         "打开正式凭据安全入口",
-        ":disabled=\"submitting || !secureContextAvailable\"",
+        ':disabled="submitting || !secureContextAvailable"',
     )
 
     update_contract = require_fragments(
@@ -581,7 +613,9 @@ def check_vendor_live_invariants() -> None:
         "deploy/scripts/test_secure_access_contract.py",
         "deploy/scripts/test_secure_access_manager.py",
         "deploy/scripts/test_secure_access_runtime.py",
+        "deploy/scripts/cloudflare_tunnel_manager.py",
         "deploy/systemd/sms-platform-test-secure-access.service",
+        "deploy/systemd/sms-platform-cloudflare-tunnel.service",
         "deploy/sms-compose",
         "scripts/check_invariants.py",
         "scripts/classify_ci_changes.py",
@@ -617,6 +651,9 @@ def check_vendor_live_invariants() -> None:
         "dispatch_secure_access()",
         "reject_production_control_plane secure-access",
         "start | status | stop",
+        "dispatch_cloudflare_tunnel()",
+        "reject_production_control_plane cloudflare-tunnel",
+        "install-token | start | status | verify | stop",
     )
     update_dispatch = wrapper.split("dispatch_test_update()", maxsplit=1)[-1].split(
         "run_locked_operation()", maxsplit=1
@@ -625,7 +662,7 @@ def check_vendor_live_invariants() -> None:
         if forbidden in update_dispatch:
             fail(ROOT / "deploy/sms-compose", f"快速更新包装器禁止 {forbidden}")
     secure_dispatch = wrapper.split("dispatch_secure_access()", maxsplit=1)[-1].split(
-        "run_locked_operation()", maxsplit=1
+        "dispatch_cloudflare_tunnel()", maxsplit=1
     )[0]
     for forbidden in (
         "prepare_runtime_secrets",
@@ -636,6 +673,17 @@ def check_vendor_live_invariants() -> None:
     ):
         if forbidden in secure_dispatch:
             fail(ROOT / "deploy/sms-compose", f"临时 HTTPS 包装器禁止 {forbidden}")
+    cloudflare_dispatch = wrapper.split("dispatch_cloudflare_tunnel()", maxsplit=1)[-1].split(
+        "run_locked_operation()", maxsplit=1
+    )[0]
+    for forbidden in (
+        "prepare_runtime_secrets",
+        "run_with_lifecycle_lock",
+        "--token ",
+        "TUNNEL_TOKEN",
+    ):
+        if forbidden in cloudflare_dispatch:
+            fail(ROOT / "deploy/sms-compose", f"持久 Tunnel 包装器禁止 {forbidden}")
 
     require_fragments(
         ROOT / "scripts/classify_ci_changes.py",

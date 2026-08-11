@@ -48,6 +48,7 @@ PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
 PUBLIC_BASELINE_MANAGER=""
 HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
 TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
+CLOUDFLARE_TUNNEL_MANAGER="$HOST_CONTROL_ROOT/cloudflare_tunnel_manager.py"
 HOST_BOOTSTRAP=0
 if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
   HOST_BOOTSTRAP=1
@@ -69,6 +70,10 @@ fi
 if [[ "${SMS_SECURE_ACCESS_MANAGER_SMOKE:-0}" == 1 &&
       "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
   TEST_SECURE_ACCESS_MANAGER="$ROOT/deploy/scripts/test_secure_access_manager.py"
+fi
+if [[ "${SMS_CLOUDFLARE_TUNNEL_MANAGER_SMOKE:-0}" == 1 &&
+      "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
+  CLOUDFLARE_TUNNEL_MANAGER="$ROOT/deploy/scripts/cloudflare_tunnel_manager.py"
 fi
 DEFAULT_RELEASE_ROOT="/var/lib/sms-platform/releases"
 RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
@@ -93,6 +98,7 @@ usage() {
   echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
+  echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
   echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
   echo "lifecycle locking: portable Python fcntl runner" >&2
@@ -887,6 +893,29 @@ dispatch_secure_access() {
   esac
 }
 
+dispatch_cloudflare_tunnel() {
+  local command="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  reject_production_control_plane cloudflare-tunnel || return $?
+  case "$command" in
+    install | install-token | start | status | verify | stop)
+      [[ $# -eq 0 ]] || return 2
+      ;;
+    configure)
+      [[ $# -eq 2 && "$1" == --hostname ]] || return 2
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+  /usr/bin/env \
+    PYTHONNOUSERSITE=1 \
+    "PYTHONPATH=$HOST_CONTROL_ROOT" \
+    /usr/bin/python3 "$CLOUDFLARE_TUNNEL_MANAGER" "$command" "$@"
+}
+
 run_locked_operation() {
   local operation="$1"
   local lock_fd="${SMS_LIFECYCLE_LOCK_FD:-}"
@@ -1072,6 +1101,15 @@ case "$ACTION" in
     ;;
   secure-access)
     if dispatch_secure_access "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  cloudflare-tunnel)
+    if dispatch_cloudflare_tunnel "$@"; then
       :
     else
       control_status=$?

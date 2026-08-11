@@ -1,0 +1,50 @@
+[Unit]
+Description=SMS Platform persistent Cloudflare Named Tunnel
+Requires=sms-platform.service
+Wants=network-online.target
+After=network-online.target sms-platform.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=tunnel-token:/etc/sms-platform/cloudflare-tunnel-token
+ExecStart=/usr/local/libexec/sms-platform/cloudflared tunnel --no-autoupdate --protocol http2 run --token-file %d/tunnel-token
+TimeoutStopSec=15s
+KillMode=control-group
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+Environment=HOME=/nonexistent
+Environment=XDG_CONFIG_HOME=/nonexistent
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+TasksMax=256
+LimitNOFILE=4096
+
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
