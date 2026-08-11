@@ -318,7 +318,7 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert 'expected_stages+=",10"' in gate["run"]
 
 
-def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> None:
+def test_owner_pr_automation_only_opens_draft_for_independent_review() -> None:
     draft = load_workflow(AUTO_DRAFT_WORKFLOW)
     draft_triggers = workflow_triggers(draft)
     assert draft_triggers == {"push": {"branches-ignore": ["main"]}}
@@ -330,111 +330,10 @@ def test_owner_pr_automation_is_exact_sha_bound_and_never_bypasses_checks() -> N
     assert draft_job["if"] == "${{ github.actor == github.repository_owner }}"
     draft_commands = job_commands(draft_job)
     assert '"draft=true"' in draft_commands
-    assert "Successful push CI will mark this PR Ready and queue squash merge." in (
-        draft_commands
-    )
-
-    merge = load_workflow(AUTO_MERGE_WORKFLOW)
-    merge_triggers = workflow_triggers(merge)
-    assert merge_triggers == {
-        "workflow_run": {
-            "workflows": ["CI"],
-            "types": ["completed"],
-        }
-    }
-    assert merge["permissions"] == {
-        "actions": "write",
-        "contents": "write",
-        "pull-requests": "write",
-    }
-    assert merge["concurrency"] == {
-        "group": "auto-merge-owner-pr-${{ github.event.workflow_run.head_branch }}",
-        "cancel-in-progress": False,
-    }
-
-    jobs = merge["jobs"]
-    assert set(jobs) == {"queue"}
-    queue = jobs["queue"]
-    assert queue["name"] == "auto-merge-owner-pr"
-    assert queue["timeout-minutes"] == 15
-    for condition in (
-        "workflow_run.conclusion == 'success'",
-        "workflow_run.event == 'push'",
-        "workflow_run.path == '.github/workflows/ci.yml'",
-        "workflow_run.head_branch != 'main'",
-        "workflow_run.actor.login == github.repository_owner",
-        "workflow_run.head_repository.full_name == github.repository",
-    ):
-        assert condition in queue["if"]
-
-    checkout = queue["steps"][0]
-    assert checkout["uses"] == (
-        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
-    )
-    assert checkout["with"] == {
-        "ref": "main",
-        "fetch-depth": 0,
-        "persist-credentials": True,
-    }
-
-    step = queue["steps"][1]
-    assert step["env"] == {
-        "GH_TOKEN": "${{ github.token }}",
-        "HEAD_BRANCH": "${{ github.event.workflow_run.head_branch }}",
-        "HEAD_SHA": "${{ github.event.workflow_run.head_sha }}",
-        "REPOSITORY": "${{ github.repository }}",
-        "SOURCE_RUN_ID": "${{ github.run_id }}",
-        "SOURCE_RUN_ATTEMPT": "${{ github.run_attempt }}",
-    }
-    commands = step["run"]
-    for token in (
-        "set -euo pipefail",
-        'test "$HEAD_BRANCH" != main',
-        'git check-ref-format "refs/heads/$HEAD_BRANCH"',
-        "gh pr list",
-        "--base main",
-        "--state all",
-        "--limit 20",
-        '.headRefOid == $sha',
-        '(.state == "OPEN" or .state == "MERGED")',
-        "test \"$count\" == 1",
-        "gh pr view",
-        "'.headRefOid'",
-        '== "$HEAD_SHA"',
-        "'.isCrossRepository'",
-        "gh pr ready",
-        "gh pr merge",
-        "--auto",
-        "--squash",
-        '--match-head-commit "$HEAD_SHA"',
-        "--json number,state,isDraft,mergedAt,mergeCommit",
-        "gh pr merge \"$number\" --repo \"$REPOSITORY\" --disable-auto",
-        "PR did not merge before timeout",
-        'test "$(jq -r \'.headRefOid\' <<<"$details")" == "$HEAD_SHA"',
-        'merge_sha="$(jq -r \'.mergeCommit.oid // empty\' <<<"$details")"',
-        "refs/heads/main:refs/remotes/origin/main",
-        "git merge-base --is-ancestor",
-        "Exact PR was already merged; resuming post-merge steps.",
-        'tag="post-merge-ci-${merge_sha}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"',
-        '--force-with-lease="${tag_ref}:"',
-        "gh workflow run ci.yml",
-        '--ref "$tag"',
-        '-f "post_merge_candidate=$merge_sha"',
-        '-f "post_merge_head=$HEAD_SHA"',
-        '-f "post_merge_pr=$number"',
-        "cleanup_tag",
-        'branch_state="$(git ls-remote --heads origin "$branch_ref")"',
-        "Merged branch was already deleted.",
-        '--force-with-lease="${branch_ref}:${HEAD_SHA}"',
-        '":$branch_ref"',
-        "Merged branch was deleted concurrently.",
-        "Refusing to delete a merged branch that no longer matches its CI SHA.",
-    ):
-        assert token in commands
-    assert "--admin" not in commands
-    assert "gh api" not in commands
-    assert "secrets." not in AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
-    assert_actions_are_immutable(merge)
+    assert "Mark Ready only after independent review is available." in draft_commands
+    assert "gh pr ready" not in draft_commands
+    assert "gh pr merge" not in draft_commands
+    assert not AUTO_MERGE_WORKFLOW.exists()
 
 
 def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:

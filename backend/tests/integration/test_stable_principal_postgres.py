@@ -252,11 +252,12 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                             INSERT INTO sms_batch(
                               batch_no,category,channel,creator,
                               creator_account_id,creator_identity_id,
-                              dept,content,send_content_enc,status
+                              dept,content,display_content_enc,send_content_enc,status
                             ) VALUES(
                               :batch_no,'notice','web',:creator,
                               :account_id,:identity_id,
-                              '平台部','维护通知',:ciphertext,'pending_approval'
+                              '平台部','[encrypted]',:ciphertext,:ciphertext,
+                              'pending_approval'
                             ) RETURNING id
                             """
                         ),

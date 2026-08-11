@@ -101,11 +101,12 @@ async def _create_batch(
                 """
                 INSERT INTO sms_batch(
                   batch_no,category,channel,app_id,creator,dept,content,
-                  send_content_enc,segments,quota_cost,status,total,
+                  display_content_enc,send_content_enc,segments,quota_cost,status,total,
                   usage_reservation_id
                 ) VALUES(
                   :batch_no,:category,'api',:app_id,'integration','账本测试部',
-                  'masked',:ciphertext,1,:quota_cost,'queued',1,:reservation_id
+                  '[encrypted]',:ciphertext,:ciphertext,1,:quota_cost,'queued',1,
+                  :reservation_id
                 ) RETURNING id
                 """
             ),

@@ -442,6 +442,29 @@ class CryptoService:
             hashlib.sha256,
         ).hexdigest()
 
+    def stable_hmac_fingerprint(
+        self,
+        canonical_value: bytes,
+        *,
+        domain: str,
+    ) -> tuple[int, str]:
+        """用最早保留版本生成跨活动密钥轮换稳定的领域指纹。"""
+
+        if not isinstance(canonical_value, bytes) or not canonical_value:
+            raise ValueError("canonical value must be non-empty bytes")
+        if CONTEXT_COMPONENT_PATTERN.fullmatch(domain) is None:
+            raise ValueError("fingerprint domain is invalid")
+        version = min(self._hmac_keys)
+        prefix = f"sms-platform:fingerprint:{domain}:v1:key:{version}\0".encode("ascii")
+        return (
+            version,
+            hmac.new(
+                self._hmac_key(version),
+                prefix + canonical_value,
+                hashlib.sha256,
+            ).hexdigest(),
+        )
+
     @property
     def hmac_versions(self) -> frozenset[int]:
         """只暴露索引版本集合，供持久化投影做完整性校验。"""

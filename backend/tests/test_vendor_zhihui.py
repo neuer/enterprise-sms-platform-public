@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -16,6 +18,7 @@ from app.vendor.zhihui import (
     VendorTotalTimeout,
     VendorTransportError,
     ZhihuiClient,
+    decode_pulled_payload,
 )
 
 
@@ -48,7 +51,16 @@ class RecordingTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append((request.url.path, body))
-        return httpx.Response(200, json=self.responses[request.url.path], request=request)
+        encoded = json.dumps(self.responses[request.url.path]).encode()
+        return httpx.Response(200, stream=RawStream(encoded), request=request)
+
+
+class RawStream(httpx.AsyncByteStream):
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self.content
 
 
 def make_client(transport: httpx.AsyncBaseTransport) -> ZhihuiClient:
@@ -128,6 +140,50 @@ async def test_all_eight_endpoints_use_exact_camel_case_payloads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pull_transport_returns_complete_non_json_bytes_before_protocol_parsing() -> None:
+    raw = b"not-json-but-may-already-be-consumed"
+    client = make_client(
+        httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=RawStream(raw), request=request)
+        )
+    )
+
+    pulled = await client.get_report_raw()
+    await client.aclose()
+
+    assert pulled.raw_payload == raw
+    assert pulled.status_code == 200
+    with pytest.raises(VendorProtocolError, match="not JSON"):
+        decode_pulled_payload(pulled, "GetReport")
+
+
+@pytest.mark.asyncio
+async def test_vendor_preserves_compressed_wire_bytes_without_httpx_decoding() -> None:
+    decoded = b"x" * (8 * 1024 * 1024)
+    compressed = gzip.compress(decoded)
+    seen_accept_encoding: list[str] = []
+
+    async def compressed_response(request: httpx.Request) -> httpx.Response:
+        seen_accept_encoding.append(request.headers.get("accept-encoding", ""))
+        return httpx.Response(
+            200,
+            stream=RawStream(compressed),
+            headers={"content-encoding": "gzip"},
+            request=request,
+        )
+
+    client = make_client(httpx.MockTransport(compressed_response))
+    pulled = await client.get_report_raw()
+    assert pulled.raw_payload == compressed
+    assert pulled.content_encoding == "unsupported"
+    with pytest.raises(VendorProtocolError, match="content-encoding"):
+        decode_pulled_payload(pulled, "GetReport")
+    await client.aclose()
+
+    assert seen_accept_encoding == ["identity"]
+
+
+@pytest.mark.asyncio
 async def test_vendor_error_exposes_complete_policy_without_secret_logging(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -198,7 +254,7 @@ async def test_vendor_response_body_over_hard_limit_fails_closed() -> None:
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
             200,
-            content=b'{"code":0,"msg":null,"data":' + b"x" * 64 + b"}",
+            stream=RawStream(b'{"code":0,"msg":null,"data":' + b"x" * 64 + b"}"),
             request=request,
         )
     )
@@ -220,7 +276,7 @@ async def test_vendor_declared_content_length_over_limit_fails_before_read() -> 
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
             200,
-            content=b"{}",
+            stream=RawStream(b"{}"),
             headers={"content-length": "4096"},
             request=request,
         )

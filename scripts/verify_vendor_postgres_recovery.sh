@@ -12,9 +12,15 @@ chmod 700 "$tmp_root"
 container="sms-vendor-postgres-${UID}-$$"
 database="sms_vendor_recovery"
 owner_password_file="$tmp_root/db_owner_password"
+data_aes_key_file="$tmp_root/data_aes_key"
+data_hmac_key_file="$tmp_root/data_hmac_key"
 owner_password="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+data_aes_key="$(python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+data_hmac_key="$(python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())')"
 umask 077
 printf '%s\n' "$owner_password" >"$owner_password_file"
+printf '%s\n' "$data_aes_key" >"$data_aes_key_file"
+printf '%s\n' "$data_hmac_key" >"$data_hmac_key_file"
 # 外层目录保持仅当前操作者可遍历；文件使用 Docker secrets 的只读模式，
 # 让容器内已降权的 postgres 用户能够读取只读 bind mount。
 chmod 0444 "$owner_password_file"
@@ -72,6 +78,8 @@ esac
   DB_PORT="$port" \
   DB_NAME="$database" \
   DB_OWNER_PASSWORD_FILE="$owner_password_file" \
+  DATA_AES_KEY_FILE="$data_aes_key_file" \
+  DATA_HMAC_KEY_FILE="$data_hmac_key_file" \
     uv run alembic upgrade head
 
   role_boundary_result="$(

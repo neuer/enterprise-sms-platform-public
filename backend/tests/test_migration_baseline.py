@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -8,8 +11,38 @@ from typing import Any
 import pytest
 from sqlalchemy.schema import ExecutableDDLElement
 
+from app.services.crypto import CryptoService, EncryptionContext
+
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
+
+
+class BackfillResult:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def mappings(self) -> BackfillResult:
+        return self
+
+    def all(self) -> list[dict[str, object]]:
+        return self.rows
+
+
+class BackfillConnection:
+    def __init__(self, selects: list[list[dict[str, object]]]) -> None:
+        self.selects = selects
+        self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def execute(
+        self,
+        statement: object,
+        params: dict[str, object] | None = None,
+    ) -> BackfillResult:
+        sql = str(statement)
+        self.calls.append((sql, params))
+        if sql.lstrip().startswith("SELECT"):
+            return BackfillResult(self.selects.pop(0))
+        return BackfillResult([])
 
 
 def load_baseline() -> ModuleType:
@@ -68,6 +101,8 @@ def test_migration_checker_explicitly_uses_mock_vendor_mode() -> None:
     assert '"DEBUG": "1"' in checker
     assert '"AUTH_MOCK": "1"' in checker
     assert '"VENDOR_MOCK": "1"' in checker
+    assert '"DATA_AES_KEY_FILE": str(DATA_AES_SECRET)' in checker
+    assert '"DATA_HMAC_KEY_FILE": str(DATA_HMAC_SECRET)' in checker
 
 
 def test_alert_smtp_relay_config_is_in_schema_and_followup_migration() -> None:
@@ -733,6 +768,130 @@ def test_security_scan_remediation_migration_is_fail_closed_and_idempotent() -> 
     spec.loader.exec_module(module)
     assert module.revision == "0062_security_scan_remediations"
     assert module.down_revision == "0061_vendor_binding_outbox"
+
+
+def test_sensitive_content_migration_encrypts_history_and_preserves_raw_status() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0063_sensitive_content_and_raw_first.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "display_content_enc BYTEA       NOT NULL",
+        "event_key_version SMALLINT NOT NULL",
+        "content_enc     BYTEA NOT NULL",
+        "http_status    SMALLINT    NOT NULL DEFAULT 200",
+        "content_encoding VARCHAR(16) NOT NULL DEFAULT 'identity'",
+        "ck_sms_batch_content_marker",
+        "ck_sms_reply_content_marker",
+        "ck_reply_event_content_marker",
+    ):
+        assert fragment in schema
+    for fragment in (
+        "CryptoService.from_settings(get_settings())",
+        "_backfill_batch_content(crypto)",
+        "_backfill_reply_content(crypto)",
+        "stable_hmac_fingerprint",
+        "encrypt_bound_packed_text",
+        "ALTER TABLE raw_vendor_log ADD COLUMN IF NOT EXISTS http_status",
+        "content_encoding VARCHAR(16) DEFAULT 'identity'",
+    ):
+        assert fragment in source
+    assert "'[redacted]'" not in source
+    assert "SMS_COMPONENT: migrate" in compose
+    migrate_service = compose.split("  migrate:", maxsplit=1)[1].split(
+        "\n  api:", maxsplit=1
+    )[0]
+    assert "source: data_aes_key" in migrate_service
+    assert "source: data_hmac_key" in migrate_service
+
+    spec = importlib.util.spec_from_file_location("sensitive_content_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0063_sensitive_content_and_raw_first"
+    assert module.down_revision == "0062_security_scan_remediations"
+
+
+def test_sensitive_content_backfill_preserves_plaintext_only_inside_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = BACKEND / "migrations/versions/0063_sensitive_content_and_raw_first.py"
+    spec = importlib.util.spec_from_file_location("sensitive_backfill_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    key = base64.b64encode(b"m" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+
+    batch_connection = BackfillConnection(
+        [[{"id": 7, "batch_no": "BATCH-7", "content": "验证码123456"}], []]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: batch_connection)
+    module._backfill_batch_content(crypto)
+    batch_update = next(
+        params
+        for sql, params in batch_connection.calls
+        if sql.lstrip().startswith("UPDATE sms_batch")
+    )
+    assert batch_update is not None
+    assert "content" not in batch_update
+    assert batch_update["content_enc"] != "验证码123456".encode()
+    assert crypto.decrypt_bound_packed_text(
+        bytes(batch_update["content_enc"]),
+        EncryptionContext(
+            domain="sms-display-content",
+            table="sms_batch",
+            column="display_content_enc",
+            object_id="BATCH-7",
+        ),
+    ) == "验证码123456"
+
+    old_event_key = hashlib.sha256(b"legacy reply").hexdigest()
+    reply_connection = BackfillConnection(
+        [
+            [
+                {
+                    "event_key": old_event_key,
+                    "raw_id": None,
+                    "vendor_task_id": "task-1",
+                    "custom_id": None,
+                    "phone_enc": b"phone-ciphertext",
+                    "phone_hmac": "a" * 64,
+                    "phone_mask": "138****8000",
+                    "key_version": 1,
+                    "ext_code": "01",
+                    "content": "TD",
+                    "reply_time": datetime(2026, 8, 11, tzinfo=UTC),
+                    "created_at": datetime(2026, 8, 11, tzinfo=UTC),
+                }
+            ],
+            [],
+        ]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: reply_connection)
+    module._backfill_reply_content(crypto)
+    reply_insert = next(
+        params
+        for sql, params in reply_connection.calls
+        if sql.lstrip().startswith("INSERT INTO reply_event")
+    )
+    assert reply_insert is not None
+    assert "content" not in reply_insert
+    assert reply_insert["content_enc"] != b"TD"
+    assert reply_insert["event_key"] != old_event_key
+    assert crypto.decrypt_bound_packed_text(
+        bytes(reply_insert["content_enc"]),
+        EncryptionContext(
+            domain="reply-content",
+            table="reply_event",
+            column="content_enc",
+            object_id=str(reply_insert["event_key"]),
+        ),
+    ) == "TD"
+    statements = [sql.lstrip() for sql, _params in reply_connection.calls]
+    assert any(sql.startswith("UPDATE sms_reply") for sql in statements)
+    assert any(sql.startswith("DELETE FROM reply_event") for sql in statements)
 
 
 def test_security_daily_generation_source_migration_is_expand_only() -> None:

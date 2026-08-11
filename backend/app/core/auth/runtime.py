@@ -71,6 +71,8 @@ class AuthenticationService(Protocol):
         ip: str,
     ) -> AuthenticatedIdentity: ...
 
+    async def record_bound_success(self, username: str) -> None: ...
+
 
 class PasswordHasher(Protocol):
     def hash(self, password: str) -> str: ...
@@ -109,6 +111,11 @@ class AuthFacade:
 
     def password_policy(self) -> dict[str, int | bool | str]:
         return self.policy.public_contract()
+
+    async def _record_bound_success(self, account: PlatformAccount) -> None:
+        """账号归属确认后才允许清除规范化登录名的失败/锁定状态。"""
+
+        await self.auth.record_bound_success(account.normalized_login_name)
 
     async def reauthenticate_current(
         self,
@@ -166,6 +173,7 @@ class AuthFacade:
         )
         if not same_identity:
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None)
+        await self._record_bound_success(account)
 
     async def login(
         self,
@@ -182,6 +190,7 @@ class AuthFacade:
                 ip,
             )
             user = await self.users.resolve_identity(identity, ip)
+            await self._record_bound_success(user)
         except AccountLocked:
             raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
         except RateLimited:

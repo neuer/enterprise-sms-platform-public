@@ -1751,7 +1751,9 @@ class UatSuite:
         protected_count = self._probe().psql_count(
             "SELECT count(*) FROM sms_batch "
             "WHERE batch_no=CAST(:'batch_no' AS char(32)) "
-            "AND content LIKE '%******%' AND content !~ '[0-9]{4,8}'",
+            "AND content='[encrypted]' "
+            "AND display_content_enc IS NOT NULL "
+            "AND octet_length(display_content_enc)>32",
             batch_no=batch_no,
         )
         detail = self._batch("24", batch_no, app="app-iam")

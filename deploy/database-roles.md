@@ -68,7 +68,9 @@ Compose 启动顺序固定为：
 1. `postgres` 只挂载 owner secret，init 脚本创建 NOLOGIN 占位角色；
 2. `db-role-provision` 挂载 PostgreSQL UID 副本，通过 `.pgpass` 连接，设置七个独立
    密码和 LOGIN，并撤销数据库的 PUBLIC CONNECT；
-3. `migrate` 只挂载 owner secret，执行 Alembic 和分区维护；
+3. `migrate` 挂载 owner secret，并仅额外挂载数据 AES/HMAC keyring；0063 使用它们在
+   同一事务内把历史短信/回复展示正文前滚为上下文密文。迁移容器不得获得厂商、JWT、
+   LDAP、Redis 或运行数据库角色凭据；
 4. 各运行服务只挂载其实际需要的角色 secret。
 
 应用 DSN 使用 SQLAlchemy `URL.create`。固定用户名与固定 secret 文件映射由

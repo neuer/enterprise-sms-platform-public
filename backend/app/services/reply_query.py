@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
+from app.services.content_protection import decrypt_reply_content
 from app.services.crypto import CryptoService
 from app.settings import Settings, get_settings
 
@@ -105,8 +106,13 @@ class ReplyQueryService:
 
 
 class SqlReplyQueryRepository:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -148,11 +154,14 @@ class SqlReplyQueryRepository:
                 rows_result = await connection.execute(
                     text(
                         """
-                        SELECT r.id,r.phone_mask,r.content,b.batch_no,r.reply_time,
+                        SELECT r.id,r.phone_mask,trim(r.event_key) event_key,
+                          e.content_enc,b.batch_no,r.reply_time,
                           EXISTS(
                             SELECT 1 FROM blacklist bl WHERE bl.phone_hmac=r.phone_hmac
                           ) AS blacklisted
-                        FROM sms_reply r LEFT JOIN sms_batch b ON b.id=r.batch_id
+                        FROM sms_reply r
+                        JOIN reply_event e ON e.event_key=r.event_key
+                        LEFT JOIN sms_batch b ON b.id=r.batch_id
                         WHERE """
                         + where
                         + " ORDER BY r.reply_time DESC NULLS LAST,r.created_at DESC "
@@ -160,10 +169,16 @@ class SqlReplyQueryRepository:
                     ),
                     params,
                 )
-                return ReplyPage(
-                    int(count_result.scalar_one()),
-                    tuple(ReplyItem(**dict(row)) for row in rows_result.mappings()),
-                )
+                items: list[ReplyItem] = []
+                for row in rows_result.mappings():
+                    values = dict(row)
+                    content = decrypt_reply_content(
+                        self.crypto,
+                        values.pop("content_enc"),
+                        str(values.pop("event_key")),
+                    )
+                    items.append(ReplyItem(content=content, **values))
+                return ReplyPage(int(count_result.scalar_one()), tuple(items))
         finally:
             await engine.dispose()
 
@@ -181,7 +196,8 @@ class SqlReplyQueryRepository:
                         SELECT r.phone_hmac,r.phone_enc,r.phone_mask,r.key_version,
                           'reply_optout','上行回复退订',:actor
                         FROM sms_reply r LEFT JOIN sms_batch b ON b.id=r.batch_id
-                        WHERE r.id=:reply_id AND (:dept IS NULL OR b.dept=:dept)
+                        WHERE r.id=:reply_id AND r.batch_id IS NOT NULL
+                          AND (:dept IS NULL OR b.dept=:dept)
                         ON CONFLICT(phone_hmac) DO UPDATE SET
                           phone_enc=excluded.phone_enc,phone_mask=excluded.phone_mask,
                           key_version=excluded.key_version,source='reply_optout',

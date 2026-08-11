@@ -9,7 +9,7 @@ import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.batch_query import BatchAccessScope
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.operations_query import (
     TIMELINE_EVENT_LIMIT,
     MessageQueryPage,
@@ -27,6 +27,30 @@ def crypto() -> CryptoService:
     return CryptoService.from_secret_values(
         '{"active_version":2,"keys":{"1":"' + key1 + '","2":"' + key2 + '"}}',
         '{"active_version":2,"keys":{"1":"' + key1 + '","2":"' + key2 + '"}}',
+    )
+
+
+def batch_content(batch_no: str, content: str) -> bytes:
+    return crypto().encrypt_bound_packed_text(
+        content,
+        EncryptionContext(
+            domain="sms-display-content",
+            table="sms_batch",
+            column="display_content_enc",
+            object_id=batch_no,
+        ),
+    )
+
+
+def reply_content(event_key: str, content: str) -> bytes:
+    return crypto().encrypt_bound_packed_text(
+        content,
+        EncryptionContext(
+            domain="reply-content",
+            table="reply_event",
+            column="content_enc",
+            object_id=event_key,
+        ),
     )
 
 
@@ -227,7 +251,7 @@ def bind(repository: SqlOperationsQueryRepository, connection: FakeConnection) -
 
 @pytest.mark.asyncio
 async def test_sql_search_projects_mask_only_and_applies_department_scope() -> None:
-    repository = SqlOperationsQueryRepository()
+    repository = SqlOperationsQueryRepository(crypto=crypto())
     row = {
         "id": 9,
         "phone_mask": "138****8000",
@@ -237,7 +261,7 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
         "created_at": datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
         "batch_no": "BATCH-1",
         "category": "notice",
-        "content": "系统通知",
+        "display_content_enc": batch_content("BATCH-1", "系统通知"),
         "sender": "通知应用",
     }
     connection = FakeConnection([FakeResult(scalar=1), FakeResult(rows=[row])])
@@ -273,8 +297,8 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
 
 
 @pytest.mark.asyncio
-async def test_sql_timeline_combines_directions_and_badge_without_decryption() -> None:
-    repository = SqlOperationsQueryRepository()
+async def test_sql_timeline_decrypts_only_after_scope_filtering() -> None:
+    repository = SqlOperationsQueryRepository(crypto=crypto())
     moment = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
     events = [
         {
@@ -282,7 +306,9 @@ async def test_sql_timeline_combines_directions_and_badge_without_decryption() -
             "direction": "out",
             "category": "verify",
             "batch_no": "BATCH-1",
-            "content": "验证码******",
+            "batch_content_enc": batch_content("BATCH-1", "验证码******"),
+            "reply_content_enc": None,
+            "content_object_id": "BATCH-1",
             "status": "delivered",
             "sender": "验证码应用",
         },
@@ -291,7 +317,9 @@ async def test_sql_timeline_combines_directions_and_badge_without_decryption() -
             "direction": "in",
             "category": "verify",
             "batch_no": "BATCH-1",
-            "content": "退订",
+            "batch_content_enc": None,
+            "reply_content_enc": reply_content("e" * 64, "退订"),
+            "content_object_id": "e" * 64,
             "status": None,
             "sender": "用户",
         },
@@ -327,7 +355,7 @@ async def test_sql_timeline_combines_directions_and_badge_without_decryption() -
 
 @pytest.mark.asyncio
 async def test_sql_timeline_caps_events_and_marks_truncated() -> None:
-    repository = SqlOperationsQueryRepository()
+    repository = SqlOperationsQueryRepository(crypto=crypto())
     moment = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
     rows = [
         {
@@ -335,7 +363,9 @@ async def test_sql_timeline_caps_events_and_marks_truncated() -> None:
             "direction": "out",
             "category": "notice",
             "batch_no": f"BATCH-{index}",
-            "content": "系统通知",
+            "batch_content_enc": batch_content(f"BATCH-{index}", "系统通知"),
+            "reply_content_enc": None,
+            "content_object_id": f"BATCH-{index}",
             "status": "delivered",
             "sender": "通知应用",
         }

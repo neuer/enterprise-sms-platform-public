@@ -210,14 +210,16 @@ def get_pipeline_store() -> SqlPipelineStore:
 
 
 def get_batch_query_service() -> BatchQueryService:
-    return BatchQueryService()
+    settings = get_settings()
+    return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
 def get_operations_query_service() -> OperationsQueryService:
     settings = get_settings()
+    crypto = CryptoService.from_settings(settings)
     return OperationsQueryService(
-        SqlOperationsQueryRepository(settings),
-        CryptoService.from_settings(settings),
+        SqlOperationsQueryRepository(settings, crypto),
+        crypto,
     )
 
 

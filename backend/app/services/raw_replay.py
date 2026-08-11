@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Protocol
 
 from app.services.crypto import EncryptionContext
+from app.vendor.zhihui import RawPulledPayload, VendorError, decode_pulled_payload
 
 
 class RawReplayNotFound(LookupError):
@@ -30,6 +30,8 @@ class RawReplayRecord:
     payload_sha256: str
     key_version: int
     processed: bool
+    http_status: int = 200
+    content_encoding: str = "identity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,18 +113,19 @@ class RawReplayService:
         if hashlib.sha256(raw).hexdigest() != record.payload_sha256:
             await self._integrity_error(raw_id, "raw payload integrity mismatch")
             raise RawIntegrityConflict("raw payload integrity mismatch")
+        operation = "GetReport" if record.source == "report" else "GetReply"
         try:
-            document = json.loads(raw)
-        except (ValueError, UnicodeError):
-            await self._integrity_error(raw_id, "raw payload is not valid JSON")
-            raise RawIntegrityConflict("raw payload is not valid JSON") from None
-        if not isinstance(document, dict) or document.get("code") != 0 or "data" not in document:
+            data = decode_pulled_payload(
+                RawPulledPayload(raw, record.http_status, record.content_encoding),
+                operation,
+            )
+        except VendorError:
             await self._integrity_error(raw_id, "raw vendor envelope is invalid")
-            raise RawIntegrityConflict("raw vendor envelope is invalid")
+            raise RawIntegrityConflict("raw vendor envelope is invalid") from None
         if record.source == "report":
-            count = await self.reports.process_existing(raw_id, document["data"])
+            count = await self.reports.process_existing(raw_id, data)
         elif record.source == "reply":
-            count = await self.replies.process_existing(raw_id, document["data"])
+            count = await self.replies.process_existing(raw_id, data)
         else:
             await self._integrity_error(raw_id, "raw source is invalid")
             raise RawIntegrityConflict("raw source is invalid")

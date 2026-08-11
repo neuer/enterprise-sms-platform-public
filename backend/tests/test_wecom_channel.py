@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 from collections.abc import AsyncIterator
 
@@ -27,6 +28,7 @@ class FakeResponseContext:
 
 class FakeClient:
     response: httpx.Response
+    stream_headers: dict[str, str]
 
     def __init__(self, **kwargs: object) -> None:
         assert isinstance(kwargs["timeout"], httpx.Timeout)
@@ -39,7 +41,8 @@ class FakeClient:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    def stream(self, method: str, url: str, **_: object) -> FakeResponseContext:
+    def stream(self, method: str, url: str, **kwargs: object) -> FakeResponseContext:
+        self.stream_headers = dict(kwargs.get("headers", {}))  # type: ignore[arg-type]
         request = httpx.Request(method, url)
         self.response.request = request
         return FakeResponseContext(self.response)
@@ -91,3 +94,18 @@ async def test_wecom_accepts_small_success_response(
     monkeypatch.setattr(alert_module.httpx, "AsyncClient", FakeClient)
 
     await WeComChannel().send(WEBHOOK, EVENT)
+
+
+@pytest.mark.asyncio
+async def test_wecom_rejects_compressed_response_before_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeClient.response = httpx.Response(
+        200,
+        headers={"content-encoding": "gzip"},
+        content=gzip.compress(b"x" * (8 * 1024 * 1024)),
+    )
+    monkeypatch.setattr(alert_module.httpx, "AsyncClient", FakeClient)
+
+    with pytest.raises(RuntimeError, match="content-encoding"):
+        await WeComChannel().send(WEBHOOK, EVENT)

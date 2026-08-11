@@ -123,6 +123,9 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "postgres:16-alpine" in postgres_gate
     assert "POSTGRES_PASSWORD_FILE" in postgres_gate
     assert "DB_OWNER_PASSWORD_FILE" in postgres_gate
+    assert "DATA_AES_KEY_FILE" in postgres_gate
+    assert "DATA_HMAC_KEY_FILE" in postgres_gate
+    assert "secrets.token_bytes(32)" in postgres_gate
     assert 'chmod 700 "$tmp_root"' in postgres_gate
     assert 'chmod 0444 "$owner_password_file"' in postgres_gate
     assert "seq 1 90" in postgres_gate

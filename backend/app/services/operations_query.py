@@ -12,6 +12,10 @@ from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope
+from app.services.content_protection import (
+    decrypt_batch_display_content,
+    decrypt_reply_content,
+)
 from app.services.crypto import CryptoService
 from app.settings import Settings, get_settings
 
@@ -192,8 +196,13 @@ class OperationsQueryService:
 class SqlOperationsQueryRepository:
     """PostgreSQL 查询事实源；普通查询永不投影手机号密文或 HMAC。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -241,7 +250,8 @@ class SqlOperationsQueryRepository:
                     text(
                         """
                         SELECT m.id,m.phone_mask,m.status,m.report_desc,m.report_time,
-                          m.created_at,trim(b.batch_no) batch_no,b.category,b.content,
+                          m.created_at,trim(b.batch_no) batch_no,b.category,
+                          b.display_content_enc,
                           CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender
                         """
                         + source
@@ -251,10 +261,16 @@ class SqlOperationsQueryRepository:
                     ),
                     params,
                 )
-                return MessageQueryPage(
-                    int(count_result.scalar_one()),
-                    tuple(MessageQueryItem(**dict(row)) for row in rows_result.mappings()),
-                )
+                items: list[MessageQueryItem] = []
+                for row in rows_result.mappings():
+                    values = dict(row)
+                    content = decrypt_batch_display_content(
+                        self.crypto,
+                        values.pop("display_content_enc"),
+                        str(values["batch_no"]),
+                    )
+                    items.append(MessageQueryItem(content=content, **values))
+                return MessageQueryPage(int(count_result.scalar_one()), tuple(items))
         finally:
             await engine.dispose()
 
@@ -313,7 +329,10 @@ class SqlOperationsQueryRepository:
                         f"""
                         SELECT * FROM (
                           SELECT m.created_at ts,'out' direction,b.category,
-                            trim(b.batch_no) batch_no,b.content,m.status,
+                            trim(b.batch_no) batch_no,
+                            b.display_content_enc batch_content_enc,
+                            NULL::bytea reply_content_enc,
+                            trim(b.batch_no) content_object_id,m.status,
                             CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender
                           FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                           LEFT JOIN app a ON a.id=b.app_id
@@ -323,9 +342,13 @@ class SqlOperationsQueryRepository:
                             AND {predicate}
                           UNION ALL
                           SELECT COALESCE(r.reply_time,r.created_at) ts,'in' direction,
-                            b.category,trim(b.batch_no) batch_no,r.content,NULL status,
+                            b.category,trim(b.batch_no) batch_no,
+                            NULL::bytea batch_content_enc,e.content_enc reply_content_enc,
+                            trim(r.event_key) content_object_id,NULL status,
                             '用户' sender
-                          FROM sms_reply r LEFT JOIN sms_batch b ON b.id=r.batch_id
+                          FROM sms_reply r
+                          JOIN reply_event e ON e.event_key=r.event_key
+                          LEFT JOIN sms_batch b ON b.id=r.batch_id
                           WHERE r.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
                             AND (CAST(:start AS timestamptz) IS NULL
                               OR COALESCE(r.reply_time,r.created_at)>=:start)
@@ -337,17 +360,63 @@ class SqlOperationsQueryRepository:
                     ),
                     params,
                 )
-                rows = [dict(row) for row in events_result.mappings()]
-                truncated = len(rows) > TIMELINE_EVENT_LIMIT
+                events: list[TimelineEvent] = []
+                for row in events_result.mappings():
+                    values = dict(row)
+                    object_id = str(values.pop("content_object_id"))
+                    batch_content = values.pop("batch_content_enc")
+                    reply_content = values.pop("reply_content_enc")
+                    content = (
+                        decrypt_batch_display_content(
+                            self.crypto,
+                            batch_content,
+                            object_id,
+                        )
+                        if values["direction"] == "out"
+                        else decrypt_reply_content(
+                            self.crypto,
+                            reply_content,
+                            object_id,
+                        )
+                    )
+                    timestamp = values["ts"]
+                    if not isinstance(timestamp, datetime):
+                        raise ValueError("timeline timestamp is invalid")
+                    events.append(
+                        TimelineEvent(
+                            ts=timestamp,
+                            direction=str(values["direction"]),
+                            category=(
+                                str(values["category"])
+                                if values["category"] is not None
+                                else None
+                            ),
+                            batch_no=(
+                                str(values["batch_no"])
+                                if values["batch_no"] is not None
+                                else None
+                            ),
+                            content=content,
+                            status=(
+                                str(values["status"])
+                                if values["status"] is not None
+                                else None
+                            ),
+                            sender=(
+                                str(values["sender"])
+                                if values["sender"] is not None
+                                else None
+                            ),
+                        )
+                    )
+                truncated = len(events) > TIMELINE_EVENT_LIMIT
                 return Timeline(
                     PhoneBadge(
                         blacklist_row is not None,
                         str(blacklist_row["source"]) if blacklist_row is not None else None,
                         int(received_result.scalar_one()),
                     ),
-                    tuple(
-                        TimelineEvent(**row) for row in rows[:TIMELINE_EVENT_LIMIT]
-                    ),
+                    tuple(events[:TIMELINE_EVENT_LIMIT]),
                     truncated,
                 )
         finally:

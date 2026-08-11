@@ -92,6 +92,8 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
                         "payload_sha256": "a" * 64,
                         "key_version": 2,
                         "processed": False,
+                        "http_status": 200,
+                        "content_encoding": "identity",
                         "claimed": True,
                     }
                 ]

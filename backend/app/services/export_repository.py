@@ -640,7 +640,8 @@ class SqlExportRepository:
             statement = text(
                 f"""
                 SELECT m.id,m.created_at,trim(b.batch_no) batch_no,b.category,
-                  {phone_columns},m.status,m.report_desc,m.report_time,b.content
+                  {phone_columns},m.status,m.report_desc,m.report_time,
+                  b.display_content_enc
                 FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                 WHERE {_message_where()}
                 ORDER BY m.created_at,m.id LIMIT {MAX_EXPORT_ROWS + 1}

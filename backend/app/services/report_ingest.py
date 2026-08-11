@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
-from app.vendor.zhihui import RawPulledPayload
+from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
 
 LOGGER = logging.getLogger(__name__)
 VENDOR_LOCAL_TIME = re.compile(
@@ -60,6 +60,14 @@ class ReportGateway(Protocol):
 
 class ReportRepository(Protocol):
     async def persist_raw(self, **values: Any) -> int: ...
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None: ...
 
     async def apply_report(
         self,
@@ -242,24 +250,38 @@ class ReportIngestService:
                 object_id=f"report:{payload_sha256}",
             ),
         )
-        records = pulled.data if isinstance(pulled.data, list) else []
-        custom_ids = sorted(
-            {
-                str(normalized["customId"]).strip()
-                for item in records
-                if isinstance(item, dict)
-                and (normalized := _normalized(item)).get("customId")
-                and isinstance(normalized["customId"], str)
-            }
-        )
         raw_id = await self.repository.persist_raw(
             payload_enc=encrypted.payload,
             payload_sha256=payload_sha256,
             key_version=encrypted.key_version,
-            custom_ids=custom_ids,
-            item_count=len(records),
+            http_status=pulled.status_code,
+            content_encoding=pulled.content_encoding,
+            custom_ids=[],
+            item_count=0,
         )
-        return await self.process_existing(raw_id, pulled.data)
+        try:
+            data = decode_pulled_payload(pulled, "GetReport")
+        except Exception as error:
+            await self.repository.mark_error(
+                raw_id,
+                f"{type(error).__name__}: vendor response parsing failed",
+            )
+            raise
+        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+            custom_ids = sorted(
+                {
+                    str(normalized["customId"]).strip()
+                    for item in data
+                    if (normalized := _normalized(item)).get("customId")
+                    and isinstance(normalized["customId"], str)
+                }
+            )
+            await self.repository.update_metadata(
+                raw_id,
+                custom_ids=custom_ids,
+                item_count=len(data),
+            )
+        return await self.process_existing(raw_id, data)
 
     async def process_existing(self, raw_id: int, data: object) -> int:
         """解析已独立提交的 raw；供轮询与受控重放共用。"""

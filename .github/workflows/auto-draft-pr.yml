@@ -39,7 +39,7 @@ jobs:
               -f "title=Draft: $HEAD_BRANCH" \
               -f "head=$HEAD_BRANCH" \
               -f "base=main" \
-              -f "body=Automated owner PR. Successful push CI will mark this PR Ready and queue squash merge." \
+              -f "body=Automated owner Draft PR. Mark Ready only after independent review is available." \
               -F "draft=true" \
               >/dev/null
           fi

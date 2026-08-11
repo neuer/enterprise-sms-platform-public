@@ -265,7 +265,8 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
 
 
 def _batch_queries() -> BatchQueryService:
-    return BatchQueryService()
+    settings = get_settings()
+    return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
 def get_resend_service() -> ResendService:

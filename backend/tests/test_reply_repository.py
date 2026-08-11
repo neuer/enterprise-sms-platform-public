@@ -68,7 +68,7 @@ def protected_reply() -> ProtectedReply:
 
     class Gateway:
         async def get_reply_raw(self) -> RawPulledPayload:
-            return RawPulledPayload(b"", [])
+            return RawPulledPayload(b"", 200)
 
     service = ReplyIngestService(Gateway(), cast(ReplyRepository, object()), crypto)
     return service._parse(
@@ -93,6 +93,8 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
         payload_enc=b"cipher",
         payload_sha256="a" * 64,
         key_version=1,
+        http_status=200,
+        content_encoding="identity",
         custom_ids=["custom-1"],
         item_count=1,
     ) == 19
@@ -101,6 +103,8 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
     assert "raw_vendor_log" in sql
     assert "'reply'" in sql
     assert "processing_started_at" in sql
+    assert "http_status" in sql
+    assert "content_encoding" in sql
     assert "now()" in sql
     assert params["custom_ids"] == ["custom-1"]
     assert engine.disposed
@@ -122,8 +126,9 @@ async def test_reply_insert_is_database_idempotent_and_associates_custom_before_
     assert "CAST(:custom_id AS varchar(64)) IS NOT NULL" in normalized_sql
     assert "c.custom_id=CAST(:custom_id AS varchar(64))" in normalized_sql
     assert "c.vendor_task_id=CAST(:vendor_task_id AS varchar(64))" in normalized_sql
+    assert "m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))" in normalized_sql
     assert "CAST(:phone_hmac AS char(64))" in normalized_sql
-    assert "CAST(:content AS varchar(500))" in normalized_sql
+    assert "CAST(:content_enc AS bytea)" in normalized_sql
     assert "CAST(:reply_time AS timestamptz)" in normalized_sql
     assert (
         "CASE WHEN c.custom_id=CAST(:custom_id AS varchar(64)) THEN 0 ELSE 1 END"
@@ -133,6 +138,8 @@ async def test_reply_insert_is_database_idempotent_and_associates_custom_before_
     assert params["raw_id"] == 19
     assert params["phone_enc"] == reply.phone_enc
     assert params["phone_hmac"] == reply.phone_hmac
+    assert params["phone_hmacs"] == list(reply.phone_hmacs)
+    assert params["dedup_key_version"] == reply.dedup_key_version
     assert "13800138000" not in str(params)
     assert engine.disposed
 

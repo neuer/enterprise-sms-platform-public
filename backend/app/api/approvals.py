@@ -19,6 +19,7 @@ from app.core.errors import ApiError
 from app.services.alert_repository import SqlAlertService
 from app.services.approval import ApprovalService, SelfApprovalDenied, StateConflict
 from app.services.approval_repository import SqlApprovalRepository
+from app.services.crypto import CryptoService
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaRedis, QuotaService
 from app.settings import get_settings
@@ -62,7 +63,7 @@ async def get_approval_service() -> AsyncIterator[ApprovalService]:
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
         yield ApprovalService(
-            SqlApprovalRepository(settings),
+            SqlApprovalRepository(settings, CryptoService.from_settings(settings)),
             QuotaService(cast(QuotaRedis, redis)),
             CeleryQueuePublisher(),
             SqlAlertService(settings),
@@ -72,7 +73,8 @@ async def get_approval_service() -> AsyncIterator[ApprovalService]:
 
 
 def get_approval_repository() -> SqlApprovalRepository:
-    return SqlApprovalRepository()
+    settings = get_settings()
+    return SqlApprovalRepository(settings, CryptoService.from_settings(settings))
 
 
 async def _approver(

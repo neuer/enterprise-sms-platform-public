@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.services.approval_repository import SqlApprovalRepository, record_pendi
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.blacklist import BlacklistEntry
 from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.idempotency import IdempotencyScope
 from app.services.import_repository import (
     ImportStateConflict,
@@ -36,6 +38,23 @@ from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
 
 OPERATOR = SecurityPrincipal(1, 10, "operator01", "业务一部", "operator")
+
+
+def content_crypto() -> CryptoService:
+    key = base64.b64encode(b"c" * 32).decode()
+    return CryptoService.from_secret_values(key, key)
+
+
+def batch_content(batch_no: str, content: str) -> bytes:
+    return content_crypto().encrypt_bound_packed_text(
+        content,
+        EncryptionContext(
+            domain="sms-display-content",
+            table="sms_batch",
+            column="display_content_enc",
+            object_id=batch_no,
+        ),
+    )
 
 
 class FakeResult:
@@ -200,7 +219,7 @@ async def test_pending_approval_notification_is_log_sink_without_pii() -> None:
 async def test_approval_repository_returns_batch_status_for_enqueue_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = SqlApprovalRepository()
+    repository = SqlApprovalRepository(crypto=content_crypto())
     connection = FakeConnection(
         [
             FakeResult(
@@ -237,7 +256,7 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduled_at = datetime(2026, 7, 21, 1, 0, tzinfo=UTC)
-    repository = SqlApprovalRepository()
+    repository = SqlApprovalRepository(crypto=content_crypto())
     connection = FakeConnection(
         [
             FakeResult(
@@ -254,7 +273,7 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
                         "scheduled_at": scheduled_at,
                         "trigger_threshold": 50,
                         "trigger_threshold_source": "snapshot",
-                        "content": "活动回T退订",
+                        "display_content_enc": batch_content("batch-9", "活动回T退订"),
                         "status": "pending",
                         "approver": None,
                         "reason": None,
@@ -814,14 +833,17 @@ async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
     with pytest.raises(ValueError):
         BatchAccessScope().sql()
 
-    service = BatchQueryService()
+    service = BatchQueryService(crypto=content_crypto())
     row: dict[str, object] = {
         "batch_no": "batch-1",
-        "content": "验证码******",
+        "display_content_enc": batch_content("batch-1", "验证码******"),
     }
     connection = FakeConnection([FakeResult(rows=[row])])
     bind_engine(monkeypatch, service, connection)
-    assert await service.get_batch("batch-1", BatchAccessScope(app_id=7)) == row
+    assert await service.get_batch("batch-1", BatchAccessScope(app_id=7)) == {
+        "batch_no": "batch-1",
+        "content": "验证码******",
+    }
 
     connection = FakeConnection([FakeResult()])
     bind_engine(monkeypatch, service, connection)

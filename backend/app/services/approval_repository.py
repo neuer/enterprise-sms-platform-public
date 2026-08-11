@@ -12,6 +12,8 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.approval import ApprovalCase
 from app.services.callback_repository import enqueue_batch_finished
+from app.services.content_protection import decrypt_batch_display_content
+from app.services.crypto import CryptoService
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.usage_ledger import request_usage_release_for_batch
@@ -84,8 +86,13 @@ def _case(row: Any, *, outbox_persisted: bool = False) -> ApprovalCase:
 
 
 class SqlApprovalRepository:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -119,14 +126,23 @@ class SqlApprovalRepository:
                         SELECT p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.dept,
                           b.total,b.segments,b.quota_cost estimated_segments,
                           b.scheduled_at,p.trigger_threshold,
-                          p.trigger_threshold_source,b.content,p.status,
+                          p.trigger_threshold_source,b.display_content_enc,p.status,
                           p.approver,p.reason,p.expires_at,p.decided_at,p.created_at
                         {source} ORDER BY p.created_at DESC LIMIT :limit OFFSET :offset
                         """
                     ),
                     params,
                 )
-                return {"total": int(total or 0), "items": [dict(row) for row in result.mappings()]}
+                items: list[dict[str, object]] = []
+                for row in result.mappings():
+                    item = dict(row)
+                    item["content"] = decrypt_batch_display_content(
+                        self.crypto,
+                        item.pop("display_content_enc"),
+                        str(item["batch_no"]),
+                    )
+                    items.append(item)
+                return {"total": int(total or 0), "items": items}
         finally:
             await engine.dispose()
 
