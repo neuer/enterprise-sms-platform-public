@@ -492,6 +492,7 @@ async def test_callback_authority_is_acquired_only_for_current_task_and_app_conf
     await repository.release_authority(9, LEASE_ID)
 
     assert "pg_advisory_xact_lock" in connection.calls[1][0]
+    assert connection.calls[1][1] == {"lock_subject": "callback-authority:7"}
     acquire_sql = connection.calls[3][0]
     assert "t.status='retrying'" in acquire_sql
     assert "t.lease_id=:lease_id" in acquire_sql
@@ -553,6 +554,7 @@ async def test_callback_authority_final_confirmation_locks_app_and_renews_lease(
     assert await repository.confirm_authority(9, LEASE_ID) is True
 
     assert "pg_advisory_xact_lock" in connection.calls[1][0]
+    assert connection.calls[1][1] == {"lock_subject": "callback-authority:7"}
     assert "FOR UPDATE OF a" not in connection.calls[2][0]
     assert "a.callback_url=t.url" in connection.calls[2][0]
     assert "expires_at>now()" in connection.calls[3][0]
@@ -572,6 +574,7 @@ async def test_callback_configuration_mutation_rejects_active_authority_lease() 
         await ensure_callback_authority_idle(connection, 7)
 
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert connection.calls[0][1] == {"lock_subject": "callback-authority:7"}
     assert "FOR UPDATE" in connection.calls[1][0]
     assert "expires_at<=now()" in connection.calls[2][0]
     assert "callback_authority_lease" in connection.calls[3][0]

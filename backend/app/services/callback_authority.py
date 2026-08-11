@@ -16,10 +16,10 @@ async def lock_callback_authority(connection: Any, app_id: int) -> None:
 
     await connection.execute(
         text(
-            "SELECT pg_advisory_xact_lock(hashtextextended("
-            "'callback-authority:' || CAST(:app_id AS text),0))"
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended(:lock_subject,0))"
         ),
-        {"app_id": app_id},
+        {"lock_subject": f"callback-authority:{app_id}"},
     )
 
 
