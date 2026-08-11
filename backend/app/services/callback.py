@@ -101,6 +101,22 @@ class DeliveryOutcome:
     error: str | None = None
 
 
+def _safe_failure_kind(error: Exception) -> str:
+    """仅返回异常类型和标准 SQLSTATE，不暴露 SQL、参数或数据库消息。"""
+
+    error_type = type(error).__name__
+    original = getattr(error, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(error, "sqlstate", None)
+    if (
+        isinstance(sqlstate, str)
+        and len(sqlstate) == 5
+        and sqlstate.isalnum()
+        and sqlstate.isascii()
+    ):
+        return f"{error_type}_{sqlstate.upper()}"
+    return error_type
+
+
 class CallbackMaterialRepository(Protocol):
     async def acquire_authority(
         self,
@@ -409,16 +425,17 @@ class CallbackDelivery:
             )
             return DeliveryOutcome(200 <= status < 300, status)
         except Exception as error:
+            failure_kind = _safe_failure_kind(error)
             LOGGER.error(
                 "callback_delivery_failed",
                 extra={
                     "correlation_id": str(current_correlation_id()),
                     "callback_task_id": task_id,
-                    "error_type": type(error).__name__,
+                    "error_type": failure_kind,
                 },
                 exc_info=(type(error), error, error.__traceback__),
             )
-            return DeliveryOutcome(False, None, type(error).__name__)
+            return DeliveryOutcome(False, None, failure_kind)
         finally:
             if authority_acquired:
                 try:

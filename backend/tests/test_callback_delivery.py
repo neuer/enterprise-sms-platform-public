@@ -58,6 +58,22 @@ def crypto() -> CryptoService:
     return CryptoService.from_secret_values(key, key)
 
 
+def test_safe_failure_kind_exposes_only_valid_sqlstate() -> None:
+    class OriginalError:
+        sqlstate = "42501"
+
+    class DatabaseFailure(Exception):
+        orig = OriginalError()
+
+    class UnsafeFailure(Exception):
+        sqlstate = "42501 permission denied for app"
+
+    assert callback_module._safe_failure_kind(DatabaseFailure("private")) == (
+        "DatabaseFailure_42501"
+    )
+    assert callback_module._safe_failure_kind(UnsafeFailure("private")) == "UnsafeFailure"
+
+
 class FakeRepository:
     def __init__(
         self,
