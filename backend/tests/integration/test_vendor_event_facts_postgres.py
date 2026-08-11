@@ -314,7 +314,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
         )
 
         reply_item = {
-            "taskId": f"vendor-{first_custom}",
+            "taskId": "vendor-reply-task",
             "customId": first_custom,
             "phone": "13800138000",
             "extCode": "01",
