@@ -23,6 +23,7 @@ from public_baseline_manager import (  # noqa: E402
     BaselineManifest,
     GitIdentity,
     HostImageInspector,
+    HostSourceInspector,
     HostVendorControlUnitManager,
     PublicBaselineManager,
     PublicBaselineManagerError,
@@ -210,7 +211,23 @@ def test_standard_request_must_bind_every_mutable_identity() -> None:
 
 def test_rebaseline_recovery_binds_new_request_to_existing_target() -> None:
     manifest = _manifest()
-    _raw, request = _rebaseline_request()
+    different_target = "a" * 40
+    document = _request_document()
+    document["update_id"] = REBASELINE_ID
+    document["operation"] = "rebaseline"
+    document["commit"] = different_target
+    document["images"]["api"]["ref"] = (
+        f"sms-platform-test-api:{different_target}"
+    )
+    document["images"]["web"]["ref"] = (
+        f"sms-platform-test-web:{different_target}"
+    )
+    document["migration"] = {
+        "from": "0053_idempotency_scope",
+        "target": "0061_vendor_binding_outbox",
+        "compatibility": "expand",
+    }
+    request = parse_test_update_request(json.dumps(document))
 
     validate_rebaseline_recovery_binding(
         manifest,
@@ -386,6 +403,16 @@ class FakeSourceInspector:
         self.events.append(("source_observe", root))
         return self.observed
 
+    def read_file(
+        self,
+        root: Path,
+        *,
+        identity: GitIdentity,
+        path: Path,
+    ) -> bytes:
+        self.events.append(("source_read", root, identity, path))
+        return b"previous-unit"
+
 
 class FakeImageInspector:
     def __init__(self, fail: bool = False) -> None:
@@ -414,6 +441,11 @@ class FakeUnitManager:
 
     def restore(self, outcome: object) -> None:
         self.events.append("unit_restore")
+
+    def recover(self, active_root: Path, *, previous: bytes) -> None:
+        self.events.append(("unit_recover", active_root, previous))
+        if self.fail_activate:
+            raise RuntimeError("injected unit recovery failure")
 
     def verify(self, active_root: Path) -> None:
         self.events.append(("unit_verify", active_root))
@@ -509,6 +541,12 @@ class FakeHostOperations:
 
     def verify_backend_services(self) -> None:
         self.events.append("verify_services")
+
+    def verify_running_image_identity(self) -> None:
+        self.events.append("verify_images")
+
+    def recover_verified_rebaseline_services(self) -> None:
+        self.events.append("recover_verified_services")
 
     def restore_owned_update_pauses(self, update_id: str) -> None:
         self.events.append(("restore_pauses", update_id))
@@ -823,16 +861,26 @@ def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
     result = manager.recover_verify()
 
     assert result == "verified"
-    assert core.events == ["core_activate"]
+    assert core.events == []
     assert operations.events == [
         "lock",
         "migration_head",
+        "verify_images",
         "recover_verify",
+        "verify_images",
         "verify_services",
     ]
-    assert len(source.events) == 2
-    assert images.events == ["image_verify", "image_verify"]
-    assert unit.events == ["unit_activate", ("unit_verify", ACTIVE_ROOT)]
+    assert [event[0] for event in source.events] == [
+        "source_observe",
+        "source_verify",
+        "source_read",
+        "source_observe",
+    ]
+    assert images.events == []
+    assert unit.events == [
+        ("unit_recover", ACTIVE_ROOT, b"previous-unit"),
+        ("unit_verify", ACTIVE_ROOT),
+    ]
     assert store.state is UpdateState.VERIFIED
 
 
@@ -853,14 +901,37 @@ def test_recover_verify_unit_failure_holds_fail_closed_before_state_resume() -> 
     ):
         manager.recover_verify()
 
-    assert core.events == ["core_activate"]
+    assert core.events == []
     assert operations.events == [
         "lock",
         "migration_head",
+        "verify_images",
         ("hold", REBASELINE_ID),
     ]
-    assert unit.events == ["unit_activate"]
+    assert unit.events == [("unit_recover", ACTIVE_ROOT, b"previous-unit")]
     assert store.state is UpdateState.BLOCKED
+
+
+def test_recover_verify_finishes_verified_fail_closed_services() -> None:
+    store = FakeStore(UpdateState.VERIFIED)
+    operations = FakeHostOperations(migration_head="0061_vendor_binding_outbox")
+    manager, store, core, operations, _source, _images, _unit = _manager(
+        store=store,
+        operations=operations,
+        rebaseline_recovery=True,
+    )
+
+    assert manager.recover_verify() == "verified"
+    assert core.events == []
+    assert operations.events == [
+        "lock",
+        "migration_head",
+        "verify_images",
+        "recover_verify",
+        "recover_verified_services",
+        "verify_images",
+        "verify_services",
+    ]
 
 
 def test_verify_state_write_failure_keeps_old_image_tags_for_rollback() -> None:
@@ -950,6 +1021,61 @@ def test_loaded_images_require_version_revision_and_schema_labels() -> None:
         HostImageInspector(runner).verify(_manifest())  # type: ignore[arg-type]
 
 
+class HistoricalSourceRunner:
+    def __init__(self, *, tree: str = TARGET_TREE) -> None:
+        self.tree = tree
+        self.commands: list[tuple[str, ...]] = []
+
+    def run(self, command: Any, **_: object) -> bytes:
+        argv = tuple(command)
+        self.commands.append(argv)
+        if "rev-parse" in argv:
+            return f"{self.tree}\n".encode()
+        if "cat-file" in argv:
+            return b"[Service]\nExecStart=/old-agent\n"
+        raise AssertionError(argv)
+
+
+def test_historical_unit_read_is_bound_to_manifest_tree_and_fixed_path() -> None:
+    runner = HistoricalSourceRunner()
+    inspector = HostSourceInspector(runner)  # type: ignore[arg-type]
+
+    payload = inspector.read_file(
+        ACTIVE_ROOT,
+        identity=GitIdentity(TARGET_COMMIT, TARGET_TREE),
+        path=baseline_module.VENDOR_UNIT_SOURCE,
+    )
+
+    assert payload == b"[Service]\nExecStart=/old-agent\n"
+    assert runner.commands == [
+        (
+            "git",
+            "-C",
+            str(ACTIVE_ROOT),
+            "rev-parse",
+            "--verify",
+            f"{TARGET_COMMIT}^{{tree}}",
+        ),
+        (
+            "git",
+            "-C",
+            str(ACTIVE_ROOT),
+            "cat-file",
+            "blob",
+            f"{TARGET_COMMIT}:{baseline_module.VENDOR_UNIT_SOURCE.as_posix()}",
+        ),
+    ]
+
+    with pytest.raises(PublicBaselineManagerError, match="identity"):
+        HostSourceInspector(  # type: ignore[arg-type]
+            HistoricalSourceRunner(tree=BASE_TREE)
+        ).read_file(
+            ACTIVE_ROOT,
+            identity=GitIdentity(TARGET_COMMIT, TARGET_TREE),
+            path=baseline_module.VENDOR_UNIT_SOURCE,
+        )
+
+
 def test_finalize_requires_verified_and_preserves_core_recovery_contract() -> None:
     manager, store, core, operations, *_ = _manager()
     with pytest.raises(PublicBaselineManagerError, match="verified"):
@@ -1030,8 +1156,12 @@ def test_cleanup_artifact_requires_exact_digest_and_is_idempotent(
 
 
 class UnitRunner:
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+
     def run(self, command: Any, **_: object) -> bytes:
-        raise AssertionError(f"unexpected unit command: {tuple(command)}")
+        self.commands.append(tuple(command))
+        return b""
 
 
 def test_unit_preflight_accepts_only_server_base_and_public_target_profiles(
@@ -1062,6 +1192,48 @@ def test_unit_preflight_accepts_only_server_base_and_public_target_profiles(
     (active / "deploy/systemd/vendor-control-agent.service").chmod(0o644)
     with pytest.raises(PublicBaselineManagerError, match="unsafe"):
         manager.preflight(active, staged)
+
+
+def test_unit_recovery_accepts_only_manifest_previous_or_current_bytes(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active"
+    source = active / baseline_module.VENDOR_UNIT_SOURCE
+    source.parent.mkdir(parents=True)
+    target = b"[Service]\nExecStart=/new-agent\n"
+    previous = b"[Service]\nExecStart=/old-agent\n"
+    source.write_bytes(target)
+    source.chmod(0o644)
+    installed = tmp_path / "vendor-control-agent.service"
+    installed.write_bytes(previous)
+    installed.chmod(0o644)
+    runner = UnitRunner()
+    manager = HostVendorControlUnitManager(
+        expected_uid=os.getuid(),
+        expected_operator_gid=os.getgid(),
+        expected_system_gid=os.getgid(),
+        runner=runner,  # type: ignore[arg-type]
+        unit_path=installed,
+    )
+
+    manager.recover(active, previous=previous)
+
+    assert installed.read_bytes() == target
+    assert runner.commands == [
+        ("/usr/bin/systemctl", "daemon-reload"),
+        ("/usr/bin/systemctl", "restart", "vendor-control-agent.service"),
+        (
+            "/usr/bin/systemctl",
+            "is-active",
+            "--quiet",
+            "vendor-control-agent.service",
+        ),
+    ]
+
+    installed.write_bytes(b"unrelated unit")
+    installed.chmod(0o644)
+    with pytest.raises(PublicBaselineManagerError, match="cannot be recovered"):
+        manager.recover(active, previous=previous)
 
 
 def test_status_is_read_only_and_contains_only_safe_identity_fields() -> None:
