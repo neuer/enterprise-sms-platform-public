@@ -450,6 +450,11 @@ class FakeUnitManager:
         if self.fail_activate:
             raise RuntimeError("injected unit recovery failure")
 
+    def verify_recovery(self, active_root: Path) -> None:
+        self.events.append(("unit_verify_recovery", active_root))
+        if self.fail_verify:
+            raise RuntimeError("injected recovered unit verification failure")
+
     def verify(self, active_root: Path) -> None:
         self.events.append(("unit_verify", active_root))
         if self.fail_verify:
@@ -886,7 +891,7 @@ def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
     assert images.events == []
     assert unit.events == [
         ("unit_recover", ACTIVE_ROOT, b"previous-unit"),
-        ("unit_verify", ACTIVE_ROOT),
+        ("unit_verify_recovery", ACTIVE_ROOT),
     ]
     assert store.state is UpdateState.VERIFIED
 
@@ -1226,6 +1231,7 @@ def test_unit_recovery_accepts_only_manifest_previous_or_current_bytes(
     )
 
     manager.recover(active, previous=previous)
+    manager.verify_recovery(active)
 
     assert installed.read_bytes() == target
     assert runner.commands == [
