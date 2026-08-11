@@ -11,9 +11,11 @@ from uuid import UUID
 
 from app.core.correlation import correlation_scope
 from app.services.callback import DeliveryOutcome
+from app.services.callback_authority import CallbackAuthorityBusy
 
 RETRY_DELAYS_S = (60, 300, 900, 3600, 3600)
 CALLBACK_LEASE_SECONDS = 30
+CALLBACK_AUTHORITY_BUSY_DELAY_S = 1
 PERMANENT_CALLBACK_STATUSES = frozenset({400, 401, 403, 404, 410, 422})
 RETRYABLE_CALLBACK_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
@@ -63,6 +65,15 @@ class CallbackStateRepository(Protocol):
     ) -> bool: ...
 
     async def mark_done(self, task_id: int, lease_id: UUID, http_code: int) -> None: ...
+
+    async def mark_authority_busy(
+        self,
+        task_id: int,
+        lease_id: UUID,
+        *,
+        retry_count: int,
+        delay_s: int,
+    ) -> None: ...
 
     async def mark_retry(
         self,
@@ -195,6 +206,14 @@ class CallbackWorker:
                 task_id,
                 claimed.lease_id,
                 outcome.http_code,
+            )
+            return 1
+        if outcome.error == CallbackAuthorityBusy.__name__:
+            await self.repository.mark_authority_busy(
+                task_id,
+                claimed.lease_id,
+                retry_count=claimed.retry_count,
+                delay_s=CALLBACK_AUTHORITY_BUSY_DELAY_S,
             )
             return 1
         if (
