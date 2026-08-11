@@ -2017,6 +2017,8 @@ def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
     [
         (State.BLOCKED, "get_balance", False, 1),
         (State.BLOCKED, "environment_mode", True, 1),
+        (State.BLOCKED, "recover_services", True, 1),
+        (State.BLOCKED, "services", True, 1),
         (State.VERIFYING, "recover_verify", False, 1),
         (State.VERIFIED, "verify", False, 0),
     ],
@@ -2129,6 +2131,38 @@ def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
         assert not any(
             isinstance(event, tuple) and event[0] == "pause" for event in events
         )
+
+
+def test_rebaseline_verify_recovery_starts_only_fixed_backend_services(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    update_id = "test-20260810T125640Z-5488823a73ef"
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        operation="rebaseline",
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    events: list[object] = []
+
+    class Host:
+        def _run(self, *argv: str) -> str:
+            events.append(argv)
+            return ""
+
+    operations.host = Host()  # type: ignore[assignment]
+    operations.require_owned_update_pauses = (  # type: ignore[method-assign]
+        lambda value: events.append(("pause", value))
+    )
+
+    operations.recover_backend_services()
+
+    assert events == [
+        ("pause", update_id),
+        ("up", "-d", "--no-deps", *BACKEND_SERVICES),
+    ]
 
 
 def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(

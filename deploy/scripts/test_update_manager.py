@@ -106,6 +106,7 @@ _REBASELINE_VERIFY_STEPS = frozenset(
         "budget",
         "pauses",
         "get_balance",
+        "recover_services",
         "services",
         "restore_owned_pauses",
     }
@@ -2517,6 +2518,18 @@ class HostTestUpdateOperations:
 
     def probe_balance(self) -> None:
         self.host.probe_balance()
+
+    def recover_backend_services(self) -> None:
+        """GetBalance 成功后仅重启被 fail-closed 停止的既有后端服务。"""
+
+        self._require_exact_rebaseline_migration()
+        self.require_owned_update_pauses(self.request.update_id)
+        self.host._run(
+            "up",
+            "-d",
+            "--no-deps",
+            *BACKEND_SERVICES,
+        )
 
     def verify_backend_services(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())

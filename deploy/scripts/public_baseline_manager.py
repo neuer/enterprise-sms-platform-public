@@ -1004,6 +1004,9 @@ class BaselineUpdateOperations:
     def probe_balance(self) -> None:
         self.delegate.probe_balance()
 
+    def recover_backend_services(self) -> None:
+        self.delegate.recover_backend_services()
+
     def verify_backend_services(self) -> None:
         self.delegate.verify_backend_services()
         self.source_inspector.verify(

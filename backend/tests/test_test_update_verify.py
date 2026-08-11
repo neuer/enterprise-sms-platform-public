@@ -56,6 +56,9 @@ class FakeVerifyOperations:
     def probe_balance(self) -> None:
         self._event("get_balance")
 
+    def recover_backend_services(self) -> None:
+        self._event("recover_services")
+
     def verify_backend_services(self) -> None:
         self._event("services")
 
@@ -121,6 +124,7 @@ def test_recovered_backend_verify_uses_verifying_state_and_rechecks_all_invarian
         "budget",
         "pauses",
         "get_balance",
+        "recover_services",
         "services",
         ("restore_owned_pauses", "test-recovery"),
         ("cleanup_rollback", "test-recovery"),
@@ -201,6 +205,33 @@ def test_recovered_verify_failure_returns_to_blocked_without_pause_release() -> 
             expected_state=State.VERIFYING,
         )
 
+    assert ("restore_owned_pauses", "test-recovery") not in operations.events
+    assert operations.events[-1] == ("hold", "test-recovery")
+    assert store.state is State.BLOCKED
+
+
+def test_recovered_verify_service_restart_failure_returns_to_blocked() -> None:
+    store = FakeStore(State.VERIFYING)
+    operations = FakeVerifyOperations(fail_at="recover_services")
+
+    with pytest.raises(VerifyError, match="blocked"):
+        UpdateVerify(store, operations).verify(
+            "backend-safe",
+            update_id="test-recovery",
+            commit="0" * 40,
+            migration_from="0015",
+            migration_target="0016",
+            expected_state=State.VERIFYING,
+        )
+
+    assert operations.events[:6] == [
+        "lock",
+        ("mode", "live"),
+        "budget",
+        "pauses",
+        "get_balance",
+        "recover_services",
+    ]
     assert ("restore_owned_pauses", "test-recovery") not in operations.events
     assert operations.events[-1] == ("hold", "test-recovery")
     assert store.state is State.BLOCKED

@@ -421,8 +421,9 @@ operator 读路径，然后重新执行完整 rebaseline。日常更新继续只
 完全一致，migration head 必须为 `0061_vendor_binding_outbox`，且原 update 仍持有两条
 pause；随后完整重跑 verify，不会重跑迁移或绕过真实厂商探测。调用必须使用本地
 `scripts/test_update.sh recover-rebaseline-verify`，由它校验并传递受控厂商 origin；同一入口
-产生且事件链可证明的固定 verify step 再阻断允许重放，其他 blocked step 或身份漂移继续
-失败关闭。
+在 GetBalance 成功且两条原 update pause 仍被持有时，仅启动被 fail-closed 停止的固定 backend
+服务集合，再检查服务与 migration head；不会强制重建或切换镜像。该入口产生且事件链可证明的
+固定 verify step 再阻断允许重放，其他 blocked step 或身份漂移继续失败关闭。
 
 页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
 
