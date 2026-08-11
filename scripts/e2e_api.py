@@ -1602,7 +1602,7 @@ class UatSuite:
         time.sleep(2.2)
         self._trigger_job("20", "poll_report")
 
-        def callback_task(expected_task_id: int | None = None) -> dict[str, Any] | None:
+        def callback_tasks() -> list[dict[str, Any]]:
             page = self._expect(
                 "20",
                 self._request(
@@ -1614,14 +1614,18 @@ class UatSuite:
                 200,
             )
             items = page.get("items")
-            if isinstance(items, list):
-                for item in items:
-                    if (
-                        isinstance(item, dict)
-                        and item.get("batch_no") == batch_no
-                        and (expected_task_id is None or item.get("id") == expected_task_id)
-                    ):
-                        return item
+            if not isinstance(items, list):
+                return []
+            return [
+                item
+                for item in items
+                if isinstance(item, dict) and item.get("batch_no") == batch_no
+            ]
+
+        def callback_task(expected_task_id: int | None = None) -> dict[str, Any] | None:
+            for item in callback_tasks():
+                if expected_task_id is None or item.get("id") == expected_task_id:
+                    return item
             return None
 
         task = wait_until("20-callback-task", callback_task, timeout_s=15, interval_s=0.5)
@@ -1691,16 +1695,41 @@ class UatSuite:
             200,
         )
         self._trigger_job("20", "dispatch_callbacks")
-        wait_until(
-            "20-done",
-            lambda: (
-                current
-                if (current := callback_state()) is not None and current.get("status") == "done"
-                else None
-            ),
-            timeout_s=15,
-            interval_s=0.25,
-        )
+        try:
+            wait_until(
+                "20-done",
+                lambda: (
+                    current
+                    if (current := callback_state()) is not None
+                    and current.get("status") == "done"
+                    else None
+                ),
+                timeout_s=15,
+                interval_s=0.25,
+            )
+        except UatFailure as error:
+            state_keys = (
+                "id",
+                "event",
+                "status",
+                "retry_count",
+                "last_http_code",
+                "last_error",
+                "stalled",
+            )
+            states = [
+                {key: item.get(key) for key in state_keys}
+                for item in callback_tasks()
+            ]
+            mock = self.mock_state()
+            mock_summary = {
+                key: mock.get(key)
+                for key in ("callback_failures", "callback_status", "callback_count")
+            }
+            raise UatFailure(
+                f"{error} states={json.dumps(states, ensure_ascii=False, sort_keys=True)} "
+                f"mock={json.dumps(mock_summary, sort_keys=True)}"
+            ) from None
         callbacks_response = self._request(self.mock, "GET", "/_mock/callbacks")
         if callbacks_response.status != 200 or not isinstance(callbacks_response.data, list):
             raise UatFailure("UAT-20 callback evidence missing")
