@@ -98,8 +98,11 @@ def verify_operator_git_access(
     """以日常 operator 身份验证 Git 读路径，而不是只用 root 验证。"""
 
     environment = {
+        "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_KEY_0": "safe.directory",
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_VALUE_0": str(root),
         "GIT_TERMINAL_PROMPT": "0",
         "LC_ALL": "C",
         "PATH": "/usr/bin:/bin",

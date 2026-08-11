@@ -286,6 +286,9 @@ def test_operator_git_probe_uses_fixed_operator_identity_and_safe_git_config(
     assert all(call[1]["group"] == 2345 for call in calls)
     assert all(call[1]["extra_groups"] == () for call in calls)
     assert all(call[1]["env"]["GIT_CONFIG_NOSYSTEM"] == "1" for call in calls)  # type: ignore[index]
+    assert all(call[1]["env"]["GIT_CONFIG_COUNT"] == "1" for call in calls)  # type: ignore[index]
+    assert all(call[1]["env"]["GIT_CONFIG_KEY_0"] == "safe.directory" for call in calls)  # type: ignore[index]
+    assert all(call[1]["env"]["GIT_CONFIG_VALUE_0"] == "/opt/sms-platform" for call in calls)  # type: ignore[index]
 
 
 class FakeStore:
