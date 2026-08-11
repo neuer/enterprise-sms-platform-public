@@ -81,6 +81,7 @@ def test_unmatched_uat_uses_vendor_contract_and_pseudonym_assertions() -> None:
     assert "custom_id ~ '^[0-9a-f]{64}$'" in source
     assert "vendor_task_id ~ '^[0-9a-f]{64}$'" in source
     assert "WHERE custom_id=CAST" not in source
+    assert "phone_mask=" not in source
 
 
 def test_rollback_stack_runs_lifo_and_reports_only_safe_error_types() -> None:

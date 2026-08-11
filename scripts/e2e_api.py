@@ -1843,12 +1843,12 @@ class UatSuite:
         if (
             self._probe().psql_count(
                 "SELECT count(*) FROM unmatched_report "
-                "WHERE phone_mask=CAST(:'phone_mask' AS varchar(11)) "
+                "WHERE report_status=1 AND report_desc='INJECTED' "
+                "AND phone_mask ~ '^1[0-9]{2}\\*{4}[0-9]{4}$' "
                 "AND vendor_task_id ~ '^[0-9a-f]{64}$' "
                 "AND custom_id ~ '^[0-9a-f]{64}$' "
                 "AND phone_enc IS NOT NULL AND phone_hmac IS NOT NULL "
-                "AND phone_mask IS NOT NULL AND key_version IS NOT NULL",
-                phone_mask=expected_mask,
+                "AND key_version IS NOT NULL"
             )
             != 1
         ):
