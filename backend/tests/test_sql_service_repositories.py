@@ -993,6 +993,34 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
     bind_engine(monkeypatch, store, connection)
     assert await store.find_existing(scope, "missing") is None
 
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "request_hash": "a" * 64,
+                        "request_hash_key_version": 2,
+                    }
+                ]
+            )
+        ]
+    )
+    bind_engine(monkeypatch, store, connection)
+    fingerprint = await store.find_request_fingerprint(scope, "biz-1")
+    assert fingerprint is not None
+    assert fingerprint.digest == "a" * 64
+    assert fingerprint.key_version == 2
+    assert "balance_blocked" in connection.calls[0][0]
+
+    connection = FakeConnection([FakeResult(rows=[])])
+    bind_engine(monkeypatch, store, connection)
+    assert await store.find_request_fingerprint(scope, "legacy") is None
+
+    connection = FakeConnection([FakeResult(scalar="child-1")])
+    bind_engine(monkeypatch, store, connection)
+    assert await store.find_resend_child("source-1") == "child-1"
+    assert "sms_resend_action" in connection.calls[0][0]
+
 
 @pytest.mark.asyncio
 async def test_resend_repository_scopes_batch_and_reads_only_failed_ciphertext(
