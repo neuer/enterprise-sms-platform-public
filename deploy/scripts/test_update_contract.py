@@ -307,6 +307,7 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/verify_tls_termination_e2e.py",
         "scripts/verify_all.sh",
         "scripts/verify_vendor_live_test.sh",
+        "scripts/verify_vendor_postgres_recovery.sh",
         "scripts/verify_release_control.sh",
         "test-update.env.example",
     }

@@ -715,6 +715,7 @@ def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
             "scripts/verify_release_control.sh",
             "scripts/verify_tls_termination_e2e.py",
             "scripts/verify_all.sh",
+            "scripts/verify_vendor_postgres_recovery.sh",
         ]
     )
 
