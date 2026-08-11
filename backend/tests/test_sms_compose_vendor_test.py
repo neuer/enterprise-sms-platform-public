@@ -373,7 +373,7 @@ def test_host_rebaseline_verify_recovery_inherits_the_verified_lock(
     manager = next(
         line
         for line in lines
-        if "test_update_manager.py|recover-rebaseline-verify|" in line
+        if "public_baseline_manager.py|recover-verify|" in line
     )
     assert "|locked=1|fd=" in manager
 

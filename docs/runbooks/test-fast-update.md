@@ -214,7 +214,10 @@ bootstrap；不得手工拼接缺少 origin 的远端命令。
 入口先把原状态原子推进到 `verifying/recover_verify`，再从环境模式、预算守恒、pause 所有权、
 真实 GetBalance、服务健康与 migration head 开始完整重跑 verify；GetBalance 成功后、服务健康
 检查前，在两条原 update pause 仍被持有时仅以 `up -d --no-deps` 启动固定 backend 服务集合，
-不强制重建、不重跑迁移、不切换镜像、不更换凭据。启动或任一后续不变量再次失败会停止发送
+并在活动根、baseline manifest、镜像和 operator Git 身份精确匹配后，由 baseline manager
+仅从已知旧/目标 unit 字节恢复目标 `vendor-control-agent.service`，重启并验证安全投影；不得手工
+`chown` 或直接启动 systemd unit。不强制重建、不重跑迁移、不切换镜像、不更换凭据。unit 恢复、
+启动或任一后续不变量再次失败会停止发送
 进程、重新进入 `blocked` 并保持 fail closed。
 若命令在恢复中断，可原样重放；`verifying/recover_verify` 会继续完整 verify。若完整 verify
 再次阻断，只有不可变事件链能证明紧邻的 `blocked → verifying/recover_verify → blocked` 且

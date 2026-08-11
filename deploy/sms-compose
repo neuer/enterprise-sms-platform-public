@@ -816,6 +816,8 @@ run_locked_test_update() {
   fi
   if [[ "$command" == recover-rebaseline-verify ]]; then
     [[ "$HOST_BOOTSTRAP" == 1 ]] || return 2
+    run_public_baseline_manager recover-verify
+    return
   fi
   [[ "$command" == prepare || "$command" == apply || "$command" == verify ||
       "$command" == recover-rebaseline ||
