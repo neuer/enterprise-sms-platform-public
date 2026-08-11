@@ -21,7 +21,10 @@ from app.services.callback import (
     CallbackTaskRef,
     MessageReportData,
 )
-from app.services.callback_authority import CallbackAuthorityBusy
+from app.services.callback_authority import (
+    CallbackAuthorityBusy,
+    lock_callback_authority,
+)
 from app.services.callback_worker import CallbackClaim, CallbackLeaseLost
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -935,9 +938,8 @@ class SqlCallbackRepository:
                 app_result = await connection.execute(
                     text(
                         """
-                        SELECT a.id FROM callback_task t JOIN app a ON a.id=t.app_id
+                        SELECT t.app_id FROM callback_task t
                         WHERE t.id=:task_id
-                        FOR UPDATE OF a
                         """
                     ),
                     {"task_id": task_id},
@@ -945,6 +947,7 @@ class SqlCallbackRepository:
                 app_id = app_result.scalar_one_or_none()
                 if app_id is None:
                     return False
+                await lock_callback_authority(connection, int(app_id))
                 await connection.execute(
                     text(
                         "DELETE FROM callback_authority_lease "
@@ -1006,6 +1009,14 @@ class SqlCallbackRepository:
         try:
             async with engine.begin() as connection:
                 current = await connection.execute(
+                    text("SELECT app_id FROM callback_task WHERE id=:task_id"),
+                    {"task_id": task_id},
+                )
+                app_id = current.scalar_one_or_none()
+                if app_id is None:
+                    return False
+                await lock_callback_authority(connection, int(app_id))
+                current = await connection.execute(
                     text(
                         """
                         SELECT a.id FROM callback_task t JOIN app a ON a.id=t.app_id
@@ -1014,13 +1025,12 @@ class SqlCallbackRepository:
                           AND a.status=1 AND a.callback_url=t.url
                           AND a.callback_secret_enc=t.callback_secret_enc
                           AND (t.event<>'message.report' OR a.callback_report_enabled=true)
-                        FOR UPDATE OF a
                         """
                     ),
                     {"task_id": task_id, "lease_id": lease_id},
                 )
-                app_id = current.scalar_one_or_none()
-                if app_id is None:
+                confirmed_app_id = current.scalar_one_or_none()
+                if confirmed_app_id is None:
                     return False
                 renewed = await connection.execute(
                     text(
@@ -1032,7 +1042,11 @@ class SqlCallbackRepository:
                         RETURNING app_id
                         """
                     ),
-                    {"app_id": app_id, "task_id": task_id, "lease_id": lease_id},
+                    {
+                        "app_id": confirmed_app_id,
+                        "task_id": task_id,
+                        "lease_id": lease_id,
+                    },
                 )
                 return renewed.scalar_one_or_none() is not None
         finally:
