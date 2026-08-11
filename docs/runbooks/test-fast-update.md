@@ -212,8 +212,10 @@ scripts/test_update.sh recover-rebaseline-verify
 bootstrap；不得手工拼接缺少 origin 的远端命令。
 
 入口先把原状态原子推进到 `verifying/recover_verify`，再从环境模式、预算守恒、pause 所有权、
-真实 GetBalance、服务健康与 migration head 开始完整重跑 verify；不重跑迁移、不切换镜像、
-不更换凭据。GetBalance 或任一后续不变量再次失败会重新进入 `blocked` 并保持 fail closed。
+真实 GetBalance、服务健康与 migration head 开始完整重跑 verify；GetBalance 成功后、服务健康
+检查前，在两条原 update pause 仍被持有时仅以 `up -d --no-deps` 启动固定 backend 服务集合，
+不强制重建、不重跑迁移、不切换镜像、不更换凭据。启动或任一后续不变量再次失败会停止发送
+进程、重新进入 `blocked` 并保持 fail closed。
 若命令在恢复中断，可原样重放；`verifying/recover_verify` 会继续完整 verify。若完整 verify
 再次阻断，只有不可变事件链能证明紧邻的 `blocked → verifying/recover_verify → blocked` 且
 失败 step 属于固定 verify 步骤时才可重放；已 `verified` 则只复核精确身份后幂等返回。缺少

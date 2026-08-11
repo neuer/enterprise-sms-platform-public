@@ -50,6 +50,8 @@ class VerifyOperations(Protocol):
 
     def probe_balance(self) -> None: ...
 
+    def recover_backend_services(self) -> None: ...
+
     def verify_backend_services(self) -> None: ...
 
     def restore_owned_update_pauses(self, update_id: str) -> None: ...
@@ -105,6 +107,9 @@ class TestUpdateVerify:
                 if environment_mode == "live":
                     step = "get_balance"
                     self.operations.probe_balance()
+                    if expected_state is TestUpdateState.VERIFYING:
+                        step = "recover_services"
+                        self.operations.recover_backend_services()
                 step = "services"
                 self.operations.verify_backend_services()
                 step = "restore_owned_pauses"
