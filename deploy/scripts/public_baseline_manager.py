@@ -1483,6 +1483,7 @@ class PublicBaselineManager:
                 identity=observed,
                 origin_url=self.manifest.origin_url,
             )
+            operations.restore_operator_git_read_access()
             self._require_operator_git_access()
             if operations.current_migration_head() != self.request.migration_target:
                 raise PublicBaselineManagerError(

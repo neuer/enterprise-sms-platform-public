@@ -548,6 +548,9 @@ class FakeHostOperations:
     def verify_running_image_identity(self) -> None:
         self.events.append("verify_images")
 
+    def restore_operator_git_read_access(self) -> None:
+        self.events.append("restore_operator_git")
+
     def recover_verified_rebaseline_services(self) -> None:
         self.events.append("recover_verified_services")
 
@@ -867,6 +870,7 @@ def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
     assert core.events == []
     assert operations.events == [
         "lock",
+        "restore_operator_git",
         "migration_head",
         "verify_images",
         "recover_verify",
@@ -907,6 +911,7 @@ def test_recover_verify_unit_failure_holds_fail_closed_before_state_resume() -> 
     assert core.events == []
     assert operations.events == [
         "lock",
+        "restore_operator_git",
         "migration_head",
         "verify_images",
         ("hold", REBASELINE_ID),
@@ -928,6 +933,7 @@ def test_recover_verify_finishes_verified_fail_closed_services() -> None:
     assert core.events == []
     assert operations.events == [
         "lock",
+        "restore_operator_git",
         "migration_head",
         "verify_images",
         "recover_verify",

@@ -2531,6 +2531,12 @@ class HostTestUpdateOperations:
             *BACKEND_SERVICES,
         )
 
+    def restore_operator_git_read_access(self) -> None:
+        """在 root 恢复动作后安全恢复 operator 的 Git 只读路径。"""
+
+        self._require_exact_rebaseline_migration()
+        _restore_operator_git_read_access(self.root)
+
     def recover_verified_rebaseline_services(self) -> None:
         """幂等收尾 verified 恢复遗留的成对 update 暂停。"""
 
