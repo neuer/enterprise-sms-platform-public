@@ -1357,6 +1357,53 @@ class PublicBaselineManager:
         )
         operations.restore_owned_update_pauses(self.request.update_id)
 
+    def recover_verify(self) -> str:
+        """恢复迁移后 rebaseline，并一并修复目标 systemd unit。"""
+
+        operations = self._operations()
+        try:
+            operations.require_lifecycle_lock()
+            state = self.store.read_consistent_state()
+            if state["state"] not in {
+                TestUpdateState.BLOCKED.value,
+                TestUpdateState.VERIFYING.value,
+                TestUpdateState.VERIFIED.value,
+            }:
+                raise PublicBaselineManagerError(
+                    "public baseline verify recovery state is invalid"
+                )
+            self.source_inspector.verify(
+                ACTIVE_ROOT,
+                identity=self.manifest.target,
+                origin_url=self.manifest.origin_url,
+            )
+            self._require_operator_git_access()
+            if operations.current_migration_head() != self.manifest.migration_target:
+                raise PublicBaselineManagerError(
+                    "public baseline verify recovery migration drifted"
+                )
+            self.image_inspector.verify(self.manifest)
+            outcome = self.core.activate(self.core_request)
+            _validate_outcome(outcome, self.manifest, target=True)
+            self.unit_manager.activate(outcome)
+            status = operations.recover_blocked_rebaseline_verify(self.store)
+            self.source_inspector.verify(
+                ACTIVE_ROOT,
+                identity=self.manifest.target,
+                origin_url=self.manifest.origin_url,
+            )
+            self._require_operator_git_access()
+            self.unit_manager.verify(ACTIVE_ROOT)
+            self.image_inspector.verify(self.manifest)
+            operations.verify_backend_services()
+            return status
+        except Exception:
+            with contextlib.suppress(Exception):
+                operations.hold_fail_closed(self.request.update_id)
+            raise PublicBaselineManagerError(
+                "public baseline verify recovery blocked"
+            ) from None
+
     def status(self) -> dict[str, object]:
         state = (
             self.store.read_consistent_state()
@@ -1520,7 +1567,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="public_baseline_manager.py")
     parser.add_argument(
         "command",
-        choices=("prepare", "apply", "verify", "status", "finalize", "cleanup"),
+        choices=(
+            "prepare",
+            "apply",
+            "verify",
+            "recover-verify",
+            "status",
+            "finalize",
+            "cleanup",
+        ),
     )
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--runtime-root", required=True, type=Path)
@@ -1599,12 +1654,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            getattr(manager, args.command)()
+            result = getattr(manager, args.command.replace("-", "_"))()
             print(
                 json.dumps(
                     {
                         "activation_id": manifest.activation_id,
-                        "status": args.command,
+                        "status": result if isinstance(result, str) else args.command,
                     },
                     separators=(",", ":"),
                     sort_keys=True,

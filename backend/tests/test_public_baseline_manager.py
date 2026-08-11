@@ -480,6 +480,11 @@ class FakeHostOperations:
     def hold_fail_closed(self, update_id: str) -> None:
         self.events.append(("hold", update_id))
 
+    def recover_blocked_rebaseline_verify(self, store: FakeStore) -> str:
+        self.events.append("recover_verify")
+        store.state = UpdateState.VERIFIED
+        return "verified"
+
     def current_migration_head(self) -> str:
         self.events.append("migration_head")
         return self.migration_head
@@ -760,6 +765,50 @@ def test_verify_resume_from_verified_revalidates_and_releases_pauses() -> None:
     assert images.events == ["image_verify"]
     assert unit.events == [("unit_verify", ACTIVE_ROOT)]
     assert store.state is UpdateState.VERIFIED
+
+
+def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
+    store = FakeStore(UpdateState.BLOCKED)
+    manager, store, core, operations, source, images, unit = _manager(store=store)
+
+    result = manager.recover_verify()
+
+    assert result == "verified"
+    assert core.events == ["core_activate"]
+    assert operations.events == [
+        "lock",
+        "migration_head",
+        "recover_verify",
+        "verify_services",
+    ]
+    assert len(source.events) == 2
+    assert images.events == ["image_verify", "image_verify"]
+    assert unit.events == ["unit_activate", ("unit_verify", ACTIVE_ROOT)]
+    assert store.state is UpdateState.VERIFIED
+
+
+def test_recover_verify_unit_failure_holds_fail_closed_before_state_resume() -> None:
+    store = FakeStore(UpdateState.BLOCKED)
+    unit = FakeUnitManager(fail_activate=True)
+    manager, store, core, operations, _source, _images, unit = _manager(
+        store=store,
+        unit=unit,
+    )
+
+    with pytest.raises(
+        PublicBaselineManagerError,
+        match="verify recovery blocked",
+    ):
+        manager.recover_verify()
+
+    assert core.events == ["core_activate"]
+    assert operations.events == [
+        "lock",
+        "migration_head",
+        ("hold", ACTIVATION_ID),
+    ]
+    assert unit.events == ["unit_activate"]
+    assert store.state is UpdateState.BLOCKED
 
 
 def test_verify_state_write_failure_keeps_old_image_tags_for_rollback() -> None:
