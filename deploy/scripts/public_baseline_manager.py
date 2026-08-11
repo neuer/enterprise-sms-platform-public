@@ -238,6 +238,8 @@ class UnitManager(Protocol):
 
     def recover(self, active_root: Path, *, previous: bytes) -> None: ...
 
+    def verify_recovery(self, active_root: Path) -> None: ...
+
     def verify(self, active_root: Path) -> None: ...
 
 
@@ -1015,6 +1017,23 @@ class HostVendorControlUnitManager:
             )
         self._install(target)
 
+    def verify_recovery(self, active_root: Path) -> None:
+        """按后续 rebaseline 的 operator-readable 活动配置复核 unit。"""
+
+        expected = self._source(active_root, profile="base")
+        if (
+            _safe_unit_bytes(
+                self.unit_path,
+                expected_uid=self.expected_uid,
+                expected_gid=self.expected_system_gid,
+                expected_mode=0o644,
+            )
+            != expected
+        ):
+            raise PublicBaselineManagerError(
+                "recovered vendor control unit does not match active source"
+            )
+
     def verify(self, active_root: Path) -> None:
         expected = self._source(active_root, profile="target")
         if (
@@ -1505,7 +1524,7 @@ class PublicBaselineManager:
                     "public baseline verify recovery source drifted"
                 )
             self._require_operator_git_access()
-            self.unit_manager.verify(ACTIVE_ROOT)
+            self.unit_manager.verify_recovery(ACTIVE_ROOT)
             operations.verify_running_image_identity()
             operations.verify_backend_services()
             return status
