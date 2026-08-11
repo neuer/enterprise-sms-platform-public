@@ -1002,7 +1002,7 @@ class HostVendorControlUnitManager:
     def recover(self, active_root: Path, *, previous: bytes) -> None:
         """仅允许从 manifest 历史 unit 恢复到当前活动根 unit。"""
 
-        target = self._source(active_root, profile="target")
+        target = self._source(active_root, profile="base")
         installed = _safe_unit_bytes(
             self.unit_path,
             expected_uid=self.expected_uid,

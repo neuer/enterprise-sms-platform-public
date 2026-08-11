@@ -1212,7 +1212,7 @@ def test_unit_recovery_accepts_only_manifest_previous_or_current_bytes(
     target = b"[Service]\nExecStart=/new-agent\n"
     previous = b"[Service]\nExecStart=/old-agent\n"
     source.write_bytes(target)
-    source.chmod(0o644)
+    source.chmod(0o640)
     installed = tmp_path / "vendor-control-agent.service"
     installed.write_bytes(previous)
     installed.chmod(0o644)
