@@ -88,9 +88,9 @@ class FakeIdemRepository:
         self.find_calls += 1
         return next(iter(self.batches), None)
 
-    async def find_request_hash(
+    async def find_request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None:
+    ) -> None:
         return None
 
 
@@ -131,7 +131,7 @@ async def test_idempotency_account_scope_uses_stable_identity_and_hash_port() ->
         "idem:quota:account:1:10:biz-web:20260711"
     )
     assert await coordinator.lookup(scope, "biz-web") == "web-batch"
-    assert await coordinator.request_hash(scope, "biz-web") is None
+    assert await coordinator.request_fingerprint(scope, "biz-web") is None
 
 
 @pytest.mark.asyncio

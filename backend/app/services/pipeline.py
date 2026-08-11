@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -28,7 +29,7 @@ from app.services.billing import calculate_segments
 from app.services.category import CategoryPolicy, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
-from app.services.idempotency import IdempotencyScope
+from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
 from app.services.masking import mask_phone_text, mask_verify_otp
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -189,6 +190,7 @@ class BatchCommand:
     scope_kind: str
     scope_id: str
     request_hash: str | None = None
+    request_hash_key_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,9 +238,9 @@ class IdempotencyPort(Protocol):
         self, scope: IdempotencyScope, biz_id: str, date_key: str
     ) -> str: ...
 
-    async def request_hash(
+    async def request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None: ...
+    ) -> IdempotencyFingerprint | None: ...
 
     async def lookup(
         self, scope: IdempotencyScope, biz_id: str
@@ -376,7 +378,12 @@ class QueuePublisher(Protocol):
 
 
 class TemplatePort(Protocol):
-    async def render(self, template_id: int, params: Sequence[str]) -> str: ...
+    async def render(
+        self,
+        template_id: int,
+        params: Sequence[str],
+        dept: str,
+    ) -> str: ...
 
 
 class SignPort(Protocol):
@@ -434,7 +441,7 @@ class SendPipeline:
 
         return await self.store.response_for(batch_no)
 
-    async def _render(self, request: SendRequest) -> str:
+    async def _render(self, request: SendRequest, dept: str) -> str:
         has_content = request.content is not None
         has_template = request.template_id is not None
         if has_content == has_template:
@@ -443,7 +450,11 @@ class SendPipeline:
             return request.content
         if self.templates is None or request.template_id is None:
             raise InvalidContent("模板服务不可用")
-        return await self.templates.render(request.template_id, request.template_params or ())
+        return await self.templates.render(
+            request.template_id,
+            request.template_params or (),
+            dept,
+        )
 
     def _protect_plain_phones(
         self,
@@ -503,13 +514,15 @@ class SendPipeline:
         target = datetime.combine(target_date, start, tzinfo=SHANGHAI)
         return "scheduled", "market_window", target
 
-    @staticmethod
     def _request_hash(
+        self,
         request: SendRequest,
         app: ApiAppContext,
         policy: CategoryPolicy,
+        *,
+        key_version: int | None = None,
     ) -> str:
-        """规范化请求指纹，覆盖会改变真实短信副作用与稳定作用域的字段。"""
+        """生成版本化请求 HMAC，覆盖会改变真实短信副作用与作用域的字段。"""
 
         actor = request.actor
         if isinstance(actor, SecurityPrincipal):
@@ -524,6 +537,18 @@ class SendPipeline:
             actor_document = None
         else:
             actor_document = str(actor)
+        fingerprint_key_version = self.crypto.active_version if key_version is None else key_version
+        protected_aliases = dict(request.protected_hmac_candidates)
+        protected_identity: dict[str, object] | None = None
+        if request.protected_mobiles:
+            try:
+                protected_digest = protected_aliases[fingerprint_key_version]
+            except KeyError:
+                raise ValueError("加密测试号码缺少幂等指纹版本") from None
+            protected_identity = {
+                "key_version": fingerprint_key_version,
+                "digest": protected_digest,
+            }
         document = {
             "app_id": app.app_id,
             "dept": app.dept,
@@ -540,9 +565,7 @@ class SendPipeline:
             "consent_confirmed": request.consent_confirmed,
             "is_test": request.is_test,
             "mobiles": list(request.mobiles or ()),
-            "protected_phone_masks": [
-                item.phone_mask for item in request.protected_mobiles
-            ],
+            "protected_phone_identity": protected_identity,
             "vendor_test_uat": request.vendor_test_uat,
             "resend_of": request.resend_of,
             "resend_dept": request.resend_dept,
@@ -551,9 +574,16 @@ class SendPipeline:
                 "blacklist_required": policy.blacklist_required,
             },
         }
-        return hashlib.sha256(
-            json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        canonical = json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return self.crypto.idempotency_fingerprint(
+            canonical,
+            key_version=key_version,
+        )
 
     @staticmethod
     def _resolve_policy(
@@ -583,6 +613,8 @@ class SendPipeline:
     ) -> IdempotencyScope:
         """稳定幂等主体：API=app，Web=稳定账号/身份复合作用域。"""
 
+        if request.resend_of is not None:
+            return IdempotencyScope("resend", request.resend_of)
         if request.channel == "web" and not request.vendor_test_uat:
             if not isinstance(request.actor, SecurityPrincipal):
                 raise ValueError("Web 发送必须绑定稳定账号")
@@ -610,12 +642,22 @@ class SendPipeline:
         self,
         scope: IdempotencyScope,
         biz_id: str,
-        request_hash: str,
+        request: SendRequest,
+        app: ApiAppContext,
+        policy: CategoryPolicy,
     ) -> None:
-        """旧记录（无指纹）沿用原幂等行为；新记录指纹不一致时拒绝静默复用。"""
+        """用记录绑定的 HMAC 版本复算；旧记录无指纹时沿用原幂等行为。"""
 
-        stored_hash = await self.idempotency.request_hash(scope, biz_id)
-        if stored_hash is not None and stored_hash != request_hash:
+        stored = await self.idempotency.request_fingerprint(scope, biz_id)
+        if stored is None:
+            return
+        request_hash = self._request_hash(
+            request,
+            app,
+            policy,
+            key_version=stored.key_version,
+        )
+        if not hmac.compare_digest(stored.digest, request_hash):
             raise IdempotencyConflict(
                 "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
             )
@@ -666,16 +708,22 @@ class SendPipeline:
             )
         idem_scope = self._idempotency_scope(request, app)
         policy = self._resolve_policy(app, request, preauthorization)
-        request_hash = self._request_hash(request, app, policy)
+        request_hash_key_version = self.crypto.active_version
+        request_hash = self._request_hash(
+            request,
+            app,
+            policy,
+            key_version=request_hash_key_version,
+        )
         existing = await self.idempotency.lookup(idem_scope, biz_id)
         if existing is not None:
-            await self._ensure_same_request(idem_scope, biz_id, request_hash)
+            await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
             return await self.store.response_for(existing)
         token = await self.idempotency.claim(idem_scope, biz_id)
         if token is None:
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_scope, biz_id, request_hash)
+                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
                 return await self.store.response_for(existing)
             token = await self.idempotency.claim(idem_scope, biz_id)
         if token is None:
@@ -700,7 +748,7 @@ class SendPipeline:
         try:
             existing = await self.idempotency.lookup(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_scope, biz_id, request_hash)
+                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
                 return await self.store.response_for(existing)
             await check_ownership()
             return await self._accept_claimed(
@@ -715,6 +763,7 @@ class SendPipeline:
                 ),
                 idem_scope=idem_scope,
                 request_hash=request_hash,
+                request_hash_key_version=request_hash_key_version,
             )
         finally:
             heartbeat.cancel()
@@ -739,6 +788,7 @@ class SendPipeline:
         frequency_result_key: str | None = None,
         idem_scope: IdempotencyScope | None = None,
         request_hash: str | None = None,
+        request_hash_key_version: int | None = None,
     ) -> BatchResponse:
         if ownership_check is not None:
             await ownership_check()
@@ -748,7 +798,15 @@ class SendPipeline:
             raise RuntimeError("idempotency scope unavailable")
         if request.biz_id and request_hash is None:
             policy = self._resolve_policy(app, request, preauthorization)
-            request_hash = self._request_hash(request, app, policy)
+            request_hash_key_version = self.crypto.active_version
+            request_hash = self._request_hash(
+                request,
+                app,
+                policy,
+                key_version=request_hash_key_version,
+            )
+        if request.biz_id and request_hash_key_version is None:
+            raise RuntimeError("idempotency fingerprint key version unavailable")
         self._validate_schedule(request)
         has_plain = bool(request.mobiles)
         has_protected = bool(request.protected_mobiles)
@@ -774,7 +832,7 @@ class SendPipeline:
                 limit_per_minute=app.rate_limit_per_min,
             )
         policy = self._resolve_policy(app, request, preauthorization)
-        rendered = await self._render(request)
+        rendered = await self._render(request, app.dept)
         sign_name = request.sign_name or app.default_sign
         if sign_name is not None and self.signs is not None:
             sign_name = await self.signs.resolve(sign_name)
@@ -1090,6 +1148,7 @@ class SendPipeline:
                 deferred_reason=deferred_reason,
                 scheduled_at=scheduled_at,
                 request_hash=request_hash,
+                request_hash_key_version=request_hash_key_version,
                 removed_duplicate=removed_duplicate,
                 removed_blacklist=len(blocked_active),
                 removed_freq=removed_freq,
@@ -1116,8 +1175,13 @@ class SendPipeline:
                 except Exception:
                     raise original from None
                 if existing is not None:
+                    policy = self._resolve_policy(app, request, preauthorization)
                     await self._ensure_same_request(
-                        idem_scope, request.biz_id, request_hash or ""
+                        idem_scope,
+                        request.biz_id,
+                        request,
+                        app,
+                        policy,
                     )
                     await release_usage("idempotent-reuse")
                     return await self.store.response_for(existing)
@@ -1126,8 +1190,13 @@ class SendPipeline:
         if stored.idempotent:
             if request.biz_id:
                 assert idem_scope is not None
+                policy = self._resolve_policy(app, request, preauthorization)
                 await self._ensure_same_request(
-                    idem_scope, request.biz_id, request_hash or ""
+                    idem_scope,
+                    request.biz_id,
+                    request,
+                    app,
+                    policy,
                 )
             if self.usage_ledger is not None:
                 await release_usage("idempotent-reuse")

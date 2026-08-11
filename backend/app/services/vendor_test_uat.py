@@ -129,7 +129,12 @@ class UatPreviewConfigStore(Protocol):
 
 
 class UatPreviewRenderer(Protocol):
-    async def render(self, template_id: int, params: Sequence[str]) -> str: ...
+    async def render(
+        self,
+        template_id: int,
+        params: Sequence[str],
+        dept: str,
+    ) -> str: ...
 
 
 class UatPreviewSigns(Protocol):
@@ -420,7 +425,11 @@ class VendorTestUatPreviewService:
         if content is not None:
             rendered = content
         elif template_id is not None:
-            rendered = await self.templates.render(template_id, template_params or ())
+            rendered = await self.templates.render(
+                template_id,
+                template_params or (),
+                app.dept,
+            )
         else:
             raise ValueError("content 与 template_id 必须且只能提供一个")
         resolved_sign = sign_name or app.default_sign

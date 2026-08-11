@@ -491,7 +491,7 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
             port=port,
             database=database,
         )
-        engine = create_async_engine(database_url)
+        engine = create_async_engine(database_url, hide_parameters=True)
         try:
             async with engine.begin() as connection:
                 await connection.execute(text("SET SESSION AUTHORIZATION sms_accept"))
@@ -1415,7 +1415,7 @@ def run_check() -> None:
                     ),
                 )
             )
-            engine = create_async_engine(database_url)
+            engine = create_async_engine(database_url, hide_parameters=True)
             principals: list[SecurityPrincipal] = []
             async with engine.begin() as connection:
                 provider_id = int(
@@ -1501,7 +1501,7 @@ def run_check() -> None:
                     actor=principals[0].login_name,
                     ip="127.0.0.1",
                 )
-            password_engine = create_async_engine(database_url)
+            password_engine = create_async_engine(database_url, hide_parameters=True)
             async with password_engine.connect() as connection:
                 password_row = (
                     await connection.execute(
@@ -1579,7 +1579,7 @@ def run_check() -> None:
                 )
             if not created.created:
                 raise RuntimeError("audit attribution probe did not create a word")
-            audit_engine = create_async_engine(database_url)
+            audit_engine = create_async_engine(database_url, hide_parameters=True)
             async with audit_engine.connect() as connection:
                 attributed = (
                     await connection.execute(

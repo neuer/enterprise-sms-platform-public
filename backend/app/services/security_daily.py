@@ -288,6 +288,15 @@ class SecurityDailyConfiguration:
     enabled: bool
     api_key: str
     recipients: tuple[str, ...]
+    config_version: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.config_version, int)
+            or isinstance(self.config_version, bool)
+            or self.config_version < 1
+        ):
+            raise SecurityDailyConfigurationError("安全日报配置版本无效")
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +335,15 @@ class SecurityDailyDeliveryRequest:
     state: DeliveryRequestState
     requested_at: datetime
     idempotent: bool
+    config_version: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.config_version, int)
+            or isinstance(self.config_version, bool)
+            or self.config_version < 1
+        ):
+            raise SecurityDailyConfigurationError("安全日报配置版本无效")
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,6 +875,7 @@ class FileSecurityDailyControl:
                         "recipients": list(
                             validate_resend_recipients(configuration.recipients)
                         ),
+                        "config_version": configuration.config_version,
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -892,6 +911,7 @@ class FileSecurityDailyControl:
             "request_id": str(request.request_id),
             "report_date": request.report_date.isoformat(),
             "action": request.action,
+            "config_version": request.config_version,
             "payload": validate_security_daily_payload(payload),
         }
         try:

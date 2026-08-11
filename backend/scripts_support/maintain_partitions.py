@@ -244,7 +244,11 @@ async def _run_once(
     future_months: int,
 ) -> MaintenanceResult:
     settings = get_settings()
-    engine = create_async_engine(settings.database_owner_url, poolclass=NullPool)
+    engine = create_async_engine(
+        settings.database_owner_url,
+        poolclass=NullPool,
+        hide_parameters=True,
+    )
     try:
         async with engine.begin() as connection:
             # migrate 是 sms_owner；显式绑定受认证的 system 上下文后再写审计。

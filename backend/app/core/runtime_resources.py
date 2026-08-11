@@ -437,6 +437,7 @@ def database_engine(
             budget = _BUDGETS[selected]
             engine = create_async_engine(
                 database_url,
+                hide_parameters=True,
                 pool_size=budget.pool_size,
                 max_overflow=budget.max_overflow,
                 pool_timeout=budget.pool_timeout_seconds,

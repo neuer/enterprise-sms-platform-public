@@ -135,7 +135,16 @@ class SqlHousekeepingRepository:
                             )
                           RETURNING 1
                         ), deleted_idempotency AS (
-                          DELETE FROM idempotency_record WHERE expires_at<=now()
+                          DELETE FROM idempotency_record i
+                          WHERE i.expires_at<=now()
+                            AND NOT EXISTS (
+                              SELECT 1 FROM sms_batch b
+                              WHERE b.id=i.batch_id
+                                AND b.status IN (
+                                  'pending_approval','scheduled','queued',
+                                  'sending','balance_blocked'
+                                )
+                            )
                           RETURNING 1
                         ), deleted_jobs AS (
                           DELETE FROM job_run

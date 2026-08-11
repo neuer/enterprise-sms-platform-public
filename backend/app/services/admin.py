@@ -111,6 +111,7 @@ SENSITIVE_CONFIG_KEYS = frozenset({"alert_wecom_webhook", "security_daily_resend
 UI_ONLY_CONFIG_KEYS = frozenset(
     {
         "security_daily_enabled",
+        "security_daily_config_version",
         "security_daily_recipient_count",
         "security_daily_resend_configured",
         "security_daily_resend_api_key",

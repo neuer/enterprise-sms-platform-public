@@ -27,7 +27,7 @@ async def provision() -> None:
             settings.credential("audit_system_bulk_context_key")
         ),
     }
-    engine = create_async_engine(settings.database_owner_url)
+    engine = create_async_engine(settings.database_owner_url, hide_parameters=True)
     try:
         async with engine.begin() as connection:
             await connection.execute(

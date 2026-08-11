@@ -24,7 +24,7 @@ class IdempotencyScope:
     id: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"app", "account", "web-legacy"}:
+        if self.kind not in {"app", "account", "resend", "web-legacy"}:
             raise ValueError("idempotency scope kind invalid")
         if not self.id or len(self.id) > 64:
             raise ValueError("idempotency scope id invalid")
@@ -32,6 +32,14 @@ class IdempotencyScope:
     @property
     def key(self) -> str:
         return f"{self.kind}:{self.id}"
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyFingerprint:
+    """PostgreSQL 中的版本化请求 HMAC；旧记录没有该事实。"""
+
+    digest: str
+    key_version: int
 
 
 class IdempotencyCoordinationTimeout(RuntimeError):
@@ -71,9 +79,9 @@ class IdempotencyRepository(Protocol):
         self, scope: IdempotencyScope, biz_id: str
     ) -> str | None: ...
 
-    async def find_request_hash(
+    async def find_request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None: ...
+    ) -> IdempotencyFingerprint | None: ...
 
 
 class IdempotencyCoordinator:
@@ -147,13 +155,13 @@ class IdempotencyCoordinator:
             raise ValueError("date_key must be YYYYMMDD")
         return f"idem:quota:{scope.key}:{biz_id}:{date_key}"
 
-    async def request_hash(
+    async def request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None:
-        """返回 PostgreSQL 事实源中的请求指纹；旧记录可能为 NULL。"""
+    ) -> IdempotencyFingerprint | None:
+        """返回 PostgreSQL 事实源中的版本化请求 HMAC；旧记录可能为空。"""
 
         self.key(scope, biz_id)
-        return await self.repository.find_request_hash(scope, biz_id)
+        return await self.repository.find_request_fingerprint(scope, biz_id)
 
     async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         key = self.key(scope, biz_id)

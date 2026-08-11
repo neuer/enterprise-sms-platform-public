@@ -81,7 +81,7 @@ async def test_resend_decrypts_failed_phones_in_memory_and_preserves_controls() 
     assert request.actor == "operator01"
     assert request.resend_of == "original-1"
     assert request.resend_dept == "市场部"
-    assert request.biz_id is None and request.scheduled_at is None
+    assert request.biz_id == "failed-recipients-v1" and request.scheduled_at is None
 
 
 @pytest.mark.asyncio

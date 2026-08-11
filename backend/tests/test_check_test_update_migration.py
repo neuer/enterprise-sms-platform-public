@@ -74,6 +74,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0059_authenticated_audit_alert",
         "0060_audit_producer_domains",
         "0061_vendor_binding_outbox",
+        "0062_security_scan_remediations",
     ]
 
 

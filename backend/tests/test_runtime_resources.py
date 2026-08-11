@@ -126,6 +126,7 @@ def test_database_engine_reuses_bounded_pool_per_component(
     assert first is not metrics
     assert len(engines) == 2
     assert options[0] == {
+        "hide_parameters": True,
         "pool_size": 8,
         "max_overflow": 2,
         "pool_timeout": 3.0,

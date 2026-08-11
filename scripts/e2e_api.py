@@ -1443,7 +1443,9 @@ class UatSuite:
                     "content": content,
                     "var_specs": [{"pos": 1, "max_len": 10}, {"pos": 2, "max_len": 6}],
                 },
-                headers=self._bearer("operator01"),
+                # app-iam 属于平台技术部；用同部门 admin 创建，避免把旧的跨部门
+                # 模板复用行为当成合法验收前提。
+                headers=self._bearer("admin01"),
             ),
             200,
         )
@@ -1464,7 +1466,7 @@ class UatSuite:
                 self.api,
                 "POST",
                 f"/api/v1/web/templates/{template_id}/sync",
-                headers=self._bearer("operator01"),
+                headers=self._bearer("admin01"),
             ),
             202,
         )
@@ -1476,7 +1478,7 @@ class UatSuite:
                     self.api,
                     "GET",
                     f"/api/v1/web/templates/{template_id}",
-                    headers=self._bearer("operator01"),
+                    headers=self._bearer("admin01"),
                 ),
                 200,
             )

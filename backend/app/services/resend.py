@@ -14,6 +14,8 @@ from app.services.crypto import CryptoService, EncryptionContext
 from app.services.pipeline import SendRequest
 from app.settings import Settings, get_settings
 
+RESEND_FAILED_BIZ_ID = "failed-recipients-v1"
+
 
 class NoFailedRecipients(ValueError):
     """原批次没有可重发的 failed 明细。"""
@@ -145,6 +147,7 @@ class ResendService:
             channel=source.channel,
             consent_confirmed=source.consent_confirmed,
             actor=actor,
+            biz_id=RESEND_FAILED_BIZ_ID,
             is_test=source.is_test,
             resend_of=source.batch_no,
             resend_dept=source.dept,

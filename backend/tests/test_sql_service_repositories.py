@@ -25,7 +25,7 @@ from app.services.import_repository import (
     consume_import_reservation,
 )
 from app.services.imports import ImportPhone, ImportResult, RemovedPhone
-from app.services.pipeline_repository import SqlPipelineStore
+from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.reconcile_repository import SqlRecoveryRepository
 from app.services.report_ingest import ProtectedReport, ReportApplyResult
 from app.services.report_repository import SqlReportRepository
@@ -150,6 +150,34 @@ def protected_report() -> ProtectedReport:
         report_time=datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
         phone_hmacs=("b" * 64, "a" * 64),
     )
+
+
+@pytest.mark.asyncio
+async def test_template_renderer_binds_authoritative_department(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "content": "尊敬的{1}",
+                        "var_specs": [{"pos": 1, "max_len": 10}],
+                    }
+                ]
+            )
+        ]
+    )
+    engine = FakeEngine(connection)
+    monkeypatch.setattr(pipeline_repository_module, "database_engine", lambda _url: engine)
+    renderer = SqlTemplateRenderer(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused"))
+    )
+
+    assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
+    sql, params = connection.calls[0]
+    assert "dept=:dept" in sql
+    assert params == {"template_id": 17, "dept": "平台技术部"}
 
 
 @pytest.mark.asyncio
@@ -401,6 +429,7 @@ async def test_reschedule_uses_runtime_approval_expiry(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
@@ -413,7 +442,10 @@ async def test_reschedule_uses_runtime_approval_expiry(
     )
 
     assert changed is True
-    approval_sql, approval_params = connection.calls[2]
+    expiry_sql, expiry_params = connection.calls[2]
+    assert "GREATEST" in expiry_sql
+    assert expiry_params["id"] == 9  # type: ignore[index]
+    approval_sql, approval_params = connection.calls[3]
     assert "make_interval" in approval_sql
     assert approval_params["expire_hours"] == 6  # type: ignore[index]
 
@@ -960,6 +992,34 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
     connection = FakeConnection([FakeResult(scalar=None)])
     bind_engine(monkeypatch, store, connection)
     assert await store.find_existing(scope, "missing") is None
+
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "request_hash": "a" * 64,
+                        "request_hash_key_version": 2,
+                    }
+                ]
+            )
+        ]
+    )
+    bind_engine(monkeypatch, store, connection)
+    fingerprint = await store.find_request_fingerprint(scope, "biz-1")
+    assert fingerprint is not None
+    assert fingerprint.digest == "a" * 64
+    assert fingerprint.key_version == 2
+    assert "balance_blocked" in connection.calls[0][0]
+
+    connection = FakeConnection([FakeResult(rows=[])])
+    bind_engine(monkeypatch, store, connection)
+    assert await store.find_request_fingerprint(scope, "legacy") is None
+
+    connection = FakeConnection([FakeResult(scalar="child-1")])
+    bind_engine(monkeypatch, store, connection)
+    assert await store.find_resend_child("source-1") == "child-1"
+    assert "sms_resend_action" in connection.calls[0][0]
 
 
 @pytest.mark.asyncio

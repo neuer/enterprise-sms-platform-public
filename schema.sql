@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.53  2026-08-11
+-- v1.6.53：版本化幂等 HMAC、失败重发唯一事实、生命周期保留、callback 列权限与日报配置版本绑定
 -- v1.6.52  2026-08-10
 -- v1.6.52：厂商签名/模板 Bind 与单模板同步改由 realtime worker 消费精确 Outbox；API 不持凭据
 -- v1.6.51  2026-08-09
@@ -394,9 +396,18 @@ CREATE INDEX idx_sms_batch_creator_account
 CREATE INDEX idx_batch_active   ON sms_batch(status)
     WHERE status IN ('scheduled','queued','sending','balance_blocked');
 
--- 幂等 DB 兜底：请求事务先删除同键 expires_at<=now() 的记录，再创建
--- batch+record；唯一冲突时回查未过期 batch 返回 idempotent=true。
--- request_hash 固化请求指纹，生命周期覆盖 scheduled_at + 安全窗口。
+-- 失败重发一代一事实：历史重复子批次保留，但新请求只能原子认领一次。
+CREATE TABLE sms_resend_action (
+    source_batch_id BIGINT PRIMARY KEY REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    child_batch_id  BIGINT NOT NULL UNIQUE REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_sms_resend_action_distinct CHECK (source_batch_id <> child_batch_id)
+);
+
+-- 幂等 DB 兜底：仅在同键 expires_at<=now() 且关联批次不再具有外部副作用时删除，
+-- 再以同事务创建 batch+record；唯一冲突时回查仍受保护的原批次。
+-- request_hash 是版本化 HMAC 指纹，生命周期至少覆盖批次活跃期和
+-- scheduled_at + 安全窗口，避免明文摘要离线枚举与延迟任务重复发送。
 -- scope_kind/scope_id：app=<app_id>；account=<account_id>:<identity_id>；
 -- web-legacy/global 仅为迁移前 app_id IS NULL 旧记录的短期兼容作用域。
 CREATE TABLE idempotency_record (
@@ -406,10 +417,18 @@ CREATE TABLE idempotency_record (
     scope_id   VARCHAR(64)  NOT NULL,
     biz_id     VARCHAR(32)  NOT NULL,
     request_hash VARCHAR(64),
+    request_hash_key_version SMALLINT,
     batch_id   BIGINT       NOT NULL UNIQUE REFERENCES sms_batch(id),
     expires_at TIMESTAMPTZ  NOT NULL,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT uk_idem_app_biz UNIQUE (scope_kind, scope_id, biz_id)
+    CONSTRAINT uk_idem_app_biz UNIQUE (scope_kind, scope_id, biz_id),
+    CONSTRAINT ck_idem_request_fingerprint CHECK (
+      (request_hash IS NULL AND request_hash_key_version IS NULL)
+      OR (
+        request_hash ~ '^[0-9a-f]{64}$'
+        AND request_hash_key_version BETWEEN 1 AND 32767
+      )
+    )
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
 
@@ -1522,9 +1541,11 @@ CREATE TABLE security_daily_delivery_request (
                      CHECK (state IN ('pending','sent','failed')),
     dedup_key        VARCHAR(192) NOT NULL UNIQUE,
     requested_by     VARCHAR(64) NOT NULL,
+    config_version   BIGINT NOT NULL,
     requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at     TIMESTAMPTZ,
     error            VARCHAR(256),
+    CONSTRAINT ck_security_daily_request_config_version CHECK (config_version > 0),
     CONSTRAINT ck_security_daily_request_completion CHECK (
       (state='pending' AND completed_at IS NULL)
       OR (state IN ('sent','failed') AND completed_at IS NOT NULL)
@@ -1619,6 +1640,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
 ('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态'),
+('security_daily_config_version','1','int','安全日报发信配置单调版本'),
 -- v1.6.40 新增：安全日报配置页允许管理员维护 Resend Key。
 ('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）');
 
@@ -2003,7 +2025,7 @@ TO sms_auth;
 
 -- API 消息受理、管理页面与运行控制；账号表写入仍只属于 sms_auth。
 GRANT SELECT ON
-    app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
+    app, dept_quota, sms_batch, sms_resend_action, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
     sms_sign, blacklist, sensitive_word, callback_report_event, callback_task,
@@ -2023,6 +2045,7 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
 TO sms_accept;
+GRANT INSERT ON sms_resend_action TO sms_accept;
 GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
@@ -2092,9 +2115,13 @@ TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。
 GRANT SELECT ON
-    app, sms_batch, sms_message, callback_report_event, callback_task,
+    app, sms_message, callback_report_event, callback_task,
     worker_lease_event, alert_log, outbox_event, sys_config, job_run
 TO sms_callback;
+GRANT SELECT (
+    id, batch_no, category, app_id, biz_id, status, total,
+    delivered, failed, unknown_cnt, updated_at
+) ON sms_batch TO sms_callback;
 GRANT INSERT, UPDATE, DELETE ON callback_report_event, callback_task TO sms_callback;
 GRANT INSERT, UPDATE ON outbox_event, alert_log, job_run TO sms_callback;
 GRANT INSERT ON worker_lease_event, audit_log TO sms_callback;

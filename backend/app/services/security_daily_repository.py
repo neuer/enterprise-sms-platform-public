@@ -129,7 +129,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 config_result = await connection.execute(
                     text(
                         "SELECT key,value FROM sys_config WHERE key IN "
-                        "('security_daily_enabled','security_daily_resend_api_key')"
+                        "('security_daily_enabled','security_daily_resend_api_key',"
+                        "'security_daily_config_version')"
                     )
                 )
                 config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
@@ -146,6 +147,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             enabled=_bool_config(config.get("security_daily_enabled")),
             api_key=validate_resend_api_key(config.get("security_daily_resend_api_key", "")),
             recipients=validate_resend_recipients(recipients),
+            config_version=int(config.get("security_daily_config_version", "1")),
         )
 
     async def audit_evidence(
@@ -244,6 +246,17 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
                 current_row = current_result.mappings().one_or_none()
                 current_key = str(current_row["value"]) if current_row is not None else ""
+                version_result = await connection.execute(
+                    text(
+                        "SELECT value FROM sys_config "
+                        "WHERE key='security_daily_config_version' FOR UPDATE"
+                    )
+                )
+                version_row = version_result.mappings().one_or_none()
+                current_version = int(version_row["value"]) if version_row is not None else 0
+                next_version = current_version + 1
+                if not 1 <= next_version <= 9223372036854775807:
+                    raise SecurityDailyConfigurationError("安全日报配置版本无效")
                 api_key = (
                     validate_resend_api_key(update.api_key)
                     if update.api_key is not None
@@ -254,6 +267,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     "security_daily_resend_api_key": api_key,
                     "security_daily_recipient_count": str(len(recipients)),
                     "security_daily_resend_configured": "true" if api_key else "false",
+                    "security_daily_config_version": str(next_version),
                 }
                 for key, value in values.items():
                     await connection.execute(
@@ -295,12 +309,18 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                 "enabled": update.enabled,
                                 "resend_configured": bool(api_key),
                                 "recipient_count": len(recipients),
+                                "config_version": next_version,
                             },
                             ensure_ascii=False,
                         ),
                     },
                 )
-                return SecurityDailyConfiguration(update.enabled, api_key, recipients)
+                return SecurityDailyConfiguration(
+                    update.enabled,
+                    api_key,
+                    recipients,
+                    next_version,
+                )
         finally:
             await engine.dispose()
 
@@ -718,6 +738,17 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await connection.execute(text("SELECT pg_advisory_xact_lock(83174621)"))
+                version_result = await connection.execute(
+                    text(
+                        "SELECT value FROM sys_config "
+                        "WHERE key='security_daily_config_version'"
+                    )
+                )
+                version_raw = version_result.scalar_one_or_none()
+                config_version = int(version_raw) if version_raw is not None else 1
+                if config_version < 1:
+                    raise SecurityDailyConfigurationError("安全日报配置版本无效")
                 locked_result = await connection.execute(
                     text(
                         "SELECT delivery_status,retry_count FROM security_daily_report "
@@ -733,7 +764,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 if action == "send" and delivery_status in {"pending", "sending", "sent"}:
                     existing = await connection.execute(
                         text(
-                            "SELECT request_id,requested_at,state "
+                            "SELECT request_id,requested_at,state,config_version "
                             "FROM security_daily_delivery_request "
                             "WHERE report_id=:report_id ORDER BY requested_at DESC LIMIT 1"
                         ),
@@ -748,14 +779,16 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                             state=cast(DeliveryRequestState, str(row["state"])),
                             requested_at=row["requested_at"],
                             idempotent=True,
+                            config_version=int(row["config_version"]),
                         )
                     return SecurityDailyDeliveryRequest(
                         request_id=request_id,
                         report_date=report.report_date,
                         action=action,
                         state="sent" if delivery_status == "sent" else "pending",
-                            requested_at=datetime.now(SHANGHAI_TZ),
+                        requested_at=datetime.now(SHANGHAI_TZ),
                         idempotent=True,
+                        config_version=config_version,
                     )
                 if action == "retry" and delivery_status != "failed":
                     raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
@@ -772,10 +805,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     text(
                         """
                         INSERT INTO security_daily_delivery_request(
-                          request_id,report_id,report_date,action,state,dedup_key,requested_by
+                          request_id,report_id,report_date,action,state,dedup_key,
+                          requested_by,config_version
                         ) VALUES(
                           :request_id,:report_id,:report_date,:action,'pending',
-                          :dedup_key,:actor
+                          :dedup_key,:actor,:config_version
                         )
                         """
                     ),
@@ -786,6 +820,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "action": action,
                         "dedup_key": dedup_key,
                         "actor": requested_by,
+                        "config_version": config_version,
                     },
                 )
                 await connection.execute(
@@ -846,6 +881,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     state="pending",
                     requested_at=datetime.now(SHANGHAI_TZ),
                     idempotent=False,
+                    config_version=config_version,
                 )
         finally:
             await engine.dispose()

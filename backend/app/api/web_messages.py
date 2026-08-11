@@ -320,12 +320,17 @@ async def _pipeline_for(claims: JwtClaims) -> AsyncIterator[SendPipeline]:
 async def _render(
     payload: WebContentModel,
     renderer: SqlTemplateRenderer,
+    dept: str,
 ) -> str:
     if payload.content is not None:
         return payload.content
     if payload.template_id is None:
         raise ValueError("模板编号不能为空")
-    return await renderer.render(payload.template_id, payload.template_params or ())
+    return await renderer.render(
+        payload.template_id,
+        payload.template_params or (),
+        dept,
+    )
 
 
 def _import_response(stored: StoredImport) -> ImportResponse:
@@ -711,7 +716,7 @@ async def billing_preview(
 ) -> BillingPreview:
     claims = await _writer(facade, credentials)
     try:
-        content = await _render(payload, renderer)
+        content = await _render(payload, renderer, claims.dept)
         values = await store.load_config(claims.dept)
         policy = RuntimePolicy.from_mapping(values)
         sign_name = await signs.resolve(payload.sign_name) if payload.sign_name else None

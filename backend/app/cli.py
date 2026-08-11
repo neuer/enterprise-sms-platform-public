@@ -229,7 +229,10 @@ class SqlInitAdminRepository:
         display_name: str,
         password_hash: str,
     ) -> None:
-        engine = create_async_engine(self.settings.database_url_for("auth"))
+        engine = create_async_engine(
+            self.settings.database_url_for("auth"),
+            hide_parameters=True,
+        )
         try:
             async with engine.begin() as connection:
                 await connection.execute(
@@ -652,8 +655,14 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
 
     ensure_seed_allowed(settings)
     api_keys, _generated = load_or_generate_dev_api_keys(keys_file)
-    auth_engine = create_async_engine(settings.database_url_for("auth"))
-    accept_engine = create_async_engine(settings.database_url_for("accept"))
+    auth_engine = create_async_engine(
+        settings.database_url_for("auth"),
+        hide_parameters=True,
+    )
+    accept_engine = create_async_engine(
+        settings.database_url_for("accept"),
+        hide_parameters=True,
+    )
     try:
         commands = seed_commands(api_keys)
         auth_command_count = 2 + len(DEV_USERS)
