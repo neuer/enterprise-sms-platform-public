@@ -993,6 +993,7 @@ def test_round4_migration_pseudonymizes_vendor_metadata_and_guards_raw_index(
         "ck_reply_event_ext_code_redacted",
         "CREATE OR REPLACE FUNCTION enforce_raw_vendor_custom_ids()",
         "trg_raw_vendor_custom_ids",
+        "GRANT UPDATE (expires_at) ON callback_authority_lease TO sms_callback",
     ):
         assert fragment in schema
         assert fragment in source

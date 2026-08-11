@@ -2238,6 +2238,7 @@ GRANT SELECT (
 ) ON sms_batch TO sms_callback;
 GRANT INSERT, UPDATE, DELETE ON callback_report_event, callback_task TO sms_callback;
 GRANT INSERT, DELETE ON callback_authority_lease TO sms_callback;
+GRANT UPDATE (expires_at) ON callback_authority_lease TO sms_callback;
 GRANT INSERT, UPDATE ON outbox_event, alert_log, job_run TO sms_callback;
 GRANT INSERT ON worker_lease_event, audit_log TO sms_callback;
 GRANT USAGE, SELECT ON SEQUENCE

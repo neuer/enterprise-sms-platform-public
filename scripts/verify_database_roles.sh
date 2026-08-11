@@ -44,7 +44,22 @@ result="$(
        AND NOT has_table_privilege('sms_auth','password_change_token','TRUNCATE')
       AND has_sequence_privilege(
          'sms_auth','password_change_token_id_seq','USAGE')),
-      has_table_privilege('sms_callback','callback_task','UPDATE'),
+      (has_table_privilege('sms_callback','callback_task','UPDATE')
+       AND has_column_privilege(
+         'sms_callback','callback_authority_lease','expires_at','UPDATE'
+       )
+       AND NOT has_column_privilege(
+         'sms_callback','callback_authority_lease','app_id','UPDATE'
+       )
+       AND NOT has_column_privilege(
+         'sms_callback','callback_authority_lease','task_id','UPDATE'
+       )
+       AND NOT has_column_privilege(
+         'sms_callback','callback_authority_lease','lease_id','UPDATE'
+       )
+       AND NOT has_column_privilege(
+         'sms_callback','callback_authority_lease','created_at','UPDATE'
+       )),
       (has_table_privilege('sms_send','callback_task','INSERT')
        AND has_table_privilege('sms_send','callback_task','UPDATE')
        AND has_table_privilege('sms_send','callback_report_event','INSERT')

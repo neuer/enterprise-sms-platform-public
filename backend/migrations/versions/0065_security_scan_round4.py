@@ -250,6 +250,9 @@ def upgrade() -> None:
     op.execute("GRANT SELECT,DELETE ON callback_authority_lease TO sms_accept")
     op.execute("GRANT SELECT,INSERT,DELETE ON callback_authority_lease TO sms_callback")
     op.execute(
+        "GRANT UPDATE (expires_at) ON callback_authority_lease TO sms_callback"
+    )
+    op.execute(
         """
         UPDATE import_task SET filename=CASE
           WHEN lower(filename) LIKE '%.xlsx' THEN 'upload.xlsx'
