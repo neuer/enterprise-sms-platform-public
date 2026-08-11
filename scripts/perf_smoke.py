@@ -24,6 +24,7 @@ import httpx
 from runtime_credentials import read_secret_file
 
 ACCEPTANCE_P95_LIMIT_SECONDS = 2.0
+TAB_ID = "00000000000000000000000000000001"
 
 
 class PerformanceFailure(RuntimeError):
@@ -541,6 +542,7 @@ class PerformanceSuite:
                 "provider_code": "ad",
                 "username": "operator01",
                 "password": self.mock_password,
+                "tab_id": TAB_ID,
             },
         )
         if response.status != 200:

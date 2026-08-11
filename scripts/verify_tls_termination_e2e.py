@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 from render_trusted_proxy_conf import render  # noqa: E402
 
 SIMULATED_CLIENTS = ("203.0.113.7", "203.0.113.8")
+TAB_ID = "00000000000000000000000000000001"
 
 
 class TlsProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -220,6 +221,7 @@ def main() -> int:
                 "provider_code": "ad",
                 "username": "operator01",
                 "password": mock_password,
+                "tab_id": TAB_ID,
             },
             headers=login_headers,
         )
@@ -242,6 +244,7 @@ def main() -> int:
             proxy_port,
             "POST",
             "/api/v1/web/auth/refresh",
+            body={"tab_id": TAB_ID},
             headers=refresh_headers,
         )
         if status != 200:

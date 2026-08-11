@@ -30,6 +30,7 @@ REQUIRED_APPS = frozenset({"app-iam", "app-oa", "app-mkt"})
 SAFE_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_DATABASE_VALUE = re.compile(r"^[A-Za-z0-9_.:@+\-]+$")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+TAB_ID = "00000000000000000000000000000001"
 
 
 class UatFailure(RuntimeError):
@@ -430,6 +431,7 @@ class UatSuite:
                 "provider_code": "ad",
                 "username": username,
                 "password": self.mock_password,
+                "tab_id": TAB_ID,
             },
         )
         data = self._expect("00", response, 200)

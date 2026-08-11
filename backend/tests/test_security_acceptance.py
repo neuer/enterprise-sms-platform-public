@@ -158,6 +158,7 @@ def test_injection_probes_use_valid_shape_and_authenticated_path(tmp_path: Path)
         "provider_code": "ad",
         "username": "admin01' OR '1'='1",
         "password": "in-memory-security-test-password",
+        "tab_id": "00000000000000000000000000000001",
     }
     path_probe = next(
         call for call in http.calls if call[1].endswith("/phone/decrypt")

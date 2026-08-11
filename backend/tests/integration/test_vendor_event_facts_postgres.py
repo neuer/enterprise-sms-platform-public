@@ -101,6 +101,9 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
 
     async def create_message(index: int) -> tuple[int, str, datetime]:
         custom_id = f"{nonce[:24]}{index:08d}"
+        vendor_task_id = _crypto().stable_hmac_fingerprint(
+            f"vendor-{custom_id}".encode(), domain="vendor-task-id"
+        )[1]
         created_at = base_time + timedelta(minutes=index)
         async with engine.begin() as connection:
             batch_id = int(
@@ -142,7 +145,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
                         {
                             "batch_id": batch_id,
                             "custom_id": custom_id,
-                            "vendor_task_id": f"vendor-{custom_id}",
+                            "vendor_task_id": vendor_task_id,
                             "submitted_at": created_at,
                         },
                     )
