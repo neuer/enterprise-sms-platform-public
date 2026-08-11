@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -15,6 +15,7 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.blacklist import RedisBlacklistCache
 from app.services.crypto import CryptoService
@@ -22,6 +23,10 @@ from app.services.reply_query import (
     ReplyNotFound,
     ReplyQueryService,
     SqlReplyQueryRepository,
+)
+from app.services.sensitive_read_audit import (
+    SensitiveReadAuditor,
+    get_sensitive_read_auditor,
 )
 from app.settings import get_settings
 
@@ -78,6 +83,8 @@ async def _claims(
 
 @router.get("", response_model=ReplyPageModel, responses={400: ERROR_RESPONSE})
 async def list_replies(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[ReplyQueryService, Depends(get_reply_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -97,6 +104,13 @@ async def list_replies(
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    await auditor.record(
+        action="reply_content_read",
+        object_type="reply_page",
+        object_id="list",
+        ip=trusted_client_ip(request),
+        count=len(result.items),
+    )
     return ReplyPageModel(
         total=result.total,
         items=[

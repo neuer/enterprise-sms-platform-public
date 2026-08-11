@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.sensitive_text import reject_phone_in_text
 
 
 class SelfApprovalDenied(PermissionError):
@@ -120,6 +121,7 @@ class ApprovalService:
         if action not in {"approve", "reject"}:
             raise ValueError("invalid approval action")
         cleaned_reason = reason.strip() if reason else None
+        reject_phone_in_text(cleaned_reason, field_name="reason")
         if action == "reject" and not cleaned_reason:
             raise ValueError("驳回必须填写原因")
         current = await self.repository.get(approval_id)

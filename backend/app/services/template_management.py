@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
+from app.core.sensitive_text import mask_phone_in_text
 from app.services.template import VarSpecInput, to_vendor_template
 
 
@@ -193,7 +194,9 @@ class TemplateManagementService:
                 raise ValueError("invalid GetTemplateState item")
             local_id = vendor_to_local.get(vendor_id)
             if local_id is not None:
-                states.append((local_id, map_vendor_template_state(check_type), remark))
+                states.append(
+                    (local_id, map_vendor_template_state(check_type), mask_phone_in_text(remark))
+                )
         return await self.repository.apply_states(states)
 
     async def bind(self, template_id: int) -> int:

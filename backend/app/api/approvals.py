@@ -15,6 +15,7 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.alert_repository import SqlAlertService
 from app.services.approval import ApprovalService, SelfApprovalDenied, StateConflict
@@ -22,6 +23,10 @@ from app.services.approval_repository import SqlApprovalRepository
 from app.services.crypto import CryptoService
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaRedis, QuotaService
+from app.services.sensitive_read_audit import (
+    SensitiveReadAuditor,
+    get_sensitive_read_auditor,
+)
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/approvals", tags=["approval"])
@@ -91,6 +96,8 @@ async def _approver(
 
 @router.get("", response_model=ApprovalPage)
 async def list_approvals(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     repository: Annotated[SqlApprovalRepository, Depends(get_approval_repository)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -100,11 +107,20 @@ async def list_approvals(
     page: Annotated[int, Query(ge=1)] = 1,
 ) -> dict[str, object]:
     await _approver(facade, credentials)
-    return await repository.list_page(
+    result = await repository.list_page(
         status=status,
         dept=None,
         page=page,
     )
+    items = result.get("items", [])
+    await auditor.record(
+        action="approval_content_read",
+        object_type="approval_page",
+        object_id=status,
+        ip=trusted_client_ip(request),
+        count=len(items) if isinstance(items, list) else 0,
+    )
+    return result
 
 
 @router.post(

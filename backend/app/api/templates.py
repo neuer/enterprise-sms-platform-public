@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -12,8 +12,13 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.ops_dispatch import TemplateSyncSender
+from app.services.sensitive_read_audit import (
+    SensitiveReadAuditor,
+    get_sensitive_read_auditor,
+)
 from app.services.template import TemplateParamMismatch
 from app.services.template_management import (
     TemplateManagementService,
@@ -97,12 +102,21 @@ def _error(error: Exception) -> ApiError:
 
 @router.get("", response_model=list[TemplateModel])
 async def list_templates(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[TemplateModel]:
     claims = await _user(facade, credentials, write=False)
     records = await service.list_all(dept=None if claims.role == "admin" else claims.dept)
+    await auditor.record(
+        action="template_content_read",
+        object_type="template_page",
+        object_id="list",
+        ip=trusted_client_ip(request),
+        count=len(records),
+    )
     return [_model(record) for record in records]
 
 
@@ -132,15 +146,25 @@ async def create_template(
 @router.get("/{id}", response_model=TemplateModel, responses={404: ERROR_RESPONSE})
 async def get_template(
     id: int,
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> TemplateModel:
     claims = await _user(facade, credentials, write=False)
     try:
-        return _model(await service.get(id, dept=None if claims.role == "admin" else claims.dept))
+        record = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
     except TemplateNotFound as error:
         raise _error(error) from None
+    await auditor.record(
+        action="template_content_read",
+        object_type="template",
+        object_id=str(id),
+        ip=trusted_client_ip(request),
+        count=1,
+    )
+    return _model(record)
 
 
 @router.put("/{id}", response_model=TemplateModel, responses={409: ERROR_RESPONSE})

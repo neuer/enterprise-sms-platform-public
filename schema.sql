@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.55  2026-08-11
+-- v1.6.55：模板正文上下文加密、敏感元数据手机号兜底约束、主体隔离用量键
 -- v1.6.54  2026-08-11
 -- v1.6.54：短信/回复展示正文上下文加密、拉取 raw-first HTTP 状态与密钥化回复事件键
 -- v1.6.53  2026-08-11
@@ -386,7 +388,10 @@ CREATE TABLE sms_batch (
       (creator_account_id IS NULL AND creator_identity_id IS NULL)
       OR (creator_account_id IS NOT NULL AND creator_identity_id IS NOT NULL)
     ),
-    CONSTRAINT ck_sms_batch_content_marker CHECK (content='[encrypted]')
+    CONSTRAINT ck_sms_batch_content_marker CHECK (content='[encrypted]'),
+    CONSTRAINT ck_sms_batch_remark_no_phone CHECK (
+      remark IS NULL OR remark !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
+    )
 );
 -- biz_id 只用于追踪；过期后允许复用，唯一性由 idempotency_record 管理。
 CREATE INDEX idx_batch_app_biz ON sms_batch(app_id, biz_id)
@@ -950,6 +955,9 @@ CREATE TABLE approval (
       approver_account_id IS NULL
       OR applicant_account_id IS NULL
       OR approver_account_id <> applicant_account_id
+    ),
+    CONSTRAINT ck_approval_reason_no_phone CHECK (
+      reason IS NULL OR reason !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
     )
 );
 CREATE INDEX idx_approval_status ON approval(status, created_at);
@@ -962,7 +970,8 @@ CREATE INDEX idx_approval_approver_account
 CREATE TABLE sms_template (
     id                   BIGSERIAL PRIMARY KEY,
     name                 VARCHAR(64)  NOT NULL,
-    content              VARCHAR(500) NOT NULL,           -- 平台格式占位 {1}..{n}
+    content              VARCHAR(500) NOT NULL DEFAULT '[encrypted]', -- 固定非敏感标记
+    content_enc          BYTEA        NOT NULL,           -- 模板定义：版本头+上下文 AES-GCM
     var_specs            JSONB,                           -- 变量声明,如 [{"pos":1,"max_len":10},{"pos":2,"max_len":6}]
                                                           -- 提交厂商时按序转为 {s<max_len>}；渲染时校验参数长度
     dept                 VARCHAR(128) NOT NULL,
@@ -972,7 +981,12 @@ CREATE TABLE sms_template (
     vendor_reject_reason VARCHAR(256),
     created_by           VARCHAR(64)  NOT NULL,
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now()
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT ck_sms_template_content_marker CHECK (content='[encrypted]'),
+    CONSTRAINT ck_sms_template_reject_reason_no_phone CHECK (
+      vendor_reject_reason IS NULL
+      OR vendor_reject_reason !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
+    )
 );
 
 CREATE TABLE sms_sign (
@@ -983,7 +997,11 @@ CREATE TABLE sms_sign (
         CHECK (vendor_state IN ('pending','approved','rejected')),
     vendor_reject_reason VARCHAR(256),
     created_by           VARCHAR(64) NOT NULL,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_sms_sign_reject_reason_no_phone CHECK (
+      vendor_reject_reason IS NULL
+      OR vendor_reject_reason !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
+    )
 );
 
 -- ─────────────── 管控 ───────────────
@@ -996,8 +1014,30 @@ CREATE TABLE blacklist (
         CHECK (source IN ('manual','reply_optout','import')),
     remark      VARCHAR(128),
     created_by  VARCHAR(64) NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_blacklist_remark_no_phone CHECK (
+      remark IS NULL OR remark !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
+    )
 );
+
+-- 历史自由文本命中手机号时，迁移先加密保存原值，再收敛在线字段。
+-- 该表不授予任何运行角色，只允许 sms_owner 受控恢复。
+CREATE TABLE sensitive_metadata_archive (
+    source_table  VARCHAR(32)  NOT NULL,
+    source_row    VARCHAR(128) NOT NULL,
+    source_column VARCHAR(32)  NOT NULL,
+    value_enc     BYTEA       NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_table, source_row, source_column),
+    CONSTRAINT ck_sensitive_metadata_archive_source CHECK (
+      (source_table='sms_batch' AND source_column='remark')
+      OR (source_table='blacklist' AND source_column='remark')
+      OR (source_table='approval' AND source_column='reason')
+      OR (source_table='sms_template' AND source_column='vendor_reject_reason')
+      OR (source_table='sms_sign' AND source_column='vendor_reject_reason')
+    )
+);
+REVOKE ALL ON sensitive_metadata_archive FROM PUBLIC;
 
 CREATE TABLE sensitive_word (
     id         BIGSERIAL PRIMARY KEY,
@@ -1367,7 +1407,8 @@ CREATE TABLE usage_reservation (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_usage_request_key_no_pii CHECK (
       request_key ~ (
-        '^(acceptance[:]([0-9]+[:][0-9a-f]{64}[:][0-9]{8}|'
+        '^(acceptance[:](v2[:][0-9a-f]{64}[:][0-9]{8}|'
+        ||'[0-9]+[:][0-9a-f]{64}[:][0-9]{8}|'
         ||'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
         ||'[89ab][0-9a-f]{3}-[0-9a-f]{12})|'
         ||'legacy[:]batch[:][0-9a-f]{32})$'

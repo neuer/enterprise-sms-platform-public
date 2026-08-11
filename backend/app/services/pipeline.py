@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -23,13 +22,18 @@ from app.core.auth.accounts import (
     SecurityPrincipal,
 )
 from app.core.bounded_executor import run_bounded
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
 from app.services.category import CategoryPolicy, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
-from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency import (
+    IdempotencyFingerprint,
+    IdempotencyScope,
+    usage_request_key,
+)
 from app.services.masking import mask_phone_text, mask_verify_otp
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -790,6 +794,7 @@ class SendPipeline:
         request_hash: str | None = None,
         request_hash_key_version: int | None = None,
     ) -> BatchResponse:
+        reject_phone_in_text(request.remark, field_name="remark")
         if ownership_check is not None:
             await ownership_check()
         if idem_scope is None and request.biz_id:
@@ -931,11 +936,8 @@ class SendPipeline:
         usage_reservation_reused = False
         if self.usage_ledger is not None:
             request_key = (
-                (
-                    f"acceptance:{app.app_id}:"
-                    f"{hashlib.sha256(request.biz_id.encode()).hexdigest()}:{date_key}"
-                )
-                if request.biz_id
+                usage_request_key(idem_scope, request.biz_id, date_key)
+                if request.biz_id and idem_scope is not None
                 else f"acceptance:{uuid4()}"
             )
             usage_reservation = await self.usage_ledger.start_reservation(

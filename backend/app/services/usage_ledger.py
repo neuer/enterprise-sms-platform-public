@@ -30,7 +30,8 @@ UUID_FRAGMENT = (
 )
 REQUEST_KEY_PATTERN = re.compile(
     rf"^(?:"
-    rf"acceptance:(?:[0-9]+:[0-9a-f]{{64}}:[0-9]{{8}}|{UUID_FRAGMENT})"
+    rf"acceptance:(?:v2:[0-9a-f]{{64}}:[0-9]{{8}}|"
+    rf"[0-9]+:[0-9a-f]{{64}}:[0-9]{{8}}|{UUID_FRAGMENT})"
     rf"|legacy:batch:[0-9a-f]{{32}}"
     rf")$"
 )

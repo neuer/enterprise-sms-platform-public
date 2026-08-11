@@ -53,3 +53,25 @@ def decrypt_reply_content(
             object_id=event_key.strip(),
         ),
     )
+
+
+def decrypt_template_content(
+    crypto: CryptoService | None,
+    payload: object,
+    template_id: int,
+) -> str:
+    """解密已通过模板授权过滤的正文，密文绑定模板稳定 ID。"""
+
+    if crypto is None:
+        raise RuntimeError("template content crypto is unavailable")
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError("invalid protected template content")
+    return crypto.decrypt_bound_packed_text(
+        bytes(payload),
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id=str(template_id),
+        ),
+    )

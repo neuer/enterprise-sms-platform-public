@@ -58,12 +58,22 @@ class FakeSender:
         self.sent.append(template_id)
 
 
+class FakeAuditor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record(self, **values: object) -> None:
+        self.calls.append(values)
+
+
 def test_operator_can_list_and_create_template() -> None:
     service = FakeService()
     app = FastAPI()
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
     app.dependency_overrides[api.get_template_service] = lambda: service
+    auditor = FakeAuditor()
+    app.dependency_overrides[api.get_sensitive_read_auditor] = lambda: auditor
     client = TestClient(app)
     headers = {"Authorization": "Bearer jwt"}
     assert client.get("/api/v1/web/templates", headers=headers).status_code == 200
@@ -79,6 +89,8 @@ def test_operator_can_list_and_create_template() -> None:
     assert created.status_code == 200
     assert created.json()["vendor_state"] == "pending"
     assert service.created
+    assert auditor.calls[0]["action"] == "template_content_read"
+    assert auditor.calls[0]["count"] == 0
 
 
 def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None:
@@ -97,3 +109,22 @@ def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None
 
     assert response.status_code == 202
     assert sender.sent == [1]
+
+
+def test_template_detail_records_sensitive_read_audit() -> None:
+    service = FakeService()
+    auditor = FakeAuditor()
+    app = FastAPI()
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    app.dependency_overrides[api.get_sensitive_read_auditor] = lambda: auditor
+
+    response = TestClient(app).get(
+        "/api/v1/web/templates/1",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 200
+    assert auditor.calls[0]["action"] == "template_content_read"
+    assert auditor.calls[0]["object_id"] == "1"

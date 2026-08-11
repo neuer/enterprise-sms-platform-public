@@ -13,9 +13,9 @@ from sqlalchemy import text
 
 from app.core.auth.accounts import ActorPrincipal
 from app.core.correlation import current_correlation_id
+from app.core.sensitive_text import PHONE_IN_TEXT
 
 F = TypeVar("F", bound=Callable[..., Any])
-PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 FORBIDDEN_AUDIT_KEY = re.compile(
     r"(?:^|_)(?:phone|phones|mobile|mobiles|token|secret|password|"
     r"body|request|request_body|content|ciphertext|encrypted)(?:$|_)",

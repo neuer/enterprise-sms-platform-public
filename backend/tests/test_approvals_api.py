@@ -70,6 +70,14 @@ class FakeApprovalRepository:
         }
 
 
+class FakeAuditor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record(self, **values: object) -> None:
+        self.calls.append(values)
+
+
 def make_app(service: object) -> FastAPI:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
@@ -97,6 +105,8 @@ def test_approver_list_has_all_department_scope() -> None:
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
     app.dependency_overrides[api.get_approval_repository] = lambda: repository
+    auditor = FakeAuditor()
+    app.dependency_overrides[api.get_sensitive_read_auditor] = lambda: auditor
 
     response = TestClient(app).get(
         "/api/v1/web/approvals",
@@ -113,6 +123,8 @@ def test_approver_list_has_all_department_scope() -> None:
     assert item["trigger_threshold_source"] == "snapshot"
     assert item["expires_at"] == "2026-07-21T01:00:00Z"
     assert item["decided_at"] is None
+    assert auditor.calls[0]["action"] == "approval_content_read"
+    assert auditor.calls[0]["count"] == 1
 
 
 class RecordingRepository:

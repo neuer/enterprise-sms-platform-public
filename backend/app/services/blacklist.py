@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import PHONE_PATTERN, CryptoService
 
 BLACKLIST_KEY = "blacklist:phone_hmacs"
@@ -152,6 +153,7 @@ class BlacklistService:
         actor: str,
     ) -> BlacklistAddResult:
         """批量加黑；先统一校验号码格式，报错只带行号、不带号码明文。"""
+        reject_phone_in_text(remark, field_name="remark")
         if source not in VALID_SOURCES:
             raise ValueError("invalid blacklist source")
         if not phones:

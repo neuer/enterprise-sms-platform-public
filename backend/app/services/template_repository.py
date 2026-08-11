@@ -11,23 +11,27 @@ from sqlalchemy import text
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.sensitive_text import mask_phone_in_text
+from app.services.content_protection import decrypt_template_content
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.template_management import TemplateRecord
 from app.settings import Settings, get_settings
 
 SELECT_FIELDS = """
-SELECT id,name,content,COALESCE(var_specs,'[]'::jsonb) var_specs,dept,
+SELECT id,name,content_enc,COALESCE(var_specs,'[]'::jsonb) var_specs,dept,
   vendor_template_id,vendor_state,vendor_reject_reason
 FROM sms_template
 """
 
 
-def _record(row: Any) -> TemplateRecord:
+def _record(row: Any, crypto: CryptoService) -> TemplateRecord:
+    template_id = int(row["id"])
     return TemplateRecord(
-        int(row["id"]),
+        template_id,
         str(row["name"]),
-        str(row["content"]),
+        decrypt_template_content(crypto, row["content_enc"], template_id),
         list(row["var_specs"] or []),
         str(row["dept"]),
         str(row["vendor_template_id"]) if row["vendor_template_id"] is not None else None,
@@ -37,8 +41,18 @@ def _record(row: Any) -> TemplateRecord:
 
 
 class SqlTemplateRepository:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
+
+    def _crypto(self) -> CryptoService:
+        if self.crypto is None:
+            self.crypto = CryptoService.from_settings(self.settings)
+        return self.crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -51,7 +65,7 @@ class SqlTemplateRepository:
                 result = await connection.execute(
                     text(f"{SELECT_FIELDS} {where} ORDER BY updated_at DESC"), {"dept": dept}
                 )
-                return [_record(row) for row in result.mappings()]
+                return [_record(row, self._crypto()) for row in result.mappings()]
         finally:
             await engine.dispose()
 
@@ -65,7 +79,7 @@ class SqlTemplateRepository:
                     {"id": template_id, "dept": dept},
                 )
                 row = result.mappings().one_or_none()
-                return _record(row) if row is not None else None
+                return _record(row, self._crypto()) if row is not None else None
         finally:
             await engine.dispose()
 
@@ -80,7 +94,6 @@ class SqlTemplateRepository:
     ) -> TemplateRecord:
         values: dict[str, Any] = {
             "name": name,
-            "content": content,
             "var_specs": var_specs,
             "dept": dept,
             "actor": actor,
@@ -88,25 +101,42 @@ class SqlTemplateRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                result = await connection.execute(
+                template_id = int(
+                    await connection.scalar(text("SELECT nextval('sms_template_id_seq')"))
+                )
+                content_enc = self._crypto().encrypt_bound_packed_text(
+                    content,
+                    EncryptionContext(
+                        domain="sms-template-content",
+                        table="sms_template",
+                        column="content_enc",
+                        object_id=str(template_id),
+                    ),
+                )
+                await connection.execute(
                     text(
                         """
                         INSERT INTO sms_template(
-                          name,content,var_specs,dept,vendor_template_id,vendor_state,created_by
-                        ) VALUES(:name,:content,CAST(:var_specs AS jsonb),:dept,
+                          id,name,content,content_enc,var_specs,dept,
+                          vendor_template_id,vendor_state,created_by
+                        ) VALUES(:id,:name,'[encrypted]',:content_enc,
+                          CAST(:var_specs AS jsonb),:dept,
                           NULL,'pending',:actor)
-                        RETURNING id
                         """
                     ),
-                    {**values, "var_specs": json.dumps(values["var_specs"])},
+                    {
+                        "id": template_id,
+                        "content_enc": content_enc,
+                        **values,
+                        "var_specs": json.dumps(values["var_specs"]),
+                    },
                 )
-                template_id = int(result.scalar_one())
                 await self._audit(connection, values["actor"], "template_create", template_id)
                 await self._enqueue_binding(connection, template_id)
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
                 )
-                return _record(current.mappings().one())
+                return _record(current.mappings().one(), self._crypto())
         finally:
             await engine.dispose()
 
@@ -121,7 +151,15 @@ class SqlTemplateRepository:
     ) -> TemplateRecord | None:
         values: dict[str, Any] = {
             "name": name,
-            "content": content,
+            "content_enc": self._crypto().encrypt_bound_packed_text(
+                content,
+                EncryptionContext(
+                    domain="sms-template-content",
+                    table="sms_template",
+                    column="content_enc",
+                    object_id=str(template_id),
+                ),
+            ),
             "var_specs": var_specs,
             "actor": actor,
         }
@@ -131,7 +169,8 @@ class SqlTemplateRepository:
                 changed = await connection.execute(
                     text(
                         """
-                        UPDATE sms_template SET name=:name,content=:content,
+                        UPDATE sms_template SET name=:name,content='[encrypted]',
+                          content_enc=:content_enc,
                           var_specs=CAST(:var_specs AS jsonb),
                           vendor_template_id=NULL,
                           vendor_state='pending',vendor_reject_reason=NULL,updated_at=now()
@@ -147,7 +186,7 @@ class SqlTemplateRepository:
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
                 )
-                return _record(current.mappings().one())
+                return _record(current.mappings().one(), self._crypto())
         finally:
             await engine.dispose()
 
@@ -182,7 +221,7 @@ class SqlTemplateRepository:
                     text(f"{SELECT_FIELDS} WHERE vendor_state='pending' {id_filter}"),
                     {"id": template_id},
                 )
-                return [_record(row) for row in result.mappings()]
+                return [_record(row, self._crypto()) for row in result.mappings()]
         finally:
             await engine.dispose()
 
@@ -194,6 +233,7 @@ class SqlTemplateRepository:
             async with engine.begin() as connection:
                 applied = 0
                 for template_id, state, reason in states:
+                    reason = mask_phone_in_text(reason)
                     changed = await connection.execute(
                         text(
                             """

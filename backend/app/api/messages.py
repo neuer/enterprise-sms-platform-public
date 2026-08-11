@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, Response, Security
+from fastapi import APIRouter, Depends, Query, Request, Response, Security
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from redis.asyncio import Redis
@@ -16,6 +16,7 @@ from app.core.apikey import ApiAppContext, optional_api_app, require_api_app
 from app.core.audit import audited
 from app.core.auth.accounts import ActorPrincipal, ApplicationPrincipal
 from app.core.auth.runtime import get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
 from app.services.app_ratelimit import (
@@ -48,6 +49,10 @@ from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
 from app.services.scheduling import SchedulingService
 from app.services.scheduling import StateConflict as SchedulingConflict
 from app.services.scheduling_repository import SqlSchedulingRepository
+from app.services.sensitive_read_audit import (
+    SensitiveReadAuditor,
+    get_sensitive_read_auditor,
+)
 from app.services.sign import SignResolver
 from app.services.sign_repository import SqlSignRepository
 from app.services.template import TemplateParamMismatch
@@ -557,6 +562,8 @@ async def send_vendor_test_api_uat(
 )
 async def get_batch(
     batch_no: str,
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
@@ -565,9 +572,17 @@ async def get_batch(
 ) -> dict[str, object]:
     scope = await _batch_scope(app, credentials)
     try:
-        return await _batch_queries().get_batch(batch_no, scope)
+        result = await _batch_queries().get_batch(batch_no, scope)
     except BatchNotFound:
         raise ApiError(404, "NOT_FOUND", "批次不存在", None) from None
+    await auditor.record(
+        action="batch_content_read",
+        object_type="batch",
+        object_id=batch_no,
+        ip=trusted_client_ip(request),
+        count=1,
+    )
+    return result
 
 
 @router.get(

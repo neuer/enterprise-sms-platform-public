@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -26,6 +27,9 @@ class BackfillResult:
 
     def all(self) -> list[dict[str, object]]:
         return self.rows
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self.rows)
 
 
 class BackfillConnection:
@@ -892,6 +896,89 @@ def test_sensitive_content_backfill_preserves_plaintext_only_inside_ciphertext(
     statements = [sql.lstrip() for sql, _params in reply_connection.calls]
     assert any(sql.startswith("UPDATE sms_reply") for sql in statements)
     assert any(sql.startswith("DELETE FROM reply_event") for sql in statements)
+
+
+def test_round3_migration_encrypts_templates_and_archives_metadata_before_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0064_security_scan_round3.py"
+    source = revision.read_text(encoding="utf-8")
+    for fragment in (
+        "content_enc          BYTEA        NOT NULL",
+        "ck_sms_template_content_marker",
+        "CREATE TABLE sensitive_metadata_archive",
+        "REVOKE ALL ON sensitive_metadata_archive FROM PUBLIC",
+        "acceptance[:](v2[:][0-9a-f]{64}",
+    ):
+        assert fragment in schema
+    assert "INSERT INTO sensitive_metadata_archive" in source
+    assert "UPDATE {table} SET {value_column}='[redacted-phone]'" in source
+
+    spec = importlib.util.spec_from_file_location("round3_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0064_security_scan_round3"
+    assert module.down_revision == "0063_sensitive_content_and_raw_first"
+
+    key = base64.b64encode(b"n" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    template_connection = BackfillConnection(
+        [[{"id": 17, "content": "验证码{1}"}], []]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: template_connection)
+    module._backfill_template_content(crypto)
+    template_update = next(
+        params
+        for sql, params in template_connection.calls
+        if sql.lstrip().startswith("UPDATE sms_template")
+    )
+    assert template_update is not None
+    assert crypto.decrypt_bound_packed_text(
+        bytes(template_update["content_enc"]),
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    ) == "验证码{1}"
+
+    metadata_connection = BackfillConnection(
+        [
+            [{"source_key": 7, "source_row": "7", "source_value": "联系13900139000"}],
+            [],
+            [],
+            [],
+            [],
+        ]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: metadata_connection)
+    module._archive_and_redact_metadata(crypto)
+    archive_index = next(
+        index
+        for index, (sql, _params) in enumerate(metadata_connection.calls)
+        if sql.lstrip().startswith("INSERT INTO sensitive_metadata_archive")
+    )
+    redact_index = next(
+        index
+        for index, (sql, _params) in enumerate(metadata_connection.calls)
+        if sql.lstrip().startswith("UPDATE sms_batch")
+    )
+    assert archive_index < redact_index
+    archive_params = metadata_connection.calls[archive_index][1]
+    assert archive_params is not None
+    assert "13900139000" not in str(archive_params)
+    assert crypto.decrypt_bound_packed_text(
+        bytes(archive_params["value_enc"]),
+        EncryptionContext(
+            domain="sensitive-metadata-archive",
+            table="sensitive_metadata_archive",
+            column="value_enc",
+            object_id="sms_batch:7:remark",
+        ),
+    ) == "联系13900139000"
 
 
 def test_security_daily_generation_source_migration_is_expand_only() -> None:

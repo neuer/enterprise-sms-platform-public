@@ -34,6 +34,7 @@ from app.services.report_repository import SqlReportRepository
 from app.services.resend import SqlResendRepository
 from app.services.scheduling_repository import SqlSchedulingRepository
 from app.services.sensitive_repository import SqlSensitiveWordRepository
+from app.services.template_repository import SqlTemplateRepository
 from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
 
@@ -180,7 +181,15 @@ async def test_template_renderer_binds_authoritative_department(
             FakeResult(
                 rows=[
                     {
-                        "content": "尊敬的{1}",
+                        "content_enc": content_crypto().encrypt_bound_packed_text(
+                            "尊敬的{1}",
+                            EncryptionContext(
+                                domain="sms-template-content",
+                                table="sms_template",
+                                column="content_enc",
+                                object_id="17",
+                            ),
+                        ),
                         "var_specs": [{"pos": 1, "max_len": 10}],
                     }
                 ]
@@ -190,13 +199,94 @@ async def test_template_renderer_binds_authoritative_department(
     engine = FakeEngine(connection)
     monkeypatch.setattr(pipeline_repository_module, "database_engine", lambda _url: engine)
     renderer = SqlTemplateRenderer(
-        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused"))
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        content_crypto(),
     )
 
     assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
     sql, params = connection.calls[0]
     assert "dept=:dept" in sql
     assert params == {"template_id": 17, "dept": "平台技术部"}
+
+
+@pytest.mark.asyncio
+async def test_template_repository_update_persists_only_object_bound_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    encrypted = crypto.encrypt_bound_packed_text(
+        "验证码{1}",
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    )
+    outbox_id = UUID("20000000-0000-4000-8000-000000000017")
+    connection = FakeConnection(
+        [
+            FakeResult(scalar=17),
+            FakeResult(),
+            FakeResult(
+                rows=[
+                    {
+                        "id": outbox_id,
+                        "event_type": "template.bind",
+                        "aggregate_type": "sms_template",
+                        "aggregate_id": "17",
+                        "task_name": "app.tasks.bind_template",
+                        "queue": "realtime",
+                        "args": [17],
+                        "max_attempts": 1,
+                        "correlation_id": None,
+                    }
+                ]
+            ),
+            FakeResult(
+                rows=[
+                    {
+                        "id": 17,
+                        "name": "验证码",
+                        "content_enc": encrypted,
+                        "var_specs": [{"pos": 1, "max_len": 6}],
+                        "dept": "平台技术部",
+                        "vendor_template_id": None,
+                        "vendor_state": "pending",
+                        "vendor_reject_reason": None,
+                    }
+                ]
+            ),
+        ]
+    )
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    record = await repository.update(
+        17,
+        name="验证码",
+        content="验证码{1}",
+        var_specs=[{"pos": 1, "max_len": 6}],
+        actor="operator01",
+    )
+
+    assert record is not None and record.content == "验证码{1}"
+    update_sql, update_params = connection.calls[0]
+    assert "content='[encrypted]'" in update_sql
+    assert "验证码{1}" not in str(update_params)
+    assert isinstance(update_params, dict)
+    assert crypto.decrypt_bound_packed_text(
+        update_params["content_enc"],
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    ) == "验证码{1}"
 
 
 @pytest.mark.asyncio
