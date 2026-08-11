@@ -25,7 +25,7 @@ from app.services.import_repository import (
     consume_import_reservation,
 )
 from app.services.imports import ImportPhone, ImportResult, RemovedPhone
-from app.services.pipeline_repository import SqlPipelineStore
+from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.reconcile_repository import SqlRecoveryRepository
 from app.services.report_ingest import ProtectedReport, ReportApplyResult
 from app.services.report_repository import SqlReportRepository
@@ -150,6 +150,34 @@ def protected_report() -> ProtectedReport:
         report_time=datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
         phone_hmacs=("b" * 64, "a" * 64),
     )
+
+
+@pytest.mark.asyncio
+async def test_template_renderer_binds_authoritative_department(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "content": "尊敬的{1}",
+                        "var_specs": [{"pos": 1, "max_len": 10}],
+                    }
+                ]
+            )
+        ]
+    )
+    engine = FakeEngine(connection)
+    monkeypatch.setattr(pipeline_repository_module, "database_engine", lambda _url: engine)
+    renderer = SqlTemplateRenderer(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused"))
+    )
+
+    assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
+    sql, params = connection.calls[0]
+    assert "dept=:dept" in sql
+    assert params == {"template_id": 17, "dept": "平台技术部"}
 
 
 @pytest.mark.asyncio
