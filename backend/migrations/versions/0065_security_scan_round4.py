@@ -88,6 +88,23 @@ def _pseudonymize_vendor_metadata(crypto: CryptoService) -> None:
             cursor = tuple(rows[-1][key] for key in keys)
 
 
+def _add_check(table: str, name: str, expression: str) -> None:
+    """兼容最终 schema 基线与增量升级两种建库路径。"""
+
+    op.execute(
+        f"""
+        DO $constraint$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname='{name}' AND conrelid='{table}'::regclass
+          ) THEN
+            ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({expression});
+          END IF;
+        END $constraint$
+        """
+    )
+
+
 def _backfill_template_names(crypto: CryptoService) -> None:
     connection = op.get_bind()
     while True:
@@ -137,46 +154,46 @@ def upgrade() -> None:
     op.execute("ALTER TABLE reply_event ALTER COLUMN ext_code SET NOT NULL")
     op.execute("ALTER TABLE sms_reply ALTER COLUMN ext_code SET DEFAULT ''")
     op.execute("ALTER TABLE sms_reply ALTER COLUMN ext_code SET NOT NULL")
-    op.create_check_constraint(
-        "ck_sms_chunk_vendor_task_pseudonym",
+    _add_check(
         "sms_chunk",
+        "ck_sms_chunk_vendor_task_pseudonym",
         "vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint(
-        "ck_sms_reply_vendor_task_pseudonym",
+    _add_check(
         "sms_reply",
+        "ck_sms_reply_vendor_task_pseudonym",
         "vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint("ck_sms_reply_ext_code_redacted", "sms_reply", "ext_code=''")
-    op.create_check_constraint(
-        "ck_report_event_vendor_task_pseudonym",
+    _add_check("sms_reply", "ck_sms_reply_ext_code_redacted", "ext_code=''")
+    _add_check(
         "report_event",
+        "ck_report_event_vendor_task_pseudonym",
         "vendor_task_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint(
-        "ck_report_event_custom_pseudonym",
+    _add_check(
         "report_event",
+        "ck_report_event_custom_pseudonym",
         "custom_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint(
-        "ck_reply_event_vendor_task_pseudonym",
+    _add_check(
         "reply_event",
+        "ck_reply_event_vendor_task_pseudonym",
         "vendor_task_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint(
-        "ck_reply_event_custom_pseudonym",
+    _add_check(
         "reply_event",
+        "ck_reply_event_custom_pseudonym",
         "custom_id IS NULL OR custom_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint("ck_reply_event_ext_code_redacted", "reply_event", "ext_code=''")
-    op.create_check_constraint(
-        "ck_unmatched_vendor_task_pseudonym",
+    _add_check("reply_event", "ck_reply_event_ext_code_redacted", "ext_code=''")
+    _add_check(
         "unmatched_report",
+        "ck_unmatched_vendor_task_pseudonym",
         "vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'",
     )
-    op.create_check_constraint(
-        "ck_unmatched_custom_pseudonym",
+    _add_check(
         "unmatched_report",
+        "ck_unmatched_custom_pseudonym",
         "custom_id IS NULL OR custom_id ~ '^[0-9a-f]{64}$'",
     )
     op.execute(
@@ -213,9 +230,9 @@ def upgrade() -> None:
     _backfill_template_names(crypto)
     op.execute("ALTER TABLE sms_template ALTER COLUMN name SET DEFAULT '[encrypted]'")
     op.execute("ALTER TABLE sms_template ALTER COLUMN name_enc SET NOT NULL")
-    op.create_check_constraint(
-        "ck_sms_template_name_marker",
+    _add_check(
         "sms_template",
+        "ck_sms_template_name_marker",
         "name='[encrypted]'",
     )
     op.execute(
@@ -241,9 +258,9 @@ def upgrade() -> None:
         """
     )
     op.execute("ALTER TABLE import_task ALTER COLUMN filename SET NOT NULL")
-    op.create_check_constraint(
-        "ck_import_task_canonical_filename",
+    _add_check(
         "import_task",
+        "ck_import_task_canonical_filename",
         "filename IN ('upload.csv','upload.xlsx')",
     )
 
