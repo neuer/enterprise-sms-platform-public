@@ -91,7 +91,7 @@ Callback 同样实行双层边界：根 `.env` 的 `CALLBACK_EGRESS_ALLOWED_CIDR
 
 ### Security-sensitive boundary
 
-认证、API Key、加密、幂等、短信发送任务、迁移、部署和 CI workflow 属于安全敏感边界，目录与文件见 `.github/CODEOWNERS`。这些区域的变更应经过独立 Code Review，owner 自动合并不得绕过 required reviews 或 ruleset。
+认证、API Key、加密、幂等、短信发送任务、迁移、部署和 CI workflow 属于安全敏感边界，目录与文件见 `.github/CODEOWNERS`。这些区域的变更必须经过独立 Code Review；仓库不提供 owner 自动合并 workflow，required reviews 与 ruleset 不得被旁路。
 
 生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 24 件 secret 名或值。
 

@@ -166,11 +166,16 @@ class LoginGuard:
             )
             raise AccountLocked("登录账号已临时锁定")
 
-    async def record_success(self, username: str, provider_code: str | None = None) -> None:
+    async def record_bound_success(self, username: str) -> None:
+        """仅在权威账号/身份归属确认后清除主体锁定。"""
+
         await self.store.delete(self._user_key("fail", username))
         await self.store.delete(self._user_key("lock", username))
-        if provider_code is not None:
-            await self.store.delete(self._provider_capacity_key(provider_code))
+
+    async def record_provider_success(self, provider_code: str) -> None:
+        """Provider 凭据校验成功只证明容量健康，不证明账号归属。"""
+
+        await self.store.delete(self._provider_capacity_key(provider_code))
 
 
 class AuthService:
@@ -202,5 +207,10 @@ class AuthService:
         except ProviderCapacityUnavailable:
             await self.guard.record_capacity_failure(provider_code, ip)
             raise
-        await self.guard.record_success(normalized, provider_code)
+        await self.guard.record_provider_success(provider_code)
         return identity
+
+    async def record_bound_success(self, username: str) -> None:
+        """由应用门面在 resolve_identity 成功后确认登录主体。"""
+
+        await self.guard.record_bound_success(normalize_login_name(username))

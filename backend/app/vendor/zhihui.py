@@ -72,10 +72,19 @@ class PulledRecords(list[dict[str, Any]]):
 
 @dataclass(frozen=True, slots=True)
 class RawPulledPayload:
-    """尚未做业务结构校验的拉取响应，供调用方先加密落地。"""
+    """尚未做 HTTP/JSON/业务包络校验的拉取响应。"""
 
     raw_payload: bytes
-    data: Any
+    status_code: int
+    content_encoding: str = "identity"
+
+
+@dataclass(frozen=True, slots=True)
+class _RawHttpResponse:
+    raw_body: bytes
+    status_code: int
+    duration_ms: int
+    content_encoding: str
 
 
 def _strip_keys(value: Any) -> Any:
@@ -84,6 +93,54 @@ def _strip_keys(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_keys(item) for item in value]
     return value
+
+
+def _decode_vendor_envelope(
+    raw_body: bytes,
+    status_code: int,
+    operation: str,
+    content_encoding: str = "identity",
+) -> Any:
+    """解释已完整取得的响应；调用者可在此之前先提交原始密文。"""
+
+    if content_encoding != "identity":
+        raise VendorProtocolError("vendor response content-encoding is forbidden")
+    if not 200 <= status_code < 300:
+        raise VendorProtocolError(f"vendor HTTP status {status_code}")
+    try:
+        envelope = json.loads(raw_body)
+    except (ValueError, UnicodeError):
+        raise VendorProtocolError("vendor response is not JSON") from None
+    if not isinstance(envelope, dict):
+        raise VendorProtocolError("vendor response envelope must be an object")
+    code = envelope.get("code")
+    message = envelope.get("msg")
+    if not isinstance(code, int) or isinstance(code, bool) or "data" not in envelope:
+        raise VendorProtocolError("vendor response envelope is invalid")
+    if message is not None and not isinstance(message, str):
+        raise VendorProtocolError("vendor response msg is invalid")
+    if code != 0:
+        LOGGER.warning(
+            "vendor API error endpoint=%s code=%s classification=%s",
+            operation,
+            code,
+            policy_for(code).description,
+        )
+        raise VendorApiError(code)
+    return _strip_keys(envelope["data"])
+
+
+def decode_pulled_payload(pulled: RawPulledPayload, operation: str) -> Any:
+    """在 raw 已持久化后解释 GetReport/GetReply 的不可信响应。"""
+
+    if operation not in {"GetReport", "GetReply"}:
+        raise ValueError("unsupported pulled payload operation")
+    return _decode_vendor_envelope(
+        pulled.raw_payload,
+        pulled.status_code,
+        operation,
+        pulled.content_encoding,
+    )
 
 
 class ZhihuiClient:
@@ -117,7 +174,10 @@ class ZhihuiClient:
         self._client = http_client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(VENDOR_TIMEOUT_S),
-            headers={"Content-Type": "application/json; charset=UTF-8"},
+            headers={
+                "Content-Type": "application/json; charset=UTF-8",
+                "Accept-Encoding": "identity",
+            },
             trust_env=False,
         )
 
@@ -141,11 +201,11 @@ class ZhihuiClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _post(
+    async def _request_raw(
         self,
         path: str,
         payload: Mapping[str, Any] | None = None,
-    ) -> _VendorPayload:
+    ) -> _RawHttpResponse:
         body = {
             "secretName": self._secret_name,
             "secretKey": self._secret_key,
@@ -155,13 +215,18 @@ class ZhihuiClient:
         try:
             async with asyncio.timeout(self.total_timeout_s):
                 url = httpx.URL(self._base_url).join(path)
-                request = self._client.build_request("POST", url, json=body)
+                request = self._client.build_request(
+                    "POST",
+                    url,
+                    json=body,
+                    headers={"Accept-Encoding": "identity"},
+                )
                 response = await self._client.send(request, stream=True)
                 try:
                     self._check_response_header_limits(response)
                     chunks: list[bytes] = []
                     total = 0
-                    async for chunk in response.aiter_bytes():
+                    async for chunk in response.aiter_raw():
                         total += len(chunk)
                         if total > self.max_response_body_bytes:
                             raise VendorResponseTooLarge(
@@ -179,39 +244,43 @@ class ZhihuiClient:
             LOGGER.error("vendor transport error endpoint=%s", path)
             raise VendorTransportError("vendor transport failed; result unknown") from None
 
-        duration_ms = round((perf_counter() - started) * 1000)
-        if not response.is_success:
+        return _RawHttpResponse(
+            raw_body=content,
+            status_code=response.status_code,
+            duration_ms=round((perf_counter() - started) * 1000),
+            content_encoding=(
+                "identity"
+                if response.headers.get("content-encoding", "").strip().casefold()
+                in {"", "identity"}
+                else "unsupported"
+            ),
+        )
+
+    async def _post(
+        self,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> _VendorPayload:
+        response = await self._request_raw(path, payload)
+        if not 200 <= response.status_code < 300:
             LOGGER.error(
                 "vendor HTTP error endpoint=%s status=%s duration_ms=%s",
                 path,
                 response.status_code,
-                duration_ms,
+                response.duration_ms,
             )
-            raise VendorProtocolError(f"vendor HTTP status {response.status_code}")
-        try:
-            envelope = json.loads(content)
-        except (ValueError, UnicodeError):
-            raise VendorProtocolError("vendor response is not JSON") from None
-        if not isinstance(envelope, dict):
-            raise VendorProtocolError("vendor response envelope must be an object")
-
-        code = envelope.get("code")
-        message = envelope.get("msg")
-        if not isinstance(code, int) or isinstance(code, bool) or "data" not in envelope:
-            raise VendorProtocolError("vendor response envelope is invalid")
-        if message is not None and not isinstance(message, str):
-            raise VendorProtocolError("vendor response msg is invalid")
-        if code != 0:
-            LOGGER.warning(
-                "vendor API error endpoint=%s code=%s classification=%s duration_ms=%s",
-                path,
-                code,
-                policy_for(code).description,
-                duration_ms,
-            )
-            raise VendorApiError(code)
-        LOGGER.info("vendor API success endpoint=%s duration_ms=%s", path, duration_ms)
-        return _VendorPayload(_strip_keys(envelope["data"]), content)
+        data = _decode_vendor_envelope(
+            response.raw_body,
+            response.status_code,
+            path,
+            response.content_encoding,
+        )
+        LOGGER.info(
+            "vendor API success endpoint=%s duration_ms=%s",
+            path,
+            response.duration_ms,
+        )
+        return _VendorPayload(data, response.raw_body)
 
     def _check_response_header_limits(self, response: httpx.Response) -> None:
         """在读取响应体前校验响应头和声明长度。"""
@@ -276,30 +345,38 @@ class ZhihuiClient:
 
         response = await self.get_report_raw()
         return PulledRecords(
-            self._object_list(response.data, "GetReport"),
+            self._object_list(decode_pulled_payload(response, "GetReport"), "GetReport"),
             response.raw_payload,
         )
 
     async def get_report_raw(self) -> RawPulledPayload:
         """返回完整原始字节，业务结构校验必须在持久化之后进行。"""
 
-        response = await self._post("/Sms/Api/GetReport")
-        return RawPulledPayload(response.raw_body, response.data)
+        response = await self._request_raw("/Sms/Api/GetReport")
+        return RawPulledPayload(
+            response.raw_body,
+            response.status_code,
+            response.content_encoding,
+        )
 
     async def get_reply(self) -> PulledRecords:
         """拉取上行回复；调用方必须按拉走即消费协议处理。"""
 
         response = await self.get_reply_raw()
         return PulledRecords(
-            self._object_list(response.data, "GetReply"),
+            self._object_list(decode_pulled_payload(response, "GetReply"), "GetReply"),
             response.raw_payload,
         )
 
     async def get_reply_raw(self) -> RawPulledPayload:
         """返回未校验的回复原始响应，支持同样的 raw-first 协议。"""
 
-        response = await self._post("/Sms/Api/GetReply")
-        return RawPulledPayload(response.raw_body, response.data)
+        response = await self._request_raw("/Sms/Api/GetReply")
+        return RawPulledPayload(
+            response.raw_body,
+            response.status_code,
+            response.content_encoding,
+        )
 
     async def get_balance(self) -> int:
         """查询厂商剩余计费条。"""

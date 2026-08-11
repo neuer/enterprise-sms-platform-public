@@ -164,7 +164,7 @@ class BatchCommand:
     dept: str
     category: str
     channel: str
-    persisted_content: str
+    display_content_enc: bytes
     send_content_enc: bytes
     sign_name: str | None
     template_id: int | None
@@ -1127,7 +1127,15 @@ class SendPipeline:
                 dept=app.dept,
                 category=request.category,
                 channel=request.channel,
-                persisted_content=prepared.persisted_content,
+                display_content_enc=self.crypto.encrypt_bound_packed_text(
+                    prepared.persisted_content,
+                    EncryptionContext(
+                        domain="sms-display-content",
+                        table="sms_batch",
+                        column="display_content_enc",
+                        object_id=batch_no,
+                    ),
+                ),
                 send_content_enc=self.crypto.encrypt_bound_packed_text(
                     prepared.send_content,
                     EncryptionContext(

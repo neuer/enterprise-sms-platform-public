@@ -225,14 +225,14 @@ class SqlOpsRepository:
                               OR processing_started_at<=now()-interval '15 minutes'
                             )
                           RETURNING id,source,payload_enc,payload_sha256,
-                            key_version,processed
+                            key_version,processed,http_status,content_encoding
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,true claimed
+                          processed,http_status,content_encoding,true claimed
                         FROM claimed
                         UNION ALL
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,false claimed
+                          processed,http_status,content_encoding,false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
                           AND NOT EXISTS (SELECT 1 FROM claimed)
@@ -252,6 +252,8 @@ class SqlOpsRepository:
                         str(row["payload_sha256"]),
                         int(row["key_version"]),
                         bool(row["processed"]),
+                        int(row["http_status"]),
+                        str(row["content_encoding"]),
                     ),
                     claimed=bool(row["claimed"]),
                 )

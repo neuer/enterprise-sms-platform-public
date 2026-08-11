@@ -164,8 +164,11 @@ def test_runtime_services_never_mount_owner_password() -> None:
     assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
         "/run/secrets/db_owner_password"
     )
+    assert migrate["environment"]["SMS_COMPONENT"] == "migrate"
     assert migrate["secrets"] == [
         {"source": "db_owner_password", "target": "db_owner_password"},
+        {"source": "data_aes_key", "target": "data_aes_key"},
+        {"source": "data_hmac_key", "target": "data_hmac_key"},
         {"source": "migrate_audit_context_key", "target": "audit_context_key"},
         {
             "source": "migrate_audit_system_api_context_key",

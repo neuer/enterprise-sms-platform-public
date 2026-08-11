@@ -232,11 +232,15 @@ def test_start_postgres_retains_failed_container_until_final_cleanup(
 ) -> None:
     module = load_checker_module()
     owner_secret = tmp_path / "db_owner_password"
+    data_aes_secret = tmp_path / "data_aes_key"
+    data_hmac_secret = tmp_path / "data_hmac_key"
     init_script = tmp_path / "01-create-app-role.sh"
-    for path in (owner_secret, init_script):
+    for path in (owner_secret, data_aes_secret, data_hmac_secret, init_script):
         path.write_text("test", encoding="utf-8")
 
     monkeypatch.setattr(module, "OWNER_SECRET", owner_secret)
+    monkeypatch.setattr(module, "DATA_AES_SECRET", data_aes_secret)
+    monkeypatch.setattr(module, "DATA_HMAC_SECRET", data_hmac_secret)
     monkeypatch.setattr(module, "INIT_SCRIPT", init_script)
     monkeypatch.setattr(module, "wait_for_postgres", lambda _container: None)
     commands: list[list[str]] = []

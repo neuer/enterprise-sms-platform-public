@@ -219,11 +219,12 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
                 text(
                     """
                     INSERT INTO sms_batch(
-                      batch_no,channel,app_id,dept,content,send_content_enc,biz_id,
+                      batch_no,channel,app_id,dept,content,display_content_enc,
+                      send_content_enc,biz_id,
                       is_test,status
                     ) VALUES(
-                      :batch_no,'web',:app_id,'平台部','已打码内容',
-                      :ciphertext,:biz_id,
+                      :batch_no,'web',:app_id,'平台部','[encrypted]',
+                      :ciphertext,:ciphertext,:biz_id,
                       true,'queued'
                     )
                     """

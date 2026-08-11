@@ -28,10 +28,11 @@ class SqlReplyRepository:
                     text(
                         """
                         INSERT INTO raw_vendor_log(
-                          source,payload_enc,payload_sha256,key_version,custom_ids,
-                          item_count,processing_started_at
+                          source,payload_enc,payload_sha256,key_version,http_status,
+                          content_encoding,custom_ids,item_count,processing_started_at
                         ) VALUES (
-                          'reply',:payload_enc,:payload_sha256,:key_version,
+                          'reply',:payload_enc,:payload_sha256,:key_version,:http_status,
+                          :content_encoding,
                           CAST(:custom_ids AS text[]),:item_count,now()
                         ) RETURNING id
                         """
@@ -39,6 +40,28 @@ class SqlReplyRepository:
                     values,
                 )
                 return int(result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None:
+        """raw 已提交后补充不含 PII 的索引元数据。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE raw_vendor_log SET custom_ids=CAST(:custom_ids AS text[]),"
+                        "item_count=:item_count WHERE id=:id AND source='reply'"
+                    ),
+                    {"id": raw_id, "custom_ids": custom_ids, "item_count": item_count},
+                )
         finally:
             await engine.dispose()
 
@@ -53,27 +76,32 @@ class SqlReplyRepository:
                         """
                         WITH event_insert AS (
                           INSERT INTO reply_event(
-                            event_key,raw_id,vendor_task_id,custom_id,
+                            event_key,event_key_version,raw_id,vendor_task_id,custom_id,
                             phone_enc,phone_hmac,phone_mask,key_version,
-                            ext_code,content,reply_time
+                            ext_code,content,content_enc,reply_time
                           ) VALUES (
-                            CAST(:dedup_hash AS char(64)),:raw_id,
+                            CAST(:dedup_hash AS char(64)),
+                            CAST(:dedup_key_version AS smallint),:raw_id,
                             CAST(:vendor_task_id AS varchar(64)),
                             CAST(:custom_id AS varchar(64)),
                             CAST(:phone_enc AS bytea),CAST(:phone_hmac AS char(64)),
                             CAST(:phone_mask AS varchar(11)),
                             CAST(:key_version AS smallint),
                             CAST(:ext_code AS varchar(8)),
-                            CAST(:content AS varchar(500)),
+                            '[encrypted]',CAST(:content_enc AS bytea),
                             CAST(:reply_time AS timestamptz)
                           )
                           ON CONFLICT(event_key) DO NOTHING
                           RETURNING event_key
                         ), matched AS (
                           SELECT c.batch_id FROM sms_chunk c
-                          WHERE (CAST(:custom_id AS varchar(64)) IS NOT NULL
-                            AND c.custom_id=CAST(:custom_id AS varchar(64)))
-                             OR c.vendor_task_id=CAST(:vendor_task_id AS varchar(64))
+                          JOIN sms_message m ON m.chunk_id=c.id
+                          WHERE (
+                            (CAST(:custom_id AS varchar(64)) IS NOT NULL
+                              AND c.custom_id=CAST(:custom_id AS varchar(64)))
+                            OR c.vendor_task_id=CAST(:vendor_task_id AS varchar(64))
+                          )
+                            AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
                           ORDER BY CASE
                             WHEN c.custom_id=CAST(:custom_id AS varchar(64)) THEN 0 ELSE 1
                           END,
@@ -90,7 +118,7 @@ class SqlReplyRepository:
                           (SELECT batch_id FROM matched),CAST(:phone_enc AS bytea),
                           CAST(:phone_hmac AS char(64)),CAST(:phone_mask AS varchar(11)),
                           CAST(:key_version AS smallint),CAST(:ext_code AS varchar(8)),
-                          CAST(:content AS varchar(500)),CAST(:reply_time AS timestamptz)
+                          '[encrypted]',CAST(:reply_time AS timestamptz)
                         FROM event_insert
                         """
                     ),
@@ -100,12 +128,14 @@ class SqlReplyRepository:
                         "custom_id": reply.custom_id,
                         "phone_enc": reply.phone_enc,
                         "phone_hmac": reply.phone_hmac,
+                        "phone_hmacs": list(reply.phone_hmacs),
                         "phone_mask": reply.phone_mask,
                         "key_version": reply.key_version,
                         "ext_code": reply.ext_code,
-                        "content": reply.content,
+                        "content_enc": reply.content_enc,
                         "reply_time": reply.reply_time,
                         "dedup_hash": reply.dedup_hash,
+                        "dedup_key_version": reply.dedup_key_version,
                     },
                 )
         finally:

@@ -191,9 +191,17 @@ class WeComChannel:
                 trust_env=False,
                 follow_redirects=False,
             ) as client,
-            client.stream("POST", webhook, json=payload) as response,
+            client.stream(
+                "POST",
+                webhook,
+                json=payload,
+                headers={"Accept-Encoding": "identity"},
+            ) as response,
         ):
             response.raise_for_status()
+            content_encoding = response.headers.get("content-encoding", "").strip().casefold()
+            if content_encoding not in {"", "identity"}:
+                raise RuntimeError("wecom response content-encoding is forbidden")
             raw_length = response.headers.get("content-length")
             if raw_length is not None:
                 try:

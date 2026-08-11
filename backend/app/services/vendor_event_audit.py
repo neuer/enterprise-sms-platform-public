@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
+from app.services.content_protection import decrypt_reply_content
 from app.services.crypto import CryptoService
 from app.settings import Settings
 
@@ -100,7 +101,7 @@ class SqlVendorEventAuditRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def legacy_reply_facts(self) -> list[LegacyReplyFact]:
+    async def legacy_reply_facts(self, crypto: CryptoService) -> list[LegacyReplyFact]:
         engine = database_engine(self.settings.database_url)
         try:
             async with engine.connect() as connection:
@@ -109,7 +110,7 @@ class SqlVendorEventAuditRepository:
                         """
                         SELECT trim(event_key) event_key,vendor_task_id,custom_id,
                           phone_enc,trim(phone_hmac) phone_hmac,phone_mask,key_version,
-                          content,reply_time,created_at
+                          content_enc,reply_time,created_at
                         FROM reply_event
                         WHERE raw_id IS NULL
                         ORDER BY created_at,event_key
@@ -125,7 +126,11 @@ class SqlVendorEventAuditRepository:
                         phone_hmac=str(row["phone_hmac"]),
                         phone_mask=str(row["phone_mask"]),
                         key_version=int(row["key_version"]),
-                        content=str(row["content"]),
+                        content=decrypt_reply_content(
+                            crypto,
+                            row["content_enc"],
+                            str(row["event_key"]),
+                        ),
                         reply_time=row["reply_time"],
                         created_at=row["created_at"],
                     )
@@ -138,4 +143,4 @@ class SqlVendorEventAuditRepository:
         self,
         crypto: CryptoService,
     ) -> list[DuplicateReplyGroup]:
-        return find_legacy_reply_duplicates(await self.legacy_reply_facts(), crypto)
+        return find_legacy_reply_duplicates(await self.legacy_reply_facts(crypto), crypto)

@@ -256,3 +256,31 @@ async def test_integrity_failure_keeps_raw_unprocessed_and_records_safe_error() 
 
     assert events == []
     assert repository.errors == [(9, "raw payload integrity mismatch")]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_wire_encoding_remains_rejected_during_replay() -> None:
+    raw = b"compressed-wire-bytes"
+    repository = FakeRepository(
+        RawReplayRecord(
+            9,
+            "report",
+            b"ciphertext",
+            hashlib.sha256(raw).hexdigest(),
+            1,
+            False,
+            200,
+            "unsupported",
+        )
+    )
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        FakeProcessor("report", []),
+        FakeProcessor("reply", []),
+    )
+
+    with pytest.raises(RawIntegrityConflict, match="envelope"):
+        await service.replay(9, actor="admin01", ip="10.0.0.8")
+
+    assert repository.errors == [(9, "raw vendor envelope is invalid")]

@@ -182,6 +182,7 @@ services:
     env_file: ../.env
     environment:
       TZ: Asia/Shanghai
+      SMS_COMPONENT: migrate
       DB_OWNER_PASSWORD_FILE: /run/secrets/db_owner_password
     user: "10001:10001"
     pids_limit: 128
@@ -191,6 +192,8 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
     secrets:
       - { source: db_owner_password, target: db_owner_password }
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
       - { source: migrate_audit_context_key, target: audit_context_key }
       - { source: migrate_audit_system_api_context_key, target: audit_system_api_context_key }
       - { source: migrate_audit_system_realtime_context_key, target: audit_system_realtime_context_key }

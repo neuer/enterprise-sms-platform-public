@@ -182,6 +182,9 @@ class HttpxCallbackTransport:
             )
             if header_bytes > self.max_response_header_bytes:
                 raise ValueError("callback response headers exceed limit")
+            content_encoding = response.headers.get("content-encoding", "").strip().casefold()
+            if content_encoding not in {"", "identity"}:
+                raise ValueError("callback response content-encoding is forbidden")
             declared = response.headers.get("content-length")
             if declared is not None:
                 try:
@@ -234,6 +237,7 @@ class HttpxCallbackTransport:
                     else original_url.copy_with(host=target_ip)
                 )
                 request_headers = dict(headers)
+                request_headers["Accept-Encoding"] = "identity"
                 if target_ip is not None:
                     request_headers["Host"] = parsed.netloc
                 request = self._client.build_request(

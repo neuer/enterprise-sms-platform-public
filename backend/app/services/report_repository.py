@@ -49,10 +49,11 @@ class SqlReportRepository:
                     text(
                         """
                         INSERT INTO raw_vendor_log (
-                          source,payload_enc,payload_sha256,key_version,
-                          custom_ids,item_count,processing_started_at
+                          source,payload_enc,payload_sha256,key_version,http_status,
+                          content_encoding,custom_ids,item_count,processing_started_at
                         ) VALUES (
-                          'report',:payload_enc,:payload_sha256,:key_version,
+                          'report',:payload_enc,:payload_sha256,:key_version,:http_status,
+                          :content_encoding,
                           CAST(:custom_ids AS text[]),:item_count,now()
                         ) RETURNING id
                         """
@@ -60,6 +61,28 @@ class SqlReportRepository:
                     values,
                 )
                 return int(result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None:
+        """raw 已提交后补充不含 PII 的索引元数据。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "UPDATE raw_vendor_log SET custom_ids=CAST(:custom_ids AS text[]),"
+                        "item_count=:item_count WHERE id=:id AND source='report'"
+                    ),
+                    {"id": raw_id, "custom_ids": custom_ids, "item_count": item_count},
+                )
         finally:
             await engine.dispose()
 

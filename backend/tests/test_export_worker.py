@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.export import ExportFilterSet, ExportTooLarge
 from app.services.export_file import ExportFileCodec
 from app.services.export_repository import ExportClaim, ExportLeaseLost
@@ -101,7 +101,15 @@ def row(*, decrypted: bool) -> dict[str, object]:
         "status": "delivered",
         "report_desc": "DELIVRD",
         "report_time": datetime(2026, 7, 12, 8, 1, tzinfo=UTC),
-        "content": "系统通知",
+        "display_content_enc": crypto().encrypt_bound_packed_text(
+            "系统通知",
+            EncryptionContext(
+                domain="sms-display-content",
+                table="sms_batch",
+                column="display_content_enc",
+                object_id="BATCH-1",
+            ),
+        ),
     }
     if decrypted:
         protected = crypto().protect_phone("13800138000")

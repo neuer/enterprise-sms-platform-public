@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any, TypedDict, cast
@@ -17,6 +18,7 @@ from app.services.callback_repository import (
     enqueue_message_report,
     report_event_key,
 )
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.scheduling_repository import SqlSchedulingRepository
 
 APPROVER = SecurityPrincipal(2, 20, "approver01", "研发部", "approver")
@@ -419,23 +421,34 @@ async def test_approval_expiry_failure_isolated_to_one_item(
 
 @pytest.mark.asyncio
 async def test_approval_list_interpolates_scoped_source_clause() -> None:
+    key = base64.b64encode(b"p" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    batch_no = "a" * 32
     row = {
         "id": 3,
-        "batch_no": "a" * 32,
+        "batch_no": batch_no,
         "category": "market",
                             "applicant": "operator01",
                             "applicant_account_id": 1,
                             "applicant_identity_id": 10,
         "dept": "业务一部",
         "total": 60,
-        "content": "审批内容",
+        "display_content_enc": crypto.encrypt_bound_packed_text(
+            "审批内容",
+            EncryptionContext(
+                domain="sms-display-content",
+                table="sms_batch",
+                column="display_content_enc",
+                object_id=batch_no,
+            ),
+        ),
         "status": "pending",
         "approver": None,
         "reason": None,
         "created_at": datetime.fromisoformat("2026-07-12T08:00:00+08:00"),
     }
     connection = FakeConnection([FakeResult(1), FakeResult(rows=[row])])
-    repository = SqlApprovalRepository()
+    repository = SqlApprovalRepository(crypto=crypto)
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
 
     page = await repository.list_page(status="pending", dept="业务一部", page=1)

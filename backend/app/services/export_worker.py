@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from app.services.content_protection import decrypt_batch_display_content
 from app.services.crypto import CryptoService
 from app.services.export import MAX_EXPORT_ROWS, ExportTooLarge
 from app.services.export_file import ExportFileCodec
@@ -145,7 +146,11 @@ class ExportWorker:
                         _text(row["status"]),
                         _text(row["report_desc"]),
                         _text(row["report_time"]),
-                        _text(row["content"]),
+                        decrypt_batch_display_content(
+                            self.crypto,
+                            row["display_content_enc"],
+                            _text(row["batch_no"]),
+                        ),
                     )
 
         async def maintain_lease() -> None:

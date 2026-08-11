@@ -1317,8 +1317,17 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
     command = store.commands[0]
     assert result.accepted == 2
     assert result.removed_duplicate == 1
-    assert command.persisted_content == "验证码******"
-    assert "123456" not in command.persisted_content
+    assert not hasattr(command, "persisted_content")
+    assert service.decrypt_bound_packed_text(
+        command.display_content_enc,
+        EncryptionContext(
+            domain="sms-display-content",
+            table="sms_batch",
+            column="display_content_enc",
+            object_id=command.batch_no,
+        ),
+    ) == "验证码******"
+    assert b"123456" not in command.display_content_enc
     assert service.decrypt_bound_packed_text(
         command.send_content_enc,
         EncryptionContext(

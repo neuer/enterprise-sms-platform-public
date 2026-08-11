@@ -44,12 +44,13 @@ class ReplyPageModel(BaseModel):
 
 async def get_reply_service() -> AsyncIterator[ReplyQueryService]:
     settings = get_settings()
+    crypto = CryptoService.from_settings(settings)
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
         yield ReplyQueryService(
-            SqlReplyQueryRepository(settings),
+            SqlReplyQueryRepository(settings, crypto),
             RedisBlacklistCache(redis),
-            CryptoService.from_settings(settings),
+            crypto,
         )
     finally:
         await redis.aclose()

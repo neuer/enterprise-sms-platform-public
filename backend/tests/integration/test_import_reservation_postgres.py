@@ -228,11 +228,11 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
                             """
                             INSERT INTO sms_batch(
                               batch_no,channel,creator,creator_account_id,
-                              creator_identity_id,dept,content,send_content_enc,
-                              status,total
+                              creator_identity_id,dept,content,display_content_enc,
+                              send_content_enc,status,total
                             ) VALUES(
                               :batch_no,'web',:creator,:account_id,:identity_id,
-                              '平台部','维护通知',:ciphertext,'queued',1
+                              '平台部','[encrypted]',:ciphertext,:ciphertext,'queued',1
                             ) RETURNING id
                             """
                         ),

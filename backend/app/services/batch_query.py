@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
+from app.services.content_protection import decrypt_batch_display_content
+from app.services.crypto import CryptoService
 from app.settings import Settings, get_settings
 
 
@@ -43,11 +45,26 @@ def _escape_like(value: str) -> str:
 class BatchQueryService:
     """查询永不选择手机号密文/HMAC，响应只能使用 phone_mask。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
+
+    def _batch(self, row: Any) -> dict[str, object]:
+        values = dict(row)
+        batch_no = str(values["batch_no"])
+        values["content"] = decrypt_batch_display_content(
+            self.crypto,
+            values.pop("display_content_enc"),
+            batch_no,
+        )
+        return values
 
     async def list_batches(
         self,
@@ -108,7 +125,7 @@ class BatchQueryService:
                     text(
                         """
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
-                          a.name AS app_name,b.creator,b.dept,b.content,b.status,
+                          a.name AS app_name,b.creator,b.dept,b.display_content_enc,b.status,
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
                           b.is_test,b.segments,b.quota_cost,b.total,
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
@@ -123,7 +140,7 @@ class BatchQueryService:
                 )
                 return {
                     "total": int(count_result.scalar_one()),
-                    "items": [dict(row) for row in rows_result.mappings()],
+                    "items": [self._batch(row) for row in rows_result.mappings()],
                 }
         finally:
             await engine.dispose()
@@ -141,7 +158,7 @@ class BatchQueryService:
                     text(
                         f"""
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
-                          a.name AS app_name,b.creator,b.dept,b.content,b.status,
+                          a.name AS app_name,b.creator,b.dept,b.display_content_enc,b.status,
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
                           b.is_test,b.segments,b.quota_cost,b.total,
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
@@ -157,7 +174,7 @@ class BatchQueryService:
                 row = result.mappings().first()
                 if row is None:
                     raise BatchNotFound
-                return dict(row)
+                return self._batch(row)
         finally:
             await engine.dispose()
 

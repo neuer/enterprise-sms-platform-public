@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
-from app.vendor.zhihui import RawPulledPayload
+from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,10 +20,12 @@ class ProtectedReply:
     phone_hmac: str
     phone_mask: str
     key_version: int
+    phone_hmacs: tuple[str, ...]
     ext_code: str
-    content: str
+    content_enc: bytes
     reply_time: datetime
     dedup_hash: str
+    dedup_key_version: int
 
 
 class ReplyGateway(Protocol):
@@ -32,6 +34,14 @@ class ReplyGateway(Protocol):
 
 class ReplyRepository(Protocol):
     async def persist_raw(self, **values: Any) -> int: ...
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None: ...
 
     async def store_reply(self, raw_id: int, reply: ProtectedReply) -> None: ...
 
@@ -82,6 +92,7 @@ class ReplyIngestService:
         phone = str(value["phone"])
         protected = self.crypto.protect_phone(phone, table="reply_event")
         hmac_candidates = self.crypto.hmac_candidates(phone)
+        masked_content = mask_phone_text(content)
         dedup_source = "\x1f".join(
             (
                 task_id,
@@ -91,6 +102,20 @@ class ReplyIngestService:
                 reply_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             )
         )
+        legacy_digest = hashlib.sha256(dedup_source.encode("utf-8")).digest()
+        dedup_key_version, dedup_hash = self.crypto.stable_hmac_fingerprint(
+            legacy_digest,
+            domain="reply-event",
+        )
+        content_enc = self.crypto.encrypt_bound_packed_text(
+            masked_content,
+            EncryptionContext(
+                domain="reply-content",
+                table="reply_event",
+                column="content_enc",
+                object_id=dedup_hash,
+            ),
+        )
         return ProtectedReply(
             vendor_task_id=task_id,
             custom_id=custom_id,
@@ -98,10 +123,12 @@ class ReplyIngestService:
             phone_hmac=protected.phone_hmac,
             phone_mask=protected.phone_mask,
             key_version=protected.key_version,
+            phone_hmacs=tuple(hmac_candidates.values()),
             ext_code=ext_value,
-            content=mask_phone_text(content),
+            content_enc=content_enc,
             reply_time=reply_time,
-            dedup_hash=hashlib.sha256(dedup_source.encode()).hexdigest(),
+            dedup_hash=dedup_hash,
+            dedup_key_version=dedup_key_version,
         )
 
     async def poll_once(self) -> int:
@@ -118,24 +145,38 @@ class ReplyIngestService:
                 object_id=f"reply:{payload_sha256}",
             ),
         )
-        records = pulled.data if isinstance(pulled.data, list) else []
-        custom_ids = sorted(
-            {
-                str(normalized["customId"]).strip()
-                for item in records
-                if isinstance(item, dict)
-                and (normalized := _normalized(item)).get("customId")
-                and isinstance(normalized["customId"], str)
-            }
-        )
         raw_id = await self.repository.persist_raw(
             payload_enc=encrypted.payload,
             payload_sha256=payload_sha256,
             key_version=encrypted.key_version,
-            custom_ids=custom_ids,
-            item_count=len(records),
+            http_status=pulled.status_code,
+            content_encoding=pulled.content_encoding,
+            custom_ids=[],
+            item_count=0,
         )
-        return await self.process_existing(raw_id, pulled.data)
+        try:
+            data = decode_pulled_payload(pulled, "GetReply")
+        except Exception as error:
+            await self.repository.mark_error(
+                raw_id,
+                f"{type(error).__name__}: vendor response parsing failed",
+            )
+            raise
+        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+            custom_ids = sorted(
+                {
+                    str(normalized["customId"]).strip()
+                    for item in data
+                    if (normalized := _normalized(item)).get("customId")
+                    and isinstance(normalized["customId"], str)
+                }
+            )
+            await self.repository.update_metadata(
+                raw_id,
+                custom_ids=custom_ids,
+                item_count=len(data),
+            )
+        return await self.process_existing(raw_id, data)
 
     async def process_existing(self, raw_id: int, data: object) -> int:
         """解析已独立提交的 reply raw；轮询与受控重放共用。"""

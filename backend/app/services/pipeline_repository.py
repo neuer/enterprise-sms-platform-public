@@ -250,7 +250,7 @@ class SqlPipelineStore:
                 INSERT INTO sms_batch (
                   batch_no, category, channel, app_id, creator,
                   creator_account_id,creator_identity_id,dept, content,
-                  send_content_enc, sign_name, template_id, biz_id,
+                  display_content_enc,send_content_enc, sign_name, template_id, biz_id,
                   resend_of,
                   consent_confirmed,is_test,segments, quota_cost, status,remark,
                   deferred_reason, total, removed_duplicate,
@@ -258,8 +258,8 @@ class SqlPipelineStore:
                   usage_reservation_id
                 ) VALUES (
                   :batch_no, :category, :channel, :app_id, :creator,
-                  :creator_account_id,:creator_identity_id,:dept,:content,
-                  :send_content_enc, :sign_name, :template_id, :biz_id,
+                  :creator_account_id,:creator_identity_id,:dept,'[encrypted]',
+                  :display_content_enc,:send_content_enc, :sign_name, :template_id, :biz_id,
                   (SELECT id FROM sms_batch
                     WHERE batch_no=CAST(:resend_of AS char(32))),
                   :consent_confirmed,:is_test,:segments,:quota_cost,:status,
@@ -288,7 +288,7 @@ class SqlPipelineStore:
                     else None
                 ),
                 "dept": command.dept,
-                "content": command.persisted_content,
+                "display_content_enc": command.display_content_enc,
                 "send_content_enc": command.send_content_enc,
                 "sign_name": command.sign_name,
                 "template_id": command.template_id,

@@ -465,6 +465,28 @@ async def test_shared_guard_locks_account_after_five_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_success_cannot_clear_username_failures_before_account_binding() -> None:
+    store = FakeKeyValue()
+    guard = LoginGuard(store)
+    await guard.record_failure("shared-user", "10.0.0.1")
+    provider = RecordingProviderKind("ad")
+    service = AuthService(
+        AuthProviderRegistry(
+            FakeProviderRepository(provider_record(code="ad", kind="ldap")),
+            {"ldap": provider},
+        ),
+        guard,
+    )
+
+    identity = await service.authenticate("ad", "shared-user", "pw", "10.0.0.2")
+
+    assert identity.provider_code == "ad"
+    assert store.values["auth:fail:user:shared-user"] == 1
+    await service.record_bound_success("shared-user")
+    assert "auth:fail:user:shared-user" not in store.values
+
+
+@pytest.mark.asyncio
 async def test_shared_guard_bans_ip_after_twenty_failures() -> None:
     store = FakeKeyValue()
     guard = LoginGuard(store)

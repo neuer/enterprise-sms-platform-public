@@ -104,11 +104,11 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
                         text(
                             """
                             INSERT INTO sms_batch(
-                              batch_no,channel,app_id,dept,content,send_content_enc,
-                              status,total
+                              batch_no,channel,app_id,dept,content,
+                              display_content_enc,send_content_enc,status,total
                             ) VALUES(
-                              :batch_no,'api',:app_id,'平台部','notice',:content_enc,
-                              'sending',1
+                              :batch_no,'api',:app_id,'平台部','[encrypted]',
+                              :content_enc,:content_enc,'sending',1
                             ) RETURNING id
                             """
                         ),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 from typing import Any
 
@@ -31,7 +32,7 @@ def rotated_crypto() -> CryptoService:
 class FakeGateway:
     def __init__(self, records: Any) -> None:
         raw = json.dumps({"code": 0, "msg": None, "data": records}).encode()
-        self.result = RawPulledPayload(raw, records)
+        self.result = RawPulledPayload(raw, 200)
 
     async def get_report_raw(self) -> RawPulledPayload:
         return self.result
@@ -47,6 +48,15 @@ class FakeRepository:
     async def persist_raw(self, **values: Any) -> int:
         self.events.append(("persist_raw", values))
         return 12
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None:
+        self.events.append(("metadata", (raw_id, custom_ids, item_count)))
 
     async def apply_report(self, raw_id: int, report: Any) -> ReportApplyResult | None:
         self.events.append(("apply", report))
@@ -91,12 +101,20 @@ async def test_raw_response_is_encrypted_and_committed_before_parsing() -> None:
     service = ReportIngestService(FakeGateway([report()]), repository, crypto())
     assert await service.poll_once() == 1
 
-    assert [event[0] for event in repository.events] == ["persist_raw", "apply", "processed"]
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "apply",
+        "processed",
+    ]
     raw_values = repository.events[0][1]
     assert b"13800138000" not in raw_values["payload_enc"]
-    assert raw_values["custom_ids"] == ["custom-1"]
-    assert raw_values["item_count"] == 1
-    parsed = repository.events[1][1]
+    assert raw_values["custom_ids"] == []
+    assert raw_values["item_count"] == 0
+    assert raw_values["http_status"] == 200
+    assert raw_values["content_encoding"] == "identity"
+    assert repository.events[1][1] == (12, ["custom-1"], 1)
+    parsed = repository.events[2][1]
     assert not hasattr(parsed, "phone")
     assert parsed.phone_mask == "138****8000"
 
@@ -109,8 +127,8 @@ async def test_report_parser_tolerates_vendor_custom_id_key_typo() -> None:
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    assert repository.events[0][1]["custom_ids"] == ["custom-1"]
-    assert repository.events[1][1].custom_id == "custom-1"
+    assert repository.events[1][1] == (12, ["custom-1"], 1)
+    assert repository.events[2][1].custom_id == "custom-1"
 
 
 @pytest.mark.asyncio
@@ -120,7 +138,7 @@ async def test_report_description_masks_embedded_phone_before_projection_persist
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    parsed = repository.events[1][1]
+    parsed = repository.events[2][1]
     assert parsed.report_desc == "号码138****8000投递失败"
     assert "13800138000" not in parsed.report_desc
 
@@ -143,7 +161,7 @@ async def test_vendor_report_time_preserves_explicit_zone_and_defaults_to_shangh
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    parsed = repository.events[1][1]
+    parsed = repository.events[2][1]
     assert parsed.report_time.isoformat() == expected
 
 
@@ -159,7 +177,7 @@ async def test_invalid_report_time_is_not_copied_into_safe_raw_error() -> None:
             crypto(),
         ).poll_once()
 
-    assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert [event[0] for event in repository.events] == ["persist_raw", "metadata", "error"]
     error = repository.events[-1][1]
     assert sensitive_value not in error
     assert "13800138000" not in error
@@ -176,7 +194,7 @@ async def test_report_keeps_all_hmac_versions_in_memory_with_active_primary() ->
         service_crypto,
     ).poll_once()
 
-    parsed = repository.events[1][1]
+    parsed = repository.events[2][1]
     candidates = service_crypto.hmac_candidates("13800138000")
     assert parsed.phone_hmac == candidates[2]
     assert parsed.phone_hmacs == tuple(candidates.values())
@@ -195,8 +213,8 @@ async def test_report_event_key_is_stable_when_active_hmac_version_rotates() -> 
         rotated_crypto(),
     ).poll_once()
 
-    assert before.events[1][1].event_key == after.events[1][1].event_key
-    assert before.events[1][1].phone_hmac != after.events[1][1].phone_hmac
+    assert before.events[2][1].event_key == after.events[2][1].event_key
+    assert before.events[2][1].phone_hmac != after.events[2][1].phone_hmac
 
 
 @pytest.mark.asyncio
@@ -214,7 +232,7 @@ async def test_parse_failure_keeps_raw_unprocessed_for_replay() -> None:
     repository = FakeRepository()
     with pytest.raises(ValueError):
         await ReportIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
-    assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert [event[0] for event in repository.events] == ["persist_raw", "metadata", "error"]
 
 
 @pytest.mark.asyncio
@@ -223,6 +241,34 @@ async def test_invalid_data_shape_is_still_persisted_before_error() -> None:
     with pytest.raises(ValueError, match="object array"):
         await ReportIngestService(FakeGateway("broken"), repository, crypto()).poll_once()
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+
+
+@pytest.mark.asyncio
+async def test_non_json_pull_is_persisted_before_protocol_error() -> None:
+    repository = FakeRepository()
+    gateway = FakeGateway([])
+    gateway.result = RawPulledPayload(b"not-json", 200)
+
+    with pytest.raises(Exception, match="not JSON"):
+        await ReportIngestService(gateway, repository, crypto()).poll_once()
+
+    assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+
+
+@pytest.mark.asyncio
+async def test_compressed_wire_response_is_persisted_before_rejection() -> None:
+    repository = FakeRepository()
+    gateway = FakeGateway([])
+    wire_bytes = gzip.compress(b"x" * (8 * 1024 * 1024))
+    gateway.result = RawPulledPayload(wire_bytes, 200, "unsupported")
+
+    with pytest.raises(Exception, match="content-encoding"):
+        await ReportIngestService(gateway, repository, crypto()).poll_once()
+
+    assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    persisted = repository.events[0][1]
+    assert persisted["content_encoding"] == "unsupported"
+    assert persisted["item_count"] == 0 and persisted["custom_ids"] == []
 
 
 def test_failure_rate_requires_terminal_batch_minimum_and_strict_threshold() -> None:

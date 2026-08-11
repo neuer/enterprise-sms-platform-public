@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.reply_query import (
     ReplyNotFound,
     ReplyPage,
@@ -21,6 +21,18 @@ def crypto() -> CryptoService:
     v2 = base64.b64encode(b"2" * 32).decode()
     ring1 = '{"active_version":2,"keys":{"1":"' + v1 + '","2":"' + v2 + '"}}'
     return CryptoService.from_secret_values(ring1, ring1)
+
+
+def protected_reply(event_key: str, content: str) -> bytes:
+    return crypto().encrypt_bound_packed_text(
+        content,
+        EncryptionContext(
+            domain="reply-content",
+            table="reply_event",
+            column="content_enc",
+            object_id=event_key,
+        ),
+    )
 
 
 class FakeRepository:
@@ -156,7 +168,7 @@ def bind(repository: SqlReplyQueryRepository, connection: FakeConnection) -> Non
 
 @pytest.mark.asyncio
 async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() -> None:
-    repository = SqlReplyQueryRepository()
+    repository = SqlReplyQueryRepository(crypto=crypto())
     moment = datetime.fromisoformat("2026-07-12T08:00:00+08:00")
     connection = FakeConnection(
         [
@@ -166,7 +178,8 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
                     {
                         "id": 5,
                         "phone_mask": "138****8000",
-                        "content": "TD",
+                        "event_key": "e" * 64,
+                        "content_enc": protected_reply("e" * 64, "TD"),
                         "batch_no": "BATCH-1",
                         "reply_time": moment,
                         "blacklisted": False,
@@ -186,6 +199,7 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
     )
 
     assert page.items[0].phone_mask == "138****8000"
+    assert page.items[0].content == "TD"
     assert page.items[0].blacklisted is False
     assert all("phone_enc" not in sql for sql, _ in connection.calls)
     assert "phone_hmac = ANY" in connection.calls[0][0]

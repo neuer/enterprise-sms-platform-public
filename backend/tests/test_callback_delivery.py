@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
 import hmac
 import inspect
@@ -564,6 +565,32 @@ async def test_callback_response_memory_is_bounded(
             follow_redirects=False,
         )
     await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_compressed_response_before_decoding() -> None:
+    seen_accept_encoding: list[str] = []
+
+    async def compressed(request: httpx.Request) -> httpx.Response:
+        seen_accept_encoding.append(request.headers.get("accept-encoding", ""))
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            content=gzip.compress(b"x" * (8 * 1024 * 1024)),
+            request=request,
+        )
+
+    transport = HttpxCallbackTransport(transport=httpx.MockTransport(compressed))
+    with pytest.raises(ValueError, match="content-encoding"):
+        await transport.post(
+            url="https://callback.example/hook",
+            raw_body=b"{}",
+            headers={},
+            timeout_s=1,
+            follow_redirects=False,
+        )
+    await transport.aclose()
+    assert seen_accept_encoding == ["identity"]
 
 
 @pytest.mark.asyncio

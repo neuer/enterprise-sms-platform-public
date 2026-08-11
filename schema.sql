@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.54  2026-08-11
+-- v1.6.54：短信/回复展示正文上下文加密、拉取 raw-first HTTP 状态与密钥化回复事件键
 -- v1.6.53  2026-08-11
 -- v1.6.53：版本化幂等 HMAC、失败重发唯一事实、生命周期保留、callback 列权限与日报配置版本绑定
 -- v1.6.52  2026-08-10
@@ -351,8 +353,9 @@ CREATE TABLE sms_batch (
     creator_account_id BIGINT REFERENCES user_account(id) ON DELETE RESTRICT,
     creator_identity_id BIGINT,
     dept              VARCHAR(128) NOT NULL,
-    content           VARCHAR(600) NOT NULL,
-    send_content_enc  BYTEA        NOT NULL,             -- 实际下发内容：版本头+AES-GCM密文；content仅存打码展示值
+    content           VARCHAR(600) NOT NULL DEFAULT '[encrypted]', -- 固定非敏感标记
+    display_content_enc BYTEA       NOT NULL,             -- 掩码展示正文：版本头+上下文 AES-GCM
+    send_content_enc  BYTEA        NOT NULL,             -- 实际下发内容：版本头+上下文 AES-GCM
     sign_name         VARCHAR(32),
     template_id       BIGINT,
     biz_id            VARCHAR(32),
@@ -382,7 +385,8 @@ CREATE TABLE sms_batch (
     CONSTRAINT ck_sms_batch_creator_principal_pair CHECK (
       (creator_account_id IS NULL AND creator_identity_id IS NULL)
       OR (creator_account_id IS NOT NULL AND creator_identity_id IS NOT NULL)
-    )
+    ),
+    CONSTRAINT ck_sms_batch_content_marker CHECK (content='[encrypted]')
 );
 -- biz_id 只用于追踪；过期后允许复用，唯一性由 idempotency_record 管理。
 CREATE INDEX idx_batch_app_biz ON sms_batch(app_id, biz_id)
@@ -630,10 +634,11 @@ CREATE TABLE sms_reply (
     phone_mask     VARCHAR(11) NOT NULL,
     key_version    SMALLINT    NOT NULL DEFAULT 1,
     ext_code       VARCHAR(8),
-    content        VARCHAR(500) NOT NULL,
+    content        VARCHAR(500) NOT NULL DEFAULT '[encrypted]',
     reply_time     TIMESTAMPTZ,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (id, created_at)
+    PRIMARY KEY (id, created_at),
+    CONSTRAINT ck_sms_reply_content_marker CHECK (content='[encrypted]')
 ) PARTITION BY RANGE (created_at);
 CREATE INDEX idx_reply_hmac ON sms_reply(phone_hmac, created_at);
 CREATE INDEX idx_reply_event ON sms_reply(event_key);
@@ -645,15 +650,20 @@ CREATE TABLE sms_reply_2026_07 PARTITION OF sms_reply
 CREATE TABLE raw_vendor_log (
     id             BIGSERIAL PRIMARY KEY,
     source         VARCHAR(8)  NOT NULL CHECK (source IN ('report','reply')),
-    payload_enc    BYTEA       NOT NULL, -- 完整响应 JSON 的 AES-256-GCM 密文
+    payload_enc    BYTEA       NOT NULL, -- 完整原始响应字节的 AES-256-GCM 密文
     payload_sha256 CHAR(64)    NOT NULL, -- 密文落库前对原始字节计算，重放校验完整性
     key_version    SMALLINT    NOT NULL DEFAULT 1,
+    http_status    SMALLINT    NOT NULL DEFAULT 200,
+    content_encoding VARCHAR(16) NOT NULL DEFAULT 'identity',
     custom_ids     TEXT[]      NOT NULL DEFAULT '{}', -- 只含 customId，不含 phone/content
     item_count     INTEGER     NOT NULL DEFAULT 0,
     processed      BOOLEAN     NOT NULL DEFAULT FALSE,
     processing_started_at TIMESTAMPTZ,
     error          VARCHAR(256),
-    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_raw_vendor_http_status CHECK (http_status BETWEEN 100 AND 599),
+    CONSTRAINT ck_raw_vendor_content_encoding
+      CHECK (content_encoding IN ('identity','unsupported'))
 );
 CREATE INDEX idx_raw_unprocessed ON raw_vendor_log(processed, fetched_at)
     WHERE processed = FALSE;
@@ -703,6 +713,7 @@ CREATE INDEX idx_report_projection_message
 CREATE TABLE reply_event (
     event_key       CHAR(64) PRIMARY KEY
                     CHECK (event_key ~ '^[0-9a-f]{64}$'),
+    event_key_version SMALLINT NOT NULL,
     raw_id          BIGINT, -- raw 90天清理后允许成为仅审计用历史引用
     vendor_task_id  VARCHAR(64) NOT NULL,
     custom_id       VARCHAR(64),
@@ -712,9 +723,12 @@ CREATE TABLE reply_event (
     phone_mask      VARCHAR(11) NOT NULL,
     key_version     SMALLINT    NOT NULL CHECK (key_version>0),
     ext_code        VARCHAR(8),
-    content         VARCHAR(500) NOT NULL,
+    content         VARCHAR(500) NOT NULL DEFAULT '[encrypted]',
+    content_enc     BYTEA NOT NULL,
     reply_time      TIMESTAMPTZ NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_reply_event_content_marker CHECK (content='[encrypted]'),
+    CONSTRAINT ck_reply_event_key_version CHECK (event_key_version>0)
 );
 CREATE INDEX idx_reply_event_raw ON reply_event(raw_id);
 CREATE INDEX idx_reply_event_time ON reply_event(reply_time);

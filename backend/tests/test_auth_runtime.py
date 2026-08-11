@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.core.auth.accounts import LocalAccountRecord, PlatformAccount
+from app.core.auth.accounts import AccountSourceConflict, LocalAccountRecord, PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
@@ -93,6 +93,7 @@ class FakeAuthService:
     def __init__(self, identity: AuthenticatedIdentity | Exception) -> None:
         self.identity = identity
         self.calls: list[tuple[str, str, str, str]] = []
+        self.bound_successes: list[str] = []
 
     async def authenticate(
         self,
@@ -105,6 +106,9 @@ class FakeAuthService:
         if isinstance(self.identity, Exception):
             raise self.identity
         return self.identity
+
+    async def record_bound_success(self, username: str) -> None:
+        self.bound_successes.append(username)
 
 
 class FakeUserRepository:
@@ -328,6 +332,33 @@ async def test_normal_login_issues_account_based_access_token() -> None:
     assert refreshed.refresh_token != result.refresh_token
     assert (await tokens.verify(refreshed.token)).account_id == 8
     assert users.refresh_audits == [(users.value, IP)]
+
+
+@pytest.mark.asyncio
+async def test_account_source_conflict_does_not_record_bound_login_success() -> None:
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="ad",
+        login_name="admin",
+        external_subject="ad:admin",
+        display_name="冲突账号",
+        dept="平台部",
+        groups=(),
+    )
+    auth = FakeAuthService(identity)
+    users = FakeUserRepository(value)
+
+    async def conflict(_: AuthenticatedIdentity, __: str) -> PlatformAccount:
+        raise AccountSourceConflict("owned by local")
+
+    users.resolve_identity = conflict  # type: ignore[method-assign]
+    service = AuthFacade(auth, users, JwtService(SECRET, FakeKeyValue()), FakeHasher())
+
+    with pytest.raises(ApiError) as raised:
+        await service.login("ad", "admin", "Valid@Password123", IP)
+
+    assert raised.value.code == "ACCOUNT_SOURCE_CONFLICT"
+    assert auth.bound_successes == []
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,8 @@ SECRETS_DIR = Path(
     )
 )
 OWNER_SECRET = SECRETS_DIR / "db_owner_password"
+DATA_AES_SECRET = SECRETS_DIR / "data_aes_key"
+DATA_HMAC_SECRET = SECRETS_DIR / "data_hmac_key"
 INIT_SCRIPT = ROOT / "deploy/initdb/01-create-app-role.sh"
 
 CATALOG_QUERY = r"""
@@ -177,7 +179,7 @@ def wait_for_postgres(container: str) -> None:
 def start_postgres(container: str) -> int:
     """以 secrets 文件启动隔离 PostgreSQL 并返回随机主机端口。"""
 
-    for required in (OWNER_SECRET, INIT_SCRIPT):
+    for required in (OWNER_SECRET, DATA_AES_SECRET, DATA_HMAC_SECRET, INIT_SCRIPT):
         if not required.is_file():
             raise RuntimeError(f"required migration-check asset missing: {required}")
     run(
@@ -1115,6 +1117,8 @@ def run_check() -> None:
                 "DB_PORT": str(port),
                 "DB_NAME": "alembic_build",
                 "DB_OWNER_PASSWORD_FILE": str(OWNER_SECRET),
+                "DATA_AES_KEY_FILE": str(DATA_AES_SECRET),
+                "DATA_HMAC_KEY_FILE": str(DATA_HMAC_SECRET),
             }
         )
         run(
@@ -1258,8 +1262,9 @@ def run_check() -> None:
         docker_psql(
             container,
             "legacy_approval_build",
-            "INSERT INTO sms_batch(batch_no,channel,dept,content,send_content_enc) "
-            "VALUES(repeat('l',32),'web','legacy','compatibility',decode('00','hex'))",
+            "INSERT INTO sms_batch(batch_no,channel,dept,content,display_content_enc,"
+            "send_content_enc) VALUES(repeat('l',32),'web','legacy','[encrypted]',"
+            "decode('00','hex'),decode('00','hex'))",
         )
         docker_psql(
             container,
@@ -1737,8 +1742,9 @@ def run_check() -> None:
               cardinality(message_ids)=cardinality(message_times));
             INSERT INTO app(id,name,dept,api_key_hash,api_key_prefix,created_by)
               VALUES(1,'legacy','dept',repeat('a',64),'12345678','test');
-            INSERT INTO sms_batch(id,batch_no,channel,app_id,dept,content,send_content_enc)
-              VALUES(1,repeat('b',32),'api',1,'dept','masked','\\x01');
+            INSERT INTO sms_batch(
+              id,batch_no,channel,app_id,dept,content,display_content_enc,send_content_enc)
+              VALUES(1,repeat('b',32),'api',1,'dept','[encrypted]','\\x01','\\x01');
             INSERT INTO sms_chunk(id,batch_id,chunk_no,custom_id,vendor_task_id,phone_count)
               VALUES(1,1,1,repeat('c',32),'vendor-task-1',1);
             INSERT INTO sms_message(
@@ -1798,8 +1804,9 @@ def run_check() -> None:
               cardinality(message_ids)=cardinality(message_times));
             INSERT INTO app(id,name,dept,api_key_hash,api_key_prefix,created_by)
               VALUES(1,'legacy-single','dept',repeat('a',64),'12345678','test');
-            INSERT INTO sms_batch(id,batch_no,channel,app_id,dept,content,send_content_enc)
-              VALUES(1,repeat('e',32),'api',1,'dept','masked','\\x01');
+            INSERT INTO sms_batch(
+              id,batch_no,channel,app_id,dept,content,display_content_enc,send_content_enc)
+              VALUES(1,repeat('e',32),'api',1,'dept','[encrypted]','\\x01','\\x01');
             INSERT INTO sms_chunk(id,batch_id,chunk_no,custom_id,vendor_task_id,phone_count)
               VALUES(1,1,1,'  custom-1  ','  vendor-task-1  ',1);
             INSERT INTO sms_message(
@@ -2018,6 +2025,7 @@ def run_check() -> None:
             ALTER TABLE sms_reply DROP CONSTRAINT fk_reply_event;
             DROP INDEX idx_reply_event;
             ALTER TABLE sms_reply DROP COLUMN event_key;
+            ALTER TABLE sms_reply DROP CONSTRAINT ck_sms_reply_content_marker;
             ALTER TABLE unmatched_report
               DROP CONSTRAINT fk_unmatched_report_event;
             ALTER TABLE unmatched_report
@@ -2060,13 +2068,18 @@ def run_check() -> None:
                WHERE projection_changed)::int,
               (SELECT count(*) FROM reply_event
                WHERE raw_id IS NULL)::int,
+              (SELECT count(*) FROM reply_event
+               WHERE raw_id IS NULL AND content='[encrypted]'
+                 AND content_enc IS NOT NULL AND event_key_version>0)::int,
               (SELECT count(*) FROM sms_reply
                WHERE event_key IS NOT NULL)::int,
+              (SELECT count(*) FROM sms_reply
+               WHERE event_key IS NOT NULL AND content='[encrypted]')::int,
               (SELECT count(*) FROM unmatched_report
                WHERE event_key IS NOT NULL)::int
             """,
         ).strip()
-        if vendor_event_backfill != "2|1|1|1|1":
+        if vendor_event_backfill != "2|1|1|1|1|1|1":
             raise RuntimeError("legacy vendor event facts were not safely backfilled")
     finally:
         run(["docker", "rm", "-f", container], check=False)
