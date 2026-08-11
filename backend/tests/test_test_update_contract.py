@@ -648,6 +648,16 @@ def test_g2_api_acceptance_script_is_explicitly_non_runtime() -> None:
     assert change.risk == "none"
 
 
+def test_security_acceptance_script_is_explicitly_non_runtime() -> None:
+    change = classify_changed_paths(["scripts/security_acceptance.py"])
+
+    assert change.components == frozenset()
+    assert change.migration_changed is False
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+    assert change.high_risk_paths == ()
+
+
 def test_database_role_gate_inputs_are_safe_non_runtime_changes() -> None:
     change = classify_changed_paths(
         [

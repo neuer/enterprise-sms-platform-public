@@ -296,6 +296,9 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         # G2 性能门禁脚本不进入 api/web 运行镜像；阈值变更由精确提交的
         # 托管 CI/G2 负责验证，不能阻断同一提交中的正式运行态更新。
         "scripts/perf_smoke.py",
+        # 安全验收仅供本地/托管 CI 检查，不进入 api/web 运行镜像；其结果由
+        # 精确提交的 ci-gate 负责验证。
+        "scripts/security_acceptance.py",
         "scripts/canonicalize_sbom.py",
         "scripts/create_release_manifest.py",
         "scripts/render_release_evidence.py",
