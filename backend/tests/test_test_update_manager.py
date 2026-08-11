@@ -2165,6 +2165,23 @@ def test_rebaseline_verify_recovery_starts_only_fixed_backend_services(
     ]
 
 
+def test_rebaseline_recovery_restores_operator_git_with_safe_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    events: list[Path] = []
+    monkeypatch.setattr(
+        update_manager_module,
+        "_restore_operator_git_read_access",
+        lambda root: events.append(root),
+    )
+
+    operations.restore_operator_git_read_access()
+
+    assert events == [tmp_path]
+
+
 @pytest.mark.parametrize(
     ("pause_state", "expected"),
     [
