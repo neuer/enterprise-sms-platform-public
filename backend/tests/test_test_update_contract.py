@@ -861,12 +861,15 @@ def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None
     )
 
 
-@pytest.mark.parametrize("path", ["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
-def test_rebaseline_performance_evidence_does_not_relax_daily_apply(
-    path: str,
-) -> None:
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths([path])
+def test_performance_gate_evidence_is_non_runtime_for_daily_apply() -> None:
+    change = classify_changed_paths(
+        ["docs/PERFORMANCE.md", "scripts/perf_smoke.py"]
+    )
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+    assert change.high_risk_paths == ()
 
 
 def test_rebaseline_requires_a_migration_change() -> None:
