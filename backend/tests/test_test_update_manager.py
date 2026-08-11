@@ -2165,6 +2165,120 @@ def test_rebaseline_verify_recovery_starts_only_fixed_backend_services(
     ]
 
 
+@pytest.mark.parametrize(
+    ("pause_state", "expected"),
+    [
+        (
+            "owned",
+            [
+                "pause_observe",
+                ("up", "-d", "--no-deps", *BACKEND_SERVICES),
+                "verify_services",
+                ("restore_pauses", "test-20260810T125640Z-5488823a73ef"),
+            ],
+        ),
+        ("released", ["pause_observe", "verify_services"]),
+    ],
+)
+def test_verified_rebaseline_service_recovery_is_exact_and_idempotent(
+    tmp_path: Path,
+    pause_state: str,
+    expected: list[object],
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    update_id = "test-20260810T125640Z-5488823a73ef"
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        operation="rebaseline",
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    operations.pause_value = f"test-update:{update_id}"
+    events: list[object] = []
+
+    class Host:
+        def _redis(self, *argv: str) -> str:
+            assert argv[0] == "EVAL"
+            events.append("pause_observe")
+            return pause_state
+
+        def _run(self, *argv: str) -> str:
+            events.append(argv)
+            return ""
+
+    operations.host = Host()  # type: ignore[assignment]
+    operations.verify_backend_services = (  # type: ignore[method-assign]
+        lambda: events.append("verify_services")
+    )
+    operations.restore_owned_update_pauses = (  # type: ignore[method-assign]
+        lambda value: events.append(("restore_pauses", value))
+    )
+
+    operations.recover_verified_rebaseline_services()
+
+    assert events == expected
+
+
+def test_verified_rebaseline_service_recovery_rejects_partial_pause(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    operations.request = SimpleNamespace(
+        update_id="test-20260810T125640Z-5488823a73ef",
+        operation="rebaseline",
+        migration_from="0053_idempotency_scope",
+        migration_target="0061_vendor_binding_outbox",
+        migration_compatibility="expand",
+    )
+    operations.pause_value = f"test-update:{operations.request.update_id}"
+    operations.host = SimpleNamespace(_redis=lambda *_argv: "blocked")  # type: ignore[assignment]
+
+    with pytest.raises(ManagerError, match="pause state is invalid"):
+        operations.recover_verified_rebaseline_services()
+
+
+def test_rebaseline_running_images_match_request_identity(tmp_path: Path) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    commit = "b" * 40
+    migration = "0061_vendor_binding_outbox"
+    image_ids = {
+        "api": f"sha256:{'1' * 64}",
+        "web": f"sha256:{'2' * 64}",
+    }
+    containers = {"api": "a" * 12, "web": "b" * 12}
+    operations.request = SimpleNamespace(
+        components=frozenset({"api", "web"}),
+        images={
+            component: SimpleNamespace(image_id=image_id)
+            for component, image_id in image_ids.items()
+        },
+        commit=commit,
+        migration_target=migration,
+    )
+
+    class Host:
+        def _run(self, *argv: str) -> str:
+            assert argv[:2] == ("ps", "-q")
+            return containers[argv[2]]
+
+    operations.host = Host()  # type: ignore[assignment]
+
+    def command(*argv: str) -> str:
+        component = next(
+            name for name, container in containers.items() if container == argv[-1]
+        )
+        return f"{image_ids[component]}|{commit}|{migration}"
+
+    operations._command = command  # type: ignore[method-assign]
+
+    operations.verify_running_image_identity()
+
+    operations._command = lambda *_argv: "mismatch"  # type: ignore[method-assign]
+    with pytest.raises(ManagerError, match="image identity is invalid"):
+        operations.verify_running_image_identity()
+
+
 def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(
     tmp_path: Path,
 ) -> None:

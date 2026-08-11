@@ -2531,6 +2531,41 @@ class HostTestUpdateOperations:
             *BACKEND_SERVICES,
         )
 
+    def recover_verified_rebaseline_services(self) -> None:
+        """幂等收尾 verified 恢复遗留的成对 update 暂停。"""
+
+        self._require_exact_rebaseline_migration()
+        script = (
+            "local a=redis.call('get',KEYS[1]); "
+            "local b=redis.call('get',KEYS[2]); "
+            "if a==ARGV[1] and b==ARGV[1] then return 'owned' end; "
+            "if not a and not b then return 'released' end; return 'blocked'"
+        )
+        observed = self.host._redis(
+            "EVAL",
+            script,
+            "2",
+            "queue:paused:realtime",
+            "queue:paused:bulk",
+            self.pause_value,
+        )
+        if observed == "owned":
+            self.host._run(
+                "up",
+                "-d",
+                "--no-deps",
+                *BACKEND_SERVICES,
+            )
+            self.verify_backend_services()
+            self.restore_owned_update_pauses(self.request.update_id)
+            return
+        if observed == "released":
+            self.verify_backend_services()
+            return
+        raise TestUpdateManagerError(
+            "verified rebaseline update pause state is invalid"
+        )
+
     def verify_backend_services(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if not set(BACKEND_SERVICES).issubset(running):
@@ -2539,6 +2574,35 @@ class HostTestUpdateOperations:
             raise TestUpdateManagerError("selected web service is not running")
         if self.current_migration_head() != self.request.migration_target:
             raise TestUpdateManagerError("migration head drifted")
+
+    def verify_running_image_identity(self) -> None:
+        """复核当前 API/Web 容器仍绑定本次 rebaseline 的精确镜像。"""
+
+        for component in sorted(self.request.components):
+            image = self.request.images[component]
+            container_id = self.host._run("ps", "-q", component)
+            if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
+                raise TestUpdateManagerError(
+                    "rebaseline running service is unavailable"
+                )
+            observed = self._command(
+                "docker",
+                "inspect",
+                "--format",
+                (
+                    "{{.Image}}|"
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                ),
+                container_id,
+            )
+            if observed != (
+                f"{image.image_id}|{self.request.commit}|"
+                f"{self.request.migration_target}"
+            ):
+                raise TestUpdateManagerError(
+                    "rebaseline running image identity is invalid"
+                )
 
     def restore_owned_update_pauses(self, update_id: str) -> None:
         if update_id != self.request.update_id:

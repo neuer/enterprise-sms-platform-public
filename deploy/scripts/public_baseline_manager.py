@@ -210,6 +210,14 @@ class SourceInspector(Protocol):
 
     def observe(self, root: Path) -> GitIdentity: ...
 
+    def read_file(
+        self,
+        root: Path,
+        *,
+        identity: GitIdentity,
+        path: Path,
+    ) -> bytes: ...
+
 
 class ImageInspector(Protocol):
     def verify(
@@ -224,6 +232,8 @@ class UnitManager(Protocol):
     def activate(self, outcome: ActivationOutcome) -> None: ...
 
     def restore(self, outcome: ActivationOutcome) -> None: ...
+
+    def recover(self, active_root: Path, *, previous: bytes) -> None: ...
 
     def verify(self, active_root: Path) -> None: ...
 
@@ -623,7 +633,6 @@ def validate_rebaseline_recovery_binding(
 
     if (
         manifest.activation_id == request.update_id
-        or manifest.target.commit != request.commit
         or request.operation != "rebaseline"
         or request.source_ref != "origin/main"
         or request.components != COMPONENTS
@@ -637,16 +646,6 @@ def validate_rebaseline_recovery_binding(
         raise PublicBaselineManagerError(
             "baseline manifest and rebaseline recovery request are not bound"
         )
-    for component in COMPONENTS:
-        manifest_image = manifest.images[component]
-        request_image = request.images[component]
-        if (
-            request_image.ref != manifest_image.ref
-            or request_image.image_id != manifest_image.image_id
-        ):
-            raise PublicBaselineManagerError(
-                "baseline image and rebaseline recovery request are not bound"
-            )
 
 
 def _fixed_scope() -> ChangedScope:
@@ -705,6 +704,45 @@ class HostSourceInspector:
         )
         if remote_main != identity.commit:
             raise PublicBaselineManagerError("baseline origin/main drifted")
+
+    def read_file(
+        self,
+        root: Path,
+        *,
+        identity: GitIdentity,
+        path: Path,
+    ) -> bytes:
+        """从 manifest 绑定的历史 Git tree 读取固定 unit 字节。"""
+
+        if path != VENDOR_UNIT_SOURCE:
+            raise PublicBaselineManagerError(
+                "baseline historical source path is invalid"
+            )
+        tree = self._git(
+            root,
+            "rev-parse",
+            "--verify",
+            f"{identity.commit}^{{tree}}",
+        )
+        if tree != identity.tree:
+            raise PublicBaselineManagerError(
+                "baseline historical source identity is invalid"
+            )
+        payload = self.runner.run(
+            (
+                "git",
+                "-C",
+                str(root),
+                "cat-file",
+                "blob",
+                f"{identity.commit}:{path.as_posix()}",
+            )
+        )
+        if not 1 <= len(payload) <= 64 * 1024:
+            raise PublicBaselineManagerError(
+                "baseline historical unit is invalid"
+            )
+        return payload
 
 
 class HostImageInspector:
@@ -957,6 +995,22 @@ class HostVendorControlUnitManager:
                 "installed vendor control unit cannot be restored safely"
             )
         self._install(desired)
+
+    def recover(self, active_root: Path, *, previous: bytes) -> None:
+        """仅允许从 manifest 历史 unit 恢复到当前活动根 unit。"""
+
+        target = self._source(active_root, profile="target")
+        installed = _safe_unit_bytes(
+            self.unit_path,
+            expected_uid=self.expected_uid,
+            expected_gid=self.expected_system_gid,
+            expected_mode=0o644,
+        )
+        if installed not in {previous, target}:
+            raise PublicBaselineManagerError(
+                "installed vendor control unit cannot be recovered safely"
+            )
+        self._install(target)
 
     def verify(self, active_root: Path) -> None:
         expected = self._source(active_root, profile="target")
@@ -1416,9 +1470,14 @@ class PublicBaselineManager:
                 raise PublicBaselineManagerError(
                     "public baseline verify recovery state is invalid"
                 )
+            observed = self.source_inspector.observe(ACTIVE_ROOT)
+            if observed.commit != self.request.commit:
+                raise PublicBaselineManagerError(
+                    "public baseline verify recovery source drifted"
+                )
             self.source_inspector.verify(
                 ACTIVE_ROOT,
-                identity=self.manifest.target,
+                identity=observed,
                 origin_url=self.manifest.origin_url,
             )
             self._require_operator_git_access()
@@ -1426,19 +1485,24 @@ class PublicBaselineManager:
                 raise PublicBaselineManagerError(
                     "public baseline verify recovery migration drifted"
                 )
-            self.image_inspector.verify(self.manifest)
-            outcome = self.core.activate(self.core_request)
-            _validate_outcome(outcome, self.manifest, target=True)
-            self.unit_manager.activate(outcome)
-            status = operations.recover_blocked_rebaseline_verify(self.store)
-            self.source_inspector.verify(
+            operations.verify_running_image_identity()
+            previous_unit = self.source_inspector.read_file(
                 ACTIVE_ROOT,
                 identity=self.manifest.target,
-                origin_url=self.manifest.origin_url,
+                path=VENDOR_UNIT_SOURCE,
             )
+            self.unit_manager.recover(ACTIVE_ROOT, previous=previous_unit)
+            status = operations.recover_blocked_rebaseline_verify(self.store)
+            if state["state"] == TestUpdateState.VERIFIED.value:
+                operations.recover_verified_rebaseline_services()
+            observed = self.source_inspector.observe(ACTIVE_ROOT)
+            if observed.commit != self.request.commit:
+                raise PublicBaselineManagerError(
+                    "public baseline verify recovery source drifted"
+                )
             self._require_operator_git_access()
             self.unit_manager.verify(ACTIVE_ROOT)
-            self.image_inspector.verify(self.manifest)
+            operations.verify_running_image_identity()
             operations.verify_backend_services()
             return status
         except Exception:
