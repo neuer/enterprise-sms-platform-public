@@ -28,6 +28,7 @@ from public_baseline_manager import (  # noqa: E402
     PublicBaselineManagerError,
     _unlink_verified_artifact,
     parse_baseline_manifest,
+    validate_rebaseline_recovery_binding,
     validate_request_binding,
     verify_operator_git_access,
 )
@@ -42,6 +43,7 @@ from test_update_store import TestUpdateState as UpdateState  # noqa: E402
 from test_update_verify import TestUpdateVerifyError as VerifyError  # noqa: E402
 
 ACTIVATION_ID = "test-20260731T120000Z-0123456789ab"
+REBASELINE_ID = "test-20260811T010000Z-abcdef012345"
 BASE_COMMIT = "1" * 40
 BASE_TREE = "2" * 40
 TARGET_COMMIT = "3" * 40
@@ -143,6 +145,19 @@ def _request() -> tuple[str, UpdateRequest]:
     return raw, parse_test_update_request(raw)
 
 
+def _rebaseline_request() -> tuple[str, UpdateRequest]:
+    document = _request_document()
+    document["update_id"] = REBASELINE_ID
+    document["operation"] = "rebaseline"
+    document["migration"] = {
+        "from": "0053_idempotency_scope",
+        "target": "0061_vendor_binding_outbox",
+        "compatibility": "expand",
+    }
+    raw = json.dumps(document, separators=(",", ":"), sort_keys=True)
+    return raw, parse_test_update_request(raw)
+
+
 def test_manifest_parser_accepts_only_exact_target_bound_contract() -> None:
     manifest = _manifest()
 
@@ -190,6 +205,33 @@ def test_standard_request_must_bind_every_mutable_identity() -> None:
             manifest,
             changed_request,
             host_source_commit=TARGET_COMMIT,
+        )
+
+
+def test_rebaseline_recovery_binds_new_request_to_existing_target() -> None:
+    manifest = _manifest()
+    _raw, request = _rebaseline_request()
+
+    validate_rebaseline_recovery_binding(
+        manifest,
+        request,
+        host_source_commit="a" * 40,
+    )
+
+    changed = _request_document()
+    changed["update_id"] = "test-20260811T010000Z-fedcba543210"
+    changed["operation"] = "rebaseline"
+    changed["migration"] = {
+        "from": "0053_idempotency_scope",
+        "target": "0060_forbidden",
+        "compatibility": "expand",
+    }
+    changed_request = parse_test_update_request(json.dumps(changed))
+    with pytest.raises(PublicBaselineManagerError, match="not bound"):
+        validate_rebaseline_recovery_binding(
+            manifest,
+            changed_request,
+            host_source_commit="a" * 40,
         )
     with pytest.raises(PublicBaselineManagerError, match="not bound"):
         validate_request_binding(
@@ -498,6 +540,7 @@ def _manager(
     source: FakeSourceInspector | None = None,
     images: FakeImageInspector | None = None,
     unit: FakeUnitManager | None = None,
+    rebaseline_recovery: bool = False,
     operator_git_probe: Callable[[Path], None] | None = None,
 ) -> tuple[
     PublicBaselineManager,
@@ -508,7 +551,7 @@ def _manager(
     FakeImageInspector,
     FakeUnitManager,
 ]:
-    raw, request = _request()
+    raw, request = _rebaseline_request() if rebaseline_recovery else _request()
     actual_store = store or FakeStore()
     actual_core = core or FakeCore()
     actual_operations = operations or FakeHostOperations()
@@ -527,6 +570,7 @@ def _manager(
         image_inspector=actual_images,
         unit_manager=actual_unit,
         host_source_commit=TARGET_COMMIT,
+        rebaseline_recovery=rebaseline_recovery,
         operator_git_probe=operator_git_probe or (lambda _root: None),
     )
     return (
@@ -769,7 +813,12 @@ def test_verify_resume_from_verified_revalidates_and_releases_pauses() -> None:
 
 def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
     store = FakeStore(UpdateState.BLOCKED)
-    manager, store, core, operations, source, images, unit = _manager(store=store)
+    operations = FakeHostOperations(migration_head="0061_vendor_binding_outbox")
+    manager, store, core, operations, source, images, unit = _manager(
+        store=store,
+        operations=operations,
+        rebaseline_recovery=True,
+    )
 
     result = manager.recover_verify()
 
@@ -790,9 +839,12 @@ def test_recover_verify_repairs_unit_before_resuming_rebaseline() -> None:
 def test_recover_verify_unit_failure_holds_fail_closed_before_state_resume() -> None:
     store = FakeStore(UpdateState.BLOCKED)
     unit = FakeUnitManager(fail_activate=True)
+    operations = FakeHostOperations(migration_head="0061_vendor_binding_outbox")
     manager, store, core, operations, _source, _images, unit = _manager(
         store=store,
         unit=unit,
+        operations=operations,
+        rebaseline_recovery=True,
     )
 
     with pytest.raises(
@@ -805,7 +857,7 @@ def test_recover_verify_unit_failure_holds_fail_closed_before_state_resume() -> 
     assert operations.events == [
         "lock",
         "migration_head",
-        ("hold", ACTIVATION_ID),
+        ("hold", REBASELINE_ID),
     ]
     assert unit.events == ["unit_activate"]
     assert store.state is UpdateState.BLOCKED

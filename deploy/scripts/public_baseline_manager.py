@@ -613,6 +613,42 @@ def validate_request_binding(
             )
 
 
+def validate_rebaseline_recovery_binding(
+    manifest: BaselineManifest,
+    request: TestUpdateRequest,
+    *,
+    host_source_commit: str,
+) -> None:
+    """把后续 rebaseline 恢复收窄到既有 public target。"""
+
+    if (
+        manifest.activation_id == request.update_id
+        or manifest.target.commit != request.commit
+        or request.operation != "rebaseline"
+        or request.source_ref != "origin/main"
+        or request.components != COMPONENTS
+        or request.public_cutover is not None
+        or request.migration_from != "0053_idempotency_scope"
+        or request.migration_target != "0061_vendor_binding_outbox"
+        or request.migration_compatibility != "expand"
+        or set(request.images) != set(COMPONENTS)
+        or _COMMIT_RE.fullmatch(host_source_commit) is None
+    ):
+        raise PublicBaselineManagerError(
+            "baseline manifest and rebaseline recovery request are not bound"
+        )
+    for component in COMPONENTS:
+        manifest_image = manifest.images[component]
+        request_image = request.images[component]
+        if (
+            request_image.ref != manifest_image.ref
+            or request_image.image_id != manifest_image.image_id
+        ):
+            raise PublicBaselineManagerError(
+                "baseline image and rebaseline recovery request are not bound"
+            )
+
+
 def _fixed_scope() -> ChangedScope:
     return ChangedScope(
         components=COMPONENTS,
@@ -1119,13 +1155,21 @@ class PublicBaselineManager:
         image_inspector: ImageInspector,
         unit_manager: UnitManager,
         host_source_commit: str,
+        rebaseline_recovery: bool = False,
         operator_git_probe: Callable[[Path], None] | None = None,
     ) -> None:
-        validate_request_binding(
-            manifest,
-            request,
-            host_source_commit=host_source_commit,
-        )
+        if rebaseline_recovery:
+            validate_rebaseline_recovery_binding(
+                manifest,
+                request,
+                host_source_commit=host_source_commit,
+            )
+        else:
+            validate_request_binding(
+                manifest,
+                request,
+                host_source_commit=host_source_commit,
+            )
         self.manifest = manifest
         self.core_request = core_request
         self.request_raw = request_raw
@@ -1378,7 +1422,7 @@ class PublicBaselineManager:
                 origin_url=self.manifest.origin_url,
             )
             self._require_operator_git_access()
-            if operations.current_migration_head() != self.manifest.migration_target:
+            if operations.current_migration_head() != self.request.migration_target:
                 raise PublicBaselineManagerError(
                     "public baseline verify recovery migration drifted"
                 )
@@ -1644,6 +1688,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner=runner,
             ),
             host_source_commit=host_source_commit,
+            rebaseline_recovery=args.command == "recover-verify",
         )
         if args.command == "status":
             print(
