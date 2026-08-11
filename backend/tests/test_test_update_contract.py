@@ -241,10 +241,7 @@ def test_rejects_duplicate_json_keys() -> None:
     [
         (
             f'"ref": "sms-platform-test-api:{COMMIT}"',
-            (
-                f'"ref": "sms-platform-test-api:{COMMIT}", '
-                f'"ref": "sms-platform-test-api:{COMMIT}"'
-            ),
+            (f'"ref": "sms-platform-test-api:{COMMIT}", "ref": "sms-platform-test-api:{COMMIT}"'),
         ),
         (
             '"compatibility": "expand"',
@@ -718,7 +715,6 @@ def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
             "scripts/verify_release_control.sh",
             "scripts/verify_tls_termination_e2e.py",
             "scripts/verify_all.sh",
-            "scripts/verify_web_transport.py",
         ]
     )
 
@@ -862,9 +858,7 @@ def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None
 
 
 def test_performance_gate_evidence_is_non_runtime_for_daily_apply() -> None:
-    change = classify_changed_paths(
-        ["docs/PERFORMANCE.md", "scripts/perf_smoke.py"]
-    )
+    change = classify_changed_paths(["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
 
     assert change.components == frozenset()
     assert change.runtime_changed is False

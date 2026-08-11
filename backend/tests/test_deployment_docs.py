@@ -688,3 +688,25 @@ def test_test_secure_access_runbooks_define_the_phone_operator_boundary() -> Non
         assert "打开正式凭据安全入口" in document
         assert "sms-compose secure-access start" in document
         assert "sms-compose secure-access stop" in document
+
+
+def test_persistent_cloudflare_tunnel_runbook_keeps_origin_and_token_private() -> None:
+    index = read_required("README.md")
+
+    for token in (
+        "持久 Cloudflare Named Tunnel",
+        "sms-compose cloudflare-tunnel install",
+        "sms-compose cloudflare-tunnel configure",
+        "sms-compose cloudflare-tunnel install-token",
+        "sms-compose cloudflare-tunnel start",
+        "sms-compose cloudflare-tunnel verify",
+        "WEB_BIND_IP=127.0.0.1",
+        "SMS_EXTERNAL_TLS_MODE=1",
+        "SMS_TRUSTED_PROXY_CIDRS=127.0.0.1/32",
+        "LoadCredential",
+        "token 禁止进入命令参数",
+        "TLS 1.2/1.3",
+        "证书剩余至少 14 天",
+        "DNSSEC",
+    ):
+        assert token in index

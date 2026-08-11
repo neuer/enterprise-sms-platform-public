@@ -44,9 +44,7 @@ TEST_UPDATE_BACKUP_CONFIG = Path("/etc/sms-platform/test-update-backup.json")
 TEST_UPDATE_BACKUP_KEY = Path("/etc/sms-platform/test-update-backup-key")
 TEST_UPDATE_BACKUP_ROOT = Path("/var/lib/sms-platform/test-backups")
 TEST_UPDATE_LIFECYCLE_LOCK = Path("/run/sms-platform/secrets.lifecycle.lock")
-_VERSION_RE = re.compile(
-    rf"cloudflared version {re.escape(CLOUDFLARED_VERSION)}(?:[ \n]|\Z)"
-)
+_VERSION_RE = re.compile(rf"cloudflared version {re.escape(CLOUDFLARED_VERSION)}(?:[ \n]|\Z)")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _CHECKPOINT_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _NONCE_RE = re.compile(r"[0-9a-f]{24}")
@@ -171,9 +169,7 @@ class GitCommitVerifier:
                 capture_output=True,
             )
         except OSError as exc:
-            raise SecureAccessInstallerError(
-                "secure access source commit is unavailable"
-            ) from exc
+            raise SecureAccessInstallerError("secure access source commit is unavailable") from exc
         entries = tree.stdout.split(b"\0")
         metadata, separator, observed_path = (
             entries[0].partition(b"\t")
@@ -244,9 +240,7 @@ def _prepare_directory(path: Path, *, expected_uid: int) -> None:
             os.chown(path, expected_uid, 0 if expected_uid == 0 else os.getegid())
             os.chmod(path, 0o755)
     except OSError as exc:
-        raise SecureAccessInstallerError(
-            "secure access install directory is unsafe"
-        ) from exc
+        raise SecureAccessInstallerError("secure access install directory is unsafe") from exc
 
 
 def _prepare_dynamic_user_asset_tree(
@@ -260,9 +254,7 @@ def _prepare_dynamic_user_asset_tree(
     try:
         relative = asset_root.relative_to(traverse_root)
     except ValueError as exc:
-        raise SecureAccessInstallerError(
-            "secure access host asset path is invalid"
-        ) from exc
+        raise SecureAccessInstallerError("secure access host asset path is invalid") from exc
 
     paths = [traverse_root]
     current = traverse_root
@@ -276,9 +268,7 @@ def _prepare_dynamic_user_asset_tree(
         try:
             descriptor = os.open(
                 path,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
             metadata = os.fstat(descriptor)
             mode = stat.S_IMODE(metadata.st_mode)
@@ -294,9 +284,7 @@ def _prepare_dynamic_user_asset_tree(
             if not mode & 0o001 or mode & 0o022:
                 raise OSError("dynamic user asset directory is inaccessible")
         except OSError as exc:
-            raise SecureAccessInstallerError(
-                "secure access install directory is unsafe"
-            ) from exc
+            raise SecureAccessInstallerError("secure access install directory is unsafe") from exc
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -332,9 +320,7 @@ def _open_safe_source(
             raise OSError("source changed")
         return descriptor
     except OSError as exc:
-        raise SecureAccessInstallerError(
-            "secure access install source is unsafe"
-        ) from exc
+        raise SecureAccessInstallerError("secure access install source is unsafe") from exc
 
 
 def _validate_source_root(path: Path, *, expected_uid: int) -> None:
@@ -350,9 +336,7 @@ def _validate_source_root(path: Path, *, expected_uid: int) -> None:
         or metadata.st_uid != expected_uid
         or stat.S_IMODE(metadata.st_mode) != 0o700
     ):
-        raise SecureAccessInstallerError(
-            "secure access install source root is unsafe"
-        )
+        raise SecureAccessInstallerError("secure access install source root is unsafe")
 
 
 def _validate_bootstrap_parent(path: Path, *, expected_uid: int) -> None:
@@ -365,9 +349,7 @@ def _validate_bootstrap_parent(path: Path, *, expected_uid: int) -> None:
     try:
         metadata = BOOTSTRAP_ROOT.lstat()
     except OSError as exc:
-        raise SecureAccessInstallerError(
-            "secure access bootstrap parent is unavailable"
-        ) from exc
+        raise SecureAccessInstallerError("secure access bootstrap parent is unavailable") from exc
     if (
         not stat.S_ISDIR(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
@@ -379,10 +361,7 @@ def _validate_bootstrap_parent(path: Path, *, expected_uid: int) -> None:
 
 def _temporary_path(destination: Path) -> Path:
     if destination.suffix == ".service":
-        return (
-            destination.parent
-            / f".{destination.stem}.{uuid.uuid4().hex}.service"
-        )
+        return destination.parent / f".{destination.stem}.{uuid.uuid4().hex}.service"
     return destination.parent / f".{destination.name}.{uuid.uuid4().hex}.tmp"
 
 
@@ -426,9 +405,7 @@ def _copy_source_to_temporary(
     except OSError as exc:
         with suppress(FileNotFoundError):
             temporary.unlink()
-        raise SecureAccessInstallerError(
-            "secure access install staging failed"
-        ) from exc
+        raise SecureAccessInstallerError("secure access install staging failed") from exc
     finally:
         os.close(source_fd)
         if target_fd >= 0:
@@ -447,10 +424,7 @@ def _write_payload_to_temporary(
     try:
         descriptor = os.open(
             temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             mode,
         )
         view = memoryview(payload)
@@ -464,18 +438,14 @@ def _write_payload_to_temporary(
     except OSError as exc:
         with suppress(FileNotFoundError):
             temporary.unlink()
-        raise SecureAccessInstallerError(
-            "secure access install staging failed"
-        ) from exc
+        raise SecureAccessInstallerError("secure access install staging failed") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
 
 
 def _checkpoint_error() -> SecureAccessInstallerError:
-    return SecureAccessInstallerError(
-        "secure access checkpoint prerequisites are unsafe"
-    )
+    return SecureAccessInstallerError("secure access checkpoint prerequisites are unsafe")
 
 
 def _prepare_checkpoint_directory(path: Path, *, expected_uid: int) -> None:
@@ -616,9 +586,7 @@ def _validate_amd64_elf(prefix: bytes) -> None:
         or prefix[5] != 1
         or int.from_bytes(prefix[18:20], "little") != 62
     ):
-        raise SecureAccessInstallerError(
-            "secure access install binary architecture is invalid"
-        )
+        raise SecureAccessInstallerError("secure access install binary architecture is invalid")
 
 
 class SecureAccessInstaller:
@@ -679,10 +647,7 @@ class SecureAccessInstaller:
 
     @property
     def source_host_assets(self) -> dict[str, Path]:
-        return {
-            name: self.root / path
-            for name, path in HOST_CONTROL_SOURCE_ASSETS
-        }
+        return {name: self.root / path for name, path in HOST_CONTROL_SOURCE_ASSETS}
 
     def _validate_version(self, staged_binary: Path) -> None:
         try:
@@ -692,13 +657,9 @@ class SecureAccessInstaller:
                 check=True,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise SecureAccessInstallerError(
-                "secure access install version check failed"
-            ) from exc
+            raise SecureAccessInstallerError("secure access install version check failed") from exc
         if _VERSION_RE.match(result.stdout) is None:
-            raise SecureAccessInstallerError(
-                "secure access install version is invalid"
-            )
+            raise SecureAccessInstallerError("secure access install version is invalid")
 
     def _validate_python_runtime(
         self,
@@ -711,11 +672,13 @@ class SecureAccessInstaller:
             "sys.path.insert(0, sys.argv[1]);"
             "from cryptography.hazmat.primitives.ciphers.aead import AESGCM;"
             "import test_secure_access_manager;"
+            "import cloudflare_tunnel_manager;"
             "import public_baseline_activation;"
             "import public_baseline_manager;"
             "import public_cutover_bootstrap;"
             "import test_update_manager;"
-            "import verify_public_snapshot_cutover"
+            "import verify_public_snapshot_cutover;"
+            "import verify_web_transport"
         )
         import_root = Path(
             tempfile.mkdtemp(
@@ -1084,9 +1047,7 @@ class SecureAccessInstaller:
             or metadata.st_uid != self.expected_uid
             or stat.S_IMODE(metadata.st_mode) != 0o644
         ):
-            raise SecureAccessInstallerError(
-                "secure access install service unit is unsafe"
-            )
+            raise SecureAccessInstallerError("secure access install service unit is unsafe")
         return True
 
     def _require_inactive_static_unit(self, *, installed: bool) -> None:
@@ -1134,9 +1095,7 @@ class SecureAccessInstaller:
                 expected_uid=self.expected_uid,
             )
             if digest != self.expected_sha256:
-                raise SecureAccessInstallerError(
-                    "secure access install checksum is invalid"
-                )
+                raise SecureAccessInstallerError("secure access install checksum is invalid")
             _validate_amd64_elf(prefix)
             self._validate_version(binary_temp)
 
@@ -1166,16 +1125,10 @@ class SecureAccessInstaller:
                     commit=self.source_commit,
                     path=str(source.relative_to(self.root)),
                     sha256=asset_digest,
-                    git_mode=(
-                        "100755"
-                        if name == "sms-compose-bootstrap"
-                        else "100644"
-                    ),
+                    git_mode=("100755" if name == "sms-compose-bootstrap" else "100644"),
                 )
             if set(digests) != set(HOST_ASSET_NAMES):
-                raise SecureAccessInstallerError(
-                    "secure access install host asset set is invalid"
-                )
+                raise SecureAccessInstallerError("secure access install host asset set is invalid")
             self._validate_python_runtime(verified_assets=host_temps)
             manifest_temp = _write_payload_to_temporary(
                 serialize_host_manifest(
@@ -1291,9 +1244,7 @@ def parse_install_invocation(
     commit_index = 2
     if len(argv) == 6:
         if argv[2] != "--source-root":
-            raise SecureAccessInstallerError(
-                "secure access install invocation is blocked"
-            )
+            raise SecureAccessInstallerError("secure access install invocation is blocked")
         root = _safe_absolute_path(argv[3])
         commit_index = 4
     if (

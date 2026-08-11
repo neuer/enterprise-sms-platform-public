@@ -8,9 +8,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 UNIT = ROOT / "deploy" / "systemd" / "sms-platform.service"
 AGENT_UNIT = ROOT / "deploy" / "systemd" / "vendor-control-agent.service"
-SECURE_ACCESS_UNIT = (
-    ROOT / "deploy" / "systemd" / "sms-platform-test-secure-access.service"
-)
+SECURE_ACCESS_UNIT = ROOT / "deploy" / "systemd" / "sms-platform-test-secure-access.service"
+CLOUDFLARE_TUNNEL_UNIT = ROOT / "deploy" / "systemd" / "sms-platform-cloudflare-tunnel.service"
 HOST_ENV = ROOT / "deploy" / "systemd" / "compose.env.example"
 VENDOR_TEST_HOST_ENV = ROOT / "deploy" / "systemd" / "compose.vendor-test.env.example"
 LIFECYCLE_ENV = ROOT / "deploy" / "systemd" / "lifecycle.env.example"
@@ -319,9 +318,7 @@ def test_vendor_control_agent_allows_atomic_control_files_but_protects_code() ->
     assert "ReadOnlyPaths=-/etc/sms-platform/test-environment" not in unit
     assert "StateDirectory=sms-platform/vendor-test" in unit
     assert "StateDirectory=sms-platform/vendor-test sms-platform/test-backups" not in unit
-    writable = next(
-        line for line in unit.splitlines() if line.startswith("ReadWritePaths=")
-    )
+    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
     assert "/var/lib/sms-platform/test-backups" in writable
     assert "/opt/sms-platform/deploy/secrets" not in writable
 
@@ -387,6 +384,36 @@ def test_secure_access_unit_is_static_short_lived_and_non_privileged() -> None:
         assert forbidden.casefold() not in unit.casefold()
 
 
+def test_cloudflare_tunnel_unit_is_persistent_token_file_only_and_hardened() -> None:
+    unit = read_asset(CLOUDFLARE_TUNNEL_UNIT)
+
+    for token in (
+        "Requires=sms-platform.service",
+        "After=network-online.target sms-platform.service",
+        "DynamicUser=yes",
+        "LoadCredential=tunnel-token:/etc/sms-platform/cloudflare-tunnel-token",
+        "run --token-file %d/tunnel-token",
+        "Restart=on-failure",
+        "RestartSec=5s",
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "CapabilityBoundingSet=",
+        "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
+        "[Install]",
+        "WantedBy=multi-user.target",
+    ):
+        assert token in unit
+    for forbidden in (
+        "--token ey",
+        "EnvironmentFile=",
+        "TUNNEL_TOKEN=",
+        "0.0.0.0",
+        "docker.sock",
+    ):
+        assert forbidden.casefold() not in unit.casefold()
+
+
 def test_systemd_runbook_serializes_release_mutations_with_unit_lifecycle() -> None:
     runbook = (ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
 
@@ -402,9 +429,7 @@ def test_systemd_runbook_serializes_release_mutations_with_unit_lifecycle() -> N
 
 
 def test_vendor_test_runbook_has_deterministic_mock_only_bootstrap() -> None:
-    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(
-        encoding="utf-8"
-    )
+    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
 
     for token in (
         "compose.vendor-test.env.example",
@@ -419,9 +444,7 @@ def test_vendor_test_runbook_has_deterministic_mock_only_bootstrap() -> None:
 
 
 def test_vendor_reset_runbook_covers_runtime_revocation_and_replay_boundary() -> None:
-    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(
-        encoding="utf-8"
-    )
+    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
     deploy_readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
 
     for token in (

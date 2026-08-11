@@ -30,22 +30,19 @@ def test_contract_pins_every_host_runtime_boundary() -> None:
     )
     assert Path("/usr/local/libexec/sms-platform/cloudflared") == module.CLOUDFLARED_PATH
     assert module.SERVICE_NAME == "sms-platform-test-secure-access.service"
+    assert module.PERSISTENT_SERVICE_NAME == "sms-platform-cloudflare-tunnel.service"
     assert Path("/etc/sms-platform/test-host") == module.TEST_HOST_MARKER_PATH
     assert module.ORIGIN == "http://127.0.0.1:18080"
-    assert (
-        Path("/run/sms-platform-test-secure-access/status.json")
-        == module.STATUS_PATH
-    )
+    assert Path("/run/sms-platform-test-secure-access/status.json") == module.STATUS_PATH
     assert module.MAX_LIFETIME_SECONDS == 900
-    assert Path(
-        "/usr/local/libexec/sms-platform/test-secure-access"
-    ) == module.HOST_ASSET_ROOT
+    assert Path("/usr/local/libexec/sms-platform/test-secure-access") == module.HOST_ASSET_ROOT
     assert module.HOST_MANIFEST_PATH == module.HOST_ASSET_ROOT / "manifest.json"
     assert set(module.HOST_ASSET_NAMES) == {
         "install_test_secure_access.py",
         "test_secure_access_contract.py",
         "test_secure_access_runtime.py",
         "test_secure_access_manager.py",
+        "cloudflare_tunnel_manager.py",
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
@@ -62,8 +59,10 @@ def test_contract_pins_every_host_runtime_boundary() -> None:
         "check_public_readiness.py",
         "export_public_snapshot.py",
         "verify_public_snapshot_cutover.py",
+        "verify_web_transport.py",
         "sms-compose-bootstrap",
         "sms-platform-test-secure-access.service",
+        "sms-platform-cloudflare-tunnel.service",
         "cloudflared",
     }
 
@@ -151,10 +150,7 @@ def test_ready_state_rejects_unknown_duplicate_or_invalid_values(raw: str) -> No
 
 def test_host_manifest_round_trips_only_exact_asset_digests() -> None:
     module = contract()
-    digests = {
-        name: f"{index:064x}"
-        for index, name in enumerate(module.HOST_ASSET_NAMES, start=1)
-    }
+    digests = {name: f"{index:064x}" for index, name in enumerate(module.HOST_ASSET_NAMES, start=1)}
 
     raw = module.serialize_host_manifest(digests, source_commit="a" * 40)
 
@@ -171,10 +167,7 @@ def test_host_manifest_rejects_drifted_shape_or_digest(
     mutate: str,
 ) -> None:
     module = contract()
-    digests = {
-        name: f"{index:064x}"
-        for index, name in enumerate(module.HOST_ASSET_NAMES, start=1)
-    }
+    digests = {name: f"{index:064x}" for index, name in enumerate(module.HOST_ASSET_NAMES, start=1)}
     document = {
         "schema_version": 1,
         "source_commit": "a" * 40,
@@ -192,9 +185,7 @@ def test_host_manifest_rejects_drifted_shape_or_digest(
     else:
         name = next(iter(digests))
         raw = (
-            '{"schema_version":1,"source_commit":"'
-            + "a" * 40
-            + '","files":{'
+            '{"schema_version":1,"source_commit":"' + "a" * 40 + '","files":{'
             f'"{name}":"{digests[name]}","{name}":"{digests[name]}"'
             "}}"
         )

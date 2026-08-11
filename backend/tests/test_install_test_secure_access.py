@@ -131,6 +131,7 @@ def fixture(tmp_path: Path):
         "test_secure_access_contract.py",
         "test_secure_access_runtime.py",
         "test_secure_access_manager.py",
+        "cloudflare_tunnel_manager.py",
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
@@ -153,6 +154,7 @@ def fixture(tmp_path: Path):
         "check_public_readiness.py",
         "export_public_snapshot.py",
         "verify_public_snapshot_cutover.py",
+        "verify_web_transport.py",
     ):
         source = root / "scripts" / name
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -161,14 +163,15 @@ def fixture(tmp_path: Path):
     wrapper = root / "deploy/sms-compose"
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(0o755)
+    persistent_unit = root / "deploy/systemd/sms-platform-cloudflare-tunnel.service"
+    persistent_unit.write_text("[Service]\nExecStart=persistent\n", encoding="utf-8")
+    persistent_unit.chmod(0o644)
     source_binary = tmp_path / "upload/cloudflared-linux-amd64"
     source_binary.parent.mkdir()
     source_binary.write_bytes(amd64_elf())
     source_binary.chmod(0o644)
     binary_path = tmp_path / "installed/bin/cloudflared"
-    installed_unit = (
-        tmp_path / "installed/unit/sms-platform-test-secure-access.service"
-    )
+    installed_unit = tmp_path / "installed/unit/sms-platform-test-secure-access.service"
     host_asset_root = tmp_path / "installed/libexec/test-secure-access"
     backup_config_path = tmp_path / "installed/etc/test-update-backup.json"
     backup_key_path = tmp_path / "installed/etc/test-update-backup-key"
@@ -264,13 +267,11 @@ def test_first_install_status_uses_fixed_manager_before_checkout_update() -> Non
     )[0]
 
     assert (
-        "/usr/local/libexec/sms-platform/test-secure-access/"
-        "test_secure_access_manager.py status"
+        "/usr/local/libexec/sms-platform/test-secure-access/test_secure_access_manager.py status"
     ) in install_section
     assert "/usr/local/sbin/sms-compose secure-access status" not in install_section
     assert (
-        'SOURCE_ROOT="/var/lib/sms-platform/'
-        'test-secure-access-bootstrap/source-$TARGET_COMMIT"'
+        'SOURCE_ROOT="/var/lib/sms-platform/test-secure-access-bootstrap/source-$TARGET_COMMIT"'
     ) in install_section
     assert "deploy/scripts deploy/sms-compose" not in install_section
     assert "deploy/scripts/install_test_secure_access.py" in install_section
@@ -284,9 +285,7 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         maxsplit=1,
     )[0]
 
-    archive_end = install_section.index(
-        'sudo /bin/tar -x -C "$SOURCE_ROOT"'
-    )
+    archive_end = install_section.index('sudo /bin/tar -x -C "$SOURCE_ROOT"')
     installer_start = install_section.rindex(
         '"$SOURCE_ROOT/deploy/scripts/install_test_secure_access.py"'
     )
@@ -298,6 +297,7 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/test_secure_access_contract.py",
         "deploy/scripts/test_secure_access_runtime.py",
         "deploy/scripts/test_secure_access_manager.py",
+        "deploy/scripts/cloudflare_tunnel_manager.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
@@ -313,13 +313,12 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
         "scripts/verify_public_snapshot_cutover.py",
+        "scripts/verify_web_transport.py",
         "deploy/systemd/sms-platform-test-secure-access.service",
+        "deploy/systemd/sms-platform-cloudflare-tunnel.service",
     ):
         assert f'"$SOURCE_ROOT/{path}"' in normalized_section
-    assert (
-        'sudo chmod 0755 "$SOURCE_ROOT/deploy/sms-compose"'
-        in normalized_section
-    )
+    assert 'sudo chmod 0755 "$SOURCE_ROOT/deploy/sms-compose"' in normalized_section
 
 
 def test_host_control_source_assets_match_fixed_git_mode_contract() -> None:
@@ -373,11 +372,7 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     digests = parsed.files
     assert set(digests) == set(HOST_ASSET_NAMES)
     for name in HOST_ASSET_NAMES:
-        path = (
-            binary
-            if name == "cloudflared"
-            else installer.host_asset_root / name
-        )
+        path = binary if name == "cloudflared" else installer.host_asset_root / name
         assert path.is_file()
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digests[name]
         if name == "sms-compose-bootstrap":
@@ -396,11 +391,13 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     assert import_root.name.startswith(".python-import-")
     assert "sys.version_info < (3, 11)" in python_runtime_command[3]
     assert "import test_secure_access_manager" in python_runtime_command[3]
+    assert "import cloudflare_tunnel_manager" in python_runtime_command[3]
     assert "import public_baseline_activation" in python_runtime_command[3]
     assert "import public_baseline_manager" in python_runtime_command[3]
     assert "import public_cutover_bootstrap" in python_runtime_command[3]
     assert "import test_update_manager" in python_runtime_command[3]
     assert "import verify_public_snapshot_cutover" in python_runtime_command[3]
+    assert "import verify_web_transport" in python_runtime_command[3]
     version_command = next(argv for argv in commands if argv[-1:] == ("--version",))
     assert Path(version_command[0]).parent == binary.parent
     assert version_command[0] != str(source)
@@ -410,18 +407,13 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
         "--now",
         "sms-platform-test-secure-access.service",
     ) not in commands
-    verify_command = next(
-        argv for argv in commands if argv[:2] == ("systemd-analyze", "verify")
-    )
+    verify_command = next(argv for argv in commands if argv[:2] == ("systemd-analyze", "verify"))
     assert Path(verify_command[2]).suffix == ".service"
     assert ("systemctl", "daemon-reload") in commands
     from test_secure_access_contract import parse_test_host_marker
 
     assert installer.marker_path.stat().st_mode & 0o777 == 0o600
-    assert (
-        parse_test_host_marker(installer.marker_path.read_text(encoding="utf-8"))
-        is None
-    )
+    assert parse_test_host_marker(installer.marker_path.read_text(encoding="utf-8")) is None
     forbidden_actions = {("systemctl", "start"), ("systemctl", "enable")}
     assert not any(argv[:2] in forbidden_actions for argv in commands)
 
@@ -437,8 +429,7 @@ def test_installer_bootstraps_encrypted_checkpoint_prerequisites_once(
     key = installer.backup_key_path
     output = installer.backup_output_root
     assert config.read_text(encoding="utf-8") == (
-        '{"database":"sms","key_file":"'
-        f'{key}","output_root":"{output}","schema_version":1}}\n'
+        f'{{"database":"sms","key_file":"{key}","output_root":"{output}","schema_version":1}}\n'
     )
     assert config.stat().st_mode & 0o777 == 0o600
     assert key.stat().st_mode & 0o777 == 0o600
@@ -831,10 +822,7 @@ def test_installer_repairs_directory_durability_after_postcommit_fsync_failure(
 
     def fail_first_directory_fsync(path: Path) -> None:
         nonlocal attempts
-        if (
-            path == installer.backup_config_path.parent
-            and installer.backup_config_path.exists()
-        ):
+        if path == installer.backup_config_path.parent and installer.backup_config_path.exists():
             attempts += 1
             if attempts == 1:
                 raise OSError("injected directory fsync failure")
@@ -937,10 +925,7 @@ def test_installer_never_imports_host_modules_before_every_commit_blob_is_verifi
         installer.run()
 
     assert verifier.calls == 1
-    assert not any(
-        argv[:2] == ("/usr/bin/python3", "-I")
-        for argv, _check in runner.calls
-    )
+    assert not any(argv[:2] == ("/usr/bin/python3", "-I") for argv, _check in runner.calls)
 
 
 def test_installer_rejects_existing_unit_symlink_before_systemd_mutation(
@@ -1209,13 +1194,7 @@ def test_installer_cli_accepts_fixed_binary_and_absolute_staged_source_root() ->
         ],
         euid=0,
     ) == (
-        Path(
-            "/var/lib/sms-platform/test-secure-access-bootstrap/"
-            "cloudflared-linux-amd64"
-        ),
-        Path(
-            "/var/lib/sms-platform/test-secure-access-bootstrap/"
-            f"source-{'a' * 40}"
-        ),
+        Path("/var/lib/sms-platform/test-secure-access-bootstrap/cloudflared-linux-amd64"),
+        Path(f"/var/lib/sms-platform/test-secure-access-bootstrap/source-{'a' * 40}"),
         "a" * 40,
     )

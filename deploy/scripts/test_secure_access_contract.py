@@ -11,11 +11,10 @@ from pathlib import Path
 from typing import Any
 
 CLOUDFLARED_VERSION = "2026.7.2"
-CLOUDFLARED_SHA256 = (
-    "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd"
-)
+CLOUDFLARED_SHA256 = "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd"
 CLOUDFLARED_PATH = Path("/usr/local/libexec/sms-platform/cloudflared")
 SERVICE_NAME = "sms-platform-test-secure-access.service"
+PERSISTENT_SERVICE_NAME = "sms-platform-cloudflare-tunnel.service"
 ORIGIN = "http://127.0.0.1:18080"
 STATUS_PATH = Path("/run/sms-platform-test-secure-access/status.json")
 TEST_HOST_MARKER_PATH = Path("/etc/sms-platform/test-host")
@@ -27,6 +26,7 @@ HOST_CONTROL_SOURCE_ASSETS = (
     ("test_secure_access_contract.py", "deploy/scripts/test_secure_access_contract.py"),
     ("test_secure_access_runtime.py", "deploy/scripts/test_secure_access_runtime.py"),
     ("test_secure_access_manager.py", "deploy/scripts/test_secure_access_manager.py"),
+    ("cloudflare_tunnel_manager.py", "deploy/scripts/cloudflare_tunnel_manager.py"),
     ("vendor_test_files.py", "deploy/scripts/vendor_test_files.py"),
     ("check_test_update_migration.py", "deploy/scripts/check_test_update_migration.py"),
     ("run_with_lifecycle_lock.py", "deploy/scripts/run_with_lifecycle_lock.py"),
@@ -55,8 +55,13 @@ HOST_CONTROL_SOURCE_ASSETS = (
         "verify_public_snapshot_cutover.py",
         "scripts/verify_public_snapshot_cutover.py",
     ),
+    ("verify_web_transport.py", "scripts/verify_web_transport.py"),
     ("sms-compose-bootstrap", "deploy/sms-compose"),
     (SERVICE_NAME, f"deploy/systemd/{SERVICE_NAME}"),
+    (
+        PERSISTENT_SERVICE_NAME,
+        f"deploy/systemd/{PERSISTENT_SERVICE_NAME}",
+    ),
 )
 HOST_CONTROL_SOURCE_PATHS = tuple(path for _name, path in HOST_CONTROL_SOURCE_ASSETS)
 HOST_ASSET_NAMES = (
@@ -64,9 +69,7 @@ HOST_ASSET_NAMES = (
     "cloudflared",
 )
 
-_URL_RE = re.compile(
-    r"https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.]trycloudflare[.]com"
-)
+_URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.]trycloudflare[.]com")
 _STATE_FIELDS = {
     "schema_version",
     "status",
@@ -127,9 +130,7 @@ def _parse_timestamp(value: object) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise SecureAccessContractError(
-            "secure access state has invalid timestamp"
-        ) from exc
+        raise SecureAccessContractError("secure access state has invalid timestamp") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SecureAccessContractError("secure access state has invalid timestamp")
     return parsed
@@ -144,9 +145,7 @@ def _validate_window(started_at: datetime, expires_at: datetime) -> None:
     ):
         raise SecureAccessContractError("secure access state has invalid timestamp")
     lifetime = expires_at.astimezone(UTC) - started_at.astimezone(UTC)
-    if lifetime <= timedelta(0) or lifetime > timedelta(
-        seconds=MAX_LIFETIME_SECONDS
-    ):
+    if lifetime <= timedelta(0) or lifetime > timedelta(seconds=MAX_LIFETIME_SECONDS):
         raise SecureAccessContractError("secure access state has invalid lifetime")
 
 
@@ -203,9 +202,7 @@ def _validate_host_digests(value: object) -> dict[str, str]:
         raise SecureAccessContractError("secure access host manifest is invalid")
     files = value
     if any(
-        type(name) is not str
-        or type(digest) is not str
-        or _SHA256_RE.fullmatch(digest) is None
+        type(name) is not str or type(digest) is not str or _SHA256_RE.fullmatch(digest) is None
         for name, digest in files.items()
     ):
         raise SecureAccessContractError("secure access host manifest is invalid")
@@ -222,15 +219,18 @@ def serialize_host_manifest(
     files = _validate_host_digests(dict(digests))
     if type(source_commit) is not str or _COMMIT_RE.fullmatch(source_commit) is None:
         raise SecureAccessContractError("secure access host manifest is invalid")
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "source_commit": source_commit,
-            "files": files,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ) + "\n"
+    return (
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": source_commit,
+                "files": files,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def parse_host_manifest(raw: object) -> HostManifest:
@@ -241,9 +241,7 @@ def parse_host_manifest(raw: object) -> HostManifest:
     try:
         document = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except (json.JSONDecodeError, SecureAccessContractError) as exc:
-        raise SecureAccessContractError(
-            "secure access host manifest is invalid"
-        ) from exc
+        raise SecureAccessContractError("secure access host manifest is invalid") from exc
     if (
         type(document) is not dict
         or set(document) != {"schema_version", "source_commit", "files"}
@@ -262,11 +260,14 @@ def parse_host_manifest(raw: object) -> HostManifest:
 def serialize_test_host_marker() -> str:
     """生成与 live activation 完全独立的固定测试主机标记。"""
 
-    return json.dumps(
-        _TEST_HOST_MARKER,
-        separators=(",", ":"),
-        sort_keys=True,
-    ) + "\n"
+    return (
+        json.dumps(
+            _TEST_HOST_MARKER,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def parse_test_host_marker(raw: object) -> None:
@@ -277,8 +278,6 @@ def parse_test_host_marker(raw: object) -> None:
     try:
         document = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except (json.JSONDecodeError, SecureAccessContractError) as exc:
-        raise SecureAccessContractError(
-            "secure access test host marker is invalid"
-        ) from exc
+        raise SecureAccessContractError("secure access test host marker is invalid") from exc
     if type(document) is not dict or document != _TEST_HOST_MARKER:
         raise SecureAccessContractError("secure access test host marker is invalid")
