@@ -135,6 +135,20 @@ def test_uat_25_checks_export_filter_shape_without_scanning_hmac_digits() -> Non
     assert "creator_account_id IS NOT NULL AND scope_resolved" in source
 
 
+def test_uat_24_checks_ciphertext_at_rest_and_masked_authorized_read() -> None:
+    source = (SCRIPTS / "e2e_api.py").read_text(encoding="utf-8")
+    case_24 = source.split("    def case_24(self) -> None:", maxsplit=1)[1].split(
+        "\n    def case_", maxsplit=1
+    )[0]
+
+    assert "content='[encrypted]'" in case_24
+    assert "display_content_enc IS NOT NULL" in case_24
+    assert "octet_length(display_content_enc)>32" in case_24
+    assert 'stored_content = detail.get("content")' in case_24
+    assert '"******" not in stored_content' in case_24
+    assert "content LIKE '%******%'" not in case_24
+
+
 def test_compose_probe_uses_argv_variables_and_safe_scalar_counts(tmp_path: Path) -> None:
     runner = FakeRunner([b"cancelled\n", b"7\n"])
     probe = ComposeProbe(
