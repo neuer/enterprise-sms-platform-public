@@ -291,6 +291,7 @@ class VendorTestUatService:
         self,
         *,
         operation_id: str,
+        biz_id: str | None = None,
         recipient_id: int,
         app_id: int,
         category: str,
@@ -351,7 +352,7 @@ class VendorTestUatService:
                             actor=principal,
                             is_test=True,
                             remark=remark,
-                            biz_id=vendor_test_uat_biz_id(operation_id),
+                            biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
                             protected_mobiles=(
                                 ProtectedPhone(
                                     phone_enc=recipient.phone_enc,

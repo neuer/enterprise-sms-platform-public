@@ -34,6 +34,7 @@ from app.services.report_repository import SqlReportRepository
 from app.services.resend import SqlResendRepository
 from app.services.scheduling_repository import SqlSchedulingRepository
 from app.services.sensitive_repository import SqlSensitiveWordRepository
+from app.services.template_repository import SqlTemplateRepository
 from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
 
@@ -157,8 +158,9 @@ def bind_engine(
 def protected_report() -> ProtectedReport:
     return ProtectedReport(
         event_key="c" * 64,
-        vendor_task_id="task-1",
-        custom_id="custom-1",
+        vendor_task_id="d" * 64,
+        custom_id="e" * 64,
+        match_custom_id="custom-1",
         phone_enc=b"ciphertext",
         phone_hmac="a" * 64,
         phone_mask="138****8000",
@@ -180,7 +182,15 @@ async def test_template_renderer_binds_authoritative_department(
             FakeResult(
                 rows=[
                     {
-                        "content": "尊敬的{1}",
+                        "content_enc": content_crypto().encrypt_bound_packed_text(
+                            "尊敬的{1}",
+                            EncryptionContext(
+                                domain="sms-template-content",
+                                table="sms_template",
+                                column="content_enc",
+                                object_id="17",
+                            ),
+                        ),
                         "var_specs": [{"pos": 1, "max_len": 10}],
                     }
                 ]
@@ -190,13 +200,113 @@ async def test_template_renderer_binds_authoritative_department(
     engine = FakeEngine(connection)
     monkeypatch.setattr(pipeline_repository_module, "database_engine", lambda _url: engine)
     renderer = SqlTemplateRenderer(
-        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused"))
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        content_crypto(),
     )
 
     assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
     sql, params = connection.calls[0]
     assert "dept=:dept" in sql
     assert params == {"template_id": 17, "dept": "平台技术部"}
+
+
+@pytest.mark.asyncio
+async def test_template_repository_update_persists_only_object_bound_ciphertext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    encrypted = crypto.encrypt_bound_packed_text(
+        "验证码{1}",
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    )
+    encrypted_name = crypto.encrypt_bound_packed_text(
+        "验证码",
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    )
+    outbox_id = UUID("20000000-0000-4000-8000-000000000017")
+    connection = FakeConnection(
+        [
+            FakeResult(scalar=17),
+            FakeResult(),
+            FakeResult(
+                rows=[
+                    {
+                        "id": outbox_id,
+                        "event_type": "template.bind",
+                        "aggregate_type": "sms_template",
+                        "aggregate_id": "17",
+                        "task_name": "app.tasks.bind_template",
+                        "queue": "realtime",
+                        "args": [17],
+                        "max_attempts": 1,
+                        "correlation_id": None,
+                    }
+                ]
+            ),
+            FakeResult(
+                rows=[
+                    {
+                        "id": 17,
+                        "name_enc": encrypted_name,
+                        "content_enc": encrypted,
+                        "var_specs": [{"pos": 1, "max_len": 6}],
+                        "dept": "平台技术部",
+                        "vendor_template_id": None,
+                        "vendor_state": "pending",
+                        "vendor_reject_reason": None,
+                    }
+                ]
+            ),
+        ]
+    )
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    record = await repository.update(
+        17,
+        name="验证码",
+        content="验证码{1}",
+        var_specs=[{"pos": 1, "max_len": 6}],
+        actor="operator01",
+    )
+
+    assert record is not None and record.content == "验证码{1}"
+    update_sql, update_params = connection.calls[0]
+    assert "content='[encrypted]'" in update_sql
+    assert "验证码{1}" not in str(update_params)
+    assert "验证码" not in str(update_params)
+    assert isinstance(update_params, dict)
+    assert crypto.decrypt_bound_packed_text(
+        update_params["content_enc"],
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    ) == "验证码{1}"
+    assert crypto.decrypt_bound_packed_text(
+        update_params["name_enc"],
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    ) == "验证码"
 
 
 @pytest.mark.asyncio
@@ -346,7 +456,7 @@ async def test_import_repository_persists_reserves_and_scopes_removed_file(
         .read_text(encoding="utf-8")
         .startswith("phone_mask,source_row,reason")
     )
-    assert connection.calls[0][1]["filename"] == "phones.csv"  # type: ignore[index]
+    assert connection.calls[0][1]["filename"] == "upload.csv"  # type: ignore[index]
     assert connection.calls[0][1]["expire_hours"] == 6  # type: ignore[index]
     assert "make_interval" in connection.calls[0][0]
     assert "13800138000" not in str(connection.calls)
@@ -686,6 +796,13 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "CAST(:phone_hmac AS char(64))" in unmatched_sql
     assert "CAST(:report_status AS smallint)" in unmatched_sql
     assert "CAST(:report_time AS timestamptz)" in unmatched_sql
+
+    connection = FakeConnection([FakeResult(scalars=["known000000000000000000000000001"])])
+    bind_engine(monkeypatch, repository, connection)
+    assert await repository.filter_known_custom_ids(
+        ["known000000000000000000000000001", "untrusted"]
+    ) == ["known000000000000000000000000001"]
+    assert "FROM sms_chunk" in connection.calls[0][0]
 
 
 @pytest.mark.asyncio

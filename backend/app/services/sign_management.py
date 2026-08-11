@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.core.sensitive_text import mask_phone_in_text
 from app.services.sign import format_sign_name
 
 
@@ -120,7 +121,9 @@ class SignManagementService:
                 raise ValueError("invalid GetSignState item")
             local_id = vendor_to_local.get(vendor_id)
             if local_id is not None:
-                states.append((local_id, map_vendor_sign_state(check_type), reason))
+                states.append(
+                    (local_id, map_vendor_sign_state(check_type), mask_phone_in_text(reason))
+                )
         return await self.repository.apply_states(states)
 
     async def bind(self, sign_id: int) -> int:

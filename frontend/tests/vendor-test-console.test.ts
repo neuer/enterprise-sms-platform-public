@@ -363,6 +363,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(JSON.parse(String(send?.[1].body))).toEqual({
       recipient_id: 9,
       app_id: 7,
+      biz_id: expect.stringMatching(/^[0-9a-f]{32}$/),
       category: "notice",
       content: "维护通知",
       consent_confirmed: false,
@@ -372,6 +373,68 @@ describe("系统配置页真实联调控制台", () => {
     expect(wrapper.text()).toContain("UAT-001")
     expect(uatPolls).toBe(1)
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
+    wrapper.unmount()
+  })
+
+  it("真实 UAT 响应不明确时重试复用同一浏览器幂等键", async () => {
+    const bodies: Array<{ biz_id: string }> = []
+    const fetch = consoleFetch(
+      { ...baseStatus, mode: "controlled" },
+      (url, init) => {
+        if (url.endsWith("/vendor-test/messages/preview")) {
+          return response({
+            final_length: 4,
+            est_segments: 1,
+            quota_cost: 1,
+            segment_parts: [{ used: 4, capacity: 70, partial: false }],
+            next_segment_at: 71,
+            approval_required: false,
+            unsubscribe_appended: false,
+            deferred_reason: null,
+          })
+        }
+        if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
+          bodies.push(JSON.parse(String(init.body)) as { biz_id: string })
+          if (bodies.length === 1) {
+            return response({ code: "AUTH_SESSION_UNAVAILABLE", message: "结果不明确" }, 503)
+          }
+          return response({
+            operation_id: "00000000-0000-4000-8000-000000000199",
+            operation_type: "uat_send",
+            status: "succeeded",
+            safe_code: null,
+            vendor_code: null,
+            batch_no: "UAT-RETRY-001",
+            checkpoint_id: null,
+            requested_at: "2026-07-17T09:31:00+08:00",
+            completed_at: "2026-07-17T09:31:01+08:00",
+          })
+        }
+        return undefined
+      },
+    )
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mountConsole()
+    await flushPromises()
+    await wrapper.getComponent("[data-testid='uat-recipient']").setValue(9)
+    await wrapper.getComponent("[data-testid='uat-app']").setValue(7)
+    await wrapper.get("[data-testid='uat-content']").setValue("通知")
+    await wrapper.get("[data-testid='uat-preview']").trigger("click")
+    await flushPromises()
+
+    await wrapper.get("[data-testid='uat-send']").trigger("click")
+    await flushPromises()
+    const pendingKey = sessionStorage.getItem("sms-platform:vendor-test:uat-biz-id:v1")
+    expect(pendingKey).toMatch(/^[0-9a-f]{32}$/)
+    await wrapper.get("[data-testid='uat-send']").trigger("click")
+    await flushPromises()
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0].biz_id).toMatch(/^[0-9a-f]{32}$/)
+    expect(bodies[1].biz_id).toBe(bodies[0].biz_id)
+    expect(bodies[1].biz_id).toBe(pendingKey)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:uat-biz-id:v1")).toBeNull()
     wrapper.unmount()
   })
 
@@ -475,6 +538,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(JSON.parse(String(sendCall?.[1].body))).toEqual({
       recipient_id: 9,
       app_id: 7,
+      biz_id: expect.stringMatching(/^[0-9a-f]{32}$/),
       category: "notice",
       template_id: 31,
       template_params: ["今日 22:00"],

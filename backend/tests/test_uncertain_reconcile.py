@@ -63,7 +63,11 @@ async def test_reconcile_only_transitions_after_decrypted_custom_id_confirmation
     chunk = UncertainChunk(3, "custom-1", now - timedelta(minutes=5))
     repository = FakeRepository([chunk], [raw(service, "custom-1")])
     assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 1
-    assert repository.resolved == [(3, "task-9")]
+    assert len(repository.resolved) == 1
+    resolved_chunk, resolved_task = repository.resolved[0]
+    assert resolved_chunk == 3
+    assert len(resolved_task) == 64
+    assert "task-9" not in resolved_task
     assert repository.alerts == []
 
 

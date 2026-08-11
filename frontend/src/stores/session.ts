@@ -12,6 +12,7 @@ import {
 } from "../api/auth"
 import {
   clearAccessSession,
+  clearRefreshTabBinding,
   getAccessToken,
   getSessionUser,
   setAccessSession,
@@ -22,6 +23,15 @@ const USER_KEY = "sms_user"
 const CHANGE_TOKEN_KEY = "sms_change_token"
 const CHANGE_TOKEN_EXPIRES_AT_KEY = "sms_change_token_expires_at"
 export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
+
+function broadcastSessionClear(): void {
+  try {
+    localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
+    localStorage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
+  } catch {
+    // 当前标签页仍由服务端权威会话保护；受限存储环境无法通知兄弟标签页。
+  }
+}
 
 function clearLegacyPersistence(): void {
   localStorage.removeItem(TOKEN_KEY)
@@ -103,15 +113,14 @@ export const useSessionStore = defineStore("session", {
     clear() {
       clearLegacyPersistence()
       this.resetIdentity()
+      clearRefreshTabBinding()
     },
     clearAllTabs() {
       this.clear()
       try {
         window.dispatchEvent(new Event("sms:session-clearing"))
-        localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
-        localStorage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
-      } catch {
-        // 当前标签页仍已清理；受限存储环境由服务端 JWT 撤销继续 fail closed。
+      } finally {
+        broadcastSessionClear()
       }
     },
     restore() {
@@ -124,7 +133,8 @@ export const useSessionStore = defineStore("session", {
       const memoryToken = getAccessToken()
       const memoryUser = getSessionUser()
       if (!memoryToken && (!token || !rawUser)) {
-        this.clear()
+        clearLegacyPersistence()
+        this.resetIdentity()
         return
       }
       if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
@@ -166,8 +176,7 @@ export const useSessionStore = defineStore("session", {
     > {
       const response = await loginRequest(providerCode, username, password)
       if ("next_action" in response) {
-        clearLegacyPersistence()
-        this.resetIdentity()
+        this.clear()
         return {
           nextAction: "change_password",
           changeToken: response.change_token,
@@ -175,6 +184,8 @@ export const useSessionStore = defineStore("session", {
         }
       }
       this.apply(response.token, response.user)
+      // 登录会覆盖浏览器级 Refresh Cookie；兄弟标签页必须销毁旧主体。
+      broadcastSessionClear()
       return { nextAction: "authenticated" }
     },
     async changePassword(currentPassword: string, newPassword: string) {

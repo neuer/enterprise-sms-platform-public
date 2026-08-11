@@ -1,7 +1,11 @@
 import { createPinia, setActivePinia } from "pinia"
 import { beforeEach, vi } from "vitest"
 
-import { clearAccessSession } from "../src/api/sessionTokens"
+import {
+  clearAccessSession,
+  clearRefreshTabBinding,
+  REFRESH_TAB_ID_KEY,
+} from "../src/api/sessionTokens"
 import { useSessionStore } from "../src/stores/session"
 
 function response(body: unknown, status = 200) {
@@ -28,6 +32,7 @@ describe("Provider 与 JWT 会话", () => {
     localStorage.clear()
     sessionStorage.clear()
     clearAccessSession()
+    clearRefreshTabBinding()
     vi.unstubAllGlobals()
     setActivePinia(createPinia())
   })
@@ -51,6 +56,7 @@ describe("Provider 与 JWT 会话", () => {
   })
 
   it("登录后保存稳定账号摘要与 Bearer token", async () => {
+    const storageSignal = vi.spyOn(Storage.prototype, "setItem")
     const fetch = vi.fn().mockResolvedValue(
       response({
         token: "jwt-token",
@@ -70,13 +76,14 @@ describe("Provider 与 JWT 会话", () => {
       expect.objectContaining({
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider_code: "local",
-          username: "admin",
-          password: "Temp@Password123",
-        }),
       }),
     )
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toMatchObject({
+      provider_code: "local",
+      username: "admin",
+      password: "Temp@Password123",
+      tab_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
     expect(session.isAuthenticated).toBe(true)
     expect(session.accountId).toBe(8)
     expect(session.providerCode).toBe("local")
@@ -84,8 +91,10 @@ describe("Provider 与 JWT 会话", () => {
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
+    expect(sessionStorage.getItem(REFRESH_TAB_ID_KEY)).toMatch(/^[0-9a-f]{32}$/)
     expect(localStorage.getItem("sms_token")).toBeNull()
     expect(localStorage.getItem("sms_user")).toBeNull()
+    expect(storageSignal).toHaveBeenCalledWith("sms_session_clear", expect.any(String))
   })
 
   it("首次登录只把 change token 返回给调用组件且不写任何浏览器存储", async () => {

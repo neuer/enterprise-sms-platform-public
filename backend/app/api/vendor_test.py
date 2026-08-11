@@ -33,6 +33,7 @@ from app.core.errors import (
     internal_error_handler,
 )
 from app.core.runtime_resources import redis_client
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.billing_preview import BillingPreview
 from app.services.crypto import CryptoService
 from app.services.vendor_control_client import (
@@ -275,6 +276,7 @@ class UatMessageRequestModel(StrictModel):
 
     recipient_id: int = Field(gt=0)
     app_id: int = Field(gt=0)
+    biz_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     category: Literal["verify", "notice", "market"]
     content: str | None = Field(default=None, min_length=1, max_length=500)
     template_id: int | None = Field(default=None, gt=0)
@@ -285,6 +287,12 @@ class UatMessageRequestModel(StrictModel):
     sign_name: str | None = Field(default=None, max_length=64)
     consent_confirmed: bool = False
     remark: str | None = Field(default=None, max_length=200)
+
+    @field_validator("biz_id")
+    @classmethod
+    def validate_biz_id(cls, value: str) -> str:
+        reject_phone_in_text(value, field_name="biz_id")
+        return value
 
     @model_validator(mode="after")
     def content_or_template(self) -> UatMessageRequestModel:
@@ -1085,6 +1093,7 @@ async def send_uat_message(
     try:
         record = await service.send(
             operation_id=operation_id,
+            biz_id=payload.biz_id,
             recipient_id=payload.recipient_id,
             app_id=payload.app_id,
             category=payload.category,

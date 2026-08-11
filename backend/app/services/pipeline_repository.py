@@ -15,6 +15,8 @@ from app.core.runtime_resources import database_engine, redis_client
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.content_protection import decrypt_template_content
+from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
@@ -516,8 +518,18 @@ class SqlPipelineStore:
 class SqlTemplateRenderer:
     """只渲染厂商已审核通过的模板。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
+
+    def _crypto(self) -> CryptoService:
+        if self.crypto is None:
+            self.crypto = CryptoService.from_settings(self.settings)
+        return self.crypto
 
     async def render(
         self,
@@ -529,7 +541,7 @@ class SqlTemplateRenderer:
             result = await connection.execute(
                 text(
                     """
-                        SELECT content, var_specs FROM sms_template
+                        SELECT content_enc, var_specs FROM sms_template
                         WHERE id=:template_id AND dept=:dept
                           AND vendor_state='approved'
                         """
@@ -540,7 +552,7 @@ class SqlTemplateRenderer:
             if row is None:
                 raise ValueError("模板不存在或尚未审核通过")
             return render_template(
-                str(row["content"]),
+                decrypt_template_content(self._crypto(), row["content_enc"], template_id),
                 cast(list[dict[str, object]], row["var_specs"] or []),
                 params,
             )

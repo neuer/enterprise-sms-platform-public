@@ -295,6 +295,18 @@ async def test_usage_facts_release_rebuild_rotation_and_drift_are_recoverable() 
             quota_cost=2,
         )
         batch_ids.append(first_batch_id)
+        assert not await service.request_unlinked_release(
+            first.reservation_id,
+            event_id=f"usage:{first.reservation_id}:ambiguous-save",
+        )
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT state FROM usage_reservation WHERE id=:id"),
+                    {"id": first.reservation_id},
+                )
+                == "committed"
+            )
 
         # 迁移当天跨 HMAC 版本的历史记录可能先形成分裂主体；新请求须原子归并。
         split_subject_id = uuid4()

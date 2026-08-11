@@ -30,6 +30,7 @@ REQUIRED_APPS = frozenset({"app-iam", "app-oa", "app-mkt"})
 SAFE_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_DATABASE_VALUE = re.compile(r"^[A-Za-z0-9_.:@+\-]+$")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+TAB_ID = "00000000000000000000000000000001"
 
 
 class UatFailure(RuntimeError):
@@ -430,6 +431,7 @@ class UatSuite:
                 "provider_code": "ad",
                 "username": username,
                 "password": self.mock_password,
+                "tab_id": TAB_ID,
             },
         )
         data = self._expect("00", response, 200)
@@ -1600,7 +1602,7 @@ class UatSuite:
         time.sleep(2.2)
         self._trigger_job("20", "poll_report")
 
-        def callback_task() -> dict[str, Any] | None:
+        def callback_tasks() -> list[dict[str, Any]]:
             page = self._expect(
                 "20",
                 self._request(
@@ -1612,19 +1614,27 @@ class UatSuite:
                 200,
             )
             items = page.get("items")
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict) and item.get("batch_no") == batch_no:
-                        return item
+            if not isinstance(items, list):
+                return []
+            return [
+                item
+                for item in items
+                if isinstance(item, dict) and item.get("batch_no") == batch_no
+            ]
+
+        def callback_task(expected_task_id: int | None = None) -> dict[str, Any] | None:
+            for item in callback_tasks():
+                if expected_task_id is None or item.get("id") == expected_task_id:
+                    return item
             return None
 
-        task = wait_until("20", callback_task, timeout_s=15, interval_s=0.5)
+        task = wait_until("20-callback-task", callback_task, timeout_s=15, interval_s=0.5)
         task_id = task.get("id")
         if not isinstance(task_id, int):
             raise UatFailure("UAT-20 callback task id missing")
 
         def callback_state() -> dict[str, Any] | None:
-            return callback_task()
+            return callback_task(task_id)
 
         def retry_ready(expected_retry_count: int) -> Callable[[], dict[str, Any] | None]:
             def predicate() -> dict[str, Any] | None:
@@ -1638,7 +1648,7 @@ class UatSuite:
         self._trigger_job("20", "dispatch_callbacks")
         for retry_count in range(1, 6):
             wait_until(
-                "20",
+                f"20-retry-{retry_count}",
                 retry_ready(retry_count),
                 timeout_s=15,
                 interval_s=0.25,
@@ -1659,7 +1669,7 @@ class UatSuite:
         )
         self._trigger_job("20", "dispatch_callbacks")
         wait_until(
-            "20",
+            "20-dead",
             lambda: (
                 current
                 if (current := callback_state()) is not None and current.get("status") == "dead"
@@ -1669,7 +1679,7 @@ class UatSuite:
             interval_s=0.25,
         )
         wait_until(
-            "20",
+            "20-alert",
             lambda: self._alerts("20", "callback_dead") or None,
             timeout_s=15,
             interval_s=0.25,
@@ -1685,16 +1695,41 @@ class UatSuite:
             200,
         )
         self._trigger_job("20", "dispatch_callbacks")
-        wait_until(
-            "20",
-            lambda: (
-                current
-                if (current := callback_state()) is not None and current.get("status") == "done"
-                else None
-            ),
-            timeout_s=15,
-            interval_s=0.25,
-        )
+        try:
+            wait_until(
+                "20-done",
+                lambda: (
+                    current
+                    if (current := callback_state()) is not None
+                    and current.get("status") == "done"
+                    else None
+                ),
+                timeout_s=15,
+                interval_s=0.25,
+            )
+        except UatFailure as error:
+            state_keys = (
+                "id",
+                "event",
+                "status",
+                "retry_count",
+                "last_http_code",
+                "last_error",
+                "stalled",
+            )
+            states = [
+                {key: item.get(key) for key in state_keys}
+                for item in callback_tasks()
+            ]
+            mock = self.mock_state()
+            mock_summary = {
+                key: mock.get(key)
+                for key in ("callback_failures", "callback_status", "callback_count")
+            }
+            raise UatFailure(
+                f"{error} states={json.dumps(states, ensure_ascii=False, sort_keys=True)} "
+                f"mock={json.dumps(mock_summary, sort_keys=True)}"
+            ) from None
         callbacks_response = self._request(self.mock, "GET", "/_mock/callbacks")
         if callbacks_response.status != 200 or not isinstance(callbacks_response.data, list):
             raise UatFailure("UAT-20 callback evidence missing")
@@ -1768,7 +1803,7 @@ class UatSuite:
 
     def case_25(self) -> None:
         phone = self.phone(25, 0)
-        custom_id = f"legacy-{self.run_id}"
+        custom_id = f"legacy{self.run_id}"
         self._mock_config(
             "25",
             {
@@ -1808,10 +1843,12 @@ class UatSuite:
         if (
             self._probe().psql_count(
                 "SELECT count(*) FROM unmatched_report "
-                "WHERE custom_id=CAST(:'custom_id' AS varchar(64)) "
+                "WHERE report_status=1 AND report_desc='INJECTED' "
+                "AND phone_mask ~ '^1[0-9]{2}\\*{4}[0-9]{4}$' "
+                "AND vendor_task_id ~ '^[0-9a-f]{64}$' "
+                "AND custom_id ~ '^[0-9a-f]{64}$' "
                 "AND phone_enc IS NOT NULL AND phone_hmac IS NOT NULL "
-                "AND phone_mask IS NOT NULL AND key_version IS NOT NULL",
-                custom_id=custom_id,
+                "AND key_version IS NOT NULL"
             )
             != 1
         ):

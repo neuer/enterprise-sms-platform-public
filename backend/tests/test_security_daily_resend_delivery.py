@@ -5,6 +5,7 @@ import io
 import json
 import stat
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -329,6 +330,28 @@ def test_default_https_transport_is_fixed_to_resend_without_proxy_or_redirect(
     assert headers == {"Authorization": "Bearer re_test"}
     assert captured["read_size"] == module.MAX_RESPONSE_BYTES + 1
     assert captured["closed"] is True
+
+
+def test_resend_transport_absolute_deadline_interrupts_slow_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class SlowConnection:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            time.sleep(0.05)
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(module, "RESEND_ABSOLUTE_DEADLINE_S", 0.01)
+    monkeypatch.setattr(module.http.client, "HTTPSConnection", SlowConnection)
+
+    with pytest.raises(TimeoutError, match="absolute deadline"):
+        module.ResendHttpsTransport().post(headers={}, body=b"{}")
 
 
 def test_mailer_config_reader_and_control_loop_use_ui_synced_config(

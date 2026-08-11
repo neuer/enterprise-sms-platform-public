@@ -49,18 +49,32 @@ class FakeService:
             raise ReplyNotFound("回复不存在")
 
 
-def client(service: FakeService, role: str) -> TestClient:
+class FakeAuditor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record(self, **values: object) -> None:
+        self.calls.append(values)
+
+
+def client(
+    service: FakeService,
+    role: str,
+    auditor: FakeAuditor | None = None,
+) -> TestClient:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[api.get_reply_service] = lambda: service
+    app.dependency_overrides[api.get_sensitive_read_auditor] = lambda: auditor or FakeAuditor()
     return TestClient(app)
 
 
 def test_viewer_plus_lists_only_masked_reply_fields_with_department_scope() -> None:
     service = FakeService()
-    response = client(service, "viewer").get(
+    auditor = FakeAuditor()
+    response = client(service, "viewer", auditor).get(
         "/api/v1/web/replies?phone=13800138000&page=1",
         headers={"Authorization": "Bearer jwt"},
     )
@@ -81,6 +95,8 @@ def test_viewer_plus_lists_only_masked_reply_fields_with_department_scope() -> N
     }
     assert service.list_calls[0]["dept"] == "研发部"
     assert service.list_calls[0]["phone"] == "13800138000"
+    assert auditor.calls[0]["action"] == "reply_content_read"
+    assert auditor.calls[0]["count"] == 1
 
 
 def test_operator_can_optout_but_viewer_is_forbidden() -> None:

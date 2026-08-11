@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +31,7 @@ PASSWORD_CHANGE_TTL = timedelta(minutes=10)
 JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
+REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 LOGGER = logging.getLogger(__name__)
 
@@ -285,6 +288,7 @@ class JwtService:
         claims: JwtClaims,
         session_id: str,
         family_expires_at: int,
+        tab_id: str,
     ) -> tuple[str, dict[str, Any]]:
         payload = self._common_payload(
             claims,
@@ -294,6 +298,7 @@ class JwtService:
         )
         payload["family_exp"] = family_expires_at
         payload["exp"] = family_expires_at
+        payload["tab_id"] = tab_id
         return (
             jwt.encode(
                 payload,
@@ -328,12 +333,15 @@ class JwtService:
                 "provider_code": str(payload["provider_code"]),
                 "security_version": int(payload["security_version"]),
                 "family_exp": int(payload["family_exp"]),
+                "tab_id": str(payload["tab_id"]),
             },
             sort_keys=True,
             separators=(",", ":"),
         )
 
-    async def issue_pair(self, claims: JwtClaims) -> IssuedTokenPair:
+    async def issue_pair(self, claims: JwtClaims, tab_id: str) -> IssuedTokenPair:
+        if REFRESH_TAB_ID_PATTERN.fullmatch(tab_id) is None:
+            raise ValueError("refresh token requires a 32-hex tab binding")
         session_id = uuid4().hex
         access_token = self._encode_access(claims, session_id)
         family_expires_at = int((self.clock() + self.refresh_ttl).timestamp())
@@ -341,6 +349,7 @@ class JwtService:
             claims,
             session_id,
             family_expires_at,
+            tab_id,
         )
         remaining = max(1, family_expires_at - int(self.clock().timestamp()))
         try:
@@ -567,10 +576,17 @@ class JwtService:
         await self._ensure_account_not_revoked(payload, claims)
         return await self._authoritative(claims)
 
-    async def rotate_refresh(self, token: str) -> IssuedTokenPair:
+    async def rotate_refresh(self, token: str, tab_id: str) -> IssuedTokenPair:
         payload = self._decode(token)
         if payload["token_type"] != REFRESH_TOKEN_TYPE:
             raise InvalidCredentials("无效或已使用的刷新令牌")
+        bound_tab_id = payload.get("tab_id")
+        if (
+            not isinstance(bound_tab_id, str)
+            or REFRESH_TAB_ID_PATTERN.fullmatch(tab_id) is None
+            or not hmac.compare_digest(bound_tab_id, tab_id)
+        ):
+            raise InvalidCredentials("刷新令牌与当前标签页不匹配")
         try:
             family_expires_at = int(payload["family_exp"])
         except (KeyError, TypeError, ValueError):
@@ -588,6 +604,7 @@ class JwtService:
             claims,
             session_id,
             family_expires_at,
+            tab_id,
         )
         try:
             result = await self.store.eval(

@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
 
 
 def load_cli_module() -> ModuleType:
@@ -73,7 +73,7 @@ def test_database_seed_commands_only_contain_key_hashes() -> None:
     commands = module.seed_commands(keys)
     serialized_params = json.dumps([params for _, params in commands], ensure_ascii=False)
 
-    assert len(commands) == 11
+    assert len(commands) == 10
     assert "UPDATE auth_provider" in commands[0][0]
     assert commands[0][1] == {"provider_code": "ad"}
     mapping_sql, mapping_params = commands[1]
@@ -96,13 +96,57 @@ def test_database_seed_commands_only_contain_key_hashes() -> None:
     assert app_params["rate_limit_per_min"] == 10_000
 
 
-def test_template_seed_parameters_have_explicit_postgres_types() -> None:
+@pytest.mark.asyncio
+async def test_template_seed_persists_only_object_bound_ciphertext() -> None:
     module = load_cli_module()
-    template_sql, _params = module.seed_commands(development_keys(module))[-2]
+    crypto = CryptoService(
+        aes_keys={1: b"a" * 32},
+        hmac_keys={1: b"b" * 32},
+        active_version=1,
+    )
 
-    assert "CAST(:name AS varchar(64))" in template_sql
-    assert "CAST(:dept AS varchar(128))" in template_sql
-    assert "CAST(:vendor_state AS varchar(10))" in template_sql
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.scalars: list[object | None] = [None, 17]
+            self.calls: list[tuple[str, object]] = []
+
+        async def scalar(self, statement: object, params: object = None) -> object | None:
+            self.calls.append((str(statement), params))
+            return self.scalars.pop(0)
+
+        async def execute(self, statement: object, params: object = None) -> None:
+            self.calls.append((str(statement), params))
+
+    connection = FakeConnection()
+    await module.seed_dev_template(connection, crypto)
+
+    insert_sql, insert_params = connection.calls[-1]
+    assert "'[encrypted]'" in insert_sql
+    assert "CAST(:dept AS varchar(128))" in insert_sql
+    assert "CAST(:vendor_state AS varchar(10))" in insert_sql
+    assert "content='[encrypted]'" not in insert_sql
+    assert "'[encrypted]'" in insert_sql
+    assert module.DEV_TEMPLATE.content not in str(insert_params)
+    assert module.DEV_TEMPLATE.name not in str(insert_params)
+    assert isinstance(insert_params, dict)
+    assert crypto.decrypt_bound_packed_text(
+        insert_params["content_enc"],
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    ) == module.DEV_TEMPLATE.content
+    assert crypto.decrypt_bound_packed_text(
+        insert_params["name_enc"],
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    ) == module.DEV_TEMPLATE.name
 
 
 def test_api_key_file_is_atomic_json_and_owner_only(tmp_path: Path) -> None:

@@ -501,7 +501,12 @@ async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     settings = cast(Any, SimpleNamespace(database_url=database_url))
-    template_repository = SqlTemplateRepository(settings)
+    content_crypto = CryptoService(
+        aes_keys={1: b"a" * 32},
+        hmac_keys={1: b"b" * 32},
+        active_version=1,
+    )
+    template_repository = SqlTemplateRepository(settings, content_crypto)
     sign_repository = SqlSignRepository(settings)
     template_id: int | None = None
     sign_id: int | None = None

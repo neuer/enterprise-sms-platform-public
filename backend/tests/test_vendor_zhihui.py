@@ -224,6 +224,20 @@ async def test_network_timeout_is_classified_as_result_unknown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_rejects_phone_shaped_vendor_task_id_as_result_unknown() -> None:
+    transport = RecordingTransport(
+        {"/Sms/Api/Send": {"code": 0, "msg": None, "data": "13800138000"}}
+    )
+    client = make_client(transport)
+
+    with pytest.raises(VendorProtocolError, match="taskId format") as captured:
+        await client.send(["13800138000"], "测试")
+    await client.aclose()
+
+    assert captured.value.result_unknown is True
+
+
+@pytest.mark.asyncio
 async def test_invalid_envelope_is_protocol_error() -> None:
     transport = RecordingTransport({"/Sms/Api/GetBalance": {"Code": 0, "data": 1}})
     client = make_client(transport)

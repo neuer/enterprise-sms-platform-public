@@ -5,6 +5,7 @@ import { computed, onMounted, ref, watch } from "vue"
 import {
   previewVendorTestUat,
   sendVendorTestUat,
+  VendorRequestError,
   type VendorTestOperation,
   type VendorTestRecipient,
 } from "../api/admin"
@@ -39,6 +40,36 @@ const consentConfirmed = ref(false)
 const preview = ref<BillingPreview | null>(null)
 const previewing = ref(false)
 const sending = ref(false)
+const PENDING_BIZ_ID_KEY = "sms-platform:vendor-test:uat-biz-id:v1"
+
+function loadPendingBizId(): string | null {
+  try {
+    const value = sessionStorage.getItem(PENDING_BIZ_ID_KEY)
+    return value && /^[0-9a-f]{32}$/.test(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+let pendingBizId: string | null = loadPendingBizId()
+
+function rememberPendingBizId(value: string): void {
+  pendingBizId = value
+  try {
+    sessionStorage.setItem(PENDING_BIZ_ID_KEY, value)
+  } catch {
+    // 受限存储环境仍保留本页面内存幂等键。
+  }
+}
+
+function clearPendingBizId(): void {
+  pendingBizId = null
+  try {
+    sessionStorage.removeItem(PENDING_BIZ_ID_KEY)
+  } catch {
+    // 内存状态已经清除。
+  }
+}
 
 const selectedApp = computed(() => props.apps.find((item) => item.id === appId.value) || null)
 const categories = computed<UatCategory[]>(() => {
@@ -158,17 +189,24 @@ async function send(): Promise<void> {
       },
     )
     sending.value = true
+    const bizId = pendingBizId || crypto.randomUUID().replaceAll("-", "")
+    if (!pendingBizId) rememberPendingBizId(bizId)
     const operation = await sendVendorTestUat({
       recipient_id: recipientId.value!,
       app_id: appId.value!,
+      biz_id: bizId,
       category: category.value,
       ...messagePayload(),
       sign_name: signName.value || undefined,
       consent_confirmed: consentConfirmed.value,
       remark: "系统配置页真实 UAT",
     })
+    clearPendingBizId()
     emit("operation", operation)
   } catch (error) {
+    if (error instanceof VendorRequestError && error.status >= 400 && error.status < 500) {
+      clearPendingBizId()
+    }
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(error instanceof Error ? error.message : "真实 UAT 提交失败")
     }

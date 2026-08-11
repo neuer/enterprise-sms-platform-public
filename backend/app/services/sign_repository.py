@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.sensitive_text import mask_phone_in_text
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.sign import format_sign_name
@@ -174,6 +175,7 @@ class SqlSignRepository:
             async with engine.begin() as connection:
                 applied = 0
                 for sign_id, state, reason in states:
+                    reason = mask_phone_in_text(reason)
                     changed = await connection.execute(
                         text(
                             """

@@ -424,6 +424,7 @@ paths:
         refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
         身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
       requestBody:
+        required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/RefreshRequest' }
@@ -1225,6 +1226,7 @@ paths:
       responses:
         '200': { description: 已更新并记审计, content: { application/json: { schema: { $ref: '#/components/schemas/App' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { description: callback URL不在CIDR白名单或字段无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: callback DNS 校验暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     delete:
@@ -1236,6 +1238,7 @@ paths:
       responses:
         '204': { description: 已停用 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /api/v1/web/admin/apps/{id}/rotate-key:
     post:
@@ -1287,6 +1290,7 @@ paths:
                 properties:
                   callback_secret: { type: string, description: 新密钥，仅此一次明文 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /api/v1/web/admin/queue/status:
     get:
@@ -2776,11 +2780,12 @@ components:
     LoginRequest:
       type: object
       additionalProperties: false
-      required: [provider_code, username, password]
+      required: [provider_code, username, password, tab_id]
       properties:
         provider_code: { type: string, minLength: 1, maxLength: 64, description: 必须由用户显式选择，不回退 }
         username: { type: string, minLength: 1, maxLength: 64 }
         password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+        tab_id: { type: string, pattern: '^[0-9a-f]{32}$', description: 当前浏览器标签页生成的随机非凭据绑定值 }
 
     AuthUser:
       type: object
@@ -2808,7 +2813,9 @@ components:
     RefreshRequest:
       type: object
       additionalProperties: false
+      required: [tab_id]
       properties:
+        tab_id: { type: string, pattern: '^[0-9a-f]{32}$', description: 必须与 refresh family 登录时绑定的标签页一致 }
         refresh_token:
           anyOf:
             - { type: string, maxLength: 4096 }
@@ -3034,10 +3041,11 @@ components:
           not: { required: [template_id] }
         - required: [template_id, template_params]
           not: { required: [content] }
-      required: [recipient_id, app_id, category]
+      required: [recipient_id, app_id, biz_id, category]
       properties:
         recipient_id: { type: integer, exclusiveMinimum: 0 }
         app_id: { type: integer, exclusiveMinimum: 0 }
+        biz_id: { type: string, pattern: '^[0-9a-f]{32}$' }
         category: { type: string, enum: [verify, notice, market] }
         content:
           anyOf:

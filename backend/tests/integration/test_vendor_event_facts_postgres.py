@@ -50,8 +50,13 @@ def _report(
     states = {0: "unknown", 1: "delivered", 2: "failed", 99: "failed"}
     return ProtectedReport(
         event_key=event_key,
-        vendor_task_id=f"vendor-{custom_id}",
-        custom_id=custom_id,
+        vendor_task_id=crypto.stable_hmac_fingerprint(
+            f"vendor-{custom_id}".encode(), domain="vendor-task-id"
+        )[1],
+        custom_id=crypto.stable_hmac_fingerprint(
+            custom_id.encode(), domain="vendor-custom-id"
+        )[1],
+        match_custom_id=custom_id,
         phone_enc=protected.phone_enc,
         phone_hmac=protected.phone_hmac,
         phone_mask=protected.phone_mask,
@@ -96,6 +101,9 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
 
     async def create_message(index: int) -> tuple[int, str, datetime]:
         custom_id = f"{nonce[:24]}{index:08d}"
+        vendor_task_id = _crypto().stable_hmac_fingerprint(
+            f"vendor-{custom_id}".encode(), domain="vendor-task-id"
+        )[1]
         created_at = base_time + timedelta(minutes=index)
         async with engine.begin() as connection:
             batch_id = int(
@@ -137,7 +145,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
                         {
                             "batch_id": batch_id,
                             "custom_id": custom_id,
-                            "vendor_task_id": f"vendor-{custom_id}",
+                            "vendor_task_id": vendor_task_id,
                             "submitted_at": created_at,
                         },
                     )
@@ -174,7 +182,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
         message_refs.append((message_id, created_at))
         return batch_id, custom_id, created_at
 
-    async def raw(source: str, marker: str) -> int:
+    async def raw(source: str, marker: str, custom_id: str) -> int:
         async with engine.begin() as connection:
             raw_id = int(
                 (
@@ -185,7 +193,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
                               source,payload_enc,payload_sha256,key_version,
                               custom_ids,item_count
                             ) VALUES(
-                              :source,:payload_enc,:sha,1,ARRAY[:marker],1
+                              :source,:payload_enc,:sha,1,ARRAY[:custom_id],1
                             ) RETURNING id
                             """
                         ),
@@ -193,7 +201,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
                             "source": source,
                             "payload_enc": f"cipher-{marker}".encode(),
                             "sha": "a" * 64,
-                            "marker": marker,
+                            "custom_id": custom_id,
                         },
                     )
                 ).scalar_one()
@@ -247,11 +255,11 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
             event_time=first_created + timedelta(seconds=10),
         )
         assert await reports.apply_report(
-            await raw("report", "delivered"),
+            await raw("report", "delivered", first_custom),
             delivered,
         ) == ReportApplyResult(first_batch, True)
         assert await reports.apply_report(
-            await raw("report", "stale-failed"),
+            await raw("report", "stale-failed", first_custom),
             stale_failed,
         ) == ReportApplyResult(first_batch, False)
 
@@ -272,11 +280,13 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
         )
         event_keys.update((same_failed.event_key, same_delivered.event_key))
         assert (
-            await reports.apply_report(await raw("report", "same-failed"), same_failed)
+            await reports.apply_report(
+                await raw("report", "same-failed", second_custom), same_failed
+            )
         ) == ReportApplyResult(second_batch, True)
         assert (
             await reports.apply_report(
-                await raw("report", "same-delivered"),
+                await raw("report", "same-delivered", second_custom),
                 same_delivered,
             )
         ) == ReportApplyResult(second_batch, True)
@@ -290,7 +300,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
             event_time=third_created + timedelta(seconds=10),
         )
         event_keys.add(duplicate.event_key)
-        duplicate_raw = await raw("report", "duplicate")
+        duplicate_raw = await raw("report", "duplicate", third_custom)
         concurrent = await asyncio.gather(
             reports.apply_report(duplicate_raw, duplicate),
             reports.apply_report(duplicate_raw, duplicate),
@@ -304,7 +314,7 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
         )
 
         reply_item = {
-            "taskId": f"vendor-{first_custom}",
+            "taskId": "vendor-reply-task",
             "customId": first_custom,
             "phone": "13800138000",
             "extCode": "01",
@@ -322,8 +332,8 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
         assert before.dedup_hash == after.dedup_hash
         reply_keys.add(before.dedup_hash)
         reply_raw_ids = await asyncio.gather(
-            raw("reply", "reply-v1"),
-            raw("reply", "reply-v2"),
+            raw("reply", "reply-v1", first_custom),
+            raw("reply", "reply-v2", first_custom),
         )
         await asyncio.gather(
             replies.store_reply(reply_raw_ids[0], before),

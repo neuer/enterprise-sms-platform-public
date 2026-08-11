@@ -10,6 +10,7 @@ from typing import Protocol
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import RuntimePolicy
+from app.vendor.identifiers import protect_vendor_task_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +112,14 @@ class UncertainReconciler:
                 if task_id is not None:
                     break
             if task_id is not None:
-                await self.repository.resolve_submitted(chunk.chunk_id, task_id)
+                _raw_task_id, task_pseudonym = protect_vendor_task_id(
+                    self.crypto,
+                    task_id,
+                )
+                await self.repository.resolve_submitted(
+                    chunk.chunk_id,
+                    task_pseudonym,
+                )
                 resolved += 1
             elif now - chunk.uncertain_since >= self.alert_after:
                 await self.repository.alert_overdue(chunk)

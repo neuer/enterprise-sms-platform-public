@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -26,6 +27,9 @@ class BackfillResult:
 
     def all(self) -> list[dict[str, object]]:
         return self.rows
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(self.rows)
 
 
 class BackfillConnection:
@@ -892,6 +896,164 @@ def test_sensitive_content_backfill_preserves_plaintext_only_inside_ciphertext(
     statements = [sql.lstrip() for sql, _params in reply_connection.calls]
     assert any(sql.startswith("UPDATE sms_reply") for sql in statements)
     assert any(sql.startswith("DELETE FROM reply_event") for sql in statements)
+
+
+def test_round3_migration_encrypts_templates_and_archives_metadata_before_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0064_security_scan_round3.py"
+    source = revision.read_text(encoding="utf-8")
+    for fragment in (
+        "content_enc          BYTEA        NOT NULL",
+        "ck_sms_template_content_marker",
+        "CREATE TABLE sensitive_metadata_archive",
+        "REVOKE ALL ON sensitive_metadata_archive FROM PUBLIC",
+        "acceptance[:](v2[:][0-9a-f]{64}",
+    ):
+        assert fragment in schema
+    assert "INSERT INTO sensitive_metadata_archive" in source
+    assert "UPDATE {table} SET {value_column}='[redacted-phone]'" in source
+
+    spec = importlib.util.spec_from_file_location("round3_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0064_security_scan_round3"
+    assert module.down_revision == "0063_sensitive_content_and_raw_first"
+
+    key = base64.b64encode(b"n" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    template_connection = BackfillConnection(
+        [[{"id": 17, "content": "验证码{1}"}], []]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: template_connection)
+    module._backfill_template_content(crypto)
+    template_update = next(
+        params
+        for sql, params in template_connection.calls
+        if sql.lstrip().startswith("UPDATE sms_template")
+    )
+    assert template_update is not None
+    assert crypto.decrypt_bound_packed_text(
+        bytes(template_update["content_enc"]),
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    ) == "验证码{1}"
+
+    metadata_connection = BackfillConnection(
+        [
+            [{"source_key": 7, "source_row": "7", "source_value": "联系13900139000"}],
+            [],
+            [],
+            [],
+            [],
+        ]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: metadata_connection)
+    module._archive_and_redact_metadata(crypto)
+    archive_index = next(
+        index
+        for index, (sql, _params) in enumerate(metadata_connection.calls)
+        if sql.lstrip().startswith("INSERT INTO sensitive_metadata_archive")
+    )
+    redact_index = next(
+        index
+        for index, (sql, _params) in enumerate(metadata_connection.calls)
+        if sql.lstrip().startswith("UPDATE sms_batch")
+    )
+    assert archive_index < redact_index
+    archive_params = metadata_connection.calls[archive_index][1]
+    assert archive_params is not None
+    assert "13900139000" not in str(archive_params)
+    assert crypto.decrypt_bound_packed_text(
+        bytes(archive_params["value_enc"]),
+        EncryptionContext(
+            domain="sensitive-metadata-archive",
+            table="sensitive_metadata_archive",
+            column="value_enc",
+            object_id="sms_batch:7:remark",
+        ),
+    ) == "联系13900139000"
+
+
+def test_round4_migration_pseudonymizes_vendor_metadata_and_guards_raw_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0065_security_scan_round4.py"
+    source = revision.read_text(encoding="utf-8")
+    for fragment in (
+        "ck_sms_chunk_vendor_task_pseudonym",
+        "ck_report_event_custom_pseudonym",
+        "ck_reply_event_ext_code_redacted",
+        "CREATE OR REPLACE FUNCTION enforce_raw_vendor_custom_ids()",
+        "trg_raw_vendor_custom_ids",
+        "GRANT UPDATE (expires_at) ON callback_authority_lease TO sms_callback",
+    ):
+        assert fragment in schema
+        assert fragment in source
+
+    spec = importlib.util.spec_from_file_location("round4_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    key = base64.b64encode(b"v" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    created_at = datetime(2026, 8, 11, tzinfo=UTC)
+    connection = BackfillConnection(
+        [
+            [{"id": 1, "vendor_task_id": "task-phone-13800138000"}],
+            [],
+            [
+                {
+                    "event_key": "a" * 64,
+                    "vendor_task_id": "task-1",
+                    "custom_id": "otp123456",
+                }
+            ],
+            [],
+            [
+                {
+                    "event_key": "b" * 64,
+                    "vendor_task_id": "task-2",
+                    "custom_id": "contentfragment",
+                }
+            ],
+            [],
+            [{"id": 2, "created_at": created_at, "vendor_task_id": "task-2"}],
+            [],
+            [{"id": 3, "vendor_task_id": "task-3", "custom_id": "legacy"}],
+            [],
+        ]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: connection)
+
+    module._pseudonymize_vendor_metadata(crypto)
+
+    updates = [params for sql, params in connection.calls if sql.lstrip().startswith("UPDATE")]
+    assert len(updates) == 5
+    assert all(params is not None for params in updates)
+    serialized = str(updates)
+    for plaintext in (
+        "13800138000",
+        "otp123456",
+        "contentfragment",
+        "legacy",
+    ):
+        assert plaintext not in serialized
+    fingerprints = [
+        value
+        for params in updates
+        for key, value in params.items()
+        if key in {"vendor_task_id", "custom_id"}
+    ]
+    assert len(fingerprints) == 8
+    assert all(isinstance(value, str) and len(value) == 64 for value in fingerprints)
 
 
 def test_security_daily_generation_source_migration_is_expand_only() -> None:

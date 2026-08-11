@@ -81,7 +81,18 @@ class FakeQueryService:
         }
 
 
-def make_app() -> FastAPI:
+class FakeAuditor:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict[str, object]] = []
+
+    async def record(self, **values: object) -> None:
+        self.calls.append(values)
+        if self.fail:
+            raise RuntimeError("audit unavailable")
+
+
+def make_app(auditor: FakeAuditor | None = None) -> FastAPI:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
@@ -89,6 +100,9 @@ def make_app() -> FastAPI:
         validation_error_handler,  # type: ignore[arg-type]
     )
     app.dependency_overrides[get_api_key_authenticator] = FakeKeyAuth
+    app.dependency_overrides[messages_module.get_sensitive_read_auditor] = (
+        lambda: auditor or FakeAuditor()
+    )
     app.include_router(messages_module.router)
     return app
 
@@ -134,6 +148,35 @@ def test_missing_batch_uses_uniform_not_found(
     }
 
 
+def test_batch_content_audit_is_recorded_before_response_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = FakeQueryService()
+    monkeypatch.setattr(messages_module, "_batch_queries", lambda: service)
+    auditor = FakeAuditor()
+    response = TestClient(make_app(auditor)).get(
+        "/api/v1/messages/batches/batch-1",
+        headers={"X-Api-Key": "key"},
+    )
+    assert response.status_code == 200
+    assert auditor.calls == [
+        {
+            "action": "batch_content_read",
+            "object_type": "batch",
+            "object_id": "batch-1",
+            "ip": "0.0.0.0",
+            "count": 1,
+        }
+    ]
+
+    failed = TestClient(make_app(FakeAuditor(fail=True)), raise_server_exceptions=False).get(
+        "/api/v1/messages/batches/batch-1",
+        headers={"X-Api-Key": "key"},
+    )
+    assert failed.status_code == 500
+    assert "验证码" not in failed.text
+
+
 def test_batch_query_accepts_bearer_and_applies_department_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -143,6 +186,7 @@ def test_batch_query_accepts_bearer_and_applies_department_scope(
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.dependency_overrides[get_api_key_authenticator] = FakeKeyAuth
+    app.dependency_overrides[messages_module.get_sensitive_read_auditor] = FakeAuditor
     app.include_router(messages_module.router)
 
     response = TestClient(app).get(

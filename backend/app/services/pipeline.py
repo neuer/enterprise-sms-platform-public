@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -23,13 +22,18 @@ from app.core.auth.accounts import (
     SecurityPrincipal,
 )
 from app.core.bounded_executor import run_bounded
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
 from app.services.category import CategoryPolicy, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
-from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency import (
+    IdempotencyFingerprint,
+    IdempotencyScope,
+    usage_request_key,
+)
 from app.services.masking import mask_phone_text, mask_verify_otp
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -372,6 +376,13 @@ class UsageLedgerPort(Protocol):
         event_id: str,
     ) -> bool: ...
 
+    async def request_unlinked_release(
+        self,
+        reservation_id: UUID,
+        *,
+        event_id: str,
+    ) -> bool: ...
+
 
 class QueuePublisher(Protocol):
     async def enqueue(self, batch_no: str, queue: str) -> None: ...
@@ -615,7 +626,7 @@ class SendPipeline:
 
         if request.resend_of is not None:
             return IdempotencyScope("resend", request.resend_of)
-        if request.channel == "web" and not request.vendor_test_uat:
+        if request.channel == "web":
             if not isinstance(request.actor, SecurityPrincipal):
                 raise ValueError("Web 发送必须绑定稳定账号")
             return IdempotencyScope(
@@ -790,6 +801,7 @@ class SendPipeline:
         request_hash: str | None = None,
         request_hash_key_version: int | None = None,
     ) -> BatchResponse:
+        reject_phone_in_text(request.remark, field_name="remark")
         if ownership_check is not None:
             await ownership_check()
         if idem_scope is None and request.biz_id:
@@ -931,11 +943,8 @@ class SendPipeline:
         usage_reservation_reused = False
         if self.usage_ledger is not None:
             request_key = (
-                (
-                    f"acceptance:{app.app_id}:"
-                    f"{hashlib.sha256(request.biz_id.encode()).hexdigest()}:{date_key}"
-                )
-                if request.biz_id
+                usage_request_key(idem_scope, request.biz_id, date_key)
+                if request.biz_id and idem_scope is not None
                 else f"acceptance:{uuid4()}"
             )
             usage_reservation = await self.usage_ledger.start_reservation(
@@ -956,7 +965,7 @@ class SendPipeline:
             ):
                 return
             try:
-                await self.usage_ledger.request_release(
+                await self.usage_ledger.request_unlinked_release(
                     usage_reservation_id,
                     event_id=f"usage:{usage_reservation_id}:{reason}",
                 )

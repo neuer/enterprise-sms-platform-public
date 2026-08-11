@@ -8,7 +8,9 @@ from uuid import UUID
 import pytest
 
 from app.services.callback import DeliveryOutcome
+from app.services.callback_authority import CallbackAuthorityBusy
 from app.services.callback_worker import (
+    CALLBACK_AUTHORITY_BUSY_DELAY_S,
     RETRY_DELAYS_S,
     CallbackClaim,
     CallbackLeaseLost,
@@ -60,6 +62,17 @@ class FakeRepository:
     ) -> None:
         assert lease_id == LEASE_ID
         self.events.append(("done", (task_id, http_code)))
+
+    async def mark_authority_busy(
+        self,
+        task_id: int,
+        lease_id: UUID,
+        *,
+        retry_count: int,
+        delay_s: int,
+    ) -> None:
+        assert lease_id == LEASE_ID
+        self.events.append(("authority_busy", (task_id, retry_count, delay_s)))
 
     async def mark_retry(
         self,
@@ -138,6 +151,23 @@ async def test_successful_2xx_marks_done() -> None:
         FakeAlerts(),
     ).process(9) == 1
     assert ("done", (9, 204)) in repository.events
+
+
+@pytest.mark.asyncio
+async def test_authority_contention_defers_without_consuming_delivery_retry() -> None:
+    repository = FakeRepository(claim(4))
+
+    await CallbackWorker(
+        repository,
+        FakeDelivery(DeliveryOutcome(False, None, CallbackAuthorityBusy.__name__)),
+        FakeAlerts(),
+    ).process(9)
+
+    assert (
+        "authority_busy",
+        (9, 4, CALLBACK_AUTHORITY_BUSY_DELAY_S),
+    ) in repository.events
+    assert all(name not in {"retry", "dead", "done"} for name, _ in repository.events)
 
 
 @pytest.mark.asyncio

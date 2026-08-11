@@ -1,7 +1,9 @@
 import { AuthApiError, refreshRequest } from "./auth"
 import {
   clearAccessSession,
+  clearRefreshTabBinding,
   getAccessToken,
+  getSessionUser,
   setAccessSession,
 } from "./sessionTokens"
 
@@ -161,6 +163,7 @@ function requestWithCurrentAuthorization(
 function clearSession(): void {
   cancelSessionRequests()
   clearAccessSession()
+  clearRefreshTabBinding()
   window.dispatchEvent(new Event("sms:unauthorized"))
 }
 
@@ -168,6 +171,7 @@ async function refreshSession(): Promise<RefreshResult> {
   if (refreshInFlight) return refreshInFlight
   refreshInFlight = (async () => {
     try {
+      const currentUser = getSessionUser()
       const controller = new AbortController()
       const timer = window.setTimeout(
         () => controller.abort(new DOMException("刷新超时", "TimeoutError")),
@@ -178,6 +182,18 @@ async function refreshSession(): Promise<RefreshResult> {
         result = await refreshRequest(controller.signal)
       } finally {
         window.clearTimeout(timer)
+      }
+      if (
+        currentUser &&
+        Number.isInteger(currentUser.account_id) &&
+        currentUser.account_id > 0 &&
+        Number.isInteger(currentUser.identity_id) &&
+        currentUser.identity_id > 0 &&
+        (currentUser.account_id !== result.user.account_id ||
+          currentUser.identity_id !== result.user.identity_id)
+      ) {
+        clearSession()
+        return "unauthorized"
       }
       setAccessSession(result.token, result.user)
       window.dispatchEvent(new Event("sms:session-refreshed"))

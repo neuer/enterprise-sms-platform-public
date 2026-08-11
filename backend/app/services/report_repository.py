@@ -86,6 +86,23 @@ class SqlReportRepository:
         finally:
             await engine.dispose()
 
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+        if not custom_ids:
+            return []
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT trim(custom_id) FROM sms_chunk "
+                        "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
+                    ),
+                    {"custom_ids": custom_ids},
+                )
+                return [str(value) for value in result.scalars()]
+        finally:
+            await engine.dispose()
+
     @staticmethod
     async def _lock_batch(connection: AsyncConnection, batch_id: int) -> None:
         await connection.execute(
@@ -185,13 +202,13 @@ class SqlReportRepository:
                         """
                         SELECT m.id,m.created_at,m.batch_id FROM sms_chunk c
                         JOIN sms_message m ON m.chunk_id=c.id
-                        WHERE c.custom_id=:custom_id
+                        WHERE c.custom_id=:match_custom_id
                           AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
                         ORDER BY m.created_at DESC LIMIT 1
                         """
                     ),
                     {
-                        "custom_id": report.custom_id,
+                        "match_custom_id": report.match_custom_id,
                         "phone_hmacs": list(report.phone_hmacs),
                     },
                 )
@@ -409,7 +426,8 @@ class SqlReportRepository:
                           key_version,report_status,report_desc,report_time
                         ) SELECT
                           CAST(:event_key AS char(64)),
-                          :vendor_task_id,CAST(:custom_id AS varchar(64)),
+                          CAST(:vendor_task_id AS varchar(64)),
+                          CAST(:custom_id AS varchar(64)),
                           :phone_enc,CAST(:phone_hmac AS char(64)),:phone_mask,
                           :key_version,CAST(:report_status AS smallint),
                           :report_desc,CAST(:report_time AS timestamptz)

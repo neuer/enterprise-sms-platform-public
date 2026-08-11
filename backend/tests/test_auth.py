@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import jwt
@@ -14,6 +15,7 @@ from app.core.auth.backends import (
     InvalidCredentials,
     ProviderCapacityUnavailable,
     ProviderDisabled,
+    ProviderUnavailable,
     SessionStateUnavailable,
 )
 from app.core.auth.jwt import (
@@ -29,6 +31,8 @@ from app.core.auth.roles import ExistingUser, RoleResolver
 from app.core.auth.service import AccountLocked, AuthService, LoginGuard, RateLimited
 from app.services.auth_provider import ProviderRecord, ProviderTestResult
 from app.services.runtime_policy import RuntimePolicy
+
+TAB_ID = "a" * 32
 
 
 class FakeKeyValue:
@@ -239,6 +243,13 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
         def __init__(self, server: object, **kwargs: Any) -> None:
             calls.append(kwargs)
             self.entries = [Entry()]
+            self.socket = object()
+
+        def open(self) -> None:
+            return None
+
+        def bind(self) -> bool:
+            return True
 
         def search(self, **kwargs: Any) -> bool:
             calls.append(kwargs)
@@ -309,6 +320,13 @@ async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
     class FakeConnection:
         def __init__(self, server: object, **kwargs: Any) -> None:
             del server, kwargs
+            self.socket = object()
+
+        def open(self) -> None:
+            return None
+
+        def bind(self) -> bool:
+            return True
 
         def search(self, **kwargs: Any) -> bool:
             searches.append(kwargs)
@@ -350,6 +368,30 @@ async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
             "size_limit": 1,
         }
     ]
+
+
+def test_ldap_receive_budget_fails_before_unbounded_parser_materialization() -> None:
+    import app.core.auth.ldap_real as ldap_module
+
+    class Socket:
+        def recv(self, size: int, *_args: object) -> bytes:
+            return b"x" * size
+
+    bounded = ldap_module._ReceiveBudgetSocket(Socket(), limit=4)
+
+    assert bounded.recv(3) == b"xxx"
+    with pytest.raises(OSError, match="byte budget"):
+        bounded.recv(3)
+
+
+def test_ldap_group_attribute_has_count_and_aggregate_budgets() -> None:
+    import app.core.auth.ldap_real as ldap_module
+
+    attribute = SimpleNamespace(values=["group"] * (ldap_module.LDAP_MAX_GROUPS + 1))
+    entry = SimpleNamespace(memberOf=attribute)
+
+    with pytest.raises(ProviderUnavailable, match="组属性超出限制"):
+        ldap_module._attribute_values(entry, "memberOf")
 
 
 @pytest.mark.asyncio
@@ -682,8 +724,8 @@ async def test_logout_revokes_every_access_token_in_the_same_session() -> None:
         "a-jwt-secret-that-is-long-enough-for-hs256-tests",
         store,
     )
-    first = await service.issue_pair(access_claims())
-    second = await service.rotate_refresh(first.refresh_token)
+    first = await service.issue_pair(access_claims(), TAB_ID)
+    second = await service.rotate_refresh(first.refresh_token, TAB_ID)
 
     await service.revoke_token(second.token)
 
@@ -691,6 +733,21 @@ async def test_logout_revokes_every_access_token_in_the_same_session() -> None:
         await service.verify(first.token)
     with pytest.raises(InvalidCredentials):
         await service.verify(second.token)
+
+
+@pytest.mark.asyncio
+async def test_refresh_family_is_bound_to_issuing_browser_tab() -> None:
+    service = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        FakeKeyValue(),
+    )
+    pair = await service.issue_pair(access_claims(), TAB_ID)
+
+    with pytest.raises(InvalidCredentials, match="标签页"):
+        await service.rotate_refresh(pair.refresh_token, "d" * 32)
+
+    rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
+    assert (await service.verify(rotated.token)).account_id == 8
 
 
 @pytest.mark.asyncio
@@ -703,14 +760,14 @@ async def test_logout_by_refresh_token_revokes_family_when_access_is_expired() -
         clock=lambda: moments[0],
         ttl=timedelta(minutes=15),
     )
-    pair = await service.issue_pair(access_claims())
+    pair = await service.issue_pair(access_claims(), TAB_ID)
     moments[0] += timedelta(minutes=16)
 
     claims = await service.revoke_refresh_token(pair.refresh_token)
 
     assert claims.account_id == 8
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(pair.refresh_token)
+        await service.rotate_refresh(pair.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio
@@ -743,12 +800,12 @@ async def test_force_user_revoke_also_blocks_refresh_rotation() -> None:
         store,
         clock=lambda: now,
     )
-    pair = await service.issue_pair(access_claims())
+    pair = await service.issue_pair(access_claims(), TAB_ID)
 
     await service.revoke_user(8)
 
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(pair.refresh_token)
+        await service.rotate_refresh(pair.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio
@@ -853,16 +910,16 @@ async def test_refresh_replay_revokes_family_with_authoritative_projection() -> 
         clock=lambda: datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
         security_session_loader=load_security_session,
     )
-    first = await service.issue_pair(access_claims())
-    second = await service.rotate_refresh(first.refresh_token)
+    first = await service.issue_pair(access_claims(), TAB_ID)
+    second = await service.rotate_refresh(first.refresh_token, TAB_ID)
     assert (await service.verify(second.token)).account_id == 8
 
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(first.refresh_token)
+        await service.rotate_refresh(first.refresh_token, TAB_ID)
     with pytest.raises(InvalidCredentials):
         await service.verify(second.token)
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(second.refresh_token)
+        await service.rotate_refresh(second.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio
@@ -882,7 +939,7 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
         clock=lambda: moments[0],
         security_session_loader=load_security_session,
     )
-    first = await service.issue_pair(access_claims())
+    first = await service.issue_pair(access_claims(), TAB_ID)
     first_payload = jwt.decode(
         first.refresh_token,
         service.secret,
@@ -890,7 +947,7 @@ async def test_refresh_family_has_an_absolute_seven_day_lifetime() -> None:
         options={"verify_exp": False, "verify_aud": False},
     )
     moments[0] += timedelta(days=2)
-    second = await service.rotate_refresh(first.refresh_token)
+    second = await service.rotate_refresh(first.refresh_token, TAB_ID)
     second_payload = jwt.decode(
         second.refresh_token,
         service.secret,
@@ -910,13 +967,13 @@ async def test_old_refresh_token_replay_immediately_destroys_family() -> None:
         "a-jwt-secret-that-is-long-enough-for-hs256-tests",
         store,
     )
-    first = await service.issue_pair(access_claims())
-    second = await service.rotate_refresh(first.refresh_token)
+    first = await service.issue_pair(access_claims(), TAB_ID)
+    second = await service.rotate_refresh(first.refresh_token, TAB_ID)
 
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(first.refresh_token)
+        await service.rotate_refresh(first.refresh_token, TAB_ID)
     with pytest.raises(InvalidCredentials):
-        await service.rotate_refresh(second.refresh_token)
+        await service.rotate_refresh(second.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio
@@ -936,11 +993,11 @@ async def test_refresh_replay_revocation_failure_is_fail_closed() -> None:
         "a-jwt-secret-that-is-long-enough-for-hs256-tests",
         store,
     )
-    first = await service.issue_pair(access_claims())
-    await service.rotate_refresh(first.refresh_token)
+    first = await service.issue_pair(access_claims(), TAB_ID)
+    await service.rotate_refresh(first.refresh_token, TAB_ID)
 
     with pytest.raises(SessionStateUnavailable):
-        await service.rotate_refresh(first.refresh_token)
+        await service.rotate_refresh(first.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio

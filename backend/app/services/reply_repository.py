@@ -65,6 +65,23 @@ class SqlReplyRepository:
         finally:
             await engine.dispose()
 
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+        if not custom_ids:
+            return []
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT trim(custom_id) FROM sms_chunk "
+                        "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
+                    ),
+                    {"custom_ids": custom_ids},
+                )
+                return [str(value) for value in result.scalars()]
+        finally:
+            await engine.dispose()
+
     async def store_reply(self, raw_id: int, reply: ProtectedReply) -> None:
         if raw_id < 1:
             raise ValueError("raw_id must be positive")
@@ -97,13 +114,13 @@ class SqlReplyRepository:
                           SELECT c.batch_id FROM sms_chunk c
                           JOIN sms_message m ON m.chunk_id=c.id
                           WHERE (
-                            (CAST(:custom_id AS varchar(64)) IS NOT NULL
-                              AND c.custom_id=CAST(:custom_id AS varchar(64)))
+                            (CAST(:match_custom_id AS varchar(32)) IS NOT NULL
+                              AND c.custom_id=CAST(:match_custom_id AS varchar(32)))
                             OR c.vendor_task_id=CAST(:vendor_task_id AS varchar(64))
                           )
                             AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
                           ORDER BY CASE
-                            WHEN c.custom_id=CAST(:custom_id AS varchar(64)) THEN 0 ELSE 1
+                            WHEN c.custom_id=CAST(:match_custom_id AS varchar(32)) THEN 0 ELSE 1
                           END,
                                    c.id DESC
                           LIMIT 1
@@ -126,6 +143,7 @@ class SqlReplyRepository:
                         "raw_id": raw_id,
                         "vendor_task_id": reply.vendor_task_id,
                         "custom_id": reply.custom_id,
+                        "match_custom_id": reply.match_custom_id,
                         "phone_enc": reply.phone_enc,
                         "phone_hmac": reply.phone_hmac,
                         "phone_hmacs": list(reply.phone_hmacs),

@@ -101,12 +101,38 @@ class DeliveryOutcome:
     error: str | None = None
 
 
+def _safe_failure_kind(error: Exception) -> str:
+    """仅返回异常类型和标准 SQLSTATE，不暴露 SQL、参数或数据库消息。"""
+
+    error_type = type(error).__name__
+    original = getattr(error, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(error, "sqlstate", None)
+    if (
+        isinstance(sqlstate, str)
+        and len(sqlstate) == 5
+        and sqlstate.isalnum()
+        and sqlstate.isascii()
+    ):
+        return f"{error_type}_{sqlstate.upper()}"
+    return error_type
+
+
 class CallbackMaterialRepository(Protocol):
+    async def acquire_authority(
+        self,
+        task_id: int,
+        lease_id: UUID,
+    ) -> bool: ...
+
     async def load_material(
         self,
         task_id: int,
         lease_id: UUID,
     ) -> CallbackMaterial | None: ...
+
+    async def confirm_authority(self, task_id: int, lease_id: UUID) -> bool: ...
+
+    async def release_authority(self, task_id: int, lease_id: UUID) -> None: ...
 
 
 class OutboundValidator(Protocol):
@@ -324,7 +350,11 @@ class CallbackDelivery:
         raise ValueError("callback material does not match event")
 
     async def deliver(self, task_id: int, lease_id: UUID) -> DeliveryOutcome:
+        authority_acquired = False
         try:
+            authority_acquired = await self.repository.acquire_authority(task_id, lease_id)
+            if not authority_acquired:
+                raise LookupError("callback authority unavailable")
             material = await self.repository.load_material(task_id, lease_id)
             if material is None:
                 raise LookupError("callback task unavailable")
@@ -337,6 +367,8 @@ class CallbackDelivery:
                 url = approved.url
                 approved_ips = approved.addresses
                 original_hostname = approved.hostname
+            if not await self.repository.confirm_authority(task_id, lease_id):
+                raise LookupError("callback authority changed before delivery")
             body = self._body(material)
             raw_body = json.dumps(
                 body,
@@ -393,13 +425,26 @@ class CallbackDelivery:
             )
             return DeliveryOutcome(200 <= status < 300, status)
         except Exception as error:
+            failure_kind = _safe_failure_kind(error)
             LOGGER.error(
                 "callback_delivery_failed",
                 extra={
                     "correlation_id": str(current_correlation_id()),
                     "callback_task_id": task_id,
-                    "error_type": type(error).__name__,
+                    "error_type": failure_kind,
                 },
                 exc_info=(type(error), error, error.__traceback__),
             )
-            return DeliveryOutcome(False, None, type(error).__name__)
+            return DeliveryOutcome(False, None, failure_kind)
+        finally:
+            if authority_acquired:
+                try:
+                    await self.repository.release_authority(task_id, lease_id)
+                except Exception as error:
+                    LOGGER.error(
+                        "callback_authority_release_failed",
+                        extra={
+                            "callback_task_id": task_id,
+                            "error_type": type(error).__name__,
+                        },
+                    )

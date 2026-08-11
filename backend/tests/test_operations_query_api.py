@@ -95,10 +95,18 @@ class FakeOperations:
         return "13800138000"
 
 
+class FakeAuditor:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record(self, **values: object) -> None:
+        self.calls.append(values)
+
+
 def make_client(
     *,
     role: str = "viewer",
-) -> tuple[TestClient, FakeBatchQueries, FakeOperations]:
+) -> tuple[TestClient, FakeBatchQueries, FakeOperations, FakeAuditor]:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
@@ -107,15 +115,17 @@ def make_client(
     )
     batches = FakeBatchQueries()
     operations = FakeOperations()
+    auditor = FakeAuditor()
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[module.get_batch_query_service] = lambda: batches
     app.dependency_overrides[module.get_operations_query_service] = lambda: operations
+    app.dependency_overrides[module.get_sensitive_read_auditor] = lambda: auditor
     app.include_router(module.router)
-    return TestClient(app), batches, operations
+    return TestClient(app), batches, operations, auditor
 
 
 def test_viewer_batch_filters_are_locked_to_jwt_department() -> None:
-    client, batches, _ = make_client()
+    client, batches, _, auditor = make_client()
     response = client.get(
         "/api/v1/web/batches?category=notice&is_test=false&batch_no=AB12&page=2",
         headers={"Authorization": "Bearer jwt"},
@@ -127,10 +137,11 @@ def test_viewer_batch_filters_are_locked_to_jwt_department() -> None:
     assert batches.calls[0]["is_test"] is False
     assert batches.calls[0]["batch_no"] == "AB12"
     assert batches.calls[0]["page"] == 2
+    assert auditor.calls[0]["action"] == "batch_content_read"
 
 
 def test_non_admin_cannot_request_another_department() -> None:
-    client, _, _ = make_client(role="operator")
+    client, _, _, _ = make_client(role="operator")
     response = client.get(
         "/api/v1/web/batches?dept=财务部",
         headers={"Authorization": "Bearer jwt"},
@@ -140,7 +151,7 @@ def test_non_admin_cannot_request_another_department() -> None:
 
 
 def test_message_search_and_timeline_return_masked_contract() -> None:
-    client, _, operations = make_client(role="approver")
+    client, _, operations, auditor = make_client(role="approver")
     headers = {"Authorization": "Bearer jwt"}
     search = client.get(
         "/api/v1/web/messages?phone=13800138000&category=notice&status=failed&page=2&size=50",
@@ -166,10 +177,14 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
     assert values["category"] == "notice" and values["status"] == "failed"
     assert values["page"] == 2 and values["size"] == 50
     assert values["scope"] == BatchAccessScope(dept="平台部")
+    assert [call["action"] for call in auditor.calls] == [
+        "message_content_read",
+        "message_content_read",
+    ]
 
 
 def test_message_search_rejects_invalid_filters() -> None:
-    client, _, _ = make_client()
+    client, _, _, _ = make_client()
     headers = {"Authorization": "Bearer jwt"}
     bad_category = client.get(
         "/api/v1/web/messages?phone=13800138000&category=urgent",
@@ -193,14 +208,14 @@ def test_message_search_rejects_invalid_filters() -> None:
 
 
 def test_decrypt_requires_approver_or_admin_and_passes_actor_scope() -> None:
-    viewer, _, _ = make_client(role="viewer")
+    viewer, _, _, _ = make_client(role="viewer")
     denied = viewer.post(
         "/api/v1/web/messages/9/phone/decrypt",
         headers={"Authorization": "Bearer jwt"},
     )
     assert denied.status_code == 403
 
-    approver, _, operations = make_client(role="approver")
+    approver, _, operations, _ = make_client(role="approver")
     allowed = approver.post(
         "/api/v1/web/messages/9/phone/decrypt",
         headers={"Authorization": "Bearer jwt"},

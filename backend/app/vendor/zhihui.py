@@ -15,6 +15,7 @@ import httpx
 
 from app.settings import Settings, get_settings
 from app.vendor.codes import VendorErrorPolicy, policy_for
+from app.vendor.identifiers import validate_vendor_task_id
 
 LOGGER = logging.getLogger(__name__)
 PHONE_PATTERN = re.compile(r"^1\d{10}$")
@@ -44,6 +45,8 @@ class VendorTotalTimeout(VendorTransportError):
 
 class VendorProtocolError(VendorError):
     """HTTP 状态、JSON 或响应包络不符合厂商契约。"""
+
+    result_unknown = True
 
 
 class VendorApiError(VendorError):
@@ -338,7 +341,10 @@ class ZhihuiClient:
         )
         if not isinstance(response.data, str):
             raise VendorProtocolError("Send.data must be a string taskId")
-        return response.data
+        try:
+            return validate_vendor_task_id(response.data)
+        except ValueError as error:
+            raise VendorProtocolError("Send.data taskId format is invalid") from error
 
     async def get_report(self) -> PulledRecords:
         """拉取状态报告；调用方必须按先加密落原始响应再解析的协议处理。"""

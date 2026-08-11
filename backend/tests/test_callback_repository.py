@@ -10,6 +10,7 @@ import pytest
 
 import app.services.callback_repository as callback_repository_module
 from app.core.auth.accounts import SecurityPrincipal
+from app.services.callback_authority import CallbackAuthorityBusy, ensure_callback_authority_idle
 from app.services.callback_repository import (
     CallbackRetryConflict,
     CallbackTaskNotFound,
@@ -227,6 +228,42 @@ async def test_state_updates_store_only_safe_code_and_error_type(
 
 
 @pytest.mark.asyncio
+async def test_authority_contention_deferral_preserves_retry_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection([FakeResult(scalars=[9])])
+    bind(repository, connection)
+    outbox_events: list[tuple[Any, int]] = []
+
+    async def outbox(
+        _connection: object,
+        spec: Any,
+        *,
+        available_delay_seconds: int = 0,
+    ) -> object:
+        outbox_events.append((spec, available_delay_seconds))
+        return object()
+
+    monkeypatch.setattr(callback_repository_module, "enqueue_outbox", outbox)
+
+    await repository.mark_authority_busy(
+        9,
+        LEASE_ID,
+        retry_count=4,
+        delay_s=1,
+    )
+
+    sql, params = connection.calls[0]
+    assert "retry_count=retry_count+1" not in sql
+    assert "retry_count=:retry_count" in sql
+    assert "last_error='CallbackAuthorityBusy'" in sql
+    assert params["retry_count"] == 4
+    assert outbox_events[0][0].dedup_key == f"callback:9:authority-busy:{LEASE_ID}"
+    assert outbox_events[0][1] == 1
+
+
+@pytest.mark.asyncio
 async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body_column() -> None:
     repository = SqlCallbackRepository()
     finished = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
@@ -435,3 +472,109 @@ async def test_callback_cidr_policy_is_loaded_from_database() -> None:
     bind(repository, connection)
 
     assert await repository.callback_allow_cidrs() == "10.0.0.0/8,192.168.0.0/16"
+
+
+@pytest.mark.asyncio
+async def test_callback_authority_is_acquired_only_for_current_task_and_app_config() -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(scalars=[7]),
+            FakeResult(),
+        ]
+    )
+    bind(repository, connection)
+
+    assert await repository.acquire_authority(9, LEASE_ID) is True
+    await repository.release_authority(9, LEASE_ID)
+
+    assert "pg_advisory_xact_lock" in connection.calls[1][0]
+    assert connection.calls[1][1] == {"lock_subject": "callback-authority:7"}
+    acquire_sql = connection.calls[3][0]
+    assert "t.status='retrying'" in acquire_sql
+    assert "t.lease_id=:lease_id" in acquire_sql
+    assert "a.status=1" in acquire_sql
+    assert "a.callback_url=t.url" in acquire_sql
+    assert "a.callback_secret_enc=t.callback_secret_enc" in acquire_sql
+    assert "callback_report_enabled=true" in acquire_sql
+    assert "ON CONFLICT DO NOTHING" in acquire_sql
+    assert "callback_authority_lease" in connection.calls[4][0]
+
+
+@pytest.mark.asyncio
+async def test_callback_authority_contention_is_distinct_from_revocation() -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(scalars=[7]),
+        ]
+    )
+    bind(repository, connection)
+
+    with pytest.raises(CallbackAuthorityBusy):
+        await repository.acquire_authority(9, LEASE_ID)
+
+    assert "expires_at>now()" in connection.calls[4][0]
+
+    revoked_repository = SqlCallbackRepository()
+    revoked_connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+    bind(revoked_repository, revoked_connection)
+
+    assert await revoked_repository.acquire_authority(9, LEASE_ID) is False
+
+
+@pytest.mark.asyncio
+async def test_callback_authority_final_confirmation_locks_app_and_renews_lease() -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(),
+            FakeResult(scalars=[7]),
+            FakeResult(scalars=[7]),
+        ]
+    )
+    bind(repository, connection)
+
+    assert await repository.confirm_authority(9, LEASE_ID) is True
+
+    assert "pg_advisory_xact_lock" in connection.calls[1][0]
+    assert connection.calls[1][1] == {"lock_subject": "callback-authority:7"}
+    assert "FOR UPDATE OF a" not in connection.calls[2][0]
+    assert "a.callback_url=t.url" in connection.calls[2][0]
+    assert "expires_at>now()" in connection.calls[3][0]
+    assert "interval '30 seconds'" in connection.calls[3][0]
+
+
+@pytest.mark.asyncio
+async def test_callback_configuration_mutation_rejects_active_authority_lease() -> None:
+    class AuthorityConnection(FakeConnection):
+        async def scalar(self, statement: object, params: Any = None) -> object | None:
+            self.calls.append((str(statement), params))
+            return 1
+
+    connection = AuthorityConnection([FakeResult(), FakeResult(), FakeResult()])
+
+    with pytest.raises(CallbackAuthorityBusy):
+        await ensure_callback_authority_idle(connection, 7)
+
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert connection.calls[0][1] == {"lock_subject": "callback-authority:7"}
+    assert "FOR UPDATE" in connection.calls[1][0]
+    assert "expires_at<=now()" in connection.calls[2][0]
+    assert "callback_authority_lease" in connection.calls[3][0]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -32,6 +33,22 @@ class IdempotencyScope:
     @property
     def key(self) -> str:
         return f"{self.kind}:{self.id}"
+
+
+def usage_request_key(scope: IdempotencyScope, biz_id: str, date_key: str) -> str:
+    """把账本请求键绑定到与幂等相同的稳定主体，且不暴露主体或业务键。"""
+
+    if not biz_id or len(biz_id) > 32:
+        raise ValueError("biz_id length must be 1..32")
+    if len(date_key) != 8 or not date_key.isdigit():
+        raise ValueError("date_key must be YYYYMMDD")
+    digest = hashlib.sha256(
+        b"sms-platform:usage-request:v2\x00"
+        + scope.key.encode("utf-8")
+        + b"\x00"
+        + biz_id.encode("utf-8")
+    ).hexdigest()
+    return f"acceptance:v2:{digest}:{date_key}"
 
 
 @dataclass(frozen=True, slots=True)

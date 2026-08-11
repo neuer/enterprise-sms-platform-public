@@ -9,6 +9,7 @@ from app.api.apps import get_app_management_service
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.main import create_app
+from app.services.callback_authority import CallbackAuthorityBusy
 
 APP = {
     "id": 1,
@@ -117,6 +118,29 @@ def test_non_admin_cannot_manage_apps() -> None:
     )
     assert response.status_code == 403
     assert response.json()["code"] == "FORBIDDEN"
+
+
+def test_active_callback_delivery_blocks_secret_rotation_with_state_conflict() -> None:
+    class BusyService(FakeAppService):
+        async def rotate_callback_secret(
+            self,
+            app_id: int,
+            *,
+            actor: str,
+            ip: str,
+        ) -> dict[str, str]:
+            raise CallbackAuthorityBusy("回调正在投递，请稍后重试配置变更")
+
+    app = create_app()
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[get_app_management_service] = lambda: BusyService()
+    response = TestClient(app).post(
+        "/api/v1/web/admin/apps/1/rotate-callback-secret",
+        headers={"Authorization": "Bearer admin.jwt"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"
 
 
 def test_frequency_override_rejects_unknown_or_non_positive_values() -> None:

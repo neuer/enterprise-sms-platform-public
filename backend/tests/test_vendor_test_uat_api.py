@@ -112,6 +112,7 @@ def test_uat_api_accepts_recipient_id_only_and_returns_safe_operation() -> None:
     payload = {
         "recipient_id": 9,
         "app_id": 7,
+        "biz_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
         "category": "market",
         "content": "活动通知",
         "consent_confirmed": True,
@@ -131,6 +132,14 @@ def test_uat_api_accepts_recipient_id_only_and_returns_safe_operation() -> None:
     assert state.calls == 1
     assert uat.values is not None
     assert uat.values["recipient_id"] == 9
+    assert uat.values["biz_id"] == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+
+    missing_key = http.post(
+        "/api/v1/web/admin/vendor-test/messages",
+        headers=headers(),
+        json={key: value for key, value in payload.items() if key != "biz_id"},
+    )
+    assert missing_key.status_code == 400
     rendered = json.dumps(response.json()).casefold()
     for forbidden in ("phone", "mobile", "13800138000", "phone_hmac", "phone_enc"):
         assert forbidden not in rendered
@@ -172,7 +181,12 @@ def test_uat_preview_uses_selected_app_and_supports_verify_category() -> None:
 
 def test_uat_api_rejects_multiple_or_missing_content_sources() -> None:
     http, *_ = client()
-    base = {"recipient_id": 9, "app_id": 7, "category": "notice"}
+    base = {
+        "recipient_id": 9,
+        "app_id": 7,
+        "biz_id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
+        "category": "notice",
+    }
 
     missing = http.post(
         "/api/v1/web/admin/vendor-test/messages",
@@ -202,6 +216,7 @@ def test_uat_api_rejects_stale_or_blocked_state_before_creating_operation() -> N
         json={
             "recipient_id": 9,
             "app_id": 7,
+            "biz_id": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
             "category": "notice",
             "content": "维护通知",
         },
@@ -242,6 +257,7 @@ def test_uat_api_returns_same_running_operation_when_send_result_is_pending() ->
         json={
             "recipient_id": 9,
             "app_id": 7,
+            "biz_id": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1",
             "category": "notice",
             "content": "维护通知",
         },
@@ -284,6 +300,7 @@ def test_uat_api_returns_terminal_operation_restored_during_pending_recovery() -
         json={
             "recipient_id": 9,
             "app_id": 7,
+            "biz_id": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
             "category": "notice",
             "content": "维护通知",
         },
@@ -316,6 +333,7 @@ def test_uat_api_returns_safe_503_when_pending_operation_cannot_be_restored() ->
         json={
             "recipient_id": 9,
             "app_id": 7,
+            "biz_id": "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
             "category": "notice",
             "content": "维护通知",
         },

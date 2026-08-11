@@ -10,7 +10,7 @@ from threading import BoundedSemaphore, Lock
 from typing import Literal, TypeVar
 
 T = TypeVar("T")
-ExecutorPool = Literal["default", "ldap", "archive"]
+ExecutorPool = Literal["default", "ldap", "archive", "smtp"]
 
 
 class ExecutorBackpressure(RuntimeError):

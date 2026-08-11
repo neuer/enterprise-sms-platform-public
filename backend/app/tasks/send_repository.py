@@ -30,6 +30,7 @@ from app.services.vendor_test_recipient_repository import (
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
 from app.tasks.send import ChunkPayload
+from app.vendor.identifiers import vendor_identifier_pseudonym
 
 LOGGER = logging.getLogger(__name__)
 
@@ -543,6 +544,11 @@ class SqlChunkStore:
             await engine.dispose()
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None:
+        task_pseudonym = vendor_identifier_pseudonym(
+            self.crypto,
+            task_id,
+            domain="vendor-task-id",
+        )
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -555,7 +561,7 @@ class SqlChunkStore:
                         RETURNING id
                         """
                     ),
-                    {"id": chunk_id, "task_id": task_id},
+                    {"id": chunk_id, "task_id": task_pseudonym},
                 )
                 if submitted.scalar_one_or_none() is None:
                     return

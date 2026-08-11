@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import app.services.report_ingest as report_ingest_module
 from app.services.crypto import CryptoService
 from app.services.report_ingest import (
     FailureRateAlert,
@@ -58,6 +59,9 @@ class FakeRepository:
     ) -> None:
         self.events.append(("metadata", (raw_id, custom_ids, item_count)))
 
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+        return [value for value in custom_ids if value == "custom1"]
+
     async def apply_report(self, raw_id: int, report: Any) -> ReportApplyResult | None:
         self.events.append(("apply", report))
         return ReportApplyResult(8, self.changed) if self.matched else None
@@ -87,7 +91,7 @@ class FakeAlerts:
 def report() -> dict[str, Any]:
     return {
         "taskId": "task-1",
-        "customId": "custom-1",
+        "customId": "custom1",
         "phone": "13800138000",
         "reportStatus": 1,
         "reportDescription": "DELIVRD",
@@ -113,10 +117,14 @@ async def test_raw_response_is_encrypted_and_committed_before_parsing() -> None:
     assert raw_values["item_count"] == 0
     assert raw_values["http_status"] == 200
     assert raw_values["content_encoding"] == "identity"
-    assert repository.events[1][1] == (12, ["custom-1"], 1)
+    assert repository.events[1][1] == (12, ["custom1"], 1)
     parsed = repository.events[2][1]
     assert not hasattr(parsed, "phone")
     assert parsed.phone_mask == "138****8000"
+    assert parsed.match_custom_id == "custom1"
+    assert len(parsed.custom_id) == 64
+    assert len(parsed.vendor_task_id) == 64
+    assert "task-1" not in parsed.vendor_task_id
 
 
 @pytest.mark.asyncio
@@ -127,8 +135,59 @@ async def test_report_parser_tolerates_vendor_custom_id_key_typo() -> None:
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    assert repository.events[1][1] == (12, ["custom-1"], 1)
-    assert repository.events[2][1].custom_id == "custom-1"
+    assert repository.events[1][1] == (12, ["custom1"], 1)
+    assert repository.events[2][1].match_custom_id == "custom1"
+    assert len(repository.events[2][1].custom_id) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["taskId", "customId"])
+async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> None:
+    item = report() | {field: "13800138000"}
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError, match=f"{field}不得包含手机号"):
+        await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_untrusted_identifier_text_is_only_persisted_as_hmac_pseudonym() -> None:
+    item = report() | {"taskId": "OTP123456", "customId": "SecretOTP123456"}
+    repository = FakeRepository()
+
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert repository.events[1][1] == (12, [], 1)
+    parsed = repository.events[2][1]
+    assert parsed.match_custom_id == "SecretOTP123456"
+    assert len(parsed.vendor_task_id) == 64
+    assert len(parsed.custom_id) == 64
+    assert "OTP123456" not in parsed.vendor_task_id + parsed.custom_id
+
+
+@pytest.mark.asyncio
+async def test_identifier_pseudonymization_preserves_legacy_report_event_key() -> None:
+    repository = FakeRepository()
+    service = ReportIngestService(
+        FakeGateway([report()]),
+        repository,
+        crypto(),
+    )
+
+    await service.poll_once()
+
+    parsed = repository.events[2][1]
+    expected = report_ingest_module._report_event_key(
+        vendor_task_id="task-1",
+        custom_id="custom1",
+        canonical_phone_hmac=parsed.phone_hmac,
+        report_status=1,
+        report_desc="DELIVRD",
+        report_time=parsed.report_time,
+    )
+    assert parsed.event_key == expected
 
 
 @pytest.mark.asyncio

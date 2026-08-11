@@ -25,6 +25,7 @@ from app.core.errors import ApiError
 
 IP = "10.0.0.8"
 SECRET = "a-jwt-secret-that-is-long-enough-for-hs256-tests"
+TAB_ID = "b" * 32
 
 
 def account(*, must_change_password: bool) -> PlatformAccount:
@@ -289,7 +290,7 @@ def facade(
 async def test_temporary_password_login_requires_one_time_initial_change() -> None:
     service, users, tokens, hasher = facade(must_change_password=True)
 
-    result = await service.login("local", "admin", "Temporary@123", IP)
+    result = await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
 
     assert isinstance(result, PasswordChangeRequired)
     assert result.next_action == "change_password"
@@ -318,7 +319,7 @@ async def test_temporary_password_login_requires_one_time_initial_change() -> No
 async def test_normal_login_issues_account_based_access_token() -> None:
     service, users, tokens, _ = facade(must_change_password=False)
 
-    result = await service.login("local", "Admin", "Valid@Password123", IP)
+    result = await service.login("local", "Admin", "Valid@Password123", IP, TAB_ID)
 
     assert isinstance(result, LoginSuccess)
     claims = await tokens.verify(result.token)
@@ -328,7 +329,7 @@ async def test_normal_login_issues_account_based_access_token() -> None:
     assert claims.login_name == "admin"
     assert result.expires_in == 900
     assert result.refresh_expires_in == 604800
-    refreshed = await service.refresh(result.refresh_token, IP)
+    refreshed = await service.refresh(result.refresh_token, IP, TAB_ID)
     assert refreshed.refresh_token != result.refresh_token
     assert (await tokens.verify(refreshed.token)).account_id == 8
     assert users.refresh_audits == [(users.value, IP)]
@@ -355,7 +356,7 @@ async def test_account_source_conflict_does_not_record_bound_login_success() -> 
     service = AuthFacade(auth, users, JwtService(SECRET, FakeKeyValue()), FakeHasher())
 
     with pytest.raises(ApiError) as raised:
-        await service.login("ad", "admin", "Valid@Password123", IP)
+        await service.login("ad", "admin", "Valid@Password123", IP, TAB_ID)
 
     assert raised.value.code == "ACCOUNT_SOURCE_CONFLICT"
     assert auth.bound_successes == []
@@ -364,12 +365,12 @@ async def test_account_source_conflict_does_not_record_bound_login_success() -> 
 @pytest.mark.asyncio
 async def test_refresh_audit_failure_revokes_successor_session() -> None:
     service, users, tokens, _ = facade(must_change_password=False)
-    login = await service.login("local", "admin", "Valid@Password123", IP)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
     assert isinstance(login, LoginSuccess)
     users.fail_refresh_audit = True
 
     with pytest.raises(ApiError) as raised:
-        await service.refresh(login.refresh_token, IP)
+        await service.refresh(login.refresh_token, IP, TAB_ID)
 
     assert raised.value.code == "AUTH_SESSION_UNAVAILABLE"
     with pytest.raises(InvalidCredentials):
@@ -379,7 +380,7 @@ async def test_refresh_audit_failure_revokes_successor_session() -> None:
 @pytest.mark.asyncio
 async def test_facade_verify_binds_stable_audit_principal() -> None:
     service, _, _, _ = facade(must_change_password=False)
-    login = await service.login("local", "admin", "Valid@Password123", IP)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
     assert isinstance(login, LoginSuccess)
 
     with audit_principal_scope():
@@ -395,7 +396,7 @@ async def test_facade_verify_binds_stable_audit_principal() -> None:
 @pytest.mark.asyncio
 async def test_daily_password_change_checks_current_password_and_revokes_sessions() -> None:
     service, users, tokens, hasher = facade(must_change_password=False)
-    login = await service.login("local", "admin", "Valid@Password123", IP)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
     assert isinstance(login, LoginSuccess)
 
     await service.change_password(
@@ -433,7 +434,7 @@ async def test_logout_uses_refresh_family_when_access_token_has_expired() -> Non
         security_session_loader=users.load_security_session,
     )
     service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
-    login = await service.login("local", "admin", "Valid@Password123", IP)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
     assert isinstance(login, LoginSuccess)
     moments[0] += timedelta(minutes=16)
 
@@ -441,7 +442,7 @@ async def test_logout_uses_refresh_family_when_access_token_has_expired() -> Non
 
     assert users.logout_audits == [(value, IP)]
     with pytest.raises(InvalidCredentials):
-        await tokens.rotate_refresh(login.refresh_token)
+        await tokens.rotate_refresh(login.refresh_token, TAB_ID)
 
 
 @pytest.mark.asyncio
@@ -465,7 +466,8 @@ async def test_logout_revokes_bearer_and_mismatched_cookie_families(
     tokens = JwtService(SECRET, FakeKeyValue())
     service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
     bearer_family = await tokens.issue_pair(
-        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3)
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3),
+        TAB_ID,
     )
     cookie_family = await tokens.issue_pair(
         JwtClaims(
@@ -477,7 +479,8 @@ async def test_logout_revokes_bearer_and_mismatched_cookie_families(
             "平台部",
             "admin" if cookie_account_id == 8 else "viewer",
             3,
-        )
+        ),
+        TAB_ID,
     )
 
     await service.logout(bearer_family.token, IP, cookie_family.refresh_token)
@@ -485,7 +488,7 @@ async def test_logout_revokes_bearer_and_mismatched_cookie_families(
     with pytest.raises(InvalidCredentials):
         await tokens.verify(bearer_family.token)
     with pytest.raises(InvalidCredentials):
-        await tokens.rotate_refresh(cookie_family.refresh_token)
+        await tokens.rotate_refresh(cookie_family.refresh_token, TAB_ID)
     assert users.logout_audits == [(value, IP)]
 
 
@@ -517,7 +520,8 @@ async def test_logout_revokes_expired_bearer_and_mismatched_cookie_families(
     )
     service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
     bearer_family = await tokens.issue_pair(
-        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3)
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3),
+        TAB_ID,
     )
     cookie_claims = JwtClaims(
         cookie_account_id,
@@ -529,15 +533,15 @@ async def test_logout_revokes_expired_bearer_and_mismatched_cookie_families(
         "admin" if cookie_account_id == 8 else "viewer",
         3,
     )
-    cookie_family = await tokens.issue_pair(cookie_claims)
+    cookie_family = await tokens.issue_pair(cookie_claims, TAB_ID)
     moments[0] += timedelta(minutes=16)
 
     await service.logout(bearer_family.token, IP, cookie_family.refresh_token)
 
     with pytest.raises(InvalidCredentials):
-        await tokens.rotate_refresh(bearer_family.refresh_token)
+        await tokens.rotate_refresh(bearer_family.refresh_token, TAB_ID)
     with pytest.raises(InvalidCredentials):
-        await tokens.rotate_refresh(cookie_family.refresh_token)
+        await tokens.rotate_refresh(cookie_family.refresh_token, TAB_ID)
     assert len(users.logout_audits) == 1
     assert users.logout_audits[0][0].account_id == cookie_account_id
 
@@ -560,7 +564,7 @@ async def test_facade_maps_provider_errors(
     service = AuthFacade(FakeAuthService(error), users, tokens, FakeHasher())
 
     with pytest.raises(ApiError) as raised:
-        await service.login("ad", "user01", "password", IP)
+        await service.login("ad", "user01", "password", IP, TAB_ID)
 
     assert raised.value.status_code == status
     assert raised.value.code == code

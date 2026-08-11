@@ -25,6 +25,7 @@ from app.services.app_management import (
     InvalidAppConfig,
 )
 from app.services.app_repository import SqlAppRepository
+from app.services.callback_authority import CallbackAuthorityBusy
 from app.services.crypto import CryptoService
 from app.settings import get_settings
 
@@ -174,6 +175,8 @@ def _translate(error: Exception) -> ApiError:
         return ApiError(422, "INVALID_PARAM", str(error), None)
     if isinstance(error, CallbackValidationUnavailable):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
+    if isinstance(error, CallbackAuthorityBusy):
+        return ApiError(409, "STATE_CONFLICT", str(error), None)
     return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
 
 
@@ -249,7 +252,12 @@ async def get_app(
 @router.put(
     "/{id}",
     response_model=AppResponse,
-    responses={404: ERROR_RESPONSE, 422: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        422: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("app_update")
 async def update_app(
@@ -278,7 +286,12 @@ async def update_app(
             actor=actor,
             ip=ip,
         )
-    except (AppNotFound, InvalidAppConfig, CallbackValidationUnavailable) as error:
+    except (
+        AppNotFound,
+        CallbackAuthorityBusy,
+        InvalidAppConfig,
+        CallbackValidationUnavailable,
+    ) as error:
         raise _translate(error) from None
 
 
@@ -286,7 +299,7 @@ async def update_app(
     "/{id}",
     status_code=204,
     response_class=Response,
-    responses={404: ERROR_RESPONSE},
+    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
 )
 @audited("app_disable")
 async def disable_app(
@@ -302,7 +315,7 @@ async def disable_app(
     actor, ip = await _admin(request, facade, credentials)
     try:
         await service.disable(id, actor=actor, ip=ip)
-    except AppNotFound as error:
+    except (AppNotFound, CallbackAuthorityBusy) as error:
         raise _translate(error) from None
     return Response(status_code=204)
 
@@ -360,7 +373,7 @@ async def revoke_old_key(
 @router.post(
     "/{id}/rotate-callback-secret",
     response_model=RotateCallbackSecretResponse,
-    responses={404: ERROR_RESPONSE},
+    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
 )
 @audited("app_rotate_callback_secret")
 async def rotate_callback_secret(
@@ -379,5 +392,5 @@ async def rotate_callback_secret(
         result = await service.rotate_callback_secret(id, actor=actor, ip=ip)
         _no_store(response)
         return result
-    except AppNotFound as error:
+    except (AppNotFound, CallbackAuthorityBusy) as error:
         raise _translate(error) from None

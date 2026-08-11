@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from runtime_credentials import read_secret_file
 
+TAB_ID = "00000000000000000000000000000001"
 PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 UUID_PATTERN = re.compile(
     r"(?<![0-9A-Fa-f])"
@@ -207,6 +208,7 @@ class AcceptanceSuite:
                 "provider_code": "ad",
                 "username": username,
                 "password": self.mock_password,
+                "tab_id": TAB_ID,
             },
         )
         self._expect(response, 200, "SEC-01")
@@ -285,6 +287,7 @@ class AcceptanceSuite:
                 "provider_code": "ad",
                 "username": "admin01' OR '1'='1",
                 "password": self.mock_password,
+                "tab_id": TAB_ID,
             },
         )
         self._expect_error(login_injection, 401, "UNAUTHORIZED", "SEC-03")

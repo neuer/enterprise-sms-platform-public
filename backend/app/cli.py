@@ -18,7 +18,7 @@ from uuid import UUID
 
 from redis.asyncio import Redis
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.passwords import (
@@ -28,7 +28,12 @@ from app.core.auth.passwords import (
 )
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import bind_connection_audit_subject
-from app.services.crypto import PHONE_PATTERN, CryptoService, get_crypto_service
+from app.services.crypto import (
+    PHONE_PATTERN,
+    CryptoService,
+    EncryptionContext,
+    get_crypto_service,
+)
 from app.services.usage_ledger import UsageLedgerService
 from app.services.vendor_event_audit import SqlVendorEventAuditRepository
 from app.services.vendor_test_guard import (
@@ -587,33 +592,6 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
     commands.append(
         (
             """
-            INSERT INTO sms_template (
-              name, content, var_specs, dept, vendor_state, created_by
-            )
-            SELECT CAST(:name AS varchar(64)),
-                   CAST(:content AS varchar(500)),
-                   CAST(:var_specs AS jsonb),
-                   CAST(:dept AS varchar(128)),
-                   CAST(:vendor_state AS varchar(10)),
-                   'seed-dev'
-            WHERE NOT EXISTS (
-              SELECT 1 FROM sms_template
-              WHERE name = CAST(:name AS varchar(64))
-                AND dept = CAST(:dept AS varchar(128))
-            )
-            """,
-            {
-                "name": DEV_TEMPLATE.name,
-                "content": DEV_TEMPLATE.content,
-                "var_specs": json.dumps(DEV_TEMPLATE.var_specs, ensure_ascii=False),
-                "dept": DEV_TEMPLATE.dept,
-                "vendor_state": DEV_TEMPLATE.vendor_state,
-            },
-        )
-    )
-    commands.append(
-        (
-            """
             INSERT INTO sms_sign (name, vendor_state, created_by)
             VALUES (:name, :vendor_state, 'seed-dev')
             ON CONFLICT (name) DO UPDATE SET vendor_state = EXCLUDED.vendor_state
@@ -624,12 +602,77 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
     return tuple(commands)
 
 
-async def seed_database(engine: AsyncEngine, api_keys: Mapping[str, str]) -> None:
+async def seed_dev_template(
+    connection: AsyncConnection,
+    crypto: CryptoService,
+) -> None:
+    """使用模板稳定 ID 绑定密文；seed 参数与 SQL 均不得出现正文。"""
+
+    existing_id = await connection.scalar(
+        text(
+            """
+            SELECT id FROM sms_template
+            WHERE created_by='seed-dev'
+              AND dept=CAST(:dept AS varchar(128))
+            """
+        ),
+        {"dept": DEV_TEMPLATE.dept},
+    )
+    if existing_id is not None:
+        return
+    template_id = int(await connection.scalar(text("SELECT nextval('sms_template_id_seq')")))
+    content_enc = crypto.encrypt_bound_packed_text(
+        DEV_TEMPLATE.content,
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id=str(template_id),
+        ),
+    )
+    name_enc = crypto.encrypt_bound_packed_text(
+        DEV_TEMPLATE.name,
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id=str(template_id),
+        ),
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO sms_template(
+              id,name,name_enc,content,content_enc,var_specs,dept,vendor_state,created_by
+            ) VALUES(
+              :id,'[encrypted]',:name_enc,'[encrypted]',:content_enc,
+              CAST(:var_specs AS jsonb),CAST(:dept AS varchar(128)),
+              CAST(:vendor_state AS varchar(10)),'seed-dev'
+            )
+            """
+        ),
+        {
+            "id": template_id,
+            "name_enc": name_enc,
+            "content_enc": content_enc,
+            "var_specs": json.dumps(DEV_TEMPLATE.var_specs, ensure_ascii=False),
+            "dept": DEV_TEMPLATE.dept,
+            "vendor_state": DEV_TEMPLATE.vendor_state,
+        },
+    )
+
+
+async def seed_database(
+    engine: AsyncEngine,
+    api_keys: Mapping[str, str],
+    crypto: CryptoService,
+) -> None:
     """在单个事务内幂等写入全部开发数据。"""
 
     async with engine.begin() as connection:
         for sql, params in seed_commands(api_keys):
             await connection.execute(text(sql), params)
+        await seed_dev_template(connection, crypto)
 
 
 def write_dev_api_keys(destination: Path, api_keys: Mapping[str, str]) -> None:
@@ -665,6 +708,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
     )
     try:
         commands = seed_commands(api_keys)
+        crypto = CryptoService.from_settings(settings)
         auth_command_count = 2 + len(DEV_USERS)
         async with auth_engine.begin() as connection:
             for sql, params in commands[:auth_command_count]:
@@ -672,6 +716,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
         async with accept_engine.begin() as connection:
             for sql, params in commands[auth_command_count:]:
                 await connection.execute(text(sql), params)
+            await seed_dev_template(connection, crypto)
     finally:
         await auth_engine.dispose()
         await accept_engine.dispose()

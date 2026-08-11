@@ -98,6 +98,9 @@ def test_shanghai_boundaries_are_explicit_and_timezone_aware() -> None:
         "acceptance:3:"
         "6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628"
         ":20260726",
+        "acceptance:v2:"
+        "6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628"
+        ":20260811",
         "acceptance:123e4567-e89b-42d3-a456-426614174000",
         "legacy:batch:cbfc7a12676741399d36bf52390f0fb1",
     ],

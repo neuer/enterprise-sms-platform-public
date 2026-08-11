@@ -57,6 +57,10 @@ from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRender
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaService
 from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
+from app.services.sensitive_read_audit import (
+    SensitiveReadAuditor,
+    get_sensitive_read_auditor,
+)
 from app.services.sign import SignResolver
 from app.services.sign_repository import SqlSignRepository
 from app.services.template import TemplateParamMismatch
@@ -378,6 +382,8 @@ def _enqueue_import(import_id: str) -> None:
     response_model=BatchPageModel,
 )
 async def list_web_batches(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[BatchQueryService, Depends(get_batch_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -395,7 +401,7 @@ async def list_web_batches(
 ) -> dict[str, object]:
     claims = await _reader(facade, credentials)
     try:
-        return await service.list_batches(
+        result = await service.list_batches(
             scope=_query_scope(claims, dept),
             category=category,
             status=status,
@@ -410,6 +416,15 @@ async def list_web_batches(
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    items = result.get("items", [])
+    await auditor.record(
+        action="batch_content_read",
+        object_type="batch_page",
+        object_id="list",
+        ip=trusted_client_ip(request),
+        count=len(items) if isinstance(items, list) else 0,
+    )
+    return result
 
 
 @router.get(
@@ -417,6 +432,8 @@ async def list_web_batches(
     response_model=MessageQueryPageModel,
 )
 async def search_web_messages(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -445,6 +462,13 @@ async def search_web_messages(
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    await auditor.record(
+        action="message_content_read",
+        object_type="message_page",
+        object_id="search",
+        ip=trusted_client_ip(request),
+        count=len(result.items),
+    )
     return MessageQueryPageModel(
         total=result.total,
         items=[
@@ -470,6 +494,8 @@ async def search_web_messages(
     response_model=TimelineModel,
 )
 async def message_timeline(
+    request: Request,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -487,6 +513,13 @@ async def message_timeline(
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    await auditor.record(
+        action="message_content_read",
+        object_type="message_timeline",
+        object_id="timeline",
+        ip=trusted_client_ip(request),
+        count=len(result.events),
+    )
     return TimelineModel(
         badge=PhoneBadgeModel(
             blacklisted=result.badge.blacklisted,

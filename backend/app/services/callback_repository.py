@@ -21,6 +21,10 @@ from app.services.callback import (
     CallbackTaskRef,
     MessageReportData,
 )
+from app.services.callback_authority import (
+    CallbackAuthorityBusy,
+    lock_callback_authority,
+)
 from app.services.callback_worker import CallbackClaim, CallbackLeaseLost
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -561,6 +565,21 @@ class SqlCallbackRepository:
                     },
                 )
                 renewed = result.scalar_one_or_none() is not None
+                if renewed:
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE callback_authority_lease
+                            SET expires_at=now()+make_interval(secs=>:lease_seconds)
+                            WHERE task_id=:task_id AND lease_id=:lease_id
+                            """
+                        ),
+                        {
+                            "task_id": task_id,
+                            "lease_id": lease_id,
+                            "lease_seconds": lease_seconds,
+                        },
+                    )
         finally:
             await engine.dispose()
         if not renewed:
@@ -584,6 +603,60 @@ class SqlCallbackRepository:
             """,
             {"task_id": task_id, "lease_id": lease_id, "http_code": http_code},
         )
+
+    async def mark_authority_busy(
+        self,
+        task_id: int,
+        lease_id: UUID,
+        *,
+        retry_count: int,
+        delay_s: int,
+    ) -> None:
+        """同一应用的并发投递只延期，不消耗外部投递重试次数。"""
+
+        engine = self._engine()
+        deferred = False
+        try:
+            async with engine.begin() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        UPDATE callback_task SET status='retrying',
+                          next_retry_at=now()+make_interval(secs=>:delay_s),
+                          lease_id=NULL,lease_expires_at=NULL,
+                          last_http_code=NULL,last_error='CallbackAuthorityBusy'
+                        WHERE id=:task_id AND status='retrying'
+                          AND retry_count=:retry_count
+                          AND lease_id=:lease_id AND lease_expires_at>now()
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "task_id": task_id,
+                        "lease_id": lease_id,
+                        "retry_count": retry_count,
+                        "delay_s": delay_s,
+                    },
+                )
+                deferred = result.scalar_one_or_none() is not None
+                if deferred:
+                    await enqueue_outbox(
+                        connection,
+                        OutboxEventSpec(
+                            event_type="callback.ready",
+                            aggregate_type="callback_task",
+                            aggregate_id=str(task_id),
+                            task_name="app.tasks.deliver_callback",
+                            queue="callback",
+                            args=(task_id,),
+                            dedup_key=f"callback:{task_id}:authority-busy:{lease_id}",
+                        ),
+                        available_delay_seconds=delay_s,
+                    )
+        finally:
+            await engine.dispose()
+        if not deferred:
+            await self._fencing_miss(task_id, lease_id)
 
     async def mark_retry(
         self,
@@ -849,5 +922,132 @@ class SqlCallbackRepository:
                         ),
                     )
                 raise ValueError("unsupported callback event")
+        finally:
+            await engine.dispose()
+
+    async def acquire_authority(
+        self,
+        task_id: int,
+        lease_id: UUID,
+    ) -> bool:
+        """短事务内锁定 app 并登记最长 30 秒的在途权限租约。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                app_result = await connection.execute(
+                    text(
+                        """
+                        SELECT t.app_id FROM callback_task t
+                        WHERE t.id=:task_id
+                        """
+                    ),
+                    {"task_id": task_id},
+                )
+                app_id = app_result.scalar_one_or_none()
+                if app_id is None:
+                    return False
+                await lock_callback_authority(connection, int(app_id))
+                await connection.execute(
+                    text(
+                        "DELETE FROM callback_authority_lease "
+                        "WHERE app_id=:app_id AND expires_at<=now()"
+                    ),
+                    {"app_id": app_id},
+                )
+                inserted = await connection.execute(
+                    text(
+                        """
+                        INSERT INTO callback_authority_lease(
+                          app_id,task_id,lease_id,expires_at
+                        )
+                        SELECT t.app_id,t.id,:lease_id,now()+interval '30 seconds'
+                        FROM callback_task t JOIN app a ON a.id=t.app_id
+                        WHERE t.id=:task_id AND t.status='retrying'
+                          AND t.lease_id=:lease_id AND t.lease_expires_at>now()
+                          AND a.status=1 AND a.callback_url=t.url
+                          AND a.callback_secret_enc=t.callback_secret_enc
+                          AND (t.event<>'message.report' OR a.callback_report_enabled=true)
+                        ON CONFLICT DO NOTHING RETURNING app_id
+                        """
+                    ),
+                    {"task_id": task_id, "lease_id": lease_id},
+                )
+                if inserted.scalar_one_or_none() is not None:
+                    return True
+                busy = await connection.execute(
+                    text(
+                        "SELECT 1 FROM callback_authority_lease "
+                        "WHERE app_id=:app_id AND expires_at>now()"
+                    ),
+                    {"app_id": app_id},
+                )
+                if busy.scalar_one_or_none() is not None:
+                    raise CallbackAuthorityBusy("callback authority lease is busy")
+                return False
+        finally:
+            await engine.dispose()
+
+    async def release_authority(self, task_id: int, lease_id: UUID) -> None:
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "DELETE FROM callback_authority_lease "
+                        "WHERE task_id=:task_id AND lease_id=:lease_id"
+                    ),
+                    {"task_id": task_id, "lease_id": lease_id},
+                )
+        finally:
+            await engine.dispose()
+
+    async def confirm_authority(self, task_id: int, lease_id: UUID) -> bool:
+        """DNS 校验后再次串行化 app 变更，并把授权覆盖到有界 POST 完成。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                current = await connection.execute(
+                    text("SELECT app_id FROM callback_task WHERE id=:task_id"),
+                    {"task_id": task_id},
+                )
+                app_id = current.scalar_one_or_none()
+                if app_id is None:
+                    return False
+                await lock_callback_authority(connection, int(app_id))
+                current = await connection.execute(
+                    text(
+                        """
+                        SELECT a.id FROM callback_task t JOIN app a ON a.id=t.app_id
+                        WHERE t.id=:task_id AND t.status='retrying'
+                          AND t.lease_id=:lease_id AND t.lease_expires_at>now()
+                          AND a.status=1 AND a.callback_url=t.url
+                          AND a.callback_secret_enc=t.callback_secret_enc
+                          AND (t.event<>'message.report' OR a.callback_report_enabled=true)
+                        """
+                    ),
+                    {"task_id": task_id, "lease_id": lease_id},
+                )
+                confirmed_app_id = current.scalar_one_or_none()
+                if confirmed_app_id is None:
+                    return False
+                renewed = await connection.execute(
+                    text(
+                        """
+                        UPDATE callback_authority_lease
+                        SET expires_at=now()+interval '30 seconds'
+                        WHERE app_id=:app_id AND task_id=:task_id
+                          AND lease_id=:lease_id AND expires_at>now()
+                        RETURNING app_id
+                        """
+                    ),
+                    {
+                        "app_id": confirmed_app_id,
+                        "task_id": task_id,
+                        "lease_id": lease_id,
+                    },
+                )
+                return renewed.scalar_one_or_none() is not None
         finally:
             await engine.dispose()

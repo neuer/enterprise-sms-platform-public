@@ -50,6 +50,9 @@ class FakeRepository:
     ) -> None:
         self.events.append(("metadata", (raw_id, custom_ids, item_count)))
 
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+        return [value for value in custom_ids if value == "custom1"]
+
     async def store_reply(self, raw_id: int, reply: Any) -> None:
         self.events.append(("store", reply))
 
@@ -63,7 +66,7 @@ class FakeRepository:
 def reply() -> dict[str, Any]:
     return {
         "taskId": "task-1",
-        "customId ": "custom-1",
+        "customId ": "custom1",
         "phone": "13800138000",
         "extCode": "01",
         "contents": "TD",
@@ -88,12 +91,14 @@ async def test_complete_raw_is_committed_before_protected_reply_parsing() -> Non
     assert raw_values["item_count"] == 0
     assert raw_values["http_status"] == 200
     assert raw_values["content_encoding"] == "identity"
-    assert repository.events[1][1] == (23, ["custom-1"], 1)
+    assert repository.events[1][1] == (23, ["custom1"], 1)
     assert b"13800138000" not in raw_values["payload_enc"]
     protected = repository.events[2][1]
     assert not hasattr(protected, "phone")
     assert protected.phone_mask == "138****8000"
-    assert protected.custom_id == "custom-1"
+    assert protected.match_custom_id == "custom1"
+    assert protected.custom_id is not None and len(protected.custom_id) == 64
+    assert len(protected.vendor_task_id) == 64
     assert crypto().decrypt_bound_packed_text(
         protected.content_enc,
         EncryptionContext(
@@ -126,6 +131,61 @@ async def test_reply_content_masks_embedded_phone_before_projection_persistence(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["taskId", "customId "])
+async def test_reply_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> None:
+    item = reply() | {field: "13800138000"}
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError):
+        await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert not any(event[0] == "store" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_reply_ext_code_enforces_vendor_digit_contract() -> None:
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError, match="extCode must be at most 6 digits"):
+        await ReplyIngestService(
+            FakeGateway([reply() | {"extCode": "12AB"}]),
+            repository,
+            crypto(),
+        ).poll_once()
+
+    assert not any(event[0] == "store" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_reply_ext_code_is_not_persisted_as_plaintext_otp_metadata() -> None:
+    repository = FakeRepository()
+
+    await ReplyIngestService(
+        FakeGateway([reply() | {"extCode": "123456"}]),
+        repository,
+        crypto(),
+    ).poll_once()
+
+    protected = next(value for event, value in repository.events if event == "store")
+    assert protected.ext_code == ""
+
+
+@pytest.mark.asyncio
+async def test_reply_identifier_text_is_only_persisted_as_hmac_pseudonym() -> None:
+    repository = FakeRepository()
+    item = reply() | {"taskId": "OTP123456", "customId ": "SecretOTP123456"}
+
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert repository.events[1][1] == (23, [], 1)
+    protected = next(value for event, value in repository.events if event == "store")
+    assert protected.match_custom_id == "SecretOTP123456"
+    assert len(protected.vendor_task_id) == 64
+    assert protected.custom_id is not None and len(protected.custom_id) == 64
+    assert "OTP123456" not in protected.vendor_task_id + protected.custom_id
+
+
+@pytest.mark.asyncio
 async def test_reply_event_key_stays_stable_across_hmac_rotation_and_time_offsets() -> None:
     before = FakeRepository()
     after = FakeRepository()
@@ -154,7 +214,7 @@ async def test_reply_event_key_is_keyed_and_not_an_offline_content_oracle() -> N
         "\x1f".join(
             (
                 "task-1",
-                "custom-1",
+                "custom1",
                 crypto().hmac_candidates("13800138000")[1],
                 "TD",
                 "2026-07-12T00:00:00.000000Z",
