@@ -376,6 +376,13 @@ class UsageLedgerPort(Protocol):
         event_id: str,
     ) -> bool: ...
 
+    async def request_unlinked_release(
+        self,
+        reservation_id: UUID,
+        *,
+        event_id: str,
+    ) -> bool: ...
+
 
 class QueuePublisher(Protocol):
     async def enqueue(self, batch_no: str, queue: str) -> None: ...
@@ -619,7 +626,7 @@ class SendPipeline:
 
         if request.resend_of is not None:
             return IdempotencyScope("resend", request.resend_of)
-        if request.channel == "web" and not request.vendor_test_uat:
+        if request.channel == "web":
             if not isinstance(request.actor, SecurityPrincipal):
                 raise ValueError("Web 发送必须绑定稳定账号")
             return IdempotencyScope(
@@ -958,7 +965,7 @@ class SendPipeline:
             ):
                 return
             try:
-                await self.usage_ledger.request_release(
+                await self.usage_ledger.request_unlinked_release(
                     usage_reservation_id,
                     event_id=f"usage:{usage_reservation_id}:{reason}",
                 )

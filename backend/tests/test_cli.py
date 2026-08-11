@@ -121,12 +121,13 @@ async def test_template_seed_persists_only_object_bound_ciphertext() -> None:
     await module.seed_dev_template(connection, crypto)
 
     insert_sql, insert_params = connection.calls[-1]
-    assert "CAST(:name AS varchar(64))" in insert_sql
+    assert "'[encrypted]'" in insert_sql
     assert "CAST(:dept AS varchar(128))" in insert_sql
     assert "CAST(:vendor_state AS varchar(10))" in insert_sql
     assert "content='[encrypted]'" not in insert_sql
     assert "'[encrypted]'" in insert_sql
     assert module.DEV_TEMPLATE.content not in str(insert_params)
+    assert module.DEV_TEMPLATE.name not in str(insert_params)
     assert isinstance(insert_params, dict)
     assert crypto.decrypt_bound_packed_text(
         insert_params["content_enc"],
@@ -137,6 +138,15 @@ async def test_template_seed_persists_only_object_bound_ciphertext() -> None:
             object_id="17",
         ),
     ) == module.DEV_TEMPLATE.content
+    assert crypto.decrypt_bound_packed_text(
+        insert_params["name_enc"],
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    ) == module.DEV_TEMPLATE.name
 
 
 def test_api_key_file_is_atomic_json_and_owner_only(tmp_path: Path) -> None:

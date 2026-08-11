@@ -247,6 +247,7 @@ export type VendorStepUpOperation =
 export interface VendorTestUatPayload {
   recipient_id: number
   app_id: number
+  biz_id: string
   category: "verify" | "notice" | "market"
   content?: string
   template_id?: number
@@ -256,18 +257,36 @@ export interface VendorTestUatPayload {
   remark?: string
 }
 
-export type VendorTestUatPreviewPayload = Omit<VendorTestUatPayload, "recipient_id" | "remark">
+export type VendorTestUatPreviewPayload = Omit<
+  VendorTestUatPayload,
+  "recipient_id" | "remark" | "biz_id"
+>
 
 interface VendorApiErrorBody {
   code?: string
   message?: string
 }
 
+export class VendorRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string,
+  ) {
+    super(message)
+    this.name = "VendorRequestError"
+  }
+}
+
 async function vendorRequest<T>(path: string, init: RequestInit): Promise<T> {
   const response = await authorizedFetch(`/api/v1/web/admin/vendor-test${path}`, init)
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as VendorApiErrorBody
-    throw new Error(body.message || body.code || `请求失败（${response.status}）`)
+    throw new VendorRequestError(
+      response.status,
+      body.code,
+      body.message || body.code || `请求失败（${response.status}）`,
+    )
   }
   const cacheControl = response.headers.get("cache-control")?.toLowerCase() || ""
   if (!cacheControl.split(",").some((value) => value.trim() === "no-store")) {

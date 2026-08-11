@@ -17,6 +17,8 @@ from app.main import create_app
 from app.services.auth_provider import ProviderSummary
 from app.settings import Settings
 
+TAB_ID = "c" * 32
+
 
 def user() -> PlatformAccount:
     return PlatformAccount(
@@ -36,13 +38,13 @@ def user() -> PlatformAccount:
 
 class FakeAuthFacade:
     def __init__(self) -> None:
-        self.login_calls: list[tuple[str, str, str, str]] = []
+        self.login_calls: list[tuple[str, str, str, str, str]] = []
         self.initial_changes: list[tuple[str, str, str]] = []
         self.daily_changes: list[tuple[str, str, str, str]] = []
         self.logout_tokens: list[str] = []
         self.logout_calls: list[tuple[str, str, str | None]] = []
         self.force_calls: list[tuple[str, str, str]] = []
-        self.refresh_calls: list[tuple[str, str]] = []
+        self.refresh_calls: list[tuple[str, str, str]] = []
 
     async def list_providers(self) -> tuple[ProviderSummary, ...]:
         return (
@@ -65,8 +67,9 @@ class FakeAuthFacade:
         username: str,
         password: str,
         ip: str,
+        tab_id: str,
     ) -> LoginSuccess | PasswordChangeRequired:
-        self.login_calls.append((provider_code, username, password, ip))
+        self.login_calls.append((provider_code, username, password, ip, tab_id))
         if provider_code == "disabled":
             raise ApiError(403, "AUTH_PROVIDER_DISABLED", "所选认证源未启用", None)
         if password == "temporary":
@@ -81,8 +84,8 @@ class FakeAuthFacade:
             user(),
         )
 
-    async def refresh(self, refresh_token: str, ip: str) -> LoginSuccess:
-        self.refresh_calls.append((refresh_token, ip))
+    async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
+        self.refresh_calls.append((refresh_token, ip, tab_id))
         if refresh_token != "refresh.jwt":
             raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None)
         return LoginSuccess(
@@ -157,6 +160,7 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
             "provider_code": "local",
             "username": "operator01",
             "password": "correct",
+            "tab_id": TAB_ID,
         },
     )
 
@@ -186,7 +190,7 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     refreshed = response_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": "http://testserver"},
-        json={},
+        json={"tab_id": TAB_ID},
     )
     assert refreshed.status_code == 200
     assert refreshed.headers["cache-control"] == "no-store"
@@ -196,6 +200,14 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     assert "sms_refresh_token=rotated-refresh.jwt" in refreshed_cookie
     assert "HttpOnly" in refreshed_cookie
     assert vars(auth_api.refresh)["__audited_action__"] == "session_refresh"
+
+    missing_tab = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={},
+    )
+    assert missing_tab.status_code == 400
+    assert missing_tab.json()["code"] == "INVALID_PARAM"
 
     missing_source = response_client.post(
         "/api/v1/web/auth/login",
@@ -215,6 +227,7 @@ def test_temporary_login_and_both_password_change_endpoints() -> None:
             "provider_code": "local",
             "username": "operator01",
             "password": "temporary",
+            "tab_id": TAB_ID,
         },
     )
 
@@ -232,13 +245,18 @@ def test_cookie_refresh_rejects_cross_origin_request() -> None:
     response_client = client(facade)
     response_client.post(
         "/api/v1/web/auth/login",
-        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+        json={
+            "provider_code": "local",
+            "username": "operator01",
+            "password": "correct",
+            "tab_id": TAB_ID,
+        },
     )
 
     denied = response_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": "http://evil.example"},
-        json={},
+        json={"tab_id": TAB_ID},
     )
     assert denied.status_code == 403
     assert denied.json()["code"] == "FORBIDDEN"
@@ -259,13 +277,18 @@ def test_cookie_refresh_rejects_malformed_origin_with_stable_403(origin: str) ->
     response_client = client(facade)
     response_client.post(
         "/api/v1/web/auth/login",
-        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+        json={
+            "provider_code": "local",
+            "username": "operator01",
+            "password": "correct",
+            "tab_id": TAB_ID,
+        },
     )
 
     denied = response_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": origin},
-        json={},
+        json={"tab_id": TAB_ID},
     )
     assert denied.status_code == 403
     assert denied.json()["code"] == "FORBIDDEN"
@@ -299,7 +322,12 @@ def test_login_uses_standard_error_envelope_for_credentials_and_provider_state()
 
     failed = response_client.post(
         "/api/v1/web/auth/login",
-        json={"provider_code": "local", "username": "unknown", "password": "wrong"},
+        json={
+            "provider_code": "local",
+            "username": "unknown",
+            "password": "wrong",
+            "tab_id": TAB_ID,
+        },
     )
     disabled = response_client.post(
         "/api/v1/web/auth/login",
@@ -307,6 +335,7 @@ def test_login_uses_standard_error_envelope_for_credentials_and_provider_state()
             "provider_code": "disabled",
             "username": "unknown",
             "password": "correct",
+            "tab_id": TAB_ID,
         },
     )
 
@@ -396,7 +425,12 @@ def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
 
     login = response_client.post(
         "/api/v1/web/auth/login",
-        json={"provider_code": "local", "username": "operator01", "password": "correct"},
+        json={
+            "provider_code": "local",
+            "username": "operator01",
+            "password": "correct",
+            "tab_id": TAB_ID,
+        },
     )
     assert login.status_code == 200
     assert "Secure" in login.headers.get("set-cookie", "")

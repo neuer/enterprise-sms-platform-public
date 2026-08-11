@@ -612,11 +612,11 @@ async def seed_dev_template(
         text(
             """
             SELECT id FROM sms_template
-            WHERE name=CAST(:name AS varchar(64))
+            WHERE created_by='seed-dev'
               AND dept=CAST(:dept AS varchar(128))
             """
         ),
-        {"name": DEV_TEMPLATE.name, "dept": DEV_TEMPLATE.dept},
+        {"dept": DEV_TEMPLATE.dept},
     )
     if existing_id is not None:
         return
@@ -630,13 +630,22 @@ async def seed_dev_template(
             object_id=str(template_id),
         ),
     )
+    name_enc = crypto.encrypt_bound_packed_text(
+        DEV_TEMPLATE.name,
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id=str(template_id),
+        ),
+    )
     await connection.execute(
         text(
             """
             INSERT INTO sms_template(
-              id,name,content,content_enc,var_specs,dept,vendor_state,created_by
+              id,name,name_enc,content,content_enc,var_specs,dept,vendor_state,created_by
             ) VALUES(
-              :id,CAST(:name AS varchar(64)),'[encrypted]',:content_enc,
+              :id,'[encrypted]',:name_enc,'[encrypted]',:content_enc,
               CAST(:var_specs AS jsonb),CAST(:dept AS varchar(128)),
               CAST(:vendor_state AS varchar(10)),'seed-dev'
             )
@@ -644,7 +653,7 @@ async def seed_dev_template(
         ),
         {
             "id": template_id,
-            "name": DEV_TEMPLATE.name,
+            "name_enc": name_enc,
             "content_enc": content_enc,
             "var_specs": json.dumps(DEV_TEMPLATE.var_specs, ensure_ascii=False),
             "dept": DEV_TEMPLATE.dept,

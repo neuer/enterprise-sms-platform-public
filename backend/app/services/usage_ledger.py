@@ -1260,6 +1260,46 @@ class UsageLedgerService:
             )
             return changed
 
+    async def request_unlinked_release(
+        self,
+        reservation_id: UUID,
+        *,
+        event_id: str,
+    ) -> bool:
+        """仅补偿尚未绑定批次的受理预留；与批次提交按行锁串行。"""
+
+        engine = self._engine()
+        async with engine.begin() as connection:
+            selected = await connection.execute(
+                text(
+                    """
+                    SELECT state FROM usage_reservation
+                    WHERE id=:reservation_id FOR UPDATE
+                    """
+                ),
+                {"reservation_id": reservation_id},
+            )
+            row = selected.mappings().one_or_none()
+            if row is None:
+                raise UsageReservationConflict("usage reservation unavailable")
+            # 单独语句获得锁后的新 READ COMMITTED 快照；避免等待并发 batch
+            # 提交时，LEFT JOIN 沿用等待前快照而误判为未绑定。
+            linked = await connection.scalar(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM sms_batch "
+                    "WHERE usage_reservation_id=:reservation_id)"
+                ),
+                {"reservation_id": reservation_id},
+            )
+            if linked:
+                return False
+            changed, _ = await _request_release(
+                connection,
+                reservation_id=reservation_id,
+                event_id=event_id,
+            )
+            return changed
+
     async def apply_release(self, reservation_id: UUID) -> int:
         """Outbox effect：覆盖全部受影响绝对投影，成功后才标记 released。"""
 

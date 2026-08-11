@@ -12,6 +12,11 @@ from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
+from app.vendor.identifiers import (
+    protect_vendor_custom_id,
+    protect_vendor_task_id,
+    validate_vendor_custom_id,
+)
 from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
 
 LOGGER = logging.getLogger(__name__)
@@ -26,6 +31,7 @@ class ProtectedReport:
     event_key: str
     vendor_task_id: str
     custom_id: str
+    match_custom_id: str
     phone_enc: bytes
     phone_hmac: str
     phone_mask: str
@@ -68,6 +74,8 @@ class ReportRepository(Protocol):
         custom_ids: list[str],
         item_count: int,
     ) -> None: ...
+
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]: ...
 
     async def apply_report(
         self,
@@ -212,12 +220,18 @@ class ReportIngestService:
         hmac_candidates = self.crypto.hmac_candidates(phone)
         phone_hmacs = tuple(hmac_candidates.values())
         report_desc = mask_phone_text(str(value["reportDescription"]))[:128]
-        vendor_task_id = str(value["taskId"]).strip()
-        custom_id = str(value["customId"]).strip()
+        raw_task_id, vendor_task_id = protect_vendor_task_id(
+            self.crypto,
+            value["taskId"],
+        )
+        match_custom_id, custom_id = protect_vendor_custom_id(
+            self.crypto,
+            value["customId"],
+        )
         return ProtectedReport(
             event_key=_report_event_key(
-                vendor_task_id=vendor_task_id,
-                custom_id=custom_id,
+                vendor_task_id=raw_task_id,
+                custom_id=match_custom_id,
                 canonical_phone_hmac=hmac_candidates[min(hmac_candidates)],
                 report_status=status,
                 report_desc=report_desc,
@@ -225,6 +239,7 @@ class ReportIngestService:
             ),
             vendor_task_id=vendor_task_id,
             custom_id=custom_id,
+            match_custom_id=match_custom_id,
             phone_enc=protected.phone_enc,
             phone_hmac=protected.phone_hmac,
             phone_mask=protected.phone_mask,
@@ -270,12 +285,13 @@ class ReportIngestService:
         if isinstance(data, list) and all(isinstance(item, dict) for item in data):
             custom_ids = sorted(
                 {
-                    str(normalized["customId"]).strip()
+                    validate_vendor_custom_id(normalized["customId"])
                     for item in data
                     if (normalized := _normalized(item)).get("customId")
                     and isinstance(normalized["customId"], str)
                 }
             )
+            custom_ids = await self.repository.filter_known_custom_ids(custom_ids)
             await self.repository.update_metadata(
                 raw_id,
                 custom_ids=custom_ids,

@@ -117,6 +117,7 @@ async def test_registration_records_deterministic_source_before_file_staging(
     assert "'staging'" in sql
     assert "source_file,source_size,parse_status" in sql
     assert params["source_file"] == f"import-{import_id}.smsx"
+    assert params["filename"] == "upload.csv"
     assert stored.status == "staging"
     assert stored.source_file == f"import-{import_id}.smsx"
 

@@ -18,6 +18,17 @@ from app.core.runtime_resources import bind_connection_system_audit, database_en
 from app.services.imports import ImportPhone, ImportResult
 from app.settings import Settings, get_settings
 
+_IMPORT_SUFFIXES = frozenset({".csv", ".xlsx"})
+
+
+def canonical_import_filename(filename: str) -> str:
+    """持久化仅保留解析所需的非敏感文件类型。"""
+
+    suffix = Path(filename).suffix.casefold()
+    if suffix not in _IMPORT_SUFFIXES:
+        raise ValueError("unsupported import file type")
+    return f"upload{suffix}"
+
 
 class ImportStateConflict(RuntimeError):
     pass
@@ -128,7 +139,7 @@ class SqlImportRepository:
                         "creator": principal.login_name,
                         "creator_account_id": principal.account_id,
                         "creator_identity_id": principal.identity_id,
-                        "filename": Path(filename).name[:256],
+                        "filename": canonical_import_filename(filename),
                         "valid": len(result.valid),
                         "invalid": result.invalid,
                         "duplicate": result.duplicate,
@@ -264,7 +275,7 @@ class SqlImportRepository:
                         "creator": principal.login_name,
                         "account_id": principal.account_id,
                         "identity_id": principal.identity_id,
-                        "filename": Path(filename).name[:256],
+                        "filename": canonical_import_filename(filename),
                         "source_file": source_file,
                         "source_size": source_size,
                         "expire_hours": expire_hours,

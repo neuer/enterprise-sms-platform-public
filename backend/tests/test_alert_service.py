@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import io
+import smtplib
+import time
 from typing import Any
 
 import pytest
 
 import app.core.jobtrack as jobtrack_module
+import app.services.alert as alert_module
 import app.services.uncertain_repository as uncertain_repository_module
 import app.tasks.poll_balance as poll_balance_module
 from app.services.alert import AlertRouting, AlertService, SmtpRouting
@@ -232,3 +236,24 @@ def test_existing_alert_producers_depend_on_unified_sql_service() -> None:
     assert vars(jobtrack_module)["SqlAlertService"] is SqlAlertService
     assert vars(poll_balance_module)["SqlAlertService"] is SqlAlertService
     assert vars(uncertain_repository_module)["SqlAlertService"] is SqlAlertService
+
+
+def test_smtp_protocol_enforces_absolute_deadline_and_aggregate_reply_limit() -> None:
+    class Socket:
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+    expired = object.__new__(alert_module._DeadlineSmtp)
+    expired._deadline = time.monotonic() - 1
+    expired.sock = Socket()
+    expired.file = io.BytesIO(b"250 ok\r\n")
+    with pytest.raises(TimeoutError, match="absolute deadline"):
+        expired.getreply()
+
+    oversized = object.__new__(alert_module._DeadlineSmtp)
+    oversized._deadline = time.monotonic() + 10
+    oversized.sock = Socket()
+    line = b"250-" + (b"x" * 7990) + b"\r\n"
+    oversized.file = io.BytesIO(line * 9 + b"250 ok\r\n")
+    with pytest.raises(smtplib.SMTPResponseException, match="Reply too large"):
+        oversized.getreply()

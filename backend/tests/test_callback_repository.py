@@ -10,6 +10,7 @@ import pytest
 
 import app.services.callback_repository as callback_repository_module
 from app.core.auth.accounts import SecurityPrincipal
+from app.services.callback_authority import CallbackAuthorityBusy, ensure_callback_authority_idle
 from app.services.callback_repository import (
     CallbackRetryConflict,
     CallbackTaskNotFound,
@@ -435,3 +436,66 @@ async def test_callback_cidr_policy_is_loaded_from_database() -> None:
     bind(repository, connection)
 
     assert await repository.callback_allow_cidrs() == "10.0.0.0/8,192.168.0.0/16"
+
+
+@pytest.mark.asyncio
+async def test_callback_authority_is_acquired_only_for_current_task_and_app_config() -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(),
+            FakeResult(scalars=[7]),
+            FakeResult(),
+        ]
+    )
+    bind(repository, connection)
+
+    assert await repository.acquire_authority(9, LEASE_ID) is True
+    await repository.release_authority(9, LEASE_ID)
+
+    acquire_sql = connection.calls[2][0]
+    assert "t.status='retrying'" in acquire_sql
+    assert "t.lease_id=:lease_id" in acquire_sql
+    assert "a.status=1" in acquire_sql
+    assert "a.callback_url=t.url" in acquire_sql
+    assert "a.callback_secret_enc=t.callback_secret_enc" in acquire_sql
+    assert "callback_report_enabled=true" in acquire_sql
+    assert "ON CONFLICT DO NOTHING" in acquire_sql
+    assert "callback_authority_lease" in connection.calls[3][0]
+
+
+@pytest.mark.asyncio
+async def test_callback_authority_final_confirmation_locks_app_and_renews_lease() -> None:
+    repository = SqlCallbackRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(scalars=[7]),
+            FakeResult(scalars=[7]),
+        ]
+    )
+    bind(repository, connection)
+
+    assert await repository.confirm_authority(9, LEASE_ID) is True
+
+    assert "FOR UPDATE OF a" in connection.calls[0][0]
+    assert "a.callback_url=t.url" in connection.calls[0][0]
+    assert "expires_at>now()" in connection.calls[1][0]
+    assert "interval '30 seconds'" in connection.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_callback_configuration_mutation_rejects_active_authority_lease() -> None:
+    class AuthorityConnection(FakeConnection):
+        async def scalar(self, statement: object, params: Any = None) -> object | None:
+            self.calls.append((str(statement), params))
+            return 1
+
+    connection = AuthorityConnection([FakeResult(), FakeResult()])
+
+    with pytest.raises(CallbackAuthorityBusy):
+        await ensure_callback_authority_idle(connection, 7)
+
+    assert "FOR UPDATE" in connection.calls[0][0]
+    assert "expires_at<=now()" in connection.calls[1][0]
+    assert "callback_authority_lease" in connection.calls[2][0]

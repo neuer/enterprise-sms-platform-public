@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.runtime_resources import database_engine
 from app.services.app_management import AppNotFound
+from app.services.callback_authority import ensure_callback_authority_idle
 from app.settings import Settings, get_settings
 
 APP_COLUMNS = """
@@ -167,6 +168,7 @@ class SqlAppRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await ensure_callback_authority_idle(connection, app_id)
                 result = await connection.execute(
                     text(
                         f"""
@@ -214,6 +216,7 @@ class SqlAppRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await ensure_callback_authority_idle(connection, app_id)
                 result = await connection.execute(
                     text(
                         """
@@ -298,6 +301,7 @@ class SqlAppRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await ensure_callback_authority_idle(connection, app_id)
                 result = await connection.execute(
                     text(
                         """

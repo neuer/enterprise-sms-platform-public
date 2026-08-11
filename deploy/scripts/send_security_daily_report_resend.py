@@ -6,11 +6,12 @@ import http.client
 import json
 import os
 import re
+import signal
 import ssl
 import sys
 import time
-from collections.abc import Callable, Sequence
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,7 @@ RESEND_HOST = "api.resend.com"
 RESEND_PORT = 443
 RESEND_PATH = "/emails"
 RESEND_TIMEOUT_S = 10.0
+RESEND_ABSOLUTE_DEADLINE_S = 15.0
 MAX_RESPONSE_BYTES = 64 * 1024
 MAX_HTML_BYTES = 256 * 1024
 MAX_TEXT_BYTES = 128 * 1024
@@ -93,19 +95,38 @@ class ResendHttpsTransport:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         self._context = context
 
-    def post(self, *, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
-        connection = http.client.HTTPSConnection(
-            RESEND_HOST,
-            RESEND_PORT,
-            timeout=RESEND_TIMEOUT_S,
-            context=self._context,
-        )
+    @staticmethod
+    @contextmanager
+    def _absolute_deadline(seconds: float) -> Iterator[None]:
+        """Linux 单进程 mailer 的可执行总截止，覆盖 DNS/TCP/TLS/读写。"""
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def expired(_signum: int, _frame: object) -> None:
+            raise TimeoutError("Resend absolute deadline exceeded")
+
+        signal.signal(signal.SIGALRM, expired)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
         try:
-            connection.request("POST", RESEND_PATH, body=body, headers=headers)
-            response = connection.getresponse()
-            response_body = response.read(MAX_RESPONSE_BYTES + 1)
+            yield
         finally:
-            connection.close()
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    def post(self, *, headers: dict[str, str], body: bytes) -> tuple[int, bytes]:
+        with self._absolute_deadline(RESEND_ABSOLUTE_DEADLINE_S):
+            connection = http.client.HTTPSConnection(
+                RESEND_HOST,
+                RESEND_PORT,
+                timeout=RESEND_TIMEOUT_S,
+                context=self._context,
+            )
+            try:
+                connection.request("POST", RESEND_PATH, body=body, headers=headers)
+                response = connection.getresponse()
+                response_body = response.read(MAX_RESPONSE_BYTES + 1)
+            finally:
+                connection.close()
         if len(response_body) > MAX_RESPONSE_BYTES:
             raise ResendDeliveryError("Resend response exceeded the safe size limit")
         return response.status, response_body

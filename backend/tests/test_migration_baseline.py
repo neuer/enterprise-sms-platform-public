@@ -981,6 +981,80 @@ def test_round3_migration_encrypts_templates_and_archives_metadata_before_redact
     ) == "联系13900139000"
 
 
+def test_round4_migration_pseudonymizes_vendor_metadata_and_guards_raw_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0065_security_scan_round4.py"
+    source = revision.read_text(encoding="utf-8")
+    for fragment in (
+        "ck_sms_chunk_vendor_task_pseudonym",
+        "ck_report_event_custom_pseudonym",
+        "ck_reply_event_ext_code_redacted",
+        "CREATE OR REPLACE FUNCTION enforce_raw_vendor_custom_ids()",
+        "trg_raw_vendor_custom_ids",
+    ):
+        assert fragment in schema
+        assert fragment in source
+
+    spec = importlib.util.spec_from_file_location("round4_revision", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    key = base64.b64encode(b"v" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    created_at = datetime(2026, 8, 11, tzinfo=UTC)
+    connection = BackfillConnection(
+        [
+            [{"id": 1, "vendor_task_id": "task-phone-13800138000"}],
+            [],
+            [
+                {
+                    "event_key": "a" * 64,
+                    "vendor_task_id": "task-1",
+                    "custom_id": "otp123456",
+                }
+            ],
+            [],
+            [
+                {
+                    "event_key": "b" * 64,
+                    "vendor_task_id": "task-2",
+                    "custom_id": "contentfragment",
+                }
+            ],
+            [],
+            [{"id": 2, "created_at": created_at, "vendor_task_id": "task-2"}],
+            [],
+            [{"id": 3, "vendor_task_id": "task-3", "custom_id": "legacy"}],
+            [],
+        ]
+    )
+    monkeypatch.setattr(module.op, "get_bind", lambda: connection)
+
+    module._pseudonymize_vendor_metadata(crypto)
+
+    updates = [params for sql, params in connection.calls if sql.lstrip().startswith("UPDATE")]
+    assert len(updates) == 5
+    assert all(params is not None for params in updates)
+    serialized = str(updates)
+    for plaintext in (
+        "13800138000",
+        "otp123456",
+        "contentfragment",
+        "legacy",
+    ):
+        assert plaintext not in serialized
+    fingerprints = [
+        value
+        for params in updates
+        for key, value in params.items()
+        if key in {"vendor_task_id", "custom_id"}
+    ]
+    assert len(fingerprints) == 8
+    assert all(isinstance(value, str) and len(value) == 64 for value in fingerprints)
+
+
 def test_security_daily_generation_source_migration_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0045_security_daily_source.py"

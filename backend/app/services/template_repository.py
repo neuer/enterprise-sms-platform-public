@@ -12,7 +12,7 @@ from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.core.sensitive_text import mask_phone_in_text
-from app.services.content_protection import decrypt_template_content
+from app.services.content_protection import decrypt_template_content, decrypt_template_name
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -20,7 +20,7 @@ from app.services.template_management import TemplateRecord
 from app.settings import Settings, get_settings
 
 SELECT_FIELDS = """
-SELECT id,name,content_enc,COALESCE(var_specs,'[]'::jsonb) var_specs,dept,
+SELECT id,name_enc,content_enc,COALESCE(var_specs,'[]'::jsonb) var_specs,dept,
   vendor_template_id,vendor_state,vendor_reject_reason
 FROM sms_template
 """
@@ -30,7 +30,7 @@ def _record(row: Any, crypto: CryptoService) -> TemplateRecord:
     template_id = int(row["id"])
     return TemplateRecord(
         template_id,
-        str(row["name"]),
+        decrypt_template_name(crypto, row["name_enc"], template_id),
         decrypt_template_content(crypto, row["content_enc"], template_id),
         list(row["var_specs"] or []),
         str(row["dept"]),
@@ -93,7 +93,6 @@ class SqlTemplateRepository:
         actor: str,
     ) -> TemplateRecord:
         values: dict[str, Any] = {
-            "name": name,
             "var_specs": var_specs,
             "dept": dept,
             "actor": actor,
@@ -113,19 +112,29 @@ class SqlTemplateRepository:
                         object_id=str(template_id),
                     ),
                 )
+                name_enc = self._crypto().encrypt_bound_packed_text(
+                    name,
+                    EncryptionContext(
+                        domain="sms-template-name",
+                        table="sms_template",
+                        column="name_enc",
+                        object_id=str(template_id),
+                    ),
+                )
                 await connection.execute(
                     text(
                         """
                         INSERT INTO sms_template(
-                          id,name,content,content_enc,var_specs,dept,
+                          id,name,name_enc,content,content_enc,var_specs,dept,
                           vendor_template_id,vendor_state,created_by
-                        ) VALUES(:id,:name,'[encrypted]',:content_enc,
+                        ) VALUES(:id,'[encrypted]',:name_enc,'[encrypted]',:content_enc,
                           CAST(:var_specs AS jsonb),:dept,
                           NULL,'pending',:actor)
                         """
                     ),
                     {
                         "id": template_id,
+                        "name_enc": name_enc,
                         "content_enc": content_enc,
                         **values,
                         "var_specs": json.dumps(values["var_specs"]),
@@ -150,7 +159,15 @@ class SqlTemplateRepository:
         actor: str,
     ) -> TemplateRecord | None:
         values: dict[str, Any] = {
-            "name": name,
+            "name_enc": self._crypto().encrypt_bound_packed_text(
+                name,
+                EncryptionContext(
+                    domain="sms-template-name",
+                    table="sms_template",
+                    column="name_enc",
+                    object_id=str(template_id),
+                ),
+            ),
             "content_enc": self._crypto().encrypt_bound_packed_text(
                 content,
                 EncryptionContext(
@@ -169,7 +186,8 @@ class SqlTemplateRepository:
                 changed = await connection.execute(
                     text(
                         """
-                        UPDATE sms_template SET name=:name,content='[encrypted]',
+                        UPDATE sms_template SET name='[encrypted]',name_enc=:name_enc,
+                          content='[encrypted]',
                           content_enc=:content_enc,
                           var_specs=CAST(:var_specs AS jsonb),
                           vendor_template_id=NULL,

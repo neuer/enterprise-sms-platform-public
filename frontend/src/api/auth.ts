@@ -1,3 +1,9 @@
+import {
+  beginRefreshTabBinding,
+  clearRefreshTabBinding,
+  getRefreshTabBinding,
+} from "./sessionTokens"
+
 export type UserRole = "admin" | "approver" | "operator" | "viewer"
 
 export interface AuthProvider {
@@ -85,20 +91,30 @@ export async function loginRequest(
   username: string,
   password: string,
 ): Promise<LoginResponse> {
-  const response = await fetch("/api/v1/web/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider_code: providerCode, username, password }),
-  })
-  if (!response.ok) throw await apiError(response)
-  return (await response.json()) as LoginResponse
+  const tabId = beginRefreshTabBinding()
+  try {
+    const response = await fetch("/api/v1/web/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider_code: providerCode, username, password, tab_id: tabId }),
+    })
+    if (!response.ok) throw await apiError(response)
+    return (await response.json()) as LoginResponse
+  } catch (error) {
+    clearRefreshTabBinding()
+    throw error
+  }
 }
 
 export async function refreshRequest(signal?: AbortSignal): Promise<LoginSuccess> {
+  const tabId = getRefreshTabBinding()
+  if (!tabId) {
+    throw new AuthApiError(401, "UNAUTHORIZED", "当前标签页会话绑定缺失，请重新登录")
+  }
   const response = await fetch("/api/v1/web/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ tab_id: tabId }),
     signal,
   })
   if (!response.ok) throw await apiError(response)

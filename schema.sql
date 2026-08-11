@@ -459,7 +459,10 @@ CREATE TABLE sms_chunk (
     submitting_since TIMESTAMPTZ,
     uncertain_since TIMESTAMPTZ,
     UNIQUE (batch_id, chunk_no),
-    CONSTRAINT chk_chunk_vendor_attempt_count CHECK (vendor_attempt_count >= 0)
+    CONSTRAINT chk_chunk_vendor_attempt_count CHECK (vendor_attempt_count >= 0),
+    CONSTRAINT ck_sms_chunk_vendor_task_pseudonym CHECK (
+      vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
+    )
 );
 CREATE INDEX idx_chunk_taskid    ON sms_chunk(vendor_task_id);
 CREATE INDEX idx_chunk_retry_due ON sms_chunk(retry_not_before) WHERE status = 'retrying';
@@ -638,12 +641,16 @@ CREATE TABLE sms_reply (
     phone_hmac     CHAR(64)    NOT NULL,
     phone_mask     VARCHAR(11) NOT NULL,
     key_version    SMALLINT    NOT NULL DEFAULT 1,
-    ext_code       VARCHAR(8),
+    ext_code       VARCHAR(8) NOT NULL DEFAULT '',
     content        VARCHAR(500) NOT NULL DEFAULT '[encrypted]',
     reply_time     TIMESTAMPTZ,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id, created_at),
-    CONSTRAINT ck_sms_reply_content_marker CHECK (content='[encrypted]')
+    CONSTRAINT ck_sms_reply_content_marker CHECK (content='[encrypted]'),
+    CONSTRAINT ck_sms_reply_vendor_task_pseudonym CHECK (
+      vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
+    ),
+    CONSTRAINT ck_sms_reply_ext_code_redacted CHECK (ext_code='')
 ) PARTITION BY RANGE (created_at);
 CREATE INDEX idx_reply_hmac ON sms_reply(phone_hmac, created_at);
 CREATE INDEX idx_reply_event ON sms_reply(event_key);
@@ -678,6 +685,28 @@ CREATE INDEX idx_raw_fetched ON raw_vendor_log(fetched_at);
 -- GIN 索引支持 uncertain 分片按无PII customId 元数据比对
 CREATE INDEX idx_raw_custom_ids ON raw_vendor_log USING GIN (custom_ids);
 
+CREATE OR REPLACE FUNCTION enforce_raw_vendor_custom_ids()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
+DECLARE candidate TEXT;
+BEGIN
+  FOREACH candidate IN ARRAY NEW.custom_ids LOOP
+    IF candidate !~ '^[A-Za-z0-9]{32}$'
+       OR NOT EXISTS (
+         SELECT 1 FROM public.sms_chunk c WHERE trim(c.custom_id)=candidate
+       ) THEN
+      RAISE EXCEPTION 'raw vendor customId is not a known platform identifier'
+        USING ERRCODE='23514';
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION enforce_raw_vendor_custom_ids() FROM PUBLIC;
+CREATE TRIGGER trg_raw_vendor_custom_ids
+BEFORE INSERT OR UPDATE OF custom_ids ON raw_vendor_log
+FOR EACH ROW EXECUTE FUNCTION enforce_raw_vendor_custom_ids();
+
 -- ─────────────── 厂商事件事实与单调投影（v1.6.29） ───────────────
 -- 两张 event 表只追加；raw_id=NULL 仅用于升级时从历史投影回填的兼容事实。
 CREATE TABLE report_event (
@@ -696,7 +725,11 @@ CREATE TABLE report_event (
                     CHECK (message_status IN ('delivered','failed','unknown','other')),
     report_desc     VARCHAR(128) NOT NULL DEFAULT '',
     report_time     TIMESTAMPTZ NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_report_event_vendor_task_pseudonym
+      CHECK (vendor_task_id ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT ck_report_event_custom_pseudonym
+      CHECK (custom_id ~ '^[0-9a-f]{64}$')
 );
 CREATE INDEX idx_report_event_raw ON report_event(raw_id);
 CREATE INDEX idx_report_event_custom ON report_event(custom_id,report_time);
@@ -727,13 +760,18 @@ CREATE TABLE reply_event (
                     CHECK (phone_hmac ~ '^[0-9a-f]{64}$'),
     phone_mask      VARCHAR(11) NOT NULL,
     key_version     SMALLINT    NOT NULL CHECK (key_version>0),
-    ext_code        VARCHAR(8),
+    ext_code        VARCHAR(8) NOT NULL DEFAULT '',
     content         VARCHAR(500) NOT NULL DEFAULT '[encrypted]',
     content_enc     BYTEA NOT NULL,
     reply_time      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_reply_event_content_marker CHECK (content='[encrypted]'),
-    CONSTRAINT ck_reply_event_key_version CHECK (event_key_version>0)
+    CONSTRAINT ck_reply_event_key_version CHECK (event_key_version>0),
+    CONSTRAINT ck_reply_event_vendor_task_pseudonym
+      CHECK (vendor_task_id ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT ck_reply_event_custom_pseudonym
+      CHECK (custom_id IS NULL OR custom_id ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT ck_reply_event_ext_code_redacted CHECK (ext_code='')
 );
 CREATE INDEX idx_reply_event_raw ON reply_event(raw_id);
 CREATE INDEX idx_reply_event_time ON reply_event(reply_time);
@@ -760,7 +798,13 @@ CREATE TABLE unmatched_report (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uk_unmatched_report_event UNIQUE(event_key),
     CONSTRAINT fk_unmatched_report_event
-      FOREIGN KEY(event_key) REFERENCES report_event(event_key) ON DELETE RESTRICT
+      FOREIGN KEY(event_key) REFERENCES report_event(event_key) ON DELETE RESTRICT,
+    CONSTRAINT ck_unmatched_vendor_task_pseudonym CHECK (
+      vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
+    ),
+    CONSTRAINT ck_unmatched_custom_pseudonym CHECK (
+      custom_id IS NULL OR custom_id ~ '^[0-9a-f]{64}$'
+    )
 );
 CREATE INDEX idx_unmatched_hmac ON unmatched_report(phone_hmac, created_at);
 CREATE INDEX idx_unmatched_time ON unmatched_report(created_at);
@@ -787,7 +831,7 @@ CREATE TABLE import_task (
     creator      VARCHAR(64) NOT NULL,                    -- 事件时登录名快照
     creator_account_id BIGINT REFERENCES user_account(id) ON DELETE RESTRICT,
     creator_identity_id BIGINT,
-    filename     VARCHAR(256),
+    filename     VARCHAR(256) NOT NULL,
     valid_cnt    INTEGER     NOT NULL DEFAULT 0,
     invalid_cnt  INTEGER     NOT NULL DEFAULT 0,
     dup_cnt      INTEGER     NOT NULL DEFAULT 0,
@@ -823,6 +867,8 @@ CREATE TABLE import_task (
       REFERENCES sms_batch(id) ON DELETE RESTRICT,
     CONSTRAINT uk_import_reservation_id UNIQUE (reservation_id),
     CONSTRAINT uk_import_consumed_batch UNIQUE (consumed_batch_id),
+    CONSTRAINT ck_import_task_canonical_filename
+      CHECK (filename IN ('upload.csv','upload.xlsx')),
     CONSTRAINT ck_import_task_state
       CHECK (state IN ('ready','reserved','consumed')),
     CONSTRAINT ck_import_parse_status
@@ -969,7 +1015,8 @@ CREATE INDEX idx_approval_approver_account
 -- ─────────────── 模板与签名 ───────────────
 CREATE TABLE sms_template (
     id                   BIGSERIAL PRIMARY KEY,
-    name                 VARCHAR(64)  NOT NULL,
+    name                 VARCHAR(64)  NOT NULL DEFAULT '[encrypted]', -- 固定非敏感标记
+    name_enc             BYTEA        NOT NULL,           -- 模板 ID 绑定 AES-GCM
     content              VARCHAR(500) NOT NULL DEFAULT '[encrypted]', -- 固定非敏感标记
     content_enc          BYTEA        NOT NULL,           -- 模板定义：版本头+上下文 AES-GCM
     var_specs            JSONB,                           -- 变量声明,如 [{"pos":1,"max_len":10},{"pos":2,"max_len":6}]
@@ -983,6 +1030,7 @@ CREATE TABLE sms_template (
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT ck_sms_template_content_marker CHECK (content='[encrypted]'),
+    CONSTRAINT ck_sms_template_name_marker CHECK (name='[encrypted]'),
     CONSTRAINT ck_sms_template_reject_reason_no_phone CHECK (
       vendor_reject_reason IS NULL
       OR vendor_reject_reason !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
@@ -1116,6 +1164,15 @@ CREATE INDEX idx_cb_pending ON callback_task(status, next_retry_at)
 CREATE INDEX idx_cb_lease_expiry ON callback_task(lease_expires_at,id)
     WHERE lease_id IS NOT NULL;
 CREATE INDEX idx_cb_event_keys ON callback_task USING GIN(event_keys);
+
+CREATE TABLE callback_authority_lease (
+    app_id      BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE CASCADE,
+    task_id     BIGINT NOT NULL UNIQUE REFERENCES callback_task(id) ON DELETE CASCADE,
+    lease_id    UUID NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+REVOKE ALL ON callback_authority_lease FROM PUBLIC;
 
 -- 回调配置撤销与旧任务隔离必须和 app 更新处于同一数据库事务；
 -- SECURITY DEFINER 只由触发器调用，避免给 sms_accept callback_task UPDATE 权限。
@@ -2084,6 +2141,7 @@ GRANT SELECT ON
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
     sms_sign, blacklist, sensitive_word, callback_report_event, callback_task,
+    callback_authority_lease,
     worker_lease_event, balance_snapshot, alert_log, outbox_event,
     usage_reservation, usage_frequency_subject, usage_frequency_alias,
     usage_quota_entry, usage_frequency_entry, usage_projection,
@@ -2105,6 +2163,7 @@ GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
 GRANT INSERT ON callback_task, alert_log TO sms_accept;
+GRANT DELETE ON callback_authority_lease TO sms_accept;
 GRANT INSERT, DELETE ON vendor_test_recipient_hmac_alias TO sms_accept;
 GRANT INSERT, UPDATE ON
     outbox_event, vendor_test_daily_usage, vendor_test_send_attempt,
@@ -2170,7 +2229,7 @@ TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。
 GRANT SELECT ON
-    app, sms_message, callback_report_event, callback_task,
+    app, sms_message, callback_report_event, callback_task, callback_authority_lease,
     worker_lease_event, alert_log, outbox_event, sys_config, job_run
 TO sms_callback;
 GRANT SELECT (
@@ -2178,6 +2237,7 @@ GRANT SELECT (
     delivered, failed, unknown_cnt, updated_at
 ) ON sms_batch TO sms_callback;
 GRANT INSERT, UPDATE, DELETE ON callback_report_event, callback_task TO sms_callback;
+GRANT INSERT, DELETE ON callback_authority_lease TO sms_callback;
 GRANT INSERT, UPDATE ON outbox_event, alert_log, job_run TO sms_callback;
 GRANT INSERT ON worker_lease_event, audit_log TO sms_callback;
 GRANT USAGE, SELECT ON SEQUENCE

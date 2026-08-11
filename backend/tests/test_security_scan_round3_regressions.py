@@ -191,6 +191,9 @@ def test_schema_requires_encrypted_template_content_and_blocks_phone_metadata() 
     ).read_text(encoding="utf-8")
     assert "content_enc          BYTEA        NOT NULL" in schema
     assert "ck_sms_template_content_marker" in schema
+    assert "name_enc             BYTEA        NOT NULL" in schema
+    assert "ck_sms_template_name_marker" in schema
+    assert "ck_import_task_canonical_filename" in schema
     for constraint in (
         "ck_sms_batch_remark_no_phone",
         "ck_blacklist_remark_no_phone",

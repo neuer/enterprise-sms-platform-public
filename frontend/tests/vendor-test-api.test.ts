@@ -59,6 +59,7 @@ describe("真实联调前端 API", () => {
     await sendVendorTestUat({
       recipient_id: 9,
       app_id: 7,
+      biz_id: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
       category: "notice",
       content: "维护通知",
       consent_confirmed: false,

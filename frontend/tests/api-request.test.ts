@@ -3,8 +3,11 @@ import { afterEach, beforeEach, vi } from "vitest"
 import { apiRequest, authorizedFetch } from "../src/api/webMessages"
 import {
   clearAccessSession,
+  clearRefreshTabBinding,
   getAccessToken,
   getSessionUser,
+  REFRESH_TAB_ID_KEY,
+  setAccessSession,
 } from "../src/api/sessionTokens"
 import {
   createLocalUser,
@@ -30,6 +33,7 @@ function invalidJsonResponse(status: number) {
 }
 
 describe("统一 API 请求", () => {
+  const tabId = "d".repeat(32)
   const unauthorizedListeners: EventListener[] = []
 
   function watchUnauthorized() {
@@ -43,6 +47,8 @@ describe("统一 API 请求", () => {
     localStorage.clear()
     sessionStorage.clear()
     clearAccessSession()
+    clearRefreshTabBinding()
+    sessionStorage.setItem(REFRESH_TAB_ID_KEY, tabId)
     vi.unstubAllGlobals()
     vi.useRealTimers()
   })
@@ -109,7 +115,7 @@ describe("统一 API 请求", () => {
 
     expect(fetch).toHaveBeenCalledTimes(3)
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/auth/refresh")
-    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({})
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({ tab_id: tabId })
     expect(fetch.mock.calls[2][1].headers).toMatchObject({
       Authorization: "Bearer access-2",
     })
@@ -162,6 +168,51 @@ describe("统一 API 请求", () => {
     expect(
       fetch.mock.calls.filter(([url]) => url === "/api/v1/web/auth/refresh"),
     ).toHaveLength(1)
+  })
+
+  it("refresh 返回不同稳定主体时清空旧标签且不重放原请求", async () => {
+    const originalUser = {
+      account_id: 7,
+      identity_id: 17,
+      provider_code: "local",
+      username: "operator",
+      display_name: "操作员",
+      dept: "业务部",
+      role: "operator" as const,
+    }
+    const replacementUser = {
+      ...originalUser,
+      account_id: 8,
+      identity_id: 18,
+      username: "admin",
+      role: "admin" as const,
+    }
+    setAccessSession("expired", originalUser)
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(
+        response(
+          {
+            token: "admin-access",
+            expires_in: 900,
+            refresh_expires_in: 604800,
+            user: replacementUser,
+          },
+          200,
+        ),
+      )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
+      "UNAUTHORIZED",
+    )
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(getAccessToken()).toBeNull()
+    expect(getSessionUser()).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
   })
 
   it("refresh 状态服务故障时保留会话并显式返回 503", async () => {

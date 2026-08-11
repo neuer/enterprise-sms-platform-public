@@ -4,9 +4,51 @@ import type { PlatformUser } from "./auth"
 
 const TOKEN_KEY = "sms_token"
 const USER_KEY = "sms_user"
+export const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
+const REFRESH_TAB_ID_PATTERN = /^[0-9a-f]{32}$/
 
 let accessToken: string | null = null
 let sessionUser: PlatformUser | null = null
+let refreshTabId: string | null = null
+
+function newRefreshTabId(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")
+}
+
+export function beginRefreshTabBinding(): string {
+  refreshTabId = newRefreshTabId()
+  try {
+    sessionStorage.setItem(REFRESH_TAB_ID_KEY, refreshTabId)
+  } catch {
+    // 受限存储环境仅保留当前页面内存绑定；刷新页面后必须重新登录。
+  }
+  return refreshTabId
+}
+
+export function getRefreshTabBinding(): string | null {
+  if (refreshTabId && REFRESH_TAB_ID_PATTERN.test(refreshTabId)) return refreshTabId
+  try {
+    const stored = sessionStorage.getItem(REFRESH_TAB_ID_KEY)
+    if (stored && REFRESH_TAB_ID_PATTERN.test(stored)) {
+      refreshTabId = stored
+      return stored
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+export function clearRefreshTabBinding(): void {
+  refreshTabId = null
+  try {
+    sessionStorage.removeItem(REFRESH_TAB_ID_KEY)
+  } catch {
+    // 内存状态已经清除。
+  }
+}
 
 function migrateLegacyStorage(): void {
   const legacyToken = sessionStorage.getItem(TOKEN_KEY)

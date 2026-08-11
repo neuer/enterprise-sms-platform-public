@@ -99,8 +99,18 @@ class FakeEngine:
 
 
 def chunk_store() -> SqlChunkStore:
+    class FingerprintCrypto:
+        def stable_hmac_fingerprint(
+            self,
+            value: bytes,
+            *,
+            domain: str,
+        ) -> tuple[int, str]:
+            assert value and domain == "vendor-task-id"
+            return 1, "f" * 64
+
     return SqlChunkStore(
-        object(),  # type: ignore[arg-type]
+        FingerprintCrypto(),  # type: ignore[arg-type]
         settings=cast(
             Any,
             SimpleNamespace(
@@ -888,6 +898,9 @@ async def test_submitted_and_uncertain_transitions_clear_submitting_timestamp(
     await store.mark_submitted(7, "task-1")
 
     assert "submitting_since=NULL" in connection.calls[0][0]
+    task_pseudonym = str(connection.calls[0][1]["task_id"])
+    assert len(task_pseudonym) == 64
+    assert "task-1" not in task_pseudonym
     assert connection.calls[1][1] == {"chunk_id": 7, "status": "confirmed"}
 
     uncertain_connection = SequenceConnection(

@@ -10,6 +10,7 @@ import smtplib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from email.message import EmailMessage
+from time import monotonic
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
@@ -25,6 +26,58 @@ WECOM_HOST = "qyapi.weixin.qq.com"
 WECOM_PATH = "/cgi-bin/webhook/send"
 WECOM_DEADLINE_S = 5.0
 WECOM_MAX_RESPONSE_BYTES = 4096
+SMTP_DEADLINE_S = 10.0
+SMTP_MAX_REPLY_BYTES = 64 * 1024
+SMTP_MAX_REPLY_LINES = 100
+SMTP_MAX_LINE_BYTES = 8192
+
+
+class _DeadlineSmtp(smtplib.SMTP):
+    """为同步 SMTP 对话施加单调总截止与响应上限。"""
+
+    def __init__(self, host: str, port: int, *, deadline_s: float) -> None:
+        self._deadline = monotonic() + deadline_s
+        super().__init__(host, port, timeout=min(5.0, deadline_s))
+
+    def _remaining(self) -> float:
+        remaining = self._deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("SMTP absolute deadline exceeded")
+        return min(5.0, remaining)
+
+    def send(self, data: Any) -> None:
+        if self.sock is not None:
+            self.sock.settimeout(self._remaining())
+        super().send(data)
+
+    def getreply(self) -> tuple[int, bytes]:
+        if self.file is None:
+            if self.sock is None:
+                raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+            self.file = self.sock.makefile("rb")
+        lines: list[bytes] = []
+        total = 0
+        while True:
+            if self.sock is not None:
+                self.sock.settimeout(self._remaining())
+            line = self.file.readline(SMTP_MAX_LINE_BYTES + 1)
+            if not line:
+                raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+            if len(line) > SMTP_MAX_LINE_BYTES:
+                raise smtplib.SMTPResponseException(500, b"Line too long.")
+            total += len(line)
+            if total > SMTP_MAX_REPLY_BYTES or len(lines) >= SMTP_MAX_REPLY_LINES:
+                raise smtplib.SMTPResponseException(500, b"Reply too large.")
+            lines.append(line.rstrip(b"\r\n"))
+            try:
+                code = int(line[:3])
+            except ValueError:
+                raise smtplib.SMTPServerDisconnected(
+                    "Server sent an invalid SMTP reply"
+                ) from None
+            if line[3:4] != b"-":
+                break
+        return code, b"\n".join(item[4:] for item in lines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,11 +290,20 @@ class SmtpChannel:
         message["From"] = routing.sender
         message["To"] = ", ".join(routing.recipients)
         message.set_content(json.dumps(event.detail, ensure_ascii=False, sort_keys=True))
-        with smtplib.SMTP(routing.host, routing.port, timeout=5) as client:
+        client = _DeadlineSmtp(routing.host, routing.port, deadline_s=SMTP_DEADLINE_S)
+        try:
             client.send_message(message)
+        finally:
+            client.close()
 
     async def send(self, routing: SmtpRouting, event: AlertEvent) -> None:
-        await run_bounded(self._send_sync, routing, event, timeout_s=10)
+        await run_bounded(
+            self._send_sync,
+            routing,
+            event,
+            timeout_s=SMTP_DEADLINE_S + 2,
+            pool="smtp",
+        )
 
 
 class AlertService:

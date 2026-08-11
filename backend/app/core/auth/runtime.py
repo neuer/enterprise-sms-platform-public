@@ -181,6 +181,7 @@ class AuthFacade:
         login_name: str,
         password: str,
         ip: str,
+        tab_id: str,
     ) -> LoginSuccess | PasswordChangeRequired:
         try:
             identity = await self.auth.authenticate(
@@ -239,7 +240,7 @@ class AuthFacade:
             )
             return PasswordChangeRequired(change_token)
         try:
-            pair = await self.tokens.issue_pair(self._claims(user))
+            pair = await self.tokens.issue_pair(self._claims(user), tab_id)
         except SessionStateUnavailable:
             raise ApiError(
                 503,
@@ -249,11 +250,11 @@ class AuthFacade:
             ) from None
         return self._login_success(pair, user)
 
-    async def refresh(self, refresh_token: str, ip: str) -> LoginSuccess:
+    async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
         """轮换后持久审计；审计失败时吊销刚签发的整个会话。"""
 
         try:
-            pair = await self.tokens.rotate_refresh(refresh_token)
+            pair = await self.tokens.rotate_refresh(refresh_token, tab_id)
             claims = await self.tokens.verify(pair.token)
         except InvalidCredentials:
             raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None) from None

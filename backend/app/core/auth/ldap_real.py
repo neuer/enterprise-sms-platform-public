@@ -19,6 +19,37 @@ from app.core.auth.backends import (
 )
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
+LDAP_MAX_RESPONSE_BYTES = 256 * 1024
+LDAP_MAX_SCALAR_BYTES = 4096
+LDAP_MAX_GROUPS = 256
+LDAP_MAX_GROUP_BYTES = 1024
+LDAP_MAX_GROUP_TOTAL_BYTES = 64 * 1024
+
+
+class _ReceiveBudgetSocket:
+    """在 ldap3 ASN.1 解析前限制一个连接可接收的 LDAP 字节数。"""
+
+    def __init__(self, wrapped: Any, limit: int = LDAP_MAX_RESPONSE_BYTES) -> None:
+        self._wrapped = wrapped
+        self._remaining = limit
+
+    def recv(self, size: int, *args: object) -> bytes:
+        data = bytes(self._wrapped.recv(min(size, self._remaining + 1), *args))
+        self._remaining -= len(data)
+        if self._remaining < 0:
+            raise OSError("LDAP response exceeds byte budget")
+        return data
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+
+def _bounded_text(value: object, *, field: str) -> str:
+    rendered = _stable_subject(value)
+    if len(rendered.encode("utf-8")) > LDAP_MAX_SCALAR_BYTES:
+        raise ProviderUnavailable(f"LDAP {field} 属性超出限制")
+    return rendered
+
 
 @dataclass(frozen=True, slots=True)
 class LdapConfig:
@@ -46,7 +77,20 @@ def _attribute_value(entry: object, name: str) -> object:
 def _attribute_values(entry: object, name: str) -> tuple[str, ...]:
     attribute = getattr(entry, name, None)
     values = getattr(attribute, "values", ()) or ()
-    return tuple(str(value) for value in values)
+    if len(values) > LDAP_MAX_GROUPS:
+        raise ProviderUnavailable("LDAP 组属性超出限制")
+    rendered: list[str] = []
+    total = 0
+    for value in values:
+        item = str(value)
+        size = len(item.encode("utf-8"))
+        if size > LDAP_MAX_GROUP_BYTES:
+            raise ProviderUnavailable("LDAP 组属性超出限制")
+        total += size
+        if total > LDAP_MAX_GROUP_TOTAL_BYTES:
+            raise ProviderUnavailable("LDAP 组属性超出限制")
+        rendered.append(item)
+    return tuple(rendered)
 
 
 def _stable_subject(value: object) -> str:
@@ -124,14 +168,25 @@ class LdapPasswordProvider:
             allowed_referral_hosts=[],
         )
 
+    @staticmethod
+    def _open_bounded_connection(server: Any, **kwargs: Any) -> Connection:
+        connection = Connection(
+            server,
+            auto_bind=False,
+            auto_referrals=False,
+            raise_exceptions=True,
+            **kwargs,
+        )
+        connection.open()
+        connection.socket = _ReceiveBudgetSocket(connection.socket)
+        connection.bind()
+        return connection
+
     def _service_connection(self, server: Any) -> Connection:
-        return Connection(
+        return self._open_bounded_connection(
             server,
             user=self.config.bind_dn,
             password=self.config.bind_password,
-            auto_bind=True,
-            auto_referrals=False,
-            raise_exceptions=True,
             receive_timeout=self.config.receive_timeout_s,
         )
 
@@ -189,34 +244,39 @@ class LdapPasswordProvider:
             if len(service.entries) != 1:
                 raise InvalidCredentials("用户名或密码错误")
             entry = service.entries[0]
-            subject = _stable_subject(_attribute_value(entry, self.config.subject_attribute))
+            subject = _bounded_text(
+                _attribute_value(entry, self.config.subject_attribute),
+                field="subject",
+            )
             if not subject:
                 raise ProviderUnavailable("LDAP 稳定主体属性不可用")
             try:
-                user_connection = Connection(
+                user_connection = self._open_bounded_connection(
                     server,
                     user=entry.entry_dn,
                     password=password,
-                    auto_bind=True,
-                    auto_referrals=False,
-                    raise_exceptions=True,
                     receive_timeout=self.config.receive_timeout_s,
                 )
             except LDAPBindError:
                 raise InvalidCredentials("用户名或密码错误") from None
             else:
                 user_connection.unbind()
-            directory_login = str(
-                _attribute_value(entry, self.config.username_attribute) or login_name
+            directory_login = _bounded_text(
+                _attribute_value(entry, self.config.username_attribute) or login_name,
+                field="username",
             )
             return AuthenticatedIdentity(
                 provider_code=self.config.provider_code,
                 login_name=directory_login,
                 external_subject=subject,
-                display_name=str(
-                    _attribute_value(entry, self.config.display_name_attribute) or directory_login
+                display_name=_bounded_text(
+                    _attribute_value(entry, self.config.display_name_attribute) or directory_login,
+                    field="display_name",
                 ),
-                dept=str(_attribute_value(entry, self.config.dept_attribute) or ""),
+                dept=_bounded_text(
+                    _attribute_value(entry, self.config.dept_attribute) or "",
+                    field="department",
+                ),
                 groups=_attribute_values(entry, self.config.group_attribute),
             )
         except (InvalidCredentials, ProviderUnavailable):

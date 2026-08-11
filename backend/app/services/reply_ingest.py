@@ -9,6 +9,12 @@ from typing import Any, Protocol
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
+from app.vendor.identifiers import (
+    protect_vendor_custom_id,
+    protect_vendor_task_id,
+    validate_vendor_custom_id,
+    validate_vendor_ext_code,
+)
 from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
 
 
@@ -16,6 +22,7 @@ from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
 class ProtectedReply:
     vendor_task_id: str
     custom_id: str | None
+    match_custom_id: str | None
     phone_enc: bytes
     phone_hmac: str
     phone_mask: str
@@ -42,6 +49,8 @@ class ReplyRepository(Protocol):
         custom_ids: list[str],
         item_count: int,
     ) -> None: ...
+
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]: ...
 
     async def store_reply(self, raw_id: int, reply: ProtectedReply) -> None: ...
 
@@ -72,20 +81,24 @@ class ReplyIngestService:
         required = {"taskId", "phone", "contents", "replyTime"}
         if not required.issubset(value):
             raise ValueError("reply fields are incomplete")
-        task_id = value["taskId"]
-        if not isinstance(task_id, str) or not task_id:
-            raise ValueError("taskId must be a non-empty string")
+        raw_task_id, task_id = protect_vendor_task_id(self.crypto, value["taskId"])
         custom_value = value.get("customId")
         if custom_value is not None and not isinstance(custom_value, str):
             raise ValueError("customId must be a string or null")
-        custom_id = custom_value.strip() if isinstance(custom_value, str) else None
-        custom_id = custom_id or None
+        raw_custom_id: str | None = None
+        custom_id: str | None = None
+        if custom_value is not None:
+            raw_custom_id, custom_id = protect_vendor_custom_id(self.crypto, custom_value)
+            if not raw_custom_id:
+                raw_custom_id = None
+                custom_id = None
         content = value["contents"]
         if not isinstance(content, str) or not 1 <= len(content) <= 500:
             raise ValueError("contents length must be between 1 and 500")
-        ext_value = value.get("extCode", "")
-        if not isinstance(ext_value, str) or len(ext_value) > 8:
-            raise ValueError("extCode length must not exceed 8")
+        # 平台发送链路从不设置 extCode，且业务投影不消费该字段。仅校验厂商
+        # 合同后丢弃，避免把 4–6 位 OTP 伪装成扩展号写入明文元数据列。
+        validate_vendor_ext_code(value.get("extCode", ""))
+        ext_value = ""
         reply_time = datetime.fromisoformat(str(value["replyTime"]).replace("Z", "+00:00"))
         if reply_time.tzinfo is None or reply_time.utcoffset() is None:
             raise ValueError("replyTime must include timezone")
@@ -95,8 +108,8 @@ class ReplyIngestService:
         masked_content = mask_phone_text(content)
         dedup_source = "\x1f".join(
             (
-                task_id,
-                custom_id or "",
+                raw_task_id,
+                raw_custom_id or "",
                 hmac_candidates[min(hmac_candidates)],
                 content,
                 reply_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -119,6 +132,7 @@ class ReplyIngestService:
         return ProtectedReply(
             vendor_task_id=task_id,
             custom_id=custom_id,
+            match_custom_id=raw_custom_id,
             phone_enc=protected.phone_enc,
             phone_hmac=protected.phone_hmac,
             phone_mask=protected.phone_mask,
@@ -165,12 +179,13 @@ class ReplyIngestService:
         if isinstance(data, list) and all(isinstance(item, dict) for item in data):
             custom_ids = sorted(
                 {
-                    str(normalized["customId"]).strip()
+                    validate_vendor_custom_id(normalized["customId"])
                     for item in data
                     if (normalized := _normalized(item)).get("customId")
                     and isinstance(normalized["customId"], str)
                 }
             )
+            custom_ids = await self.repository.filter_known_custom_ids(custom_ids)
             await self.repository.update_metadata(
                 raw_id,
                 custom_ids=custom_ids,

@@ -251,6 +251,15 @@ class FakeUsageLedger:
         self.releases.append((reservation_id, event_id))
         return True
 
+    async def request_unlinked_release(
+        self,
+        reservation_id: UUID,
+        *,
+        event_id: str,
+    ) -> bool:
+        self.releases.append((reservation_id, event_id))
+        return True
+
 
 @pytest.mark.asyncio
 async def test_usage_ledger_replaces_redis_counters_and_commits_stable_reference() -> None:
@@ -765,6 +774,45 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
         (IdempotencyScope("account", "1:10"), "web-biz-1")
     ]
     assert store.commands == []
+
+
+@pytest.mark.asyncio
+async def test_console_uat_idempotency_is_bound_to_stable_web_principal() -> None:
+    app = ApiAppContext(7, "uat-app", "平台部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        (),
+        content="维护通知",
+        biz_id="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        channel="web",
+        actor=ADMIN,
+        is_test=True,
+        protected_mobiles=(ProtectedPhone(b"cipher", "a" * 64, "138****8000", 1),),
+        protected_hmac_candidates=((1, "a" * 64),),
+        vendor_test_uat=True,
+    )
+    policy = policy_for_category(
+        request.category,
+        app.allowed_categories,
+        notice_blacklist=app.blacklist_check,
+    )
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    request_hash = pipeline._request_hash(request, app, policy, key_version=1)
+    idempotency = FakeIdempotency("existing", stored_request_hash=request_hash)
+    pipeline.idempotency = idempotency
+
+    assert (await pipeline.accept(app, request)).idempotent is True
+    assert idempotency.lookup_calls == [
+        (IdempotencyScope("account", "1:10"), request.biz_id)
+    ]
 
 
 @pytest.mark.asyncio

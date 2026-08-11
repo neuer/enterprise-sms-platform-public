@@ -75,3 +75,25 @@ def decrypt_template_content(
             object_id=str(template_id),
         ),
     )
+
+
+def decrypt_template_name(
+    crypto: CryptoService | None,
+    payload: object,
+    template_id: int,
+) -> str:
+    """解密与模板稳定 ID 绑定的名称。"""
+
+    if crypto is None:
+        raise RuntimeError("template name crypto is unavailable")
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError("invalid protected template name")
+    return crypto.decrypt_bound_packed_text(
+        bytes(payload),
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id=str(template_id),
+        ),
+    )

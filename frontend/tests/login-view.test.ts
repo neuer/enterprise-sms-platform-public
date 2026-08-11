@@ -105,13 +105,15 @@ describe("登录页", () => {
     expect(fetch).toHaveBeenLastCalledWith(
       "/api/v1/web/auth/login",
       expect.objectContaining({
-        body: JSON.stringify({
-          provider_code: "local",
-          username: "admin",
-          password: "Temp@Password123",
-        }),
+        method: "POST",
       }),
     )
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+      provider_code: "local",
+      username: "admin",
+      password: "Temp@Password123",
+      tab_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
     expect(router.currentRoute.value.path).toBe("/dashboard")
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()

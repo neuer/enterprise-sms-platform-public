@@ -157,7 +157,7 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
         [
             {
                 "taskId": "task-1",
-                "customId": "custom-1",
+                "customId": "custom1",
                 "phone": "13800138000",
                 "reportStatus": 1,
                 "reportDescription": "DELIVRD",

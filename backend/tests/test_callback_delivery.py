@@ -59,8 +59,20 @@ def crypto() -> CryptoService:
 
 
 class FakeRepository:
-    def __init__(self, material: CallbackMaterial | None) -> None:
+    def __init__(
+        self,
+        material: CallbackMaterial | None,
+        *,
+        authority_available: bool = True,
+    ) -> None:
         self.material = material
+        self.authority_available = authority_available
+        self.authority_active = False
+
+    async def acquire_authority(self, task_id: int, lease_id: UUID) -> bool:
+        assert task_id == 9 and lease_id == LEASE_ID
+        self.authority_active = self.authority_available
+        return self.authority_available
 
     async def load_material(
         self,
@@ -69,6 +81,14 @@ class FakeRepository:
     ) -> CallbackMaterial | None:
         assert task_id == 9 and lease_id == LEASE_ID
         return self.material
+
+    async def confirm_authority(self, task_id: int, lease_id: UUID) -> bool:
+        assert task_id == 9 and lease_id == LEASE_ID
+        return self.authority_active
+
+    async def release_authority(self, task_id: int, lease_id: UUID) -> None:
+        assert task_id == 9 and lease_id == LEASE_ID
+        self.authority_active = False
 
 
 class FakeValidator:
@@ -290,6 +310,48 @@ async def test_non_2xx_and_outbound_validation_failure_become_safe_outcomes() ->
     assert failed.success is False and failed.http_code == 500
     assert blocked.success is False and blocked.error == "ValueError"
     assert blocked_transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_revoked_callback_authority_stops_before_sensitive_material_or_network() -> None:
+    repository = FakeRepository(None, authority_available=False)
+    validator = FakeValidator()
+    transport = FakeTransport()
+
+    outcome = await CallbackDelivery(
+        repository,
+        crypto(),
+        validator,
+        transport,
+    ).deliver(9, LEASE_ID)
+
+    assert outcome == callback_module.DeliveryOutcome(False, None, "LookupError")
+    assert repository.authority_active is False
+    assert validator.calls == []
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_authority_is_confirmed_after_dns_before_decryption_or_network() -> None:
+    repository = FakeRepository(CallbackMaterial(task("batch.finished", "secret")))
+    validator = FakeValidator()
+    transport = FakeTransport()
+
+    async def revoke_after_validation(url: str) -> str:
+        validator.calls.append(url)
+        repository.authority_active = False
+        return url
+
+    validator.validate_for_outbound = revoke_after_validation  # type: ignore[method-assign]
+    outcome = await CallbackDelivery(
+        repository,
+        crypto(),
+        validator,
+        transport,
+    ).deliver(9, LEASE_ID)
+
+    assert outcome == callback_module.DeliveryOutcome(False, None, "LookupError")
+    assert transport.calls == []
 
 
 @pytest.mark.asyncio

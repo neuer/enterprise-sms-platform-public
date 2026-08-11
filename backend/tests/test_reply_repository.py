@@ -74,7 +74,7 @@ def protected_reply() -> ProtectedReply:
     return service._parse(
         {
             "taskId": "task-1",
-            "customId": "custom-1",
+            "customId": "custom1",
             "phone": "13800138000",
             "extCode": "01",
             "contents": "TD",
@@ -123,15 +123,15 @@ async def test_reply_insert_is_database_idempotent_and_associates_custom_before_
     normalized_sql = " ".join(sql.split())
     assert "INSERT INTO reply_event" in normalized_sql
     assert "ON CONFLICT(event_key) DO NOTHING" in normalized_sql
-    assert "CAST(:custom_id AS varchar(64)) IS NOT NULL" in normalized_sql
-    assert "c.custom_id=CAST(:custom_id AS varchar(64))" in normalized_sql
+    assert "CAST(:match_custom_id AS varchar(32)) IS NOT NULL" in normalized_sql
+    assert "c.custom_id=CAST(:match_custom_id AS varchar(32))" in normalized_sql
     assert "c.vendor_task_id=CAST(:vendor_task_id AS varchar(64))" in normalized_sql
     assert "m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))" in normalized_sql
     assert "CAST(:phone_hmac AS char(64))" in normalized_sql
     assert "CAST(:content_enc AS bytea)" in normalized_sql
     assert "CAST(:reply_time AS timestamptz)" in normalized_sql
     assert (
-        "CASE WHEN c.custom_id=CAST(:custom_id AS varchar(64)) THEN 0 ELSE 1 END"
+        "CASE WHEN c.custom_id=CAST(:match_custom_id AS varchar(32)) THEN 0 ELSE 1 END"
         in normalized_sql
     )
     assert "FROM event_insert" in normalized_sql

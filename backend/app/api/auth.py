@@ -66,6 +66,7 @@ class PasswordPolicyResponse(StrictModel):
 class LoginRequest(StrictModel):
     provider_code: str = Field(min_length=1, max_length=64)
     username: str = Field(min_length=1, max_length=64)
+    tab_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     password: str = Field(
         min_length=1,
         max_length=128,
@@ -91,6 +92,7 @@ class LoginResponse(StrictModel):
 
 
 class RefreshRequest(StrictModel):
+    tab_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     refresh_token: str | None = Field(
         default=None,
         max_length=4096,
@@ -271,6 +273,7 @@ async def login(
         payload.username,
         payload.password,
         _client_ip(request),
+        payload.tab_id,
     )
     response.headers["Cache-Control"] = "no-store"
     if isinstance(result, PasswordChangeRequired):
@@ -308,15 +311,15 @@ async def refresh(
     request: Request,
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    payload: Annotated[RefreshRequest, Body()] = None,  # type: ignore[assignment]
+    payload: Annotated[RefreshRequest, Body()],
 ) -> LoginResponse:
     _assert_same_origin(request)
     refresh_token = (
-        payload.refresh_token if payload is not None else None
+        payload.refresh_token
     ) or request.cookies.get(REFRESH_COOKIE_NAME)
     if not refresh_token:
         raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
-    result = await facade.refresh(refresh_token, _client_ip(request))
+    result = await facade.refresh(refresh_token, _client_ip(request), payload.tab_id)
     response.headers["Cache-Control"] = "no-store"
     _set_refresh_cookie(
         response,

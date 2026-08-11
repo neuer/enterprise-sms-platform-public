@@ -50,8 +50,13 @@ def _report(
     states = {0: "unknown", 1: "delivered", 2: "failed", 99: "failed"}
     return ProtectedReport(
         event_key=event_key,
-        vendor_task_id=f"vendor-{custom_id}",
-        custom_id=custom_id,
+        vendor_task_id=crypto.stable_hmac_fingerprint(
+            f"vendor-{custom_id}".encode(), domain="vendor-task-id"
+        )[1],
+        custom_id=crypto.stable_hmac_fingerprint(
+            custom_id.encode(), domain="vendor-custom-id"
+        )[1],
+        match_custom_id=custom_id,
         phone_enc=protected.phone_enc,
         phone_hmac=protected.phone_hmac,
         phone_mask=protected.phone_mask,
