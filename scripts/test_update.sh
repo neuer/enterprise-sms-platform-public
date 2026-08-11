@@ -78,6 +78,7 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/test_secure_access_contract.py"
   "deploy/scripts/test_secure_access_runtime.py"
   "deploy/scripts/test_secure_access_manager.py"
+  "deploy/scripts/cloudflare_tunnel_manager.py"
   "deploy/scripts/render_trusted_proxy_conf.py"
   "deploy/scripts/vendor_test_files.py"
   "deploy/scripts/check_test_update_migration.py"
@@ -95,9 +96,11 @@ HOST_CONTROL_PATHS=(
   "scripts/check_public_readiness.py"
   "scripts/export_public_snapshot.py"
   "scripts/verify_public_snapshot_cutover.py"
+  "scripts/verify_web_transport.py"
   "deploy/sms-compose"
   "deploy/trusted-proxies.conf"
   "deploy/systemd/sms-platform-test-secure-access.service"
+  "deploy/systemd/sms-platform-cloudflare-tunnel.service"
 )
 REMOTE_CONTROL_ENV=(
   "/usr/bin/env"

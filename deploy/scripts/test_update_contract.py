@@ -100,6 +100,7 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_secure_access_contract.py",
         "deploy/scripts/test_secure_access_runtime.py",
         "deploy/scripts/test_secure_access_manager.py",
+        "deploy/scripts/cloudflare_tunnel_manager.py",
         "deploy/scripts/render_trusted_proxy_conf.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
@@ -117,80 +118,85 @@ HOST_CONTROL_PATHS = frozenset(
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
         "scripts/verify_public_snapshot_cutover.py",
+        "scripts/verify_web_transport.py",
         "deploy/sms-compose",
         "deploy/trusted-proxies.conf",
         "deploy/systemd/sms-platform-test-secure-access.service",
+        "deploy/systemd/sms-platform-cloudflare-tunnel.service",
     }
 )
-_VENDOR_LIVE_PROTECTED_EXACT = frozenset(
-    {
-        ".dockerignore",
-        "backend/app/api/messages.py",
-        "backend/app/api/vendor_test.py",
-        "backend/app/api/web_messages.py",
-        "backend/app/cli.py",
-        "backend/app/core/auth/runtime.py",
-        "backend/app/main.py",
-        "backend/app/settings.py",
-        "backend/app/services/pipeline.py",
-        "backend/app/services/reconcile_repository.py",
-        "backend/app/services/vendor_control_client.py",
-        "backend/app/services/vendor_control_state.py",
-        "backend/app/vendor/zhihui.py",
-        "backend/app/vendor/codes.py",
-        "backend/app/tasks/reconcile.py",
-        "backend/app/tasks/send.py",
-        "backend/app/services/billing.py",
-        "backend/app/services/vendor_test_guard.py",
-        "backend/app/services/vendor_test_budget.py",
-        "backend/app/services/vendor_test_operation.py",
-        "backend/app/services/vendor_test_operation_repository.py",
-        "backend/app/services/vendor_test_pause.py",
-        "backend/app/services/vendor_test_recipient.py",
-        "backend/app/services/vendor_test_security_audit.py",
-        "backend/app/services/vendor_test_recipient_repository.py",
-        "backend/app/services/vendor_test_step_up.py",
-        "backend/app/services/vendor_test_uat.py",
-        "backend/app/tasks/send_repository.py",
-        "backend/migrations/versions/0016_vendor_live_test_budget.py",
-        "backend/migrations/versions/0017_vendor_test_web_console.py",
-        "backend/migrations/versions/0018_vendor_test_operation_vendor_code.py",
-        "backend/migrations/versions/0019_vendor_test_recipient_hmac_alias.py",
-        "backend/migrations/versions/0022_vendor_test_reset_operation.py",
-        "backend/migrations/versions/0023_vendor_uat_acceptance_lease.py",
-        "backend/vendor_control_protocol.py",
-        "backend/vendor_control_protocol.pyi",
-        "backend/Dockerfile",
-        "deploy/docker-compose.yml",
-        "deploy/.env.example",
-        "deploy/scripts/install_vendor_credentials.py",
-        "deploy/scripts/install_resend_api_key.py",
-        "deploy/scripts/send_security_daily_report_resend.py",
-        "deploy/scripts/vendor_control_agent.py",
-        "deploy/scripts/vendor_control_journal.py",
-        "deploy/scripts/vendor_control_protocol.py",
-        "deploy/scripts/vendor_credential_store.py",
-        "deploy/scripts/vendor_control_reload.py",
-        "deploy/scripts/vendor_seal_sessions.py",
-        "deploy/systemd/vendor-control-agent.service",
-        "deploy/scripts/install_test_secure_access.py",
-        "deploy/systemd/sms-platform-test-secure-access.service",
-        "deploy/sms-compose",
-        "scripts/check_invariants.py",
-        "scripts/classify_ci_changes.py",
-        "scripts/test_update.sh",
-        "scripts/verify_vendor_live_test.sh",
-        "frontend/src/api/admin.ts",
-        "frontend/src/components/VendorCredentialDialog.vue",
-        "frontend/src/components/VendorTestConsole.vue",
-        "frontend/src/components/VendorTestRecipientDialog.vue",
-        "frontend/src/components/VendorTestUatPanel.vue",
-        "frontend/src/lib/vendorSeal.ts",
-        "frontend/src/views/ConfigView.vue",
-        "openapi.yaml",
-        "schema.sql",
-    }
-) | HOST_CONTROL_PATHS
+_VENDOR_LIVE_PROTECTED_EXACT = (
+    frozenset(
+        {
+            ".dockerignore",
+            "backend/app/api/messages.py",
+            "backend/app/api/vendor_test.py",
+            "backend/app/api/web_messages.py",
+            "backend/app/cli.py",
+            "backend/app/core/auth/runtime.py",
+            "backend/app/main.py",
+            "backend/app/settings.py",
+            "backend/app/services/pipeline.py",
+            "backend/app/services/reconcile_repository.py",
+            "backend/app/services/vendor_control_client.py",
+            "backend/app/services/vendor_control_state.py",
+            "backend/app/vendor/zhihui.py",
+            "backend/app/vendor/codes.py",
+            "backend/app/tasks/reconcile.py",
+            "backend/app/tasks/send.py",
+            "backend/app/services/billing.py",
+            "backend/app/services/vendor_test_guard.py",
+            "backend/app/services/vendor_test_budget.py",
+            "backend/app/services/vendor_test_operation.py",
+            "backend/app/services/vendor_test_operation_repository.py",
+            "backend/app/services/vendor_test_pause.py",
+            "backend/app/services/vendor_test_recipient.py",
+            "backend/app/services/vendor_test_security_audit.py",
+            "backend/app/services/vendor_test_recipient_repository.py",
+            "backend/app/services/vendor_test_step_up.py",
+            "backend/app/services/vendor_test_uat.py",
+            "backend/app/tasks/send_repository.py",
+            "backend/migrations/versions/0016_vendor_live_test_budget.py",
+            "backend/migrations/versions/0017_vendor_test_web_console.py",
+            "backend/migrations/versions/0018_vendor_test_operation_vendor_code.py",
+            "backend/migrations/versions/0019_vendor_test_recipient_hmac_alias.py",
+            "backend/migrations/versions/0022_vendor_test_reset_operation.py",
+            "backend/migrations/versions/0023_vendor_uat_acceptance_lease.py",
+            "backend/vendor_control_protocol.py",
+            "backend/vendor_control_protocol.pyi",
+            "backend/Dockerfile",
+            "deploy/docker-compose.yml",
+            "deploy/.env.example",
+            "deploy/scripts/install_vendor_credentials.py",
+            "deploy/scripts/install_resend_api_key.py",
+            "deploy/scripts/send_security_daily_report_resend.py",
+            "deploy/scripts/vendor_control_agent.py",
+            "deploy/scripts/vendor_control_journal.py",
+            "deploy/scripts/vendor_control_protocol.py",
+            "deploy/scripts/vendor_credential_store.py",
+            "deploy/scripts/vendor_control_reload.py",
+            "deploy/scripts/vendor_seal_sessions.py",
+            "deploy/systemd/vendor-control-agent.service",
+            "deploy/scripts/install_test_secure_access.py",
+            "deploy/systemd/sms-platform-test-secure-access.service",
+            "deploy/sms-compose",
+            "scripts/check_invariants.py",
+            "scripts/classify_ci_changes.py",
+            "scripts/test_update.sh",
+            "scripts/verify_vendor_live_test.sh",
+            "frontend/src/api/admin.ts",
+            "frontend/src/components/VendorCredentialDialog.vue",
+            "frontend/src/components/VendorTestConsole.vue",
+            "frontend/src/components/VendorTestRecipientDialog.vue",
+            "frontend/src/components/VendorTestUatPanel.vue",
+            "frontend/src/lib/vendorSeal.ts",
+            "frontend/src/views/ConfigView.vue",
+            "openapi.yaml",
+            "schema.sql",
+        }
+    )
+    | HOST_CONTROL_PATHS
+)
 _VENDOR_LIVE_PROTECTED_PREFIXES = (
     "deploy/scripts/vendor_test_",
     "deploy/scripts/test_update_",
@@ -301,7 +307,6 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/verify_tls_termination_e2e.py",
         "scripts/verify_all.sh",
         "scripts/verify_vendor_live_test.sh",
-        "scripts/verify_web_transport.py",
         "scripts/verify_release_control.sh",
         "test-update.env.example",
     }
@@ -486,8 +491,7 @@ def _require_components(value: object) -> frozenset[str]:
         raise TestUpdateContractError("components has an invalid value")
     raw_components = cast(list[object], value)
     if any(
-        type(component) is not str or component not in _COMPONENTS
-        for component in raw_components
+        type(component) is not str or component not in _COMPONENTS for component in raw_components
     ):
         raise TestUpdateContractError("components has an invalid value")
     components = cast(list[str], raw_components)
@@ -566,9 +570,7 @@ def _parse_public_cutover(value: object) -> PublicCutoverEvidence | None:
         "public_cutover pack_file",
     )
     if Path(pack_file).name != pack_file:
-        raise TestUpdateContractError(
-            "public_cutover pack_file has an invalid value"
-        )
+        raise TestUpdateContractError("public_cutover pack_file has an invalid value")
     pack_sha256 = _require_matching_string(
         evidence["pack_sha256"],
         _SHA256_RE,
@@ -594,18 +596,12 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
 
     payload = _require_object(decoded, "request")
     actual_fields = set(payload)
-    unknown_fields = actual_fields - (
-        set(_TOP_LEVEL_FIELDS) | set(_OPTIONAL_TOP_LEVEL_FIELDS)
-    )
+    unknown_fields = actual_fields - (set(_TOP_LEVEL_FIELDS) | set(_OPTIONAL_TOP_LEVEL_FIELDS))
     missing_fields = set(_TOP_LEVEL_FIELDS) - actual_fields
     if unknown_fields:
-        raise TestUpdateContractError(
-            f"request has unknown fields: {sorted(unknown_fields)}"
-        )
+        raise TestUpdateContractError(f"request has unknown fields: {sorted(unknown_fields)}")
     if missing_fields:
-        raise TestUpdateContractError(
-            f"request has missing fields: {sorted(missing_fields)}"
-        )
+        raise TestUpdateContractError(f"request has missing fields: {sorted(missing_fields)}")
     if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
         raise TestUpdateContractError("schema_version has an invalid value")
 
@@ -614,10 +610,7 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
     commit = _require_matching_string(payload["commit"], _COMMIT_RE, "commit")
     source_ref = _require_source_ref(payload["source_ref"])
     environment_mode = payload["environment_mode"]
-    if (
-        type(environment_mode) is not str
-        or environment_mode not in {"pre-live", "live"}
-    ):
+    if type(environment_mode) is not str or environment_mode not in {"pre-live", "live"}:
         raise TestUpdateContractError("environment_mode has an invalid value")
     operation = payload.get("operation", "apply")
     if type(operation) is not str or operation not in {"apply", "rebaseline"}:
@@ -626,15 +619,11 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
     images = _parse_images(payload["images"], components=components, commit=commit)
     public_cutover = _parse_public_cutover(payload.get("public_cutover"))
     if public_cutover is not None and source_ref != "origin/main":
-        raise TestUpdateContractError(
-            "public_cutover requires source_ref origin/main"
-        )
+        raise TestUpdateContractError("public_cutover requires source_ref origin/main")
 
     migration = _require_object(payload["migration"], "migration")
     _require_exact_fields(migration, _MIGRATION_FIELDS, "migration")
-    migration_from = _require_matching_string(
-        migration["from"], _SAFE_NAME_RE, "migration from"
-    )
+    migration_from = _require_matching_string(migration["from"], _SAFE_NAME_RE, "migration from")
     migration_target = _require_matching_string(
         migration["target"], _SAFE_NAME_RE, "migration target"
     )
@@ -735,9 +724,8 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
             high_risk_paths.add(path)
             if path in _WEB_HIGH_RISK_EXACT:
                 components.add("web")
-            elif (
-                path in _MAILER_HIGH_RISK_EXACT
-                or path.startswith(("backend/", "deploy/", "scripts/"))
+            elif path in _MAILER_HIGH_RISK_EXACT or path.startswith(
+                ("backend/", "deploy/", "scripts/")
             ):
                 components.add("api")
             if path.startswith("frontend/"):
@@ -799,10 +787,7 @@ def classify_public_cutover_paths(paths: Iterable[str]) -> ChangedScope:
     cutover_high_risk_paths: set[str] = set()
     for raw_path in paths:
         path = _require_safe_changed_path(raw_path)
-        if (
-            path in _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT
-            or path.startswith("docs/")
-        ):
+        if path in _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT or path.startswith("docs/"):
             continue
         if path in _PUBLIC_CUTOVER_HIGH_RISK_EXACT:
             cutover_high_risk_paths.add(path)
@@ -866,11 +851,7 @@ def _classify_nul_stream(raw: bytes, *, rebaseline: bool = False) -> str:
     if len(raw) > 1_048_576:
         raise TestUpdateContractError("changed path input is too large")
     paths = [os.fsdecode(item) for item in raw.split(b"\0") if item]
-    scope = (
-        classify_rebaseline_paths(paths)
-        if rebaseline
-        else classify_changed_paths(paths)
-    )
+    scope = classify_rebaseline_paths(paths) if rebaseline else classify_changed_paths(paths)
     return json.dumps(
         {
             "components": sorted(scope.components),

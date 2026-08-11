@@ -19,9 +19,7 @@ def control_environment(tmp_path: Path) -> tuple[dict[str, str], Path]:
     scripts = platform / "deploy/scripts"
     scripts.mkdir(parents=True)
     (platform / "deploy/secrets").mkdir(mode=0o700)
-    (platform / "deploy/docker-compose.yml").write_text(
-        "services: {}\n", encoding="utf-8"
-    )
+    (platform / "deploy/docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (platform / ".env").write_text("# fixture\n", encoding="utf-8")
     (scripts / "run_with_lifecycle_lock.py").write_text(
         LOCK_RUNNER.read_text(encoding="utf-8"), encoding="utf-8"
@@ -43,6 +41,7 @@ with Path(os.environ["CONTROL_LOG"]).open("a", encoding="utf-8") as stream:
         "test_update_manager.py",
         "public_baseline_manager.py",
         "test_secure_access_manager.py",
+        "cloudflare_tunnel_manager.py",
         "prepare_runtime_secrets.py",
         "vendor_control_reload.py",
     ):
@@ -56,6 +55,7 @@ with Path(os.environ["CONTROL_LOG"]).open("a", encoding="utf-8") as stream:
             "SMS_RUNTIME_ROOT": str(runtime),
             "SMS_SECRETS_MODE": "development",
             "SMS_SECURE_ACCESS_MANAGER_SMOKE": "1",
+            "SMS_CLOUDFLARE_TUNNEL_MANAGER_SMOKE": "1",
             "CONTROL_LOG": str(log),
         }
     )
@@ -91,8 +91,7 @@ def _bootstrap_wrapper(
     )
     (host_root / "test_update_manager.py").write_text(
         (
-            Path(environment["SMS_PLATFORM_ROOT"])
-            / "deploy/scripts/test_update_manager.py"
+            Path(environment["SMS_PLATFORM_ROOT"]) / "deploy/scripts/test_update_manager.py"
         ).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
@@ -148,7 +147,10 @@ def _run_wrapper(
     )
 
 
-@pytest.mark.parametrize("action", ["vendor-test", "test-update", "secure-access"])
+@pytest.mark.parametrize(
+    "action",
+    ["vendor-test", "test-update", "secure-access", "cloudflare-tunnel"],
+)
 def test_production_rejects_control_planes_before_any_helper(
     control_environment: tuple[dict[str, str], Path],
     action: str,
@@ -180,6 +182,11 @@ def test_production_rejects_control_planes_before_any_helper(
         ("secure-access", "shell"),
         ("secure-access", "start", "--origin", "http://evil"),
         ("secure-access", "install"),
+        ("cloudflare-tunnel",),
+        ("cloudflare-tunnel", "shell"),
+        ("cloudflare-tunnel", "configure"),
+        ("cloudflare-tunnel", "configure", "--hostname", "sms.example.invalid", "extra"),
+        ("cloudflare-tunnel", "start", "--token", "forbidden"),
     ],
 )
 def test_control_planes_reject_arbitrary_passthrough(
@@ -323,8 +330,7 @@ def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
         for command in ("activate", "pause", "resume", "rotate", "recover-rotation")
     ]
     updates = [
-        _run(environment, "test-update", command)
-        for command in ("prepare", "recover-rebaseline")
+        _run(environment, "test-update", command) for command in ("prepare", "recover-rebaseline")
     ]
 
     assert all(result.returncode == 0 for result in mutations)
@@ -334,10 +340,7 @@ def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
     for command in ("activate", "pause", "resume", "rotate", "recover-rotation"):
         assert any(f"vendor_test_manager.py|{command}|" in line for line in managers)
     assert any("test_update_manager.py|prepare|" in line for line in managers)
-    assert any(
-        "test_update_manager.py|recover-rebaseline|" in line
-        for line in managers
-    )
+    assert any("test_update_manager.py|recover-rebaseline|" in line for line in managers)
     assert all("|locked=1|fd=" in line for line in managers)
     assert all(line.rsplit("|fd=", 1)[1].isdigit() for line in managers)
 
@@ -370,11 +373,7 @@ def test_host_rebaseline_verify_recovery_inherits_the_verified_lock(
     assert result.returncode == 0, result.stderr
     assert asset_log.exists()
     lines = log.read_text(encoding="utf-8").splitlines()
-    manager = next(
-        line
-        for line in lines
-        if "public_baseline_manager.py|recover-verify|" in line
-    )
+    manager = next(line for line in lines if "public_baseline_manager.py|recover-verify|" in line)
     assert "|locked=1|fd=" in manager
 
 
@@ -498,10 +497,7 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     source = WRAPPER.read_text(encoding="utf-8")
 
     assert "development only: secure-access start|status|stop" in source
-    assert (
-        'HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"'
-        in source
-    )
+    assert 'HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"' in source
     assert 'TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/' in source
     assert 'TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"' in source
     assert 'LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"' in source
@@ -511,7 +507,7 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     assert "/usr/bin/python3" in source
     assert '"${LOCK_PYTHON[@]}" "$LOCK_RUNNER"' in source
     secure_dispatch = source.split("dispatch_secure_access()", maxsplit=1)[1].split(
-        "run_locked_operation()", maxsplit=1
+        "dispatch_cloudflare_tunnel()", maxsplit=1
     )[0]
     assert "/usr/bin/python3" in secure_dispatch
     assert "PYTHONNOUSERSITE=1" in secure_dispatch
@@ -522,10 +518,7 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     assert '[[ "${SMS_PUBLIC_CUTOVER_CONFIRMED:-}" == 1 ]]' in source
     assert "public_cutover_bootstrap.py" in source
     assert "verify-assets >/dev/null" in source
-    assert (
-        "bootstrap-public-cutover | prepare | apply | verify"
-        in source
-    )
+    assert "bootstrap-public-cutover | prepare | apply | verify" in source
     for forbidden in (
         "prepare_runtime_secrets",
         "run_with_lifecycle_lock",
@@ -537,6 +530,51 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
         assert forbidden not in secure_dispatch
 
 
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("install",), "install"),
+        (
+            ("configure", "--hostname", "sms.example.invalid"),
+            "configure|--hostname|sms.example.invalid",
+        ),
+        (("install-token",), "install-token"),
+        (("start",), "start"),
+        (("status",), "status"),
+        (("verify",), "verify"),
+        (("stop",), "stop"),
+    ],
+)
+def test_cloudflare_tunnel_dispatch_is_fixed_and_never_accepts_token_argv(
+    control_environment: tuple[dict[str, str], Path],
+    arguments: tuple[str, ...],
+    expected: str,
+) -> None:
+    environment, log = control_environment
+
+    result = _run(environment, "cloudflare-tunnel", *arguments)
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text(encoding="utf-8").strip() == (
+        f"cloudflare_tunnel_manager.py|{expected}|locked=|fd="
+    )
+
+
+def test_cloudflare_tunnel_usage_documents_interactive_token_boundary() -> None:
+    source = WRAPPER.read_text(encoding="utf-8")
+
+    assert (
+        "development only: cloudflare-tunnel "
+        "install|configure --hostname HOST|install-token|start|status|verify|stop"
+    ) in source
+    dispatch = source.split("dispatch_cloudflare_tunnel()", maxsplit=1)[1].split(
+        "run_locked_operation()", maxsplit=1
+    )[0]
+    assert '"$command" "$@"' in dispatch
+    assert "--token" not in dispatch
+    assert "prepare_runtime_secrets" not in dispatch
+
+
 def test_vendor_control_source_exposes_no_tty_credential_or_recipient_flow() -> None:
     source = WRAPPER.read_text(encoding="utf-8")
 
@@ -544,8 +582,7 @@ def test_vendor_control_source_exposes_no_tty_credential_or_recipient_flow() -> 
     assert "allow-recipient" not in source
     assert (
         "vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|"
-        "reset-runtime|reload-agent|status"
-        in source
+        "reset-runtime|reload-agent|status" in source
     )
     assert "GetReport" not in source and "GetReply" not in source
     assert stat.S_IMODE(WRAPPER.stat().st_mode) & stat.S_IXUSR
