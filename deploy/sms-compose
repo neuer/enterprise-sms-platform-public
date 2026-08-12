@@ -137,6 +137,62 @@ trim_non_secret_value() {
   printf '%s' "$value"
 }
 
+load_development_web_transport() {
+  local env_file="$ROOT/.env"
+  local line key raw value
+  local seen_external_tls_mode=0 seen_trusted_proxy_cidrs=0
+  local seen_trusted_proxy_conf=0
+  local env_external_tls_mode='' env_trusted_proxy_cidrs=''
+  local env_trusted_proxy_conf='/usr/local/share/sms-platform/trusted-proxies.conf'
+
+  if [[ ! -f "$env_file" || -L "$env_file" ]]; then
+    echo "sms-compose: development requires a regular root .env file" >&2
+    return 1
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*(SMS_EXTERNAL_TLS_MODE|SMS_TRUSTED_PROXY_CIDRS|SMS_TRUSTED_PROXY_CONF)[[:space:]]*=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      raw="${BASH_REMATCH[2]}"
+      value="$(trim_non_secret_value "$raw")"
+      case "$key" in
+        SMS_EXTERNAL_TLS_MODE)
+          [[ "$seen_external_tls_mode" == 0 ]] || {
+            echo "sms-compose: duplicate development Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_external_tls_mode=1
+          env_external_tls_mode="$value"
+          ;;
+        SMS_TRUSTED_PROXY_CIDRS)
+          [[ "$seen_trusted_proxy_cidrs" == 0 ]] || {
+            echo "sms-compose: duplicate development Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_trusted_proxy_cidrs=1
+          env_trusted_proxy_cidrs="$value"
+          ;;
+        SMS_TRUSTED_PROXY_CONF)
+          [[ "$seen_trusted_proxy_conf" == 0 ]] || {
+            echo "sms-compose: duplicate development Web transport setting in root .env" >&2
+            return 1
+          }
+          seen_trusted_proxy_conf=1
+          env_trusted_proxy_conf="$value"
+          ;;
+      esac
+    fi
+  done < "$env_file"
+
+  if [[ "$seen_external_tls_mode" != 1 && ! ${SMS_EXTERNAL_TLS_MODE+x} ]]; then
+    echo "sms-compose: development requires explicit SMS_EXTERNAL_TLS_MODE" >&2
+    return 1
+  fi
+  DEVELOPMENT_EXTERNAL_TLS_MODE="${SMS_EXTERNAL_TLS_MODE-$env_external_tls_mode}"
+  DEVELOPMENT_TRUSTED_PROXY_CIDRS="${SMS_TRUSTED_PROXY_CIDRS-$env_trusted_proxy_cidrs}"
+  DEVELOPMENT_TRUSTED_PROXY_CONF="${SMS_TRUSTED_PROXY_CONF-$env_trusted_proxy_conf}"
+}
+
 validate_production_launch() {
   local env_file="$ROOT/.env"
   local line key raw value shell_value
@@ -398,17 +454,22 @@ rotate_backend() {
 }
 
 start_stack() {
-  local external_tls_mode="${SMS_EXTERNAL_TLS_MODE:-0}"
-  local trusted_proxy_cidrs="${SMS_TRUSTED_PROXY_CIDRS:-}"
+  local external_tls_mode trusted_proxy_cidrs trusted_proxy_conf
   if [[ "$SECRETS_MODE" == production ]]; then
     external_tls_mode="$PRODUCTION_EXTERNAL_TLS_MODE"
     trusted_proxy_cidrs="$PRODUCTION_TRUSTED_PROXY_CIDRS"
+    trusted_proxy_conf="${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
+  else
+    load_development_web_transport || return $?
+    external_tls_mode="$DEVELOPMENT_EXTERNAL_TLS_MODE"
+    trusted_proxy_cidrs="$DEVELOPMENT_TRUSTED_PROXY_CIDRS"
+    trusted_proxy_conf="$DEVELOPMENT_TRUSTED_PROXY_CONF"
   fi
   prepare_runtime_secrets
   python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
     --mode "$external_tls_mode" \
     --cidrs "$trusted_proxy_cidrs" \
-    --output "${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
+    --output "$trusted_proxy_conf"
   "${COMPOSE[@]}" config --quiet
   "${COMPOSE[@]}" up "$@"
 }

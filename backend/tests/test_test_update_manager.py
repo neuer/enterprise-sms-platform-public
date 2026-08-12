@@ -1275,7 +1275,7 @@ def test_render_trusted_proxy_conf_uses_dotenv_values(tmp_path: Path) -> None:
     ]
 
 
-def test_render_trusted_proxy_conf_defaults_to_direct_mode(tmp_path: Path) -> None:
+def test_render_trusted_proxy_conf_requires_explicit_mode(tmp_path: Path) -> None:
     calls: list[list[str]] = []
 
     class Runner:
@@ -1293,14 +1293,10 @@ def test_render_trusted_proxy_conf_defaults_to_direct_mode(tmp_path: Path) -> No
     operations.root = tmp_path  # type: ignore[assignment]
     operations.host = SimpleNamespace(runner=Runner())  # type: ignore[assignment]
 
-    operations._render_trusted_proxy_conf()
+    with pytest.raises(ManagerError, match="mode must be explicit"):
+        operations._render_trusted_proxy_conf()
 
-    command = calls[0]
-    assert command[command.index("--mode") + 1] == "0"
-    assert command[command.index("--cidrs") + 1] == ""
-    assert command[command.index("--output") + 1] == (
-        "/usr/local/share/sms-platform/trusted-proxies.conf"
-    )
+    assert calls == []
 
 
 def test_rollback_image_tags_are_idempotent_across_apply_resume() -> None:

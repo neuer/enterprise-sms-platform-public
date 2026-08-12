@@ -2125,13 +2125,17 @@ class HostTestUpdateOperations:
             key, value = line.split("=", 1)
             if key in _TRUSTED_PROXY_DOTENV_KEYS:
                 values[key] = value
+        if "SMS_EXTERNAL_TLS_MODE" not in values:
+            raise TestUpdateManagerError(
+                "trusted proxy mode must be explicit in root dotenv"
+            )
         output = values.get("SMS_TRUSTED_PROXY_CONF") or _TRUSTED_PROXY_RUNTIME_CONF
         self.host.runner.run(
             [
                 "/usr/bin/python3",
                 str(self.root / "deploy/scripts/render_trusted_proxy_conf.py"),
                 "--mode",
-                values.get("SMS_EXTERNAL_TLS_MODE", "0"),
+                values["SMS_EXTERNAL_TLS_MODE"],
                 "--cidrs",
                 values.get("SMS_TRUSTED_PROXY_CIDRS", ""),
                 "--output",

@@ -386,8 +386,12 @@ sudo /usr/bin/env \
 Tunnel 仍只用于 15 分钟临时入口，不能替代本节。Cloudflare 侧先创建 Named Tunnel 和一条
 公开主机名路由（例如 `sms.example.com -> http://127.0.0.1:18080`）。源站继续只监听回环，
 `.env` 必须保持 `WEB_BIND_IP=127.0.0.1`、`SMS_EXTERNAL_TLS_MODE=1` 与
-`SMS_TRUSTED_PROXY_CIDRS=127.0.0.1/32`；不得开放宿主机 80/443，也不得把任意公网或整段
-Cloudflare 地址加入 Nginx trusted proxy。
+`SMS_TRUSTED_PROXY_CIDRS=127.0.0.1/32,172.31.250.1/32`：前者仅允许容器自检，后者是
+固定 `sms-platform_ingress` 网关，承载 cloudflared 从宿主回环端口进入 Web 容器的请求。
+不得开放宿主机 80/443，也不得把任意公网、整个 Docker 子网或整段 Cloudflare 地址加入
+Nginx trusted proxy。`sms-compose up` 与测试更新都会从根 `.env` 渲染该合同；开发测试环境
+缺少显式 `SMS_EXTERNAL_TLS_MODE` 时失败关闭。`cloudflare-tunnel start/verify` 还会同时核对
+根 `.env` 和工作树外的渲染结果，防止 Tunnel 正常但客户端 IP 退化为 Docker 网关。
 
 主机资产随上节的固定安装器完成 commit/digest 绑定，但持久 unit 不会自动安装、启动或
 enable。操作者在 Cloudflare 控制台复制 Tunnel token 后，只能在服务器控制 TTY 中运行
