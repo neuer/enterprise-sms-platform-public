@@ -12,6 +12,7 @@ import pytest
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.security_daily import (
     FileSecurityDailyControl,
+    SecurityDailyAutoDeliveryConfiguration,
     SecurityDailyConfiguration,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
@@ -140,6 +141,11 @@ class FakeRepository:
             api_key="re_test_value",
             recipients=("security-owner@example.com",),
         )
+        self.auto_delivery_config = SecurityDailyAutoDeliveryConfiguration(
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
 
     async def ingest_payload(
         self,
@@ -195,6 +201,11 @@ class FakeRepository:
 
     async def configuration(self) -> SecurityDailyConfiguration:
         return self.config
+
+    async def auto_delivery_configuration(
+        self,
+    ) -> SecurityDailyAutoDeliveryConfiguration:
+        return self.auto_delivery_config
 
     async def update_configuration(
         self,
@@ -591,10 +602,10 @@ async def test_submit_auto_delivery_sends_problem_email_when_evidence_unavailabl
 @pytest.mark.asyncio
 async def test_submit_auto_delivery_marks_config_incomplete_instead_of_silent_skip() -> None:
     repository = FakeRepository(record())
-    repository.config = SecurityDailyConfiguration(
+    repository.auto_delivery_config = SecurityDailyAutoDeliveryConfiguration(
         enabled=True,
-        api_key="",
-        recipients=(),
+        resend_configured=False,
+        recipient_count=0,
     )
     control = FakeControl()
     service = SecurityDailyService(repository, control)
@@ -605,6 +616,24 @@ async def test_submit_auto_delivery_marks_config_incomplete_instead_of_silent_sk
         (1, "安全日报发信配置不完整（缺少 Resend Key 或收件人）")
     ]
     assert control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_uses_nonsecret_configuration_projection() -> None:
+    repository = FakeRepository(record())
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="",
+        recipients=(),
+    )
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.submit_auto_delivery(date(2026, 7, 15))
+
+    assert request is not None
+    assert len(control.submitted) == 1
+    assert control.synced == []
 
 
 @pytest.mark.asyncio

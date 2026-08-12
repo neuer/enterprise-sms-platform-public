@@ -22,6 +22,7 @@ from app.services.security_daily import (
     GenerationStatus,
     SecurityDailyAuditEvent,
     SecurityDailyAuditEvidence,
+    SecurityDailyAutoDeliveryConfiguration,
     SecurityDailyConfiguration,
     SecurityDailyConfigurationError,
     SecurityDailyConfigurationUpdate,
@@ -90,7 +91,7 @@ def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
 
 
 class SqlSecurityDailyRepository(SecurityDailyRepository):
-    """安全日报查询与投递请求写入均使用 API 的 accept 数据库身份。"""
+    """按当前组件职责使用 accept/send 身份；自动路径只读非敏感配置投影。"""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -148,6 +149,37 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             api_key=validate_resend_api_key(config.get("security_daily_resend_api_key", "")),
             recipients=validate_resend_recipients(recipients),
             config_version=int(config.get("security_daily_config_version", "1")),
+        )
+
+    async def auto_delivery_configuration(self) -> SecurityDailyAutoDeliveryConfiguration:
+        """以 sms_send 可见的非敏感投影判断自动投递是否已配置。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT key,value FROM sys_config WHERE key IN "
+                        "('security_daily_enabled','security_daily_resend_configured',"
+                        "'security_daily_recipient_count')"
+                    )
+                )
+                config = {
+                    str(row["key"]): str(row["value"])
+                    for row in result.mappings()
+                }
+        finally:
+            await engine.dispose()
+        try:
+            recipient_count = int(config.get("security_daily_recipient_count", "0"))
+        except ValueError as error:
+            raise SecurityDailyConfigurationError("安全日报收件人数量无效") from error
+        return SecurityDailyAutoDeliveryConfiguration(
+            enabled=_bool_config(config.get("security_daily_enabled")),
+            resend_configured=_bool_config(
+                config.get("security_daily_resend_configured")
+            ),
+            recipient_count=recipient_count,
         )
 
     async def audit_evidence(

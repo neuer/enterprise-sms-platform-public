@@ -300,6 +300,19 @@ class SecurityDailyConfiguration:
 
 
 @dataclass(frozen=True, slots=True)
+class SecurityDailyAutoDeliveryConfiguration:
+    """自动投递只需非敏感配置投影，不承载 Resend Key 或收件地址。"""
+
+    enabled: bool
+    resend_configured: bool
+    recipient_count: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.recipient_count <= MAX_RESEND_RECIPIENTS:
+            raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
+
+
+@dataclass(frozen=True, slots=True)
 class SecurityDailyConfigurationUpdate:
     """管理员配置变更；api_key=None 表示保留当前 Key。"""
 
@@ -385,6 +398,10 @@ class SecurityDailyPreview:
 
 class SecurityDailyRepository(Protocol):
     async def configuration(self) -> SecurityDailyConfiguration: ...
+
+    async def auto_delivery_configuration(
+        self,
+    ) -> SecurityDailyAutoDeliveryConfiguration: ...
 
     async def audit_evidence(
         self, period_start: datetime, period_end: datetime
@@ -1161,7 +1178,7 @@ class SecurityDailyService:
         不完整时显式记录失败原因，恢复配置后自动补发。
         """
 
-        configuration = await self.repository.configuration()
+        configuration = await self.repository.auto_delivery_configuration()
         if not configuration.enabled:
             return None
         if await self.repository.exists_sent_delivery(report_date):
@@ -1179,7 +1196,7 @@ class SecurityDailyService:
             "安全日报发信配置不完整"
         ):
             return None
-        if not configuration.api_key or not configuration.recipients:
+        if not configuration.resend_configured or configuration.recipient_count == 0:
             await self.repository.mark_delivery_failed(
                 record.id,
                 "安全日报发信配置不完整（缺少 Resend Key 或收件人）",
