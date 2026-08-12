@@ -318,7 +318,8 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
             security_session_loader=repository.load_security_session,
         )
         token_before_dept_change = tokens.issue(claims(first))
-        assert (await tokens.verify(token_before_dept_change)).dept == "平台部"
+        # LDAP 返回的原始 dept 不可成为授权来源；JWT 必须绑定管理员配置的组映射部门。
+        assert (await tokens.verify(token_before_dept_change)).dept == "业务一部"
 
         async with engine.begin() as connection:
             await connection.execute(
