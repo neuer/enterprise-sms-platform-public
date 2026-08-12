@@ -1407,3 +1407,15 @@ def test_callback_crypto_context_is_in_schema_and_followup_migration() -> None:
     source = revision.read_text(encoding="utf-8")
     assert "ALTER COLUMN callback_secret_enc SET NOT NULL" in source
     assert "ALTER COLUMN callback_secret_key_version SET NOT NULL" in source
+
+
+def test_security_findings_hardening_migration_is_baseline_idempotent() -> None:
+    """0066 必须兼容已含当前 schema.sql 对象的 0001 空库基线。"""
+
+    revision = BACKEND / "migrations/versions/0066_security_findings_hardening.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS dept" in source
+    assert "conname='ck_external_role_mapping_dept'" in source
+    assert "CREATE TABLE IF NOT EXISTS blacklist_hmac_alias" in source
+    assert "ON UPDATE CASCADE ON DELETE CASCADE" in source
