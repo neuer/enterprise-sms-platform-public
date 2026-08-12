@@ -283,8 +283,12 @@ async def test_disable_rejects_removing_last_effective_admin() -> None:
 @pytest.mark.asyncio
 async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited() -> None:
     mappings = (
-        ExternalRoleMapping("CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin"),
-        ExternalRoleMapping("CN=SMS-Operators,OU=Groups,DC=example,DC=com", "operator"),
+        ExternalRoleMapping(
+            "CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"
+        ),
+        ExternalRoleMapping(
+            "CN=SMS-Operators,OU=Groups,DC=example,DC=com", "operator", "业务一部"
+        ),
     )
     repo, connection = repository(
         [
@@ -316,8 +320,16 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
     assert json.loads(audit_params["audit"]) == {
         "provider_code": "ad",
         "mappings": [
-            {"external_group": mappings[0].external_group, "role": "admin"},
-            {"external_group": mappings[1].external_group, "role": "operator"},
+            {
+                "external_group": mappings[0].external_group,
+                "role": "admin",
+                "dept": "平台部",
+            },
+            {
+                "external_group": mappings[1].external_group,
+                "role": "operator",
+                "dept": "业务一部",
+            },
         ],
     }
 
@@ -354,8 +366,16 @@ async def test_role_mapping_list_orders_groups_and_returns_no_provider_secret() 
             FakeResult(scalar=2),
             FakeResult(
                 [
-                    {"external_group": "CN=SMS-Admins", "role": "admin"},
-                    {"external_group": "CN=SMS-Operators", "role": "operator"},
+                    {
+                        "external_group": "CN=SMS-Admins",
+                        "role": "admin",
+                        "dept": "平台部",
+                    },
+                    {
+                        "external_group": "CN=SMS-Operators",
+                        "role": "operator",
+                        "dept": "业务一部",
+                    },
                 ]
             ),
         ]
@@ -364,8 +384,8 @@ async def test_role_mapping_list_orders_groups_and_returns_no_provider_secret() 
     values = await repo.list_role_mappings("ad")
 
     assert values == (
-        ExternalRoleMapping("CN=SMS-Admins", "admin"),
-        ExternalRoleMapping("CN=SMS-Operators", "operator"),
+        ExternalRoleMapping("CN=SMS-Admins", "admin", "平台部"),
+        ExternalRoleMapping("CN=SMS-Operators", "operator", "业务一部"),
     )
     sql = connection.calls[1][0]
     assert "ORDER BY external_group" in sql

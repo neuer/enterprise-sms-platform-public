@@ -297,15 +297,21 @@ class SqlOperationsQueryRepository:
                     text(
                         f"""
                         SELECT bl.source FROM blacklist bl
-                        WHERE bl.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
+                        JOIN blacklist_hmac_alias ba
+                          ON ba.blacklist_digest=bl.phone_hmac
+                        WHERE ba.hmac_digest=ANY(CAST(:phone_hmacs AS char(64)[]))
                           AND EXISTS (
                             SELECT 1 FROM sms_message m
                             JOIN sms_batch b ON b.id=m.batch_id
-                            WHERE m.phone_hmac=bl.phone_hmac AND {predicate}
+                            WHERE m.phone_hmac=ANY(
+                              CAST(:phone_hmacs AS char(64)[])
+                            ) AND {predicate}
                             UNION ALL
                             SELECT 1 FROM sms_reply r
                             LEFT JOIN sms_batch b ON b.id=r.batch_id
-                            WHERE r.phone_hmac=bl.phone_hmac AND {predicate}
+                            WHERE r.phone_hmac=ANY(
+                              CAST(:phone_hmacs AS char(64)[])
+                            ) AND {predicate}
                           )
                         ORDER BY bl.created_at DESC LIMIT 1
                         """

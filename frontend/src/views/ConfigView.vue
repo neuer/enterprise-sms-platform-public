@@ -329,7 +329,7 @@ async function disableProvider(): Promise<void> {
 }
 
 function addRoleMapping(): void {
-  roleMappings.value.push({ external_group: "", role: "viewer" })
+  roleMappings.value.push({ external_group: "", role: "viewer", dept: "" })
 }
 
 function removeRoleMapping(index: number): void {
@@ -340,7 +340,11 @@ async function saveRoleMappings(): Promise<void> {
   mappingsSaving.value = true
   try {
     const mappings = roleMappings.value
-      .map((item) => ({ external_group: item.external_group.trim(), role: item.role }))
+      .map((item) => ({
+        external_group: item.external_group.trim(),
+        role: item.role,
+        dept: item.dept?.trim() || "",
+      }))
       .filter((item) => item.external_group)
     const result = await replaceAuthProviderRoleMappings("ad", mappings)
     roleMappings.value = result.mappings.map((item) => ({ ...item }))
@@ -482,6 +486,7 @@ onMounted(() => {
         <div v-if="roleMappings.length" class="role-mapping-list">
           <div v-for="(mapping, index) in roleMappings" :key="index" class="role-mapping-row">
             <el-input v-model="mapping.external_group" :data-testid="`mapping-group-${index}`" placeholder="CN=SMS-Operators,OU=Groups,..." />
+            <el-input v-model="mapping.dept" :data-testid="`mapping-dept-${index}`" placeholder="授权部门" />
             <el-select v-model="mapping.role" :data-testid="`mapping-role-${index}`">
               <el-option v-for="(label, role) in roleLabels" :key="role" :label="label" :value="role" />
             </el-select>

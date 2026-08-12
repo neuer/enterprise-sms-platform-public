@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy import text
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
+from app.services.blacklist import BlacklistEntry
+from app.services.blacklist_repository import upsert_blacklist_entries
 from app.services.content_protection import decrypt_reply_content
 from app.services.crypto import CryptoService
 from app.settings import Settings, get_settings
@@ -48,11 +51,20 @@ class ReplyQueryRepository(Protocol):
         dept: str | None,
     ) -> ReplyPage: ...
 
-    async def optout(self, reply_id: int, *, dept: str | None, actor: str) -> bool: ...
+    async def optout(
+        self,
+        reply_id: int,
+        *,
+        dept: str | None,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> bool: ...
 
 
 class BlacklistCache(Protocol):
     async def invalidate(self) -> None: ...
+
+    async def mutate(self, callback: Callable[[], Awaitable[bool]]) -> bool: ...
 
 
 class ReplyQueryService:
@@ -93,14 +105,24 @@ class ReplyQueryService:
             dept=dept,
         )
 
-    async def optout(self, reply_id: int, *, dept: str | None, actor: str) -> None:
+    async def optout(
+        self,
+        reply_id: int,
+        *,
+        dept: str | None,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> None:
         if reply_id < 1:
             raise ReplyNotFound("回复不存在")
-        await self.cache.invalidate()
-        try:
-            found = await self.repository.optout(reply_id, dept=dept, actor=actor)
-        finally:
-            await self.cache.invalidate()
+        found = await self.cache.mutate(
+            lambda: self.repository.optout(
+                reply_id,
+                dept=dept,
+                principal=principal,
+                ip=ip,
+            )
+        )
         if not found:
             raise ReplyNotFound("回复不存在")
 
@@ -157,7 +179,8 @@ class SqlReplyQueryRepository:
                         SELECT r.id,r.phone_mask,trim(r.event_key) event_key,
                           e.content_enc,b.batch_no,r.reply_time,
                           EXISTS(
-                            SELECT 1 FROM blacklist bl WHERE bl.phone_hmac=r.phone_hmac
+                            SELECT 1 FROM blacklist_hmac_alias ba
+                            WHERE ba.hmac_digest=r.phone_hmac
                           ) AS blacklisted
                         FROM sms_reply r
                         JOIN reply_event e ON e.event_key=r.event_key
@@ -182,52 +205,62 @@ class SqlReplyQueryRepository:
         finally:
             await engine.dispose()
 
-    async def optout(self, reply_id: int, *, dept: str | None, actor: str) -> bool:
+    async def optout(
+        self,
+        reply_id: int,
+        *,
+        dept: str | None,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> bool:
+        if self.crypto is None:
+            raise RuntimeError("reply crypto service is required")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(
                     text(
                         """
-                        INSERT INTO blacklist AS current(
-                          phone_hmac,phone_enc,phone_mask,key_version,
-                          source,remark,created_by
-                        )
-                        SELECT r.phone_hmac,r.phone_enc,r.phone_mask,r.key_version,
-                          'reply_optout','上行回复退订',:actor
-                        FROM sms_reply r LEFT JOIN sms_batch b ON b.id=r.batch_id
+                        SELECT e.phone_enc,e.phone_hmac,e.phone_mask,e.key_version
+                        FROM sms_reply r
+                        JOIN reply_event e ON e.event_key=r.event_key
+                        LEFT JOIN sms_batch b ON b.id=r.batch_id
                         WHERE r.id=:reply_id AND r.batch_id IS NOT NULL
                           AND (:dept IS NULL OR b.dept=:dept)
-                        ON CONFLICT(phone_hmac) DO UPDATE SET
-                          phone_enc=excluded.phone_enc,phone_mask=excluded.phone_mask,
-                          key_version=excluded.key_version,source='reply_optout',
-                          remark='上行回复退订'
-                        RETURNING 1
                         """
                     ),
-                    {"reply_id": reply_id, "dept": dept, "actor": actor},
+                    {"reply_id": reply_id, "dept": dept},
                 )
-                found = result.scalar_one_or_none() is not None
-                if found:
-                    await connection.execute(
-                        text(
-                            """
-                            INSERT INTO audit_log(
-                              actor,action,object_type,object_id,after_val
-                            ) VALUES (
-                              :actor,'reply_optout','blacklist',:object_id,
-                              CAST(:after AS jsonb)
-                            )
-                            """
-                        ),
-                        {
-                            "actor": actor,
-                            "object_id": str(reply_id),
-                            "after": json.dumps(
-                                {"count": 1, "source": "reply_optout", "reply_id": reply_id}
-                            ),
-                        },
-                    )
-                return found
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return False
+                phone_hmac = str(row["phone_hmac"]).strip()
+                phone = self.crypto.decrypt_phone(
+                    row["phone_enc"],
+                    int(row["key_version"]),
+                    phone_hmac,
+                    table="reply_event",
+                )
+                protected = self.crypto.protect_phone(phone, table="blacklist")
+                await upsert_blacklist_entries(
+                    connection,
+                    [
+                        BlacklistEntry(
+                            protected.phone_hmac,
+                            protected.phone_enc,
+                            protected.phone_mask,
+                            protected.key_version,
+                            "reply_optout",
+                            "上行回复退订",
+                            hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
+                        )
+                    ],
+                    principal=principal,
+                    ip=ip,
+                    source="reply_optout",
+                    audit_action="reply_optout",
+                    audit_object_id=str(reply_id),
+                )
+                return True
         finally:
             await engine.dispose()

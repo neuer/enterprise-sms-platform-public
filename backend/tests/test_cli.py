@@ -79,7 +79,7 @@ def test_database_seed_commands_only_contain_key_hashes() -> None:
     mapping_sql, mapping_params = commands[1]
     assert "INSERT INTO external_role_mapping" in mapping_sql
     assert all(
-        f"('mock:{role}','{role}')" in mapping_sql
+        f"('mock:{role}','{role}'," in mapping_sql
         for role in ("admin", "approver", "operator", "viewer")
     )
     assert mapping_params == {}

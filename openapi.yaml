@@ -1423,7 +1423,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AuthProviderRoleMappings' }
+            schema: { $ref: '#/components/schemas/AuthProviderRoleMappingsUpdate' }
       responses:
         '200': { description: 已替换并完成无敏感审计, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderRoleMappings' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -3423,6 +3423,7 @@ components:
       properties:
         external_group: { type: string, minLength: 1, maxLength: 256 }
         role: { type: string, enum: [admin, approver, operator, viewer] }
+        dept: { anyOf: [{ type: string, minLength: 1, maxLength: 128 }, { type: 'null' }] }
 
     AuthProviderRoleMappings:
       type: object
@@ -3433,6 +3434,25 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/AuthProviderRoleMapping' }
+
+    AuthProviderRoleMappingUpdate:
+      type: object
+      additionalProperties: false
+      required: [external_group, role, dept]
+      properties:
+        external_group: { type: string, minLength: 1, maxLength: 256 }
+        role: { type: string, enum: [admin, approver, operator, viewer] }
+        dept: { type: string, minLength: 1, maxLength: 128 }
+
+    AuthProviderRoleMappingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [mappings]
+      properties:
+        mappings:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/AuthProviderRoleMappingUpdate' }
 
     DashboardCategoryModel:
       type: object

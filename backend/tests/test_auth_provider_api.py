@@ -117,7 +117,11 @@ class FakeProviderService:
 
     async def list_role_mappings(self, code: str) -> tuple[ExternalRoleMapping, ...]:
         self.calls.append(("list_mappings", code))
-        return (ExternalRoleMapping("CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin"),)
+        return (
+            ExternalRoleMapping(
+                "CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"
+            ),
+        )
 
     async def replace_role_mappings(
         self,
@@ -188,6 +192,7 @@ def test_admin_can_save_test_disable_and_replace_role_mappings() -> None:
                 {
                     "external_group": "CN=SMS-Operators,OU=Groups,DC=example,DC=com",
                     "role": "operator",
+                    "dept": "业务一部",
                 }
             ]
         },
@@ -199,6 +204,7 @@ def test_admin_can_save_test_disable_and_replace_role_mappings() -> None:
     assert tested.json() == {"success": False, "result_code": "LDAP_CONNECTION_FAILED"}
     assert replaced.status_code == 200
     assert replaced.json()["mappings"][0]["role"] == "operator"
+    assert replaced.json()["mappings"][0]["dept"] == "业务一部"
     assert [name for name, _ in service.calls] == [
         "draft",
         "test",

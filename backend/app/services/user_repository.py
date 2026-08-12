@@ -279,11 +279,12 @@ class SqlUserManagementRepository:
                 if current.provider_code == "local" and not role_override:
                     raise RoleMappingConflict("本地账号必须使用人工角色")
                 target_role = role
+                target_dept = current.dept
                 if current.provider_code != "local" and not role_override:
                     mapping_result = await connection.execute(
                         text(
                             """
-                            SELECT external_group,role FROM external_role_mapping
+                            SELECT external_group,role,dept FROM external_role_mapping
                             WHERE provider_id=:provider_id
                               AND external_group=ANY(CAST(:groups AS text[]))
                             """
@@ -293,10 +294,19 @@ class SqlUserManagementRepository:
                             "groups": list(current.source_groups),
                         },
                     )
+                    mapping_rows = list(mapping_result.mappings())
                     mappings = {
                         str(item["external_group"]): str(item["role"])
-                        for item in mapping_result.mappings()
+                        for item in mapping_rows
                     }
+                    mapped_departments = {
+                        str(item["dept"]).strip()
+                        for item in mapping_rows
+                        if item["dept"] is not None and str(item["dept"]).strip()
+                    }
+                    if len(mapped_departments) != 1:
+                        raise RoleMappingConflict("最近目录来源组未映射到唯一授权部门")
+                    target_dept = mapped_departments.pop()
                     try:
                         target_role = (
                             RoleResolver()
@@ -320,7 +330,7 @@ class SqlUserManagementRepository:
                     text(
                         """
                         UPDATE user_account SET
-                          role=:role,role_override=:role_override,
+                          role=:role,role_override=:role_override,dept=:dept,
                           security_version=security_version+1,updated_at=now()
                         WHERE id=:account_id
                         """
@@ -328,6 +338,7 @@ class SqlUserManagementRepository:
                     {
                         "account_id": account_id,
                         "role": target_role,
+                        "dept": target_dept,
                         "role_override": role_override,
                     },
                 )

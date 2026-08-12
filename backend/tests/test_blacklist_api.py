@@ -12,7 +12,7 @@ from app.services.blacklist import BlacklistAddResult, BlacklistEntry, Blacklist
 class FakeFacade:
     async def verify(self, token: str) -> JwtClaims:
         assert token == "jwt"
-        return JwtClaims("admin01", "管理员", "平台部", "admin")
+        return JwtClaims(1, 11, "local", "admin01", "管理员", "平台部", "admin")
 
 
 class FakeService:

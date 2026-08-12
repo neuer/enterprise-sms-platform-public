@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.56  2026-08-12
+-- v1.6.56：LDAP 授权部门映射、黑名单 HMAC 轮换别名与精确查询加固
 -- v1.6.55  2026-08-11
 -- v1.6.55：模板正文上下文加密、敏感元数据手机号兜底约束、主体隔离用量键
 -- v1.6.54  2026-08-11
@@ -203,6 +205,10 @@ CREATE TABLE external_role_mapping (
     external_group VARCHAR(256) NOT NULL,
     role           VARCHAR(16)  NOT NULL
                    CHECK (role IN ('admin','approver','operator','viewer')),
+    dept           VARCHAR(128),
+    CONSTRAINT ck_external_role_mapping_dept CHECK (
+      dept IS NULL OR length(btrim(dept)) BETWEEN 1 AND 128
+    ),
     UNIQUE (provider_id, external_group)
 );
 
@@ -1067,6 +1073,24 @@ CREATE TABLE blacklist (
       remark IS NULL OR remark !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
     )
 );
+
+CREATE TABLE blacklist_hmac_alias (
+    blacklist_digest CHAR(64) NOT NULL,
+    hmac_key_version     SMALLINT NOT NULL
+        CONSTRAINT ck_blacklist_hmac_alias_version
+        CHECK (hmac_key_version BETWEEN 1 AND 32767),
+    hmac_digest          CHAR(64) NOT NULL
+        CONSTRAINT ck_blacklist_hmac_alias_digest
+        CHECK (hmac_digest ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT pk_blacklist_hmac_alias
+      PRIMARY KEY (hmac_key_version,hmac_digest),
+    CONSTRAINT uq_blacklist_hmac_alias_owner_version
+      UNIQUE (blacklist_digest,hmac_key_version)
+);
+ALTER TABLE blacklist_hmac_alias
+  ADD CONSTRAINT fk_blacklist_hmac_alias_owner
+  FOREIGN KEY(blacklist_digest) REFERENCES blacklist(phone_hmac)
+  ON UPDATE CASCADE ON DELETE CASCADE;
 
 -- 历史自由文本命中手机号时，迁移先加密保存原值，再收敛在线字段。
 -- 该表不授予任何运行角色，只允许 sms_owner 受控恢复。
@@ -2140,7 +2164,7 @@ GRANT SELECT ON
     app, dept_quota, sms_batch, sms_resend_action, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
-    sms_sign, blacklist, sensitive_word, callback_report_event, callback_task,
+    sms_sign, blacklist, blacklist_hmac_alias, sensitive_word, callback_report_event, callback_task,
     callback_authority_lease,
     worker_lease_event, balance_snapshot, alert_log, outbox_event,
     usage_reservation, usage_frequency_subject, usage_frequency_alias,
@@ -2154,6 +2178,7 @@ TO sms_accept;
 GRANT INSERT, UPDATE, DELETE ON
     app, dept_quota, sms_batch, idempotency_record, sms_message,
     import_task, import_phone, approval, sms_template, sms_sign, blacklist,
+    blacklist_hmac_alias,
     sensitive_word, usage_reservation, usage_frequency_subject,
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
@@ -2185,6 +2210,7 @@ GRANT SELECT ON
     user_account, app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template, sms_sign, blacklist,
+    blacklist_hmac_alias,
     sensitive_word, callback_report_event, callback_task, worker_lease_event,
     balance_snapshot, alert_log, outbox_event, usage_reservation,
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,

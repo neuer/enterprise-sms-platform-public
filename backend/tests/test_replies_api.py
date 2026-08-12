@@ -18,7 +18,15 @@ class FakeFacade:
 
     async def verify(self, token: str) -> JwtClaims:
         assert token == "jwt"
-        return JwtClaims("operator01", "操作员", "研发部", self.role)  # type: ignore[arg-type]
+        return JwtClaims(
+            account_id=2,
+            identity_id=12,
+            provider_code="local",
+            login_name="operator01",
+            display_name="操作员",
+            dept="研发部",
+            role=self.role,  # type: ignore[arg-type]
+        )
 
 
 class FakeService:
@@ -109,7 +117,10 @@ def test_operator_can_optout_but_viewer_is_forbidden() -> None:
         .status_code
         == 200
     )
-    assert service.optout_calls == [{"reply_id": 5, "dept": "研发部", "actor": "operator01"}]
+    call = service.optout_calls[0]
+    assert call["reply_id"] == 5 and call["dept"] == "研发部"
+    assert call["principal"].login_name == "operator01"  # type: ignore[union-attr]
+    assert call["ip"] == "0.0.0.0"
     assert (
         client(FakeService(), "viewer")
         .post("/api/v1/web/replies/5/blacklist", headers=headers)

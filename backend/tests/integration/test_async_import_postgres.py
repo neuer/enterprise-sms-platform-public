@@ -130,6 +130,7 @@ async def test_async_import_lease_takeover_fences_old_worker_and_exhausts_attemp
             filename="phones.csv",
             source_size=12,
             expire_hours=6,
+            ip="10.0.0.8",
         )
         import_ids.append(stored.import_id)
         assert stored.status == "staging" and stored.source_file is not None
@@ -203,6 +204,7 @@ async def test_async_import_lease_takeover_fences_old_worker_and_exhausts_attemp
             filename="exhausted.csv",
             source_size=12,
             expire_hours=6,
+            ip="10.0.0.8",
         )
         import_ids.append(exhausted.import_id)
         assert exhausted.source_file is not None

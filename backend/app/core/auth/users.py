@@ -321,7 +321,7 @@ class SqlUserRepository:
                     mapping_result = await connection.execute(
                         text(
                             """
-                            SELECT external_group,role FROM external_role_mapping
+                            SELECT external_group,role,dept FROM external_role_mapping
                             WHERE provider_id=:provider_id
                               AND external_group=ANY(CAST(:groups AS text[]))
                             """
@@ -331,10 +331,19 @@ class SqlUserRepository:
                             "groups": list(identity.groups),
                         },
                     )
+                    mapping_rows = list(mapping_result.mappings())
                     mappings = {
                         str(row["external_group"]): str(row["role"])
-                        for row in mapping_result.mappings()
+                        for row in mapping_rows
                     }
+                    mapped_departments = {
+                        str(row["dept"]).strip()
+                        for row in mapping_rows
+                        if row["dept"] is not None and str(row["dept"]).strip()
+                    }
+                    if len(mapped_departments) != 1:
+                        raise InvalidCredentials("目录组未映射到唯一授权部门")
+                    mapped_dept = mapped_departments.pop()
                     existing = (
                         ExistingUser(
                             role=cast(Role, current["role"]),
@@ -357,7 +366,7 @@ class SqlUserRepository:
                             ),
                             {
                                 "display_name": identity.display_name,
-                                "dept": identity.dept,
+                                "dept": mapped_dept,
                                 "role": role,
                             },
                         )
@@ -410,7 +419,7 @@ class SqlUserRepository:
                             {
                                 "account_id": account_id,
                                 "display_name": identity.display_name,
-                                "dept": identity.dept,
+                                "dept": mapped_dept,
                                 "role": role,
                             },
                         )

@@ -57,6 +57,13 @@ class FakeParser:
         )
 
 
+def test_approver_read_scope_is_global_or_explicit_department() -> None:
+    claims = JwtClaims(11, 101, "local", "approver01", "审批员", "业务一部", "approver")
+
+    assert api._query_scope(claims) == api.BatchAccessScope(all_departments=True)
+    assert api._query_scope(claims, "市场部") == api.BatchAccessScope(dept="市场部")
+
+
 class FakeImportRepository:
     def __init__(self) -> None:
         self.reserved: tuple[str, SecurityPrincipal] | None = None
@@ -70,11 +77,13 @@ class FakeImportRepository:
         filename: str,
         source_size: int,
         expire_hours: int,
+        ip: str,
     ) -> StoredImport:
         assert principal.login_name == "operator01"
         assert filename == "phones.csv"
         assert source_size > 0
         assert expire_hours == 6
+        assert ip == "0.0.0.0"
         return StoredImport(
             "11111111-1111-1111-1111-111111111111",
             0,

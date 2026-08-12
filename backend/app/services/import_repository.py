@@ -12,9 +12,14 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.bounded_executor import run_bounded
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    bind_connection_audit_subject,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.imports import ImportPhone, ImportResult
 from app.settings import Settings, get_settings
 
@@ -246,6 +251,7 @@ class SqlImportRepository:
         filename: str,
         source_size: int,
         expire_hours: int,
+        ip: str,
     ) -> StoredImport:
         """登记待解析任务；不读取、不解析也不持久化号码明文。"""
 
@@ -282,6 +288,29 @@ class SqlImportRepository:
                     },
                 )
                 row = result.mappings().one()
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="message_import",
+                        object_type="import_task",
+                        object_id=str(row["import_id"]),
+                        after={
+                            "source_size": source_size,
+                            "file_type": Path(filename).suffix.casefold(),
+                            "parse_status": "staging",
+                        },
+                    ),
+                )
                 return StoredImport(
                     str(row["import_id"]),
                     0,

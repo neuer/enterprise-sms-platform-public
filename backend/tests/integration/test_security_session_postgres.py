@@ -253,8 +253,8 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                 text(
                     """
                     INSERT INTO external_role_mapping(
-                      provider_id,external_group,role
-                    ) VALUES(:provider_id,'mock:operator','operator')
+                      provider_id,external_group,role,dept
+                    ) VALUES(:provider_id,'mock:operator','operator','业务一部')
                     """
                 ),
                 {"provider_id": provider_ids[0]},
@@ -399,8 +399,10 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                         text(
                             """
                             INSERT INTO external_role_mapping(
-                              provider_id,external_group,role
-                            ) VALUES(:provider_id,'security-session-group','operator')
+                              provider_id,external_group,role,dept
+                            ) VALUES(
+                              :provider_id,'security-session-group','operator','业务一部'
+                            )
                             RETURNING id
                             """
                         ),
