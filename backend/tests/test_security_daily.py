@@ -134,6 +134,7 @@ class FakeRepository:
         self.record = record
         self.failed: list[tuple[UUID, str]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
+        self.existing_request: SecurityDailyDeliveryRequest | None = None
         self.delivery_failed: list[tuple[int, str]] = []
         self.ingested: list[dict[str, object]] = []
         self.config = SecurityDailyConfiguration(
@@ -268,6 +269,8 @@ class FakeRepository:
         ip: str | None = None,
         system: bool = False,
     ) -> SecurityDailyDeliveryRequest:
+        if self.existing_request is not None:
+            return self.existing_request
         request = SecurityDailyDeliveryRequest(
             request_id=uuid4(),
             report_date=record.report_date,
@@ -367,6 +370,58 @@ async def test_service_submits_redacted_report_without_mail_credentials() -> Non
     encoded = json.dumps(control.submitted[0][1], ensure_ascii=False)
     assert "secret" not in encoded.casefold()
     assert "recipient" not in encoded.casefold()
+
+
+@pytest.mark.asyncio
+async def test_service_resubmits_same_pending_request_when_control_file_was_lost() -> None:
+    repository = FakeRepository(record())
+    repository.existing_request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+    )
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(
+        1,
+        "send",
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+    )
+
+    assert request is repository.existing_request
+    assert control.synced == [repository.config]
+    assert control.submitted == [(request, repository.record.payload)]
+
+
+@pytest.mark.asyncio
+async def test_service_does_not_resubmit_completed_idempotent_request() -> None:
+    repository = FakeRepository(replace(record(), delivery_status="sent"))
+    repository.existing_request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="sent",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+    )
+    control = FakeControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(
+        1,
+        "send",
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+    )
+
+    assert request is repository.existing_request
+    assert control.synced == []
+    assert control.submitted == []
 
 
 @pytest.mark.parametrize(

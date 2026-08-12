@@ -1277,7 +1277,12 @@ class SecurityDailyService:
             ip=ip,
             system=system,
         )
-        if request.idempotent:
+        resubmit_pending = (
+            request.idempotent and request.state == "pending" and action == "send"
+        )
+        # 控制文件丢失时复用同一 request_id 重建请求，保留 Resend 幂等边界；
+        # 已完成请求仍只返回事实，不再次接触投递器。
+        if request.idempotent and not resubmit_pending:
             return request
         try:
             if not system:
