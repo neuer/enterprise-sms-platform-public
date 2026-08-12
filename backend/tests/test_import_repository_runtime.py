@@ -102,7 +102,10 @@ async def test_registration_records_deterministic_source_before_file_staging(
                         "expires_at": datetime(2026, 7, 29, tzinfo=UTC),
                     }
                 ]
-            )
+            ),
+            FakeResult([{"database_user": "sms_accept", "txid": 7}]),
+            FakeResult(),
+            FakeResult(),
         ]
     )
 
@@ -111,6 +114,7 @@ async def test_registration_records_deterministic_source_before_file_staging(
         filename="phones.csv",
         source_size=12,
         expire_hours=24,
+        ip="10.0.0.8",
     )
 
     sql, params = connection.calls[0]

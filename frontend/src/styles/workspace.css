@@ -3222,7 +3222,7 @@ main {
 .role-mapping-panel > header { justify-content: space-between; gap: 16px; }
 .role-mapping-panel > header p { margin: 5px 0 0; color: var(--ink-soft); font-size: 11px; }
 .role-mapping-list { display: grid; gap: 8px; margin-top: 14px; }
-.role-mapping-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 8px; }
+.role-mapping-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 150px auto; gap: 8px; }
 .role-mapping-empty { margin: 14px 0 0; padding: 14px; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; text-align: center; }
 .role-mapping-panel footer { display: flex; justify-content: flex-end; margin-top: 12px; }
 .config-restart-alert { margin-top: 16px; }

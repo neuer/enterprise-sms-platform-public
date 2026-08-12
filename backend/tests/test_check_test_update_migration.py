@@ -78,6 +78,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0063_sensitive_content_and_raw_first",
         "0064_security_scan_round3",
         "0065_security_scan_round4",
+        "0066_security_findings_hardening",
     ]
 
 

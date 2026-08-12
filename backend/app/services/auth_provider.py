@@ -125,10 +125,11 @@ class ProviderSummary:
 
 @dataclass(frozen=True, slots=True)
 class ExternalRoleMapping:
-    """外部目录组到平台角色的显式映射。"""
+    """外部目录组到平台角色和授权部门的显式映射。"""
 
     external_group: str
     role: Role
+    dept: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,11 +409,14 @@ class AuthProviderService:
             group = mapping.external_group.strip()
             if not group or len(group) > 256:
                 raise InvalidProviderConfig("外部组名称不能为空且不得超过 256 字符")
+            dept = (mapping.dept or "").strip()
+            if not dept or len(dept) > 128:
+                raise InvalidProviderConfig("外部组的授权部门不能为空且不得超过 128 字符")
             key = group.casefold()
             if key in seen:
                 raise DuplicateRoleMapping("同一外部组只能映射一次")
             seen.add(key)
-            normalized.append(ExternalRoleMapping(group, mapping.role))
+            normalized.append(ExternalRoleMapping(group, mapping.role, dept))
         return await self.repository.replace_role_mappings(
             code,
             tuple(normalized),

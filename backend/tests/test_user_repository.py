@@ -161,8 +161,16 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
             FakeResult([row()]),
             FakeResult(
                 [
-                    {"external_group": "sms-operators", "role": "operator"},
-                    {"external_group": "sms-approvers", "role": "approver"},
+                        {
+                            "external_group": "sms-operators",
+                            "role": "operator",
+                            "dept": "业务一部",
+                        },
+                        {
+                            "external_group": "sms-approvers",
+                            "role": "approver",
+                            "dept": "业务一部",
+                        },
                 ]
             ),
             FakeResult(),
@@ -184,6 +192,7 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
     assert "security_version=security_version+1" in update_sql.replace(" ", "")
     assert update_params["account_id"] == 8
     assert update_params["role"] == "approver"
+    assert update_params["dept"] == "业务一部"
     audit_params = connection.calls[5][1]
     assert audit_params["object_id"] == "8"
     assert set(audit_params) == {

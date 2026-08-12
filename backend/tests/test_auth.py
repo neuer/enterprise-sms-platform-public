@@ -310,6 +310,74 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
 
 
 @pytest.mark.asyncio
+async def test_ldap_invalid_credentials_result_is_uniform_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ldap3.core.exceptions import LDAPInvalidCredentialsResult
+
+    import app.core.auth.ldap_real as ldap_module
+
+    class Attribute:
+        value = "user01"
+        values = ["CN=SMS-Viewers,DC=xtc,DC=com"]
+
+    class Entry:
+        entry_dn = "CN=user01,DC=xtc,DC=com"
+        sAMAccountName = Attribute()
+        displayName = Attribute()
+        department = Attribute()
+        objectGUID = Attribute()
+        memberOf = Attribute()
+
+    class FakeConnection:
+        def __init__(self, server: object, **kwargs: Any) -> None:
+            del server
+            self.user = kwargs["user"]
+            self.entries = [Entry()]
+            self.socket = object()
+
+        def open(self) -> None:
+            return None
+
+        def bind(self) -> bool:
+            if self.user == Entry.entry_dn:
+                raise LDAPInvalidCredentialsResult(result=49)
+            return True
+
+        def search(self, **kwargs: Any) -> bool:
+            del kwargs
+            return True
+
+        def unbind(self) -> None:
+            return None
+
+    monkeypatch.setattr(ldap_module, "Tls", lambda **_: object())
+    monkeypatch.setattr(ldap_module, "Server", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(ldap_module, "Connection", FakeConnection)
+    backend = LdapPasswordProvider(
+        LdapConfig(
+            provider_code="ad",
+            server="ldaps://dc.example:636",
+            base_dn="DC=xtc,DC=com",
+            bind_dn="CN=svc,DC=xtc,DC=com",
+            bind_password="service-secret",
+            user_search_filter="(sAMAccountName={username})",
+            username_attribute="sAMAccountName",
+            display_name_attribute="displayName",
+            dept_attribute="department",
+            subject_attribute="objectGUID",
+            group_attribute="memberOf",
+            ca_certs_file="/etc/ssl/certs/ca-certificates.crt",
+            connect_timeout_s=3,
+            receive_timeout_s=4,
+        )
+    )
+
+    with pytest.raises(InvalidCredentials, match="用户名或密码错误"):
+        await backend.authenticate("user01", "wrong-password")
+
+
+@pytest.mark.asyncio
 async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

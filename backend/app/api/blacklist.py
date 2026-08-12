@@ -13,7 +13,9 @@ from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.blacklist import (
     BlacklistEntry,
@@ -81,13 +83,13 @@ async def _admin(
     request: Request,
     facade: AuthFacade,
     credentials: HTTPAuthorizationCredentials | None,
-) -> str:
+) -> SecurityPrincipal:
     if credentials is None or credentials.scheme.casefold() != "bearer":
         raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
     claims = await facade.verify(credentials.credentials)
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可管理黑名单", None)
-    return claims.username
+    return claims.principal
 
 
 @router.get("", response_model=BlacklistPageModel)
@@ -125,13 +127,14 @@ async def add_blacklist(
         Depends(bearer_scheme),
     ],
 ) -> AddBlacklistResponse:
-    actor = await _admin(request, facade, credentials)
+    principal = await _admin(request, facade, credentials)
     try:
         result = await service.add(
             payload.phones,
             source=payload.source,
             remark=payload.remark,
-            actor=actor,
+            principal=principal,
+            ip=trusted_client_ip(request),
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
@@ -156,7 +159,11 @@ async def delete_blacklist(
         Depends(bearer_scheme),
     ],
 ) -> Response:
-    actor = await _admin(request, facade, credentials)
-    if not await service.delete(phone_hmac, actor=actor):
+    principal = await _admin(request, facade, credentials)
+    if not await service.delete(
+        phone_hmac,
+        principal=principal,
+        ip=trusted_client_ip(request),
+    ):
         raise ApiError(404, "NOT_FOUND", "黑名单记录不存在", None)
     return Response(status_code=204)

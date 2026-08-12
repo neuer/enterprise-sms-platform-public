@@ -176,7 +176,7 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
     assert name == "search"
     assert values["category"] == "notice" and values["status"] == "failed"
     assert values["page"] == 2 and values["size"] == 50
-    assert values["scope"] == BatchAccessScope(dept="平台部")
+    assert values["scope"] == BatchAccessScope(all_departments=True)
     assert [call["action"] for call in auditor.calls] == [
         "message_content_read",
         "message_content_read",
@@ -225,7 +225,7 @@ def test_decrypt_requires_approver_or_admin_and_passes_actor_scope() -> None:
     assert operations.calls[-1] == (
         "decrypt",
         {
-            "scope": BatchAccessScope(dept="平台部"),
+                "scope": BatchAccessScope(all_departments=True),
             "principal": SecurityPrincipal(
                 11,
                 101,

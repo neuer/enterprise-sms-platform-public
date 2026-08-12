@@ -307,7 +307,7 @@ async def _batch_scope(
     claims = await get_auth_facade().verify(credentials.credentials)
     if write and claims.role not in {"operator", "admin"}:
         raise ApiError(403, "FORBIDDEN", "仅操作员或管理员可修改批次", None)
-    if claims.role == "admin":
+    if claims.role in {"approver", "admin"}:
         return BatchAccessScope(all_departments=True)
     return BatchAccessScope(dept=claims.dept)
 

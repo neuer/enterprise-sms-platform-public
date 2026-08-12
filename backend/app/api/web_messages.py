@@ -271,7 +271,7 @@ async def _reader(
 
 
 def _query_scope(claims: JwtClaims, requested_dept: str | None = None) -> BatchAccessScope:
-    if claims.role == "admin":
+    if claims.role in {"approver", "admin"}:
         return (
             BatchAccessScope(dept=requested_dept)
             if requested_dept is not None
@@ -587,6 +587,7 @@ async def decrypt_message_phone(
 @audited("message_import")
 async def import_messages(
     file: Annotated[UploadFile, File()],
+    request: Request,
     parser: Annotated[ImportParser, Depends(get_import_parser)],
     repository: Annotated[SqlImportRepository, Depends(get_import_repository)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
@@ -614,6 +615,7 @@ async def import_messages(
             filename=filename,
             source_size=size,
             expire_hours=parser.limits.expire_hours,
+            ip=trusted_client_ip(request),
         )
         settings = get_settings()
         codec = ImportFileCodec(

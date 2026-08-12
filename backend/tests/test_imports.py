@@ -374,6 +374,25 @@ async def test_valid_small_xlsx_still_imports_after_preflight() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tiny_xlsx_with_xfd_dimension_is_rejected_before_row_expansion() -> None:
+    source = BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet["A1"] = "手机号"
+    sheet["XFD1"] = "amplification-marker"
+    workbook.save(source)
+    payload = source.getvalue()
+
+    with pytest.raises(ImportFormatError, match="只允许一列"):
+        await ImportParser(crypto(), FakeBlacklist()).parse(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+
+
+@pytest.mark.asyncio
 async def test_invalid_xlsx_container_is_rejected_before_openpyxl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -100,7 +100,7 @@ async def list_replies(
             start=start,
             end=end,
             page=page,
-            dept=None if claims.role == "admin" else claims.dept,
+            dept=None if claims.role in {"approver", "admin"} else claims.dept,
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
@@ -135,6 +135,7 @@ async def list_replies(
 @audited("reply_optout")
 async def blacklist_reply(
     id: int,
+    request: Request,
     service: Annotated[ReplyQueryService, Depends(get_reply_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
@@ -144,7 +145,8 @@ async def blacklist_reply(
         await service.optout(
             id,
             dept=None if claims.role == "admin" else claims.dept,
-            actor=claims.username,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
         )
     except ReplyNotFound as error:
         raise ApiError(404, "NOT_FOUND", str(error), None) from None

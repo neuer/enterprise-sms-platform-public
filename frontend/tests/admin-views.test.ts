@@ -306,7 +306,7 @@ describe("审计与系统参数", () => {
       if (url === "/api/v1/web/admin/auth-providers/ad") return response(enabled)
       if (url === "/api/v1/web/admin/auth-providers/ad/disable") return response(disabled)
       if (url === "/api/v1/web/admin/auth-providers/ad/role-mappings" && init.method === "PUT") {
-        return response({ mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin" }] })
+        return response({ mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }] })
       }
       return undefined
     })
@@ -321,6 +321,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.text()).toContain("配置与角色映射均已保留")
 
     await wrapper.get("[data-testid='mapping-group-0']").setValue("CN=SMS-Admins,OU=Groups,DC=example,DC=com")
+    await wrapper.get("[data-testid='mapping-dept-0']").setValue("平台部")
     await wrapper.getComponent("[data-testid='mapping-role-0']").setValue("admin")
     await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
     await flushPromises()
@@ -328,7 +329,7 @@ describe("审计与系统参数", () => {
       ([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT",
     )
     expect(JSON.parse(String(request?.[1].body))).toEqual({
-      mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin" }],
+      mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }],
     })
     wrapper.unmount()
     vi.unstubAllGlobals()

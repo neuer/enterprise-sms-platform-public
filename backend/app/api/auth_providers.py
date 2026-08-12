@@ -84,10 +84,21 @@ class ProviderTestResultModel(StrictModel):
 class RoleMappingModel(StrictModel):
     external_group: str = Field(min_length=1, max_length=256)
     role: Role
+    dept: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class RoleMappingsModel(StrictModel):
     mappings: list[RoleMappingModel] = Field(max_length=100)
+
+
+class RoleMappingUpdateModel(StrictModel):
+    external_group: str = Field(min_length=1, max_length=256)
+    role: Role
+    dept: str = Field(min_length=1, max_length=128)
+
+
+class RoleMappingsUpdateModel(StrictModel):
+    mappings: list[RoleMappingUpdateModel] = Field(max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +186,11 @@ def _test_model(result: ProviderTestResult) -> ProviderTestResultModel:
 def _mappings_model(mappings: tuple[ExternalRoleMapping, ...]) -> RoleMappingsModel:
     return RoleMappingsModel(
         mappings=[
-            RoleMappingModel(external_group=item.external_group, role=item.role)
+            RoleMappingModel(
+                external_group=item.external_group,
+                role=item.role,
+                dept=item.dept,
+            )
             for item in mappings
         ]
     )
@@ -410,7 +425,7 @@ async def list_provider_role_mappings(
 @audited("auth_provider_role_mappings_replace")
 async def replace_provider_role_mappings(
     provider_code: str,
-    payload: RoleMappingsModel,
+    payload: RoleMappingsUpdateModel,
     request: Request,
     service: Annotated[AuthProviderService, Depends(get_auth_provider_admin_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
@@ -419,7 +434,8 @@ async def replace_provider_role_mappings(
     actor, ip = await _admin(request, facade, credentials)
     try:
         mappings = tuple(
-            ExternalRoleMapping(item.external_group, item.role) for item in payload.mappings
+            ExternalRoleMapping(item.external_group, item.role, item.dept)
+            for item in payload.mappings
         )
         return _mappings_model(
             await service.replace_role_mappings(

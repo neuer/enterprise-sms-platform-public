@@ -100,10 +100,17 @@ export interface AuthProviderTestResult {
 export interface ExternalRoleMapping {
   external_group: string
   role: AdminUserRole
+  dept: string | null
 }
 
 export interface RoleMappings {
   mappings: ExternalRoleMapping[]
+}
+
+export interface ExternalRoleMappingUpdate {
+  external_group: string
+  role: AdminUserRole
+  dept: string
 }
 
 export function listAudits(filters: AuditFilters): Promise<AuditPage> {
@@ -181,7 +188,7 @@ export function listAuthProviderRoleMappings(providerCode: string): Promise<Role
 
 export function replaceAuthProviderRoleMappings(
   providerCode: string,
-  mappings: ExternalRoleMapping[],
+  mappings: ExternalRoleMappingUpdate[],
 ): Promise<RoleMappings> {
   return apiRequest<RoleMappings>(providerPath(providerCode, "/role-mappings"), {
     method: "PUT",

@@ -184,7 +184,7 @@ class FakeProviderRepository:
 
     async def list_role_mappings(self, code: str) -> tuple[ExternalRoleMapping, ...]:
         del code
-        return (ExternalRoleMapping("CN=SMS-Admins", "admin"),)
+        return (ExternalRoleMapping("CN=SMS-Admins", "admin", "平台部"),)
 
     async def replace_role_mappings(
         self,
@@ -314,8 +314,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
     )
     service = AuthProviderService(repository, FakeProviderRegistry())
     mappings = (
-        ExternalRoleMapping(" CN=SMS-Admins ", "admin"),
-        ExternalRoleMapping("CN=SMS-Operators", "operator"),
+        ExternalRoleMapping(" CN=SMS-Admins ", "admin", " 平台部 "),
+        ExternalRoleMapping("CN=SMS-Operators", "operator", "业务一部"),
     )
 
     replaced = await service.replace_role_mappings(
@@ -326,16 +326,25 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
     )
 
     assert replaced[0].external_group == "CN=SMS-Admins"
+    assert replaced[0].dept == "平台部"
     assert await service.list_role_mappings("ad") == (
-        ExternalRoleMapping("CN=SMS-Admins", "admin"),
+        ExternalRoleMapping("CN=SMS-Admins", "admin", "平台部"),
     )
     with pytest.raises(DuplicateRoleMapping):
         await service.replace_role_mappings(
             "ad",
             (
-                ExternalRoleMapping("CN=Same", "admin"),
-                ExternalRoleMapping(" CN=Same ", "viewer"),
+                ExternalRoleMapping("CN=Same", "admin", "平台部"),
+                ExternalRoleMapping(" CN=Same ", "viewer", "业务一部"),
             ),
+            actor=ADMIN,
+            ip=IP,
+        )
+
+    with pytest.raises(InvalidProviderConfig, match="授权部门"):
+        await service.replace_role_mappings(
+            "ad",
+            (ExternalRoleMapping("CN=Missing-Dept", "viewer"),),
             actor=ADMIN,
             ip=IP,
         )

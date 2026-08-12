@@ -295,7 +295,7 @@ class SqlAuthProviderRepository:
                 result = await connection.execute(
                     text(
                         """
-                        SELECT external_group,role
+                        SELECT external_group,role,dept
                         FROM external_role_mapping
                         WHERE provider_id=:provider_id
                         ORDER BY external_group
@@ -307,6 +307,7 @@ class SqlAuthProviderRepository:
                     ExternalRoleMapping(
                         str(row["external_group"]),
                         cast(Role, str(row["role"])),
+                        str(row["dept"]) if row["dept"] is not None else None,
                     )
                     for row in result.mappings()
                 )
@@ -345,14 +346,16 @@ class SqlAuthProviderRepository:
                     await connection.execute(
                         text(
                             """
-                            INSERT INTO external_role_mapping(provider_id,external_group,role)
-                            VALUES(:provider_id,:external_group,:role)
+                            INSERT INTO external_role_mapping(
+                              provider_id,external_group,role,dept
+                            ) VALUES(:provider_id,:external_group,:role,:dept)
                             """
                         ),
                         {
                             "provider_id": int(provider_id),
                             "external_group": mapping.external_group,
                             "role": mapping.role,
+                            "dept": mapping.dept,
                         },
                     )
                 await ensure_effective_admin(connection)
@@ -379,7 +382,12 @@ class SqlAuthProviderRepository:
         payload = {
             "provider_code": code,
             "mappings": [
-                {"external_group": item.external_group, "role": item.role} for item in mappings
+                {
+                    "external_group": item.external_group,
+                    "role": item.role,
+                    "dept": item.dept,
+                }
+                for item in mappings
             ],
         }
         await connection.execute(

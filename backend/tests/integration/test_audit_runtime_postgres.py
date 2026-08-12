@@ -448,20 +448,31 @@ async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
         "b" * 32,
     )
     phone = f"139{str(uuid4().int)[:8]}"
-    protected = crypto.protect_phone(phone)
+    protected = crypto.protect_phone(phone, table="blacklist")
     entry = BlacklistEntry(
         phone_hmac=protected.phone_hmac,
         phone_enc=protected.phone_enc,
         phone_mask=protected.phone_mask,
         key_version=protected.key_version,
-        source="integration",
+        source="import",
         remark="audit-runtime",
         created_at=datetime.now(UTC),
+        hmac_candidates=tuple(crypto.hmac_candidates(phone).items()),
     )
     try:
         with audit_principal_scope(stable_admin()), correlation_scope(uuid4()):
-            await repository.upsert_many([entry], actor="audit-admin", source="integration")
-            await repository.delete(entry.phone_hmac, actor="audit-admin")
+            principal = stable_admin()
+            await repository.upsert_many(
+                [entry],
+                principal=principal,
+                ip="10.0.0.8",
+                source="import",
+            )
+            await repository.delete(
+                entry.phone_hmac,
+                principal=principal,
+                ip="10.0.0.8",
+            )
         async with engine.connect() as connection:
             rows = (
                 await connection.execute(

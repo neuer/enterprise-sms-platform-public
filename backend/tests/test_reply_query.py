@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.reply_query import (
     ReplyNotFound,
@@ -21,6 +22,9 @@ def crypto() -> CryptoService:
     v2 = base64.b64encode(b"2" * 32).decode()
     ring1 = '{"active_version":2,"keys":{"1":"' + v1 + '","2":"' + v2 + '"}}'
     return CryptoService.from_secret_values(ring1, ring1)
+
+
+PRINCIPAL = SecurityPrincipal(2, 12, "operator01", "研发部", "operator")
 
 
 def protected_reply(event_key: str, content: str) -> bytes:
@@ -56,6 +60,13 @@ class FakeCache:
 
     async def invalidate(self) -> None:
         self.invalidations += 1
+
+    async def mutate(self, callback: Any) -> bool:
+        await self.invalidate()
+        try:
+            return bool(await callback())
+        finally:
+            await self.invalidate()
 
 
 @pytest.mark.asyncio
@@ -98,10 +109,22 @@ async def test_optout_invalidates_cache_before_and_after_and_missing_raises() ->
     service = ReplyQueryService(repository, cache, crypto())
 
     with pytest.raises(ReplyNotFound):
-        await service.optout(4, dept="研发部", actor="operator01")
+        await service.optout(
+            4,
+            dept="研发部",
+            principal=PRINCIPAL,
+            ip="10.0.0.8",
+        )
 
     assert cache.invalidations == 2
-    assert repository.optout_calls == [{"reply_id": 4, "dept": "研发部", "actor": "operator01"}]
+    assert repository.optout_calls == [
+        {
+            "reply_id": 4,
+            "dept": "研发部",
+            "principal": PRINCIPAL,
+            "ip": "10.0.0.8",
+        }
+    ]
 
 
 class FakeResult:
@@ -122,6 +145,12 @@ class FakeResult:
 
     def mappings(self) -> FakeResult:
         return self
+
+    def one_or_none(self) -> dict[str, object] | None:
+        return self.rows[0] if self.rows else None
+
+    def one(self) -> dict[str, object]:
+        return self.rows[0]
 
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self.rows)
@@ -206,7 +235,7 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
     assert "b.dept=CAST(:dept AS text)" in connection.calls[0][0]
     rows_sql = connection.calls[1][0]
     assert "EXISTS" in rows_sql and "blacklist" in rows_sql
-    assert "bl.phone_hmac=r.phone_hmac" in rows_sql
+    assert "ba.hmac_digest=r.phone_hmac" in rows_sql
 
 
 @pytest.mark.asyncio
@@ -230,19 +259,51 @@ async def test_sql_query_casts_nullable_filters_for_asyncpg() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sql_optout_copies_protected_fields_and_audits_count_only() -> None:
-    repository = SqlReplyQueryRepository()
-    connection = FakeConnection([FakeResult(scalar=1), FakeResult()])
+async def test_sql_optout_reprotects_phone_and_persists_all_hmac_aliases() -> None:
+    service_crypto = crypto()
+    protected = service_crypto.protect_phone("13800138000", table="reply_event")
+    repository = SqlReplyQueryRepository(crypto=service_crypto)
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "phone_enc": protected.phone_enc,
+                        "phone_hmac": protected.phone_hmac,
+                        "phone_mask": protected.phone_mask,
+                        "key_version": protected.key_version,
+                    }
+                ]
+            ),
+            FakeResult(rows=[]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(rows=[{"database_user": "sms_accept", "txid": 7}]),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
     bind(repository, connection)
 
-    assert await repository.optout(5, dept="研发部", actor="operator01") is True
+    assert (
+        await repository.optout(
+            5,
+            dept="研发部",
+            principal=PRINCIPAL,
+            ip="10.0.0.8",
+        )
+        is True
+    )
 
     sql, params = connection.calls[0]
-    assert "INSERT INTO blacklist" in sql
-    for column in ("phone_enc", "phone_hmac", "phone_mask", "key_version"):
-        assert column in sql
-    assert "reply_optout" in sql
-    assert "decrypt" not in sql.casefold()
-    assert params == {"reply_id": 5, "dept": "研发部", "actor": "operator01"}
-    assert '"count": 1' in connection.calls[1][1]["after"]
-    assert "phone" not in connection.calls[1][1]["after"]
+    assert "JOIN reply_event" in sql
+    assert params == {"reply_id": 5, "dept": "研发部"}
+    assert any("INSERT INTO blacklist(" in call[0] for call in connection.calls)
+    alias_call = next(
+        call for call in connection.calls if "INSERT INTO blacklist_hmac_alias" in call[0]
+    )
+    assert len(alias_call[1]) == 2
+    audit_call = connection.calls[-1]
+    assert "INSERT INTO audit_log" in audit_call[0]
+    assert "phone" not in str(audit_call[1].get("after"))

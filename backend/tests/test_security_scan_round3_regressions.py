@@ -81,7 +81,8 @@ async def test_blacklist_and_approval_reject_phone_embedded_in_metadata() -> Non
             ["13800138000"],
             source="manual",
             remark="请联系 13900139000 复核",
-            actor="admin01",
+            principal=SecurityPrincipal(1, 11, "admin01", "平台部", "admin"),
+            ip="10.0.0.8",
         )
     assert blacklist_repository.entries == {}
 

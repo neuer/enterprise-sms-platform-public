@@ -482,7 +482,15 @@ async def test_external_login_role_sync_preserves_effective_admin_invariant() ->
                     }
                 ]
             ),
-            FakeResult([{"external_group": "CN=SMS-Admins", "role": "admin"}]),
+                FakeResult(
+                    [
+                        {
+                            "external_group": "CN=SMS-Admins",
+                            "role": "admin",
+                            "dept": "平台部",
+                        }
+                    ]
+                ),
             FakeResult(),
             FakeResult(),
             FakeResult(scalar=8),
@@ -503,6 +511,8 @@ async def test_external_login_role_sync_preserves_effective_admin_invariant() ->
     resolved = await repo.resolve_identity(identity, "10.0.0.8")
 
     assert resolved.role == "admin"
+    assert connection.calls[4][1]["dept"] == "平台部"
+    assert connection.calls[4][1]["dept"] != identity.dept
     assert connection.calls[0][1] == {"lock_id": ADMIN_INVARIANT_LOCK_ID}
     assert "SELECT ua.id" in connection.calls[6][0]
     assert "external_role_mapping" in connection.calls[6][0]

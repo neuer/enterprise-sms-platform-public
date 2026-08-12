@@ -17,7 +17,7 @@ import app.services.uncertain_repository as uncertain_repository_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.approval_repository import SqlApprovalRepository, record_pending_approval_alert
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
-from app.services.blacklist import BlacklistEntry
+from app.services.blacklist import BlacklistEntry, BlacklistUpsertResult
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.idempotency import IdempotencyScope
@@ -633,17 +633,43 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
 ) -> None:
     repository = SqlBlacklistRepository()
     entry = BlacklistEntry("a" * 64, b"cipher", "138****8000", 1, "import", "投诉")
-    connection = FakeConnection([FakeResult(), FakeResult(), FakeResult()])
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(rows=[{"database_user": "sms_accept", "txid": 7}]),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
     bind_engine(monkeypatch, repository, connection)
-    outcome = await repository.upsert_many([entry], actor="admin01", source="import")
+    outcome = await repository.upsert_many(
+        [entry], principal=OPERATOR, ip="10.0.0.8", source="import"
+    )
     assert (outcome.added, outcome.updated) == (1, 0)
-    audit_params = connection.calls[2][1]
+    audit_params = connection.calls[-1][1]
     assert "138" not in str(audit_params)
     assert '"count": 1' in audit_params["after"]  # type: ignore[index]
 
-    connection = FakeConnection([FakeResult(scalar=1), FakeResult()])
+    connection = FakeConnection(
+        [
+            FakeResult(scalar=1),
+            FakeResult(rows=[{"database_user": "sms_accept", "txid": 8}]),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
     bind_engine(monkeypatch, repository, connection)
-    assert await repository.delete("a" * 64, actor="admin01") is True
+    assert (
+        await repository.delete(
+            "a" * 64,
+            principal=OPERATOR,
+            ip="10.0.0.8",
+        )
+        is True
+    )
 
     row = {
         "phone_hmac": "a" * 64,
@@ -666,6 +692,57 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
     connection = FakeConnection([FakeResult(scalars=["a" * 64 + " "])])
     bind_engine(monkeypatch, repository, connection)
     assert await repository.all_hmacs() == {"a" * 64}
+
+
+@pytest.mark.asyncio
+async def test_blacklist_rotation_renames_canonical_digest_and_replaces_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SqlBlacklistRepository()
+    entry = BlacklistEntry(
+        "b" * 64,
+        b"cipher-v2",
+        "138****8000",
+        2,
+        "manual",
+        None,
+        hmac_candidates=((1, "a" * 64), (2, "b" * 64)),
+    )
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "hmac_digest": "a" * 64,
+                        "blacklist_digest": "a" * 64,
+                    }
+                ]
+            ),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(rows=[{"database_user": "sms_accept", "txid": 9}]),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    outcome = await repository.upsert_many(
+        [entry],
+        principal=OPERATOR,
+        ip="10.0.0.8",
+        source="manual",
+    )
+
+    assert outcome == BlacklistUpsertResult(added=0, updated=1)
+    update_sql, update_params = connection.calls[1]
+    assert "UPDATE blacklist SET" in update_sql
+    assert update_params[0]["current"] == "a" * 64  # type: ignore[index]
+    assert update_params[0]["canonical"] == "b" * 64  # type: ignore[index]
+    alias_call = connection.calls[3]
+    assert "INSERT INTO blacklist_hmac_alias" in alias_call[0]
+    assert {row["digest"] for row in alias_call[1]} == {"a" * 64, "b" * 64}  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
@@ -1089,6 +1166,16 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
     assert await store.blacklisted(set()) == set()
 
     class FakeRedis:
+        class Lock:
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *_: object) -> None:
+                return None
+
+        def lock(self, *_: object, **__: object) -> Lock:
+            return self.Lock()
+
         async def get(self, key: str) -> str:
             return "1"
 

@@ -234,7 +234,20 @@ class ImportParser:
                 sheet = workbook.active
                 if sheet is None:
                     raise ImportFormatError("XLSX 不包含工作表")
-                for row_no, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                if sheet.max_column > 1:
+                    raise ImportFormatError("XLSX 只允许一列手机号")
+                if sheet.max_row > self.limits.max_rows + 1:
+                    raise ImportTooLarge("XLSX 行数超过上限")
+                for row_no, row in enumerate(
+                    sheet.iter_rows(
+                        min_row=1,
+                        max_row=self.limits.max_rows + 1,
+                        min_col=1,
+                        max_col=1,
+                        values_only=True,
+                    ),
+                    start=1,
+                ):
                     yield row_no, str(row[0]).strip() if row and row[0] is not None else ""
             finally:
                 workbook.close()

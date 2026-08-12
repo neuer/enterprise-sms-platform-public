@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ldap3 import SUBTREE, Connection, Server, Tls
-from ldap3.core.exceptions import LDAPBindError, LDAPException
+from ldap3.core.exceptions import LDAPBindError, LDAPException, LDAPInvalidCredentialsResult
 from ldap3.utils.conv import escape_filter_chars
 
 from app.core.auth.backends import (
@@ -257,7 +257,7 @@ class LdapPasswordProvider:
                     password=password,
                     receive_timeout=self.config.receive_timeout_s,
                 )
-            except LDAPBindError:
+            except (LDAPBindError, LDAPInvalidCredentialsResult):
                 raise InvalidCredentials("用户名或密码错误") from None
             else:
                 user_connection.unbind()

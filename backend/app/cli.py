@@ -482,18 +482,18 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
             """
             WITH provider AS (
               SELECT id FROM auth_provider WHERE code='ad' AND kind='ldap'
-            ), mappings(external_group,role) AS (
+            ), mappings(external_group,role,dept) AS (
               VALUES
-                ('mock:admin','admin'),
-                ('mock:approver','approver'),
-                ('mock:operator','operator'),
-                ('mock:viewer','viewer')
+                ('mock:admin','admin','平台技术部'),
+                ('mock:approver','approver','业务一部'),
+                ('mock:operator','operator','业务一部'),
+                ('mock:viewer','viewer','业务一部')
             )
-            INSERT INTO external_role_mapping(provider_id,external_group,role)
-            SELECT p.id,m.external_group,m.role
+            INSERT INTO external_role_mapping(provider_id,external_group,role,dept)
+            SELECT p.id,m.external_group,m.role,m.dept
             FROM provider p CROSS JOIN mappings m
             ON CONFLICT (provider_id,external_group) DO UPDATE
-            SET role=EXCLUDED.role
+            SET role=EXCLUDED.role,dept=EXCLUDED.dept
             """,
             {},
         )

@@ -106,7 +106,10 @@ class SqlDashboardRepository:
                             SELECT count(*) FROM approval ap
                             JOIN sms_batch b ON b.id=ap.batch_id
                             WHERE ap.status='pending'
-                              AND b.dept=:scope_dept
+                              AND (
+                                CAST(:scope_dept AS text) IS NULL
+                                OR b.dept=CAST(:scope_dept AS text)
+                              )
                             """
                         ),
                         {"scope_dept": scope_dept},

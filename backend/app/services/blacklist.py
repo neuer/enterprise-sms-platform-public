@@ -5,15 +5,18 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import PHONE_PATTERN, CryptoService
 
 BLACKLIST_KEY = "blacklist:phone_hmacs"
 BLACKLIST_LOADED_KEY = "blacklist:phone_hmacs:loaded"
+BLACKLIST_LOCK_KEY = "blacklist:phone_hmacs:lock"
 VALID_SOURCES = frozenset({"manual", "reply_optout", "import"})
 MAX_PAGE_SIZE = 100
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class BlacklistEntry:
     source: str
     remark: str | None
     created_at: datetime | None = None
+    hmac_candidates: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +68,18 @@ class BlacklistRepository(Protocol):
         self,
         entries: list[BlacklistEntry],
         *,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
         source: str,
     ) -> BlacklistUpsertResult: ...
 
-    async def delete(self, phone_hmac: str, *, actor: str) -> bool: ...
+    async def delete(
+        self,
+        phone_hmac: str,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> bool: ...
 
 
 class BlacklistCache(Protocol):
@@ -79,6 +90,8 @@ class BlacklistCache(Protocol):
         candidates: set[str],
         loader: Callable[[], Awaitable[set[str]]],
     ) -> set[str]: ...
+
+    async def mutate(self, callback: Callable[[], Awaitable[T]]) -> T: ...
 
 
 class RedisBlacklistCache:
@@ -97,16 +110,31 @@ class RedisBlacklistCache:
     ) -> set[str]:
         if not candidates:
             return set()
-        if not await self.redis.get(BLACKLIST_LOADED_KEY):
-            members = await loader()
-            pipe = self.redis.pipeline(transaction=True)
-            pipe.delete(BLACKLIST_KEY)
-            if members:
-                pipe.sadd(BLACKLIST_KEY, *members)
-            pipe.set(BLACKLIST_LOADED_KEY, "1")
-            await pipe.execute()
-        flags = await self.redis.smismember(BLACKLIST_KEY, list(candidates))
-        return {value for value, present in zip(candidates, flags, strict=True) if present}
+        # 变更可含 5 万行入库，锁不设 TTL，避免长事务中途过期后
+        # 旧快照在提交后反向覆盖。Redis 连接失败时调用会失败关闭。
+        async with self.redis.lock(BLACKLIST_LOCK_KEY, timeout=None, blocking_timeout=10):
+            if not await self.redis.get(BLACKLIST_LOADED_KEY):
+                members = await loader()
+                pipe = self.redis.pipeline(transaction=True)
+                pipe.delete(BLACKLIST_KEY)
+                if members:
+                    pipe.sadd(BLACKLIST_KEY, *members)
+                pipe.set(BLACKLIST_LOADED_KEY, "1")
+                await pipe.execute()
+            flags = await self.redis.smismember(BLACKLIST_KEY, list(candidates))
+            return {
+                value for value, present in zip(candidates, flags, strict=True) if present
+            }
+
+    async def mutate(self, callback: Callable[[], Awaitable[T]]) -> T:
+        """以同一分布式锁串行化事实变更与缓存重建。"""
+
+        async with self.redis.lock(BLACKLIST_LOCK_KEY, timeout=None, blocking_timeout=10):
+            await self.redis.delete(BLACKLIST_LOADED_KEY)
+            try:
+                return await callback()
+            finally:
+                await self.redis.delete(BLACKLIST_LOADED_KEY)
 
 
 class BlacklistService:
@@ -150,7 +178,8 @@ class BlacklistService:
         *,
         source: str,
         remark: str | None,
-        actor: str,
+        principal: SecurityPrincipal,
+        ip: str,
     ) -> BlacklistAddResult:
         """批量加黑；先统一校验号码格式，报错只带行号、不带号码明文。"""
         reject_phone_in_text(remark, field_name="remark")
@@ -167,26 +196,42 @@ class BlacklistService:
             shown = "、".join(invalid_lines[:5])
             suffix = f" 等共 {len(invalid_lines)}" if len(invalid_lines) > 5 else ""
             raise ValueError(f"第 {shown}{suffix} 行号码格式错误，应为 11 位手机号")
-        protected = {item.phone_hmac: item for item in map(self.crypto.protect_phone, phones)}
-        entries = [
-            BlacklistEntry(
-                item.phone_hmac,
-                item.phone_enc,
-                item.phone_mask,
-                item.key_version,
+        entries_by_hmac: dict[str, BlacklistEntry] = {}
+        for phone in phones:
+            protected = self.crypto.protect_phone(phone, table="blacklist")
+            entries_by_hmac[protected.phone_hmac] = BlacklistEntry(
+                protected.phone_hmac,
+                protected.phone_enc,
+                protected.phone_mask,
+                protected.key_version,
                 source,
                 remark,
+                hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
             )
-            for item in protected.values()
-        ]
-        try:
-            outcome = await self.repository.upsert_many(entries, actor=actor, source=source)
-        finally:
-            await self.cache.invalidate()
+        entries = list(entries_by_hmac.values())
+
+        async def mutate() -> BlacklistUpsertResult:
+            return await self.repository.upsert_many(
+                entries,
+                principal=principal,
+                ip=ip,
+                source=source,
+            )
+
+        outcome = await self.cache.mutate(mutate)
         return BlacklistAddResult(entries, outcome.added, outcome.updated)
 
-    async def delete(self, phone_hmac: str, *, actor: str) -> bool:
-        try:
-            return await self.repository.delete(phone_hmac, actor=actor)
-        finally:
-            await self.cache.invalidate()
+    async def delete(
+        self,
+        phone_hmac: str,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> bool:
+        return await self.cache.mutate(
+            lambda: self.repository.delete(
+                phone_hmac,
+                principal=principal,
+                ip=ip,
+            )
+        )
