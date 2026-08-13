@@ -435,6 +435,7 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
         in dockerfile
     )
     assert "USER security-report" in dockerfile
+    assert "install -d -m 0755 /app/deploy/scripts /app/deploy/templates" in dockerfile
     assert "pip install" not in dockerfile
 
 
