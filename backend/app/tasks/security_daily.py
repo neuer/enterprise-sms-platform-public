@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Protocol
+from uuid import UUID
 
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
@@ -17,6 +19,38 @@ from app.settings import get_settings
 from app.tasks import background_task_options, celery_app
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+MAX_HISTORICAL_PENDING_DATES_PER_RUN = 7
+
+
+class _AutoDeliveryService(Protocol):
+    async def submit_auto_delivery(self, report_date: date) -> object | None: ...
+
+
+class _PendingDeliveryRepository(Protocol):
+    async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]: ...
+
+
+async def submit_security_daily_deliveries(
+    service: _AutoDeliveryService,
+    repository: _PendingDeliveryRepository,
+    *,
+    current_report_date: date,
+) -> None:
+    """提交当日日报，并有限补扫历史待处理请求。"""
+
+    await service.submit_auto_delivery(current_report_date)
+    submitted_dates = {current_report_date}
+    historical_dates = 0
+    for _, pending_date in await repository.pending_delivery_requests():
+        if pending_date in submitted_dates:
+            continue
+        if historical_dates >= MAX_HISTORICAL_PENDING_DATES_PER_RUN:
+            break
+        submitted_dates.add(pending_date)
+        historical_dates += 1
+        await service.submit_auto_delivery(pending_date)
+
+
 async def generate_security_daily_once(
     repository: SqlSecurityDailyRepository,
     control_dir: Path,
@@ -65,7 +99,11 @@ async def _generate() -> int:
             control_dir=settings.security_daily_control_dir,
         )
         report_date = now.astimezone(SHANGHAI_TZ).date() - timedelta(days=1)
-        await service.submit_auto_delivery(report_date)
+        await submit_security_daily_deliveries(
+            service,
+            repository,
+            current_report_date=report_date,
+        )
     return changed
 
 
@@ -80,4 +118,8 @@ def security_daily_generate() -> int:
     return run_worker_async(_generate())
 
 
-__all__ = ["generate_security_daily_once", "security_daily_generate"]
+__all__ = [
+    "generate_security_daily_once",
+    "security_daily_generate",
+    "submit_security_daily_deliveries",
+]

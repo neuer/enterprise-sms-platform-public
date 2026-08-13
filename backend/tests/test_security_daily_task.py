@@ -1,18 +1,63 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
 from app.services.security_daily import SecurityDailyAuditEvent, SecurityDailyAuditEvidence
-from app.tasks.security_daily import generate_security_daily_once
+from app.tasks.security_daily import (
+    generate_security_daily_once,
+    submit_security_daily_deliveries,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "deploy" / "templates" / "security_daily_report.sample.json"
 SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+class FakeDeliveryService:
+    def __init__(self) -> None:
+        self.submitted: list[date] = []
+
+    async def submit_auto_delivery(self, report_date: date) -> None:
+        self.submitted.append(report_date)
+
+
+class FakePendingRepository:
+    async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]:
+        pending_dates = (
+            date(2026, 8, 12),
+            date(2026, 8, 11),
+            date(2026, 8, 11),
+            *(date(2026, 8, day) for day in range(10, 3, -1)),
+        )
+        return tuple((UUID(int=index), value) for index, value in enumerate(pending_dates, 1))
+
+
+@pytest.mark.asyncio
+async def test_delivery_sweep_includes_unique_historical_pending_dates() -> None:
+    service = FakeDeliveryService()
+
+    await submit_security_daily_deliveries(
+        service,
+        FakePendingRepository(),
+        current_report_date=date(2026, 8, 12),
+    )
+
+    assert service.submitted == [
+        date(2026, 8, 12),
+        date(2026, 8, 11),
+        date(2026, 8, 10),
+        date(2026, 8, 9),
+        date(2026, 8, 8),
+        date(2026, 8, 7),
+        date(2026, 8, 6),
+        date(2026, 8, 5),
+    ]
 
 
 class FakeRepository:
@@ -123,9 +168,7 @@ async def test_generation_consumes_only_validated_redacted_snapshot(
     assert changed == 1
     assert len(repository.ingested) == 1
     assert repository.ingested[0]["recipient_count"] == 2
-    assert repository.ingested[0]["payload"]["generated_at"] == (
-        "2026-07-16T08:01:00+08:00"
-    )
+    assert repository.ingested[0]["payload"]["generated_at"] == ("2026-07-16T08:01:00+08:00")
     assert repository.unavailable == []
 
 
