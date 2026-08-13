@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -192,6 +192,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         只查询视图暴露的非载荷列，绝不读取 before/after 审计明细。
         """
 
+        # period_end 固定为 23:59:59；用次日 00:00 的开区间上界，覆盖最后
+        # 一秒内带微秒的全部事件。
+        end_exclusive = period_end + timedelta(seconds=1)
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -206,16 +209,17 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         LIMIT 10
                         """
                     ),
-                    {"start": period_start, "end": period_end},
+                    {"start": period_start, "end": end_exclusive},
                 )
                 count_result = await connection.execute(
                     text(
                         """
                         SELECT count(*) FROM security_daily_audit_evidence
                         WHERE created_at >= :start AND created_at < :end
+                          AND action NOT LIKE 'security_daily_%'
                         """
                     ),
-                    {"start": period_start, "end": period_end},
+                    {"start": period_start, "end": end_exclusive},
                 )
                 category_result = await connection.execute(
                     text(
@@ -228,7 +232,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         ORDER BY n DESC, action ASC
                         """
                     ),
-                    {"start": period_start, "end": period_end},
+                    {"start": period_start, "end": end_exclusive},
                 )
         except SQLAlchemyError:
             return None

@@ -40,6 +40,7 @@ MAX_RESEND_API_KEY_LENGTH = 512
 MAX_RESEND_RECIPIENTS = 3
 MAX_SECURITY_DAILY_INPUT_BYTES = 384 * 1024
 SSH_FAILED_CONFIRM_THRESHOLD = 20
+COUNT_VALUE_PREFIX = re.compile(r"^\s*(?P<count>\d+)(?=$|[\s次条个（])")
 FORBIDDEN_KEYS = frozenset(
     {
         "credential",
@@ -174,8 +175,8 @@ class SecurityDailyPayload(_StrictModel):
     summary: str = Field(min_length=1, max_length=500)
     pending_confirmation: str = Field(default="", max_length=500)
     metrics: list[SecurityMetric] = Field(min_length=5, max_length=5)
-    ssh: list[SecurityDetailRow] = Field(max_length=10)
-    web: list[SecurityDetailRow] = Field(max_length=10)
+    ssh: list[SecurityDetailRow] = Field(min_length=3, max_length=10)
+    web: list[SecurityDetailRow] = Field(min_length=4, max_length=10)
     audit: list[SecurityAuditRow] = Field(max_length=10)
     runtime: list[SecurityDetailRow] = Field(max_length=10)
     actions: list[SecurityActionItem] = Field(max_length=10)
@@ -507,6 +508,9 @@ async def generate_security_daily_for_date(
         value: Any = json.loads(raw)
         if not isinstance(value, dict):
             raise SecurityDailyValidationError("security report input must be an object")
+        # 平台侧派生计算只消费已通过结构、时间和脱敏校验的快照；缺列或
+        # 不完整输入必须显式记为 unavailable，不能在 enrich 阶段异常退出。
+        value = validate_security_daily_payload(value)
         evidence = await repository.audit_evidence(period_start, period_end)
         if evidence is not None:
             value = _enrich_audit_evidence(value, evidence)
@@ -672,44 +676,55 @@ def _enrich_audit_evidence(
     return payload
 
 
-def _count_from_value(value: str) -> int:
-    """解析指标值文本（如 '3'、'3 次命中'）为整数；不可解析视为 0。"""
+def _count_from_value(value: str) -> int | None:
+    """解析指标前缀计数；不可解析时返回 None，禁止静默伪造为 0。"""
 
-    try:
-        return int(str(value).strip().split()[0])
-    except (ValueError, IndexError):
-        return 0
+    match = COUNT_VALUE_PREFIX.match(str(value))
+    return int(match.group("count")) if match is not None else None
 
 
 def _count_delta_suffix(current: str, previous: str) -> str | None:
     """生成“（昨日 N，↑x%）”环比后缀；任一值不可解析时返回 None。"""
 
-    current_raw = str(current).strip()
-    previous_raw = str(previous).strip()
-    if not current_raw[:1].isdigit() or not previous_raw[:1].isdigit():
+    current_count = _count_from_value(current)
+    previous_count = _count_from_value(previous)
+    if current_count is None or previous_count is None:
         return None
-    current_count = _count_from_value(current_raw)
-    previous_count = _count_from_value(previous_raw)
     if current_count == previous_count:
         return "（与昨日持平）"
     if previous_count == 0:
         return f"（昨日 0，新增 {current_count}）"
     delta = current_count - previous_count
-    percent = round(abs(delta) * 100 / previous_count)
+    numerator = abs(delta) * 100
+    # 常规四舍五入，避免 bankers rounding 把 12.5% 显示为 12%。
+    percent = (2 * numerator + previous_count) // (2 * previous_count)
     arrow = "↑" if delta > 0 else "↓"
     return f"（昨日 {previous_count}，{arrow}{percent}%）"
+
+
+def _labeled_row(
+    rows: Sequence[dict[str, Any]], *labels: str
+) -> dict[str, Any] | None:
+    """按语义标签定位行，避免展示项重排后把不同指标互相比较。"""
+
+    expected = frozenset(labels)
+    return next((item for item in rows if str(item.get("label")) in expected), None)
 
 
 def _enrich_day_over_day(payload: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     """在平台侧追加昨日环比：SSH 失败、Web 5xx、敏感路径三个关键面。"""
 
     comparisons: list[str] = []
-    pairs = (
-        (payload["metrics"][0], previous["metrics"][0], "SSH 失败认证"),
-        (payload["metrics"][3], previous["metrics"][3], "Web 5xx"),
-        (payload["web"][3], previous["web"][3], "敏感路径"),
+    specifications = (
+        ("metrics", ("SSH 认证失败", "攻击尝试"), "SSH 失败认证"),
+        ("metrics", ("Web/API 5xx",), "Web 5xx"),
+        ("web", ("敏感路径",), "敏感路径"),
     )
-    for current, old, label in pairs:
+    for section, labels, label in specifications:
+        current = _labeled_row(payload[section], *labels)
+        old = _labeled_row(previous.get(section, []), *labels)
+        if current is None or old is None:
+            continue
         suffix = _count_delta_suffix(current["value"], old["value"])
         if suffix is None:
             continue
@@ -724,25 +739,63 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """在平台侧重算状态/待确认/建议，覆盖采集快照与审计注入后的口径漂移。"""
 
     gaps = [str(item["source"]) for item in payload["coverage"] if item.get("status") != "完整"]
-    web_sensitive = _count_from_value(str(payload["web"][3]["value"])) if payload["web"] else 0
-    ssh_failed = _count_from_value(str(payload["metrics"][0]["value"]))
-    ssh_needs_confirm = ssh_failed >= SSH_FAILED_CONFIRM_THRESHOLD
+    ssh_metric = _labeled_row(payload["metrics"], "SSH 认证失败", "攻击尝试")
+    web_5xx_metric = _labeled_row(payload["metrics"], "Web/API 5xx")
+    gap_metric = _labeled_row(payload["metrics"], "证据覆盖缺口")
+    sensitive_row = _labeled_row(payload["web"], "敏感路径")
+    runtime_unhealthy_row = _labeled_row(payload["runtime"], "异常容器")
+
+    ssh_failed = (
+        _count_from_value(str(ssh_metric["value"])) if ssh_metric is not None else None
+    )
+    web_5xx = (
+        _count_from_value(str(web_5xx_metric["value"]))
+        if web_5xx_metric is not None
+        else None
+    )
+    web_sensitive = (
+        _count_from_value(str(sensitive_row["value"]))
+        if sensitive_row is not None
+        else None
+    )
+    runtime_unhealthy = (
+        _count_from_value(str(runtime_unhealthy_row["value"]))
+        if runtime_unhealthy_row is not None
+        else None
+    )
+    ssh_failed_count = ssh_failed or 0
+    web_5xx_count = web_5xx or 0
+    web_sensitive_count = web_sensitive or 0
+    runtime_unhealthy_count = runtime_unhealthy or 0
+    ssh_needs_confirm = (
+        ssh_failed is not None and ssh_failed >= SSH_FAILED_CONFIRM_THRESHOLD
+    )
     status = (
         "high"
-        if web_sensitive
-        else ("attention" if gaps or ssh_needs_confirm else "normal")
-    )
-    pending = (
-        f"待接入证据源：{'、'.join(gaps)}。"
-        if gaps
+        if web_sensitive_count
         else (
-            "存在 SSH 失败认证，需要确认是否属于授权运维。"
-            if ssh_needs_confirm
-            else "无待确认事项。"
+            "attention"
+            if gaps
+            or ssh_needs_confirm
+            or web_5xx_count
+            or runtime_unhealthy_count
+            else "normal"
         )
     )
+    pending_items: list[str] = []
+    if web_sensitive_count:
+        pending_items.append(f"敏感路径命中 {web_sensitive_count} 次，需要核查访问来源")
+    if gaps:
+        pending_items.append(f"待接入证据源：{'、'.join(gaps)}")
+    if ssh_needs_confirm:
+        pending_items.append("存在 SSH 失败认证，需要确认是否属于授权运维")
+    if web_5xx_count:
+        pending_items.append(f"存在 {web_5xx_count} 次 Web/API 5xx，需要核查服务异常")
+    if runtime_unhealthy_count:
+        pending_items.append(f"存在 {runtime_unhealthy_count} 个异常容器，需要核查运行态")
+    pending = "；".join(pending_items) + "。" if pending_items else "无待确认事项。"
     actions: list[dict[str, str]] = []
-    if web_sensitive:
+    if web_sensitive_count:
         actions.append(
             {
                 "priority": "high",
@@ -764,17 +817,42 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "priority": "medium",
                 "title": "核查 SSH 失败认证",
                 "detail": (
-                    f"当日发现 {ssh_failed} 次 SSH 失败认证；日报不保留来源明细，"
+                    f"当日发现 {ssh_failed_count} 次 SSH 失败认证；日报不保留来源明细，"
                     "请结合主机安全日志核对。"
+                ),
+            }
+        )
+    if web_5xx_count:
+        actions.append(
+            {
+                "priority": "medium",
+                "title": "核查 Web/API 5xx",
+                "detail": (
+                    f"当日发现 {web_5xx_count} 次服务端错误，请结合受控访问日志核对。"
+                ),
+            }
+        )
+    if runtime_unhealthy_count:
+        actions.append(
+            {
+                "priority": "medium",
+                "title": "核查平台异常容器",
+                "detail": (
+                    f"采集时发现 {runtime_unhealthy_count} 个容器未运行、暂停、重启或"
+                    "健康检查失败，请核对当前运行态。"
                 ),
             }
         )
     payload["status"] = status
     payload["pending_confirmation"] = pending
     payload["actions"] = actions
-    if ssh_failed and not ssh_needs_confirm:
-        payload["metrics"][0]["tone"] = "neutral"
-        payload["metrics"][0]["note"] = "低于关注阈值，无需人工确认"
+    if gap_metric is not None:
+        gap_metric["value"] = str(len(gaps))
+        gap_metric["tone"] = "warn" if gaps else "good"
+        gap_metric["note"] = "缺口数量"
+    if ssh_failed_count and not ssh_needs_confirm and ssh_metric is not None:
+        ssh_metric["tone"] = "neutral"
+        ssh_metric["note"] = "低于关注阈值，无需人工确认"
     return payload
 
 
