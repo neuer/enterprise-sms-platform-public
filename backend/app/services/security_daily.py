@@ -1063,6 +1063,8 @@ def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
 class SecurityDailyService:
     """编排日报查询、UI 配置和独立 mailer 投递请求。"""
 
+    _PENDING_DELIVERY_RECOVERY_DELAY = timedelta(minutes=5)
+
     def __init__(
         self,
         repository: SecurityDailyRepository,
@@ -1191,7 +1193,9 @@ class SecurityDailyService:
         if record.delivery_status == "sent":
             return None
         if record.delivery_status in {"pending", "sending"}:
-            return None
+            pending_age = self.clock() - record.updated_at
+            if pending_age < self._PENDING_DELIVERY_RECOVERY_DELAY:
+                return None
         if record.delivery_status == "failed" and not (record.last_error or "").startswith(
             "安全日报发信配置不完整"
         ):

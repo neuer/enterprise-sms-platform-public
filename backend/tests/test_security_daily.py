@@ -280,7 +280,9 @@ class FakeRepository:
             idempotent=False,
         )
         self.requests.append(request)
-        self.record = replace(self.record, delivery_status="pending")
+        now = datetime.now(SHANGHAI)
+        self.record = replace(self.record, delivery_status="pending", updated_at=now)
+        self.existing_request = replace(request, idempotent=True)
         return request
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]:
@@ -631,6 +633,54 @@ async def test_submit_auto_delivery_sends_once_and_skips_pending() -> None:
     assert first is not None
     assert second is None
     assert len(control.submitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_recovers_stale_pending_request() -> None:
+    stale = replace(
+        record(),
+        delivery_status="pending",
+        updated_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+    )
+    repository = FakeRepository(stale)
+    repository.existing_request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=stale.report_date,
+        action="send",
+        state="pending",
+        requested_at=stale.updated_at,
+        idempotent=True,
+    )
+    control = FakeControl()
+    service = SecurityDailyService(
+        repository,
+        control,
+        clock=lambda: datetime(2026, 7, 16, 8, 6, tzinfo=SHANGHAI),
+    )
+
+    request = await service.submit_auto_delivery(stale.report_date)
+
+    assert request is repository.existing_request
+    assert control.submitted == [(request, stale.payload)]
+
+
+@pytest.mark.asyncio
+async def test_submit_auto_delivery_waits_before_recovering_pending_request() -> None:
+    recent = replace(
+        record(),
+        delivery_status="pending",
+        updated_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+    )
+    repository = FakeRepository(recent)
+    control = FakeControl()
+    service = SecurityDailyService(
+        repository,
+        control,
+        clock=lambda: datetime(2026, 7, 16, 8, 4, 59, tzinfo=SHANGHAI),
+    )
+
+    assert await service.submit_auto_delivery(recent.report_date) is None
+    assert control.submitted == []
 
 
 @pytest.mark.asyncio

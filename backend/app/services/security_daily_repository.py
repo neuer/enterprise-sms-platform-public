@@ -47,6 +47,8 @@ from app.settings import Settings, get_settings
 
 SENDER_DOMAIN = "reports.neuer.cn"
 SENDER_ADDRESS = "security-daily@reports.neuer.cn"
+_DELIVERY_LOCK_ID = 83174621
+_SUPERSEDED_REQUEST_ERROR = "安全日报邮件配置已更新，旧投递请求已失效"
 
 
 def _bool_config(value: str | None, default: bool = False) -> bool:
@@ -269,7 +271,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(text("SELECT pg_advisory_xact_lock(83174621)"))
+                await connection.execute(
+                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
+                )
                 current_result = await connection.execute(
                     text(
                         "SELECT value FROM sys_config "
@@ -770,7 +774,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(text("SELECT pg_advisory_xact_lock(83174621)"))
+                await connection.execute(
+                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
+                )
                 version_result = await connection.execute(
                     text(
                         "SELECT value FROM sys_config "
@@ -793,6 +799,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     raise SecurityDailyStateConflict("日报已不存在")
                 delivery_status = str(locked["delivery_status"])
                 retry_count = int(locked["retry_count"])
+                superseded_pending = False
                 if action == "send" and delivery_status in {"pending", "sending", "sent"}:
                     existing = await connection.execute(
                         text(
@@ -804,28 +811,62 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     )
                     row = existing.mappings().one_or_none()
                     if row is not None:
+                        existing_state = cast(DeliveryRequestState, str(row["state"]))
+                        existing_version = int(row["config_version"])
+                        if (
+                            delivery_status != "sent"
+                            and existing_state == "pending"
+                            and existing_version != config_version
+                        ):
+                            await connection.execute(
+                                text(
+                                    """
+                                    UPDATE security_daily_delivery_request
+                                    SET state='failed',completed_at=now(),error=:error
+                                    WHERE request_id=:request_id AND state='pending'
+                                    """
+                                ),
+                                {
+                                    "request_id": row["request_id"],
+                                    "error": _SUPERSEDED_REQUEST_ERROR,
+                                },
+                            )
+                            superseded_pending = True
+                        else:
+                            if existing_state == "pending" and delivery_status != "sent":
+                                # 对丢失控制文件的同版本续投做退避，避免每分钟重复落盘。
+                                await connection.execute(
+                                    text(
+                                        "UPDATE security_daily_report "
+                                        "SET updated_at=now() WHERE id=:id"
+                                    ),
+                                    {"id": report.id},
+                                )
+                            return SecurityDailyDeliveryRequest(
+                                request_id=UUID(str(row["request_id"])),
+                                report_date=report.report_date,
+                                action="send",
+                                state=existing_state,
+                                requested_at=row["requested_at"],
+                                idempotent=True,
+                                config_version=existing_version,
+                            )
+                    if not superseded_pending:
                         return SecurityDailyDeliveryRequest(
-                            request_id=UUID(str(row["request_id"])),
+                            request_id=request_id,
                             report_date=report.report_date,
-                            action="send",
-                            state=cast(DeliveryRequestState, str(row["state"])),
-                            requested_at=row["requested_at"],
+                            action=action,
+                            state="sent" if delivery_status == "sent" else "pending",
+                            requested_at=datetime.now(SHANGHAI_TZ),
                             idempotent=True,
-                            config_version=int(row["config_version"]),
+                            config_version=config_version,
                         )
-                    return SecurityDailyDeliveryRequest(
-                        request_id=request_id,
-                        report_date=report.report_date,
-                        action=action,
-                        state="sent" if delivery_status == "sent" else "pending",
-                        requested_at=datetime.now(SHANGHAI_TZ),
-                        idempotent=True,
-                        config_version=config_version,
-                    )
                 if action == "retry" and delivery_status != "failed":
                     raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
                 next_retry = retry_count + (
-                    1 if action == "retry" or delivery_status == "failed" else 0
+                    1
+                    if action == "retry" or delivery_status == "failed" or superseded_pending
+                    else 0
                 )
                 # 每次投递请求使用独立 request_id，避免同一报告/快照重复生成时
                 # 复用同一 dedup_key（唯一约束冲突会让“立即生成”变成 500）。
@@ -948,6 +989,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await connection.execute(
+                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
+                )
                 request_result = await connection.execute(
                     text(
                         """
@@ -1035,6 +1079,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await connection.execute(
+                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
+                )
                 await bind_connection_system_audit(
                     connection,
                     actor_name="security-report-mailer",
