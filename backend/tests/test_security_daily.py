@@ -506,6 +506,8 @@ def test_finalize_requires_confirmation_when_ssh_failures_exceed_threshold() -> 
         ("3", "3", "与昨日持平"),
         ("2 次", "0 次", "昨日 0"),
         ("0", "5", "↓100%"),
+        ("9", "8", "↑13%"),
+        ("17", "7（昨日 0，新增 7）", "昨日 7，↑143%"),
         ("不可用", "5", None),
     ],
 )
@@ -525,8 +527,12 @@ def test_count_delta_suffix_formats_day_over_day(
 def test_enrich_day_over_day_appends_comparison_to_metrics_and_summary() -> None:
     current = payload()
     previous = payload()
+    current["metrics"][0]["label"] = "SSH 认证失败"
+    previous["metrics"][0]["label"] = "SSH 认证失败"
     current["metrics"][0]["value"] = "14 次"
     previous["metrics"][0]["value"] = "9 次"
+    current["metrics"][3]["label"] = "Web/API 5xx"
+    previous["metrics"][3]["label"] = "Web/API 5xx"
     current["metrics"][3]["value"] = "3"
     previous["metrics"][3]["value"] = "1"
     current["web"][3]["value"] = "2 次命中"
@@ -538,6 +544,108 @@ def test_enrich_day_over_day_appends_comparison_to_metrics_and_summary() -> None
     assert "（昨日 1，↑200%）" in enriched["metrics"][3]["value"]
     assert "（昨日 0，新增 2）" in enriched["web"][3]["value"]
     assert "较昨日：" in enriched["summary"]
+
+
+def test_enrich_day_over_day_uses_semantic_labels_after_metric_reordering() -> None:
+    current = payload()
+    previous = payload()
+    current["metrics"][0]["label"] = "其他指标"
+    previous["metrics"][0]["label"] = "其他指标"
+    current["metrics"][1]["label"] = "SSH 认证失败"
+    current["metrics"][1]["value"] = "17"
+    previous["metrics"][4]["label"] = "SSH 认证失败"
+    previous["metrics"][4]["value"] = "7（昨日 0，新增 7）"
+
+    enriched = _enrich_day_over_day(current, previous)
+
+    assert current["metrics"][1]["value"] == "17（昨日 7，↑143%）"
+    assert "SSH 失败认证（昨日 7，↑143%）" in enriched["summary"]
+
+
+def test_finalize_recomputes_coverage_gap_metric_after_audit_enrichment() -> None:
+    value = payload()
+    value["metrics"][4] = {
+        "label": "证据覆盖缺口",
+        "value": "1",
+        "tone": "warn",
+        "note": "缺口数量",
+    }
+    for item in value["coverage"]:
+        item["status"] = "完整"
+        item["tone"] = "good"
+    value["web"][3]["value"] = "0 次命中"
+
+    finalized = _finalize_security_daily_payload(value)
+
+    assert finalized["metrics"][4] == {
+        "label": "证据覆盖缺口",
+        "value": "0",
+        "tone": "good",
+        "note": "缺口数量",
+    }
+
+
+@pytest.mark.parametrize("signal", ["web_5xx", "runtime_unhealthy"])
+def test_finalize_marks_operational_anomalies_as_attention(signal: str) -> None:
+    value = payload()
+    value["metrics"][0]["label"] = "SSH 认证失败"
+    value["metrics"][0]["value"] = "0"
+    value["metrics"][3]["label"] = "Web/API 5xx"
+    value["metrics"][3]["value"] = "1" if signal == "web_5xx" else "0"
+    value["web"][3]["value"] = "0 次命中"
+    value["runtime"].append(
+        {
+            "label": "异常容器",
+            "value": "1 个" if signal == "runtime_unhealthy" else "0 个",
+            "assessment": "运行态聚合",
+            "tone": "danger" if signal == "runtime_unhealthy" else "good",
+        }
+    )
+    for item in value["coverage"]:
+        item["status"] = "完整"
+        item["tone"] = "good"
+
+    finalized = _finalize_security_daily_payload(value)
+
+    assert finalized["status"] == "attention"
+    if signal == "web_5xx":
+        assert "Web/API 5xx" in finalized["pending_confirmation"]
+        assert any(item["title"] == "核查 Web/API 5xx" for item in finalized["actions"])
+    else:
+        assert "异常容器" in finalized["pending_confirmation"]
+        assert any(item["title"] == "核查平台异常容器" for item in finalized["actions"])
+
+
+def test_finalize_keeps_all_simultaneous_pending_items() -> None:
+    value = payload()
+    value["metrics"][0]["label"] = "SSH 认证失败"
+    value["metrics"][0]["value"] = "25"
+    value["metrics"][3]["label"] = "Web/API 5xx"
+    value["metrics"][3]["value"] = "3"
+    value["web"][3]["value"] = "2 次命中"
+    value["runtime"].append(
+        {
+            "label": "异常容器",
+            "value": "2 个",
+            "assessment": "运行态聚合",
+            "tone": "danger",
+        }
+    )
+    value["coverage"][0]["status"] = "缺失"
+    value["coverage"][0]["tone"] = "warn"
+
+    finalized = _finalize_security_daily_payload(value)
+
+    assert finalized["status"] == "high"
+    for expected in ("敏感路径", "待接入证据源", "SSH", "Web/API 5xx", "异常容器"):
+        assert expected in finalized["pending_confirmation"]
+    assert {item["title"] for item in finalized["actions"]} >= {
+        "核查敏感路径命中",
+        "补齐日报证据源",
+        "核查 SSH 失败认证",
+        "核查 Web/API 5xx",
+        "核查平台异常容器",
+    }
 
 
 @pytest.mark.asyncio

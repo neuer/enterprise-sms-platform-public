@@ -198,6 +198,13 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
         )
         + "\n"
         + json.dumps({"log": "203.0.113.9 / 200 3\n", "time": "2026-08-02T04:00:00Z"})
+        + "\n"
+        + json.dumps(
+            {
+                "log": "nginx startup probe mentions /.env but is not an access request\n",
+                "time": "2026-08-01T04:02:00Z",
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -225,6 +232,7 @@ def test_collector_falls_back_to_web_container_log_and_runtime_probe(
     assert payload["metrics"][3]["value"] == "1"
     assert payload["web"][0]["value"] == "2 条"
     assert payload["web"][1]["value"] == "0 条"
+    assert payload["web"][3]["value"] == "0 次命中"
     assert "/api/v1/reports" in _row(payload, "web", "5xx 路径 Top")["value"]
     assert {item["source"] for item in payload["coverage"] if item["tone"] == "warn"} == {
         "Fail2ban",
@@ -279,6 +287,73 @@ def test_collector_marks_web_unavailable_when_log_does_not_cover_window(
     )
     assert "无带时间戳记录可归属" in web_gap["note"]
     assert "未发现可读取的证据源" not in web_gap["note"]
+
+
+def test_collector_marks_ssh_unavailable_when_rotated_log_misses_target_day(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "Aug 2 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8"
+    )
+    web = tmp_path / "access.log"
+    web.write_text(
+        "2026-08-01T04:00:00+08:00 GET / 200\n", encoding="utf-8"
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    assert payload["metrics"][0]["value"] == "不可用"
+    ssh_gap = next(
+        item for item in payload["coverage"] if item["source"] == "SSH journal"
+    )
+    assert ssh_gap["status"] == "缺失"
+    assert "目标日期无可归属记录" in ssh_gap["note"]
+
+
+def test_collector_counts_failed_container_health_as_runtime_anomaly(
+    tmp_path: Path,
+) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8"
+    )
+    docker_root = tmp_path / "docker"
+    container_dir = docker_root / "containers" / "api01"
+    container_dir.mkdir(parents=True)
+    container_dir.joinpath("config.v2.json").write_text(
+        json.dumps(
+            {
+                "Name": "/sms-platform-api-1",
+                "State": {
+                    "Running": True,
+                    "Health": {"Status": "unhealthy"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=tmp_path / "missing-fail2ban.log",
+        web_log=tmp_path / "missing-web.log",
+        docker_root=docker_root,
+    )
+
+    runtime_values = {item["label"]: item["value"] for item in payload["runtime"]}
+    assert runtime_values["平台容器总数"] == "1 个"
+    assert runtime_values["运行中容器"] == "1 个"
+    assert runtime_values["异常容器"] == "1 个"
 
 
 def test_collector_sanitizes_uri_details_before_rendering(tmp_path: Path) -> None:

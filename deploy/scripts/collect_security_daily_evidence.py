@@ -87,6 +87,7 @@ class LogCounts:
     second: int = 0
     third: int = 0
     top_sources: tuple[tuple[str, int], ...] = ()
+    unattributed: bool = False
 
 
 def _line_matches_date(line: str, report_date: date) -> bool:
@@ -218,6 +219,10 @@ def _scan_log(
     top_sources = tuple(
         sorted(sources.items(), key=lambda item: (-item[1], item[0]))[:5]
     )
+    if total == 0:
+        # 文件存在不代表覆盖目标日期；轮转后只剩新日志时必须显式缺失，
+        # 禁止把“没有该日证据”伪装成零事件。
+        return LogCounts(False, unattributed=True)
     return LogCounts(True, total, *counters, top_sources=top_sources)
 
 
@@ -347,25 +352,26 @@ def _scan_web(
         observe(_line_date(line, report_date.year))
         if not _line_matches_date(line, report_date):
             continue
-        total += 1
         status_match = HTTP_STATUS.search(line)
-        if status_match is not None:
-            status_count += 1
-            status = int(status_match.group("status"))
-            if 400 <= status < 500:
-                count_4xx += 1
-                uri = _web_uri(line)
-                if uri is not None:
-                    four_xx[uri] += 1
-            elif 500 <= status < 600:
-                count_5xx += 1
-                uri = _web_uri(line)
-                if uri is not None:
-                    five_xx[uri] += 1
-        if SENSITIVE_PATH.search(line):
+        if status_match is None:
+            continue
+        total += 1
+        status_count += 1
+        status = int(status_match.group("status"))
+        uri = _web_uri(line)
+        if 400 <= status < 500:
+            count_4xx += 1
+            if uri is not None:
+                four_xx[uri] += 1
+        elif 500 <= status < 600:
+            count_5xx += 1
+            if uri is not None:
+                five_xx[uri] += 1
+        if uri is not None and SENSITIVE_PATH.search(uri):
             sensitive += 1
+            normalized_uri = uri.casefold()
             for marker in SENSITIVE_MARKERS:
-                if marker in line:
+                if marker in normalized_uri:
                     sensitive_paths[marker] += 1
     for candidate in docker_logs:
         for line in _iter_lines([candidate]):
@@ -373,25 +379,26 @@ def _scan_web(
             if not _docker_log_line_date(line, report_date):
                 continue
             content = _docker_log_content(line)
-            total += 1
             status_match = HTTP_STATUS.search(content)
-            if status_match is not None:
-                status_count += 1
-                status = int(status_match.group("status"))
-                if 400 <= status < 500:
-                    count_4xx += 1
-                    uri = _web_uri(content)
-                    if uri is not None:
-                        four_xx[uri] += 1
-                elif 500 <= status < 600:
-                    count_5xx += 1
-                    uri = _web_uri(content)
-                    if uri is not None:
-                        five_xx[uri] += 1
-            if SENSITIVE_PATH.search(content):
+            if status_match is None:
+                continue
+            total += 1
+            status_count += 1
+            status = int(status_match.group("status"))
+            uri = _web_uri(content)
+            if 400 <= status < 500:
+                count_4xx += 1
+                if uri is not None:
+                    four_xx[uri] += 1
+            elif 500 <= status < 600:
+                count_5xx += 1
+                if uri is not None:
+                    five_xx[uri] += 1
+            if uri is not None and SENSITIVE_PATH.search(uri):
                 sensitive += 1
+                normalized_uri = uri.casefold()
                 for marker in SENSITIVE_MARKERS:
-                    if marker in content:
+                    if marker in normalized_uri:
                         sensitive_paths[marker] += 1
     if earliest is None or earliest > report_date:
         # 源存在但未覆盖报告窗口（例如容器/日志轮换后新起文件，或日志
@@ -461,6 +468,7 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
     unhealthy = 0
     for container in containers:
         state = container.get("State")
+        health_status = ""
         if not isinstance(state, dict):
             is_running = False
             restarting = False
@@ -469,9 +477,15 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
             is_running = bool(state.get("Running"))
             restarting = bool(state.get("Restarting"))
             paused = bool(state.get("Paused"))
+            health = state.get("Health")
+            health_status = (
+                str(health.get("Status") or "").casefold()
+                if isinstance(health, dict)
+                else ""
+            )
         if is_running:
             running_count += 1
-        if not is_running or paused or restarting:
+        if not is_running or paused or restarting or health_status == "unhealthy":
             unhealthy += 1
     rows.extend(
         [
@@ -490,7 +504,7 @@ def _runtime_rows(docker_root: Path) -> tuple[list[dict[str, str]], bool]:
             {
                 "label": "异常容器",
                 "value": f"{unhealthy} 个",
-                "assessment": "未运行、暂停或重启中",
+                "assessment": "未运行、暂停、重启或健康检查失败",
                 "tone": "good" if unhealthy == 0 else "danger",
             },
         ]
@@ -766,8 +780,28 @@ def collect_report(
         "runtime": runtime_rows,
         "actions": actions,
         "coverage": [
-            _coverage("SSH journal", window, ssh.available, "认证事件仅保留计数"),
-            _coverage("Fail2ban", window, bans.available, "封禁事件仅保留计数"),
+            _coverage(
+                "SSH journal",
+                window,
+                ssh.available,
+                "认证事件仅保留计数",
+                missing_note=(
+                    "日志已接入，但目标日期无可归属记录"
+                    if ssh.unattributed
+                    else "认证事件仅保留计数"
+                ),
+            ),
+            _coverage(
+                "Fail2ban",
+                window,
+                bans.available,
+                "封禁事件仅保留计数",
+                missing_note=(
+                    "日志已接入，但目标日期无可归属记录"
+                    if bans.unattributed
+                    else "封禁事件仅保留计数"
+                ),
+            ),
             _coverage(
                 "Web/API access log",
                 window,

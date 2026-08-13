@@ -46,6 +46,10 @@ class FakeResult:
     def scalar_one_or_none(self) -> object | None:
         return self.scalar
 
+    def scalar_one(self) -> object:
+        assert self.scalar is not None
+        return self.scalar
+
 
 class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
@@ -144,6 +148,42 @@ async def test_auto_delivery_configuration_uses_only_nonsecret_projection() -> N
     assert "security_daily_recipient_count" in sql
     assert "security_daily_resend_api_key" not in sql
     assert engine.disposed
+
+
+@pytest.mark.asyncio
+async def test_audit_evidence_uses_full_day_and_consistent_self_event_filter() -> None:
+    final_event = datetime(2026, 8, 1, 23, 59, 59, 900_000, tzinfo=SHANGHAI)
+    repo, connection = repository(
+        [
+            FakeResult(
+                [
+                    {
+                        "created_at": final_event,
+                        "actor": "admin",
+                        "source_ip": "198.51.100.7",
+                        "action": "config_update",
+                    }
+                ]
+            ),
+            FakeResult(scalar=1),
+            FakeResult([{"action": "config_update", "n": 1}]),
+        ]
+    )
+
+    evidence = await repo.audit_evidence(
+        datetime(2026, 8, 1, 0, tzinfo=SHANGHAI),
+        datetime(2026, 8, 1, 23, 59, 59, tzinfo=SHANGHAI),
+    )
+
+    assert evidence is not None
+    assert evidence.total == 1
+    assert evidence.category_counts == (("系统配置", 1),)
+    assert evidence.events[0].time == "2026-08-01 23:59:59"
+    expected_end = datetime(2026, 8, 2, 0, tzinfo=SHANGHAI)
+    assert all(params["end"] == expected_end for _, params in connection.calls)
+    assert all(
+        "action NOT LIKE 'security_daily_%'" in sql for sql, _ in connection.calls
+    )
 
 
 @pytest.mark.asyncio

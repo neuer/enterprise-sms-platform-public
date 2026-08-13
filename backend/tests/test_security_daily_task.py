@@ -173,12 +173,44 @@ async def test_generation_consumes_only_validated_redacted_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_generation_rejects_incomplete_detail_sections_before_enrichment(
+    tmp_path: Path,
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    sample = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    sample["web"] = sample["web"][:1]
+    incoming.joinpath("2026-07-15.json").write_text(
+        json.dumps(sample, ensure_ascii=False), encoding="utf-8"
+    )
+    repository = FakeRepository()
+
+    changed = await generate_security_daily_once(
+        repository,
+        tmp_path,
+        now=datetime(2026, 7, 16, 8, 1, tzinfo=SHANGHAI),
+        enabled=True,
+        recipient_count=2,
+    )
+
+    assert changed == 1
+    assert repository.ingested == []
+    assert repository.unavailable == [("2026-07-15", "安全日报证据源校验失败")]
+
+
+@pytest.mark.asyncio
 async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     tmp_path: Path,
 ) -> None:
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     sample = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    sample["metrics"][4] = {
+        "label": "证据覆盖缺口",
+        "value": "1",
+        "tone": "warn",
+        "note": "缺口数量",
+    }
     sample["coverage"] = [
         {
             "source": "SSH journal",
@@ -253,6 +285,9 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     assert payload["audit"][0]["tone"] == "warn"
     audit_coverage = next(item for item in payload["coverage"] if item["source"] == "管理审计")
     assert audit_coverage["status"] == "完整"
+    gap_metric = next(item for item in payload["metrics"] if item["label"] == "证据覆盖缺口")
+    assert gap_metric["value"] == "0"
+    assert gap_metric["tone"] == "good"
     assert "管理审计" not in payload["pending_confirmation"]
     assert "管理审计共 3 条" in payload["summary"]
     assert "登录认证 2" in payload["summary"]
