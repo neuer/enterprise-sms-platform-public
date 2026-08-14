@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import json
 import os
 import re
@@ -645,6 +646,23 @@ AUDIT_TONE_BY_ACTION: dict[str, str] = {
 }
 
 
+def _audit_source_display(value: str) -> str:
+    """最小化日报中的审计来源地址；审计事实记录仍保留原始值。"""
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    if isinstance(address, ipaddress.IPv4Address):
+        return str(address)
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    if not address.is_global:
+        return f"{address.compressed}（IPv6）"
+    network = ipaddress.ip_network(f"{address.compressed}/64", strict=False)
+    return f"{network.network_address.compressed}/64（IPv6，脱敏）"
+
+
 def _enrich_audit_evidence(
     payload: dict[str, Any], evidence: SecurityDailyAuditEvidence
 ) -> dict[str, Any]:
@@ -654,7 +672,7 @@ def _enrich_audit_evidence(
         {
             "time": event.time,
             "actor": event.actor,
-            "source_ip": event.source_ip,
+            "source_ip": _audit_source_display(event.source_ip),
             "action": event.action,
             "assessment": AUDIT_ASSESSMENT_BY_ACTION.get(event.action, "管理操作"),
             "tone": AUDIT_TONE_BY_ACTION.get(event.action, "neutral"),
