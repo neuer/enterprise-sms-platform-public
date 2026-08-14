@@ -190,6 +190,7 @@ def _scan_log(
     *,
     source_pattern: re.Pattern[str] | None = None,
     message_required: re.Pattern[str] | None = None,
+    bracketed_empty_is_zero: bool = False,
 ) -> LogCounts:
     """只扫描固定日志文件并返回匹配计数，不保留任何原始行。
 
@@ -203,7 +204,15 @@ def _scan_log(
     counters = [0] * len(patterns)
     total = 0
     sources: Counter[str] = Counter()
+    earliest: date | None = None
+    latest: date | None = None
     for line in _iter_lines(files):
+        line_date = _line_date(line, report_date.year)
+        if line_date is not None:
+            if earliest is None or line_date < earliest:
+                earliest = line_date
+            if latest is None or line_date > latest:
+                latest = line_date
         if not _line_matches_date(line, report_date):
             continue
         total += 1
@@ -220,6 +229,16 @@ def _scan_log(
         sorted(sources.items(), key=lambda item: (-item[1], item[0]))[:5]
     )
     if total == 0:
+        if (
+            bracketed_empty_is_zero
+            and earliest is not None
+            and latest is not None
+            and earliest < report_date < latest
+        ):
+            # Fail2ban 在没有事件时不会为当天写日志。前后日期的可解析日志
+            # 夹住目标日，证明同一证据源跨越了该窗口；应报告 0 次封禁，
+            # 不能把安静日期误写成“未接入”。只有单侧旧/新日志仍失败关闭。
+            return LogCounts(True)
         # 文件存在不代表覆盖目标日期；轮转后只剩新日志时必须显式缺失，
         # 禁止把“没有该日证据”伪装成零事件。
         return LogCounts(False, unattributed=True)
@@ -572,6 +591,7 @@ def collect_report(
         report_date,
         (FAIL2BAN_BAN,),
         message_required=FAIL2BAN_MESSAGE_RE,
+        bracketed_empty_is_zero=True,
     )
     web = _scan_web(web_log, docker_root, report_date)
     available_sources = sum((ssh.available, bans.available, web.available))
