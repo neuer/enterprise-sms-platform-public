@@ -109,6 +109,75 @@ def test_collector_keeps_missing_sources_as_explicit_coverage_gaps(tmp_path: Pat
     assert payload["metrics"][2]["value"] == "不可用"
 
 
+def test_collector_treats_bracketed_quiet_fail2ban_day_as_zero(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8"
+    )
+    fail2ban = tmp_path / "fail2ban.log"
+    fail2ban.write_text(
+        "2026-07-31 23:59:59,000 fail2ban.server: ready\n"
+        "2026-08-02 00:00:01,000 fail2ban.server: heartbeat\n",
+        encoding="utf-8",
+    )
+    web = tmp_path / "access.log"
+    web.write_text(
+        "127.0.0.1 - - [01/Aug/2026:04:00:01 +0800] \"GET /healthz HTTP/1.1\" 200 12\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=fail2ban,
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    fail2ban_metric = next(
+        item for item in payload["metrics"] if item["label"] == "Fail2ban 封禁"
+    )
+    fail2ban_coverage = next(
+        item for item in payload["coverage"] if item["source"] == "Fail2ban"
+    )
+    assert fail2ban_metric["value"] == "0"
+    assert fail2ban_coverage["status"] == "完整"
+    assert "Fail2ban" not in payload["pending_confirmation"]
+
+
+def test_collector_keeps_stale_fail2ban_log_as_coverage_gap(tmp_path: Path) -> None:
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "Aug 1 01:00:00 host sshd[1]: Accepted publickey\n", encoding="utf-8"
+    )
+    fail2ban = tmp_path / "fail2ban.log"
+    fail2ban.write_text(
+        "2026-07-31 23:59:59,000 fail2ban.server: stopped\n",
+        encoding="utf-8",
+    )
+    web = tmp_path / "access.log"
+    web.write_text(
+        "127.0.0.1 - - [01/Aug/2026:04:00:01 +0800] \"GET /healthz HTTP/1.1\" 200 12\n",
+        encoding="utf-8",
+    )
+
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=fail2ban,
+        web_log=web,
+        docker_root=tmp_path,
+    )
+
+    fail2ban_coverage = next(
+        item for item in payload["coverage"] if item["source"] == "Fail2ban"
+    )
+    assert fail2ban_coverage["status"] == "缺失"
+    assert "Fail2ban" in payload["pending_confirmation"]
+
+
 def test_collector_refuses_to_write_when_no_source_is_available(tmp_path: Path) -> None:
     with pytest.raises(CollectorError, match="no security evidence source"):
         collect_report(

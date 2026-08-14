@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html as html_module
+import ipaddress
 import json
 import os
 import re
@@ -385,6 +386,23 @@ def _h(value: str) -> str:
     return html_module.escape(value, quote=True)
 
 
+def _audit_source_display(value: str) -> str:
+    """邮件仅展示 IPv6 /64，审计 payload 仍保留完整真实来源。"""
+
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    if isinstance(address, ipaddress.IPv4Address):
+        return str(address)
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    if not address.is_global:
+        return f"{address.compressed}（IPv6）"
+    network = ipaddress.ip_network(f"{address.compressed}/64", strict=False)
+    return f"{network.network_address.compressed}/64（IPv6，脱敏）"
+
+
 def _tone(tone: Tone) -> tuple[str, str, str]:
     return {
         "neutral": ("#334155", "#e8edf2", "信息"),
@@ -455,6 +473,7 @@ def _audit_html(rows: tuple[AuditRow, ...]) -> str:
     output: list[str] = []
     for row in rows:
         color, background, label = _tone(row.tone)
+        source_ip = _audit_source_display(row.source_ip)
         output.append(
             '<tr><td class="audit-time" style="padding:13px 0;border-bottom:1px solid #d9dee3;'
             'vertical-align:top;width:20%;font-size:12px;line-height:19px;color:#52606d;">'
@@ -462,7 +481,7 @@ def _audit_html(rows: tuple[AuditRow, ...]) -> str:
             '<td class="audit-actor" style="padding:13px 10px;border-bottom:1px solid #d9dee3;'
             'vertical-align:top;font-size:13px;line-height:20px;color:#18222c;">'
             f'<strong>{_h(row.actor)}</strong><br><span style="color:#66727e;">'
-            f"{_h(row.source_ip)}</span></td>"
+            f"{_h(source_ip)}</span></td>"
             '<td class="audit-action" style="padding:13px 10px;border-bottom:1px solid #d9dee3;'
             'vertical-align:top;font-size:13px;line-height:20px;color:#18222c;'
             f'overflow-wrap:anywhere;">{_h(row.action)}</td>'
@@ -588,7 +607,8 @@ def render_text(report: SecurityDailyReport) -> str:
         f"- {item.label}: {item.value}（{item.note}）" for item in report.metrics
     )
     audit = "\n".join(
-        f"- {row.time} | {row.actor} | {row.source_ip} | {row.action} | {row.assessment}"
+        f"- {row.time} | {row.actor} | {_audit_source_display(row.source_ip)} | "
+        f"{row.action} | {row.assessment}"
         for row in report.audit
     ) or "- 无"
     actions = "\n".join(

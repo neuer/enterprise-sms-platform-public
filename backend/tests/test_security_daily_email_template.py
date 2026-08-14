@@ -74,6 +74,31 @@ def test_email_has_no_external_resources_or_sensitive_payloads() -> None:
     assert "BEGIN PRIVATE KEY" not in rendered
 
 
+def test_email_masks_native_ipv6_but_preserves_audit_payload() -> None:
+    module = _module()
+    payload = _sample_payload()
+    source_ip = "2606:4700:4700:1111:2222:3333:4444:5555"
+    payload["audit"][0]["source_ip"] = source_ip
+
+    report = module.parse_report(payload)
+    rendered = module.render_html(report) + module.render_text(report)
+
+    assert report.audit[0].source_ip == source_ip
+    assert source_ip not in rendered
+    assert "2606:4700:4700:1111::/64（IPv6，脱敏）" in rendered
+
+
+def test_email_keeps_ipv4_audit_source_unchanged() -> None:
+    module = _module()
+    payload = _sample_payload()
+    payload["audit"][0]["source_ip"] = "198.51.100.7"
+
+    report = module.parse_report(payload)
+    rendered = module.render_html(report) + module.render_text(report)
+
+    assert "198.51.100.7" in rendered
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
