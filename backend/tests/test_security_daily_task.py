@@ -202,6 +202,7 @@ async def test_generation_rejects_incomplete_detail_sections_before_enrichment(
 async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     tmp_path: Path,
 ) -> None:
+    native_ipv6 = "2606:4700:4700:1111:2222:3333:4444:5555"
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     sample = json.loads(SAMPLE.read_text(encoding="utf-8"))
@@ -264,7 +265,7 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
             SecurityDailyAuditEvent(
                 time="2026-07-15 08:00:00",
                 actor="admin",
-                source_ip="198.51.100.7",
+                source_ip=native_ipv6,
                 action="login",
             ),
         ),
@@ -283,6 +284,11 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     payload = repository.ingested[0]["payload"]
     assert [row["action"] for row in payload["audit"]] == ["config_update", "login"]
     assert payload["audit"][0]["tone"] == "warn"
+    assert payload["audit"][0]["source_ip"] == "198.51.100.7"
+    assert payload["audit"][1]["source_ip"] == (
+        "2606:4700:4700:1111::/64（IPv6，脱敏）"
+    )
+    assert repository.audit.events[1].source_ip == native_ipv6
     audit_coverage = next(item for item in payload["coverage"] if item["source"] == "管理审计")
     assert audit_coverage["status"] == "完整"
     gap_metric = next(item for item in payload["metrics"] if item["label"] == "证据覆盖缺口")
