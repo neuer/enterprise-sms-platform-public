@@ -188,7 +188,7 @@
 
 - 决策：access JWT 固定 15 分钟；refresh JWT 最长 7 天，以 Redis family 状态和 Lua CAS 实现单次原子轮换，旧 refresh 重放即吊销整个 family。每次 access 验证及 refresh 都按稳定账号/身份读取数据库，逐项校验账号、身份、Provider 启用状态、登录名、部门、角色和 `security_version`。账号/身份/Provider/外部角色映射触发器与密码重置、强制下线写路径在同一事务递增版本；数据库或 Redis 不可用时返回 503 并 fail closed。
 - 原因：仅校验 JWT 自带角色和账号 `auth_version`，无法覆盖 LDAP 部门、身份启停、Provider 禁用及角色映射变化；长生命周期 access JWT 也会扩大权限撤销窗口。服务器端单次 refresh 状态同时限制重放，并让双前端在短 access 到期后更新权威用户摘要。
-- 影响：schema v1.6.24、0025 不可降级迁移、认证 service/API、OpenAPI、PRD 与经典版/青鸾版会话存储及 401 单飞刷新。refresh 只存当前标签页的 `sessionStorage`，不用 Cookie；明确的二次认证 401 不触发刷新，`AUTH_SESSION_UNAVAILABLE` 保留浏览器会话以便稍后重试。
+- 影响：schema v1.6.24、0025 不可降级迁移、认证 service/API、OpenAPI、PRD 与会话存储及 401 单飞刷新。refresh 浏览器边界后由 D048 修订为 HttpOnly Cookie；明确的二次认证 401 不触发刷新，`AUTH_SESSION_UNAVAILABLE` 保留浏览器会话以便稍后重试。
 
 ## D033 授权、所有权、职责分离与审计只认稳定主体 ID
 
@@ -367,20 +367,29 @@
 
 ## D048 Bearer 会话与高风险令牌使用分级浏览器边界
 
-- 决策：继续使用 `Authorization: Bearer`，不引入 Cookie/CSRF 混合模式。普通
-  access/refresh JWT 仅进入当前标签页 `sessionStorage`；注销、401、超时和强制下线清除
-  当前标签页，并只用不含凭据的 `storage` 信号通知其他标签页。首次改密、明文导出 step-up
-  等高风险短期令牌只存在于组件局部变量，提交、到期或组件销毁立即清空。
+- 状态：已修订。原「access/refresh 均仅存 `sessionStorage`、不引入 Cookie/CSRF」表述
+  由本条现行正文取代，并与 `#107`/`#126`/`#140` 实现及 `SECURITY.md` 对齐。
+- 决策：业务 API 继续使用 `Authorization: Bearer` 注入 access JWT。access JWT 与用户
+  快照只保存在当前页面的**模块/组件易失内存**，禁止写入 Pinia 持久化、`sessionStorage`、
+  `localStorage`、IndexedDB、URL 或日志；历史 Web Storage 凭据只允许同步读一次并立即清除。
+  refresh JWT 以受限路径的 **HttpOnly Cookie**（`sms_refresh_token`，path 限定
+  `/api/v1/web/auth`）承载；生产必须 `Secure`，`SameSite=Lax`。携带 Cookie 的 refresh /
+  logout 必须执行规范化同源（Origin/Referer）校验；请求体 refresh 仅作有限兼容迁移，
+  不得作为新客户端主路径。注销、401、超时和强制下线必须清除内存会话与 refresh Cookie，
+  并只用不含凭据的跨标签页信号同步兄弟标签。首次改密、明文导出/真实联调 step-up 等高风险
+  短期令牌只存在于组件局部变量，提交、到期或组件销毁立即清空。
 - 传输边界：生产 HTTP 入口只能跳转到配置的同一 HTTPS origin；无凭据部署探针验证
   TLS 1.2+、证书剩余期限、HSTS 和 CSP。CSP 禁止内联脚本、脚本属性与内联 style 块；
   Element Plus/ECharts 动态布局暂时仅保留 style attribute 例外。nonce/hash 对同源静态脚本
   和动态 style 属性不能提供额外有效覆盖；Trusted Types 在无 HTML 字符串注入点的现状下
   暂不强制，后续须经过青鸾单一前端 report-only 兼容验证再启用。
-- 原因：高风险令牌没有恢复需求，持久化只会扩大 XSS、扩展和依赖污染后的暴露窗口；
-  普通会话保留标签页刷新能力，但由数据库权威安全版本、refresh family 撤销和跨标签页
-  清理共同限制生命周期。传输探针将文档性 HTTPS 要求变为可持续机器证据。
-- 影响：前端登录/首次改密/注销/多标签页测试、会话 store、CSP、部署手册、OpenAPI
-  与生产证书监控。真实浏览器仍须在每次生产发布后验证唯一入口无 CSP violation。
+- 原因：access 与高风险令牌没有跨刷新恢复需求，写入 Web Storage 只会扩大 XSS、扩展和
+  依赖污染后的暴露窗口；refresh 改用 HttpOnly Cookie 降低脚本可读面，并因此必须对
+  Cookie 写路径施加同源 CSRF 防护。普通会话仍由数据库权威安全版本、refresh family 撤销
+  与跨标签页清理共同限制生命周期。传输探针将文档性 HTTPS 要求变为可持续机器证据。
+- 影响：前端登录/首次改密/注销/多标签页与 Cookie 刷新测试、会话 store、CSP、部署手册、
+  OpenAPI、AGENTS.md、PRD 与生产证书监控。真实浏览器仍须在每次生产发布后验证唯一入口
+  无 CSP violation。
 
 ## D049 回调传输与敏感密文使用版本化上下文边界
 
