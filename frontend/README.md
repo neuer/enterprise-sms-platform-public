@@ -10,6 +10,6 @@ Web 镜像只交付一套青鸾 SPA：
 - 源码：`src/`；
 - 静态产物：`dist/`。
 
-业务 API 继续使用同源 `/api/`。普通 access/refresh 会话只存当前标签页 `sessionStorage`，高风险短期令牌只存在组件局部易失内存，不得改用 `localStorage` 等持久化存储。
+业务 API 继续使用同源 `/api/`。access JWT 只存当前页面易失内存并以 `Authorization: Bearer` 注入；refresh JWT 由受限路径 HttpOnly Cookie 承载。高风险短期令牌只存在组件局部易失内存，不得写入 `sessionStorage`/`localStorage` 等持久化存储。
 
 `npm test`、`npm run typecheck`、`npm run build` 分别执行唯一前端的测试、类型检查与生产构建；本地开发使用 `npm run dev`。`/next` 是开发阶段退役入口，由 Nginx 返回 `410 Gone`，不得重新承载第二套 SPA。
