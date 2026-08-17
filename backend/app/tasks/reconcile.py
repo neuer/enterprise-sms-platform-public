@@ -65,7 +65,10 @@ async def _reconcile() -> int:
 async def _replay_stale_raw(settings: Settings) -> int:
     """自动重放租约过期的未处理 raw，避免崩溃后只能等人。"""
 
-    redis = redis_client(settings.redis_control_url)
+    control_url = getattr(settings, "redis_control_url", None)
+    if not isinstance(control_url, str) or not control_url:
+        return 0
+    redis = redis_client(control_url)
     ops = SqlOpsRepository(settings, redis)
     crypto = CryptoService.from_settings(settings)
     alerts = SqlAlertService(settings)

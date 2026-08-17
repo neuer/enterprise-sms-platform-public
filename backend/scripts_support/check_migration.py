@@ -1681,10 +1681,14 @@ def run_check() -> None:
             def from_settings(cls, _settings: Any) -> TestCrypto:
                 return cls()
 
+        async def skip_stale_raw_replay(_settings: Any) -> int:
+            return 0
+
         callback_task.get_settings = lambda: task_settings
         callback_task.CryptoService = TestCrypto
         reconcile_task.get_settings = lambda: task_settings
         reconcile_task.CryptoService = TestCrypto
+        reconcile_task._replay_stale_raw = skip_stale_raw_replay
         for _attempt in range(2):
             if run_async_check(callback_task._deliver(-1)) != 0:
                 raise RuntimeError("empty callback task unexpectedly delivered")
