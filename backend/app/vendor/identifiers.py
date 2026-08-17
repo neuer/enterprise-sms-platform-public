@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
-from app.core.sensitive_text import reject_phone_in_text
+from app.core.sensitive_text import reject_phone_identifier
 
 VENDOR_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 VENDOR_CUSTOM_ID = re.compile(r"^[A-Za-z0-9]{0,36}$")
@@ -47,7 +47,7 @@ def validate_vendor_task_id(value: object) -> str:
     normalized = value.strip()
     if VENDOR_TASK_ID.fullmatch(normalized) is None:
         raise ValueError("taskId format is invalid")
-    reject_phone_in_text(normalized, field_name="taskId")
+    reject_phone_identifier(normalized, field_name="taskId")
     return normalized
 
 
@@ -59,7 +59,7 @@ def validate_vendor_custom_id(value: object) -> str:
     normalized = value.strip()
     if VENDOR_CUSTOM_ID.fullmatch(normalized) is None:
         raise ValueError("customId format is invalid")
-    reject_phone_in_text(normalized, field_name="customId")
+    reject_phone_identifier(normalized, field_name="customId")
     return normalized
 
 

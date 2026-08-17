@@ -153,6 +153,19 @@ async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> 
 
 
 @pytest.mark.asyncio
+async def test_platform_hex_custom_id_is_not_rejected_as_phone() -> None:
+    custom_id = "390d6892939546adb08dc16600000001"
+    item = report() | {"customId": custom_id}
+    repository = FakeRepository()
+
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    applied = [value for event, value in repository.events if event == "apply"]
+    assert len(applied) == 1
+    assert applied[0].match_custom_id == custom_id
+
+
+@pytest.mark.asyncio
 async def test_invalid_custom_id_does_not_abort_valid_report_items() -> None:
     repository = FakeRepository()
     mixed = [report() | {"customId": "legacy-x"}, report()]
