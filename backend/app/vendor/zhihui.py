@@ -38,6 +38,10 @@ class VendorTransportError(VendorError):
 class VendorResponseTooLarge(VendorTransportError):
     """厂商响应超过硬上限；请求可能已被上游接收，保持结果未知。"""
 
+    def __init__(self, message: str, raw_body: bytes = b"") -> None:
+        super().__init__(message)
+        self.raw_body = raw_body
+
 
 class VendorTotalTimeout(VendorTransportError):
     """厂商请求完整生命周期超过绝对总截止时间；保持结果未知。"""
@@ -108,6 +112,8 @@ def _decode_vendor_envelope(
 
     if content_encoding != "identity":
         raise VendorProtocolError("vendor response content-encoding is forbidden")
+    if status_code == 429:
+        raise VendorApiError(429)
     if not 200 <= status_code < 300:
         raise VendorProtocolError(f"vendor HTTP status {status_code}")
     try:
@@ -233,7 +239,8 @@ class ZhihuiClient:
                         total += len(chunk)
                         if total > self.max_response_body_bytes:
                             raise VendorResponseTooLarge(
-                                "vendor response body exceeds hard limit"
+                                "vendor response body exceeds hard limit",
+                                raw_body=b"".join(chunks),
                             )
                         chunks.append(chunk)
                     content = b"".join(chunks)

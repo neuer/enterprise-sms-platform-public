@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.services.app_ratelimit import ControlPlaneUnavailable
+
 IDEMPOTENCY_TTL_S = 86400  # Redis 快速索引 TTL；DB 事实源按 scheduled_at+安全窗口延长
 IDEMPOTENCY_CLAIM_TTL_S = 30
 IDEMPOTENCY_WAIT_ATTEMPTS = 100
@@ -182,7 +184,10 @@ class IdempotencyCoordinator:
 
     async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         key = self.key(scope, biz_id)
-        batch_no = await self.redis.get(key)
+        try:
+            batch_no = await self.redis.get(key)
+        except Exception as exc:
+            raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         if batch_no is None:
             batch_no = await self.repository.find_existing(scope, biz_id)
             if batch_no is not None:
@@ -205,12 +210,15 @@ class IdempotencyCoordinator:
 
     async def claim(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         token = uuid4().hex
-        acquired = await self.redis.set(
-            self.claim_key(scope, biz_id),
-            token,
-            nx=True,
-            ex=self.claim_ttl_s,
-        )
+        try:
+            acquired = await self.redis.set(
+                self.claim_key(scope, biz_id),
+                token,
+                nx=True,
+                ex=self.claim_ttl_s,
+            )
+        except Exception as exc:
+            raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         return token if acquired else None
 
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:

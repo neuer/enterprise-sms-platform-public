@@ -25,6 +25,10 @@ class ApplicationRateLimitExceeded(RuntimeError):
     """应用每分钟受理次数已耗尽。"""
 
 
+class ControlPlaneUnavailable(RuntimeError):
+    """control Redis 不可用，受理必须失败关闭。"""
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -45,14 +49,17 @@ class ApplicationRateLimiter:
         if limit_per_minute < 1:
             raise ValueError("application rate limit must be positive")
         now_ms = int(self.clock().timestamp() * 1000)
-        allowed = await self.redis.eval(
-            SLIDING_WINDOW_LUA,
-            1,
-            f"ratelimit:app:{app_id}",
-            str(now_ms),
-            str(now_ms - 60_000),
-            str(limit_per_minute),
-            self.nonce(),
-        )
+        try:
+            allowed = await self.redis.eval(
+                SLIDING_WINDOW_LUA,
+                1,
+                f"ratelimit:app:{app_id}",
+                str(now_ms),
+                str(now_ms - 60_000),
+                str(limit_per_minute),
+                self.nonce(),
+            )
+        except Exception as exc:
+            raise ControlPlaneUnavailable("应用限流控制面不可用") from exc
         if not int(allowed):
             raise ApplicationRateLimitExceeded("应用请求频率超限")

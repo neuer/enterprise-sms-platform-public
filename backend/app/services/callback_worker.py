@@ -25,14 +25,10 @@ class CallbackLeaseLost(RuntimeError):
 
 
 def classify_callback_http_status(status: int) -> str:
-    """集中分类回调响应：success / retryable / permanent。"""
+    """与规则 13 对齐：2xx 成功，4xx/5xx 一律可重试。worker 按此语义重试。"""
 
     if 200 <= status < 300:
         return "success"
-    if status in RETRYABLE_CALLBACK_STATUSES or 500 <= status < 600:
-        return "retryable"
-    if status in PERMANENT_CALLBACK_STATUSES or 400 <= status < 500:
-        return "permanent"
     return "retryable"
 
 

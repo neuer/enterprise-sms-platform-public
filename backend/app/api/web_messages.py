@@ -91,8 +91,11 @@ class WebContentModel(BaseModel):
     category: Category
     content: str | None = Field(default=None, max_length=500)
     template_id: int | None = None
-    template_params: list[str] | None = None
-    sign_name: str | None = None
+    template_params: list[Annotated[str, Field(max_length=200)]] | None = Field(
+        default=None,
+        max_length=20,
+    )
+    sign_name: str | None = Field(default=None, max_length=32)
     consent_confirmed: bool = False
 
     @model_validator(mode="after")

@@ -101,9 +101,14 @@ class SqlHousekeepingRepository:
                     text(
                         """
                         WITH deleted_raw AS (
-                          DELETE FROM raw_vendor_log
-                          WHERE fetched_at < now()-make_interval(days=>:raw_days)
-                            AND processed = TRUE
+                          DELETE FROM raw_vendor_log r
+                          WHERE r.fetched_at < now()-make_interval(days=>:raw_days)
+                            AND r.processed = TRUE
+                            AND NOT EXISTS (
+                              SELECT 1 FROM sms_chunk c
+                              WHERE c.status='uncertain'
+                                AND c.custom_id = ANY(r.custom_ids)
+                            )
                           RETURNING 1
                         ), deleted_unmatched AS (
                           DELETE FROM unmatched_report

@@ -28,8 +28,14 @@ class AlertEmitter(Protocol):
 
 
 CRITICAL_EVENTS: dict[int, tuple[str, str]] = {
-    999: ("balance_blocked", "厂商余额不足，发送队列已暂停"),
-    1000: ("vendor_auth_error", "厂商鉴权失败，发送队列已暂停"),
+    999: (
+        "balance_blocked",
+        "厂商余额不足，发送队列已暂停；恢复入口：运维中心清除队列暂停后恢复批次",
+    ),
+    1000: (
+        "vendor_auth_error",
+        "厂商鉴权失败，发送队列已暂停；恢复入口：运维中心清除队列暂停",
+    ),
     1010: ("vendor_ip_error", "厂商 IP 校验失败"),
 }
 

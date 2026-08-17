@@ -35,6 +35,7 @@ from app.services.idempotency import (
     usage_request_key,
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
+from app.services.usage_ledger import FrequencyDecisionItem
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LOGGER = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ def prepare_content(
         category == "market"
         and unsubscribe_auto_append
         and unsubscribe_suffix
-        and unsubscribe_suffix not in content
+        and not content.endswith(unsubscribe_suffix)
     ):
         content += unsubscribe_suffix
     send_content = content
@@ -354,6 +355,17 @@ class UsageLedgerPort(Protocol):
         limits: FrequencyLimits,
         now: datetime | None = None,
     ) -> bool: ...
+
+    async def allow_frequency_many(
+        self,
+        reservation_id: UUID,
+        category: str,
+        *,
+        app_id: int,
+        items: Sequence[Any],
+        limits: FrequencyLimits,
+        now: datetime | None = None,
+    ) -> list[bool]: ...
 
     async def reserve_quota(
         self,
@@ -653,7 +665,9 @@ class SendPipeline:
 
         stored = await self.idempotency.request_fingerprint(scope, biz_id)
         if stored is None:
-            return
+            raise IdempotencyConflict(
+                "同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id"
+            )
         request_hash = self._request_hash(
             request,
             app,
@@ -718,6 +732,11 @@ class SendPipeline:
             policy,
             key_version=request_hash_key_version,
         )
+        if preauthorization is None and self.acceptance_limiter is not None:
+            await self.acceptance_limiter.check(
+                app_id=app.app_id,
+                limit_per_minute=app.rate_limit_per_min,
+            )
         existing = await self.idempotency.lookup(idem_scope, biz_id)
         if existing is not None:
             await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
@@ -830,7 +849,11 @@ class SendPipeline:
             raise ValueError(f"测试发送最多{self.config.test_send_max}个号码")
         if self.recipient_guard is not None and has_plain:
             self.recipient_guard.require_allowed(request.mobiles)
-        if preauthorization is None and self.acceptance_limiter is not None:
+        if (
+            preauthorization is None
+            and self.acceptance_limiter is not None
+            and not request.biz_id
+        ):
             await self.acceptance_limiter.check(
                 app_id=app.app_id,
                 limit_per_minute=app.rate_limit_per_min,
@@ -902,11 +925,9 @@ class SendPipeline:
                 candidates_by_active,
                 frequency_hmac_by_active,
                 frequency_aliases_by_active,
-            ) = await run_bounded(
-                self._protect_plain_phones,
+            ) = await self._protect_plain_phones_batched(
                 unique_phones,
                 blacklist_required=policy.blacklist_required,
-                timeout_s=10,
             )
         blocked_candidates = (
             await self.store.blacklisted(
@@ -950,11 +971,7 @@ class SendPipeline:
             usage_reservation_reused = bool(getattr(usage_reservation, "reused", False))
 
         async def release_usage(reason: str) -> None:
-            if (
-                self.usage_ledger is None
-                or usage_reservation_id is None
-                or usage_reservation_reused
-            ):
+            if self.usage_ledger is None or usage_reservation_id is None:
                 return
             try:
                 await self.usage_ledger.request_unlinked_release(
@@ -975,29 +992,45 @@ class SendPipeline:
         if ownership_check is not None:
             await ownership_check()
         try:
-            for item in after_blacklist:
+            frequency_batch = 200
+            for offset in range(0, len(after_blacklist), frequency_batch):
+                if ownership_check is not None and offset > 0:
+                    await ownership_check()
+                batch = after_blacklist[offset : offset + frequency_batch]
                 if self.usage_ledger is not None and usage_reservation_id is not None:
-                    allowed = await self.usage_ledger.allow_frequency(
+                    decisions = await self.usage_ledger.allow_frequency_many(
                         usage_reservation_id,
                         request.category,
                         app_id=app.app_id,
-                        phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                        hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
+                        items=tuple(
+                            FrequencyDecisionItem(
+                                phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
+                            )
+                            for item in batch
+                        ),
                         limits=limits,
                         now=now,
                     )
                 else:
-                    allowed = await self.frequency.allow(
-                        request.category,
-                        app_id=app.app_id,
-                        phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                        limits=limits,
-                        claim_key=claim_key,
-                        claim_token=claim_token,
-                        result_key=frequency_result_key,
-                    )
-                if allowed:
-                    accepted.append(item)
+                    decisions = []
+                    for index, item in enumerate(batch):
+                        if ownership_check is not None and index > 0 and index % 25 == 0:
+                            await ownership_check()
+                        decisions.append(
+                            await self.frequency.allow(
+                                request.category,
+                                app_id=app.app_id,
+                                phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                limits=limits,
+                                claim_key=claim_key,
+                                claim_token=claim_token,
+                                result_key=frequency_result_key,
+                            )
+                        )
+                accepted.extend(
+                    item for item, allowed in zip(batch, decisions, strict=True) if allowed
+                )
         except Exception:
             await release_usage("acceptance-failed")
             raise
@@ -1192,7 +1225,8 @@ class SendPipeline:
                         app,
                         policy,
                     )
-                    await release_usage("idempotent-reuse")
+                    if not usage_reservation_reused:
+                        await release_usage("idempotent-reuse")
                     return await self.store.response_for(existing)
             await compensate_reservation()
             raise
@@ -1208,7 +1242,8 @@ class SendPipeline:
                     policy,
                 )
             if self.usage_ledger is not None:
-                await release_usage("idempotent-reuse")
+                if not usage_reservation_reused:
+                    await release_usage("idempotent-reuse")
             elif not reservation_reused:
                 await compensate_reservation()
             return await self.store.response_for(stored.batch_no)
@@ -1231,4 +1266,61 @@ class SendPipeline:
             status,
             deferred_reason,
             scheduled_at,
+        )
+
+    async def _protect_plain_phones_batched(
+        self,
+        phones: Sequence[str],
+        *,
+        blacklist_required: bool,
+    ) -> tuple[
+        list[ProtectedPhone],
+        dict[str, frozenset[str]],
+        dict[str, str],
+        dict[str, dict[int, str]],
+    ]:
+        """分批并行加密，避免把万级号码塞进单个 10s 任务。"""
+
+        chunk_size = 1000
+        if len(phones) <= chunk_size:
+            return await run_bounded(
+                self._protect_plain_phones,
+                phones,
+                blacklist_required=blacklist_required,
+                timeout_s=min(60, max(10, ((len(phones) + 499) // 500) * 10)),
+            )
+        chunks = [phones[index : index + chunk_size] for index in range(0, len(phones), chunk_size)]
+        timeout_s = min(60, max(15, ((chunk_size + 499) // 500) * 10))
+        protected: list[ProtectedPhone] = []
+        candidates_by_active: dict[str, frozenset[str]] = {}
+        frequency_hmac_by_active: dict[str, str] = {}
+        frequency_aliases_by_active: dict[str, dict[int, str]] = {}
+        wave = 4
+        for start in range(0, len(chunks), wave):
+            parts = await asyncio.gather(
+                *[
+                    run_bounded(
+                        self._protect_plain_phones,
+                        chunk,
+                        blacklist_required=blacklist_required,
+                        timeout_s=timeout_s,
+                    )
+                    for chunk in chunks[start : start + wave]
+                ]
+            )
+            for (
+                chunk_protected,
+                chunk_candidates,
+                chunk_hmac,
+                chunk_aliases,
+            ) in parts:
+                protected.extend(chunk_protected)
+                candidates_by_active.update(chunk_candidates)
+                frequency_hmac_by_active.update(chunk_hmac)
+                frequency_aliases_by_active.update(chunk_aliases)
+        return (
+            protected,
+            candidates_by_active,
+            frequency_hmac_by_active,
+            frequency_aliases_by_active,
         )

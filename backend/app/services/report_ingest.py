@@ -12,12 +12,17 @@ from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
+from app.services.raw_spill import RawSpillStore
 from app.vendor.identifiers import (
     protect_vendor_custom_id,
     protect_vendor_task_id,
     validate_vendor_custom_id,
 )
-from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
+from app.vendor.zhihui import (
+    RawPulledPayload,
+    VendorResponseTooLarge,
+    decode_pulled_payload,
+)
 
 LOGGER = logging.getLogger(__name__)
 VENDOR_LOCAL_TIME = re.compile(
@@ -167,11 +172,13 @@ class ReportIngestService:
         crypto: CryptoService,
         *,
         alerts: AlertEmitter | None = None,
+        spill: RawSpillStore | None = None,
     ) -> None:
         self.gateway = gateway
         self.repository = repository
         self.crypto = crypto
         self.alerts = alerts
+        self.spill = spill
 
     async def _alert_failure_rate(self, batch_id: int) -> None:
         if self.alerts is None:
@@ -198,6 +205,79 @@ class ReportIngestService:
             LOGGER.error(
                 "failure rate alert unavailable",
                 extra={"batch_id": batch_id, "error_type": type(exc).__name__},
+            )
+
+    async def _persist_lost_payload(
+        self,
+        source: str,
+        raw_payload: bytes,
+        *,
+        status_code: int,
+    ) -> None:
+        payload_sha256 = hashlib.sha256(raw_payload).hexdigest()
+        encrypted = self.crypto.encrypt_bound_bytes(
+            raw_payload,
+            EncryptionContext(
+                domain="vendor-raw",
+                table="raw_vendor_log",
+                column="payload_enc",
+                object_id=f"{source}:{payload_sha256}",
+            ),
+        )
+        if self.spill is not None:
+            self.spill.write(
+                source=source,
+                payload_sha256=payload_sha256,
+                key_version=encrypted.key_version,
+                http_status=status_code,
+                content_encoding="identity",
+                payload_enc=encrypted.payload,
+            )
+        raw_id = await self.repository.persist_raw(
+            payload_enc=encrypted.payload,
+            payload_sha256=payload_sha256,
+            key_version=encrypted.key_version,
+            http_status=status_code,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        if self.spill is not None:
+            self.spill.remove(source, payload_sha256)
+        await self.repository.mark_error(raw_id, f"{source} payload persisted after consume gap")
+
+    async def _alert_consume_gap(self, source: str, error_type: str) -> None:
+        if self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_persist_failed",
+                level="crit",
+                title="厂商拉走即消费响应未能落库，需人工介入",
+                detail={"source": source, "error_type": error_type},
+                dedup_key=f"vendor_raw_persist_failed:{source}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw persist alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+
+    async def _alert_skipped(self, raw_id: int, skipped: int, *, source: str) -> None:
+        if self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="raw_item_skipped",
+                level="crit",
+                title="厂商回执存在无法解析的条目，raw 保持可重放",
+                detail={"raw_id": raw_id, "skipped_count": skipped, "source": source},
+                dedup_key=f"raw_item_skipped:{source}:{raw_id}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "raw skip alert unavailable",
+                extra={"raw_id": raw_id, "error_type": type(exc).__name__},
             )
 
     def _parse(self, item: dict[str, Any]) -> ProtectedReport:
@@ -266,10 +346,46 @@ class ReportIngestService:
             phone_hmacs=phone_hmacs,
         )
 
+    async def recover_spills(self) -> int:
+        """把落库前崩溃留下的加密 spill 恢复进 raw_vendor_log。"""
+
+        if self.spill is None:
+            return 0
+        recovered = 0
+        for record in self.spill.list_pending():
+            if record.source != "report":
+                continue
+            try:
+                await self.repository.persist_raw(
+                    payload_enc=record.payload_enc,
+                    payload_sha256=record.payload_sha256,
+                    key_version=record.key_version,
+                    http_status=record.http_status,
+                    content_encoding=record.content_encoding,
+                    custom_ids=[],
+                    item_count=0,
+                )
+            except Exception as error:
+                await self._alert_consume_gap("report", type(error).__name__)
+                continue
+            self.spill.remove(record.source, record.payload_sha256)
+            recovered += 1
+        return recovered
+
     async def poll_once(self) -> int:
         if self.gateway is None:
             raise RuntimeError("report gateway is not configured")
-        pulled = await self.gateway.get_report_raw()
+        await self.recover_spills()
+        try:
+            pulled = await self.gateway.get_report_raw()
+        except VendorResponseTooLarge as error:
+            await self._alert_consume_gap("report", type(error).__name__)
+            if error.raw_body:
+                await self._persist_lost_payload("report", error.raw_body, status_code=0)
+            raise
+        except Exception as error:
+            await self._alert_consume_gap("report", type(error).__name__)
+            raise
         payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()
         encrypted = self.crypto.encrypt_bound_bytes(
             pulled.raw_payload,
@@ -280,15 +396,30 @@ class ReportIngestService:
                 object_id=f"report:{payload_sha256}",
             ),
         )
-        raw_id = await self.repository.persist_raw(
-            payload_enc=encrypted.payload,
-            payload_sha256=payload_sha256,
-            key_version=encrypted.key_version,
-            http_status=pulled.status_code,
-            content_encoding=pulled.content_encoding,
-            custom_ids=[],
-            item_count=0,
-        )
+        if self.spill is not None:
+            self.spill.write(
+                source="report",
+                payload_sha256=payload_sha256,
+                key_version=encrypted.key_version,
+                http_status=pulled.status_code,
+                content_encoding=pulled.content_encoding,
+                payload_enc=encrypted.payload,
+            )
+        try:
+            raw_id = await self.repository.persist_raw(
+                payload_enc=encrypted.payload,
+                payload_sha256=payload_sha256,
+                key_version=encrypted.key_version,
+                http_status=pulled.status_code,
+                content_encoding=pulled.content_encoding,
+                custom_ids=[],
+                item_count=0,
+            )
+        except Exception as error:
+            await self._alert_consume_gap("report", type(error).__name__)
+            raise
+        if self.spill is not None:
+            self.spill.remove("report", payload_sha256)
         try:
             data = decode_pulled_payload(pulled, "GetReport")
             if isinstance(data, list) and all(isinstance(item, dict) for item in data):
@@ -313,13 +444,19 @@ class ReportIngestService:
         try:
             if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                 raise ValueError("GetReport.data must be an object array")
-            for item in data:
+            skipped = 0
+            for index, item in enumerate(data):
                 try:
                     report = self._parse(item)
                 except (ValueError, KeyError, TypeError) as error:
+                    skipped += 1
                     LOGGER.warning(
                         "skipping invalid report item",
-                        extra={"error_type": type(error).__name__},
+                        extra={
+                            "raw_id": raw_id,
+                            "item_index": index,
+                            "error_type": type(error).__name__,
+                        },
                     )
                     continue
                 applied = await self.repository.apply_report(raw_id, report)
@@ -330,5 +467,12 @@ class ReportIngestService:
         except Exception as error:
             await self.repository.mark_error(raw_id, f"{type(error).__name__}: {error}"[:256])
             raise
+        if skipped:
+            await self.repository.mark_error(
+                raw_id,
+                f"skipped {skipped} invalid report items",
+            )
+            await self._alert_skipped(raw_id, skipped, source="report")
+            return len(data)
         await self.repository.mark_processed(raw_id)
         return len(data)

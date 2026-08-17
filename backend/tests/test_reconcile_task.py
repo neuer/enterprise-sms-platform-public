@@ -84,6 +84,11 @@ async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions
         raising=False,
     )
 
+    async def replay_none(_settings: object) -> int:
+        return 0
+
+    monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
+
     assert await task_module._reconcile() == 10
     finalizer = captured["reset_configuration"]
     assert finalizer.repository is recipient_repository
@@ -156,3 +161,12 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
 
     with pytest.raises(RuntimeError, match="private-finalizer-detail"):
         await task_module._reconcile()
+
+
+@pytest.mark.asyncio
+async def test_replay_stale_raw_skips_synthetic_settings_without_control_redis() -> None:
+    from types import SimpleNamespace
+
+    from app.tasks import reconcile as task_module
+
+    assert await task_module._replay_stale_raw(SimpleNamespace(database_url="unused")) == 0

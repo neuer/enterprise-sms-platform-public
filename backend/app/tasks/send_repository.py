@@ -139,6 +139,29 @@ class SqlChunkStore:
 
         await pause_vendor_test_agent_stale(self.redis)
 
+    async def release_unsent(self, chunk_id: int) -> None:
+        """确认尚未调用厂商时把 submitting 放回 retrying，允许自动重试。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                released = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET status='retrying',
+                          vendor_msg='submit aborted before vendor call',
+                          submitting_since=NULL,retry_not_before=now()
+                        WHERE id=:id AND status='submitting'
+                        RETURNING id
+                        """
+                    ),
+                    {"id": chunk_id},
+                )
+                if released.scalar_one_or_none() is not None:
+                    await settle_live_test_attempt(connection, chunk_id, "released")
+        finally:
+            await engine.dispose()
+
     async def release_control_claim(self, chunk_id: int) -> None:
         """厂商调用前状态失效时释放占额，分片保持可重试。"""
 
@@ -799,6 +822,7 @@ class SqlChunkStore:
         return True
 
     async def delay(self, chunk_id: int, code: int, delay_s: int) -> None:
+        category = None
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -806,10 +830,12 @@ class SqlChunkStore:
                     text(
                         """
                         UPDATE sms_chunk c SET status='retrying',vendor_code=:code,
+                          retry_count=retry_count+1,
                           submitting_since=NULL,
                           retry_not_before=now()+make_interval(secs=>:delay_s)
                         FROM sms_batch b
                         WHERE c.id=:id AND c.status='submitting' AND b.id=c.batch_id
+                          AND c.retry_count<8
                         RETURNING b.category
                         """
                     ),
@@ -817,6 +843,21 @@ class SqlChunkStore:
                 )
                 category = result.scalar_one_or_none()
                 if category is not None:
+                    await settle_live_test_attempt(connection, chunk_id, "released")
+                elif await connection.scalar(
+                    text(
+                        "SELECT 1 FROM sms_chunk WHERE id=:id AND status='submitting'"
+                    ),
+                    {"id": chunk_id},
+                ):
+                    await connection.execute(
+                        text(
+                            "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
+                            "vendor_msg='delayed retry exhausted',submitting_since=NULL "
+                            "WHERE id=:id AND status='submitting'"
+                        ),
+                        {"id": chunk_id, "code": code},
+                    )
                     await settle_live_test_attempt(connection, chunk_id, "released")
         finally:
             await engine.dispose()
@@ -856,6 +897,10 @@ class SqlChunkStore:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT pg_advisory_xact_lock(43, :batch)"),
+                    {"batch": int(chunk.batch_id)},
+                )
                 rows_result = await connection.execute(
                     text(
                         "SELECT id,created_at FROM sms_message "

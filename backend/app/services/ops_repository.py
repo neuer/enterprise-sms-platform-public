@@ -209,6 +209,31 @@ class SqlOpsRepository:
     async def clear_queue_pauses(self) -> None:
         await self.redis.delete("queue:paused:realtime", "queue:paused:bulk")
 
+    async def list_stale_unprocessed_raw_ids(self, *, limit: int = 20) -> list[int]:
+        """列出租约过期或尚未开始处理的未处理 raw，供自动重放。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT id FROM raw_vendor_log
+                        WHERE processed=false
+                          AND (
+                            processing_started_at IS NULL
+                            OR processing_started_at<=now()-interval '15 minutes'
+                          )
+                        ORDER BY id
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": limit},
+                )
+                return [int(value) for value in result.scalars()]
+        finally:
+            await engine.dispose()
+
     async def claim_raw_for_replay(self, raw_id: int) -> RawReplayClaim | None:
         engine = self._engine()
         try:

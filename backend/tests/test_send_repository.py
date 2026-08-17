@@ -75,6 +75,10 @@ class SequenceConnection:
         self.calls.append((str(statement), params))
         return self.results.pop(0)
 
+    async def scalar(self, statement: object, params: object = None) -> object:
+        self.calls.append((str(statement), params))
+        return self.results.pop(0).scalar
+
 
 class FakeContext:
     def __init__(self, connection: Any) -> None:
@@ -983,7 +987,8 @@ async def test_long_delay_persists_due_time_before_enqueue(
     sql, params = connection.calls[0]
     assert "retry_not_before=now()+make_interval(secs=>:delay_s)" in sql
     assert "status='submitting'" in sql
-    assert "retry_count=retry_count+1" not in sql
+    assert "retry_count=retry_count+1" in sql
+    assert "retry_count<8" in sql
     assert params == {"id": 7, "code": 1011, "delay_s": 1800}
     assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 1800)]
@@ -1111,6 +1116,7 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
     store = chunk_store()
     connection = SequenceConnection(
         [
+            FakeResult(),
             FakeResult(
                 rows=[
                     {"id": 1, "created_at": "a"},
@@ -1141,13 +1147,14 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
     assert [child.chunk_id for child in children] == [20, 21]
     statements = [sql for sql, _params in connection.calls]
     assert not any("DELETE FROM sms_chunk" in sql for sql in statements)
-    assert "status='failed'" in statements[1]
-    assert "vendor_code=1006" in statements[1]
-    assert connection.calls[2][1] == {"chunk_id": 7, "status": "released"}
+    assert "pg_advisory_xact_lock" in statements[0]
+    assert "status='failed'" in statements[2]
+    assert "vendor_code=1006" in statements[2]
+    assert connection.calls[3][1] == {"chunk_id": 7, "status": "released"}
     first_insert = next(
         index for index, sql in enumerate(statements) if "INSERT INTO sms_chunk" in sql
     )
-    assert first_insert > 2
+    assert first_insert > 3
 
 
 @pytest.mark.asyncio
@@ -1220,3 +1227,46 @@ async def test_daily_limit_defers_unclaimed_chunk_until_reset(
     assert "retry_not_before=:reset_at" in sql
     assert params == {"id": 7, "reset_at": reset_at}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 60)]
+
+
+@pytest.mark.asyncio
+async def test_release_unsent_returns_submitting_chunk_to_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = chunk_store()
+    connection = SequenceConnection(
+        [FakeResult(scalar=7), FakeResult(rowcount=1)]
+    )
+    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
+
+    await store.release_unsent(7)
+
+    sql, params = connection.calls[0]
+    assert "status='retrying'" in sql
+    assert "submit aborted before vendor call" in sql
+    assert "status='submitting'" in sql
+    assert params == {"id": 7}
+    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
+
+
+@pytest.mark.asyncio
+async def test_delay_exhaustion_fails_submitting_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = chunk_store()
+    connection = SequenceConnection(
+        [FakeResult(), FakeResult(scalar=1), FakeResult(), FakeResult(rowcount=1)]
+    )
+    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
+
+    await store.delay(7, 1011, 1800)
+
+    delay_sql, delay_params = connection.calls[0]
+    assert "retry_count<8" in delay_sql
+    assert delay_params == {"id": 7, "code": 1011, "delay_s": 1800}
+    assert "status='submitting'" in connection.calls[1][0]
+    fail_sql, fail_params = connection.calls[2]
+    assert "status='failed'" in fail_sql
+    assert "delayed retry exhausted" in fail_sql
+    assert fail_params == {"id": 7, "code": 1011}
+    assert connection.calls[3][1] == {"chunk_id": 7, "status": "released"}

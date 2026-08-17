@@ -815,6 +815,21 @@
 - 影响：配额补偿、housekeeping/Outbox 释放与迁移观察窗口。观察结束后只允许删除死代码，
   不得把 Redis 直改重新产品化。
 
+## D073 日报滚动重算五个上海自然日
+
+- 状态：取代 D012 的“三个自然日”窗口；覆盖 48h 迟到回执的保守加固。
+- 决策：`services/stats.py` 的 `recent_stat_dates` 返回今天及前四个上海自然日（共 5 天）。
+  成功率口径不变，仍为 `delivered/(delivered+failed)`。
+- 原因：厂商回执可能跨日迟到；3 日窗口会漏补历史日期的 delivered/failed。
+- 影响：`aggregate_stats` 任务、统计单测对 5-tuple 的断言。
+
+## D074 空 IP 白名单保持产品默认放行并强制提示
+
+- 决策：`allowed_ips` 空数组仍表示不限制来源（PRD / D062），不改为 fail-closed。
+  管理端必须在空白名单时展示强警告；生产认证路径对空白名单打 warning 日志。
+- 原因：内部系统接入依赖空白名单；改为强制 CIDR 会破坏既有应用。第二道防线通过可见性补齐。
+- 影响：应用管理页、`core/apikey.py`、`app_management.py`。
+
 ## D072 号码精确查询改为 POST 请求体
 
 - 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、
