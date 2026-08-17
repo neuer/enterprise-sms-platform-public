@@ -275,9 +275,9 @@ class SqlReportRepository:
                           report_time=:report_time,
                           report_event_key=CAST(:event_key AS char(64))
                         WHERE m.id=:id AND m.created_at=:created_at
-                          AND NOT (
-                            m.report_status = 1
-                            AND CAST(:report_status AS smallint) IN (2, 99)
+                          AND (
+                            m.report_status IS DISTINCT FROM 1
+                            OR CAST(:report_status AS smallint) NOT IN (2, 99)
                           )
                           AND (
                             m.report_time IS NULL

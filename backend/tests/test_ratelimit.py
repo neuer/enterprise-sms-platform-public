@@ -62,7 +62,9 @@ async def test_token_refund_is_atomic_and_capped_at_vendor_qps() -> None:
     assert "math.min(capacity, tokens + 1)" in TOKEN_REFUND_LUA
     assert "last_ms ~= lease_epoch" not in TOKEN_REFUND_LUA
     assert "tokens == nil or last_ms == nil" in TOKEN_REFUND_LUA
-    assert "HINCRBY" in TOKEN_BUCKET_LUA
+    assert "HINCRBY" not in TOKEN_BUCKET_LUA
+    assert "HINCRBY" not in TOKEN_REFUND_LUA
+    assert "return last_ms" in TOKEN_BUCKET_LUA
 
 
 @pytest.mark.asyncio
