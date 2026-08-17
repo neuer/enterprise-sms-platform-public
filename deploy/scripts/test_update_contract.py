@@ -268,6 +268,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "deploy/redis-ha.md",
         "deploy/vendor-egress.md",
         "docs/DECISIONS.md",
+        "docs/LOCAL_TESTING.md",
         "docs/PERFORMANCE.md",
         "docs/TEST-MANUAL.md",
         "docs/UAT.md",
@@ -292,7 +293,10 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "docs/runbooks/public-baseline-activation.md",
         "scripts/e2e_api.py",
         # 仅用于本地/隔离测试栈的目录与凭据准备；不进入服务镜像或运行态。
+        "scripts/dev_check.sh",
         "scripts/local_test.sh",
+        # 精确 CI 证据核验只在本地 driver / 托管 CI 使用，不进入 api/web 运行镜像。
+        "scripts/verify_ci_commit.py",
         # G2 性能门禁脚本不进入 api/web 运行镜像；阈值变更由精确提交的
         # 托管 CI/G2 负责验证，不能阻断同一提交中的正式运行态更新。
         "scripts/perf_smoke.py",
