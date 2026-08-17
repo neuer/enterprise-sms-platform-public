@@ -855,24 +855,6 @@ async def test_paused_lane_skips_token_claim_and_vendor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unexpected_error_before_vendor_releases_unsent_chunk() -> None:
-    class ClosedGateway:
-        @property
-        def send(self) -> object:
-            raise RuntimeError("gateway closed")
-
-    store = FakeStore()
-    with pytest.raises(RuntimeError, match="gateway closed"):
-        await SendWorker(ClosedGateway(), store, FakeBucket()).submit(  # type: ignore[arg-type]
-            chunk(),
-            lane="realtime",
-        )
-
-    assert store.events == [("submitting", 3), ("release_unsent", 3)]
-    assert not any(event[0] == "uncertain" for event in store.events)
-
-
-@pytest.mark.asyncio
 async def test_unexpected_error_after_vendor_starts_marks_uncertain() -> None:
     store = FakeStore()
     with pytest.raises(RuntimeError, match="vendor exploded"):

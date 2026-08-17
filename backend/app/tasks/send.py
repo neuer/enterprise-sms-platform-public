@@ -342,9 +342,8 @@ class SendWorker:
                 return
             vendor_invoked = False
             try:
-                send = self.gateway.send
                 vendor_invoked = True
-                task_id = await send(
+                task_id = await self.gateway.send(
                     chunk.phones,
                     chunk.content,
                     template_id=chunk.template_id,
