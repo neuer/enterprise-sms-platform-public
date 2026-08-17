@@ -179,3 +179,41 @@ pytest -x -q                                        # VENDOR_MOCK=1 默认
 - 不确定的产品决策：先查 PRD.md，仍无答案则在 PR 描述列出假设，**不要静默自行决定**
 - 生成代码带类型注解；关键业务函数写中文 docstring
 - 涉及手机号的任何新代码，自查是否违反硬性规则 2 与 4
+
+## Cursor Cloud specific instructions
+
+面向后续 Cloud Agent（更新脚本已跑过 `uv sync` + `npm ci`，Docker/uv/Node24 已在快照中）。
+标准命令仍以 `README.md`、`docs/LOCAL_TESTING.md`、本文件「常用命令」为准，这里只记非显而易见的坑。
+
+**三层开发面**：① 全栈应用 = Docker Compose（12 个容器，见 `deploy/docker-compose.yml`），入口
+`scripts/local_test.sh`；② 后端测试/静态检查 = `backend/` 下 `uv run`（pytest/ruff/mypy）；
+③ 前端测试/构建 = `frontend/` 下 `npm`（vitest / `npm run build`）。
+
+**发送路径只在 mock 内**：本地栈固定 `VENDOR_MOCK=1`（`VENDOR_BASE_URL=http://mock-vendor:9028`），
+任何「发送」只打到 `mock-vendor` 容器，不外发真实短信。**按维护者要求，测试发送前先与其沟通**；
+默认用只读方式（登录 Web + 看仪表盘/查询页）验证环境。
+
+**启动全栈必须 root，且首启前先 `prepare`**（Linux 关键坑）：
+- `scripts/local_test.sh up|reset|down|status` 需要 `sudo`：secrets 预处理器会把运行时 secret
+  chown 成固定容器 UID（10001/70/999 等），非 root 分支只在 macOS 生效，Linux 非 root 会报
+  `runtime vendor revocation requires root`。
+- `up`/`reset` **不会**创建 nginx 日志目录 `deploy/security-report-nginx` 的正确属主；首次务必先跑
+  `sudo scripts/local_test.sh prepare`（把该目录 chown 到 UID 101），否则 `web`(nginx UID 101) 会因
+  `/var/log/nginx` 权限被拒而反复重启。属主修好后持久保留，后续 `up`/`reset` 不必重跑 `prepare`。
+- 首启顺序：`sudo scripts/local_test.sh prepare` → `sudo scripts/local_test.sh up`。
+
+**登录（AUTH_MOCK=1）**：seed 账号 `admin01/approver01/operator01/viewer01` 走 **AD**（mock）Provider，
+不是 local；密码在 `deploy/secrets/ldap_bind_password`（0600，`sudo cat` 读取，勿外泄）。连续失败会锁定/限流，
+自动化登录不要反复重试；Web `POST /api/v1/web/auth/login` 的 `tab_id` 必须是 32 位 hex。
+访问地址：Web `http://localhost:18180/login`、API `http://localhost:18100/readyz`、mock `http://localhost:19128/_mock/state`。
+
+**Node PATH 坑**：`/exec-daemon/node` 是 v22，会在 PATH 中盖住 nvm 的 Node 24。跑前端 `npm run build`/`vitest`
+前需把 Node 24 提前：`export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; export PATH="$(dirname "$(nvm which 24)"):$PATH"`。
+`uv` 在 `~/.local/bin`（已加入 `~/.bashrc`）。
+
+**后端全量 pytest 的 4 个环境性失败（非代码问题）**：在本 VM 跑
+`cd backend && ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 uv run pytest` 会有 4 个失败——
+① `test_local_test_script.py::test_prepare_creates_only_dev_configuration_and_secrets`：栈起来后
+`deploy/security-report-nginx` 属主变 101，ubuntu 再跑 `prepare` chmod 失败；
+② 3 个 `test_public_baseline_activation.py`：Cloud 把 git `origin` 改写成带 `x-access-token:...` 的 URL，
+与用例期望的干净公开 URL 不符。干净 checkout / CI 均通过。想要干净结果就在**拉起全栈前**跑全量。
