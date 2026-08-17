@@ -34,7 +34,8 @@ _API_KEY_PEPPER_DOMAIN = b"sms-api-key-pepper-v1"
 
 
 def _legacy_key_digest(key: str) -> str:
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+    # API Key 是高熵随机令牌，不是口令；SHA-256 仅作等长摘要比对。
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()  # codeql[py/weak-sensitive-data-hashing]
 
 
 def _api_key_pepper() -> bytes | None:
@@ -55,7 +56,10 @@ def hash_api_key(key: str) -> str:
     pepper = _api_key_pepper()
     if pepper is None:
         return _legacy_key_digest(key)
-    return hmac.new(pepper, key.encode("utf-8"), hashlib.sha256).hexdigest()
+    # HMAC-SHA256(pepper, key) 用于高熵 API Key，不是口令 KDF。
+    return hmac.new(  # codeql[py/weak-sensitive-data-hashing]
+        pepper, key.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
 
 
 def _digest_matches(key: str, stored: str) -> bool:
