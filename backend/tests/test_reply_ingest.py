@@ -139,7 +139,8 @@ async def test_reply_vendor_identifiers_cannot_persist_phone_plaintext(field: st
     await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
     assert not any(event[0] == "store" for event in repository.events)
-    assert ("processed", 23) in repository.events
+    assert any(event[0] == "error" for event in repository.events)
+    assert ("processed", 23) not in repository.events
 
 
 @pytest.mark.asyncio
@@ -153,8 +154,8 @@ async def test_invalid_custom_id_does_not_abort_valid_reply_items() -> None:
     stored = [value for event, value in repository.events if event == "store"]
     assert len(stored) == 1
     assert stored[0].match_custom_id == "custom1"
-    assert ("processed", 23) in repository.events
-    assert not any(event[0] == "error" for event in repository.events)
+    assert any(event[0] == "error" for event in repository.events)
+    assert ("processed", 23) not in repository.events
 
 
 @pytest.mark.asyncio
@@ -168,7 +169,8 @@ async def test_reply_ext_code_enforces_vendor_digit_contract() -> None:
     ).poll_once()
 
     assert not any(event[0] == "store" for event in repository.events)
-    assert ("processed", 23) in repository.events
+    assert any(event[0] == "error" for event in repository.events)
+    assert ("processed", 23) not in repository.events
 
 
 @pytest.mark.asyncio
@@ -251,7 +253,7 @@ async def test_null_custom_id_is_preserved_without_raw_index_placeholder() -> No
 
 
 @pytest.mark.asyncio
-async def test_parse_failure_skips_item_and_marks_raw_processed() -> None:
+async def test_parse_failure_skips_item_and_keeps_raw_replayable() -> None:
     repository = FakeRepository()
     broken = reply() | {"contents": "x" * 501}
 
@@ -260,7 +262,7 @@ async def test_parse_failure_skips_item_and_marks_raw_processed() -> None:
     assert [event[0] for event in repository.events] == [
         "persist_raw",
         "metadata",
-        "processed",
+        "error",
     ]
 
 
@@ -272,3 +274,15 @@ async def test_invalid_reply_data_shape_is_persisted_before_error() -> None:
         await ReplyIngestService(FakeGateway("broken"), repository, crypto()).poll_once()
 
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+
+
+@pytest.mark.asyncio
+async def test_naive_reply_time_is_interpreted_as_shanghai_local() -> None:
+    repository = FakeRepository()
+    item = reply() | {"replyTime": "2026-07-12 08:00:00"}
+
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    stored = next(value for event, value in repository.events if event == "store")
+    assert stored.reply_time.tzinfo is not None
+    assert stored.reply_time.utcoffset() is not None

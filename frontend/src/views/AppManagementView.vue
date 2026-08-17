@@ -730,8 +730,16 @@ onMounted(() => {
         <small class="field-rule">留空使用系统默认频控；仅支持 verify_per_minute（1–100）、verify_per_day（1–10,000）、market_per_day（1–1,000），值为正整数。</small>
       </el-form-item>
       <el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，空=不限）">
+        <el-alert
+          v-if="!form.allowed_ips.trim()"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="白名单为空表示全网放行。Key 泄露后将失去第二道防线，生产环境请填写 CIDR。"
+          style="margin-bottom: 8px"
+        />
         <el-input v-model="form.allowed_ips" data-testid="allowed-ips-input" type="textarea" placeholder="203.0.113.0/24" />
-        <small class="field-rule">仅作用于 X-Api-Key 路径；留空表示不限制来源，保存时校验格式。</small>
+        <small class="field-rule">仅作用于 X-Api-Key 路径；留空表示不限制来源（产品默认，见 PRD），保存时校验格式。</small>
       </el-form-item>
       <el-form-item label="回调 URL">
         <el-input v-model="form.callback_url" placeholder="https://" />

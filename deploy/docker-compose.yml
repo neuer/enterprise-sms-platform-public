@@ -282,6 +282,7 @@ services:
       redis-control: { condition: service_healthy }
     command: celery -A app.tasks worker -Q realtime -c 2 -l info
     volumes:
+      - rawspill:/var/lib/sms/raw-spill
       # 调用厂商前必须重读 control-state.json，不允许容器回写。
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
       # reconcile 需要连接固定 agent UDS；其余 worker 不获得该能力。
@@ -437,6 +438,7 @@ volumes:
   rediscontroldata:
   importdata:
   exportdata:
+  rawspill:
 
 networks:
   default: {}

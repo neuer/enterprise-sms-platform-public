@@ -84,6 +84,11 @@ async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions
         raising=False,
     )
 
+    async def replay_none(_settings: object) -> int:
+        return 0
+
+    monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
+
     assert await task_module._reconcile() == 10
     finalizer = captured["reset_configuration"]
     assert finalizer.repository is recipient_repository

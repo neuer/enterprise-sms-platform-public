@@ -128,6 +128,12 @@ class FakeStore:
     async def release_control_claim(self, chunk_id: int) -> None:
         self.events.append(("control_release", chunk_id))
 
+    async def release_unsent(self, chunk_id: int) -> None:
+        self.events.append(("release_unsent", chunk_id))
+
+    async def is_paused(self, lane: str) -> bool:
+        return False
+
 
 class FakeVendorMonitor:
     def __init__(self) -> None:

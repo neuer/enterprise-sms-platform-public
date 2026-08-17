@@ -244,6 +244,31 @@ class FakeUsageLedger:
         self.frequency.append({"reservation_id": reservation_id, "category": category, **values})
         return self.allowed
 
+    async def allow_frequency_many(
+        self,
+        reservation_id: UUID,
+        category: str,
+        *,
+        app_id: int,
+        items: Any,
+        limits: Any,
+        now: Any = None,
+    ) -> list[bool]:
+        results = []
+        for item in items:
+            results.append(
+                await self.allow_frequency(
+                    reservation_id,
+                    category,
+                    app_id=app_id,
+                    phone_hmac=item.phone_hmac,
+                    hmac_aliases=dict(item.hmac_aliases),
+                    limits=limits,
+                    now=now,
+                )
+            )
+        return results
+
     async def reserve_quota(self, reservation_id: UUID, **values: Any) -> None:
         self.quota.append({"reservation_id": reservation_id, **values})
 
@@ -330,6 +355,14 @@ async def test_database_save_failure_creates_durable_usage_release_request() -> 
 async def test_database_idempotent_reuse_releases_new_usage_facts_once() -> None:
     ledger = FakeUsageLedger()
     store = IdempotentStore()
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="idempotent-race",
+    )
+    policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
         store=store,
         idempotency=FakeIdempotency(),
@@ -340,16 +373,11 @@ async def test_database_idempotent_reuse_releases_new_usage_facts_once() -> None
         usage_ledger=ledger,
         config=PipelineConfig(),
     )
-
-    result = await pipeline.accept(
-        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
-        SendRequest(
-            "notice",
-            ["13800138000"],
-            content="通知",
-            biz_id="idempotent-race",
-        ),
+    pipeline.idempotency = FakeIdempotency(
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
     )
+
+    result = await pipeline.accept(app, request)
 
     assert result.idempotent is True
     assert ledger.releases == [
@@ -363,6 +391,14 @@ async def test_database_idempotent_reuse_releases_new_usage_facts_once() -> None
 @pytest.mark.asyncio
 async def test_database_idempotent_reuse_keeps_original_usage_facts() -> None:
     ledger = FakeUsageLedger(reused=True)
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="idempotent-race",
+    )
+    policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
         store=IdempotentStore(),
         idempotency=FakeIdempotency(),
@@ -373,23 +409,18 @@ async def test_database_idempotent_reuse_keeps_original_usage_facts() -> None:
         usage_ledger=ledger,
         config=PipelineConfig(),
     )
-
-    result = await pipeline.accept(
-        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
-        SendRequest(
-            "notice",
-            ["13800138000"],
-            content="通知",
-            biz_id="idempotent-race",
-        ),
+    pipeline.idempotency = FakeIdempotency(
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
     )
+
+    result = await pipeline.accept(app, request)
 
     assert result.idempotent is True
     assert ledger.releases == []
 
 
 @pytest.mark.asyncio
-async def test_reused_usage_reservation_failure_is_left_for_owner_or_recovery() -> None:
+async def test_reused_usage_reservation_failure_still_requests_release() -> None:
     ledger = FakeUsageLedger(reused=True)
     pipeline = SendPipeline(
         store=FailingStore(),
@@ -413,7 +444,12 @@ async def test_reused_usage_reservation_failure_is_left_for_owner_or_recovery() 
             ),
         )
 
-    assert ledger.releases == []
+    assert ledger.releases == [
+        (
+            ledger.reservation_id,
+            f"usage:{ledger.reservation_id}:acceptance-failed",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -655,6 +691,14 @@ async def test_idempotency_hit_does_not_recheck_or_resend_live_test_recipient() 
             raise AssertionError("幂等命中只读取原批次，不重走真实发送链")
 
     store = FakeStore()
+    app = ApiAppContext(7, "app", "平台部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="维护通知",
+        biz_id="existing-request",
+    )
+    policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
         store=store,
         idempotency=FakeIdempotency("existing"),
@@ -665,16 +709,12 @@ async def test_idempotency_hit_does_not_recheck_or_resend_live_test_recipient() 
         config=PipelineConfig(),
         recipient_guard=UnexpectedGuard(),
     )
-
-    result = await pipeline.accept(
-        ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
-        SendRequest(
-            "notice",
-            ["13800138000"],
-            content="维护通知",
-            biz_id="existing-request",
-        ),
+    pipeline.idempotency = FakeIdempotency(
+        "existing",
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
     )
+
+    result = await pipeline.accept(app, request)
 
     assert result.idempotent is True
     assert store.commands == []
@@ -686,10 +726,17 @@ async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
     frequency = FakeFrequency()
     quota = FakeQuota()
 
-    class UnexpectedLimiter:
-        async def check(self, **_values: object) -> None:
-            raise AssertionError("幂等命中不得消耗应用限流")
+    class CountingLimiter:
+        def __init__(self) -> None:
+            self.calls = 0
 
+        async def check(self, **_values: object) -> None:
+            self.calls += 1
+
+    app = ApiAppContext(1, "app", "研发部", frozenset({"verify"}))
+    request = SendRequest("verify", ["13800138000"], content="验证码123456", biz_id="biz-1")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    limiter = CountingLimiter()
     pipeline = SendPipeline(
         store=store,
         idempotency=FakeIdempotency("existing"),
@@ -698,13 +745,15 @@ async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
         quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
-        acceptance_limiter=UnexpectedLimiter(),  # type: ignore[arg-type]
+        acceptance_limiter=limiter,  # type: ignore[arg-type]
     )
-    result = await pipeline.accept(
-        ApiAppContext(1, "app", "研发部", frozenset({"verify"})),
-        SendRequest("verify", ["13800138000"], content="验证码123456", biz_id="biz-1"),
+    pipeline.idempotency = FakeIdempotency(
+        "existing",
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
     )
+    result = await pipeline.accept(app, request)
     assert result.idempotent is True
+    assert limiter.calls == 1
     assert frequency.calls == 0
     assert quota.reservations == []
     assert store.commands == []
@@ -1681,6 +1730,9 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
 
     quota = FakeQuota()
     store = FailingStore()
+    app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-race")
+    policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
         store=store,
         idempotency=CommitThenRaiseIdempotency(),
@@ -1690,10 +1742,10 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
-    result = await pipeline.accept(
-        ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
-        SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-race"),
+    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
     )
+    result = await pipeline.accept(app, request)
     assert result.batch_no == "existing"
     assert quota.refunds == []
 
@@ -1721,3 +1773,95 @@ async def test_refund_failure_does_not_mask_storage_error(
             SendRequest("notice", ["13800138000"], content="通知", biz_id="refund-fail"),
         )
     assert "quota reservation compensation unavailable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_empty_idempotency_fingerprint_conflicts() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency("existing"),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(IdempotencyConflict, match="缺少请求指纹"):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="legacy-empty"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_frequency_batch_uses_allow_frequency_many_and_ownership_check() -> None:
+    class CountingLedger(FakeUsageLedger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.many_calls = 0
+
+        async def allow_frequency_many(self, *args: Any, **kwargs: Any) -> list[bool]:
+            self.many_calls += 1
+            return await super().allow_frequency_many(*args, **kwargs)
+
+    class LosingIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.renews = 0
+
+        async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
+            self.renews += 1
+            return self.renews < 5
+
+    phones = [f"1380013{index:04d}" for index in range(250)]
+    ledger = CountingLedger()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=LosingIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        usage_ledger=ledger,
+    )
+    from app.services.pipeline import IdempotencyClaimLost
+
+    with pytest.raises(IdempotencyClaimLost):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"verify"})),
+            SendRequest("verify", phones, content="验证码123456", biz_id="freq-batch"),
+        )
+    assert ledger.many_calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_frequency_many_covers_two_hundred_phones_in_one_ledger_call() -> None:
+    class CountingLedger(FakeUsageLedger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.many_calls = 0
+
+        async def allow_frequency_many(self, *args: Any, **kwargs: Any) -> list[bool]:
+            self.many_calls += 1
+            return await super().allow_frequency_many(*args, **kwargs)
+
+    phones = [f"1380013{index:04d}" for index in range(200)]
+    ledger = CountingLedger()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        usage_ledger=ledger,
+    )
+    result = await pipeline.accept(
+        ApiAppContext(1, "app", "研发部", frozenset({"verify"})),
+        SendRequest("verify", phones, content="验证码123456", biz_id="freq-200"),
+    )
+    assert result.accepted == 200
+    assert ledger.many_calls == 1
+    assert len(ledger.frequency) == 200

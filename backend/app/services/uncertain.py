@@ -93,13 +93,15 @@ class UncertainReconciler:
         if not isinstance(document, dict) or not isinstance(document.get("data"), list):
             return None
         for item in document["data"]:
+            if not isinstance(item, dict):
+                continue
+            normalized = {str(key).strip(): value for key, value in item.items()}
             if (
-                isinstance(item, dict)
-                and item.get("customId") == custom_id
-                and isinstance(item.get("taskId"), str)
-                and item["taskId"]
+                normalized.get("customId") == custom_id
+                and isinstance(normalized.get("taskId"), str)
+                and normalized["taskId"]
             ):
-                return str(item["taskId"])
+                return str(normalized["taskId"])
         return None
 
     async def run_once(self) -> int:

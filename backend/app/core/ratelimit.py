@@ -30,10 +30,11 @@ elseif lane == 'bulk' and tokens > reserved then
   tokens = tokens - 1
   allowed = 1
 end
+local lease = tonumber(redis.call('HINCRBY', KEYS[1], 'lease', 1))
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
-redis.call('PEXPIRE', KEYS[1], 3000)
+redis.call('PEXPIRE', KEYS[1], 60000)
 if allowed == 1 then
-  return last_ms
+  return lease
 end
 return -1
 """
@@ -46,12 +47,9 @@ local last_ms = tonumber(redis.call('HGET', KEYS[1], 'last_ms'))
 if tokens == nil or last_ms == nil then
   return 0
 end
-if last_ms ~= lease_epoch then
-  return 0
-end
 tokens = math.min(capacity, tokens + 1)
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
-redis.call('PEXPIRE', KEYS[1], 3000)
+redis.call('PEXPIRE', KEYS[1], 60000)
 return 1
 """
 

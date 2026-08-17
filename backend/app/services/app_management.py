@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
+import logging
 import secrets
 import socket
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from app.core.apikey import hash_api_key
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import (
@@ -25,6 +26,7 @@ FREQ_OVERRIDE_KEYS = frozenset(
     {"verify_per_minute", "verify_per_day", "market_per_day"}
 )
 MAX_ALLOWED_IPS = 50
+LOGGER = logging.getLogger(__name__)
 
 
 class InvalidAppConfig(ValueError):
@@ -260,7 +262,7 @@ class AppManagementService:
         if len(plaintext) < 16:
             raise InvalidAppConfig("生成的密钥长度不足")
         return {
-            "api_key_hash": hashlib.sha256(plaintext.encode()).hexdigest(),
+            "api_key_hash": hash_api_key(plaintext),
             "api_key_prefix": plaintext[:8],
         }
 
@@ -314,6 +316,11 @@ class AppManagementService:
             "callback_url": callback_url,
             "callback_report_enabled": config.callback_report_enabled,
         }
+        if not values["allowed_ips"]:
+            LOGGER.warning(
+                "app ip allowlist is empty; api key accepts all sources",
+                extra={"app_name": getattr(config, "name", None)},
+            )
         if isinstance(config, AppCreate):
             values["name"] = config.name
         else:

@@ -56,3 +56,9 @@ def test_coerce_market_dispatch_rejects_naive_datetimes() -> None:
         coerce_market_dispatch(naive, "08:00-21:00", None)
     with pytest.raises(ValueError, match="timezone"):
         coerce_market_dispatch(aware, "08:00-21:00", naive)
+
+
+def test_coerce_market_dispatch_rejects_overnight_window() -> None:
+    now = datetime(2026, 7, 12, 10, 0, tzinfo=SHANGHAI)
+    with pytest.raises(ValueError, match="same-day"):
+        coerce_market_dispatch(now, "22:00-06:00", None)

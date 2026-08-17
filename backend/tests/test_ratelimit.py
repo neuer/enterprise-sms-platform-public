@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from app.core.ratelimit import TOKEN_REFUND_LUA, TokenBucket
+from app.core.ratelimit import TOKEN_BUCKET_LUA, TOKEN_REFUND_LUA, TokenBucket
 
 
 class FakeRedis:
@@ -60,8 +60,9 @@ async def test_token_refund_is_atomic_and_capped_at_vendor_qps() -> None:
     assert call[0] == TOKEN_REFUND_LUA
     assert call[1:] == (1, "vendor:tokens", "5", "12000")
     assert "math.min(capacity, tokens + 1)" in TOKEN_REFUND_LUA
-    assert "last_ms ~= lease_epoch" in TOKEN_REFUND_LUA
+    assert "last_ms ~= lease_epoch" not in TOKEN_REFUND_LUA
     assert "tokens == nil or last_ms == nil" in TOKEN_REFUND_LUA
+    assert "HINCRBY" in TOKEN_BUCKET_LUA
 
 
 @pytest.mark.asyncio

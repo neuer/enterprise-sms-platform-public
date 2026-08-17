@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import logging
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -27,6 +29,49 @@ PREFIX_LENGTH = 8
 MIN_KEY_LENGTH = 16
 MAX_ALLOWED_IPS = 50
 VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
+LOGGER = logging.getLogger(__name__)
+_API_KEY_PEPPER_DOMAIN = b"sms-api-key-pepper-v1"
+
+
+def _legacy_key_digest(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _api_key_pepper() -> bytes | None:
+    """用数据 HMAC secret 派生 API Key pepper；测试/缺凭据时回退 SHA-256。"""
+
+    try:
+        raw = get_settings().credential("data_hmac_key")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    return hmac.new(_API_KEY_PEPPER_DOMAIN, raw.encode("utf-8"), hashlib.sha256).digest()
+
+
+def hash_api_key(key: str) -> str:
+    """新写入使用 HMAC-SHA256(pepper, key)；无 pepper 时回退 SHA-256。"""
+
+    pepper = _api_key_pepper()
+    if pepper is None:
+        return _legacy_key_digest(key)
+    return hmac.new(pepper, key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _digest_matches(key: str, stored: str) -> bool:
+    if not stored:
+        return False
+    modern = hash_api_key(key)
+    legacy = _legacy_key_digest(key)
+    try:
+        matched = hmac.compare_digest(modern, stored)
+    except ValueError:
+        matched = False
+    with suppress(ValueError):
+        matched = hmac.compare_digest(legacy, stored) or matched
+    return matched
+
+
 api_key_scheme = APIKeyHeader(
     name="X-Api-Key",
     scheme_name="ApiKeyAuth",
@@ -168,6 +213,11 @@ def _ip_allowed(client_host: str, allowed_ips: tuple[str, ...]) -> bool:
 
 def _enforce_ip_allowlist(request: Request, context: ApiAppContext) -> None:
     client_host = trusted_client_ip(request)
+    if not context.allowed_ips:
+        LOGGER.warning(
+            "api key accepted with empty ip allowlist",
+            extra={"app_id": context.app_id},
+        )
     if not _ip_allowed(client_host, context.allowed_ips):
         raise ApiError(403, "IP_NOT_ALLOWED", "来源 IP 不在应用白名单", None)
 
@@ -189,20 +239,21 @@ class ApiKeyAuthenticator:
         self.clock = clock
 
     async def authenticate(self, key: str) -> ApiAppContext:
+        dummy = "0" * 64
         if len(key) < MIN_KEY_LENGTH:
+            hmac.compare_digest(_legacy_key_digest(key), dummy)
             raise InvalidApiKey("API Key 无效")
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("API Key clock must return timezone-aware datetime")
         candidates = await self.repository.find_candidates(key[:PREFIX_LENGTH])
         for candidate in candidates:
-            current_matches = hmac.compare_digest(digest, candidate.current_hash)
+            current_matches = _digest_matches(key, candidate.current_hash)
             previous_matches = (
                 candidate.previous_hash is not None
                 and candidate.previous_expires_at is not None
                 and candidate.previous_expires_at > now
-                and hmac.compare_digest(digest, candidate.previous_hash)
+                and _digest_matches(key, candidate.previous_hash)
             )
             if current_matches or previous_matches:
                 categories = frozenset(
@@ -247,7 +298,7 @@ async def optional_api_app(
     try:
         context = await authenticator.authenticate(key)
     except InvalidApiKey:
-        raise _unauthorized() from None
+        return None
     _enforce_ip_allowlist(request, context)
     request.state.sms_app = context
     _bind_app_principal(context)
