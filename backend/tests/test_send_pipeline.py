@@ -1865,3 +1865,43 @@ async def test_frequency_many_covers_two_hundred_phones_in_one_ledger_call() -> 
     assert result.accepted == 200
     assert ledger.many_calls == 1
     assert len(ledger.frequency) == 200
+
+
+@pytest.mark.asyncio
+async def test_protect_plain_phones_splits_beyond_one_thousand() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    seen: list[int] = []
+
+    def fake_protect(
+        phones: list[str],
+        *,
+        blacklist_required: bool,
+    ) -> tuple[
+        list[ProtectedPhone],
+        dict[str, frozenset[str]],
+        dict[str, str],
+        dict[str, dict[int, str]],
+    ]:
+        seen.append(len(phones))
+        assert blacklist_required is False
+        return ([], {}, {}, {})
+
+    pipeline._protect_plain_phones = fake_protect  # type: ignore[method-assign]
+    phones = [f"1380013{index:04d}" for index in range(1001)]
+    protected, candidates, hmacs, aliases = await pipeline._protect_plain_phones_batched(
+        phones,
+        blacklist_required=False,
+    )
+    assert seen == [1000, 1]
+    assert protected == []
+    assert candidates == {}
+    assert hmacs == {}
+    assert aliases == {}
