@@ -108,6 +108,21 @@ def _normalized(item: dict[str, Any]) -> dict[str, Any]:
     return {str(key).strip(): value for key, value in item.items()}
 
 
+def _collect_vendor_custom_ids(data: list[dict[str, Any]]) -> list[str]:
+    """逐条校验 customId；非法值跳过，避免一条坏数据打断整批索引。"""
+
+    collected: set[str] = set()
+    for item in data:
+        raw = _normalized(item).get("customId")
+        if not isinstance(raw, str):
+            continue
+        try:
+            collected.add(validate_vendor_custom_id(raw))
+        except ValueError:
+            continue
+    return sorted(collected)
+
+
 def _message_status(report_status: int) -> str:
     if report_status == 1:
         return "delivered"
@@ -276,27 +291,20 @@ class ReportIngestService:
         )
         try:
             data = decode_pulled_payload(pulled, "GetReport")
+            if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+                custom_ids = _collect_vendor_custom_ids(data)
+                custom_ids = await self.repository.filter_known_custom_ids(custom_ids)
+                await self.repository.update_metadata(
+                    raw_id,
+                    custom_ids=custom_ids,
+                    item_count=len(data),
+                )
         except Exception as error:
             await self.repository.mark_error(
                 raw_id,
                 f"{type(error).__name__}: vendor response parsing failed",
             )
             raise
-        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
-            custom_ids = sorted(
-                {
-                    validate_vendor_custom_id(normalized["customId"])
-                    for item in data
-                    if (normalized := _normalized(item)).get("customId")
-                    and isinstance(normalized["customId"], str)
-                }
-            )
-            custom_ids = await self.repository.filter_known_custom_ids(custom_ids)
-            await self.repository.update_metadata(
-                raw_id,
-                custom_ids=custom_ids,
-                item_count=len(data),
-            )
         return await self.process_existing(raw_id, data)
 
     async def process_existing(self, raw_id: int, data: object) -> int:
@@ -306,7 +314,14 @@ class ReportIngestService:
             if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                 raise ValueError("GetReport.data must be an object array")
             for item in data:
-                report = self._parse(item)
+                try:
+                    report = self._parse(item)
+                except (ValueError, KeyError, TypeError) as error:
+                    LOGGER.warning(
+                        "skipping invalid report item",
+                        extra={"error_type": type(error).__name__},
+                    )
+                    continue
                 applied = await self.repository.apply_report(raw_id, report)
                 if applied is None:
                     await self.repository.persist_unmatched(raw_id, report)

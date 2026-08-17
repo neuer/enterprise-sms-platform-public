@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
 from app.core.jobtrack import JobSpec
+from app.services.category import queue_for_category
 
 T = TypeVar("T")
 AlertLevel = Literal["info", "warn", "crit"]
@@ -253,7 +254,7 @@ class QueueRecoveryService:
         batches = await self.repository.resume_batches(actor=actor, ip=ip)
         await self.repository.clear_queue_pauses()
         for batch in batches:
-            lane = "bulk" if batch.category == "market" else "realtime"
+            lane = queue_for_category(batch.category)
             await self.sender.send_batch(batch.batch_no, lane)
         return QueueResumeResult(len(batches), codes)
 

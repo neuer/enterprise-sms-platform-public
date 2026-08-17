@@ -37,7 +37,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `audit_system_bulk_context_key` | bulk worker 自治事件专用 32 随机字节 base64 | 仅 worker-bulk、migrate | 只签 bulk 域；不得挂给其他 worker |
 | `alert_credential_public_key` | X25519 原始 32 字节公钥的 base64；必须与私钥配对 | 仅 api | 与私钥同窗轮换；旧企微配置会清空，轮换后由管理员重新配置并测试 |
 | `alert_credential_private_key` | X25519 原始 32 字节私钥的 base64；仅 callback 可解封 | 仅 worker-callback | 与公钥同窗轮换并重建 callback；绝不挂载 api 或其他 worker |
-| `jwt_secret` | 裸 v1 key 或版本化 JSON keyring（`active_version` + base64 keys）；由内部密钥系统生成 | 仅 api | 新签发令牌带 `kid/iss/aud`；旧无 `kid` 令牌仅在 `JWT_ACCEPT_LEGACY=true` 观察窗口接受，关闭后必须完成 keyring 迁移 |
+| `jwt_secret` | 裸 v1 key 或版本化 JSON keyring（`active_version` + base64 keys）；由内部密钥系统生成 | 仅 api | 新签发令牌带 `kid/iss/aud`；`JWT_ACCEPT_LEGACY=true` 观察窗口仅允许非生产迁移期，**生产必须为 false**，关闭后必须完成 keyring 迁移 |
 | `ldap_bind_password` | 专用最小权限 AD bind 账号密码 | 仅 api | 先在 AD 更新，再原子替换文件并重启 api；用四角色登录验证 |
 | `metrics_scrape_token` | 至少 48 随机字节的独立抓取凭据 | 仅 api；Prometheus 使用仓库外只读副本 | 原子替换两端文件并重启 api；旧值立即失效 |
 | `db_owner_password` | 独立高熵 PostgreSQL owner 密码 | **仅 postgres、db-role-provision、migrate** | 按 dba.md 维护窗流程更新；严禁挂载 api/worker/outbox-dispatcher/beat |

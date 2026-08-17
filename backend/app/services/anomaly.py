@@ -54,7 +54,7 @@ def local_date() -> date:
 
 
 def is_anomalous(sample: VolumeSample, config: AnomalyConfig) -> bool:
-    """以整数交叉乘法执行双条件，7 日不足时使用五倍绝对兜底。"""
+    """有历史时一律双条件；仅 seven_day_total==0 时走 5× 无历史兜底。"""
 
     if sample.category not in CATEGORIES:
         raise ValueError("invalid anomaly category")
@@ -69,7 +69,7 @@ def is_anomalous(sample: VolumeSample, config: AnomalyConfig) -> bool:
         raise ValueError("invalid anomaly sample or config")
     if not config.enabled:
         return False
-    if sample.baseline_days < 7:
+    if sample.seven_day_total == 0:
         return sample.current >= config.min_total * 5
     return (
         sample.current >= config.min_total

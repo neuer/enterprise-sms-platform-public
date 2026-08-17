@@ -28,6 +28,29 @@ describe("共享语义展示组件", () => {
     expect(uncertain.text()).toBe("结果未知")
     expect(uncertain.classes()).toContain("status-tag--uncertain")
     expect(uncertain.getComponent({ name: "ElTag" }).props("effect")).toBe("dark")
+    expect(uncertain.getComponent({ name: "ElTag" }).props("type")).toBe("danger")
+
+    const unknown = mount(StatusTag, {
+      props: { status: "unknown" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(unknown.text()).toBe("未知")
+    expect(unknown.getComponent({ name: "ElTag" }).props("type")).toBe("danger")
+    expect(unknown.getComponent({ name: "ElTag" }).props("effect")).toBe("plain")
+
+    const blocked = mount(StatusTag, {
+      props: { status: "balance_blocked" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(blocked.text()).toBe("余额阻断")
+    expect(blocked.getComponent({ name: "ElTag" }).props("type")).toBe("danger")
+    expect(blocked.getComponent({ name: "ElTag" }).props("effect")).toBe("dark")
+
+    const queued = mount(StatusTag, {
+      props: { status: "queued" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(queued.getComponent({ name: "ElTag" }).props("type")).toBe("info")
 
     const future = mount(StatusTag, {
       props: { status: "future_state" },

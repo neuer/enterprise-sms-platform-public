@@ -34,7 +34,7 @@ ERROR_RESPONSE = {
                 "properties": {
                     "code": {"type": "string"},
                     "message": {"type": "string"},
-                    "detail": {"type": "object", "nullable": True},
+                    "detail": {"anyOf": [{"type": "object"}, {"type": "null"}]},
                 },
             }
         }
@@ -303,6 +303,7 @@ async def login(
     responses={
         200: NO_STORE_RESPONSE,
         401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
         503: ERROR_RESPONSE,
     },
 )

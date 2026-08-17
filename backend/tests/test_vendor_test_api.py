@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -490,7 +491,16 @@ def test_reset_rejects_unsafe_or_inconsistent_control_projection() -> None:
         _assert_safe(response)
 
 
-def test_reset_fails_closed_for_unreadable_state_or_pending_operation() -> None:
+def test_reset_fails_closed_for_unreadable_state_or_pending_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def pause(_settings: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.api.vendor_control_ready.pause_vendor_test_agent_stale_keys",
+        pause,
+    )
     unavailable = VendorControlStateUnavailable(
         "stale private projection",
         requires_critical_pause=True,

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, Security
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.apikey import ApiAppContext, optional_api_app, require_api_app
 from app.core.audit import audited
 from app.core.auth.accounts import ActorPrincipal, ApplicationPrincipal
@@ -26,13 +25,14 @@ from app.services.app_ratelimit import (
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.category import CategoryNotAllowed
 from app.services.crypto import CryptoService, ProtectedPhone
-from app.services.freq import FrequencyLimiter
-from app.services.idempotency import IdempotencyCoordinator
+from app.services.freq import FrequencyFenceLost, FrequencyLimiter
+from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
     AcceptancePreauthorization,
     AllFiltered,
     BatchResponse,
     ConsentRequired,
+    IdempotencyClaimLost,
     IdempotencyConflict,
     InvalidContent,
     PipelineConfig,
@@ -56,7 +56,11 @@ from app.services.sensitive_read_audit import (
 from app.services.sign import SignResolver
 from app.services.sign_repository import SqlSignRepository
 from app.services.template import TemplateParamMismatch
-from app.services.usage_ledger import UsageLedgerService, UsageProjectionUnavailable
+from app.services.usage_ledger import (
+    UsageLedgerService,
+    UsageProjectionUnavailable,
+    UsageReservationConflict,
+)
 from app.services.vendor_control_state import (
     VendorControlStateGuard,
     VendorControlStateUnavailable,
@@ -64,7 +68,6 @@ from app.services.vendor_control_state import (
 from app.services.vendor_test_guard import (
     VendorTestRecipientDenied,
 )
-from app.services.vendor_test_pause import pause_vendor_test_agent_stale
 from app.services.vendor_test_recipient import (
     RecipientHmacIndexStale,
     RecipientNotFound,
@@ -77,7 +80,6 @@ from app.services.vendor_test_recipient_repository import (
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
-LOGGER = logging.getLogger(__name__)
 Category = Literal["verify", "notice", "market"]
 
 
@@ -355,6 +357,18 @@ def _error(error: Exception) -> ApiError:
             "配额与频控投影尚未安全恢复，请稍后重试",
             None,
         )
+    if isinstance(error, UsageReservationConflict):
+        return ApiError(409, "STATE_CONFLICT", str(error), None)
+    if isinstance(
+        error,
+        (FrequencyFenceLost, IdempotencyCoordinationTimeout, IdempotencyClaimLost),
+    ):
+        return ApiError(
+            503,
+            "USAGE_PROJECTION_UNAVAILABLE",
+            "配额与频控投影尚未安全恢复，请稍后重试",
+            None,
+        )
     if isinstance(error, (InvalidContent, ValueError)):
         return ApiError(400, "INVALID_PARAM", str(error), None)
     return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
@@ -408,16 +422,12 @@ async def send_message(
         VendorTestConsoleOnly,
         VendorTestRecipientDenied,
         UsageProjectionUnavailable,
+        UsageReservationConflict,
+        FrequencyFenceLost,
+        IdempotencyCoordinationTimeout,
+        IdempotencyClaimLost,
     ) as error:
         raise _error(error) from None
-
-
-async def _pause_vendor_test_agent_stale(settings: Any) -> None:
-    redis: Any = Redis.from_url(settings.redis_control_url, decode_responses=True)
-    try:
-        await pause_vendor_test_agent_stale(redis)
-    finally:
-        await redis.aclose()
 
 
 async def _require_vendor_test_api_ready() -> None:
@@ -432,26 +442,7 @@ async def _require_vendor_test_api_ready() -> None:
     try:
         VendorControlStateGuard().require_fresh()
     except VendorControlStateUnavailable as error:
-        if error.requires_critical_pause:
-            try:
-                await _pause_vendor_test_agent_stale(settings)
-            except Exception as pause_error:
-                LOGGER.error(
-                    "vendor test agent stale pause unavailable",
-                    extra={"error_type": type(pause_error).__name__},
-                )
-                raise ApiError(
-                    503,
-                    "CONTROL_AGENT_PAUSE_UNAVAILABLE",
-                    "真实联调安全暂停未确认，发送保持关闭",
-                    None,
-                ) from None
-        raise ApiError(
-            503,
-            "CONTROL_AGENT_UNAVAILABLE",
-            "真实联调控制代理状态不可用",
-            None,
-        ) from None
+        await raise_vendor_control_unavailable(error)
 
 
 async def _resolve_vendor_test_api_recipient(
@@ -551,6 +542,10 @@ async def send_vendor_test_api_uat(
         VendorTestConsoleOnly,
         VendorTestRecipientDenied,
         UsageProjectionUnavailable,
+        UsageReservationConflict,
+        FrequencyFenceLost,
+        IdempotencyCoordinationTimeout,
+        IdempotencyClaimLost,
     ) as error:
         raise _error(error) from None
 

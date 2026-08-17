@@ -237,9 +237,20 @@ def test_fixed_runner_never_accepts_or_appends_caller_arguments() -> None:
         "activate",
     ]
     assert calls[0][1]["shell"] is False
-    assert "timeout" not in calls[0][1]
+    assert calls[0][1]["timeout"] == 180
     with pytest.raises(agent_module.UnsupportedAgentOperation):
         runner.run("status --path /tmp")
+
+
+def test_fixed_runner_treats_wrapper_timeout_as_failure() -> None:
+    import vendor_control_agent as agent_module
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, timeout=float(kwargs["timeout"]))
+
+    result = agent_module.FixedWrapperRunner(command_runner=run).run("activate")
+    assert result.returncode == 1
+    assert result.safe_code == "CONTROL_COMMAND_FAILED"
 
 
 def test_rotate_stages_credentials_then_runs_fixed_lifecycle_wrapper() -> None:

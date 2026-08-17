@@ -25,6 +25,10 @@ CI 会逐项比较 shell driver 与 Python 合同中的资产集合，新增或�
 分类通过后仍必须执行 source commit 字节比较；“已归为 high-risk”不能替代同目标 commit
 的 root-owned 快照安装。
 
+## SSH 更新用户与 sudo 面
+
+日常 SSH 更新用户对 `sms-compose` / host-control 入口的 `sudo` 面等价于 root：能切换代码、重建容器、操作暂停键与密文 checkpoint。必须按完全可信管理员管理该账号（密钥、登录来源、审计），**不能靠受限 sudoers 规则把它降为“半特权运维”**；任何能调用上述固定入口的 sudo 授权都视为完整管理权。
+
 ## 本地入口
 
 本地工作树必须干净，默认目标是已合并的精确 `origin/main`。首次使用把样例复制为 Git 忽略的

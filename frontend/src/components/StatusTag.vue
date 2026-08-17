@@ -22,10 +22,12 @@ const labels: Record<string, string> = {
   expired: "已过期",
   uncertain: "结果未知",
   balance_blocked: "余额阻断",
+  unknown: "未知",
   dead: "终止重试",
 }
 
-const dangerStates = new Set(["failed", "rejected", "cancelled", "expired", "dead"])
+const infoStates = new Set(["queued", "sending"])
+const dangerStates = new Set(["failed", "rejected", "cancelled", "expired", "dead", "unknown"])
 const warningStates = new Set(["pending", "pending_approval", "scheduled"])
 const successStates = new Set(["completed", "delivered", "approved"])
 const interventionStates = new Set(["uncertain", "balance_blocked"])
@@ -35,6 +37,7 @@ const presentation = computed<{ type: TagType; effect: TagEffect }>(() => {
   if (dangerStates.has(props.status)) return { type: "danger", effect: "plain" }
   if (warningStates.has(props.status)) return { type: "warning", effect: "plain" }
   if (successStates.has(props.status)) return { type: "success", effect: "plain" }
+  if (infoStates.has(props.status)) return { type: "info", effect: "plain" }
   return { type: "info", effect: "plain" }
 })
 </script>

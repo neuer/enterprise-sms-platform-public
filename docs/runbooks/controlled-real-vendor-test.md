@@ -210,7 +210,7 @@ root agent 在持久化 `reset_authorized` 后先幂等清空 credential store�
 
 账本总占用为 `in_flight + confirmed + uncertain`。明确的参数拒绝可释放预留；HTTP 超时或网络异常表示结果未知，分片进入 uncertain 并继续占用当日额度，严禁自动重发，也不得在同日手工清零。达到上限时只产生隔离的 daily pause，它在下一个上海自然日自动过期；不能借此清除 critical pause。
 
-1010 是 IP 校验失败：必须 crit 告警并暂停双队列，停止后续真实发送，保留错误码、时间和无 PII 关联 ID，再告知操作者核对出口报备。1010、鉴权、余额或账号状态形成的 **critical pause** 只能在根因修复、GetBalance 成功并人工复核后解除；**daily pause** 仅因 100 条额度自动到期，两者不得相互覆盖。
+1010 是 IP 校验失败：必须 crit 告警，**不暂停双队列**；停止后续真实发送，保留错误码、时间和无 PII 关联 ID，再告知操作者核对出口报备。鉴权、余额或账号状态形成的 **critical pause** 只能在根因修复、GetBalance 成功并人工复核后解除；**daily pause** 仅因 100 条额度自动到期，两者不得相互覆盖。
 
 ## 页面真实 UAT 顺序
 

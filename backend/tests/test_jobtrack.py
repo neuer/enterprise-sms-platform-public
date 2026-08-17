@@ -16,6 +16,7 @@ from app.core.jobtrack import (
     JobSpec,
     JobTracker,
     SqlJobMonitorLease,
+    consecutive_unfinished_count,
     tracked_job,
 )
 from app.settings import Settings
@@ -253,6 +254,39 @@ async def test_monitor_treats_never_seen_job_as_stalled() -> None:
 
     await monitor.inspect_once([JobSpec("never_seen", 60)])
 
+    assert [event["alert_type"] for event in sink.events] == ["job_stalled"]
+
+
+def test_consecutive_unfinished_count_treats_running_as_failure() -> None:
+    assert consecutive_unfinished_count(["running", "running", "running"]) == 3
+    assert consecutive_unfinished_count(["running", "success"]) == 1
+    assert consecutive_unfinished_count(["failed", "failed", "success"]) == 2
+    assert consecutive_unfinished_count(["success", "failed"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_running_job_is_not_stalled_but_overdue_running_is() -> None:
+    now = datetime(2026, 7, 11, 8, 10, tzinfo=UTC)
+    repo = FakeRepository()
+    sink = FakeAlertSink()
+    monitor = JobHealthMonitor(repo, sink, clock=lambda: now)
+    repo.latest_by_name["poll_report"] = JobRunSnapshot(
+        job_name="poll_report",
+        started_at=now - timedelta(seconds=1),
+        finished_at=None,
+        status="running",
+    )
+
+    await monitor.inspect_once([JobSpec("poll_report", 60)])
+    assert sink.events == []
+
+    repo.latest_by_name["poll_report"] = JobRunSnapshot(
+        job_name="poll_report",
+        started_at=now - timedelta(seconds=61),
+        finished_at=None,
+        status="running",
+    )
+    await monitor.inspect_once([JobSpec("poll_report", 60)])
     assert [event["alert_type"] for event in sink.events] == ["job_stalled"]
 
 

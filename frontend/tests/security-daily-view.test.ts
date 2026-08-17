@@ -318,6 +318,26 @@ describe("安全日报页面", () => {
     wrapper.unmount()
   })
 
+  it("关闭或取消邮件配置对话框时清空已输入的 Resend Key", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await flushPromises()
+
+    await wrapper.find("input[type='password']").setValue("re_should_not_linger")
+    await wrapper.get(".el-checkbox input").setValue(true)
+    await wrapper.findAll("button").find((button) => button.text() === "取消")!.trigger("click")
+    wrapper.findAllComponents({ name: "ElDialog" })
+      .find((item) => item.props("title") === "安全日报邮件配置")!
+      .vm.$emit("closed")
+    await flushPromises()
+
+    const state = wrapper.vm as unknown as { configApiKey: string; clearConfigApiKey: boolean }
+    expect(state.configApiKey).toBe("")
+    expect(state.clearConfigApiKey).toBe(false)
+    wrapper.unmount()
+  })
+
   it("未配置 Key 时不展示清空入口", async () => {
     api.getSecurityDailyConfiguration.mockResolvedValue({
       enabled: false,

@@ -594,7 +594,7 @@ async def test_balance_error_blocks_batch_and_pauses_both_queues() -> None:
 
 
 @pytest.mark.asyncio
-async def test_1010_fails_chunk_pauses_both_queues_and_emits_critical_monitor_event() -> None:
+async def test_1010_fails_chunk_without_pausing_queues_and_emits_critical_monitor_event() -> None:
     store = FakeStore()
     monitor = FakeVendorMonitor()
 
@@ -605,7 +605,7 @@ async def test_1010_fails_chunk_pauses_both_queues_and_emits_critical_monitor_ev
         monitor=monitor,
     ).submit(chunk(), lane="realtime")
 
-    assert ("pause", 1010) in store.events
+    assert ("pause", 1010) not in store.events
     assert ("failed", (3, 1010)) in store.events
     assert monitor.events == [("failure", (1010, 3, 2))]
 

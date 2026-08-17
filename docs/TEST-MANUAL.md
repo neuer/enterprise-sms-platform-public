@@ -840,7 +840,7 @@ Web 地址：${TEST_BASE_URL}
 | 厂商明确错误 | 502 `VENDOR_ERROR` | 只含数值 code 与平台本地映射描述；不得出现厂商原始 msg |
 | 余额阻断 | 503 `BALANCE_BLOCKED` | 双队列安全暂停 |
 
-额外检查：Bearer JWT 只走 `Authorization` 请求头，不使用 cookie；新增/变更字段必须与 OpenAPI 一致；幂等命中为 200 而非错误。
+额外检查：access JWT 走 `Authorization: Bearer`；refresh 走 HttpOnly Cookie（同源校验作 CSRF 补偿）。新增/变更字段必须与 OpenAPI 一致；幂等命中为 200 而非错误。
 
 ### 8.2 厂商 Mock 故障矩阵
 

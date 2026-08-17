@@ -3299,6 +3299,7 @@ main {
 .vendor-recipient-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; min-height: 54px; padding: 9px 12px; background: var(--surface-soft); }
 .vendor-recipient-list article > div { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; min-width: 0; }
 .vendor-recipient-list article strong { font-size: 11px; }
+.vendor-recipient-list .phone-mask,
 .vendor-recipient-list code { color: var(--ink-soft); font: 10px/1.4 var(--mono); font-variant-numeric: tabular-nums; }
 .vendor-empty-state { margin-top: 12px; padding: 18px; border: 1px dashed var(--line-2); background: var(--surface-soft); text-align: center; }
 .vendor-empty-state p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
@@ -3748,6 +3749,14 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .batch-donut { position: relative; display: grid; width: 96px; height: 96px; flex: none; place-items: center; border-radius: 50%; }
 .batch-donut::after { position: absolute; inset: 12px; content: ""; background: var(--panel-2); border-radius: 50%; }
 .batch-donut span { position: relative; z-index: 1; color: var(--tx-hi); font: 600 12px var(--mono); }
+.batch-donut-meta { display: grid; gap: 9px; min-width: 0; }
+.batch-donut-legend { margin: 0; color: var(--tx-2); font-size: 12px; line-height: 1.5; }
+.batch-donut-swatches { display: flex; gap: 14px; margin: 0; padding: 0; list-style: none; color: var(--tx-3); font-size: 11px; }
+.batch-donut-swatches li { display: inline-flex; gap: 6px; align-items: center; }
+.batch-donut-swatches li::before { width: 8px; height: 8px; content: ""; border-radius: 50%; }
+.batch-donut-swatches .is-delivered::before { background: var(--verdi-l); }
+.batch-donut-swatches .is-failed::before { background: var(--verm); }
+.batch-donut-swatches .is-rest::before { background: var(--tx-3); }
 .batch-donut-row dl { display: grid; gap: 9px; min-width: 0; margin: 0; }
 .batch-donut-row dl div { display: grid; grid-template-columns: 118px 1fr; gap: 12px; }
 .batch-donut-row dt { color: var(--tx-3); }

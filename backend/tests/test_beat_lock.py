@@ -103,6 +103,45 @@ def test_term_request_stops_child_before_releasing_beat_lock() -> None:
     assert client.eval_calls[0][-2] == "lock:celery-beat"
 
 
+def test_lost_lock_terminates_child_and_waits_before_release() -> None:
+    module = load_beat_module()
+
+    class LosingRedis(FakeRedis):
+        def eval(self, *args: Any) -> int:
+            self.eval_calls.append(args)
+            if args[0] == module.RENEW_SCRIPT:
+                return 0
+            return 1
+
+    class FakeProcess:
+        returncode: int | None = None
+        terminated = False
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = 1
+
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout == 10
+            assert self.terminated is True
+            return 1
+
+    process = FakeProcess()
+    client = LosingRedis()
+    result = module.run_beat(
+        client,
+        process_factory=lambda _command: process,
+        wait=lambda _seconds: None,
+    )
+
+    assert result == 1
+    assert process.terminated is True
+    assert client.eval_calls[-1][0] == module.RELEASE_SCRIPT
+
+
 def test_beat_schedule_database_uses_writable_tmp_path() -> None:
     module = load_beat_module()
 
@@ -127,6 +166,7 @@ def test_beat_main_loads_database_schedule_before_child_process(
         @classmethod
         def from_url(cls, url: str, **kwargs: object) -> FakeRedis:
             captured["url"] = url
+            captured["kwargs"] = kwargs
             return FakeRedis()
 
     monkeypatch.setattr(module, "Redis", FakeClient)
@@ -134,3 +174,5 @@ def test_beat_main_loads_database_schedule_before_child_process(
 
     assert module.main() == 0
     assert '"schedule":17' in module.os.environ["SMS_BEAT_SCHEDULE_JSON"]
+    assert captured["kwargs"]["socket_timeout"] == 2
+    assert captured["kwargs"]["socket_connect_timeout"] == 2

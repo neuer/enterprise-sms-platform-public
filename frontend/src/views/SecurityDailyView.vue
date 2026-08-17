@@ -251,6 +251,11 @@ async function loadOverview(): Promise<void> {
   }
 }
 
+function clearConfigurationSecrets(): void {
+  configApiKey.value = ""
+  clearConfigApiKey.value = false
+}
+
 async function openConfiguration(): Promise<void> {
   configOpen.value = true
   configLoading.value = true
@@ -553,7 +558,7 @@ onMounted(() => void refresh())
 
     <el-dialog v-model="previewOpen" title="安全日报纯文本预览" width="720px"><pre class="security-preview-text">{{ previewText }}</pre></el-dialog>
 
-    <el-dialog v-model="configOpen" title="安全日报邮件配置" width="560px" destroy-on-close>
+    <el-dialog v-model="configOpen" title="安全日报邮件配置" width="560px" destroy-on-close @closed="clearConfigurationSecrets">
       <el-skeleton v-if="configLoading" :rows="5" animated />
       <el-form v-else label-position="top" @submit.prevent="saveConfiguration">
         <el-form-item label="启用安全日报">

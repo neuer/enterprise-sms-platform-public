@@ -53,7 +53,7 @@ def test_static_gate_forbids_api_phone_decrypt_and_short_wrapper_timeout() -> No
     source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
 
     assert 'if "decrypt_text(" in uat_service' in source
-    assert 'if "timeout=" in fixed_runner' in source
+    assert 'if "timeout=180" not in fixed_runner' in source
 
 
 def test_static_gate_uses_database_recipients_and_control_state_not_host_allowlist() -> None:

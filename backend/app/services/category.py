@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, time, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 Category = Literal["verify", "notice", "market"]
 QueueName = Literal["realtime", "bulk"]
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+DEFAULT_MARKET_WINDOW = "08:00-21:00"
 
 
 class CategoryNotAllowed(PermissionError):
@@ -51,3 +55,39 @@ def policy_for_category(
         "market_approval_threshold",
         "bulk",
     )
+
+
+def queue_for_category(category: str) -> QueueName:
+    """营销走 bulk，验证码/通知走 realtime。"""
+
+    return "bulk" if category == "market" else "realtime"
+
+
+def coerce_market_dispatch(
+    now: datetime,
+    window: str,
+    scheduled_at: datetime | None,
+) -> tuple[Literal["queued", "scheduled"], str | None, datetime | None]:
+    """营销不得窗外发送；显式定时若落在窗外也顺延到下一窗开始。"""
+
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must include timezone")
+    if scheduled_at is not None and (
+        scheduled_at.tzinfo is None or scheduled_at.utcoffset() is None
+    ):
+        raise ValueError("scheduled_at must include timezone")
+    start_raw, end_raw = window.split("-", maxsplit=1)
+    start = time.fromisoformat(start_raw)
+    end = time.fromisoformat(end_raw)
+    reference = scheduled_at if scheduled_at is not None else now
+    local = reference.astimezone(SHANGHAI)
+    local_clock = local.time().replace(tzinfo=None)
+    if start <= local_clock < end:
+        if scheduled_at is not None:
+            return "scheduled", None, scheduled_at
+        return "queued", None, None
+    target_date = (
+        local.date() if local_clock < start else local.date() + timedelta(days=1)
+    )
+    target = datetime.combine(target_date, start, tzinfo=SHANGHAI)
+    return "scheduled", "market_window", target

@@ -338,6 +338,7 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("139****0001")
+    expect(wrapper.find(".phone-mask").text()).toBe("139****0001")
     expect(wrapper.text()).not.toContain("13900000001")
     expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeUndefined()
     await wrapper.getComponent("[data-testid='uat-recipient']").setValue(9)
@@ -661,6 +662,84 @@ describe("系统配置页真实联调控制台", () => {
     expect(stored).not.toContain("single-use")
     expect(localStorage.length).toBe(0)
     afterRefresh.unmount()
+  })
+
+  it.each([404, 410])("恢复操作遇到 %s 时清除本地记录且不再重试", async (status) => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000404",
+      operation_type: "activate" as const,
+      status: "requested",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    let lookups = 0
+    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
+      operation_id: operation.operation_id,
+      operation_type: operation.operation_type,
+    }))
+    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
+      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+        lookups += 1
+        return response({ code: "NOT_FOUND", message: "操作不存在" }, status)
+      }
+      return undefined
+    }))
+
+    const wrapper = mountConsole()
+    await flushPromises()
+
+    expect(lookups).toBe(1)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(4800)
+    await flushPromises()
+    expect(lookups).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("恢复操作遇到暂时性错误时继续重试", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000503",
+      operation_type: "activate" as const,
+      status: "running",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    let lookups = 0
+    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
+      operation_id: operation.operation_id,
+      operation_type: operation.operation_type,
+    }))
+    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
+      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+        lookups += 1
+        if (lookups === 1) return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
+        return response(operation)
+      }
+      return undefined
+    }))
+
+    const wrapper = mountConsole()
+    await flushPromises()
+    expect(lookups).toBe(1)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).not.toBeNull()
+
+    await vi.advanceTimersByTimeAsync(1600)
+    await flushPromises()
+    expect(lookups).toBe(2)
+    expect(wrapper.text()).toContain(operation.operation_id)
+    wrapper.unmount()
   })
 
   it("刷新恢复 pending reset 时在 operation GET 返回前同步禁用危险动作", async () => {

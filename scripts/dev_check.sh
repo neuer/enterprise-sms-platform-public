@@ -30,6 +30,15 @@ python3 scripts/check_spec_consistency.py
 python3 scripts/check_invariants.py
 python3 scripts/check_public_readiness.py
 
+run_contract() {
+  bash scripts/local_test.sh prepare
+  (
+    cd backend
+    ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 \
+      uv run python ../scripts/check_contract.py ../openapi.yaml
+  )
+}
+
 run_backend() {
   local -a pytest_args=("$@")
   bash scripts/local_test.sh prepare
@@ -56,12 +65,14 @@ run_frontend() {
 }
 
 if [[ "$MODE" == --backend ]]; then
+  run_contract
   run_backend "$@"
 elif [[ "$MODE" == --frontend ]]; then
   [[ $# -eq 0 ]] || { usage; exit 2; }
   run_frontend
 elif [[ "$MODE" == --all ]]; then
   [[ $# -eq 0 ]] || { usage; exit 2; }
+  run_contract
   run_backend
   run_frontend
 else
@@ -89,6 +100,8 @@ for item in sys.stdin.buffer.read().split(b"\0"):
 
   backend_changed=0
   frontend_changed=0
+  contract_changed=0
+  app_code_changed=0
   backend_tests=()
   shell_scripts=()
   for path in "${changed[@]}"; do
@@ -98,11 +111,26 @@ for item in sys.stdin.buffer.read().split(b"\0"):
     case "$path" in
       backend/tests/*.py)
         backend_changed=1
+        contract_changed=1
         if [[ -f "$path" ]]; then
           backend_tests+=("${path#backend/}")
         fi
         ;;
-      backend/* | scripts/*.py | scripts/*.sh | schema.sql | openapi.yaml | deploy/*)
+      backend/app/*)
+        backend_changed=1
+        app_code_changed=1
+        contract_changed=1
+        ;;
+      backend/* | schema.sql)
+        backend_changed=1
+        app_code_changed=1
+        contract_changed=1
+        ;;
+      openapi.yaml)
+        backend_changed=1
+        contract_changed=1
+        ;;
+      scripts/*.py | scripts/*.sh | deploy/*)
         backend_changed=1
         ;;
       frontend/*)
@@ -114,11 +142,14 @@ for item in sys.stdin.buffer.read().split(b"\0"):
   if [[ ${#shell_scripts[@]} -gt 0 ]]; then
     bash -n "${shell_scripts[@]}"
   fi
+  if [[ "$contract_changed" == 1 ]]; then
+    run_contract
+  fi
   if [[ "$backend_changed" == 1 ]]; then
-    if [[ ${#backend_tests[@]} -gt 0 ]]; then
-      run_backend "${backend_tests[@]}"
-    else
+    if [[ "$app_code_changed" == 1 || ${#backend_tests[@]} -eq 0 ]]; then
       run_backend
+    else
+      run_backend "${backend_tests[@]}"
     fi
   fi
   if [[ "$frontend_changed" == 1 ]]; then

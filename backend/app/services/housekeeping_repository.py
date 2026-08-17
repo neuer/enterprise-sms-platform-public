@@ -103,6 +103,7 @@ class SqlHousekeepingRepository:
                         WITH deleted_raw AS (
                           DELETE FROM raw_vendor_log
                           WHERE fetched_at < now()-make_interval(days=>:raw_days)
+                            AND processed = TRUE
                           RETURNING 1
                         ), deleted_unmatched AS (
                           DELETE FROM unmatched_report

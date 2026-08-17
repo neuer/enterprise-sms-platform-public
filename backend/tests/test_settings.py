@@ -40,6 +40,7 @@ def test_production_rejects_auth_mock() -> None:
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=True,
         )
@@ -62,6 +63,7 @@ def test_environment_is_required_and_modes_reject_unsafe_combinations(
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=True,
             auth_mock=False,
             vendor_mock=False,
@@ -210,6 +212,7 @@ def test_production_vendor_endpoint_requires_https(tmp_path: Path) -> None:
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=False,
             vendor_mock=False,
@@ -221,6 +224,7 @@ def test_production_vendor_endpoint_requires_https(tmp_path: Path) -> None:
     settings = module.Settings(
         _env_file=None,
         environment="production",
+        trusted_hosts="testserver,sms.example.test",
         debug=False,
         auth_mock=False,
         vendor_mock=False,
@@ -251,6 +255,7 @@ def test_vendor_endpoint_rejects_non_origin_components(
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=False,
             vendor_mock=False,
@@ -364,6 +369,7 @@ def test_production_ldap_requires_readable_ca_while_debug_mock_does_not(
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=False,
             vendor_mock=False,
@@ -447,6 +453,7 @@ def test_callback_deployment_egress_boundary_is_private_and_fail_closed(
     production = module.Settings(
         _env_file=None,
         environment="production",
+        trusted_hosts="testserver,sms.example.test",
         debug=False,
         auth_mock=False,
         vendor_mock=False,
@@ -526,6 +533,7 @@ def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
     settings = module.Settings(
         _env_file=None,
         environment="production",
+        trusted_hosts="testserver,sms.example.test",
         sms_component="worker",
         debug=False,
         auth_mock=False,
@@ -574,6 +582,7 @@ def test_production_rejects_missing_redis_ca(tmp_path: Path) -> None:
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=False,
             vendor_mock=False,
@@ -604,6 +613,7 @@ def test_redis_domains_reject_single_host_and_production_standalone(
         module.Settings(
             _env_file=None,
             environment="production",
+            trusted_hosts="testserver,sms.example.test",
             debug=False,
             auth_mock=False,
             vendor_mock=False,
@@ -738,3 +748,35 @@ def test_api_component_cannot_read_vendor_credentials(tmp_path: Path) -> None:
     for credential_name in ("vendor_secret_name", "vendor_secret_key"):
         with pytest.raises(RuntimeError, match="unavailable to the API"):
             settings.credential(credential_name)
+
+
+def test_production_rejects_legacy_jwt_and_wildcard_trusted_hosts(tmp_path: Path) -> None:
+    module = load_settings_module()
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test-ca", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JWT_ACCEPT_LEGACY"):
+        module.Settings(
+            _env_file=None,
+            environment="production",
+            trusted_hosts="sms.example.test",
+            debug=False,
+            auth_mock=False,
+            vendor_mock=False,
+            redis_ha_mode="managed",
+            ldap_ca_certs_file=ca_file,
+            vendor_base_url="https://vendor.example.test",
+            jwt_accept_legacy=True,
+        )
+    with pytest.raises(ValueError, match="TRUSTED_HOSTS"):
+        module.Settings(
+            _env_file=None,
+            environment="production",
+            trusted_hosts="*",
+            debug=False,
+            auth_mock=False,
+            vendor_mock=False,
+            redis_ha_mode="managed",
+            ldap_ca_certs_file=ca_file,
+            vendor_base_url="https://vendor.example.test",
+        )

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -112,7 +113,33 @@ def full_ci_status(document: object, *, commit: str) -> str:
     return "missing"
 
 
-def github_json(url: str, *, token: str | None) -> object:
+LINK_NEXT_RE = re.compile(r"<([^>]+)>\s*;\s*rel=\"?next\"?", re.IGNORECASE)
+CHECK_RUNS_PAGE_LIMIT = 50
+
+
+def parse_link_next(header: str | None) -> str | None:
+    if not header:
+        return None
+    match = LINK_NEXT_RE.search(header)
+    if match is None:
+        return None
+    return match.group(1).strip() or None
+
+
+def next_page_url(url: str) -> str | None:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    try:
+        page = int(query.get("page") or "1")
+    except ValueError:
+        return None
+    query["page"] = str(page + 1)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def github_response(url: str, *, token: str | None) -> tuple[object, Mapping[str, str]]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "enterprise-sms-test-update",
@@ -125,7 +152,8 @@ def github_json(url: str, *, token: str | None) -> object:
         with urllib.request.urlopen(request, timeout=15) as response:
             if response.status != 200:
                 raise CiEvidenceError("GitHub CI evidence request failed")
-            return json.load(response)
+            document = json.load(response)
+            return document, {key: value for key, value in response.headers.items()}
     except (
         OSError,
         TimeoutError,
@@ -134,6 +162,78 @@ def github_json(url: str, *, token: str | None) -> object:
         json.JSONDecodeError,
     ) as error:
         raise CiEvidenceError("GitHub CI evidence request failed") from error
+
+
+def github_json(url: str, *, token: str | None) -> object:
+    document, _headers = github_response(url, token=token)
+    return document
+
+
+def fetch_check_runs(url: str, *, token: str | None) -> dict[str, Any]:
+    """Fail-closed：翻页直到取完；单页 truncated 或页数不足则失败。"""
+
+    collected: list[object] = []
+    seen_urls: set[str] = set()
+    seen_ids: set[int] = set()
+    total_count: int | None = None
+    current = url
+    pages = 0
+    while current:
+        pages += 1
+        if pages > CHECK_RUNS_PAGE_LIMIT:
+            raise CiEvidenceError("check-runs pagination exceeded safety limit")
+        if current in seen_urls:
+            raise CiEvidenceError("check-runs pagination loop")
+        seen_urls.add(current)
+        document, headers = github_response(current, token=token)
+        if type(document) is not dict:
+            raise CiEvidenceError("check-runs response is invalid")
+        if document.get("truncated") is True:
+            raise CiEvidenceError(
+                "check-runs response truncated; paginate via Link or page= until complete"
+            )
+        raw_total = document.get("total_count")
+        if type(raw_total) is not int or raw_total < 0:
+            raise CiEvidenceError("check-runs total_count is missing or invalid")
+        if total_count is None:
+            total_count = raw_total
+        elif raw_total != total_count:
+            raise CiEvidenceError("check-runs total_count changed across pages")
+        runs = document.get("check_runs")
+        if type(runs) is not list:
+            raise CiEvidenceError("check-runs response is invalid")
+        added = 0
+        for item in runs:
+            run_id = item.get("id") if type(item) is dict else None
+            if type(run_id) is int:
+                if run_id in seen_ids:
+                    continue
+                seen_ids.add(run_id)
+            collected.append(item)
+            added += 1
+        next_url = parse_link_next(headers.get("Link") or headers.get("link"))
+        if next_url:
+            current = next_url
+            continue
+        if added == 0 or len(collected) >= total_count:
+            if len(collected) < total_count:
+                raise CiEvidenceError(
+                    "check-runs truncated: "
+                    f"got {len(collected)} of {total_count}; "
+                    "paginate via Link header or page= until complete"
+                )
+            current = None
+            continue
+        fallback = next_page_url(current)
+        if fallback is not None and fallback not in seen_urls:
+            current = fallback
+            continue
+        raise CiEvidenceError(
+            "check-runs truncated: "
+            f"got {len(collected)} of {total_count}; "
+            "paginate via Link header or page= until complete"
+        )
+    return {"total_count": total_count or 0, "check_runs": collected}
 
 
 def github_token(environ: Mapping[str, str] | None = None) -> str | None:
@@ -180,7 +280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{args.commit}/check-runs?filter=latest&per_page=100"
     )
     try:
-        document = github_json(
+        document = fetch_check_runs(
             url,
             token=github_token(),
         )

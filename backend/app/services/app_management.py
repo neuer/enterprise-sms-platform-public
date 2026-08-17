@@ -28,7 +28,7 @@ MAX_ALLOWED_IPS = 50
 
 
 class InvalidAppConfig(ValueError):
-    """应用字段或 callback 地址不安全，对应 INVALID_PARAM/422。"""
+    """应用字段或 callback 地址不安全，对应 INVALID_PARAM/400。"""
 
 
 class AppNotFound(RuntimeError):

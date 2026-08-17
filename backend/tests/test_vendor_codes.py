@@ -3,10 +3,10 @@ from __future__ import annotations
 from app.vendor.codes import policy_for
 
 
-def test_1010_is_critical_environment_pause() -> None:
+def test_1010_is_critical_alert_without_queue_pause() -> None:
     policy = policy_for(1010)
 
-    assert policy.pause_queues is True
+    assert policy.pause_queues is False
     assert policy.alert_level == "crit"
     assert policy.retry_delays_s == ()
     assert policy.delay_s is None

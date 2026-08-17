@@ -481,6 +481,7 @@ describe("管理员治理页面", () => {
     expect(String(fetch.mock.calls[0][0])).toContain("/api/v1/web/admin/blacklist?page=1&size=20")
     expect(wrapper.get("[data-testid='mobile-blacklist-delete-aaaaaaaa']").text()).toContain("移除")
     expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.find(".phone-mask").exists()).toBe(true)
     expect(wrapper.text()).not.toContain("13800138000")
     await wrapper.get("[data-testid='blacklist-phones']").setValue("13800138000\n13900139000")
     await wrapper.get("[data-testid='blacklist-add']").trigger("click")

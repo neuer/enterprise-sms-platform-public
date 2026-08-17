@@ -85,7 +85,7 @@
 - 平台使用**全局不区分大小写登录名空间**，用户名规范化后唯一，归属按**先到先得**确定。本地账号创建时不探测 AD；后续真实 AD 登录若与既有本地身份冲突，则拒绝并审计 `ACCOUNT_SOURCE_CONFLICT`，由管理员线下处理。
 - 平台**不开放自助注册**，本地账号仅由管理员维护；管理员可创建、启停、重置临时密码、设置角色与强制下线，但不得重命名或硬删除账号。禁止停用自己，且不得停用或降级最后一个有效管理员。
 - 本地密码为 12–128 位，大小写字母、数字、特殊字符至少三类，不能包含用户名；管理员创建/重置后均标记为临时密码，用户**首次登录必须修改密码**。首次改密令牌只以哈希写入 PostgreSQL，并与主体、认证源、用途和签发时安全版本绑定；令牌消费、密码更新、`must_change_password` 清除、`security_version` 递增及审计必须在同一事务完成，数据库失败时全部回滚且令牌可安全重试。密码与用户名规则在登录、改密和用户管理界面提交前可见。
-- Web 会话保持 Bearer Header 契约：普通 access/refresh JWT 仅保存在当前标签页 `sessionStorage`，注销、401、会话超时和强制下线后必须清理，并用不含凭据的浏览器存储事件同步其他标签页。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
+- Web 会话：access JWT 走 `Authorization: Bearer`，仅保存在当前标签页 `sessionStorage`；refresh JWT 走受限路径的 HttpOnly Cookie（生产必须 `Secure`、`SameSite=Lax`、`path=/api/v1/web/auth`），并与登录时的 `_tab_id` 绑定。刷新与注销必须做规范化同源校验（Origin/Referer），这是 Cookie 会话的 CSRF 补偿，不是额外的 cookie CSRF token。注销、401、会话超时和强制下线后必须清理 access，用不含凭据的浏览器存储事件同步其他标签页，并由服务端清除 refresh Cookie。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
 - 首个管理员由空系统执行 `sms-compose init-admin --show-temporary-password` 创建，与 AD 完全无关；命令生成 20 位临时密码并在当前 TTY 一次显示，可由 Codex 通过 PTY 代为执行并转告操作者。
 - AD 默认禁用；管理员登录后在**系统配置页**维护非敏感草稿，依次保存、测试当前版本并激活。Bind 密码仍仅来自 Docker secret，CA 仅来自受控文件。AD 角色默认由组映射计算，允许管理员单人覆盖或恢复跟随。
 
@@ -146,7 +146,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - `POST /api/v1/messages/send`，X-Api-Key
 - 入参：category（必填）、mobiles（≤10000）、content 或 template_id+template_params、sign_name、scheduled_at、biz_id（幂等键）
 - **模板变量（v1.2）**：模板含 `{1}..{n}` 占位；调用方传 `template_params` 字符串数组（本期全批次同参）；**平台完成渲染**后下发，并校验参数个数与渲染结果长度（≤500 字），从源头规避厂商 10002 模板不匹配
-- 幂等：同应用同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{app_id}:{biz_id}` TTL=86400，DB `idempotency_record` 保存唯一键与 expires_at，过期记录清理后允许 biz_id 再次使用
+- 幂等：同作用域同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{scope_kind}:{scope_id}:{biz_id}` TTL=86400，DB `idempotency_record` 以 `(scope_kind, scope_id, biz_id)` 为唯一键并保存 expires_at；`scope_kind='app'` 时 `scope_id` 绑定 `app_id`。过期记录清理后允许 biz_id 再次使用
 - 免审批；受类别策略、配额（计费条）、限流、频控约束
 
 #### FR-02 Web 人工发送
@@ -184,7 +184,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 事件：batch.finished（终态汇总）；message.report（应用开关，分钟聚合 ≤500 条）。callback_task 只保存批次/消息引用和无 PII 元数据，worker 投递时临时解密手机号构造 body，任务表与日志不得保存明文 body
 - 生产 callback URL 只允许 HTTPS，可选加载受控 CA 与 mTLS 客户端证书/私钥文件；HTTP 只允许显式 development/test Mock。出站前重新解析 DNS 并固定已批准 IP，同时保留原 Host/SNI，禁止重定向；固定 IP 请求禁用 keep-alive，避免共享 IP 上跨逻辑主机复用旧 TLS 会话；连接并发、单地址连接预算、总超时、响应头与正文均有硬上限。应用停用、关闭明细回调、修改 callback URL 或轮换 callback secret 时，必须在同一事务把尚未终结的旧回调隔离为不可重试；投递与人工重试还必须复验当前应用状态、URL、Secret 密文和明细开关完全匹配，配置撤销后不得继续解密或投递 PII
 - 签名：X-Sms-Timestamp + X-Sms-Signature = HMAC-SHA256(secret, timestamp+"."+body)，时间戳偏差 ≤300s；event_id、callback secret 密文/密钥版本和签名协议版本在 callback_task 创建时固化，但固化值仅在当前应用配置仍完全匹配时有效
-- 重试 60/300/900/3600/3600s 共5次 → dead 告警，可手动重推；独立 callback worker
+- 失败回调（含 4xx，不只 5xx）按 60/300/900/3600/3600s 重试 5 次 → dead 告警，可手动重推；独立 callback worker
 
 ### 5.4 内容与号码管控
 
@@ -229,13 +229,13 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 
 #### FR-16 查询（v1.2 补齐 Web 端点）
 - 批次列表 `GET /web/batches`：时间/类别/状态/渠道/应用/部门/是否测试 多条件
-- **跨批次号码搜索** `GET /web/messages`：按手机号（HMAC 精确）+ 时间范围检索该号码全部收发记录（排障常用）
+- **跨批次号码搜索** `POST /web/messages`：手机号放请求体（HMAC 精确，禁止 query string），可加时间范围检索该号码全部收发记录（排障常用）
 - 批次详情与明细：列表 phone_mask，详情按角色解密（记审计）
 - 数据权限：operator/viewer 本部门；导出 CSV ≤10万行异步，decrypted 需高权限并审计；所有导出文件均 AES-GCM 密文落盘，下载端鉴权后流式解密，磁盘与临时目录不得出现明文手机号
 - 导出任务对象授权：外部仅使用不可枚举 UUID；admin 可访问已解析任务，approver 仅本人或同部门，operator/viewer 仅本人掩码任务。状态与下载执行同一授权；创建人同时固化 `account_id`/`identity_id`，历史用户名不得反查猜测主体，无法证明时对所有角色 fail closed。明文下载需绑定稳定账号、当前 JWT 会话、IP 与具体任务的五分钟单次二次认证令牌，并写无手机号的事务审计
 
 #### FR-26 号码时间线（v1.5 新增）
-- 端点 GET /web/messages/timeline：输入单个手机号（HMAC 精确）+ 时间范围，返回该号码**下行消息与上行回复合并按时间排序**的事件流；每条含类别、内容摘要（verify 已打码）、状态、关联批次、提交方
+- 端点 `POST /web/messages/timeline`：手机号放请求体（HMAC 精确，禁止 query string），可加时间范围，返回该号码**下行消息与上行回复合并按时间排序**的事件流；每条含类别、内容摘要（verify 已打码）、状态、关联批次、提交方
 - 页面：号码搜索页提供"列表 / 时间线"两种视图；时间线按日分组，下行左侧、上行回复右侧缩进并标"↩ 用户回复"
 - 场景：12321 投诉核查、客服排障——一屏还原"我们何时发了什么、用户回了什么、是否已退订加黑"
 - 权限与脱敏同 FR-16；页顶展示该号码状态徽标（是否黑名单/退订来源/近30日接收量）

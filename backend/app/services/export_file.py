@@ -274,7 +274,7 @@ class ExportFileCodec:
             payload = source.read(length)
             if len(payload) != length:
                 raise ValueError("truncated export frame")
-            yield self.crypto.decrypt_bytes(payload, version)
+            yield self.crypto.decrypt_bytes_legacy(payload, version)
 
     def validate(self, raw_path: str | Path, *, expected_task_id: int) -> Path:
         """在响应头发出前绑定授权任务、受控路径与密文文件身份。"""

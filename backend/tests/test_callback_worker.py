@@ -219,7 +219,7 @@ async def test_fifth_retry_failure_marks_dead_and_emits_log_sink_alert() -> None
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 422])
 @pytest.mark.asyncio
-async def test_permanent_4xx_marks_dead_without_retry(status: int) -> None:
+async def test_permanent_4xx_marks_retry_on_first_failure(status: int) -> None:
     repository = FakeRepository(claim())
     alerts = FakeAlerts()
 
@@ -229,20 +229,39 @@ async def test_permanent_4xx_marks_dead_without_retry(status: int) -> None:
         alerts,
     ).process(9)
 
-    assert ("dead", (9, 0, status, "permanent_failure")) in repository.events
+    assert (
+        "retry",
+        (9, 0, RETRY_DELAYS_S[0], status, None),
+    ) in repository.events
+    assert alerts.events == []
+    assert all(name != "dead" for name, _ in repository.events)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 422])
+@pytest.mark.asyncio
+async def test_permanent_4xx_marks_dead_after_retries_exhausted(status: int) -> None:
+    repository = FakeRepository(claim(5))
+    alerts = FakeAlerts()
+
+    await CallbackWorker(
+        repository,
+        FakeDelivery(DeliveryOutcome(False, status)),
+        alerts,
+    ).process(9)
+
+    assert ("dead", (9, 5, status, None)) in repository.events
     assert alerts.events == [
         {
             "alert_type": "callback_dead",
             "level": "crit",
-            "title": "结果回调永久失败",
+            "title": "结果回调重试耗尽",
             "detail": {
                 "callback_task_id": 9,
                 "app_id": 7,
                 "event": "batch.finished",
-                "failure_kind": "permanent_failure",
-                "http_code": status,
+                "failure_kind": "retries_exhausted",
             },
-            "dedup_key": f"callback_permanent:9:{status}",
+            "dedup_key": "callback_dead:9",
         }
     ]
 

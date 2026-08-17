@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from app.core.auth.accounts import LocalAccountRecord, PlatformAccount
-from app.core.auth.backends import InvalidCredentials
+from app.core.auth.backends import InvalidCredentials, ProviderCapacityUnavailable
 from app.core.auth.local import LocalPasswordProvider
+from app.core.bounded_executor import ExecutorBackpressure
 
 
 def account(
@@ -109,3 +110,20 @@ async def test_local_provider_rejects_wrong_password_after_real_hash_work() -> N
         await provider.authenticate("admin", "Wrong@Password123")
 
     assert hasher.candidates == [(record.password_hash, "Wrong@Password123")]
+
+
+@pytest.mark.asyncio
+async def test_local_provider_maps_executor_backpressure_to_capacity_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(*_args: object, **_kwargs: object) -> bool:
+        raise ExecutorBackpressure("full")
+
+    monkeypatch.setattr("app.core.auth.local.run_bounded", boom)
+    provider = LocalPasswordProvider(
+        FakeLocalRepository(LocalAccountRecord(account(), "$argon2id$v=19$valid")),
+        RecordingHasher(matches=True),
+    )
+
+    with pytest.raises(ProviderCapacityUnavailable):
+        await provider.authenticate("admin", "Valid@Password123")

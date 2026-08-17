@@ -258,13 +258,17 @@ class FixedWrapperRunner:
     def run(self, operation: str) -> WrapperResult:
         if operation not in _FIXED_WRAPPER_OPERATIONS:
             raise UnsupportedAgentOperation("不支持的控制操作")
-        result = self.command_runner(
-            [WRAPPER, "vendor-test", operation],
-            check=False,
-            text=True,
-            capture_output=True,
-            shell=False,
-        )
+        try:
+            result = self.command_runner(
+                [WRAPPER, "vendor-test", operation],
+                check=False,
+                text=True,
+                capture_output=True,
+                shell=False,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            return WrapperResult(1, "CONTROL_COMMAND_FAILED", {})
         if operation == "status":
             return self._safe_status_result(int(result.returncode), result.stdout)
         if operation == "reset-runtime":
@@ -1054,7 +1058,12 @@ async def _serve_client(
         if declared < 1 or declared > MAX_FRAME_BYTES:
             raise ProtocolError("请求帧长度无效")
         request = decode_request(header + await reader.readexactly(declared))
-        response = agent.handle(request, peer_uid=uid, peer_gid=gid)
+        response = await asyncio.to_thread(
+            agent.handle,
+            request,
+            peer_uid=uid,
+            peer_gid=gid,
+        )
         writer.write(encode_response(response))
         await writer.drain()
     except (PeerDenied, ProtocolError, asyncio.IncompleteReadError, OSError):

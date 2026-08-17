@@ -44,7 +44,7 @@ scripts/local_test.sh up
 | `operator01` | 操作员 | Web 发送、批次、回复与本部门数据 |
 | `viewer01` | 查看员 | 本部门只读查询与报表 |
 
-密码由测试负责人从本机 `deploy/secrets/ldap_bind_password` 的 0600 文件通过受控渠道提供；不要把值复制到聊天、截图、Issue 或命令参数。浏览器打开 Web 登录地址，输入任一用户名与该轮密码即可。登录使用现有 `/api/v1/web/auth/login` 获取 Bearer JWT；退出会调用服务端吊销接口并清理浏览器会话。切换角色时先点击右上角“退出”，不要手工复用旧 token。
+密码由测试负责人从本机 `deploy/secrets/ldap_bind_password` 的 0600 文件通过受控渠道提供；不要把值复制到聊天、截图、Issue 或命令参数。浏览器打开 Web 登录地址，输入任一用户名与该轮密码即可。登录使用现有 `/api/v1/web/auth/login` 获取 Bearer access JWT，refresh 由 HttpOnly Cookie 保存；退出会调用服务端吊销接口、清除 refresh Cookie 并清理浏览器会话。切换角色时先点击右上角“退出”，不要手工复用旧 token。
 
 连续五次输错密码会触发账号锁定；同 IP 高频失败会触发限流。测试锁定场景后如需立即恢复干净数据，执行 `scripts/local_test.sh reset`。
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.services.category import queue_for_category
+
 
 @dataclass(frozen=True, slots=True)
 class RecoveryWork:
@@ -32,7 +34,7 @@ class RecoveryReconciler:
     async def run_once(self) -> int:
         work = await self.repository.stalled()
         for item in work:
-            queue = "bulk" if item.category == "market" else "realtime"
+            queue = queue_for_category(item.category)
             if item.kind == "batch":
                 await self.publisher.enqueue(item.batch_no, queue)
             elif item.chunk_id is not None:

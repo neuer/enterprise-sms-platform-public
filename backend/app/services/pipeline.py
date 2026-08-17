@@ -10,7 +10,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -26,7 +26,7 @@ from app.core.sensitive_text import reject_phone_in_text
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
-from app.services.category import CategoryPolicy, policy_for_category
+from app.services.category import CategoryPolicy, coerce_market_dispatch, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
@@ -505,25 +505,17 @@ class SendPipeline:
     ) -> tuple[Literal["queued", "scheduled"], str | None, datetime | None]:
         if request.is_test:
             return "queued", None, None
-        if request.scheduled_at is not None:
-            if request.scheduled_at.tzinfo is None or request.scheduled_at.utcoffset() is None:
-                raise ValueError("scheduled_at must include timezone")
-            return "scheduled", None, request.scheduled_at
         if request.category != "market":
+            if request.scheduled_at is not None:
+                if request.scheduled_at.tzinfo is None or request.scheduled_at.utcoffset() is None:
+                    raise ValueError("scheduled_at must include timezone")
+                return "scheduled", None, request.scheduled_at
             return "queued", None, None
-        start_raw, end_raw = self.config.market_window.split("-", maxsplit=1)
-        start = time.fromisoformat(start_raw)
-        end = time.fromisoformat(end_raw)
-        local = self.clock().astimezone(SHANGHAI)
-        if start <= local.time().replace(tzinfo=None) < end:
-            return "queued", None, None
-        target_date = (
-            local.date()
-            if local.time().replace(tzinfo=None) < start
-            else local.date() + timedelta(days=1)
+        return coerce_market_dispatch(
+            self.clock(),
+            self.config.market_window,
+            request.scheduled_at,
         )
-        target = datetime.combine(target_date, start, tzinfo=SHANGHAI)
-        return "scheduled", "market_window", target
 
     def _request_hash(
         self,

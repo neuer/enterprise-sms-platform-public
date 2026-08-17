@@ -136,24 +136,39 @@ async def test_reply_vendor_identifiers_cannot_persist_phone_plaintext(field: st
     item = reply() | {field: "13800138000"}
     repository = FakeRepository()
 
-    with pytest.raises(ValueError):
-        await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
     assert not any(event[0] == "store" for event in repository.events)
+    assert ("processed", 23) in repository.events
+
+
+@pytest.mark.asyncio
+async def test_invalid_custom_id_does_not_abort_valid_reply_items() -> None:
+    repository = FakeRepository()
+    mixed = [reply() | {"customId ": "legacy-x"}, reply()]
+
+    await ReplyIngestService(FakeGateway(mixed), repository, crypto()).poll_once()
+
+    assert repository.events[1][1] == (23, ["custom1"], 2)
+    stored = [value for event, value in repository.events if event == "store"]
+    assert len(stored) == 1
+    assert stored[0].match_custom_id == "custom1"
+    assert ("processed", 23) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
 
 
 @pytest.mark.asyncio
 async def test_reply_ext_code_enforces_vendor_digit_contract() -> None:
     repository = FakeRepository()
 
-    with pytest.raises(ValueError, match="extCode must be at most 6 digits"):
-        await ReplyIngestService(
-            FakeGateway([reply() | {"extCode": "12AB"}]),
-            repository,
-            crypto(),
-        ).poll_once()
+    await ReplyIngestService(
+        FakeGateway([reply() | {"extCode": "12AB"}]),
+        repository,
+        crypto(),
+    ).poll_once()
 
     assert not any(event[0] == "store" for event in repository.events)
+    assert ("processed", 23) in repository.events
 
 
 @pytest.mark.asyncio
@@ -236,14 +251,17 @@ async def test_null_custom_id_is_preserved_without_raw_index_placeholder() -> No
 
 
 @pytest.mark.asyncio
-async def test_parse_failure_keeps_raw_unprocessed_for_replay() -> None:
+async def test_parse_failure_skips_item_and_marks_raw_processed() -> None:
     repository = FakeRepository()
     broken = reply() | {"contents": "x" * 501}
 
-    with pytest.raises(ValueError, match="contents"):
-        await ReplyIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
+    await ReplyIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
 
-    assert [event[0] for event in repository.events] == ["persist_raw", "metadata", "error"]
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "processed",
+    ]
 
 
 @pytest.mark.asyncio

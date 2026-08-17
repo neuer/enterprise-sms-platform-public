@@ -27,6 +27,9 @@ def test_healthz_returns_minimal_non_sensitive_response() -> None:
     assert live.status_code == 200
     assert live.json() == {"status": "alive"}
     assert live.headers["cache-control"] == "no-store"
+    missing = client.get("/does-not-exist")
+    assert missing.status_code == 404
+    assert missing.json() == {"code": "NOT_FOUND", "message": "资源不存在", "detail": None}
 
 
 def test_openapi_metadata_is_versioned() -> None:
@@ -49,6 +52,7 @@ def test_production_disables_interactive_api_documentation(tmp_path: Path) -> No
     settings = module.Settings(
         _env_file=None,
         environment="production",
+        trusted_hosts="testserver,sms.example.test",
         debug=False,
         auth_mock=False,
         vendor_mock=False,

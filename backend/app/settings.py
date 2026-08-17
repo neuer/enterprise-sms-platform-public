@@ -143,6 +143,7 @@ class Settings(BaseSettings):
     )
     jwt_secret_file: Path = Path("/run/secrets/jwt_secret")
     jwt_accept_legacy: bool = False
+    trusted_hosts: str = "*"
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
     metrics_scrape_token_file: Path = Path("/run/secrets/metrics_scrape_token")
     ldap_ca_certs_file: Path = Path("/etc/ssl/certs/ca-certificates.crt")
@@ -172,6 +173,12 @@ class Settings(BaseSettings):
         return self.environment == "production"
 
     @property
+    def trusted_host_list(self) -> list[str]:
+        """解析 TrustedHost 允许列表；空项忽略。"""
+
+        return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+
+    @property
     def redis_ca_bundle_file(self) -> Path:
         """Redis 默认复用平台 CA；部署可为私有 Redis 单独挂载信任根。"""
 
@@ -195,6 +202,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "production requires managed Redis endpoints for every failure domain"
                 )
+            if self.jwt_accept_legacy:
+                raise ValueError("production forbids JWT_ACCEPT_LEGACY")
+            hosts = [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+            if not hosts or "*" in hosts:
+                raise ValueError("production forbids TRUSTED_HOSTS=*")
         else:
             if not self.debug or not self.auth_mock:
                 raise ValueError(

@@ -777,6 +777,15 @@ class UsageLedgerService:
                 or reservation_row["usage_date"] != usage_date
             ):
                 raise UsageReservationConflict("frequency reservation contract changed")
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_reservation SET updated_at=now()
+                    WHERE id=:id AND state='reserved'
+                    """
+                ),
+                {"id": reservation_id},
+            )
 
             alias_result = await connection.execute(
                 text(

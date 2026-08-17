@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -10,6 +10,11 @@ from sqlalchemy import text
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope
 from app.services.callback_repository import enqueue_batch_finished
+from app.services.category import (
+    DEFAULT_MARKET_WINDOW,
+    coerce_market_dispatch,
+    queue_for_category,
+)
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.scheduling import ScheduledBatch
@@ -38,41 +43,76 @@ class SqlSchedulingRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                window_result = await connection.execute(
+                    text("SELECT value FROM sys_config WHERE key='market_send_window'")
+                )
+                window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
+                now = datetime.now(UTC)
                 result = await connection.execute(
                     text(
                         """
-                        UPDATE sms_batch SET status='queued',updated_at=now()
-                        WHERE id IN (
-                          SELECT id FROM sms_batch WHERE status='scheduled'
-                            AND scheduled_at<=now() ORDER BY scheduled_at
-                          FOR UPDATE SKIP LOCKED LIMIT 100
-                        ) RETURNING trim(batch_no) batch_no,category
+                        SELECT id, trim(batch_no) batch_no, category
+                        FROM sms_batch
+                        WHERE status='scheduled' AND scheduled_at<=now()
+                        ORDER BY scheduled_at
+                        FOR UPDATE SKIP LOCKED LIMIT 100
                         """
                     )
                 )
-                rows = list(result.mappings())
-                batches = [
-                    ScheduledBatch(
-                        str(row["batch_no"]),
-                        str(row["category"]),
-                        outbox_persisted=True,
+                claimed: list[ScheduledBatch] = []
+                for row in result.mappings():
+                    batch_id = int(row["id"])
+                    batch_no = str(row["batch_no"])
+                    category = str(row["category"])
+                    if category == "market":
+                        status, deferred, scheduled_at = coerce_market_dispatch(
+                            now,
+                            window,
+                            None,
+                        )
+                        if status == "scheduled":
+                            await connection.execute(
+                                text(
+                                    """
+                                    UPDATE sms_batch
+                                    SET scheduled_at=:scheduled_at,
+                                        deferred_reason=:deferred_reason,
+                                        updated_at=now()
+                                    WHERE id=:id AND status='scheduled'
+                                    """
+                                ),
+                                {
+                                    "id": batch_id,
+                                    "scheduled_at": scheduled_at,
+                                    "deferred_reason": deferred,
+                                },
+                            )
+                            continue
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE sms_batch SET status='queued',updated_at=now()
+                            WHERE id=:id AND status='scheduled'
+                            """
+                        ),
+                        {"id": batch_id},
                     )
-                    for row in rows
-                ]
-                for batch in batches:
                     await enqueue_outbox(
                         connection,
                         OutboxEventSpec(
                             event_type="batch.ready",
                             aggregate_type="sms_batch",
-                            aggregate_id=batch.batch_no,
+                            aggregate_id=batch_no,
                             task_name="app.tasks.send.process_batch",
-                            queue=("bulk" if batch.category == "market" else "realtime"),
-                            args=(batch.batch_no,),
-                            dedup_key=f"scheduled:{batch.batch_no}:ready",
+                            queue=queue_for_category(category),
+                            args=(batch_no,),
+                            dedup_key=f"scheduled:{batch_no}:ready",
                         ),
                     )
-                return batches
+                    claimed.append(
+                        ScheduledBatch(batch_no, category, outbox_persisted=True)
+                    )
+                return claimed
         finally:
             await self._dispose_task_engine(engine)
 

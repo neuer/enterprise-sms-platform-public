@@ -15,6 +15,7 @@ from app.core.runtime_resources import database_engine, redis_client
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
+from app.services.category import queue_for_category
 from app.services.content_protection import decrypt_template_content
 from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
@@ -415,7 +416,7 @@ class SqlPipelineStore:
                 total=len(command.messages),
             )
         if command.status == "queued":
-            queue = "bulk" if command.category == "market" else "realtime"
+            queue = queue_for_category(command.category)
             await enqueue_outbox(
                 connection,
                 OutboxEventSpec(

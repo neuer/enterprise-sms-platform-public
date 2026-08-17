@@ -291,9 +291,11 @@ def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() ->
     assert "npm run typecheck" not in frontend
     assert "scripts/*.sh" in source
     assert 'bash -n "${shell_scripts[@]}"' in source
-    assert "scripts/local_test.sh prepare" not in source.split(
-        "run_backend() {", maxsplit=1
-    )[0]
+    header = source.split("run_contract() {", maxsplit=1)[0]
+    assert "scripts/local_test.sh prepare" not in header
+    assert "scripts/local_test.sh prepare" in source.split(
+        "run_contract() {", maxsplit=1
+    )[1]
 
 
 def test_release_control_terms_the_lifecycle_lock_holder_directly() -> None:

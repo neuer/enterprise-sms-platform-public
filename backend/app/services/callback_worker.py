@@ -216,31 +216,6 @@ class CallbackWorker:
                 delay_s=CALLBACK_AUTHORITY_BUSY_DELAY_S,
             )
             return 1
-        if (
-            outcome.http_code is not None
-            and classify_callback_http_status(outcome.http_code) == "permanent"
-        ):
-            await self.repository.mark_dead(
-                task_id,
-                claimed.lease_id,
-                retry_count=claimed.retry_count,
-                http_code=outcome.http_code,
-                error=outcome.error or "permanent_failure",
-            )
-            await self.alerts.emit(
-                alert_type="callback_dead",
-                level="crit",
-                title="结果回调永久失败",
-                detail={
-                    "callback_task_id": claimed.task_id,
-                    "app_id": claimed.app_id,
-                    "event": claimed.event,
-                    "failure_kind": "permanent_failure",
-                    "http_code": outcome.http_code,
-                },
-                dedup_key=f"callback_permanent:{claimed.task_id}:{outcome.http_code}",
-            )
-            return 1
         if claimed.retry_count < len(self.retry_delays_s):
             await self.repository.mark_retry(
                 task_id,

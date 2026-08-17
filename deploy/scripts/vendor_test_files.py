@@ -62,9 +62,9 @@ _MARKER_FIELDS = frozenset(
         "backup_config",
     }
 )
-_DOTENV_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@+-]*)")
+_DOTENV_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@+*,-]*)")
 _DOTENV_INLINE_COMMENT_LINE = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@+-]*)[ \t]+#[^\r\n]*"
+    r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@+*,-]*)[ \t]+#[^\r\n]*"
 )
 _PHONE = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}")

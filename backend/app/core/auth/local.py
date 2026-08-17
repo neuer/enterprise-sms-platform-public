@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.core.auth.accounts import LocalAccountRecord
-from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
+from app.core.auth.backends import (
+    AuthenticatedIdentity,
+    InvalidCredentials,
+    ProviderCapacityUnavailable,
+)
 from app.core.auth.identity import normalize_login_name
-from app.core.bounded_executor import run_bounded
+from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
 
 class LocalAccountReader(Protocol):
@@ -40,12 +44,15 @@ class LocalPasswordProvider:
         normalized = normalize_login_name(login_name)
         record = await self.repository.find_local_account(normalized)
         password_hash = record.password_hash if record is not None else None
-        password_matches = await run_bounded(
-            self.hasher.verify_or_dummy,
-            password_hash,
-            password,
-            timeout_s=5,
-        )
+        try:
+            password_matches = await run_bounded(
+                self.hasher.verify_or_dummy,
+                password_hash,
+                password,
+                timeout_s=5,
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
         if record is None or not password_matches or not record.account.active:
             raise InvalidCredentials("用户名或密码错误")
         return AuthenticatedIdentity(
