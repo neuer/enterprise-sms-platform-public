@@ -179,7 +179,7 @@ async function reveal(item: MessageItem): Promise<void> {
       <el-table-column label="提交方" min-width="120"><template #default="{ row }">{{ row.sender || '—' }}</template></el-table-column>
       <template #empty><EmptyState :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'" :description="searched ? '可调整类别、状态或时间范围后重试。' : '输入完整手机号后查询跨批次收发轨迹。'" /></template>
     </el-table>
-    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" /></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><el-button v-if="canDecrypt" link type="primary" @click="reveal(item)">{{ revealed[item.id] || '授权查看' }}</el-button></footer></article></div>
+    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" /></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><strong v-if="revealed[item.id]" class="revealed-phone">{{ revealed[item.id] }}</strong><el-button v-else-if="canDecrypt" link type="primary" @click="reveal(item)">授权查看</el-button></footer></article></div>
     <footer class="query-pagination"><span>共 {{ total }} 条记录</span><el-pagination v-if="total > 20" v-model:current-page="page" data-testid="message-pagination" :page-size="20" :total="total" layout="prev, pager, next" @current-change="changePage" /></footer>
   </el-card>
 

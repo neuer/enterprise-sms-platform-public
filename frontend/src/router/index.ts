@@ -163,6 +163,8 @@ const router = createRouter({
       component: () => import("../views/SensitiveWordView.vue"),
       meta: { title: "敏感词", group: "管理", roles: ["admin"] },
     },
+    // 未知路径回到仪表盘，避免空白工作区；未登录时由守卫接管重定向到登录页。
+    { path: "/:pathMatch(.*)*", redirect: "/dashboard" },
   ],
 })
 

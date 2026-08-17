@@ -6,6 +6,7 @@ import { CanvasRenderer } from "echarts/renderers"
 import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { ReportRow } from "../api/reports"
+import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
 
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
@@ -29,19 +30,19 @@ function render(): void {
   const values = trend()
   chart.setOption({
     animation: false,
-    color: ["#0e7a63", "#a8650b"],
+    color: [CHART_COLORS.green, CHART_COLORS.amber],
     grid: { top: 42, right: 24, bottom: 32, left: 54 },
-    legend: { top: 3, right: 4, textStyle: { color: "#5b6862", fontSize: 10 } },
-    tooltip: { trigger: "axis" },
+    legend: { top: 3, right: 4, textStyle: { color: CHART_COLORS.text, fontSize: 10 } },
+    tooltip: { trigger: "axis", ...CHART_TOOLTIP_STYLE },
     xAxis: {
       type: "category", boundaryGap: false, data: values.map((item) => item.period),
-      axisLabel: { color: "#8a948e", fontFamily: "IBM Plex Mono" },
-      axisLine: { lineStyle: { color: "#d3d8d1" } },
+      axisLabel: { color: CHART_COLORS.text, fontFamily: "IBM Plex Mono" },
+      axisLine: { lineStyle: { color: CHART_COLORS.axisLine } },
     },
     yAxis: {
       type: "value", minInterval: 1,
-      axisLabel: { color: "#8a948e" },
-      splitLine: { lineStyle: { color: "#e9ece8", type: "dashed" } },
+      axisLabel: { color: CHART_COLORS.text },
+      splitLine: { lineStyle: { color: CHART_COLORS.splitLine, type: "dashed" } },
     },
     series: [
       { name: "消息数", type: "line", data: values.map((item) => item.total), symbolSize: 6, lineStyle: { width: 2 } },

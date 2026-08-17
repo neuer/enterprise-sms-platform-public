@@ -21,6 +21,7 @@ import { listConfigs } from "../api/admin"
 import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { copyText } from "../lib/clipboard"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
@@ -376,26 +377,11 @@ function openDemo(item: ManagedApp): void {
   void loadApprovedTemplates()
 }
 
-/** 复制 demo 脚本；优先异步剪贴板 API，非安全上下文回退隐藏 textarea。 */
 async function copyDemo(): Promise<void> {
   if (!demoScript.value) return
-  try {
-    if (window.isSecureContext && navigator.clipboard) {
-      await navigator.clipboard.writeText(demoScript.value)
-    } else {
-      const helper = document.createElement("textarea")
-      helper.value = demoScript.value
-      helper.setAttribute("readonly", "")
-      helper.style.position = "fixed"
-      helper.style.opacity = "0"
-      document.body.appendChild(helper)
-      helper.select()
-      const copied = document.execCommand("copy")
-      helper.remove()
-      if (!copied) throw new Error("execCommand copy rejected")
-    }
+  if (await copyText(demoScript.value)) {
     ElMessage.success("脚本已复制到剪贴板")
-  } catch {
+  } else {
     ElMessage.error("复制失败，请手动选择文本复制")
   }
 }
@@ -479,26 +465,11 @@ function beforeSecretClose(done: () => void): void {
   done()
 }
 
-/** 复制一次性凭据；优先异步剪贴板 API，非安全上下文回退隐藏 textarea。 */
 async function copySecret(): Promise<void> {
   if (!secretValue.value) return
-  try {
-    if (window.isSecureContext && navigator.clipboard) {
-      await navigator.clipboard.writeText(secretValue.value)
-    } else {
-      const helper = document.createElement("textarea")
-      helper.value = secretValue.value
-      helper.setAttribute("readonly", "")
-      helper.style.position = "fixed"
-      helper.style.opacity = "0"
-      document.body.appendChild(helper)
-      helper.select()
-      const copied = document.execCommand("copy")
-      helper.remove()
-      if (!copied) throw new Error("execCommand copy rejected")
-    }
+  if (await copyText(secretValue.value)) {
     ElMessage.success("已复制到剪贴板")
-  } catch {
+  } else {
     ElMessage.error("复制失败，请手动选择文本复制")
   }
 }

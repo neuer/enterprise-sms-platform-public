@@ -3679,6 +3679,13 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .el-table th.el-table__cell { color: var(--tx-3); font-size: 10.5px; font-weight: 500; letter-spacing: 0.08em; }
 .el-table td.el-table__cell { border-bottom-color: var(--hair-2); }
+
+/* 基础层按卡片定制的浅色表头变量特异性高于上面的 .el-table，需在深色层同特异性收编。 */
+.approval-card .el-table,
+.sign-card .el-table {
+  --el-table-header-bg-color: var(--panel-2);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+}
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner,
