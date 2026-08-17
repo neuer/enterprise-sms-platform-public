@@ -691,6 +691,15 @@ def test_root_gitignore_is_safe_non_runtime_input() -> None:
     assert change.risk == "none"
 
 
+def test_local_dev_check_script_is_safe_non_runtime_input() -> None:
+    change = classify_changed_paths(["scripts/dev_check.sh"])
+
+    assert change.components == frozenset()
+    assert change.migration_changed is False
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
 def test_local_test_script_is_safe_non_runtime_input() -> None:
     change = classify_changed_paths(["scripts/local_test.sh"])
 
@@ -725,6 +734,7 @@ def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
             "scripts/verify_release_control.sh",
             "scripts/verify_tls_termination_e2e.py",
             "scripts/verify_all.sh",
+            "scripts/verify_ci_commit.py",
             "scripts/verify_vendor_postgres_recovery.sh",
         ]
     )
@@ -742,6 +752,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "deploy/redis-ha.md",
             "deploy/vendor-egress.md",
             "docs/DECISIONS.md",
+            "docs/LOCAL_TESTING.md",
             "docs/TEST-MANUAL.md",
             "docs/UAT.md",
             "docs/api-test-playground.md",
