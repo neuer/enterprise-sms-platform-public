@@ -24,6 +24,7 @@
 | v1.6.5 | **可恢复用量事实**：配额和号码频控改由 PostgreSQL 事实账本串行判定，Redis 仅保存版本化绝对投影；终态释放经事务性 Outbox 幂等补偿，支持 HMAC 轮换归并、漂移告警、无 PII 解释和安全重建 |
 | v1.6.6 | **Redis 故障域硬化**：Celery broker、认证会话、业务控制面拆为三个独立高可用端点和 ACL 身份；密码只经 Docker secrets，认证故障 fail closed，broker/control 分别由 Outbox 与 PostgreSQL 事实恢复 |
 | v1.6.40 | **安全日报配置 UI 化**：管理员页面配置 Resend Key、收件人和启停状态，API 同步独立 mailer 配置文件；不再要求手工维护 Docker secret 与收件人文件 |
+| v1.6.41 | **会话边界契约回填**：与已落地实现及 D048 修订对齐——access JWT 仅内存 + Bearer；refresh JWT 改 HttpOnly Cookie 并要求 refresh/logout 同源校验；高风险短期令牌仍仅组件局部易失内存 |
 
 ---
 
@@ -85,7 +86,7 @@
 - 平台使用**全局不区分大小写登录名空间**，用户名规范化后唯一，归属按**先到先得**确定。本地账号创建时不探测 AD；后续真实 AD 登录若与既有本地身份冲突，则拒绝并审计 `ACCOUNT_SOURCE_CONFLICT`，由管理员线下处理。
 - 平台**不开放自助注册**，本地账号仅由管理员维护；管理员可创建、启停、重置临时密码、设置角色与强制下线，但不得重命名或硬删除账号。禁止停用自己，且不得停用或降级最后一个有效管理员。
 - 本地密码为 12–128 位，大小写字母、数字、特殊字符至少三类，不能包含用户名；管理员创建/重置后均标记为临时密码，用户**首次登录必须修改密码**。首次改密令牌只以哈希写入 PostgreSQL，并与主体、认证源、用途和签发时安全版本绑定；令牌消费、密码更新、`must_change_password` 清除、`security_version` 递增及审计必须在同一事务完成，数据库失败时全部回滚且令牌可安全重试。密码与用户名规则在登录、改密和用户管理界面提交前可见。
-- Web 会话：access JWT 走 `Authorization: Bearer`，仅保存在当前标签页 `sessionStorage`；refresh JWT 走受限路径的 HttpOnly Cookie（生产必须 `Secure`、`SameSite=Lax`、`path=/api/v1/web/auth`），并与登录时的 `_tab_id` 绑定。刷新与注销必须做规范化同源校验（Origin/Referer），这是 Cookie 会话的 CSRF 补偿，不是额外的 cookie CSRF token。注销、401、会话超时和强制下线后必须清理 access，用不含凭据的浏览器存储事件同步其他标签页，并由服务端清除 refresh Cookie。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
+- Web 会话保持 Bearer Header 契约承载 **access JWT**：access 与用户快照仅保存在当前页面易失内存，禁止写入 Pinia 持久化或 Web Storage；历史 `sessionStorage`/`localStorage` 凭据只允许同步迁移一次并立即清除。**refresh JWT** 以受限路径的 HttpOnly Cookie 承载（生产必须 Secure，SameSite=Lax）；refresh/logout 必须校验规范化同源 Origin/Referer。注销、401、会话超时和强制下线后必须清理内存会话与 refresh Cookie，并用不含凭据的浏览器存储事件同步其他标签页。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
 - 首个管理员由空系统执行 `sms-compose init-admin --show-temporary-password` 创建，与 AD 完全无关；命令生成 20 位临时密码并在当前 TTY 一次显示，可由 Codex 通过 PTY 代为执行并转告操作者。
 - AD 默认禁用；管理员登录后在**系统配置页**维护非敏感草稿，依次保存、测试当前版本并激活。Bind 密码仍仅来自 Docker secret，CA 仅来自受控文件。AD 角色默认由组映射计算，允许管理员单人覆盖或恢复跟随。
 
