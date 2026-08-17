@@ -389,6 +389,7 @@ async def get_reporting_stats(
     "/export",
     response_model=ExportTaskModel,
     status_code=status.HTTP_202_ACCEPTED,
+    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
 )
 @audited("export_create")
 async def create_export(
@@ -483,7 +484,7 @@ async def export_step_up(
 @router.get(
     "/export/{public_id}/download",
     response_class=StreamingResponse,
-    responses={401: ERROR_RESPONSE, 404: ERROR_RESPONSE},
+    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 404: ERROR_RESPONSE},
 )
 async def download_export(
     public_id: UUID,

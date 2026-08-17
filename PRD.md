@@ -147,7 +147,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - `POST /api/v1/messages/send`，X-Api-Key
 - 入参：category（必填）、mobiles（≤10000）、content 或 template_id+template_params、sign_name、scheduled_at、biz_id（幂等键）
 - **模板变量（v1.2）**：模板含 `{1}..{n}` 占位；调用方传 `template_params` 字符串数组（本期全批次同参）；**平台完成渲染**后下发，并校验参数个数与渲染结果长度（≤500 字），从源头规避厂商 10002 模板不匹配
-- 幂等：同应用同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{app_id}:{biz_id}` TTL=86400，DB `idempotency_record` 保存唯一键与 expires_at，过期记录清理后允许 biz_id 再次使用
+- 幂等：同作用域同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{scope_kind}:{scope_id}:{biz_id}` TTL=86400，DB `idempotency_record` 以 `(scope_kind, scope_id, biz_id)` 为唯一键并保存 expires_at；`scope_kind='app'` 时 `scope_id` 绑定 `app_id`。过期记录清理后允许 biz_id 再次使用
 - 免审批；受类别策略、配额（计费条）、限流、频控约束
 
 #### FR-02 Web 人工发送
@@ -185,7 +185,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 事件：batch.finished（终态汇总）；message.report（应用开关，分钟聚合 ≤500 条）。callback_task 只保存批次/消息引用和无 PII 元数据，worker 投递时临时解密手机号构造 body，任务表与日志不得保存明文 body
 - 生产 callback URL 只允许 HTTPS，可选加载受控 CA 与 mTLS 客户端证书/私钥文件；HTTP 只允许显式 development/test Mock。出站前重新解析 DNS 并固定已批准 IP，同时保留原 Host/SNI，禁止重定向；固定 IP 请求禁用 keep-alive，避免共享 IP 上跨逻辑主机复用旧 TLS 会话；连接并发、单地址连接预算、总超时、响应头与正文均有硬上限。应用停用、关闭明细回调、修改 callback URL 或轮换 callback secret 时，必须在同一事务把尚未终结的旧回调隔离为不可重试；投递与人工重试还必须复验当前应用状态、URL、Secret 密文和明细开关完全匹配，配置撤销后不得继续解密或投递 PII
 - 签名：X-Sms-Timestamp + X-Sms-Signature = HMAC-SHA256(secret, timestamp+"."+body)，时间戳偏差 ≤300s；event_id、callback secret 密文/密钥版本和签名协议版本在 callback_task 创建时固化，但固化值仅在当前应用配置仍完全匹配时有效
-- 重试 60/300/900/3600/3600s 共5次 → dead 告警，可手动重推；独立 callback worker
+- 失败回调（含 4xx，不只 5xx）按 60/300/900/3600/3600s 重试 5 次 → dead 告警，可手动重推；独立 callback worker
 
 ### 5.4 内容与号码管控
 
@@ -230,13 +230,13 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 
 #### FR-16 查询（v1.2 补齐 Web 端点）
 - 批次列表 `GET /web/batches`：时间/类别/状态/渠道/应用/部门/是否测试 多条件
-- **跨批次号码搜索** `GET /web/messages`：按手机号（HMAC 精确）+ 时间范围检索该号码全部收发记录（排障常用）
+- **跨批次号码搜索** `POST /web/messages`：手机号放请求体（HMAC 精确，禁止 query string），可加时间范围检索该号码全部收发记录（排障常用）
 - 批次详情与明细：列表 phone_mask，详情按角色解密（记审计）
 - 数据权限：operator/viewer 本部门；导出 CSV ≤10万行异步，decrypted 需高权限并审计；所有导出文件均 AES-GCM 密文落盘，下载端鉴权后流式解密，磁盘与临时目录不得出现明文手机号
 - 导出任务对象授权：外部仅使用不可枚举 UUID；admin 可访问已解析任务，approver 仅本人或同部门，operator/viewer 仅本人掩码任务。状态与下载执行同一授权；创建人同时固化 `account_id`/`identity_id`，历史用户名不得反查猜测主体，无法证明时对所有角色 fail closed。明文下载需绑定稳定账号、当前 JWT 会话、IP 与具体任务的五分钟单次二次认证令牌，并写无手机号的事务审计
 
 #### FR-26 号码时间线（v1.5 新增）
-- 端点 GET /web/messages/timeline：输入单个手机号（HMAC 精确）+ 时间范围，返回该号码**下行消息与上行回复合并按时间排序**的事件流；每条含类别、内容摘要（verify 已打码）、状态、关联批次、提交方
+- 端点 `POST /web/messages/timeline`：手机号放请求体（HMAC 精确，禁止 query string），可加时间范围，返回该号码**下行消息与上行回复合并按时间排序**的事件流；每条含类别、内容摘要（verify 已打码）、状态、关联批次、提交方
 - 页面：号码搜索页提供"列表 / 时间线"两种视图；时间线按日分组，下行左侧、上行回复右侧缩进并标"↩ 用户回复"
 - 场景：12321 投诉核查、客服排障——一屏还原"我们何时发了什么、用户回了什么、是否已退订加黑"
 - 权限与脱敏同 FR-16；页顶展示该号码状态徽标（是否黑名单/退订来源/近30日接收量）

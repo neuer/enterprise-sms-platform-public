@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -12,6 +14,11 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.approval import ApprovalCase
 from app.services.callback_repository import enqueue_batch_finished
+from app.services.category import (
+    DEFAULT_MARKET_WINDOW,
+    coerce_market_dispatch,
+    queue_for_category,
+)
 from app.services.content_protection import decrypt_batch_display_content
 from app.services.crypto import CryptoService
 from app.services.outbox import OutboxEventSpec
@@ -242,18 +249,52 @@ class SqlApprovalRepository:
                 row = current.mappings().one()
                 case = _case(row, outbox_persisted=True)
                 if action == "approve" and case.batch_status == "queued":
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="batch.ready",
-                            aggregate_type="sms_batch",
-                            aggregate_id=case.batch_no,
-                            task_name="app.tasks.send.process_batch",
-                            queue=("bulk" if case.category == "market" else "realtime"),
-                            args=(case.batch_no,),
-                            dedup_key=f"approval:{approval_id}:approved",
-                        ),
-                    )
+                    enqueue_ready = True
+                    if case.category == "market":
+                        window_result = await connection.execute(
+                            text(
+                                "SELECT value FROM sys_config WHERE key='market_send_window'"
+                            )
+                        )
+                        window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
+                        status, deferred, scheduled_at = coerce_market_dispatch(
+                            datetime.now(UTC),
+                            window,
+                            None,
+                        )
+                        if status == "scheduled":
+                            await connection.execute(
+                                text(
+                                    """
+                                    UPDATE sms_batch
+                                    SET status='scheduled',
+                                        scheduled_at=:scheduled_at,
+                                        deferred_reason=:deferred_reason,
+                                        updated_at=now()
+                                    WHERE id=:batch_id AND status='queued'
+                                    """
+                                ),
+                                {
+                                    "batch_id": batch_id,
+                                    "scheduled_at": scheduled_at,
+                                    "deferred_reason": deferred,
+                                },
+                            )
+                            enqueue_ready = False
+                            case = replace(case, batch_status="scheduled")
+                    if enqueue_ready:
+                        await enqueue_outbox(
+                            connection,
+                            OutboxEventSpec(
+                                event_type="batch.ready",
+                                aggregate_type="sms_batch",
+                                aggregate_id=case.batch_no,
+                                task_name="app.tasks.send.process_batch",
+                                queue=queue_for_category(case.category),
+                                args=(case.batch_no,),
+                                dedup_key=f"approval:{approval_id}:approved",
+                            ),
+                        )
                 if action == "reject":
                     release_event = f"approval:{approval_id}:rejected"
                     if not await request_usage_release_for_batch(

@@ -1,4 +1,4 @@
-"""应用与部门配额成对原子预扣、拒绝和回补。"""
+"""应用与部门配额 Redis 投影辅助；事实账本见 usage_ledger。"""
 
 from __future__ import annotations
 

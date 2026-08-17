@@ -6,9 +6,9 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
@@ -47,6 +47,15 @@ class ReplyPageModel(BaseModel):
     items: list[ReplyModel]
 
 
+class ReplyListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: Annotated[str, Field(pattern=r"^1\d{10}$")] | None = None
+    start: datetime | None = None
+    end: datetime | None = None
+    page: int = Field(default=1, ge=1)
+
+
 async def get_reply_service() -> AsyncIterator[ReplyQueryService]:
     settings = get_settings()
     crypto = CryptoService.from_settings(settings)
@@ -81,25 +90,23 @@ async def _claims(
     return claims
 
 
-@router.get("", response_model=ReplyPageModel, responses={400: ERROR_RESPONSE})
+@router.post("", response_model=ReplyPageModel, responses={400: ERROR_RESPONSE})
 async def list_replies(
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[ReplyQueryService, Depends(get_reply_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    phone: Annotated[str | None, Query(pattern=r"^1\d{10}$")] = None,
-    start: Annotated[datetime | None, Query()] = None,
-    end: Annotated[datetime | None, Query()] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    payload: ReplyListRequest,
 ) -> ReplyPageModel:
     claims = await _claims(facade, credentials, write=False)
+    body = payload
     try:
         result = await service.list_page(
-            phone=phone,
-            start=start,
-            end=end,
-            page=page,
+            phone=body.phone,
+            start=body.start,
+            end=body.end,
+            page=body.page,
             dept=None if claims.role in {"approver", "admin"} else claims.dept,
         )
     except ValueError as error:

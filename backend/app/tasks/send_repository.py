@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.runtime_resources import database_engine
 from app.services.callback_repository import enqueue_batch_finished
+from app.services.category import queue_for_category
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.vendor_test_budget import (
     LIVE_TEST_DAILY_SEGMENT_LIMIT,
@@ -56,7 +57,7 @@ class SqlChunkStore:
 
     @staticmethod
     def lane_for(category: str) -> str:
-        return "bulk" if category == "market" else "realtime"
+        return queue_for_category(category)
 
     @staticmethod
     async def _enqueue_retry(chunk_id: int, lane: str, countdown: int) -> None:

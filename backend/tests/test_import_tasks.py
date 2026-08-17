@@ -96,6 +96,7 @@ def test_production_celery_redis_transport_requires_verified_tls(
             "REDIS_BROKER_PASSWORD_FILE": str(broker_secret),
             "REDIS_AUTH_PASSWORD_FILE": str(auth_secret),
             "REDIS_CONTROL_PASSWORD_FILE": str(control_secret),
+            "TRUSTED_HOSTS": "sms.example.test",
         }
     )
     result = subprocess.run(

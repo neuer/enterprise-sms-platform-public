@@ -102,14 +102,14 @@ def test_packed_ciphertext_keeps_version_for_callback_secret_rotation() -> None:
     aes_v1 = b64(b"a")
     hmac_v1 = b64(b"h")
     old_service = CryptoService.from_secret_values(aes_v1, hmac_v1)
-    packed = old_service.encrypt_packed_text("callback-secret")
+    packed = old_service.encrypt_packed_text_legacy("callback-secret")
     rotated = CryptoService.from_secret_values(
         keyring(2, {1: aes_v1, 2: b64(b"b")}),
         keyring(2, {1: hmac_v1, 2: b64(b"i")}),
     )
 
     assert int.from_bytes(packed[:2], "big") == 1
-    assert rotated.decrypt_packed_text(packed) == "callback-secret"
+    assert rotated.decrypt_packed_text_legacy(packed) == "callback-secret"
 
 
 def test_keyrings_must_match_and_keys_must_be_32_bytes() -> None:
@@ -168,7 +168,7 @@ def test_bound_envelope_rejects_cross_field_and_cross_object_transplant() -> Non
 def test_bound_reader_dual_reads_legacy_then_reencrypts_without_plaintext_persistence() -> None:
     service = CryptoService.from_secret_values(b64(b"a"), b64(b"h"))
     context = EncryptionContext("vendor-raw", "raw_vendor_log", "payload_enc", "report:digest")
-    legacy = service.encrypt_bytes(b'{"code":0}')
+    legacy = service.encrypt_bytes_legacy(b'{"code":0}')
 
     with pytest.raises(ValueError, match="legacy"):
         service.decrypt_bound_bytes(legacy.payload, legacy.key_version, context)

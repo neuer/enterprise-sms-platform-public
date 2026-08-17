@@ -13,6 +13,7 @@ import type { ManagedApp } from "../api/apps"
 import { listSigns, type SmsSign } from "../api/signs"
 import { listTemplates, type SmsTemplate } from "../api/templates"
 import type { BillingPreview } from "../api/webMessages"
+import PhoneMask from "./PhoneMask.vue"
 
 const props = defineProps<{
   disabled: boolean
@@ -246,7 +247,9 @@ onMounted(() => void loadApprovedOptions())
               :key="recipient.id"
               :label="`${recipient.label} · ${recipient.phone_mask}`"
               :value="recipient.id"
-            />
+            >
+              {{ recipient.label }} · <PhoneMask :value="recipient.phone_mask" />
+            </el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="应用" required>

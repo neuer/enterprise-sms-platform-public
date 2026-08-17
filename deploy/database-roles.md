@@ -17,11 +17,11 @@ NOREPLICATION`：
 | `sms_callback` | callback worker 与回调管理接口 | 回调事件、任务、租约、相关 Outbox 和告警 |
 | `sms_export` | 导出 API 与 bulk export worker | 固化范围内的消息/回执读取和导出任务租约 |
 | `sms_scheduler` | beat 与 Outbox dispatcher | job 追踪、Outbox 投递和调度告警 |
-| `sms_metrics` | `/metrics` 聚合 | 迁移 0035 指定的非敏感列级 `SELECT`，无批次号、自定义 ID、手机号、正文或任何写权限 |
+| `sms_metrics` | `/metrics` 聚合 | 列级只读 `SELECT`（以 `schema.sql` GRANT 段为权威；metrics 列级授权在 0037/0038，不是 0035），无批次号、自定义 ID、手机号、正文或任何写权限 |
 
-所有表、列、序列和操作都在 `schema.sql` 与迁移 0034/0035/0040/0054/0061 中显式列出。`sms_owner` 的
+运行角色授权以 `schema.sql` 末尾 GRANT 段为权威。历史迁移会把授权演进到该基线；含授权变更的迁移包括 0034/0037/0038/0040/0054/0061 等。`sms_owner` 的
 default privileges 明确不向运行角色授权，因此新增表或序列必须在同一迁移中更新
-矩阵；不得使用 `GRANT ... ON ALL TABLES` 或 `ON ALL SEQUENCES` 给运行角色补权限。
+矩阵并回写 schema.sql GRANT 段；不得使用 `GRANT ... ON ALL TABLES` 或 `ON ALL SEQUENCES` 给运行角色补权限。
 
 `sms_export` 对 `export_task` 的 UPDATE 只覆盖租约、运行状态、完成文件路径、行数与时间；
 不得更新 `public_id/decrypted/filters/scope_dept/scope_resolved` 或创建者稳定主体字段。

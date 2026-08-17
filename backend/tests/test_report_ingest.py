@@ -146,10 +146,38 @@ async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> 
     item = report() | {field: "13800138000"}
     repository = FakeRepository()
 
-    with pytest.raises(ValueError, match=f"{field}不得包含手机号"):
-        await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
     assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
+    assert ("processed", 12) in repository.events
+
+
+@pytest.mark.asyncio
+async def test_platform_hex_custom_id_is_not_rejected_as_phone() -> None:
+    custom_id = "390d6892939546adb08dc16600000001"
+    item = report() | {"customId": custom_id}
+    repository = FakeRepository()
+
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    applied = [value for event, value in repository.events if event == "apply"]
+    assert len(applied) == 1
+    assert applied[0].match_custom_id == custom_id
+
+
+@pytest.mark.asyncio
+async def test_invalid_custom_id_does_not_abort_valid_report_items() -> None:
+    repository = FakeRepository()
+    mixed = [report() | {"customId": "legacy-x"}, report()]
+
+    await ReportIngestService(FakeGateway(mixed), repository, crypto()).poll_once()
+
+    assert repository.events[1][1] == (12, ["custom1"], 2)
+    applied = [value for event, value in repository.events if event == "apply"]
+    assert len(applied) == 1
+    assert applied[0].match_custom_id == "custom1"
+    assert ("processed", 12) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
 
 
 @pytest.mark.asyncio
@@ -225,21 +253,26 @@ async def test_vendor_report_time_preserves_explicit_zone_and_defaults_to_shangh
 
 
 @pytest.mark.asyncio
-async def test_invalid_report_time_is_not_copied_into_safe_raw_error() -> None:
+async def test_invalid_report_time_is_skipped_without_leaking_phone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     sensitive_value = "not-a-date 13800138000"
     repository = FakeRepository()
 
-    with pytest.raises(ValueError, match="reportTime format is invalid"):
-        await ReportIngestService(
-            FakeGateway([report() | {"reportTime": sensitive_value}]),
-            repository,
-            crypto(),
-        ).poll_once()
+    await ReportIngestService(
+        FakeGateway([report() | {"reportTime": sensitive_value}]),
+        repository,
+        crypto(),
+    ).poll_once()
 
-    assert [event[0] for event in repository.events] == ["persist_raw", "metadata", "error"]
-    error = repository.events[-1][1]
-    assert sensitive_value not in error
-    assert "13800138000" not in error
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "processed",
+    ]
+    rendered = repr(repository.events) + caplog.text
+    assert sensitive_value not in rendered
+    assert "13800138000" not in rendered
 
 
 @pytest.mark.asyncio
@@ -286,12 +319,17 @@ async def test_unmatched_report_is_preserved_with_phone_protection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parse_failure_keeps_raw_unprocessed_for_replay() -> None:
+async def test_parse_failure_skips_item_and_marks_raw_processed() -> None:
     broken = report() | {"phone": "invalid"}
     repository = FakeRepository()
-    with pytest.raises(ValueError):
-        await ReportIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
-    assert [event[0] for event in repository.events] == ["persist_raw", "metadata", "error"]
+
+    await ReportIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
+
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "processed",
+    ]
 
 
 @pytest.mark.asyncio

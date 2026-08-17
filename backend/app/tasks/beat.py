@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -90,9 +91,12 @@ class BeatLock:
         return bool(self.client.set(self.key, self.token, nx=True, ex=self.ttl_s))
 
     def renew(self) -> bool:
-        """仅锁持有者可以延长租期。"""
+        """仅锁持有者可以延长租期；Redis 异常视为失锁。"""
 
-        return bool(self.client.eval(RENEW_SCRIPT, 1, self.key, self.token, self.ttl_s))
+        try:
+            return bool(self.client.eval(RENEW_SCRIPT, 1, self.key, self.token, self.ttl_s))
+        except Exception:
+            return False
 
     def release(self) -> bool:
         """仅锁持有者可以删除锁。"""
@@ -135,10 +139,15 @@ def run_beat(
                 continue
             LOGGER.critical("celery beat lock lease was lost; stopping scheduler")
             process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                LOGGER.critical("celery beat child did not stop before lock release")
             return 1
         return process.returncode or 0
     finally:
-        lock.release()
+        with suppress(Exception):
+            lock.release()
 
 
 def main() -> int:
@@ -148,7 +157,12 @@ def main() -> int:
         load_startup_schedule(), sort_keys=True, separators=(",", ":")
     )
     settings = get_settings()
-    client = Redis.from_url(settings.redis_control_url, decode_responses=True)
+    client = Redis.from_url(
+        settings.redis_control_url,
+        decode_responses=True,
+        socket_timeout=2,
+        socket_connect_timeout=2,
+    )
     stopped = threading.Event()
     managed_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     previous_handlers = {signum: signal.getsignal(signum) for signum in managed_signals}

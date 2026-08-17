@@ -325,7 +325,7 @@ class AcceptanceSuite:
             },
             token=admin_token,
         )
-        self._expect(ssrf, 422, "SEC-04")
+        self._expect(ssrf, 400, "SEC-04")
         checks.append("SEC-04 callback SSRF save boundary")
 
         if self._database_count(AUDIT_SQL, "SEC-05") != 0:

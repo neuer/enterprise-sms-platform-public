@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
+from app.services.category import queue_for_category
 
 
 class SelfApprovalDenied(PermissionError):
@@ -143,7 +144,7 @@ class ApprovalService:
             if decided.batch_status == "queued" and not decided.outbox_persisted:
                 await self.publisher.enqueue(
                     decided.batch_no,
-                    "bulk" if decided.category == "market" else "realtime",
+                    queue_for_category(decided.category),
                 )
         else:
             if not decided.outbox_persisted:

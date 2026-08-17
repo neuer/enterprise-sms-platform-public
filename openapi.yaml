@@ -423,6 +423,9 @@ paths:
       description: |
         refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
         身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
+        新客户端通过 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，生产 Secure）
+        提交 refresh，并携带登录时绑定的 tab_id；请求必须通过规范化同源校验（CSRF 补偿，
+        不是 cookie CSRF token）。access 仍为 JSON 中的 Bearer token。
       requestBody:
         required: true
         content:
@@ -437,6 +440,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/LoginSuccess' }
         '401': { description: refresh 令牌无效、过期或已使用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: 缺少或非同源来源（CSRF 补偿失败）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: AUTH_SESSION_UNAVAILABLE；数据库或 Redis 状态不可用时 fail closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/auth/password-policy:
@@ -461,6 +465,8 @@ paths:
         必须显式提交 provider_code，服务端只调用该认证源且不回退。
         账号锁与来源 IP 限流由所有认证源共享；错误提示不区分用户是否存在。
         本地临时密码验证成功只返回十分钟单用途改密令牌，不签发访问 JWT。
+        登录成功将 refresh 写入 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，
+        生产 Secure），JSON 只返回 Bearer access token。
       requestBody:
         required: true
         content:
@@ -578,7 +584,7 @@ paths:
                 properties:
                   batch_no: { type: string }
                   idempotent: { type: boolean }
-                  status: { type: string, enum: [queued, scheduled, pending_approval] }
+                  status: { type: string, enum: [pending_approval, rejected, scheduled, queued, sending, completed, cancelled, balance_blocked, expired] }
                   accepted: { type: integer }
                   removed_duplicate: { type: integer }
                   removed_blacklist: { type: integer }
@@ -750,18 +756,26 @@ paths:
                     items: { $ref: '#/components/schemas/Batch' }
 
   /api/v1/web/messages:
-    get:
+    post:
       tags: [messages]
-      summary: 跨批次号码搜索（v1.2，HMAC 精确匹配，排障用）
+      summary: 跨批次号码搜索（HMAC 精确匹配，排障用；手机号走请求体）
       security: [{ BearerAuth: [] }]
-      parameters:
-        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^1\d{10}$' } }
-        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: category, in: query, required: false, schema: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] } }
-        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other] }, { type: 'null' }] } }
-        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
-        - { name: size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [phone]
+              properties:
+                phone: { type: string, pattern: '^1\d{10}$' }
+                start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                category: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] }
+                status: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other] }, { type: 'null' }] }
+                page: { type: integer, default: 1, minimum: 1 }
+                size: { type: integer, default: 20, minimum: 1, maximum: 100 }
       responses:
         '200':
           description: 该号码的收发记录（下行明细+关联批次，权限内）
@@ -790,14 +804,22 @@ paths:
                         sender: { anyOf: [{ type: string }, { type: 'null' }] }
 
   /api/v1/web/messages/timeline:
-    get:
+    post:
       tags: [messages]
-      summary: 号码时间线（v1.5，下行消息+上行回复合并事件流，投诉核查用）
+      summary: 号码时间线（下行消息+上行回复合并事件流，投诉核查用；手机号走请求体）
       security: [{ BearerAuth: [] }]
-      parameters:
-        - { name: phone, in: query, required: true, schema: { type: string, pattern: '^1\d{10}$' } }
-        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [phone]
+              properties:
+                phone: { type: string, pattern: '^1\d{10}$' }
+                start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
       responses:
         '200':
           description: 事件流（时间倒序，最多返回最近 500 条）+ 号码状态徽标
@@ -884,6 +906,8 @@ paths:
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/Approval' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/web/approvals/{id}/decision:
     post:
@@ -1091,15 +1115,22 @@ paths:
 
   # ───────────────────────── 回复 ─────────────────────────
   /api/v1/web/replies:
-    get:
+    post:
       tags: [replies]
-      summary: 上行回复查询（手机号精确查询走 HMAC 索引）
+      summary: 上行回复查询（手机号精确查询走 HMAC 索引；号码放请求体）
       security: [{ BearerAuth: [] }]
-      parameters:
-        - { name: phone, in: query, required: false, schema: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] } }
-        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
+                start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                page: { type: integer, minimum: 1, default: 1 }
       responses:
         '200':
           description: OK
@@ -1181,7 +1212,7 @@ paths:
                   id: { type: integer }
                   api_key: { type: string, description: 仅此一次明文返回 }
                   callback_secret: { anyOf: [{ type: string }, { type: 'null' }], description: 配置回调时一次性返回 }
-        '422': { description: 字段或 callback URL 无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '400': { description: INVALID_PARAM（字段或 callback URL 无效）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: callback DNS 校验暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/admin/apps/{id}:
@@ -1227,7 +1258,7 @@ paths:
         '200': { description: 已更新并记审计, content: { application/json: { schema: { $ref: '#/components/schemas/App' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
-        '422': { description: callback URL不在CIDR白名单或字段无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '400': { description: INVALID_PARAM（callback URL 不在 CIDR 白名单或字段无效）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: callback DNS 校验暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     delete:
       tags: [admin]
@@ -2492,7 +2523,10 @@ paths:
         - { name: X-Export-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 仅明文导出必填；绑定账号、会话、IP与任务且单次使用 }
       responses:
         '200': { description: CSV 文件流 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: 认证失败，或明文导出缺少/无效二次认证（UNAUTHORIZED / STEP_UP_REQUIRED）
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/web/reports/export/{public_id}/step-up:
@@ -2557,6 +2591,9 @@ paths:
         '202':
           description: 任务已创建
           content: { application/json: { schema: { $ref: '#/components/schemas/ExportTask' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
 # ───────────────────────── Webhook（平台 → 应用，v1.1） ─────────────────────────
 webhooks:
@@ -2567,7 +2604,7 @@ webhooks:
         关联头：X-Sms-Event-Id 是接收方幂等事件 ID；X-Sms-Correlation-Id 与触发该事件的 HTTP/任务/Outbox 关联 ID 一致。
         签名头：X-Sms-Timestamp（Unix秒）、X-Sms-Signature = HMAC-SHA256(callback_secret, timestamp + "." + rawBody) 的 hex。
         版本头：X-Sms-Signature-Version 固定为事件创建时的协议版本；X-Sms-Secret-Version 是该事件固化密钥的 key version。密钥轮换不改变既有事件重试。
-        接收方须验签且校验时间戳偏差 ≤ 300s，返回 2xx 视为成功；否则按 60/300/900/3600/3600s 重试共5次。
+        接收方须验签且校验时间戳偏差 ≤ 300s，返回 2xx 视为成功；否则（含 4xx）按 60/300/900/3600/3600s 重试共5次。
       requestBody:
         content:
           application/json:
@@ -2578,7 +2615,7 @@ webhooks:
                 event_id: { type: string, format: uuid }
                 event: { type: string, const: batch.finished }
                 batch_no: { type: string }
-                biz_id: { type: string, nullable: true }
+                biz_id: { anyOf: [{ type: string }, { type: 'null' }] }
                 category: { type: string }
                 status: { type: string, enum: [completed, cancelled, expired, rejected] }
                 total: { type: integer }
@@ -2602,7 +2639,7 @@ webhooks:
                 event_id: { type: string, format: uuid }
                 event: { type: string, const: message.report }
                 batch_no: { type: string }
-                biz_id: { type: string, nullable: true }
+                biz_id: { anyOf: [{ type: string }, { type: 'null' }] }
                 items:
                   type: array
                   maxItems: 500
@@ -3615,9 +3652,9 @@ components:
       type: object
       required: [code, message, detail]
       properties:
-        code: { type: string, description: 见 CLAUDE.md 平台错误码表 }
+        code: { type: string, description: 见 AGENTS.md 平台错误码表 }
         message: { type: string }
-        detail: { type: object, nullable: true }
+        detail: { anyOf: [{ type: object }, { type: 'null' }] }
 
     Batch:
       type: object

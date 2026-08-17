@@ -28,7 +28,7 @@ class FakeHttp:
     def __init__(
         self,
         *,
-        ssrf_status: int = 422,
+        ssrf_status: int = 400,
         injection_total: int = 0,
         login_injection_status: int = 401,
         path_injection_status: int = 400,

@@ -153,13 +153,21 @@ def test_non_admin_cannot_request_another_department() -> None:
 def test_message_search_and_timeline_return_masked_contract() -> None:
     client, _, operations, auditor = make_client(role="approver")
     headers = {"Authorization": "Bearer jwt"}
-    search = client.get(
-        "/api/v1/web/messages?phone=13800138000&category=notice&status=failed&page=2&size=50",
+    search = client.post(
+        "/api/v1/web/messages",
         headers=headers,
+        json={
+            "phone": "13800138000",
+            "category": "notice",
+            "status": "failed",
+            "page": 2,
+            "size": 50,
+        },
     )
-    timeline = client.get(
-        "/api/v1/web/messages/timeline?phone=13800138000",
+    timeline = client.post(
+        "/api/v1/web/messages/timeline",
         headers=headers,
+        json={"phone": "13800138000"},
     )
 
     assert search.status_code == 200
@@ -186,17 +194,20 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
 def test_message_search_rejects_invalid_filters() -> None:
     client, _, _, _ = make_client()
     headers = {"Authorization": "Bearer jwt"}
-    bad_category = client.get(
-        "/api/v1/web/messages?phone=13800138000&category=urgent",
+    bad_category = client.post(
+        "/api/v1/web/messages",
         headers=headers,
+        json={"phone": "13800138000", "category": "urgent"},
     )
-    bad_status = client.get(
-        "/api/v1/web/messages?phone=13800138000&status=lost",
+    bad_status = client.post(
+        "/api/v1/web/messages",
         headers=headers,
+        json={"phone": "13800138000", "status": "lost"},
     )
-    bad_size = client.get(
-        "/api/v1/web/messages?phone=13800138000&size=101",
+    bad_size = client.post(
+        "/api/v1/web/messages",
         headers=headers,
+        json={"phone": "13800138000", "size": 101},
     )
 
     assert bad_category.status_code == 400

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.core.auth.accounts import AccountSourceConflict, LocalAccountRecord, PlatformAccount
 from app.core.auth.backends import (
@@ -12,6 +13,7 @@ from app.core.auth.backends import (
     ProviderCapacityUnavailable,
     ProviderDisabled,
     ProviderUnavailable,
+    SessionStateUnavailable,
 )
 from app.core.auth.jwt import JwtClaims, JwtService
 from app.core.auth.principal_context import audit_principal_scope, current_audit_principal
@@ -20,7 +22,7 @@ from app.core.auth.runtime import (
     LoginSuccess,
     PasswordChangeRequired,
 )
-from app.core.auth.service import AccountLocked
+from app.core.auth.service import AccountLocked, RedisKeyValue
 from app.core.errors import ApiError
 
 IP = "10.0.0.8"
@@ -406,10 +408,79 @@ async def test_daily_password_change_checks_current_password_and_revokes_session
         IP,
     )
 
-    assert hasher.verified == [("encoded-current", "Current@Password123")]
+    assert hasher.verified == []
+    assert service.auth.calls[-1] == ("local", "admin", "Current@Password123", IP)
     assert users.changed[-1]["password_hash"] == "encoded:Daily@Password456"
     with pytest.raises(InvalidCredentials):
         await tokens.verify(login.token)
+
+
+@pytest.mark.asyncio
+async def test_daily_password_change_maps_wrong_password_to_unauthorized() -> None:
+    service, _, _, _ = facade(must_change_password=False)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+    assert isinstance(login, LoginSuccess)
+    service.auth.identity = InvalidCredentials("bad")
+
+    with pytest.raises(ApiError) as error:
+        await service.change_password(login.token, "Wrong@Password123", "Daily@Password456", IP)
+
+    assert error.value.status_code == 401
+    assert error.value.code == "UNAUTHORIZED"
+    assert error.value.message == "当前密码错误"
+    assert service.auth.calls[-1] == ("local", "admin", "Wrong@Password123", IP)
+
+
+@pytest.mark.asyncio
+async def test_login_maps_session_state_unavailable_to_503() -> None:
+    value = account(must_change_password=False)
+    users = FakeUserRepository(value)
+    tokens = JwtService(
+        SECRET,
+        FakeKeyValue(),
+        clock=lambda: datetime(2026, 7, 16, 8, tzinfo=UTC),
+        security_session_loader=users.load_security_session,
+    )
+    service = AuthFacade(
+        FakeAuthService(SessionStateUnavailable("redis down")),
+        users,
+        tokens,
+        FakeHasher(),
+    )
+
+    with pytest.raises(ApiError) as error:
+        await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+
+    assert error.value.status_code == 503
+    assert error.value.code == "AUTH_SESSION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_redis_key_value_maps_redis_errors_to_session_unavailable() -> None:
+    class BrokenRedis:
+        async def get(self, key: str) -> object:
+            raise RedisConnectionError("down")
+
+        async def set(self, key: str, value: object, *, ex: int) -> None:
+            raise RedisConnectionError("down")
+
+        async def delete(self, key: str) -> None:
+            raise RedisConnectionError("down")
+
+        async def eval(self, *args: object) -> object:
+            raise RedisConnectionError("down")
+
+    store = RedisKeyValue(BrokenRedis())  # type: ignore[arg-type]
+    with pytest.raises(SessionStateUnavailable):
+        await store.get("k")
+    with pytest.raises(SessionStateUnavailable):
+        await store.set("k", "v", ex=1)
+    with pytest.raises(SessionStateUnavailable):
+        await store.delete("k")
+    with pytest.raises(SessionStateUnavailable):
+        await store.increment("k", window_s=60)
+    with pytest.raises(SessionStateUnavailable):
+        await store.eval("return 1", 0)
 
 
 @pytest.mark.asyncio

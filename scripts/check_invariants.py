@@ -170,7 +170,9 @@ def check_vendor_live_invariants() -> None:
 
     require_fragments(
         APP / "vendor/codes.py",
-        '1010: _policy("IP 校验未通过", pause_queues=True, alert_level="crit")',
+        '1010: _policy("IP 校验未通过", alert_level="crit")',
+        "pause_queues=True",
+        'alert_level="crit"',
     )
 
     files_source = require_fragments(
@@ -323,10 +325,10 @@ def check_vendor_live_invariants() -> None:
     fixed_runner = agent.split("class FixedWrapperRunner:", maxsplit=1)[-1].split(
         "def secure_socket(", maxsplit=1
     )[0]
-    if "timeout=" in fixed_runner:
+    if "timeout=180" not in fixed_runner:
         fail(
             ROOT / "deploy/scripts/vendor_control_agent.py",
-            "控制代理不得以短超时杀死仍持 lifecycle lock 的 wrapper",
+            "控制代理 wrapper 必须 timeout=180，超时视为失败",
         )
 
     credential_store = require_fragments(

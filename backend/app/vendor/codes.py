@@ -46,7 +46,7 @@ ERROR_POLICIES: dict[int, VendorErrorPolicy] = {
     1007: _policy("定时时间小于 10 分钟", not_applicable=True),
     1008: _policy("未支持的套餐", alert_level="crit"),
     1009: _policy("账户未启用", pause_queues=True, alert_level="crit"),
-    1010: _policy("IP 校验未通过", pause_queues=True, alert_level="crit"),
+    1010: _policy("IP 校验未通过", alert_level="crit"),
     1011: _policy("未在服务时间范围", delay_s=1800),
     1012: _policy("内容字数达到上限"),
     5000: _policy("缺省参数未配置", pause_queues=True, alert_level="crit"),

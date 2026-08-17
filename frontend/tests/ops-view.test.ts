@@ -94,6 +94,7 @@ describe("统一运维中心", () => {
     await flushPromises()
     expect(wrapper.get(".ops-filter-title > div:last-child").classes()).toContain("filter-toolbar")
     expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.find(".phone-mask").text()).toBe("138****8000")
     await wrapper.findAll("button").find((item) => item.text().includes("导出对账"))!.trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain(`导出任务 #${publicId}`)

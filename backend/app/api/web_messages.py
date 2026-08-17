@@ -102,6 +102,26 @@ class WebContentModel(BaseModel):
         return self
 
 
+class MessageSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: Phone
+    start: datetime | None = None
+    end: datetime | None = None
+    category: Literal["verify", "notice", "market"] | None = None
+    status: Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None = None
+    page: int = Field(default=1, ge=1)
+    size: int = Field(default=20, ge=1, le=100)
+
+
+class MessageTimelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: Phone
+    start: datetime | None = None
+    end: datetime | None = None
+
+
 class BillingPreviewRequest(WebContentModel):
     accepted_count: int = Field(ge=0, le=50_000)
 
@@ -142,7 +162,17 @@ class WebSendResponse(BaseModel):
     removed_freq_limit: int
     est_segments: int
     quota_cost: int
-    status: Literal["queued", "scheduled", "pending_approval"]
+    status: Literal[
+        "pending_approval",
+        "rejected",
+        "scheduled",
+        "queued",
+        "sending",
+        "completed",
+        "cancelled",
+        "balance_blocked",
+        "expired",
+    ]
     deferred_reason: str | None
     scheduled_at: datetime | None
 
@@ -427,37 +457,28 @@ async def list_web_batches(
     return result
 
 
-@router.get(
+@router.post(
     "/messages",
     response_model=MessageQueryPageModel,
 )
 async def search_web_messages(
     request: Request,
+    payload: MessageSearchRequest,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    phone: Annotated[str, Query(pattern=r"^1\d{10}$")],
-    start: Annotated[datetime | None, Query()] = None,
-    end: Annotated[datetime | None, Query()] = None,
-    category: Annotated[Literal["verify", "notice", "market"] | None, Query()] = None,
-    status: Annotated[
-        Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None,
-        Query(),
-    ] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
-    size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> MessageQueryPageModel:
     claims = await _reader(facade, credentials)
     try:
         result = await service.search_messages(
-            phone=phone,
-            start=start,
-            end=end,
-            category=category,
-            status=status,
-            page=page,
-            size=size,
+            phone=payload.phone,
+            start=payload.start,
+            end=payload.end,
+            category=payload.category,
+            status=payload.status,
+            page=payload.page,
+            size=payload.size,
             scope=_query_scope(claims),
         )
     except ValueError as error:
@@ -489,26 +510,24 @@ async def search_web_messages(
     )
 
 
-@router.get(
+@router.post(
     "/messages/timeline",
     response_model=TimelineModel,
 )
 async def message_timeline(
     request: Request,
+    payload: MessageTimelineRequest,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    phone: Annotated[str, Query(pattern=r"^1\d{10}$")],
-    start: Annotated[datetime | None, Query()] = None,
-    end: Annotated[datetime | None, Query()] = None,
 ) -> TimelineModel:
     claims = await _reader(facade, credentials)
     try:
         result = await service.timeline(
-            phone=phone,
-            start=start,
-            end=end,
+            phone=payload.phone,
+            start=payload.start,
+            end=payload.end,
             scope=_query_scope(claims),
         )
     except ValueError as error:

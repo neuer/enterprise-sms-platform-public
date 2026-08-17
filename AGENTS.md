@@ -27,7 +27,7 @@ backend/
                        # quota.py approval.py alert.py blacklist.py sensitive.py
                        # crypto.py(加密/HMAC/掩码) masking.py(OTP等长打码) callback.py stats.py export.py
     vendor/            # zhihui.py mock_server.py codes.py
-    models/
+    models/            # 不承载声明式 metadata；库表以 schema.sql + 手写 Alembic 为准
     tasks/             # send.py poll_report.py poll_reply.py poll_balance.py anomaly.py
                        # scheduler.py reconcile.py(对账) callback.py
                        # housekeeping.py stats.py
@@ -45,12 +45,12 @@ deploy/
 ## 硬性规则
 
 1. **所有运行凭据默认只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入环境变量明文、入日志或入普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。安全日报是明确的产品例外：管理员可在 `/security-daily` 页面配置 Resend Key 和最多 3 个收件人，Key 允许以明文存入专用 `sys_config` 配置并由 API 同步到独立 mailer 的 `resend.json`；不得用于其他平台凭据，审计只记录 configured 状态和数量。另一个例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
-2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`(AES-256-GCM) / `phone_hmac`(HMAC-SHA256 hex) / `phone_mask` / `key_version`；精确查询一律走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许"详情按角色查看"与"授权导出"；内部仅 raw 解析/重放与 callback 投递可在内存中受控解密，严禁把明文再次写入任何持久层
+2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`(AES-256-GCM) / `phone_hmac`(HMAC-SHA256 hex) / `phone_mask` / `key_version`；精确查询一律走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许"详情按角色查看"与"授权导出"；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发、UAT 定位，以及退订入黑名单（reply optout：内存解密后经 `protect_phone` 重加密入库，不回写明文）。严禁把明文再次写入任何持久层
 3. 所有厂商调用必须经 `vendor/zhihui.py`；业务代码不得直接 httpx 调厂商；统一超时 10s、连接池、结构化日志
 4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发**；由 reconcile 任务通过 raw_vendor_log.custom_ids 索引定位并受控解密确认后修复；这是防重复下发的生命线
 5. **GetReport/GetReply 拉走即消费**：轮询任务必须先把完整响应 AES-GCM 加密落 `raw_vendor_log.payload_enc`，同时只保存不含手机号的 custom_ids 索引元数据；提交事务后再受控解密解析。解析失败保留 processed=false 可重放，raw 表禁止 JSONB 明文手机号
 6. 队列可靠性：PostgreSQL 为唯一事实源，Redis 仅投递通道；beat 单实例（启动抢 Redis 锁，抢不到即退出）；reconcile 每 5min 兜底重投，已 submitted/uncertain 的 chunk 绝不重投
-7. 幂等：`SETNX idem:{app_id}:{biz_id} = batch_no EX 86400`；DB 使用 `idempotency_record` 的 `(app_id,biz_id)` 唯一约束与 `expires_at` 兜底。事务先删除同键过期记录，再创建批次和幂等记录；唯一冲突回查未过期原批次。`sms_batch.biz_id` 不得永久唯一，确保 24h 后可复用
+7. 幂等：`SETNX idem:{scope_kind}:{scope_id}:{biz_id} = batch_no EX 86400`；DB 使用 `idempotency_record` 的 `(scope_kind, scope_id, biz_id)` 唯一约束与 `expires_at` 兜底。`scope_kind='app'` 时 `scope_id` 必须绑定 `app_id`（`app_id IS NOT NULL AND scope_id = app_id::text`）；account/resend/web-legacy 等其它作用域不受该 CHECK 误伤。事务先删除同键过期记录，再创建批次和幂等记录；唯一冲突回查未过期原批次。`sms_batch.biz_id` 不得永久唯一，确保 24h 后可复用
 8. 手机号校验统一 `^1\d{10}$`（11 位）
 9. 状态机：
    - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→balance_blocked→queued(人工恢复)
@@ -59,7 +59,7 @@ deploy/
 10. 类别策略集中在 `services/category.py` 单点实现（队列路由/时间窗/黑名单开关/审批阈值/QPS 预留），禁止散落 if-else
 11. **配额/频控事实账本（v1.6.5）**：PostgreSQL `usage_reservation` 与明细表是唯一事实源，状态至少覆盖 reserved/committed/release_requested/released/uncertain；同一稳定请求、释放事件和投影版本必须受唯一约束。Redis 只保存带版本的绝对值投影，可从事实重建；marker 缺失、重建中或 Redis 不可确认时发送入口必须 503 失败关闭，禁止把缺失计数当零。驳回/过期/取消/全量剔除/入库失败/幂等复用统一以事务性 Outbox 请求释放，重复消费不得二次回补；号码频控仅 counted=true 的已接受号码计数，HMAC 轮换通过不可逆 alias 归并同一主体
 12. 审批回避：接口层校验 approver != applicant（403），DB CHECK 兜底
-13. 回调安全：URL 保存与出站前双重校验内网 CIDR 白名单；签名 `X-Sms-Signature = hex(HMAC-SHA256(callback_secret, f"{timestamp}.{raw_body}"))` + `X-Sms-Timestamp`；5s 超时；重试 60/300/900/3600/3600s 共 5 次后置 dead 并告警
+13. 回调安全：URL 保存与出站前双重校验内网 CIDR 白名单；签名 `X-Sms-Signature = hex(HMAC-SHA256(callback_secret, f"{timestamp}.{raw_body}"))` + `X-Sms-Timestamp`；5s 超时；失败回调（含 4xx，不只 5xx）按 60/300/900/3600/3600s 重试 5 次后置 dead 并告警
 14. 写操作全部埋审计（`@audited` 装饰器），审计不得吞异常；**七个运行角色均无 audit_log UPDATE/DELETE/TRUNCATE 权限，且不得是 owner/超级用户；只读 metrics 也无 INSERT**（见 deploy/database-roles.md）。迁移只由独立 sms_owner/migrate 服务执行；应用代码中出现对 audit_log 的 UPDATE/DELETE 即为缺陷
 15. 时间一律 TIMESTAMPTZ / ISO8601 +08:00；禁 naive datetime
 16. API 错误统一 `{code, message, detail}`；禁止裸 500
@@ -81,7 +81,7 @@ deploy/
 32. **告警 log-sink（v1.6）**：告警渠道配置为空 ⇒ 只落 alert_log+日志，不外呼；所有告警测试断言 alert_log 行，任何测试不得请求企微/SMTP
 33. **令牌桶算法（v1.6）**：单桶容量 vendor_qps、每秒整补；取令牌为 Redis Lua 原子操作，入参 lane∈{realtime,bulk}；bulk 仅当 剩余令牌 > reserved_realtime_qps 时可取，realtime 无此限制；唯一实现 core/ratelimit.py
 34. **beat 调度读取时机（v1.6）**：任务间隔在 beat 启动时读 sys_config（缺省用建表默认值），修改间隔需重启 beat 容器生效（界面提示此点）；禁止实现动态热更调度
-35. **迁移基准（v1.6）**：Alembic 首个迁移必须以 `schema.sql` 为唯一输入，在同一事务内通过内置解析器按顶层分号无损切分执行，并以逐字重组测试保证原文不变；此后变更 autogenerate 且同步回写 schema.sql 注释版本；scripts_support/check_migration.py 以 sms_owner 分别构建空库，比对两种建法的表/列/索引/约束集合，差异即失败；七个运行角色均不得具备 DDL 权限，未来表不得默认授权
+35. **迁移基准（v1.6）**：Alembic 首个迁移必须以 `schema.sql` 为唯一输入，在同一事务内通过内置解析器按顶层分号无损切分执行，并以逐字重组测试保证原文不变。此后变更必须**手写** Alembic 迁移，并同步回写 `schema.sql` 注释版本；`models/` 不承载声明式 SQLAlchemy metadata，**禁止**把 `alembic revision --autogenerate` 当作权威来源。`scripts_support/check_migration.py` 以 sms_owner 分别构建空库，比对 schema.sql 与完整 Alembic 两种建法的表/列/索引/约束集合，差异即失败；七个运行角色均不得具备 DDL 权限，未来表不得默认授权
 36. **前端资源自包含（v1.6）**：字体经 npm 包（@fontsource/ibm-plex-mono 等）或系统栈回退，构建产物不得引用任何运行时外部 CDN
 37. **敏感中间产物（v1.6）**：callback_task 只存消息引用与无 PII 元数据，投递时临时构造 body；import 号码逐条落 import_phone 三列；剔除清单只含 phone_mask+原因；decrypted 导出文件仍须 AES-GCM 密文落盘、下载时流式解密
 38. **真实联调控制台与受控 API UAT（v1.6.3）**：单机开发测试环境的正式 Key 安装/轮换、加密测试号码管理、激活/暂停/恢复和页面单号码 UAT 的正常入口只能是 admin 的 `/configs`「真实联调」页。高风险操作按当前 Provider 二次认证并签发 5 分钟单用途单次令牌；普通 API 只转发浏览器密文，经固定 Unix Socket 调用 root 管理的 `vendor-control-agent`，不得获得 root、sudo 或 Docker Socket。测试号码以 PostgreSQL 的 `phone_enc/phone_hmac/phone_mask/key_version` 为唯一事实源；live-test 模式下普通发送 API/Web 必须返回 `VENDOR_TEST_CONSOLE_ONLY`。唯一应用侧真实发送例外是 `POST /api/v1/messages/uat-send`：必须使用有效 `X-Api-Key`，仅通知（`notice`）直接内容或已审核模板（`template_id`+`template_params`）、仅一个 active 已登记号码、必填 1–32 位 `biz_id`，禁止定时、验证码、营销和额外字段；必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码，所有保留版本 digest 必须完全匹配，最后只把加密四元组交给既有 pipeline。worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，且 queued/sending 测试批次作为维护租约，终态前禁止停用或删除；API 发现控制状态损坏或过期必须原子写入两个独立 agent-stale critical pause 键，写入未确认即保持 503 且不得继续。页面与 API UAT 共同受每日 100 个计费条、uncertain 占额、critical pause、应用限流和 24h 幂等约束
@@ -103,18 +103,23 @@ deploy/
 |---|---|---|
 | INVALID_PARAM | 400 | 参数校验失败 |
 | UNAUTHORIZED | 401 | Key/JWT 无效或已吊销 |
+| STEP_UP_REQUIRED | 401 | 高风险操作缺少有效二次认证 |
+| STEP_UP_EXPIRED | 401 | 二次认证令牌已过期或已使用 |
 | FORBIDDEN | 403 | 角色/数据权限不足 |
+| AUTH_PROVIDER_DISABLED | 403 | 所选认证源未启用 |
 | CATEGORY_NOT_ALLOWED | 403 | 应用无该消息类别权限 |
 | SELF_APPROVAL_DENIED | 403 | 审批回避：不能审批本人提交 |
 | IP_NOT_ALLOWED | 403 | 来源 IP 不在应用白名单 |
+| VENDOR_TEST_CONSOLE_ONLY | 403 | live-test 下普通发送入口关闭，仅真实联调控制台/UAT |
+| VENDOR_TEST_MODE_REQUIRED | 403 | 该操作仅允许在受控真实联调模式执行 |
 | NOT_FOUND | 404 | 资源不存在 |
 | STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
+| IDEMPOTENCY_CONFLICT | 409 | 同一幂等键已用于不同请求 |
 | ACCOUNT_SOURCE_CONFLICT | 409 | 规范化登录名已由其他认证源先占用 |
 | LAST_ADMIN_PROTECTED | 409 | 禁止停用或降级最后一个有效管理员 |
 | PROVIDER_CONFIG_UNTESTED | 409 | 当前认证源草稿尚未通过连接测试 |
 | PROVIDER_CONFIG_STALE | 409 | 测试期间认证源草稿已发生变化 |
 | ACCOUNT_LOCKED | 423 | 登录账号因连续失败被临时锁定 |
-| AUTH_SESSION_UNAVAILABLE | 503 | 数据库权威会话投影或 Redis 吊销/轮换状态不可用 |
 | SENSITIVE_WORD | 422 | 敏感词命中(block) |
 | PASSWORD_POLICY_VIOLATION | 422 | 本地密码不符合长度、字符类别或用户名限制 |
 | INVALID_PROVIDER_CONFIG | 422 | 认证源非敏感配置格式或范围无效 |
@@ -123,9 +128,17 @@ deploy/
 | ALL_FILTERED | 422 | 号码全部被去重/黑名单/频控剔除 |
 | QUOTA_EXCEEDED | 429 | 日配额不足 |
 | RATE_LIMITED | 429 | 请求频率超限 / 登录IP封禁 |
+| INTERNAL_ERROR | 500 | 结构化内部错误（禁止裸 500） |
+| VENDOR_ERROR | 502 | 厂商适配透传/测试控制台（附厂商数值 code）；不是通用业务 API 的默认 502 |
+| AUTH_SESSION_UNAVAILABLE | 503 | 数据库权威会话投影或 Redis 吊销/轮换状态不可用 |
+| AUTH_PROVIDER_UNAVAILABLE | 503 | 所选认证源暂时不可用 |
+| DEPENDENCY_UNAVAILABLE | 503 | 必要依赖不可用 |
+| CONTROL_AGENT_UNAVAILABLE | 503 | vendor-control-agent 或控制状态不可用 |
+| CONTROL_AGENT_PAUSE_UNAVAILABLE | 503 | agent-stale critical pause 键写入未确认 |
+| IMPORT_UNAVAILABLE | 503 | 导入登记超时或导入面不可用 |
+| SECURITY_DAILY_UNAVAILABLE | 503 | 安全日报控制面或数据源不可用 |
 | USAGE_PROJECTION_UNAVAILABLE | 503 | 配额/频控事实投影缺失、重建中或 Redis 不可确认 |
-| VENDOR_ERROR | 502 | 厂商侧错误(附厂商code/msg) |
-| BALANCE_BLOCKED | 503 | 余额不足队列暂停 |
+| BALANCE_BLOCKED | 503 | 批次/队列状态与熔断结果（余额不足暂停）；不是普通发送 HTTP 响应 |
 
 注：幂等命中不是错误，返回 200 + `idempotent: true`；营销窗外转定时不是错误，返回 200 + `deferred_reason`。
 
@@ -140,7 +153,9 @@ celery -A app.tasks worker -Q callback -l info      # 结果回调
 celery -A app.tasks beat -l info                    # 单实例
 uvicorn app.vendor.mock_server:app --port 9028
 pytest -x -q                                        # VENDOR_MOCK=1 默认
-alembic revision --autogenerate -m "xxx" && alembic upgrade head
+# 禁止 alembic revision --autogenerate（models/ 无声明式 metadata）
+# 手写 backend/migrations/versions 新迁移，同步 schema.sql 后：
+#   cd backend && uv run python scripts_support/check_migration.py
 ```
 
 ## 附录：厂商接口
@@ -150,6 +165,7 @@ alembic revision --autogenerate -m "xxx" && alembic upgrade head
 - 全部 POST + JSON 包络 `{code, msg, data}`；请求体携带 secretName/secretKey
 - 退避重试：429/5002/5003（指数 1/2/4/8/16s ≤5次）；延迟重试：1011(30min)、10010(5min)
 - 熔断暂停：999 余额不足、1000/1009/5000/10003/10004（crit 告警 + 双队列暂停）
+- 1010 IP 校验失败：仅 crit 告警、**不暂停**队列（以 `docs/vendor-api.md` 为准）
 - 缩片重试：1006 折半 vendor_batch_size 一次
 - **HTTP 超时/网络异常 → chunk uncertain，禁自动重发**（reconcile 按 customId 在 raw_vendor_log 比对修复）
 - 其余参数类错误 → chunk failed 不重试，记录 code/msg

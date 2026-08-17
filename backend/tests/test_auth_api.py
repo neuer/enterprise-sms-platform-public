@@ -411,6 +411,7 @@ def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
     settings = Settings(
         _env_file=None,
         environment="production",
+        trusted_hosts="testserver,sms.example.test",
         debug=False,
         auth_mock=False,
         vendor_mock=False,

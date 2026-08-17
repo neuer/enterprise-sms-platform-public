@@ -12,6 +12,7 @@ import {
   type BillingPreview,
   type Category,
   type ImportResult,
+  type SendResult,
   type WebMessagePayload,
 } from "../api/webMessages"
 import { listTemplates, type SmsTemplate } from "../api/templates"
@@ -83,6 +84,24 @@ const submitLabel = computed(() => {
   if (preview.value?.approval_required) return "提交审批"
   return form.scheduledAt ? "安排发送" : "立即发送"
 })
+
+const sendStatusLabel: Record<SendResult["status"], string> = {
+  queued: "排队中",
+  scheduled: "已排期",
+  pending_approval: "待审批",
+}
+
+function deferredReasonText(reason: string): string {
+  if (reason === "market_window") return "超出营销发送时间窗，已转为定时发送"
+  return `窗外转定时原因：${reason}`
+}
+
+function sendSuccessText(result: SendResult): string {
+  const parts = [`批次 ${result.batch_no} 已受理，状态：${sendStatusLabel[result.status]}`]
+  if (result.idempotent) parts.push("本次为幂等命中，返回历史批次，未重复发送")
+  if (result.deferred_reason) parts.push(deferredReasonText(result.deferred_reason))
+  return parts.join("。")
+}
 
 function contentPayload() {
   if (form.contentMode === "content") return { content: form.content }
@@ -212,7 +231,7 @@ async function submit(): Promise<void> {
   else payload.mobiles = pastedMobiles.value
   try {
     const result = await sendWebMessage(payload)
-    successMessage.value = `批次 ${result.batch_no} 已受理，状态：${result.status}`
+    successMessage.value = sendSuccessText(result)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "发送受理失败"
   } finally {

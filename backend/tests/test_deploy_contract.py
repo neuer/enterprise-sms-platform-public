@@ -435,7 +435,7 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
     compose = load_compose()
     command = compose["services"]["api"]["command"]
     assert "--proxy-headers" in command
-    assert "--forwarded-allow-ips 172.31.250.3" in command
+    assert "--forwarded-allow-ips ${SMS_WEB_INGRESS_IPV4:-172.31.250.3}" in command
     assert "TRUSTED_PROXY_IPS" not in command
     assert "*" not in command
     raw_compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")

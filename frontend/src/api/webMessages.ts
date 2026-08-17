@@ -58,6 +58,8 @@ export interface SendResult {
   status: "queued" | "scheduled" | "pending_approval"
   accepted: number
   quota_cost: number
+  idempotent: boolean
+  deferred_reason: string | null
 }
 
 interface ApiErrorBody {

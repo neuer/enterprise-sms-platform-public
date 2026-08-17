@@ -141,7 +141,14 @@ describe("人工发送工作台", () => {
           ok: true,
           status: 200,
           headers: { get: () => null },
-          json: async () => ({ batch_no: "b1", status: "queued", accepted: 1, quota_cost: 1 }),
+          json: async () => ({
+            batch_no: "b1",
+            status: "queued",
+            accepted: 1,
+            quota_cost: 1,
+            idempotent: false,
+            deferred_reason: null,
+          }),
         }
       }
       return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
@@ -173,6 +180,90 @@ describe("人工发送工作台", () => {
 
     expect(sentBodies).toHaveLength(3)
     expect(sentBodies[2].biz_id).not.toBe(sentBodies[0].biz_id)
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it.each([
+    {
+      name: "普通受理",
+      result: {
+        batch_no: "b-new",
+        status: "queued" as const,
+        accepted: 1,
+        quota_cost: 1,
+        idempotent: false,
+        deferred_reason: null,
+      },
+      expected: "批次 b-new 已受理，状态：排队中",
+      unexpected: ["queued", "幂等命中", "窗外转定时"],
+    },
+    {
+      name: "幂等命中",
+      result: {
+        batch_no: "b-hit",
+        status: "queued" as const,
+        accepted: 1,
+        quota_cost: 1,
+        idempotent: true,
+        deferred_reason: null,
+      },
+      expected: "本次为幂等命中，返回历史批次，未重复发送",
+      unexpected: ["queued"],
+    },
+    {
+      name: "窗外转定时",
+      result: {
+        batch_no: "b-defer",
+        status: "scheduled" as const,
+        accepted: 1,
+        quota_cost: 1,
+        idempotent: false,
+        deferred_reason: "market_window",
+      },
+      expected: "超出营销发送时间窗，已转为定时发送",
+      unexpected: ["scheduled", "market_window"],
+    },
+  ])("成功提示：$name 使用中文并区分幂等与转定时", async ({ result, expected, unexpected }) => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const target = String(url)
+      if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
+        }
+      }
+      if (target.endsWith("/messages/send")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => result,
+        }
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
+    }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { category: string; mobilesText: string; content: string }
+    }
+    vm.form.category = "notice"
+    vm.form.mobilesText = "13800138000"
+    vm.form.content = "维护通知"
+    await wrapper.vm.$nextTick()
+    await wrapper.get("[data-testid='send-button']").trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(expected)
+    expect(wrapper.text()).toContain(`批次 ${result.batch_no} 已受理`)
+    for (const phrase of unexpected) {
+      expect(wrapper.text()).not.toContain(phrase)
+    }
+    wrapper.unmount()
     vi.unstubAllGlobals()
     sessionStorage.removeItem("sms_token")
   })

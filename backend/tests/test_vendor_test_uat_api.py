@@ -5,6 +5,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -207,7 +208,16 @@ def test_uat_api_rejects_multiple_or_missing_content_sources() -> None:
     }
 
 
-def test_uat_api_rejects_stale_or_blocked_state_before_creating_operation() -> None:
+def test_uat_api_rejects_stale_or_blocked_state_before_creating_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def pause(_settings: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.api.vendor_control_ready.pause_vendor_test_agent_stale_keys",
+        pause,
+    )
     http, uat, state = client(available=False)
 
     response = http.post(

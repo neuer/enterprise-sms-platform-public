@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import logging
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -237,14 +237,22 @@ class SqlJobRunRepository:
                     ),
                     {"job_name": job_name, "limit": limit},
                 )
-                failures = 0
-                for status in result.scalars():
-                    if status != "failed":
-                        break
-                    failures += 1
+                failures = consecutive_unfinished_count(result.scalars())
                 return failures
         finally:
             await engine.dispose()
+
+
+def consecutive_unfinished_count(statuses: Iterable[str]) -> int:
+    """连续失败含启动后未结束的 running，用于捕捉杀循环。"""
+
+    failures = 0
+    for status in statuses:
+        if status in {"failed", "running"}:
+            failures += 1
+            continue
+        break
+    return failures
 
 
 class JobTracker:
@@ -443,6 +451,13 @@ class JobHealthMonitor:
             stalled = latest is None or now - latest.started_at > timedelta(
                 seconds=spec.expect_interval_s * 2
             )
+            if (
+                latest is not None
+                and latest.status == "running"
+                and latest.finished_at is None
+                and now - latest.started_at > timedelta(seconds=spec.expect_interval_s)
+            ):
+                stalled = True
             if stalled:
                 # 同一缺失心跳事件保持去重；任务恢复后 started_at 会变化，
                 # 再次停摆必须形成新的告警，不能被上一事件的四小时窗口吞掉。

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from app.services.batch_query import BatchAccessScope
+from app.services.category import queue_for_category
 
 
 class StateConflict(RuntimeError):
@@ -89,7 +90,7 @@ class SchedulingService:
                 continue
             await self.publisher.enqueue(
                 batch.batch_no,
-                "bulk" if batch.category == "market" else "realtime",
+                queue_for_category(batch.category),
             )
         return len(batches)
 

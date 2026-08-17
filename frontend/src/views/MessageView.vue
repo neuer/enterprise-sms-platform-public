@@ -5,6 +5,7 @@ import { computed, ref } from "vue"
 
 import PhoneMask from "../components/PhoneMask.vue"
 import EmptyState from "../components/EmptyState.vue"
+import StatusTag from "../components/StatusTag.vue"
 import {
   decryptMessagePhone,
   getTimeline,
@@ -174,11 +175,11 @@ async function reveal(item: MessageItem): Promise<void> {
       <el-table-column label="时间 / 批次" min-width="205"><template #default="{ row }"><time>{{ formatTime(row.created_at) }}</time><code class="batch-code cell-sub">{{ row.batch_no }}</code></template></el-table-column>
       <el-table-column label="号码" min-width="175"><template #default="{ row }"><strong v-if="revealed[row.id]" class="revealed-phone">{{ revealed[row.id] }}</strong><PhoneMask v-else :value="row.phone" /><el-button v-if="canDecrypt && !revealed[row.id]" link type="primary" @click="reveal(row)">授权查看</el-button></template></el-table-column>
       <el-table-column label="类别 / 内容" min-width="260"><template #default="{ row }"><span :class="['category-mark', row.category]">{{ categoryLabel[row.category] || row.category }}</span><p class="message-content">{{ row.content }}</p></template></el-table-column>
-      <el-table-column label="状态" width="140"><template #default="{ row }"><el-tag :type="row.status === 'delivered' ? 'success' : row.status === 'failed' ? 'danger' : 'info'">{{ statusLabel[row.status] || row.status }}</el-tag><p v-if="showReport(row)" class="report-desc" :title="reportTip(row)">{{ row.report_desc }}</p></template></el-table-column>
+      <el-table-column label="状态" width="140"><template #default="{ row }"><StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" /><p v-if="showReport(row)" class="report-desc" :title="reportTip(row)">{{ row.report_desc }}</p></template></el-table-column>
       <el-table-column label="提交方" min-width="120"><template #default="{ row }">{{ row.sender || '—' }}</template></el-table-column>
       <template #empty><EmptyState :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'" :description="searched ? '可调整类别、状态或时间范围后重试。' : '输入完整手机号后查询跨批次收发轨迹。'" /></template>
     </el-table>
-    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><el-tag>{{ statusLabel[item.status] || item.status }}</el-tag></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><el-button v-if="canDecrypt" link type="primary" @click="reveal(item)">{{ revealed[item.id] || '授权查看' }}</el-button></footer></article></div>
+    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" /></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><el-button v-if="canDecrypt" link type="primary" @click="reveal(item)">{{ revealed[item.id] || '授权查看' }}</el-button></footer></article></div>
     <footer class="query-pagination"><span>共 {{ total }} 条记录</span><el-pagination v-if="total > 20" v-model:current-page="page" data-testid="message-pagination" :page-size="20" :total="total" layout="prev, pager, next" @current-change="changePage" /></footer>
   </el-card>
 
@@ -186,6 +187,6 @@ async function reveal(item: MessageItem): Promise<void> {
     <header v-if="timeline" class="phone-badges"><el-tag :type="timeline.badge.blacklisted ? 'danger' : 'success'" effect="dark">{{ timeline.badge.blacklisted ? '已在黑名单' : '未在黑名单' }}</el-tag><span v-if="timeline.badge.blacklist_source">来源 {{ timeline.badge.blacklist_source }}</span><strong>近30日 {{ timeline.badge.recv_30d }} 条</strong></header>
     <p v-if="timeline?.truncated" class="timeline-truncated">事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</p>
     <EmptyState v-if="!timeline?.events.length" :title="searched ? '该号码在所选条件下没有事件' : '尚未生成号码时间线'" :description="searched ? '可调整时间范围后重试。' : '输入完整手机号后，下行与用户回复会按日期排列。'" />
-    <section v-for="group in groupedEvents" :key="group.day" class="timeline-day"><h2>{{ group.day }}</h2><article v-for="event in group.events" :key="`${event.ts}-${event.direction}-${event.content}`" :class="['timeline-event', event.direction === 'in' && 'incoming']"><div class="timeline-dot"></div><header><strong>{{ event.direction === 'in' ? '↩ 用户回复' : categoryLabel[event.category || ''] || '平台下行' }}</strong><time>{{ formatTime(event.ts).slice(11) }}</time></header><p>{{ event.content }}</p><footer><code v-if="event.batch_no">{{ event.batch_no }}</code><el-tag v-if="event.status" size="small">{{ statusLabel[event.status] || event.status }}</el-tag><span>{{ event.sender }}</span></footer></article></section>
+    <section v-for="group in groupedEvents" :key="group.day" class="timeline-day"><h2>{{ group.day }}</h2><article v-for="event in group.events" :key="`${event.ts}-${event.direction}-${event.content}`" :class="['timeline-event', event.direction === 'in' && 'incoming']"><div class="timeline-dot"></div><header><strong>{{ event.direction === 'in' ? '↩ 用户回复' : categoryLabel[event.category || ''] || '平台下行' }}</strong><time>{{ formatTime(event.ts).slice(11) }}</time></header><p>{{ event.content }}</p><footer><code v-if="event.batch_no">{{ event.batch_no }}</code><StatusTag v-if="event.status" :status="event.status" :label="statusLabel[event.status] || event.status" /><span>{{ event.sender }}</span></footer></article></section>
   </section>
 </template>

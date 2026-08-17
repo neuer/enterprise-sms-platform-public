@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.approvals import router as approvals_router
@@ -37,6 +39,7 @@ from app.core.correlation import CorrelationIdMiddleware
 from app.core.errors import (
     ApiError,
     api_error_handler,
+    http_exception_handler,
     internal_error_handler,
     validation_error_handler,
 )
@@ -134,10 +137,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         startup_check=startup_gate.ensure,
     )
     application.add_middleware(CorrelationIdMiddleware)
+    hosts = selected_settings.trusted_host_list
+    if hosts != ["*"]:
+        application.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     application.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     application.add_exception_handler(
         RequestValidationError,
         validation_error_handler,  # type: ignore[arg-type]
+    )
+    application.add_exception_handler(
+        StarletteHTTPException,
+        http_exception_handler,  # type: ignore[arg-type]
     )
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(auth_router)

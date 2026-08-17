@@ -678,8 +678,7 @@ async def test_controlled_api_uat_fails_closed_and_sets_critical_pause_when_stat
         pauses.append("agent-stale")
 
     monkeypatch.setattr(
-        messages_module,
-        "_pause_vendor_test_agent_stale",
+        "app.api.vendor_control_ready.pause_vendor_test_agent_stale_keys",
         pause,
         raising=False,
     )
@@ -713,8 +712,7 @@ async def test_controlled_api_uat_not_ready_does_not_set_critical_pause(
         raise AssertionError("未激活或人工暂停不得升级为 critical pause")
 
     monkeypatch.setattr(
-        messages_module,
-        "_pause_vendor_test_agent_stale",
+        "app.api.vendor_control_ready.pause_vendor_test_agent_stale_keys",
         unexpected_pause,
     )
 
@@ -746,7 +744,10 @@ async def test_controlled_api_uat_pause_store_failure_still_fails_closed(
     async def failed_pause(_settings: object) -> None:
         raise ConnectionError("sensitive backend detail")
 
-    monkeypatch.setattr(messages_module, "_pause_vendor_test_agent_stale", failed_pause)
+    monkeypatch.setattr(
+        "app.api.vendor_control_ready.pause_vendor_test_agent_stale_keys",
+        failed_pause,
+    )
 
     with pytest.raises(ApiError) as captured:
         await messages_module._require_vendor_test_api_ready()

@@ -94,7 +94,11 @@ async def _approver(
     return claims
 
 
-@router.get("", response_model=ApprovalPage)
+@router.get(
+    "",
+    response_model=ApprovalPage,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+)
 async def list_approvals(
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],

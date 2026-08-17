@@ -117,6 +117,7 @@ async def test_cleanup_is_one_transaction_and_never_touches_audit_log() -> None:
     sql, params = connection.calls[0]
     assert result.total == 21
     assert "raw_vendor_log" in sql and "unmatched_report" in sql
+    assert "processed = TRUE" in sql
     assert "import_task" in sql and "idempotency_record" in sql and "job_run" in sql
     assert "purged_consumed_import_phones" in sql
     assert "payload_purged_at=now()" in sql

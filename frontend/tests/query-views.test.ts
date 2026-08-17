@@ -76,6 +76,9 @@ describe("批次与号码查询", () => {
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.text()).toContain("operator-a")
     expect(wrapper.text()).toContain("单条计费条")
+    expect(wrapper.text()).toContain("构成比（送达 / 失败 / 其余 占受理总数），不是成功率")
+    expect(wrapper.text()).not.toContain(`${Math.round(1 / 2 * 100)}%`)
+    expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
     expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("失败号码重发")
     await wrapper.get("[data-testid='batch-phone-decrypt-9']").trigger("click")
     await flushPromises()
@@ -239,8 +242,12 @@ describe("批次与号码查询", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
     expect(wrapper.text()).not.toContain("13800138000")
-    expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages?phone=13800138000&page=1")
+    expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages")
+    expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST" }))
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ phone: "13800138000", page: 1 })
+    expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     const reveal = wrapper.findAll("button").find((item) => item.text().includes("授权查看"))
     await reveal!.trigger("click")
     await flushPromises()
@@ -276,6 +283,7 @@ describe("批次与号码查询", () => {
 
     expect(wrapper.text()).toContain("UNDELIV")
     expect(wrapper.find(".report-desc").exists()).toBe(true)
+    expect(wrapper.find(".status-tag--failed").exists()).toBe(true)
 
     const selects = wrapper.findAllComponents(ElSelect)
     selects[0].vm.$emit("update:modelValue", "notice")
@@ -285,23 +293,34 @@ describe("批次与号码查询", () => {
     selects[1].vm.$emit("change", "failed")
     await flushPromises()
 
-    expect(fetch.mock.calls[1][0]).toContain("category=notice")
-    expect(fetch.mock.calls[1][0]).not.toContain("status=")
-    expect(fetch.mock.calls[2][0]).toContain("category=notice")
-    expect(fetch.mock.calls[2][0]).toContain("status=failed")
-    expect(fetch.mock.calls[2][0]).toContain("page=1")
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
+      phone: "13800138000",
+      category: "notice",
+      page: 1,
+    })
+    expect(JSON.parse(String(fetch.mock.calls[2][1].body))).toEqual({
+      phone: "13800138000",
+      category: "notice",
+      status: "failed",
+      page: 1,
+    })
+    expect(String(fetch.mock.calls[2][0])).not.toContain("?")
 
     const pager = wrapper.getComponent(ElPagination)
     pager.vm.$emit("update:currentPage", 2)
     pager.vm.$emit("current-change", 2)
     await flushPromises()
-    expect(fetch.mock.calls[3][0]).toContain("page=2")
-    expect(fetch.mock.calls[3][0]).toContain("status=failed")
+    expect(JSON.parse(String(fetch.mock.calls[3][1].body))).toEqual({
+      phone: "13800138000",
+      category: "notice",
+      status: "failed",
+      page: 2,
+    })
     vi.unstubAllGlobals()
   })
 
   it("时间线展示号码徽标并将用户回复标为回声", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
+    const fetch = vi.fn().mockResolvedValue(response({
       badge: { blacklisted: true, blacklist_source: "reply_optout", recv_30d: 3 },
       truncated: true,
       events: [{
@@ -313,12 +332,17 @@ describe("批次与号码查询", () => {
         status: null,
         sender: "用户",
       }],
-    })))
+    }))
+    vi.stubGlobal("fetch", fetch)
     const wrapper = mount(MessageView, { global: { plugins: [createPinia(), ElementPlus] } })
     await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
     const timeline = wrapper.findAll("button").find((item) => item.text().includes("时间线"))
     await timeline!.trigger("click")
     await flushPromises()
+    expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages/timeline")
+    expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST" }))
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({ phone: "13800138000" })
+    expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     expect(wrapper.text()).toContain("已在黑名单")
     expect(wrapper.text()).toContain("近30日 3 条")
     expect(wrapper.text()).toContain("↩ 用户回复")

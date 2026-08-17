@@ -203,8 +203,8 @@ class CryptoService:
         except KeyError:
             raise ValueError(f"unknown key version: {version}") from None
 
-    def encrypt_bytes(self, plaintext: bytes) -> EncryptedValue:
-        """使用旧版通用 AAD 加密；仅供历史兼容，新增持久化必须用上下文接口。"""
+    def encrypt_bytes_legacy(self, plaintext: bytes) -> EncryptedValue:
+        """旧版通用 AAD 加密；禁止新持久化调用，仅历史兼容。"""
 
         version = self.active_version
         nonce = os.urandom(NONCE_SIZE)
@@ -215,7 +215,7 @@ class CryptoService:
         )
         return EncryptedValue(nonce + ciphertext, version)
 
-    def decrypt_bytes(self, payload: bytes, key_version: int) -> bytes:
+    def decrypt_bytes_legacy(self, payload: bytes, key_version: int) -> bytes:
         """解密旧版通用 AAD 密文；用于迁移期双读。"""
 
         key = self._aes_key(key_version)
@@ -262,7 +262,7 @@ class CryptoService:
             )
         if not allow_legacy:
             raise ValueError("legacy ciphertext requires controlled migration")
-        return self.decrypt_bytes(payload, key_version)
+        return self.decrypt_bytes_legacy(payload, key_version)
 
     def decrypt_bound_with_legacy_migration(
         self,
@@ -289,12 +289,12 @@ class CryptoService:
     def encrypt_text(self, plaintext: str) -> EncryptedValue:
         """以 UTF-8 加密文本。"""
 
-        return self.encrypt_bytes(plaintext.encode("utf-8"))
+        return self.encrypt_bytes_legacy(plaintext.encode("utf-8"))
 
     def decrypt_text(self, payload: bytes, key_version: int) -> str:
         """解密并严格按 UTF-8 还原文本。"""
 
-        return self.decrypt_bytes(payload, key_version).decode("utf-8")
+        return self.decrypt_bytes_legacy(payload, key_version).decode("utf-8")
 
     def encrypt_bound_text(
         self,
@@ -336,14 +336,14 @@ class CryptoService:
             context,
         ).decode("utf-8")
 
-    def encrypt_packed_text(self, plaintext: str) -> bytes:
-        """把版本头与 AES-GCM 密文打包到单个 BYTEA 字段。"""
+    def encrypt_packed_text_legacy(self, plaintext: str) -> bytes:
+        """把版本头与旧版 AES-GCM 密文打包；禁止新持久化调用。"""
 
         encrypted = self.encrypt_text(plaintext)
         return encrypted.key_version.to_bytes(KEY_VERSION_BYTES, "big") + encrypted.payload
 
-    def decrypt_packed_text(self, packed: bytes) -> str:
-        """从单字段密文解析版本并解密，供无独立 key_version 的字段使用。"""
+    def decrypt_packed_text_legacy(self, packed: bytes) -> str:
+        """从单字段旧版密文解析版本并解密。"""
 
         if len(packed) <= KEY_VERSION_BYTES:
             raise ValueError("packed ciphertext payload is too short")

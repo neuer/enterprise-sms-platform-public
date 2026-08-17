@@ -22,6 +22,7 @@ from pydantic import (
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.messages import _error as _send_error
+from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
@@ -33,7 +34,7 @@ from app.core.errors import (
     internal_error_handler,
 )
 from app.core.runtime_resources import redis_client
-from app.core.sensitive_text import reject_phone_in_text
+from app.core.sensitive_text import reject_phone_identifier
 from app.services.billing_preview import BillingPreview
 from app.services.crypto import CryptoService
 from app.services.vendor_control_client import (
@@ -291,7 +292,7 @@ class UatMessageRequestModel(StrictModel):
     @field_validator("biz_id")
     @classmethod
     def validate_biz_id(cls, value: str) -> str:
-        reject_phone_in_text(value, field_name="biz_id")
+        reject_phone_identifier(value, field_name="biz_id")
         return value
 
     @model_validator(mode="after")
@@ -454,13 +455,8 @@ async def status(
     await _admin(request, facade, credentials)
     try:
         current = state.read_fresh()
-    except VendorControlStateUnavailable:
-        raise ApiError(
-            503,
-            "CONTROL_AGENT_UNAVAILABLE",
-            "真实联调控制代理状态不可用",
-            None,
-        ) from None
+    except VendorControlStateUnavailable as error:
+        await raise_vendor_control_unavailable(error)
     try:
         active_count = len(await recipients.list(include_disabled=False))
     except Exception:
@@ -875,13 +871,8 @@ async def reset_configuration(
         raise ApiError(401, "STEP_UP_EXPIRED", "二次认证已过期或已使用", None) from None
     try:
         current = state.read_fresh()
-    except VendorControlStateUnavailable:
-        raise ApiError(
-            503,
-            "CONTROL_AGENT_UNAVAILABLE",
-            "真实联调控制代理状态不可用",
-            None,
-        ) from None
+    except VendorControlStateUnavailable as error:
+        await raise_vendor_control_unavailable(error)
     inactive_ready = (
         current.mode == "inactive"
         and current.credential_configured
@@ -953,8 +944,8 @@ async def resume(
     claims, ip = await _admin(request, facade, credentials)
     try:
         pause_kind = state.read().pause_kind
-    except VendorControlStateUnavailable:
-        raise ApiError(503, "CONTROL_AGENT_UNAVAILABLE", "控制状态不可用", None) from None
+    except VendorControlStateUnavailable as error:
+        await raise_vendor_control_unavailable(error, message="控制状态不可用")
     if pause_kind is None:
         raise ApiError(409, "STATE_CONFLICT", "当前环境未暂停", None)
     if pause_kind == "daily":
@@ -1030,13 +1021,8 @@ async def preview_uat_message(
     await _admin(request, facade, credentials)
     try:
         state.require_fresh()
-    except VendorControlStateUnavailable:
-        raise ApiError(
-            503,
-            "CONTROL_AGENT_UNAVAILABLE",
-            "真实联调控制代理状态不可用",
-            None,
-        ) from None
+    except VendorControlStateUnavailable as error:
+        await raise_vendor_control_unavailable(error)
     try:
         return await service.preview(
             app_id=payload.app_id,
@@ -1082,13 +1068,8 @@ async def send_uat_message(
     claims, _ = await _admin(request, facade, credentials)
     try:
         state.require_fresh()
-    except VendorControlStateUnavailable:
-        raise ApiError(
-            503,
-            "CONTROL_AGENT_UNAVAILABLE",
-            "真实联调控制代理状态不可用",
-            None,
-        ) from None
+    except VendorControlStateUnavailable as error:
+        await raise_vendor_control_unavailable(error)
     operation_id = str(uuid4())
     try:
         record = await service.send(

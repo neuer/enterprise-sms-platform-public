@@ -172,7 +172,7 @@ def _translate(error: Exception) -> ApiError:
     if isinstance(error, AppNotFound):
         return ApiError(404, "NOT_FOUND", "应用不存在", None)
     if isinstance(error, InvalidAppConfig):
-        return ApiError(422, "INVALID_PARAM", str(error), None)
+        return ApiError(400, "INVALID_PARAM", str(error), None)
     if isinstance(error, CallbackValidationUnavailable):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, CallbackAuthorityBusy):
@@ -197,7 +197,7 @@ async def list_apps(
 @router.post(
     "",
     response_model=CreateAppResponse,
-    responses={422: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={400: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 @audited("app_create")
 async def create_app(
@@ -255,7 +255,7 @@ async def get_app(
     responses={
         404: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
-        422: ERROR_RESPONSE,
+        400: ERROR_RESPONSE,
         503: ERROR_RESPONSE,
     },
 )

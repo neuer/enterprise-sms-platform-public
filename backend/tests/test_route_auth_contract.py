@@ -6,6 +6,7 @@ from typing import Any
 from fastapi.routing import APIRoute
 
 from app.api.auth import bearer_scheme
+from app.api.metrics import authorize_metrics
 from app.core.apikey import optional_api_app, require_api_app
 from app.main import app
 
@@ -17,6 +18,11 @@ PUBLIC_WEB_ROUTES = frozenset(
         "/api/v1/web/auth/refresh",
         "/api/v1/web/auth/password/initial",
     }
+)
+PUBLIC_SYSTEM_ROUTES = frozenset({"/livez", "/healthz", "/readyz"})
+PUBLIC_DOCS_ROUTES = frozenset({"/docs", "/redoc", "/openapi.json"})
+AUTHENTICATORS = frozenset(
+    {bearer_scheme, require_api_app, optional_api_app, authorize_metrics}
 )
 
 
@@ -40,11 +46,18 @@ def test_every_protected_route_declares_its_authentication_dependency() -> None:
 
     for route in _api_routes(app):
         calls = _dependency_calls(route.dependant)
+        if route.path in PUBLIC_WEB_ROUTES or route.path in PUBLIC_SYSTEM_ROUTES:
+            assert bearer_scheme not in calls
+            assert authorize_metrics not in calls
+            continue
+        if route.path in PUBLIC_DOCS_ROUTES or route.path.startswith("/docs"):
+            continue
+        if route.path == "/metrics":
+            assert authorize_metrics in calls, route.path
+            continue
+        assert calls & AUTHENTICATORS, route.path
         if route.path.startswith("/api/v1/web/"):
-            if route.path in PUBLIC_WEB_ROUTES:
-                assert bearer_scheme not in calls
-            else:
-                assert bearer_scheme in calls, route.path
+            assert bearer_scheme in calls, route.path
         elif route.path in {
             "/api/v1/messages/send",
             "/api/v1/messages/uat-send",

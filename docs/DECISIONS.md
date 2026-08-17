@@ -58,10 +58,11 @@
 - 原因：PRD 指定应用×类别 Redis 配额计数，但原键只有应用总量；`stat_daily` 又没有小时维度，无法还原历史同一时刻。完整日均值比按时间比例估算更保守，优先满足双条件防误报，同时不扫描业务明细表或新增原始采集链路。
 - 影响：`services/quota.py`、所有预扣/回补协议、`services/anomaly*.py`、tracked beat、T4.3 的 app×category `total_segments` 聚合。
 
-## D010 手机号 GET 查询的无 PII 访问日志
+## D010 手机号查询的无 PII 访问日志
 
-- 决策：保留 PRD/OpenAPI 指定的 `GET /web/messages?phone=` 与 timeline 契约；Nginx 使用只含 `$uri`、不含 query string 的专用 access log，Uvicorn 关闭默认 access log。应用只把手机号转换为多版本 HMAC 候选后传给仓储，业务日志不记录原值。
-- 原因：接口契约要求手机号作为 GET query，但默认 Nginx/Uvicorn access log 会记录完整请求目标，直接违反“日志不得留手机号明文”。用路径级访问日志保留状态与时延可观测性，同时移除 query 泄露面。
+- 状态：GET query 号码契约已由 D072 的 POST 请求体取代；Nginx `pii_safe` 与 uvicorn `--no-access-log` 仍是 PII 硬约束。
+- 决策：号码精确查询不得把明文手机号放进 query string。Nginx 使用只含 `$uri`、不含 query string 的专用 access log（`pii_safe`），禁止改回 `$request`/`$request_uri`；Uvicorn 关闭默认 access log。应用只把手机号转换为多版本 HMAC 候选后传给仓储，业务日志不记录原值。
+- 原因：默认 Nginx/Uvicorn access log 会记录完整请求目标，直接违反“日志不得留手机号明文”。用路径级访问日志保留状态与时延可观测性，同时移除 query 泄露面。
 - 影响：`deploy/nginx.conf`、`deploy/docker-compose.yml`、`backend/Dockerfile`、查询服务安全测试与运维日志口径。
 
 ## D011 导出采用独立认证分帧 AES-GCM 文件
@@ -365,7 +366,7 @@
   OpenAPI 与真实 PostgreSQL 故障/并发门禁。Redis 故障不再影响首次改密，既有
   access/refresh 仍由数据库权威安全版本立即失效。
 
-## D048 Bearer 会话与高风险令牌使用分级浏览器边界
+## D048 Bearer access 与 HttpOnly refresh Cookie（含同源 CSRF 补偿）
 
 - 状态：已修订。原「access/refresh 均仅存 `sessionStorage`、不引入 Cookie/CSRF」表述
   由本条现行正文取代，并与 `#107`/`#126`/`#140` 实现及 `SECURITY.md` 对齐。
@@ -396,7 +397,8 @@
 - 决策：生产 callback 只接受 HTTPS，可选受控 CA/mTLS；每次投递重新解析 DNS 后固定
   已批准 IP，保留原 Host/SNI，禁止重定向。固定 IP 请求禁用 keep-alive，确保共享 IP 上
   每个逻辑主机重新完成证书/SNI 校验；连接并发、超时、响应头和正文仍有硬上限。
-  callback task 创建时固化 event ID、secret 密文/密钥版本与签名协议版本。
+  callback task 创建时固化 event ID、secret 密文/密钥版本与签名协议版本。失败回调
+  （含 4xx，不只 5xx）按 60/300/900/3600/3600s 重试 5 次后置 dead 并告警。
 - 密文边界：新 AES-GCM envelope 把 schema/key version、domain、table、column 与不可变
   object ID 编入规范 AAD；phone、短信正文、callback secret、vendor raw 与 export frame
   分域。SMSX2 导出帧另绑定 task、lease、frame index 和 data/terminal 类型，拒绝重排、
@@ -676,7 +678,8 @@
 - 原因：内部系统主要通过 X-Api-Key 接入，密钥泄露后 IP 白名单是最直接的止损边界；
   强制点放在唯一认证依赖内可避免散落 if-else，也满足“认证方式不得按路径猜测”的契约。
   IP 来源依赖既有可信代理契约（外部 TLS 终结器必须剥离并重写 XFF/X-Real-IP，
-  内部 Nginx 仅透传、uvicorn `--forwarded-allow-ips` 固定 172.31.250.3），不需要新增
+  内部 Nginx 仅透传、uvicorn `--forwarded-allow-ips` 使用
+  `${SMS_WEB_INGRESS_IPV4:-172.31.250.3}`），不需要新增
   环境变量或中间件；未来接 CDN/WAF 时必须同步调整外部代理头重写与部署契约测试。
 - 影响：schema/migration、`core/apikey.py`、应用管理 API 与前端、openapi/PRD/AGENTS
   错误码表、单元/API/集成/E2E 与 UAT-29 用例；轮换后新旧 Key 受同一白名单约束。
@@ -791,3 +794,33 @@
 - 影响：2000ms 仅保留灾难性尾延迟上界，不再作为亚秒容量达标证据；任何交付说明必须继续
   报告实测 P50/P90/P95/P99，不得把门禁通过表述为性能优化或生产容量证明。阈值仍是固定
   代码常量，禁止环境变量覆盖；HTTP 零失败、verify 和排空门禁不得随之削弱。
+
+## D070 内部受控解密白名单扩充
+
+- 决策：规则 2 的内部受控解密白名单在 raw 解析/重放与 callback 投递之外，明确包括：
+  发送下发（worker 靠近厂商边界时内存解密）、UAT 定位（全版本 HMAC 匹配后只把加密四元组
+  交给 pipeline），以及退订入黑名单（reply optout：内存解密后经 `protect_phone` 重加密
+  写入黑名单，不回写明文）。对外仍只允许详情按角色查看与授权导出。
+- 原因：这三类路径已经在发送、回复加黑和真实联调中受控使用明文瞬态；文档若只写 raw/callback
+  会造成实现被误判为违规，或后续路径把明文再次持久化。
+- 影响：AGENTS 规则 2、黑名单/发送/UAT 边界测试与审计口径。明文仍严禁进入任何持久层。
+
+## D071 遗留 Redis 直改补偿仅迁移期有效
+
+- 决策：`services/quota.py` 中直接改 Redis 计数的补偿路径只覆盖迁移期旧批次；新批次必须
+  走 PostgreSQL `usage_reservation` 事实账本与带版本的绝对值投影（见规则 11 / D036）。
+  不得为新流量恢复“只改 Redis”的预扣/回补。
+- 原因：删除该遗留代码会切断尚未切完账本的旧批次补偿；若继续把它当成主路径，则 Redis
+  故障或投影重建无法从 PostgreSQL 事实恢复。
+- 影响：配额补偿、housekeeping/Outbox 释放与迁移观察窗口。观察结束后只允许删除死代码，
+  不得把 Redis 直改重新产品化。
+
+## D072 号码精确查询改为 POST 请求体
+
+- 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、
+  `POST /api/v1/web/messages/timeline` 与 `POST /api/v1/web/replies` 改为 JSON 请求体；
+  手机号 pattern 仍为 `^1\d{10}$`，时间范围/分页等既有筛选字段一并进入 body，不再走 query。
+  Nginx `pii_safe` 与 uvicorn `--no-access-log` 继续作为 PII 硬约束。
+- 原因：GET query 依赖访问日志阉割才能避免明文号码落盘；改 POST 后号码离开 URL，与规则 2
+  一致，且不削弱时间范围等既有非 PII 筛选。
+- 影响：OpenAPI、Web 查询页、回复列表与查询 API。

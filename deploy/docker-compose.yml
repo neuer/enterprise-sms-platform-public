@@ -231,7 +231,7 @@ services:
       migrate: { condition: service_completed_successfully }
       redis-auth: { condition: service_healthy }
       redis-control: { condition: service_healthy }
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --no-access-log --proxy-headers --forwarded-allow-ips 172.31.250.3
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --no-access-log --proxy-headers --forwarded-allow-ips ${SMS_WEB_INGRESS_IPV4:-172.31.250.3}
     networks:
       default: {}
       ingress: { ipv4_address: "${SMS_API_INGRESS_IPV4:-172.31.250.2}" }

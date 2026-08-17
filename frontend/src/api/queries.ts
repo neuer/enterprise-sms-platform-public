@@ -136,25 +136,34 @@ export interface MessageSearchFilters {
   page?: number
 }
 
-function phoneQuery(phone: string, filters: MessageSearchFilters = {}): string {
-  const query = new URLSearchParams({ phone })
-  if (filters.start) query.set("start", filters.start)
-  if (filters.end) query.set("end", filters.end)
-  if (filters.category) query.set("category", filters.category)
-  if (filters.status) query.set("status", filters.status)
-  if (filters.page) query.set("page", String(filters.page))
-  return query.toString()
+function jsonPost<T>(path: string, body: Record<string, string | number | undefined>): Promise<T> {
+  const payload: Record<string, string | number> = {}
+  for (const [key, value] of Object.entries(body)) {
+    if (value !== undefined) payload[key] = value
+  }
+  return apiRequest<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
 }
 
 export function searchMessages(
   phone: string,
   filters: MessageSearchFilters = {},
 ): Promise<MessagePage> {
-  return apiRequest<MessagePage>(`/messages?${phoneQuery(phone, filters)}`, { method: "GET" })
+  return jsonPost<MessagePage>("/messages", {
+    phone,
+    start: filters.start,
+    end: filters.end,
+    category: filters.category,
+    status: filters.status,
+    page: filters.page,
+  })
 }
 
 export function getTimeline(phone: string, start?: string, end?: string): Promise<TimelineResult> {
-  return apiRequest<TimelineResult>(`/messages/timeline?${phoneQuery(phone, { start, end })}`, { method: "GET" })
+  return jsonPost<TimelineResult>("/messages/timeline", { phone, start, end })
 }
 
 export function decryptMessagePhone(id: number): Promise<{ phone: string }> {

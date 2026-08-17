@@ -58,10 +58,12 @@ def test_baseline_path_requires_multiplier_and_absolute_minimum_together() -> No
     )
 
 
-def test_incomplete_baseline_uses_five_times_absolute_fallback() -> None:
+def test_incomplete_baseline_uses_dual_condition_when_history_exists() -> None:
     config = AnomalyConfig(True, multiplier=3, min_total=500)
 
-    assert not is_anomalous(sample(current=2499, baseline_days=6), config)
+    assert is_anomalous(sample(current=2499, baseline_days=6), config)
+    assert not is_anomalous(sample(current=499, baseline_days=6), config)
+    assert not is_anomalous(sample(current=2499, baseline_days=0, seven_day_total=0), config)
     assert is_anomalous(sample(current=2500, baseline_days=0, seven_day_total=0), config)
 
 

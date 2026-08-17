@@ -156,7 +156,7 @@ def test_release_report_is_complete_atomic_and_private(tmp_path: Path) -> None:
     assert report["gate_type"] == "release"
     assert report["candidate_commit"] == COMMIT
     assert report["source"]["git_sha"] == COMMIT
-    assert report["source"]["schema_revision"] == "0066_security_findings_hardening"
+    assert report["source"]["schema_revision"] == "0067_usage_projection_idempotency_constraints"
     assert len(report["source"]["openapi_sha256"]) == 64
     assert set(report["source"]["sbom_sha256"]) == {
         "api",

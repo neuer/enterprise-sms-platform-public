@@ -34,7 +34,7 @@ from app.core.auth.service import (
     RedisKeyValue,
 )
 from app.core.auth.users import SqlUserRepository, UserRepository
-from app.core.bounded_executor import run_bounded
+from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.errors import ApiError
 from app.services.auth_provider import AuthProviderService, ProviderSummary
 from app.services.auth_provider_repository import SqlAuthProviderRepository
@@ -134,6 +134,8 @@ class AuthFacade:
             )
         except AccountLocked:
             raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
+        except RateLimited:
+            raise ApiError(429, "RATE_LIMITED", "登录来源已临时封禁", None) from None
         except ProviderCapacityUnavailable:
             raise ApiError(
                 503,
@@ -141,8 +143,14 @@ class AuthFacade:
                 "认证源容量暂不可用，请稍后重试",
                 None,
             ) from None
+        except SessionStateUnavailable:
+            raise ApiError(
+                503,
+                "AUTH_SESSION_UNAVAILABLE",
+                "会话权威状态暂不可用，请稍后重试",
+                None,
+            ) from None
         except (
-            RateLimited,
             InvalidCredentials,
             ProviderDisabled,
             ProviderUnavailable,
@@ -219,6 +227,13 @@ class AuthFacade:
                 409,
                 "ACCOUNT_SOURCE_CONFLICT",
                 "该登录名已由其他认证源占用，请联系管理员",
+                None,
+            ) from None
+        except SessionStateUnavailable:
+            raise ApiError(
+                503,
+                "AUTH_SESSION_UNAVAILABLE",
+                "会话权威状态暂不可用，请稍后重试",
                 None,
             ) from None
         if user.must_change_password:
@@ -335,15 +350,12 @@ class AuthFacade:
         ip: str,
     ) -> None:
         claims = await self.verify(token)
-        record = await self.users.find_local_account_by_id(claims.account_id)
-        matches = await run_bounded(
-            self.passwords.verify_or_dummy,
-            record.password_hash if record is not None else None,
-            current_password,
-            timeout_s=5,
-        )
-        if record is None or not matches or record.account.identity_id != claims.identity_id:
-            raise ApiError(401, "UNAUTHORIZED", "当前密码错误", None)
+        try:
+            await self.reauthenticate_current(claims, current_password, ip)
+        except ApiError as error:
+            if error.code == "STEP_UP_REQUIRED":
+                raise ApiError(401, "UNAUTHORIZED", "当前密码错误", None) from None
+            raise
         try:
             self.policy.validate(new_password, username=claims.login_name)
         except PasswordPolicyViolation as error:
@@ -353,11 +365,19 @@ class AuthFacade:
                 str(error),
                 None,
             ) from None
-        password_hash = await run_bounded(
-            self.passwords.hash,
-            new_password,
-            timeout_s=5,
-        )
+        try:
+            password_hash = await run_bounded(
+                self.passwords.hash,
+                new_password,
+                timeout_s=5,
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ApiError(
+                503,
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "认证源容量暂不可用，请稍后重试",
+                None,
+            ) from None
         await self.users.change_local_password(
             account_id=claims.account_id,
             identity_id=claims.identity_id,

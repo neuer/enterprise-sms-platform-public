@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.correlation import REQUEST_ID_HEADER, current_correlation_id
 
@@ -49,6 +50,21 @@ async def validation_error_handler(_: Request, error: RequestValidationError) ->
             "message": "请求参数不合法",
             "detail": {"fields": fields},
         },
+    )
+
+
+async def http_exception_handler(_: Request, error: StarletteHTTPException) -> JSONResponse:
+    """把框架 HTTP 异常统一为平台错误信封，不回显内部细节。"""
+
+    if error.status_code == 404:
+        code, message = "NOT_FOUND", "资源不存在"
+    elif error.status_code == 405:
+        code, message = "INVALID_PARAM", "请求方法不允许"
+    else:
+        code, message = "INVALID_PARAM", "请求无法处理"
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"code": code, "message": message, "detail": None},
     )
 
 

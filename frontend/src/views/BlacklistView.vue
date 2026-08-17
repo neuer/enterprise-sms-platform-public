@@ -12,6 +12,7 @@ import {
   type BlacklistSource,
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
+import PhoneMask from "../components/PhoneMask.vue"
 
 const items = ref<BlacklistItem[]>([])
 const total = ref(0)
@@ -129,7 +130,7 @@ onMounted(() => void load())
   <el-card shadow="never" class="blacklist-card">
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
     <el-table v-loading="loading" :data="items" row-key="phone_hmac" class="blacklist-table">
-      <el-table-column prop="phone_mask" label="号码" min-width="140" />
+      <el-table-column label="号码" min-width="140"><template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template></el-table-column>
       <el-table-column label="来源" width="110"><template #default="{ row }"><el-tag :type="sourceType(row.source)" effect="plain">{{ sourceLabel(row.source) }}</el-tag></template></el-table-column>
       <el-table-column label="备注" min-width="160"><template #default="{ row }">{{ row.remark || "—" }}</template></el-table-column>
       <el-table-column label="加入时间" width="178"><template #default="{ row }"><time>{{ formatTime(row.created_at) }}</time></template></el-table-column>
@@ -138,7 +139,7 @@ onMounted(() => void load())
     </el-table>
     <div v-loading="loading" class="blacklist-mobile-list">
       <article v-for="item in items" :key="item.phone_hmac">
-        <header><strong>{{ item.phone_mask }}</strong><el-tag :type="sourceType(item.source)" effect="plain" size="small">{{ sourceLabel(item.source) }}</el-tag></header>
+        <header><PhoneMask :value="item.phone_mask" /><el-tag :type="sourceType(item.source)" effect="plain" size="small">{{ sourceLabel(item.source) }}</el-tag></header>
         <p>{{ item.remark || "无备注" }}</p>
         <footer><time>{{ formatTime(item.created_at) }}</time><el-button :data-testid="`mobile-blacklist-delete-${item.phone_hmac.slice(0,8)}`" link type="danger" @click="remove(item)">移除</el-button></footer>
       </article>

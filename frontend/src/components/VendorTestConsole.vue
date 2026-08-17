@@ -14,11 +14,13 @@ import {
   refreshVendorTestRecipientIndex,
   resetVendorTest,
   resumeVendorTest,
+  VendorRequestError,
   type VendorTestOperation,
   type VendorTestRecipient,
   type VendorTestStatus,
 } from "../api/admin"
 import { listApps, type ManagedApp } from "../api/apps"
+import PhoneMask from "./PhoneMask.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
@@ -175,6 +177,10 @@ function forgetOperation(): void {
   }
 }
 
+function isGoneOperation(error: unknown): boolean {
+  return error instanceof VendorRequestError && (error.status === 404 || error.status === 410)
+}
+
 function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "operation_type"> | null {
   try {
     const raw = sessionStorage.getItem(OPERATION_SESSION_KEY)
@@ -217,6 +223,12 @@ async function restoreOperation(): Promise<void> {
     else pollTimer = setTimeout(() => void pollOperation(), 800)
   } catch (error) {
     if (disposed) return
+    if (isGoneOperation(error)) {
+      forgetOperation()
+      operationRestoring.value = false
+      restoreErrorMessage.value = error instanceof Error ? error.message : "上次操作已不存在，已停止恢复"
+      return
+    }
     restoreErrorMessage.value = error instanceof Error ? error.message : "操作状态恢复失败"
     pollTimer = setTimeout(() => void restoreOperation(), 1600)
   }
@@ -571,7 +583,7 @@ onBeforeUnmount(() => {
           </header>
           <div v-if="recipients.length" class="vendor-recipient-list">
             <article v-for="recipient in recipients" :key="recipient.id">
-              <div><strong>{{ recipient.label }}</strong><code>{{ recipient.phone_mask }}</code></div>
+              <div><strong>{{ recipient.label }}</strong><PhoneMask :value="recipient.phone_mask" /></div>
               <el-tag :type="recipient.status === 'active' ? 'success' : 'info'" size="small">
                 {{ recipient.status === 'active' ? '有效' : '已停用' }}
               </el-tag>
@@ -644,7 +656,7 @@ onBeforeUnmount(() => {
     >
       <div v-if="refreshVisible" class="vendor-sensitive-form">
         <p>
-          数据密钥轮换后，请重新输入 {{ refreshRecipient?.phone_mask }} 对应的同一号码。
+          数据密钥轮换后，请重新输入 <PhoneMask v-if="refreshRecipient" :value="refreshRecipient.phone_mask" /> 对应的同一号码。
           系统只重建跨版本 HMAC 索引，不解密或回显历史号码。
         </p>
         <el-input

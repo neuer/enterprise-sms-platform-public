@@ -22,11 +22,15 @@ export interface ReplyFilters {
 }
 
 export function listReplies(filters: ReplyFilters): Promise<ReplyPage> {
-  const query = new URLSearchParams({ page: String(filters.page) })
-  if (filters.phone) query.set("phone", filters.phone)
-  if (filters.start) query.set("start", filters.start)
-  if (filters.end) query.set("end", filters.end)
-  return apiRequest<ReplyPage>(`/replies?${query}`, { method: "GET" })
+  const body: { page: number; phone?: string; start?: string; end?: string } = { page: filters.page }
+  if (filters.phone) body.phone = filters.phone
+  if (filters.start) body.start = filters.start
+  if (filters.end) body.end = filters.end
+  return apiRequest<ReplyPage>("/replies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
 }
 
 export function blacklistReply(id: number): Promise<void> {

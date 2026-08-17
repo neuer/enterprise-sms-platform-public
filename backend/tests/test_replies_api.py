@@ -82,9 +82,10 @@ def client(
 def test_viewer_plus_lists_only_masked_reply_fields_with_department_scope() -> None:
     service = FakeService()
     auditor = FakeAuditor()
-    response = client(service, "viewer", auditor).get(
-        "/api/v1/web/replies?phone=13800138000&page=1",
+    response = client(service, "viewer", auditor).post(
+        "/api/v1/web/replies",
         headers={"Authorization": "Bearer jwt"},
+        json={"phone": "13800138000", "page": 1},
     )
 
     assert response.status_code == 200

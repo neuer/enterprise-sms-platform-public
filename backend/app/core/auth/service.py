@@ -6,11 +6,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
 
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
     ProviderCapacityUnavailable,
+    SessionStateUnavailable,
 )
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.providers import AuthProviderRegistry
@@ -59,22 +61,37 @@ class RedisKeyValue:
         return cls(cast(Redis, redis_client(url)))
 
     async def get(self, key: str) -> Any:
-        return await self.redis.get(key)
+        try:
+            return await self.redis.get(key)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
 
     async def set(self, key: str, value: Any, *, ex: int) -> None:
-        await self.redis.set(key, value, ex=ex)
+        try:
+            await self.redis.set(key, value, ex=ex)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
 
     async def delete(self, key: str) -> None:
-        await self.redis.delete(key)
+        try:
+            await self.redis.delete(key)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
 
     async def increment(self, key: str, *, window_s: int) -> int:
-        operation = self.redis.eval(self._INCREMENT_LUA, 1, key, str(window_s))
-        value = await cast(Awaitable[Any], operation)
+        try:
+            operation = self.redis.eval(self._INCREMENT_LUA, 1, key, str(window_s))
+            value = await cast(Awaitable[Any], operation)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
         return int(value)
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
-        operation = self.redis.eval(script, numkeys, *args)
-        return await cast(Awaitable[Any], operation)
+        try:
+            operation = self.redis.eval(script, numkeys, *args)
+            return await cast(Awaitable[Any], operation)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
 
 
 class LoginGuard:

@@ -301,7 +301,7 @@ class ImportFileCodec:
                         payload = source.read(length)
                         if len(payload) != length:
                             raise ValueError("导入源文件密文帧截断")
-                        plaintext = self.crypto.decrypt_bytes(payload, version)
+                        plaintext = self.crypto.decrypt_bytes_legacy(payload, version)
                         total += len(plaintext)
                         if total > max_bytes:
                             raise ValueError("导入源文件解密后超过限制")

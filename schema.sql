@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.57  2026-08-17
+-- v1.6.57：usage_projection.version 唯一；app 幂等作用域绑定 app_id
 -- v1.6.56  2026-08-12
 -- v1.6.56：LDAP 授权部门映射、黑名单 HMAC 轮换别名与精确查询加固
 -- v1.6.55  2026-08-11
@@ -425,6 +427,7 @@ CREATE TABLE sms_resend_action (
 -- scheduled_at + 安全窗口，避免明文摘要离线枚举与延迟任务重复发送。
 -- scope_kind/scope_id：app=<app_id>；account=<account_id>:<identity_id>；
 -- web-legacy/global 仅为迁移前 app_id IS NULL 旧记录的短期兼容作用域。
+-- ck_idem_app_scope：仅 app 作用域要求 scope_id 绑定 app_id，不误伤其它 kind。
 CREATE TABLE idempotency_record (
     id         BIGSERIAL PRIMARY KEY,
     app_id     BIGINT       REFERENCES app(id),
@@ -437,6 +440,10 @@ CREATE TABLE idempotency_record (
     expires_at TIMESTAMPTZ  NOT NULL,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT uk_idem_app_biz UNIQUE (scope_kind, scope_id, biz_id),
+    CONSTRAINT ck_idem_app_scope CHECK (
+      scope_kind <> 'app'
+      OR (app_id IS NOT NULL AND scope_id = app_id::text)
+    ),
     CONSTRAINT ck_idem_request_fingerprint CHECK (
       (request_hash IS NULL AND request_hash_key_version IS NULL)
       OR (
@@ -1590,7 +1597,8 @@ CREATE TABLE usage_projection (
     version       BIGINT NOT NULL DEFAULT nextval('usage_projection_version_seq')
                   CHECK (version>0),
     expires_at    TIMESTAMPTZ NOT NULL,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uk_usage_projection_version UNIQUE (version)
 );
 CREATE INDEX idx_usage_projection_rebuild
     ON usage_projection(usage_date,expires_at);
