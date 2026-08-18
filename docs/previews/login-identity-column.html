@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 登录轻切换原型</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --verm:#e46a4f;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font:inherit;color:var(--tx-hi)}
+::placeholder{color:var(--tx-3)}
+:focus-visible{outline:2px solid var(--verdi);outline-offset:2px}
+
+.review-bar{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:22px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.stage-lead{max-width:760px;margin:8px 28px 0;color:var(--tx-2);font-size:12.5px;line-height:1.7}
+.toolbar{display:flex;gap:6px;margin:12px 28px 0}
+.toolbar button{
+  padding:5px 10px;border:1px solid var(--hair);border-radius:6px;background:#141d19;
+  color:var(--tx-2);font:10px/1.4 var(--mono);letter-spacing:.08em;
+}
+.toolbar button.on{color:var(--tx-hi);border-color:rgba(47,161,132,.45);background:color-mix(in srgb,var(--verdi) 16%,#18231e)}
+.viewport{margin:14px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+
+.login-screen{
+  min-height:640px;display:grid;place-items:center;padding:48px 20px;
+  background:var(--bg);
+}
+.login-card{
+  width:360px;padding:36px 32px 28px;
+  background:var(--panel);border:1px solid var(--hair);border-radius:14px;
+}
+
+.brand{display:grid;justify-items:center;gap:12px;margin-bottom:22px}
+.brand-seal{
+  width:40px;height:40px;display:grid;place-items:center;border-radius:11px;
+  background:linear-gradient(145deg,#128268,#0a5a49);color:#eaf5f0;
+  font-family:var(--serif);font-size:19px;font-weight:700;
+}
+.brand b{font-family:var(--serif);font-size:17px;font-weight:600;letter-spacing:.22em;text-indent:.22em;color:var(--tx-hi)}
+
+/* 轻切换：同一栏两个名字，无底槽、无卡片、无印 */
+.switch{display:flex;justify-content:center;align-items:baseline;gap:14px;margin:0 0 6px}
+.switch button{
+  padding:2px 1px 5px;
+  color:var(--tx-3);font-size:13.5px;letter-spacing:.04em;
+  border-bottom:2px solid transparent;
+}
+.switch button:hover{color:var(--tx)}
+.switch button.on{color:var(--tx-hi);border-bottom-color:var(--verdi)}
+.switch button[aria-disabled="true"]{cursor:default}
+.switch-sep{color:var(--tx-3);opacity:.45;font-size:13px}
+.switch-desc{margin:0 0 22px;color:var(--tx-3);font-size:11px;text-align:center;line-height:1.5}
+.switch.is-single{display:none}
+.solo{display:none;margin:-4px 0 22px;text-align:center}
+.login-card.is-single .solo{display:block}
+.solo strong{display:block;color:var(--tx-2);font-size:13px;font-weight:500}
+.solo small{display:block;margin-top:4px;color:var(--tx-3);font-size:11px}
+
+.field{margin-top:14px}
+.field:first-of-type{margin-top:0}
+.field label{display:block;margin:0 0 6px 2px;color:var(--tx-3);font-size:11px;letter-spacing:.08em}
+.field input{
+  width:100%;height:44px;padding:0 12px;background:var(--sink);
+  border:1px solid var(--hair-2);border-radius:8px;font-size:13.5px;outline:none;
+  transition:border-color .15s, box-shadow .15s;
+}
+.field input:focus{border-color:var(--verdi);box-shadow:0 0 0 3px rgba(14,122,99,.18)}
+.field.has-eye{position:relative}
+.field.has-eye input{padding-right:40px}
+.field .eye{position:absolute;right:4px;bottom:6px;padding:8px;color:var(--tx-3);border-radius:6px}
+.field .eye:hover{color:var(--tx-hi)}
+
+.login-error{display:none;align-items:center;gap:7px;margin:12px 2px 0;font-size:12px;color:var(--verm)}
+.login-error::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--verm);flex:none}
+.login-card.is-error .login-error{display:flex}
+
+.submit{
+  width:100%;height:44px;margin-top:18px;border-radius:8px;
+  background:var(--verdi);color:#eaf5f0;font-size:14px;font-weight:600;letter-spacing:.2em;text-indent:.2em;
+}
+.submit:hover{background:var(--verdi-l)}
+
+/* 更静：当前身份是一句，另一源是文案链接 */
+.alt-line{margin:-4px 0 22px;text-align:center;color:var(--tx-2);font-size:13.5px}
+.alt-more{margin:-14px 0 22px;text-align:center;color:var(--tx-3);font-size:12px}
+.alt-more button{color:var(--tx-2);border-bottom:1px solid transparent;padding:0 1px}
+.alt-more button:hover{color:var(--tx-hi);border-bottom-color:var(--hair)}
+
+.variants{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;padding:26px 28px 8px}
+.variant{display:grid;gap:10px}
+.variant-caption{font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant .frame{
+  display:grid;place-items:center;padding:28px 12px;border:1px solid var(--hair-2);border-radius:12px;background:var(--bg);
+}
+.variant .login-card{transform:scale(.96);transform-origin:top center}
+
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;padding:26px 28px 48px}
+.note-col{border:1px solid var(--hair-2);border-radius:12px;background:#0e1411;padding:18px 20px}
+.note-col h2{font-size:12px;font-weight:700;letter-spacing:.1em;margin-bottom:12px}
+.note-col.why h2{color:var(--verdi-l)}
+.note-col.changed h2{color:#d8a35c}
+.note-col.kept h2{color:var(--tx-2)}
+.note-col li{margin:0 0 9px 16px;font-size:12px;color:var(--tx-2);line-height:1.7}
+.note-col li::marker{color:var(--tx-3)}
+.note-col code{font-family:var(--mono);font-size:10.5px;color:var(--tx);background:#141d19;padding:1px 5px;border-radius:4px}
+
+html[data-shot] body{background:var(--bg)}
+html[data-shot] .review-bar,
+html[data-shot] .stage-label,
+html[data-shot] .stage-lead,
+html[data-shot] .toolbar,
+html[data-shot] .variants,
+html[data-shot] .notes{display:none}
+html[data-shot] .viewport{margin:0;border:0;border-radius:0}
+html[data-shot] .login-screen{min-height:100vh}
+html[data-shot="alt"] .hero-board{display:none}
+html[data-shot="alt"] .alt-board{display:block}
+html[data-shot="alt"] .alt-board .viewport{margin:0;border:0;border-radius:0}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header class="review-bar">
+  <b>登录轻切换 · 原型</b>
+  <span>单栏居中，表单当页。认证源只是同一栏里两个名字。不改产品代码。</span>
+  <em>2026-08-18 · docs/previews/login-identity-column.html</em>
+</header>
+
+<p class="stage-label">A · 主推（同一栏轻切换）</p>
+<p class="stage-lead">
+  对齐 AWS / 阿里云那种「必须人选，但不要演」。两个名字并排，选中加短下划线。
+  无底槽、无印、无单选圆。失败仍只走当前所选。
+</p>
+<div class="toolbar" role="group" aria-label="场景">
+  <button type="button" class="on" data-scene="dual">双认证源</button>
+  <button type="button" data-scene="ad">AD 账号</button>
+  <button type="button" data-scene="local">仅本地</button>
+  <button type="button" data-scene="error">错误态</button>
+</div>
+
+<div class="viewport hero-board">
+  <main class="login-screen">
+    <article class="login-card" id="hero">
+      <h1 class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">登录青鸾控制台</h1>
+      <div class="brand">
+        <span class="brand-seal" aria-hidden="true">鸾</span>
+        <b>青鸾</b>
+      </div>
+
+      <div class="switch" id="hero-switch" role="radiogroup" aria-label="身份来源">
+        <button type="button" class="on" role="radio" aria-checked="true" data-p="local">本地账号</button>
+        <span class="switch-sep" aria-hidden="true">·</span>
+        <button type="button" role="radio" aria-checked="false" data-p="ad" id="hero-ad">AD 账号</button>
+      </div>
+      <p class="switch-desc" id="hero-desc">管理员维护的平台内置账号</p>
+      <p class="solo" id="hero-solo">
+        <strong>本地账号</strong>
+        <small>当前唯一可用认证源</small>
+      </p>
+
+      <div class="field">
+        <label for="hero-account" id="hero-account-label">账号</label>
+        <input id="hero-account" type="text" autocomplete="username">
+      </div>
+      <div class="field has-eye">
+        <label for="hero-password">密码</label>
+        <input id="hero-password" type="password" autocomplete="current-password">
+        <button type="button" class="eye" aria-label="显示密码">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <p class="login-error" role="alert">认证失败：账号或密码错误</p>
+      <button class="submit" type="button">登 录</button>
+    </article>
+  </main>
+</div>
+
+<p class="stage-label">B · 更静（一句 + 或使用）</p>
+<p class="stage-lead">
+  GitHub / 自建 GitLab 那路：表单是主路径，另一源收成一句。仍是显式选择。
+  主推仍是 A，两个名字始终可见。
+</p>
+<div class="viewport alt-board" id="alt-board">
+  <main class="login-screen">
+    <article class="login-card" id="alt-card">
+      <div class="brand">
+        <span class="brand-seal" aria-hidden="true">鸾</span>
+        <b>青鸾</b>
+      </div>
+      <p class="alt-line" id="alt-line">本地账号</p>
+      <p class="alt-more">或使用 <button type="button" id="alt-switch">AD 账号</button></p>
+      <div class="field">
+        <label for="alt-account" id="alt-account-label">账号</label>
+        <input id="alt-account" type="text">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password">
+      </div>
+      <button class="submit" type="button">登 录</button>
+    </article>
+  </main>
+</div>
+
+<section class="variants">
+  <div class="variant">
+    <span class="variant-caption">对照：不要做成这种浅色分段</span>
+    <div class="frame">
+      <article class="login-card">
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div style="display:flex;padding:3px;gap:2px;margin:0 0 18px;background:var(--sink);border:1px solid var(--hair-2);border-radius:9px">
+          <span style="flex:1;padding:8px 0;border-radius:6px;background:#e9f1ed;color:#122019;font-size:12.5px;font-weight:600;text-align:center">本地账号</span>
+          <span style="flex:1;padding:8px 0;color:var(--tx-2);font-size:12.5px;font-weight:600;text-align:center">AD 账号</span>
+        </div>
+        <div class="field"><label>账号</label><input type="text"></div>
+        <div class="field"><label>密码</label><input type="password"></div>
+        <button class="submit" type="button">登 录</button>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="notes">
+  <div class="note-col why">
+    <h2>为什么这样收</h2>
+    <ul>
+      <li>好看的登录页把认证源压成配角。前几稿都在为选择发明结构，所以不像登录。</li>
+      <li>我们不能按邮箱域名自动分流，所以借 AWS / 阿里云：必须人选，但仍是单栏里的轻切换。</li>
+      <li>浅色分段是已否决的模式开关，只放在对照里，避免又走回去。</li>
+    </ul>
+  </div>
+  <div class="note-col changed">
+    <h2>这一稿</h2>
+    <ul>
+      <li>回到 360px 单卡、单栏。表单重新当页。</li>
+      <li>认证源是两个名字加间隔点，选中用短下划线。无底槽、无印、无列表。</li>
+      <li>输入改回标签在上，和主流控制台一致，也方便以后落 Element Plus。</li>
+      <li>仅一源时收成一行名字，不留切换。</li>
+      <li>只交原型，不改 Vue / CSS / 测试。</li>
+    </ul>
+  </div>
+  <div class="note-col kept">
+    <h2>规则仍旧</h2>
+    <ul>
+      <li>每次登录只提交一个 <code>provider_code</code>，失败不自动改走另一源。</li>
+      <li>默认仍选中服务端返回的第一项。</li>
+      <li>深色、无插画、错误内联、全中文。</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+(function () {
+  var shot = new URLSearchParams(location.search).get("shot");
+  if (shot) document.documentElement.setAttribute("data-shot", shot);
+
+  var labels = { local: "账号", ad: "企业 AD 账号" };
+  var descs = {
+    local: "管理员维护的平台内置账号",
+    ad: "通过企业目录验证身份"
+  };
+  var hero = document.getElementById("hero");
+  var sw = document.getElementById("hero-switch");
+  var items = [].slice.call(sw.querySelectorAll("button"));
+  var ad = document.getElementById("hero-ad");
+  var desc = document.getElementById("hero-desc");
+  var account = document.getElementById("hero-account");
+  var accountLabel = document.getElementById("hero-account-label");
+  var sep = sw.querySelector(".switch-sep");
+
+  function selectProvider(code) {
+    items.forEach(function (item) {
+      var on = item.getAttribute("data-p") === code;
+      item.classList.toggle("on", on);
+      item.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    desc.textContent = descs[code] || "";
+    accountLabel.textContent = labels[code] || "账号";
+    account.setAttribute("aria-label", labels[code] || "账号");
+  }
+
+  items.forEach(function (item) {
+    item.addEventListener("click", function () {
+      if (item.getAttribute("aria-disabled") === "true") return;
+      selectProvider(item.getAttribute("data-p"));
+    });
+  });
+
+  function applyScene(scene) {
+    hero.classList.toggle("is-error", scene === "error");
+    var only = scene === "local";
+    hero.classList.toggle("is-single", only);
+    sw.classList.toggle("is-single", only);
+    ad.hidden = only;
+    if (sep) sep.hidden = only;
+    desc.hidden = only;
+    items.forEach(function (item) {
+      item.setAttribute("aria-disabled", only && item.getAttribute("data-p") === "local" ? "true" : "false");
+    });
+    if (scene === "ad") selectProvider("ad");
+    else selectProvider("local");
+  }
+
+  document.querySelectorAll(".toolbar button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".toolbar button").forEach(function (item) {
+        item.classList.toggle("on", item === btn);
+      });
+      applyScene(btn.getAttribute("data-scene"));
+    });
+  });
+
+  if (shot === "ad") applyScene("ad");
+  else if (shot === "only") applyScene("local");
+  else if (shot === "error") applyScene("error");
+  else applyScene("dual");
+
+  document.querySelector(".eye").addEventListener("click", function () {
+    var input = document.getElementById("hero-password");
+    input.type = input.type === "password" ? "text" : "password";
+  });
+
+  var altLine = document.getElementById("alt-line");
+  var altSwitch = document.getElementById("alt-switch");
+  var altAccount = document.getElementById("alt-account");
+  var altAccountLabel = document.getElementById("alt-account-label");
+  var altCode = "local";
+  altSwitch.addEventListener("click", function () {
+    altCode = altCode === "local" ? "ad" : "local";
+    if (altCode === "ad") {
+      altLine.textContent = "AD 账号";
+      altSwitch.textContent = "本地账号";
+      altAccountLabel.textContent = "企业 AD 账号";
+    } else {
+      altLine.textContent = "本地账号";
+      altSwitch.textContent = "AD 账号";
+      altAccountLabel.textContent = "账号";
+    }
+  });
+})();
+</script>
+</body>
+</html>
