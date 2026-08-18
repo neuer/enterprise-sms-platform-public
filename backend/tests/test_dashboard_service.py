@@ -11,6 +11,7 @@ from app.services.dashboard import (
     DashboardOperationsFacts,
     DashboardService,
     JobLatest,
+    TrendDayTotals,
 )
 
 
@@ -52,6 +53,37 @@ async def test_dashboard_applies_dept_scope_fills_categories_and_calculates_heal
     assert result.overall_success_rate == 0.8
     assert result.categories[0].total == 0
     assert result.operations is None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_pivots_seven_day_trend_and_fills_missing_days() -> None:
+    now = datetime(2026, 7, 12, 4, 0, tzinfo=UTC)
+    facts = DashboardFacts(
+        categories=(),
+        pending_approvals=0,
+        trend=(
+            TrendDayTotals(date(2026, 7, 11), "verify", 3),
+            TrendDayTotals(date(2026, 7, 11), "market", 1),
+            TrendDayTotals(date(2026, 7, 12), "notice", 10),
+        ),
+    )
+    service = DashboardService(
+        FakeRepository(facts),
+        (),
+        clock=lambda: now,
+    )
+
+    result = await service.get(role="viewer", dept="业务一部")
+
+    assert [(item.stat_date, item.verify, item.notice, item.market) for item in result.trend] == [
+        (date(2026, 7, 6), 0, 0, 0),
+        (date(2026, 7, 7), 0, 0, 0),
+        (date(2026, 7, 8), 0, 0, 0),
+        (date(2026, 7, 9), 0, 0, 0),
+        (date(2026, 7, 10), 0, 0, 0),
+        (date(2026, 7, 11), 3, 0, 1),
+        (date(2026, 7, 12), 0, 10, 0),
+    ]
 
 
 @pytest.mark.asyncio

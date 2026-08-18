@@ -760,6 +760,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
+            "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/login-redesign-prototype.html",
             "docs/previews/login-redesign-shots.md",
             "docs/previews/login-redesign-shots/ad.png",
@@ -798,6 +799,25 @@ def test_login_redesign_preview_does_not_block_web_only_update() -> None:
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
     assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_dashboard_redesign_preview_does_not_block_classified_update() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/reports.py",
+            "backend/app/services/dashboard.py",
+            "docs/previews/dashboard-redesign-prototype.html",
+            "frontend/src/views/DashboardView.vue",
+            "frontend/tests/dashboard-view.test.ts",
+            "openapi.yaml",
+        ]
+    )
+
+    assert "web" in change.components
+    assert "api" in change.components
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
     assert change.migration_changed is False
 
 

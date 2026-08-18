@@ -16,6 +16,7 @@ from app.services.dashboard import (
     DashboardOperations,
     DashboardSnapshot,
     JobHealth,
+    TrendDay,
 )
 
 
@@ -41,6 +42,10 @@ class FakeDashboardService:
             (CategoryMetric("notice", 10, 12, 8, 2, 0, 0.8),),
             0.8,
             2,
+            (
+                TrendDay(date(2026, 7, 11), 3, 8, 1),
+                TrendDay(date(2026, 7, 12), 0, 10, 0),
+            ),
         )
         if role != "admin":
             return snapshot
@@ -49,6 +54,7 @@ class FakeDashboardService:
             snapshot.categories,
             snapshot.overall_success_rate,
             snapshot.pending_approvals,
+            snapshot.trend,
             snapshot.ui_policy,
             DashboardOperations(
                 current_balance=9000,
@@ -85,6 +91,10 @@ def test_viewer_dashboard_omits_global_operational_snapshot() -> None:
     body = response.json()
     assert body["categories"][0]["success_rate"] == 0.8
     assert body["overall_success_rate"] == 0.8
+    assert body["trend"] == [
+        {"stat_date": "2026-07-11", "verify": 3, "notice": 8, "market": 1},
+        {"stat_date": "2026-07-12", "verify": 0, "notice": 10, "market": 0},
+    ]
     assert body["ui_policy"] == {"test_send_max": 5}
     assert "operations" not in body
     for forbidden in (
@@ -108,7 +118,9 @@ def test_admin_dashboard_includes_operational_snapshot() -> None:
     )
 
     assert response.status_code == 200
-    operations = response.json()["operations"]
+    body = response.json()
+    assert body["trend"][1] == {"stat_date": "2026-07-12", "verify": 0, "notice": 10, "market": 0}
+    operations = body["operations"]
     assert operations["current_balance"] == 9000
     assert operations["dispositions"] == {
         "uncertain": 1,

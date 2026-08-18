@@ -12,6 +12,13 @@ export interface DashboardCategoryMetric {
   success_rate: number
 }
 
+export interface DashboardTrendPoint {
+  stat_date: string
+  verify: number
+  notice: number
+  market: number
+}
+
 export interface DashboardBalancePoint {
   stat_date: string
   balance: number
@@ -59,6 +66,7 @@ export interface DashboardSnapshot {
   categories: DashboardCategoryMetric[]
   overall_success_rate: number
   pending_approvals: number
+  trend?: DashboardTrendPoint[]
   ui_policy: DashboardUiPolicy
   operations?: DashboardOperations
 }

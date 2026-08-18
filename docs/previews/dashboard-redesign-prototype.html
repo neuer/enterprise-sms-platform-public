@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 仪表盘重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+ul{list-style:none}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1100px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:var(--slate);border-color:rgba(111,155,207,.45)}
+
+/* ═══════════ 共享：仪表盘画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.dash{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px}
+.dash-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.dash-head h1{font-family:var(--serif);font-size:20px;font-weight:600;color:var(--tx-hi)}
+.dash-head .sub{color:var(--tx-3);font-size:11px}
+.dash-refresh{display:flex;align-items:center;gap:12px}
+.dash-refresh time{font:10.5px var(--mono);color:var(--tx-3)}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px}
+.zone-label{display:flex;align-items:center;gap:10px;font:10px/1 var(--mono);letter-spacing:.14em;color:var(--tx-3);margin-top:4px}
+.zone-label::after{content:"";flex:1;height:1px;background:var(--hair-2)}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 18px}
+.panel-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.panel-head b{color:var(--tx-hi);font-size:13px;font-weight:600}
+.panel-head small{color:var(--tx-3);font-size:10px;margin-left:8px;font-weight:400}
+.panel-head a{color:var(--verdi-l);font-size:11px}
+
+/* KPI 卡 */
+.kpi-band{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.kpi{position:relative;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px 13px}
+.kpi .go{position:absolute;top:12px;right:14px;color:var(--tx-3);font-size:11px}
+.kpi>span{color:var(--tx-2);font-size:11.5px}
+.kpi>strong{display:block;font-size:26px;font-weight:600;color:var(--tx-hi);margin:1px 0 0;font-variant-numeric:tabular-nums}
+.kpi>small{color:var(--tx-3);font-size:10.5px}
+.kpi .foot{margin-top:8px;font-size:10.5px;color:var(--tx-2)}
+.kpi.warn{border-top:2px solid var(--amber)}
+.strip{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-top:10px;gap:1px}
+.strip i{display:block;height:100%}
+.strip .v,.bar .v,.legend .v{background:var(--verdi-l)}
+.strip .n,.bar .n,.legend .n{background:var(--slate)}
+.strip .m,.bar .m,.legend .m{background:var(--amber)}
+.rate-row{display:grid;grid-template-columns:42px 1fr 46px;gap:8px;align-items:center;margin-top:7px;font-size:10.5px;color:var(--tx-2)}
+.rate-row .track{height:4px;background:var(--sink);border-radius:2px;overflow:hidden}
+.rate-row .track i{display:block;height:100%;border-radius:2px;background:var(--verdi-l)}
+.rate-row b{font:10.5px var(--mono);text-align:right;color:var(--tx);font-variant-numeric:tabular-nums}
+
+/* 趋势 + 余额 */
+.row-trend{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+.bars{display:flex;align-items:flex-end;gap:16px;height:158px;padding:8px 4px 0}
+.bar-col{flex:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:6px}
+.bar{width:min(72%,42px);display:flex;flex-direction:column-reverse;border-radius:4px 4px 0 0;overflow:hidden}
+.bar i{display:block;width:100%}
+.bar-col span{font:9.5px var(--mono);color:var(--tx-3)}
+.bar-col.today span{color:var(--tx-2)}
+.legend{display:flex;gap:16px;margin-top:10px;font-size:10.5px;color:var(--tx-2)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.legend em{margin-left:auto;font:10px var(--mono);color:var(--tx-3);font-style:normal}
+.bal-num{font:600 30px/1.2 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.bal-num small{font-size:11px;color:var(--tx-3);font-weight:400;margin-left:6px}
+.bal-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.bal-meta div{background:var(--sink);border:1px solid var(--hair-2);border-radius:8px;padding:7px 10px}
+.bal-meta span{display:block;font-size:9.5px;color:var(--tx-3)}
+.bal-meta b{font:12px var(--mono);color:var(--tx);font-variant-numeric:tabular-nums}
+
+/* 信道条（方案 A 压缩版） */
+.chan-strip{display:grid;grid-template-columns:auto 1fr 1fr 190px auto;gap:24px;align-items:center;padding:13px 20px;background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--hair);border-radius:12px}
+.live{display:inline-flex;gap:7px;align-items:center;font:600 10px/1 var(--mono);letter-spacing:.16em;color:#71c4ad}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--verdi-l);box-shadow:0 0 8px rgba(47,161,132,.6)}
+.lane span{font:10px var(--mono);color:#71c4ad}
+.lane.bulk span{color:var(--amber)}
+.lane strong{font-size:16px;color:var(--tx-hi);margin-left:8px;font-variant-numeric:tabular-nums}
+.lane .track,.qps .track{height:6px;background:var(--sink);border:1px solid var(--hair-2);border-radius:3px;margin-top:5px;overflow:hidden}
+.lane .track i{display:block;height:100%;background:linear-gradient(90deg,var(--verdi),var(--verdi-l))}
+.lane.bulk .track i{background:linear-gradient(90deg,#8a5309,var(--amber))}
+.qps span{font:10px var(--mono);color:var(--tx-2)}
+.qps strong{font-size:13px;color:var(--tx-hi);margin-left:8px;font-variant-numeric:tabular-nums}
+.tokens{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:5px}
+.tokens i{height:14px;background:var(--sink);border:1px solid var(--hair-2);border-radius:4px}
+.tokens i.used{background:linear-gradient(180deg,#12a17e,#0a5a49);box-shadow:0 0 10px rgba(18,161,126,.35)}
+.chan-time{font:10px var(--mono);color:var(--tx-3)}
+
+/* 运维三列 */
+.ops-grid{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:14px}
+.alerts li{display:flex;gap:10px;padding:7px 0;border-top:1px solid var(--hair-2)}
+.alerts li:first-child{border-top:0;padding-top:0}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:6px}
+.dot.crit{background:var(--verm);box-shadow:0 0 6px rgba(228,106,79,.5)}
+.dot.warn{background:var(--amber)}
+.dot.info{background:var(--slate)}
+.alerts strong{display:block;font-size:12px;font-weight:500;color:var(--tx-hi)}
+.alerts time{font:10px var(--mono);color:var(--tx-3)}
+.dispo{display:grid;gap:8px}
+.dispo-row{display:flex;align-items:center;gap:12px;padding:9px 12px;background:var(--sink);border:1px solid var(--hair-2);border-left:3px solid transparent;border-radius:8px}
+.dispo-row.on{border-left-color:var(--verm)}
+.dispo-row b{font:600 18px var(--mono);color:var(--tx-hi);min-width:24px}
+.dispo-row.zero b{color:var(--tx-3)}
+.dispo-row span{font-size:11px;color:var(--tx-2)}
+.dispo-row small{margin-left:auto;font-size:10px;color:var(--tx-3)}
+.jobs-sum{display:flex;align-items:baseline;gap:8px}
+.jobs-sum b{font:600 26px var(--mono);color:var(--tx-hi)}
+.jobs-sum span{font-size:11px;color:var(--tx-2)}
+.job-alert{margin-top:10px;padding:9px 12px;background:rgba(228,106,79,.06);border:1px solid rgba(228,106,79,.3);border-radius:8px}
+.job-alert code{font:11px var(--mono);color:var(--verm)}
+.job-alert p{font-size:10.5px;color:var(--tx-2);margin-top:2px}
+.job-alert time{font:10px var(--mono);color:var(--tx-3)}
+.jobs-ok{margin-top:10px;font-size:10.5px;color:var(--tx-3)}
+
+/* ═══════════ 方案 B 专用 ═══════════ */
+.chan-hero{padding:18px 22px;background:radial-gradient(700px 140px at 88% -30%,rgba(18,130,104,.16),transparent 70%),linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--hair);border-radius:12px}
+.chan-hero .monitor-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:13px}
+.chan-hero time{font:10px var(--mono);color:var(--tx-2)}
+.chan-lanes{display:grid;grid-template-columns:1fr 1fr 300px;gap:28px}
+.chan-lanes .lane>div:first-child,.chan-lanes .qps>div:first-child{display:flex;justify-content:space-between;align-items:center}
+.chan-lanes .lane strong{font-size:21px;margin:0}
+.chan-lanes .lane small,.chan-lanes .qps small{display:block;margin-top:5px;font-size:10px;color:var(--tx-3)}
+.chan-lanes .lane .track{height:10px;margin-top:8px}
+.chan-lanes .tokens i{height:24px}
+.chan-lanes .qps{padding-left:28px;border-left:1px solid var(--hair)}
+.b-grid{display:grid;grid-template-columns:7fr 5fr;gap:14px;align-items:start}
+.b-col{display:grid;gap:12px}
+.kpi-2x2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{position:relative;background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:11px 14px}
+.tile.warn{border-top:2px solid var(--amber)}
+.tile>span{font-size:10.5px;color:var(--tx-2)}
+.tile>strong{display:block;font:600 21px/1.3 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.tile>small{font-size:10px;color:var(--tx-3)}
+.b-grid .bars{height:126px;gap:12px}
+.b-grid .bar{width:min(70%,34px)}
+.chips{display:flex;gap:10px}
+.chip{flex:1;display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--sink);border:1px solid var(--hair-2);border-radius:8px;font-size:10.5px;color:var(--tx-2)}
+.chip b{font:600 15px var(--mono);color:var(--tx-hi)}
+.chip.on{border-color:rgba(228,106,79,.5)}
+.chip.on b{color:var(--verm)}
+.job-dots{display:grid;grid-template-columns:1fr 1fr;gap:5px 14px}
+.job-dot{display:flex;gap:8px;align-items:center;font:10px var(--mono);color:var(--tx-2)}
+.job-dot i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--verdi-l)}
+.job-dot.bad{color:var(--tx)}
+.job-dot.bad i{background:var(--verm);box-shadow:0 0 6px rgba(228,106,79,.5)}
+
+/* ═══════════ 对比与数据需求 ═══════════ */
+.cmp-wrap{margin:14px 28px 40px;max-width:1100px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:22px 0 10px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{padding:8px 12px;border:1px solid var(--hair-2);text-align:left;vertical-align:top}
+.cmp th{background:var(--panel);color:var(--tx-hi);font-weight:600}
+.cmp td:first-child{font:10.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+.cmp td{color:var(--tx-2)}
+.cmp td b{color:var(--tx)}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 仪表盘重设计原型 v1</b>
+  <span>评审稿 · 所有数据均为虚构 mock · 纯静态，零外部依赖</span>
+  <em>2026-08-18</em>
+</div>
+
+<section class="notes">
+  <h2>现状诊断（当前 DashboardView）</h2>
+  <ul>
+    <li><b>业务与运维信号交错排列</b>：信道监视 → 业务 KPI → 余额/告警 → 待处置 → 任务健康，业务读者与运维读者的扫视路径互相干扰。</li>
+    <li><b>成功率只有总数</b>：接口已返回 categories[].success_rate（验证码/通知/营销），页面未利用，而三者健康基线差异很大。</li>
+    <li><b>没有任何发送量趋势</b>：想看近几天走势必须跳到报表页。</li>
+    <li><b>余额分散在两处</b>（指标卡 + 14 日走势图），且缺少「按当前消耗还能用多久」的推导信息。</li>
+    <li><b>空间效率低</b>：待处置三张小卡独占一行；任务健康把所有任务平铺，异常项淹没在健康项里。</li>
+  </ul>
+</section>
+
+<div class="stage-label">方案 A — 分层总览（推荐）　LAYERED: BUSINESS → OPS</div>
+<p class="variant-caption">
+  按「业务成果 → 趋势 → 运行健康」三层自上而下组织：业务读者前两屏拿全所需，运维信号聚合成独立楼层。
+  新增 ① 近 7 日分类目发送趋势<span class="need ext">需接口扩展</span>② 分类目成功率<span class="need ok">现有字段</span>③ 余额预计可用天数<span class="need calc">前端推导</span>；
+  信道监视压缩为单行状态条，待处置与任务健康收进运维区面板。所有卡片保留现有跳转（报表 / 审批 / 运维各 tab），10s 轮询与信道降级灰态行为不变。
+</p>
+<div class="viewport">
+  <div class="dash">
+
+    <header class="dash-head">
+      <div>
+        <p class="eyebrow">OPERATIONS / 运行总览</p>
+        <h1>仪表盘</h1>
+        <p class="sub">业务统计遵循当前数据权限，运行信号为平台级摘要。</p>
+      </div>
+      <div class="dash-refresh">
+        <time>最后刷新 2026-08-18 09:21:06</time>
+        <button class="btn">刷新</button>
+      </div>
+    </header>
+
+    <div class="zone-label">业务成果 · 今日</div>
+    <section class="kpi-band">
+      <div class="kpi">
+        <a class="go">→ 报表</a>
+        <span>今日消息</span>
+        <strong>65,432</strong>
+        <small>计费条 71,208</small>
+        <div class="strip" title="类目构成">
+          <i class="v" style="width:68.7%" title="验证码 44,980"></i><i class="n" style="width:18.9%" title="通知 12,350"></i><i class="m" style="width:12.4%" title="营销 8,102"></i>
+        </div>
+        <p class="foot">验证码 44,980 · 通知 12,350 · 营销 8,102</p>
+      </div>
+      <div class="kpi">
+        <a class="go">→ 报表</a>
+        <span>送达成功率<span class="need ok">现有字段</span></span>
+        <strong>98.6%</strong>
+        <small>delivered / (delivered + failed)</small>
+        <div class="rate-row"><span>验证码</span><div class="track"><i style="width:99.4%"></i></div><b>99.4%</b></div>
+        <div class="rate-row"><span>通知</span><div class="track"><i style="width:98.1%"></i></div><b>98.1%</b></div>
+        <div class="rate-row"><span>营销</span><div class="track"><i style="width:96.2%;background:var(--amber)"></i></div><b>96.2%</b></div>
+      </div>
+      <div class="kpi warn">
+        <a class="go">→ 审批</a>
+        <span>待审批</span>
+        <strong>3</strong>
+        <small>当前权限范围</small>
+        <p class="foot">最早提交于 08:12，及时处理避免营销批次错过发送窗口。</p>
+      </div>
+      <div class="kpi">
+        <a class="go">→ 余额</a>
+        <span>厂商余额</span>
+        <strong>1,336,822</strong>
+        <small>计费条 · 告警阈值 200,000</small>
+        <p class="foot">近 14 日日均消耗 ≈ 55,800，预计可用约 <b style="color:var(--tx-hi)">24</b> 天<span class="need calc">前端推导</span></p>
+      </div>
+    </section>
+
+    <section class="row-trend">
+      <div class="panel">
+        <div class="panel-head"><b>近 7 日发送趋势<small>按类目 · 消息条数</small></b><span class="need ext">需接口扩展 trend[]</span></div>
+        <div class="bars">
+          <div class="bar-col"><div class="bar" style="height:113px" title="08-12 · 61,500"><i class="v" style="height:68.8%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.3%"></i></div><span>08-12</span></div>
+          <div class="bar-col"><div class="bar" style="height:117px" title="08-13 · 63,900"><i class="v" style="height:68.7%"></i><i class="n" style="height:18.8%"></i><i class="m" style="height:12.5%"></i></div><span>08-13</span></div>
+          <div class="bar-col"><div class="bar" style="height:120px" title="08-14 · 65,200"><i class="v" style="height:68.6%"></i><i class="n" style="height:18.6%"></i><i class="m" style="height:12.8%"></i></div><span>08-14</span></div>
+          <div class="bar-col"><div class="bar" style="height:76px" title="08-15 周六 · 41,700"><i class="v" style="height:69.3%"></i><i class="n" style="height:20.6%"></i><i class="m" style="height:10.1%"></i></div><span>08-15</span></div>
+          <div class="bar-col"><div class="bar" style="height:72px" title="08-16 周日 · 39,500"><i class="v" style="height:69.6%"></i><i class="n" style="height:20.5%"></i><i class="m" style="height:9.9%"></i></div><span>08-16</span></div>
+          <div class="bar-col"><div class="bar" style="height:115px" title="08-17 · 62,800"><i class="v" style="height:68.8%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.3%"></i></div><span>08-17</span></div>
+          <div class="bar-col today"><div class="bar" style="height:120px" title="今天 · 65,432"><i class="v" style="height:68.7%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.4%"></i></div><span>今天</span></div>
+        </div>
+        <div class="legend">
+          <span><i class="v"></i>验证码</span><span><i class="n"></i>通知</span><span><i class="m"></i>营销</span>
+          <em>周末自然回落 · 实现时用 ECharts 堆叠柱 + tooltip</em>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><b>厂商余额<small>近 14 日 · 每日末值</small></b><a>详情 →</a></div>
+        <div class="bal-num">1,336,822<small>计费条</small></div>
+        <svg viewBox="0 0 280 64" width="100%" height="64" style="margin-top:8px" role="img" aria-label="余额走势">
+          <polyline fill="none" stroke="#2fa184" stroke-width="1.6"
+            points="0,4 21.5,8.1 43.1,12.3 64.6,16.4 86.2,18.9 107.7,21.4 129.2,25.6 150.8,29.9 172.3,33.9 193.8,38.2 215.4,42.5 236.9,45.2 258.5,47.8 280,52"/>
+          <polygon fill="rgba(47,161,132,.12)" points="0,4 21.5,8.1 43.1,12.3 64.6,16.4 86.2,18.9 107.7,21.4 129.2,25.6 150.8,29.9 172.3,33.9 193.8,38.2 215.4,42.5 236.9,45.2 258.5,47.8 280,52 280,64 0,64"/>
+        </svg>
+        <div class="bal-meta">
+          <div><span>告警阈值</span><b>200,000</b></div>
+          <div><span>日均消耗（14 日）</span><b>≈ 55,800</b></div>
+          <div><span>预计可用</span><b style="color:var(--amber)">≈ 24 天</b></div>
+          <div><span>余额轮询</span><b>正常 · 09:20</b></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="zone-label">运行健康 · 实时</div>
+    <section class="chan-strip" title="点击进入 运维·队列">
+      <span class="live"><i></i>LIVE</span>
+      <div class="lane"><span>REALTIME / 实时通道</span><strong>12</strong><div class="track"><i style="width:26%"></i></div></div>
+      <div class="lane bulk"><span>BULK / 批量通道</span><strong>348</strong><div class="track"><i style="width:58%"></i></div></div>
+      <div class="qps"><span>QPS TOKEN</span><strong>23 / 50</strong><div class="tokens"><i class="used"></i><i class="used"></i><i class="used"></i><i></i><i></i></div></div>
+      <span class="chan-time">最近更新 09:21:06</span>
+    </section>
+
+    <section class="ops-grid">
+      <div class="panel">
+        <div class="panel-head"><b>今日告警<small>仅标题，不暴露载荷</small></b><a>查看全部 →</a></div>
+        <ul class="alerts">
+          <li><i class="dot crit"></i><div><strong>验证码通道 5 分钟失败率超阈值，请检查厂商回执与签名报备</strong><time>09:12:33</time></div></li>
+          <li><i class="dot warn"></i><div><strong>营销批次 M20260818021 处于发送窗口外，已转定时</strong><time>08:47:02</time></div></li>
+          <li><i class="dot warn"></i><div><strong>按当前消耗速率，厂商余额预计 24 天后触及告警阈值</strong><time>07:30:15</time></div></li>
+          <li><i class="dot info"></i><div><strong>reconcile 已修复 uncertain 分片 ×2</strong><time>06:05:41</time></div></li>
+        </ul>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><b>待处置</b><a>运维台 →</a></div>
+        <div class="dispo">
+          <div class="dispo-row on"><b>2</b><span>uncertain</span><small>结果未知 · 禁止自动重发</small></div>
+          <div class="dispo-row zero"><b>0</b><span>unmatched</span><small>无主回执 · 等待对账</small></div>
+          <div class="dispo-row on"><b>1</b><span>callback dead</span><small>回调五次失败 · 需人工重推</small></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><b>任务健康</b><a>全部任务 →</a></div>
+        <div class="jobs-sum"><b>9<span style="color:var(--tx-3);font-size:15px"> / 10</span></b><span>正常</span></div>
+        <div class="job-alert">
+          <code>poll_reply</code>
+          <p>超过预期间隔 ×2 未运行，请检查 worker 与 broker。</p>
+          <time>最后运行 2026-08-18 08:52:11</time>
+        </div>
+        <p class="jobs-ok">其余任务均在预期间隔内运行；默认只显示异常项，不再平铺全部。</p>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div class="stage-label">方案 B — 运维值班台　OPS-FIRST HERO + TWO COLUMNS</div>
+<p class="variant-caption">
+  保留现有信道监视大卡作为首屏 hero（值班场景第一眼是链路状态），其下左右分栏：左栏业务（KPI 2×2 + 趋势），右栏运维（余额 / 告警 / 待处置 / 任务状态点）。
+  与方案 A 使用完全相同的数据与组件，只是分区策略不同：A 按纵向楼层分层，B 按左右分栏。适合以运维值班为主的使用形态，或作为投屏模式。
+</p>
+<div class="viewport">
+  <div class="dash">
+
+    <header class="dash-head">
+      <div>
+        <p class="eyebrow">OPERATIONS / 运行总览</p>
+        <h1>仪表盘</h1>
+        <p class="sub">业务统计遵循当前数据权限，运行信号为平台级摘要。</p>
+      </div>
+      <div class="dash-refresh">
+        <time>最后刷新 2026-08-18 09:21:06</time>
+        <button class="btn">刷新</button>
+      </div>
+    </header>
+
+    <section class="chan-hero" title="点击进入 运维·队列">
+      <div class="monitor-header">
+        <span class="live"><i></i>LIVE</span>
+        <time>09:21:16</time>
+      </div>
+      <div class="chan-lanes">
+        <div class="lane"><div><span>REALTIME / 实时通道</span><strong>12</strong></div><div class="track"><i style="width:26%"></i></div><small>验证码与通知优先通道</small></div>
+        <div class="lane bulk"><div><span>BULK / 批量通道</span><strong>348</strong></div><div class="track"><i style="width:58%"></i></div><small>营销批量通道</small></div>
+        <div class="qps"><div><span>QPS TOKEN</span><strong>23 / 50</strong></div><div class="tokens"><i class="used"></i><i class="used"></i><i class="used"></i><i></i><i></i></div><small>实时通道预留 10 QPS</small></div>
+      </div>
+    </section>
+
+    <section class="b-grid">
+      <div class="b-col">
+        <div class="zone-label">业务 · 今日</div>
+        <div class="kpi-2x2">
+          <div class="tile"><span>今日消息</span><strong>65,432</strong><small>计费条 71,208</small></div>
+          <div class="tile"><span>送达成功率</span><strong>98.6%</strong><small>验证码 99.4 · 通知 98.1 · 营销 96.2</small></div>
+          <div class="tile warn"><span>待审批</span><strong>3</strong><small>最早提交于 08:12</small></div>
+          <div class="tile"><span>厂商余额</span><strong>1,336,822</strong><small>预计可用约 24 天</small></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><b>近 7 日发送趋势<small>按类目</small></b><span class="need ext">需接口扩展 trend[]</span></div>
+          <div class="bars">
+            <div class="bar-col"><div class="bar" style="height:85px"><i class="v" style="height:68.8%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.3%"></i></div><span>08-12</span></div>
+            <div class="bar-col"><div class="bar" style="height:88px"><i class="v" style="height:68.7%"></i><i class="n" style="height:18.8%"></i><i class="m" style="height:12.5%"></i></div><span>08-13</span></div>
+            <div class="bar-col"><div class="bar" style="height:90px"><i class="v" style="height:68.6%"></i><i class="n" style="height:18.6%"></i><i class="m" style="height:12.8%"></i></div><span>08-14</span></div>
+            <div class="bar-col"><div class="bar" style="height:57px"><i class="v" style="height:69.3%"></i><i class="n" style="height:20.6%"></i><i class="m" style="height:10.1%"></i></div><span>08-15</span></div>
+            <div class="bar-col"><div class="bar" style="height:54px"><i class="v" style="height:69.6%"></i><i class="n" style="height:20.5%"></i><i class="m" style="height:9.9%"></i></div><span>08-16</span></div>
+            <div class="bar-col"><div class="bar" style="height:86px"><i class="v" style="height:68.8%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.3%"></i></div><span>08-17</span></div>
+            <div class="bar-col today"><div class="bar" style="height:90px"><i class="v" style="height:68.7%"></i><i class="n" style="height:18.9%"></i><i class="m" style="height:12.4%"></i></div><span>今天</span></div>
+          </div>
+          <div class="legend"><span><i class="v"></i>验证码</span><span><i class="n"></i>通知</span><span><i class="m"></i>营销</span></div>
+        </div>
+      </div>
+
+      <div class="b-col">
+        <div class="zone-label">运维 · 实时</div>
+        <div class="panel">
+          <div class="panel-head"><b>厂商余额</b><a>详情 →</a></div>
+          <div class="bal-num" style="font-size:24px">1,336,822<small>计费条 · 预计可用约 24 天</small></div>
+          <svg viewBox="0 0 280 40" width="100%" height="40" style="margin-top:6px" role="img" aria-label="余额走势">
+            <polyline fill="none" stroke="#2fa184" stroke-width="1.4"
+              points="0,3 21.5,5.6 43.1,8.2 64.6,10.8 86.2,12.3 107.7,13.9 129.2,16.6 150.8,19.3 172.3,21.9 193.8,24.6 215.4,27.2 236.9,29.1 258.5,30.8 280,33"/>
+          </svg>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><b>今日告警</b><a>全部 →</a></div>
+          <ul class="alerts">
+            <li><i class="dot crit"></i><div><strong>验证码通道 5 分钟失败率超阈值</strong><time>09:12:33</time></div></li>
+            <li><i class="dot warn"></i><div><strong>营销批次 M20260818021 已转定时</strong><time>08:47:02</time></div></li>
+            <li><i class="dot warn"></i><div><strong>余额预计 24 天后触及告警阈值</strong><time>07:30:15</time></div></li>
+          </ul>
+        </div>
+        <div class="chips">
+          <div class="chip on"><span>uncertain</span><b>2</b></div>
+          <div class="chip"><span>unmatched</span><b>0</b></div>
+          <div class="chip on"><span>callback dead</span><b>1</b></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><b>任务健康</b><a>全部任务 →</a></div>
+          <div class="job-dots">
+            <span class="job-dot"><i></i>send</span>
+            <span class="job-dot"><i></i>poll_report</span>
+            <span class="job-dot bad"><i></i>poll_reply</span>
+            <span class="job-dot"><i></i>poll_balance</span>
+            <span class="job-dot"><i></i>reconcile</span>
+            <span class="job-dot"><i></i>callback</span>
+            <span class="job-dot"><i></i>anomaly</span>
+            <span class="job-dot"><i></i>scheduler</span>
+            <span class="job-dot"><i></i>housekeeping</span>
+            <span class="job-dot"><i></i>stats</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div class="stage-label">方案对比与数据需求</div>
+<div class="cmp-wrap">
+  <h2>布局对比</h2>
+  <table class="cmp">
+    <tr><th style="width:110px"></th><th>现状</th><th>方案 A · 分层总览（推荐）</th><th>方案 B · 运维值班台</th></tr>
+    <tr><td>首屏焦点</td><td>信道监视（运维信号）</td><td><b>业务 KPI</b>，运维信号收编为独立楼层</td><td>信道监视（保留现有 hero）</td></tr>
+    <tr><td>业务/运维分区</td><td>交错排列</td><td>纵向两层，边界明确</td><td>左右两栏，边界明确</td></tr>
+    <tr><td>趋势信息</td><td>无发送趋势</td><td>近 7 日分类目堆叠柱 + 余额 sparkline</td><td>同 A（图更紧凑）</td></tr>
+    <tr><td>余额呈现</td><td>数字卡与 14 日图分离</td><td>合并为余额面板：当前值 + 走势 + 日均消耗 + 预计可用天数</td><td>同 A，紧凑版</td></tr>
+    <tr><td>成功率</td><td>仅总数</td><td>总数 + 分类目细分（接口已有字段）</td><td>同 A（tile 内一行缩写）</td></tr>
+    <tr><td>待处置</td><td>独立一行三卡</td><td>收进运维区面板（三行计数）</td><td>chips 行</td></tr>
+    <tr><td>任务健康</td><td>全量平铺，异常不突出</td><td>摘要 + 仅异常项（点击看全部）</td><td>全量状态点（紧凑，适合扫视）</td></tr>
+    <tr><td>适用场景</td><td>—</td><td>默认形态：业务与管理视角为主</td><td>值班运维 / 投屏监控为主</td></tr>
+  </table>
+
+  <h2>数据需求（对 <code style="font-family:var(--mono)">GET /reports/dashboard</code> 的影响）</h2>
+  <table class="cmp">
+    <tr><th style="width:110px">需求</th><th>内容</th><th style="width:340px">来源</th></tr>
+    <tr><td><span class="need ok">现有字段</span></td><td>今日各类目条数/计费条/成功率、总成功率、待审批、余额与 14 日走势、告警、待处置、任务健康、信道监视</td><td>现有 dashboard 响应已全覆盖，两个方案均无需改动</td></tr>
+    <tr><td><span class="need calc">前端推导</span></td><td>日均消耗 ≈ (balances[0] − balances[13]) ÷ 13；预计可用天数 = current_balance ÷ 日均消耗</td><td>由现有 balances 数组在前端计算，无需后端改动</td></tr>
+    <tr><td><span class="need ext">接口扩展</span></td><td>近 7 日分类目发送量 <code style="font-family:var(--mono)">trend: [{date, verify, notice, market}]</code>。建议做法 ①：dashboard 响应内嵌（权限口径与 dashboard 一致、少一次请求）；备选 ②：前端并行调 /reports/stats?granularity=day&amp;category=all 自行聚合（不改后端，但权限口径以 stats 为准）</td><td>两方案共同依赖的唯一新增项</td></tr>
+  </table>
+
+  <h2>不变量（两方案均保留）</h2>
+  <table class="cmp">
+    <tr><td>行为</td><td>10s 轮询与手动刷新；信道 Redis 快照不可用时整块灰态降级、不伪造指标；所有卡片/面板保留现有路由跳转（/reports、/approvals、/ops?tab=…）；告警只显示标题不暴露载荷；仪表盘不出现任何手机号；成功率口径维持 delivered/(delivered+failed) 由服务端计算。</td></tr>
+  </table>
+</div>
+
+</body>
+</html>
