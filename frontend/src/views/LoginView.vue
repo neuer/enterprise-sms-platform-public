@@ -16,19 +16,12 @@ const errorMessage = ref("")
 const successMessage = ref("")
 const pendingChange = ref<{ token: string; expiresAt: number } | null>(null)
 
-const accountPlaceholder = computed(() =>
+const accountLabel = computed(() =>
   providerCode.value === "ad" ? "企业 AD 账号" : "账号",
 )
 const singleProvider = computed(() => session.providers.length === 1)
 
-/** 登录来源条左侧标记，与系统配置页 LOCAL/AD 语言一致。 */
-function providerMark(code: string): string {
-  if (code === "local") return "LOCAL"
-  if (code === "ad") return "AD"
-  return code.toUpperCase()
-}
-
-/** 来源条一行区别；仅一个认证源时改为只读确认，不假装还能再选。 */
+/** 当前认证源一行说明；仅一个认证源时改为只读确认，不假装还能再选。 */
 function providerDescription(code: string): string {
   if (session.providers.length === 1) return "当前唯一可用认证源"
   if (code === "local") return "管理员维护的平台内置账号"
@@ -119,56 +112,62 @@ function invalidateInitialPasswordChange(message: string): void {
 
       <form @submit.prevent="submit">
         <div class="provider-sources" :aria-busy="loadingProviders">
-          <p id="login-sources-label" class="provider-sources-label">身份来源</p>
+          <p id="login-sources-label" class="sr-only">身份来源</p>
           <span v-if="loadingProviders" class="provider-loading">正在读取认证源…</span>
-          <div
-            v-else
-            role="radiogroup"
-            aria-labelledby="login-sources-label"
-            aria-label="认证源"
-          >
-            <button
-              v-for="provider in session.providers"
-              :key="provider.code"
-              :class="['provider-lane', provider.code, { on: providerCode === provider.code }]"
-              :data-testid="`provider-${provider.code}`"
-              type="button"
-              role="radio"
-              :aria-checked="providerCode === provider.code"
-              :aria-disabled="singleProvider"
-              @click="selectProvider(provider.code)"
+          <template v-else>
+            <div
+              class="provider-switch"
+              :class="{ solo: singleProvider }"
+              role="radiogroup"
+              aria-labelledby="login-sources-label"
+              aria-label="认证源"
             >
-              <span class="provider-lane-mark" aria-hidden="true">{{ providerMark(provider.code) }}</span>
-              <span class="provider-lane-copy">
-                <strong>{{ provider.name }}</strong>
-                <small>{{ providerDescription(provider.code) }}</small>
-              </span>
-              <span class="provider-lane-radio" aria-hidden="true"></span>
-            </button>
-          </div>
+              <template v-for="(provider, index) in session.providers" :key="provider.code">
+                <span v-if="index > 0" class="provider-switch-sep" aria-hidden="true">·</span>
+                <button
+                  :class="['provider-name', { on: providerCode === provider.code }]"
+                  :data-testid="`provider-${provider.code}`"
+                  type="button"
+                  role="radio"
+                  :aria-checked="providerCode === provider.code"
+                  :aria-disabled="singleProvider"
+                  @click="selectProvider(provider.code)"
+                >
+                  {{ provider.name }}
+                </button>
+              </template>
+            </div>
+            <p class="provider-switch-desc">{{ providerDescription(providerCode) }}</p>
+          </template>
         </div>
 
-        <el-input
-          id="login-username"
-          v-model="username"
-          data-testid="login-username"
-          autocomplete="username"
-          :placeholder="accountPlaceholder"
-          aria-label="账号"
-          size="large"
-        />
+        <div class="login-field">
+          <label class="login-field-label" for="login-username">{{ accountLabel }}</label>
+          <el-input
+            id="login-username"
+            v-model="username"
+            data-testid="login-username"
+            autocomplete="username"
+            :placeholder="accountLabel"
+            :aria-label="accountLabel"
+            size="large"
+          />
+        </div>
 
-        <el-input
-          id="login-password"
-          v-model="password"
-          data-testid="login-password"
-          autocomplete="current-password"
-          placeholder="密码"
-          aria-label="密码"
-          size="large"
-          show-password
-          type="password"
-        />
+        <div class="login-field">
+          <label class="login-field-label" for="login-password">密码</label>
+          <el-input
+            id="login-password"
+            v-model="password"
+            data-testid="login-password"
+            autocomplete="current-password"
+            placeholder="密码"
+            aria-label="密码"
+            size="large"
+            show-password
+            type="password"
+          />
+        </div>
 
         <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
         <p v-if="successMessage" class="login-success" role="status">{{ successMessage }}</p>
