@@ -262,6 +262,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "PRD.md",
         "PROGRESS.md",
         "deploy/README.md",
+        "docs/previews/login-redesign-prototype.html",
         "docs/previews/security-daily-report-sample.html",
         "docs/previews/security-daily-report-sample.txt",
         "deploy/prometheus.example.yml",
