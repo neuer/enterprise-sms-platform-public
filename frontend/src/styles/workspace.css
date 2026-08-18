@@ -928,9 +928,13 @@ main {
 }
 
 .channel-monitor-link,
-.metric-link,
 .disposition-link {
   display: block;
+  min-width: 0;
+}
+
+.metric-link {
+  display: flex;
   min-width: 0;
 }
 
@@ -956,6 +960,9 @@ main {
 }
 
 .metric-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   min-width: 0;
   border-top: 3px solid var(--line-2);
 }
@@ -974,6 +981,7 @@ main {
 
 .metric-card .el-card__body {
   display: grid;
+  flex: 1;
   grid-template-columns: 1fr auto;
   min-height: 156px;
   align-content: start;

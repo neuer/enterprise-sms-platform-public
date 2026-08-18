@@ -73,6 +73,14 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(monitor).toMatch(/\.monitor-degraded[^}]*color:\s*var\(--tx-2\)/s)
   })
 
+  it("仪表盘 KPI 卡片在不同内容量下始终等高对齐", () => {
+    const workspace = source("src/styles/workspace.css")
+
+    expect(workspace).toMatch(/\.metric-link\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.metric-card\s*\{[^}]*display:\s*flex[^}]*flex:\s*1/s)
+    expect(workspace).toMatch(/\.metric-card\s+\.el-card__body\s*\{[^}]*flex:\s*1/s)
+  })
+
   it("动态运行参数来自后端事实而不是设计稿默认值", () => {
     const dashboard = source("src/views/DashboardView.vue")
     const send = source("src/views/SendView.vue")
