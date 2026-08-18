@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox, ElPagination, ElSelect } from "element-plus"
+import ElementPlus, { ElMessage, ElMessageBox, ElPagination, ElSelect } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { vi } from "vitest"
 
@@ -85,6 +85,41 @@ describe("批次与号码查询", () => {
     expect(wrapper.text()).toContain("13800138000")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/messages/batches/BATCH-1")
     expect(fetch.mock.calls[2][0]).toBe("/api/v1/messages/batches/BATCH-1/details?page=1&size=20")
+    vi.unstubAllGlobals()
+  })
+
+  it("抽屉内明细加载失败用浮层消息提示，不写入被遮挡的列表警告", async () => {
+    const batch = {
+      batch_no: "BATCH-2", category: "notice", channel: "web", app_name: null,
+      creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
+      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
+      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
+      .mockResolvedValueOnce(response(batch))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: { get: () => null },
+        json: async () => ({ message: "明细服务暂不可用" }),
+      })
+    vi.stubGlobal("fetch", fetch)
+    const toast = vi.spyOn(ElMessage, "error")
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    const detail = wrapper.findAll("button").find((item) => item.text().includes("查看详情"))
+    await detail!.trigger("click")
+    await flushPromises()
+
+    expect(toast).toHaveBeenCalledWith("明细服务暂不可用")
+    expect(wrapper.find(".query-table-card .el-alert").exists()).toBe(false)
+    toast.mockRestore()
     vi.unstubAllGlobals()
   })
 

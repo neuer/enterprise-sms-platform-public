@@ -27,6 +27,7 @@ const batchNo = ref("")
 const apps = ref<ManagedApp[]>([])
 const loading = ref(false)
 const errorMessage = ref("")
+const retryingId = ref<number | null>(null)
 const hasFilter = computed(() =>
   Boolean(status.value || appId.value || event.value || batchNo.value.trim()),
 )
@@ -95,12 +96,16 @@ function filter(): void {
 }
 
 async function retry(item: CallbackTask): Promise<void> {
+  if (retryingId.value !== null) return
+  retryingId.value = item.id
   try {
     await retryCallback(item.id)
     ElMessage.success("回调任务已重新入队")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "手动重推失败")
+  } finally {
+    retryingId.value = null
   }
 }
 
@@ -194,7 +199,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="操作" width="104" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'dead'" link type="danger" @click="retry(row)">手动重推</el-button>
+          <el-button v-if="row.status === 'dead'" link type="danger" :loading="retryingId === row.id" @click="retry(row)">手动重推</el-button>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
@@ -220,7 +225,7 @@ onMounted(() => {
         </dl>
         <footer>
           <time>{{ formatTime(item.created_at) }}</time>
-          <el-button v-if="item.status === 'dead'" link type="danger" @click="retry(item)">手动重推</el-button>
+          <el-button v-if="item.status === 'dead'" link type="danger" :loading="retryingId === item.id" @click="retry(item)">手动重推</el-button>
         </footer>
       </article>
       <EmptyState v-if="!items.length" :title="hasFilter ? '没有符合筛选的回调任务' : '当前没有回调任务'" :description="hasFilter ? '可调整状态、应用、事件或批次号后重试。' : '启用应用回调后，投递任务会出现在这里。'" />

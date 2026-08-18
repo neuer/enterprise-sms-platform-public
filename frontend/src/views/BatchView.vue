@@ -117,7 +117,8 @@ async function loadDetails(): Promise<void> {
     details.value = result.items
     detailTotal.value = result.total
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "批次明细加载失败"
+    // 抽屉打开时列表卡片的 el-alert 被遮挡，此处必须用浮层消息。
+    ElMessage.error(error instanceof Error ? error.message : "批次明细加载失败")
   } finally {
     detailsLoading.value = false
   }
@@ -135,7 +136,7 @@ async function openBatch(item: BatchItem): Promise<void> {
     const [batch] = await Promise.all([getBatch(item.batch_no), loadDetails()])
     selected.value = batch
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "批次详情加载失败"
+    ElMessage.error(error instanceof Error ? error.message : "批次详情加载失败")
   }
 }
 
@@ -148,7 +149,7 @@ async function revealPhone(message: BatchMessage): Promise<void> {
   try {
     const result = await decryptMessagePhone(message.id)
     revealed.value = { ...revealed.value, [message.id]: result.phone }
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : "授权查看失败" }
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "授权查看失败") }
 }
 
 async function cancelSelected(): Promise<void> {

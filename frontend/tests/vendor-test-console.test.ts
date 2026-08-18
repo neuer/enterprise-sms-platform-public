@@ -742,6 +742,103 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
+  it("轮询连续失败只提示一次错误，恢复成功后重新获得提示能力", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000504",
+      operation_type: "activate" as const,
+      status: "running",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    let lookups = 0
+    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
+      operation_id: operation.operation_id,
+      operation_type: operation.operation_type,
+    }))
+    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
+      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+      lookups += 1
+      // 恢复成功 → 两次失败 → 一次成功 → 再次失败：验证提示只按失败段去重。
+      if (lookups === 2 || lookups === 3 || lookups === 5) {
+        return response({ code: "TEMPORARY", message: "控制代理暂不可用" }, 503)
+      }
+      return response(operation)
+    }))
+    const error = vi.spyOn(ElMessage, "error")
+
+    const wrapper = mountConsole()
+    await flushPromises()
+    expect(lookups).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(lookups).toBe(2)
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledWith("控制代理暂不可用")
+
+    await vi.advanceTimersByTimeAsync(1600)
+    await flushPromises()
+    expect(lookups).toBe(3)
+    expect(error).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1600)
+    await flushPromises()
+    expect(lookups).toBe(4)
+
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(lookups).toBe(5)
+    expect(error).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it("组件卸载后在途轮询失败保持静默且不再重排定时器", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000505",
+      operation_type: "activate" as const,
+      status: "running",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    const pendingPoll = deferred<ReturnType<typeof response>>()
+    let lookups = 0
+    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
+      operation_id: operation.operation_id,
+      operation_type: operation.operation_type,
+    }))
+    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
+      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+      lookups += 1
+      if (lookups === 1) return response(operation)
+      return pendingPoll.promise
+    }))
+    const error = vi.spyOn(ElMessage, "error")
+
+    const wrapper = mountConsole()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(lookups).toBe(2)
+
+    wrapper.unmount()
+    pendingPoll.reject(new Error("late failure"))
+    await flushPromises()
+
+    expect(error).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(lookups).toBe(2)
+  })
+
   it("刷新恢复 pending reset 时在 operation GET 返回前同步禁用危险动作", async () => {
     vi.useFakeTimers()
     const operation = {

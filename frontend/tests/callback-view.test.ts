@@ -71,6 +71,32 @@ describe("回调任务", () => {
     vi.unstubAllGlobals()
   })
 
+  it("重推请求在途时忽略重复点击", async () => {
+    let resolveRetry!: (value: unknown) => void
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(appOptions))
+      .mockResolvedValueOnce(response({ total: 1, dead_total: 1, items: [deadTask] }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRetry = resolve }))
+      .mockResolvedValue(response({ total: 0, dead_total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+
+    const wrapper = mount(CallbackView, {
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    const retry = wrapper.findAll("button").find((button) => button.text().includes("手动重推"))
+    await retry!.trigger("click")
+    await retry!.trigger("click")
+    const retryCalls = () => fetch.mock.calls.filter(([url]) => String(url).includes("/retry"))
+    expect(retryCalls()).toHaveLength(1)
+
+    resolveRetry(response(undefined))
+    await flushPromises()
+    expect(retryCalls()).toHaveLength(1)
+    vi.unstubAllGlobals()
+  })
+
   it("组合筛选透传查询参数并展示下次重试时间", async () => {
     const retrying = {
       ...deadTask,
