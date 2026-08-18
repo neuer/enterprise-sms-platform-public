@@ -190,6 +190,12 @@ button:focus-visible {
   gap: 14px;
 }
 
+.provider-switch-item {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
 .provider-name {
   padding: 2px 1px 5px;
   color: var(--tx-3);
@@ -210,14 +216,21 @@ button:focus-visible {
   border-bottom-color: var(--verdi);
 }
 
-.provider-name[aria-disabled="true"] {
+.provider-switch-item.is-off .provider-name,
+.provider-switch-item.is-off .provider-name:hover,
+.provider-switch-item.is-off .provider-name.on {
+  color: var(--tx-3);
+  opacity: 0.42;
+  border-bottom-color: transparent;
   cursor: default;
 }
 
-.provider-switch.solo .provider-name,
-.provider-switch.solo .provider-name.on {
-  color: var(--tx-2);
-  border-bottom-color: transparent;
+.provider-off-note {
+  color: var(--tx-3);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  opacity: 0.72;
 }
 
 .provider-switch-sep {
@@ -232,6 +245,10 @@ button:focus-visible {
   font-size: 11px;
   line-height: 1.5;
   text-align: center;
+}
+
+.provider-switch-desc.is-hint {
+  color: #a7b3ab;
 }
 
 .login-field {
