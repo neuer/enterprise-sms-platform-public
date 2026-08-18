@@ -14,6 +14,10 @@ class StatsRepository(Protocol):
 
     async def aggregate_day(self, stat_date: date) -> int: ...
 
+    async def list_dirty_dates(self) -> tuple[date, ...]: ...
+
+    async def clear_dirty_date(self, stat_date: date) -> None: ...
+
 
 def success_rate(delivered: int, failed: int) -> float:
     """按 delivered/(delivered+failed) 计算，unknown/other 不进入分母。"""
@@ -34,13 +38,20 @@ def recent_stat_dates(now: datetime) -> tuple[date, ...]:
 
 
 class StatsAggregationService:
-    """串行重建最近五个统计日并汇总写入行数。"""
+    """串行重建最近五个统计日，并补算晚到回执标记的窗口外归属日。"""
 
     def __init__(self, repository: StatsRepository) -> None:
         self.repository = repository
 
     async def aggregate_recent(self, now: datetime) -> int:
         total = 0
-        for stat_date in recent_stat_dates(now):
+        recent = recent_stat_dates(now)
+        for stat_date in recent:
             total += await self.repository.aggregate_day(stat_date)
+        # 晚到回执/超时过期标记的脏日：先重算成功再清除标记，聚合失败时
+        # 标记保留给下一轮，统计不会永久偏离事实（#342）。
+        for stat_date in await self.repository.list_dirty_dates():
+            if stat_date not in recent:
+                total += await self.repository.aggregate_day(stat_date)
+            await self.repository.clear_dirty_date(stat_date)
         return total

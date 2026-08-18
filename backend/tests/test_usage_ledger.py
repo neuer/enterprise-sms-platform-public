@@ -11,6 +11,7 @@ from app.services.usage_ledger import (
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
+    _frequency_projection_keys,
     _safe_event_id,
     _safe_request_key,
     frequency_windows,
@@ -192,3 +193,12 @@ async def test_redis_unavailable_is_fail_closed_before_reservation() -> None:
 
     with pytest.raises(UsageProjectionUnavailable):
         await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
+
+
+def test_frequency_projection_keys_are_deterministic() -> None:
+    digest = "a" * 64
+    assert _frequency_projection_keys("verify", 1, digest) == (
+        f"freq:v:{digest}:m",
+        f"freq:v:{digest}:d",
+    )
+    assert _frequency_projection_keys("market", 9, digest) == (f"freq:m:9:{digest}:d",)

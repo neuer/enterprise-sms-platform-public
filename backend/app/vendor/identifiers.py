@@ -86,3 +86,20 @@ def protect_vendor_custom_id(
 
     raw = validate_vendor_custom_id(value)
     return raw, vendor_identifier_pseudonym(crypto, raw, domain="vendor-custom-id")
+
+
+def degrade_vendor_identifier(
+    crypto: IdentifierFingerprint,
+    value: str,
+    *,
+    domain: str,
+) -> str:
+    """空/非法厂商标识只保留可关联伪标识，原文一律不出内存。
+
+    空值没有可指纹化的字节，用域内合同不可能出现的哨兵（含 NUL）保持
+    确定性；非法值直接指纹化。拉走即消费的回执事实由此得以保留，而不是
+    因单条坏标识被整条丢弃。
+    """
+
+    canonical = value if value else "\x00empty"
+    return vendor_identifier_pseudonym(crypto, canonical, domain=domain)

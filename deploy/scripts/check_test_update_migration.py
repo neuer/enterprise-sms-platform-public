@@ -65,6 +65,10 @@ _CREATE_UNIQUE_INDEX_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s+ON\s+([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+_DROP_INDEX_RE = re.compile(
+    r"\bDROP\s+INDEX\s+IF\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 _WIDEN_ALEMBIC_VERSION_RE = re.compile(
     r"ALTER\s+TABLE\s+alembic_version\s+ALTER\s+COLUMN\s+version_num\s+"
     r"TYPE\s+VARCHAR\(64\)",
@@ -220,6 +224,7 @@ def _check_raw_sql(
     *,
     paired_triggers: frozenset[tuple[str, str]] = frozenset(),
     paired_constraints: frozenset[tuple[str, str]] = frozenset(),
+    paired_indexes: frozenset[str] = frozenset(),
     resolved_sql: str | None = None,
 ) -> None:
     sql = resolved_sql if resolved_sql is not None else _literal_sql(call, migration)
@@ -316,6 +321,13 @@ def _check_raw_sql(
             )
         ):
             return
+    dropped_index = _DROP_INDEX_RE.fullmatch(sql.strip())
+    if dropped_index is not None:
+        if dropped_index.group(1).lower() in paired_indexes:
+            return
+        raise ExpandOnlyError(
+            f"{migration.revision}: index drop is not replaced in the same migration"
+        )
     if normalized.startswith("DO "):
         if (
             "CREATE POLICY " in normalized
@@ -390,6 +402,17 @@ def _check_upgrade(migration: CheckedMigration, tree: ast.Module) -> None:
     paired_constraints = frozenset(
         dropped_constraints & (added_constraints | created_unique_indexes)
     )
+    dropped_indexes = {
+        match.group(1).lower()
+        for sql in literal_sql
+        if (match := _DROP_INDEX_RE.fullmatch(sql.strip())) is not None
+    }
+    created_indexes = {
+        match.group(1).lower()
+        for sql in literal_sql
+        for match in _CREATE_UNIQUE_INDEX_RE.finditer(sql)
+    }
+    paired_indexes = frozenset(dropped_indexes & created_indexes)
     for node in ast.walk(upgrade):
         if not isinstance(node, ast.Call):
             continue
@@ -406,6 +429,7 @@ def _check_upgrade(migration: CheckedMigration, tree: ast.Module) -> None:
                     migration,
                     paired_triggers=paired_triggers,
                     paired_constraints=paired_constraints,
+                    paired_indexes=paired_indexes,
                     resolved_sql=statement,
                 )
             continue

@@ -6,6 +6,7 @@ import asyncio
 import atexit
 from collections.abc import Coroutine
 from concurrent.futures import Future
+from contextlib import suppress
 from threading import Event, Lock, Thread
 from typing import Any, TypeVar
 
@@ -53,7 +54,17 @@ class WorkerAsyncRuntime:
             coroutine.close()
             raise RuntimeError("worker async runtime is unavailable")
         future: Future[T] = asyncio.run_coroutine_threadsafe(coroutine, loop)
-        return future.result()
+        try:
+            return future.result()
+        except BaseException:
+            # SoftTimeLimitExceeded 等在主线程中断等待时，取消 loop 线程上的
+            # 协程并有界等待其退出：孤儿协程会与重试投递的同一 chunk 并发，
+            # 或在 worker 回收时被硬杀在厂商调用中途。已取消的发送分片由
+            # reconcile 的 stale-submitting 扫描按规则 4 转 uncertain。
+            future.cancel()
+            with suppress(BaseException):
+                future.result(timeout=10)
+            raise
 
     def close(self) -> None:
         with self._lock:

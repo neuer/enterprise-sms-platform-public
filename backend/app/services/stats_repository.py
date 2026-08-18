@@ -79,3 +79,31 @@ class SqlStatsRepository:
                 return int(result.rowcount or 0)
         finally:
             await engine.dispose()
+
+    async def list_dirty_dates(self, *, limit: int = 40) -> tuple[date, ...]:
+        """晚到回执标记的待补算归属日；限量防止单轮聚合无界。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        "SELECT stat_date FROM stat_dirty_date "
+                        "ORDER BY stat_date LIMIT :limit"
+                    ),
+                    {"limit": limit},
+                )
+                return tuple(result.scalars())
+        finally:
+            await engine.dispose()
+
+    async def clear_dirty_date(self, stat_date: date) -> None:
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM stat_dirty_date WHERE stat_date=:stat_date"),
+                    {"stat_date": stat_date},
+                )
+        finally:
+            await engine.dispose()

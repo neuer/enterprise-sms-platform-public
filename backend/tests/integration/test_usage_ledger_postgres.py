@@ -36,6 +36,7 @@ class ProjectionRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.fail = False
+        self.fail_eval = False
 
     async def get(self, name: str) -> str | None:
         if self.fail:
@@ -56,7 +57,7 @@ class ProjectionRedis:
         return [self.values.get(key) for key in keys]
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> int:
-        if self.fail:
+        if self.fail or self.fail_eval:
             raise ConnectionError("synthetic redis outage")
         if script == APPLY_PROJECTION_LUA:
             assert numkeys == 2
@@ -529,6 +530,192 @@ async def test_usage_facts_release_rebuild_rotation_and_drift_are_recoverable() 
 
 
 @pytest.mark.asyncio
+async def test_uncertain_retry_rebuilds_and_orphan_recovery_spares_committed() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    date_key, _, next_day = shanghai_day(now)
+    nonce = uuid4().hex
+    reservation_ids: list[UUID] = []
+    batch_ids: list[int] = []
+    app_id: int | None = None
+    try:
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO app(
+                      name,dept,api_key_hash,api_key_prefix,daily_quota,created_by
+                    ) VALUES(
+                      :name,'重试账本部',:api_key_hash,:api_key_prefix,10,'integration'
+                    ) RETURNING id
+                    """
+                ),
+                {
+                    "name": f"usage-retry-{nonce}",
+                    "api_key_hash": "f" * 64,
+                    "api_key_prefix": nonce[:8],
+                },
+            )
+            app_id = int(result.scalar_one())
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        await service.ensure_ready(now)
+        request_key = f"acceptance:{uuid4()}"
+        first = await service.start_reservation(
+            request_key=request_key,
+            app_id=app_id,
+            dept="重试账本部",
+            category="notice",
+            now=now,
+        )
+        reservation_ids.append(first.reservation_id)
+        assert not first.reused
+
+        # Redis 投影写失败 → 预留转 uncertain（历史缺陷：CHECK 拒绝
+        # uncertain-retry 事件导致同键重试持续 500）。只让写脚本失败，
+        # ensure_ready 的 marker 读取保持可用。
+        redis.fail_eval = True
+        with pytest.raises(UsageProjectionUnavailable):
+            await service.reserve_quota(
+                first.reservation_id,
+                app_id=app_id,
+                dept="重试账本部",
+                category="notice",
+                date_key=date_key,
+                cost=1,
+                app_limit=10,
+                dept_limit=10,
+                expires_at=next_day,
+            )
+        redis.fail_eval = False
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT state FROM usage_reservation WHERE id=:id"),
+                    {"id": first.reservation_id},
+                )
+                == "uncertain"
+            )
+
+        # 同 request_key 重试必须当场重建全新预留，旧行进入排水。
+        second = await service.start_reservation(
+            request_key=request_key,
+            app_id=app_id,
+            dept="重试账本部",
+            category="notice",
+            now=now,
+        )
+        reservation_ids.append(second.reservation_id)
+        assert second.reservation_id != first.reservation_id
+        assert not second.reused
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT state,release_event_id FROM usage_reservation
+                        WHERE id=:id
+                        """
+                    ),
+                    {"id": first.reservation_id},
+                )
+            ).mappings().one()
+        assert row["state"] == "release_requested"
+        assert row["release_event_id"] == f"usage:{first.reservation_id}:uncertain-retry"
+        assert await service.apply_release(first.reservation_id) == 1
+
+        await service.reserve_quota(
+            second.reservation_id,
+            app_id=app_id,
+            dept="重试账本部",
+            category="notice",
+            date_key=date_key,
+            cost=1,
+            app_limit=10,
+            dept_limit=10,
+            expires_at=next_day,
+        )
+        batch_id, batch_no = await _create_batch(
+            engine,
+            app_id=app_id,
+            reservation_id=second.reservation_id,
+            category="notice",
+            quota_cost=1,
+        )
+        batch_ids.append(batch_id)
+
+        # 已提交（已绑定批次）的预留即使 updated_at 陈旧也不得被孤儿回收
+        # 释放，否则配额双花且终态释放永久 409。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_reservation
+                    SET state='reserved',updated_at=now()-interval '20 minutes'
+                    WHERE id=:id
+                    """
+                ),
+                {"id": second.reservation_id},
+            )
+        assert await service.recover_orphans(older_than_seconds=600) == 0
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE usage_reservation SET state='committed' WHERE id=:id"),
+                {"id": second.reservation_id},
+            )
+
+        # 终态业务释放入口保持可用：驳回/取消不会因回收竞态永久失败。
+        async with engine.begin() as connection:
+            assert await request_usage_release_for_batch(
+                connection,
+                batch_id=batch_id,
+                event_id=f"batch:{batch_no}:cancelled",
+            )
+        assert await service.apply_release(second.reservation_id) == 1
+    finally:
+        async with engine.begin() as connection:
+            if reservation_ids:
+                await connection.execute(
+                    text(
+                        """
+                        DELETE FROM outbox_event
+                        WHERE aggregate_id=ANY(CAST(:ids AS text[]))
+                        """
+                    ),
+                    {"ids": [str(value) for value in reservation_ids]},
+                )
+            if batch_ids:
+                await connection.execute(
+                    text("DELETE FROM sms_batch WHERE id=ANY(CAST(:ids AS bigint[]))"),
+                    {"ids": batch_ids},
+                )
+            if reservation_ids:
+                await connection.execute(
+                    text(
+                        """
+                        DELETE FROM usage_reservation
+                        WHERE id=ANY(CAST(:ids AS uuid[]))
+                        """
+                    ),
+                    {"ids": reservation_ids},
+                )
+            if app_id is not None:
+                await connection.execute(
+                    text(
+                        "DELETE FROM usage_projection WHERE dimension_key LIKE :pattern"
+                    ),
+                    {"pattern": f"quota:%:{app_id}:%"},
+                )
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_quota_reservations_are_serialized_in_postgres() -> None:
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
@@ -738,4 +925,100 @@ async def test_concurrent_releases_update_shared_projection_without_deadlock() -
                 text("DELETE FROM app WHERE id=:app_id"),
                 {"app_id": app_id},
             )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recover_orphans_retries_stuck_release_requested() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    date_key, _, next_day = shanghai_day(now)
+    nonce = uuid4().hex
+    reservation_id: UUID | None = None
+    app_id: int | None = None
+    try:
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO app(
+                      name,dept,api_key_hash,api_key_prefix,daily_quota,created_by
+                    ) VALUES(
+                      :name,'死信账本部',:api_key_hash,:api_key_prefix,10,'integration'
+                    ) RETURNING id
+                    """
+                ),
+                {
+                    "name": f"usage-dead-{nonce}",
+                    "api_key_hash": "e" * 64,
+                    "api_key_prefix": nonce[:8],
+                },
+            )
+            app_id = int(result.scalar_one())
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        await service.ensure_ready(now)
+        reservation = await service.start_reservation(
+            request_key=f"acceptance:{uuid4()}",
+            app_id=app_id,
+            dept="死信账本部",
+            category="notice",
+            now=now,
+        )
+        reservation_id = reservation.reservation_id
+        await service.reserve_quota(
+            reservation_id,
+            app_id=app_id,
+            dept="死信账本部",
+            category="notice",
+            date_key=date_key,
+            cost=1,
+            app_limit=10,
+            dept_limit=10,
+            expires_at=next_day,
+        )
+        assert await service.request_unlinked_release(
+            reservation_id,
+            event_id=f"usage:{reservation_id}:acceptance-failed",
+        )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_reservation
+                    SET updated_at=now()-interval '20 minutes'
+                    WHERE id=:id
+                    """
+                ),
+                {"id": reservation_id},
+            )
+        assert await service.recover_orphans(older_than_seconds=600) == 1
+        async with engine.connect() as connection:
+            state = await connection.scalar(
+                text("SELECT state FROM usage_reservation WHERE id=:id"),
+                {"id": reservation_id},
+            )
+        assert state == "released"
+    finally:
+        async with engine.begin() as connection:
+            if reservation_id is not None:
+                await connection.execute(
+                    text("DELETE FROM outbox_event WHERE aggregate_id=:id"),
+                    {"id": str(reservation_id)},
+                )
+                await connection.execute(
+                    text("DELETE FROM usage_reservation WHERE id=:id"),
+                    {"id": reservation_id},
+                )
+            if app_id is not None:
+                await connection.execute(
+                    text("DELETE FROM usage_projection WHERE dimension_key LIKE :pattern"),
+                    {"pattern": f"quota:%:{app_id}:%"},
+                )
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
         await engine.dispose()

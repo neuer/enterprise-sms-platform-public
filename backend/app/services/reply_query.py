@@ -225,7 +225,7 @@ class SqlReplyQueryRepository:
                         FROM sms_reply r
                         JOIN reply_event e ON e.event_key=r.event_key
                         LEFT JOIN sms_batch b ON b.id=r.batch_id
-                        WHERE r.id=:reply_id AND r.batch_id IS NOT NULL
+                        WHERE r.id=:reply_id
                           AND (:dept IS NULL OR b.dept=:dept)
                         """
                     ),

@@ -887,6 +887,26 @@ class SqlChunkStore:
         finally:
             await engine.dispose()
 
+    async def pause_blocked(self, chunk_id: int, code: int) -> None:
+        """熔断码把在途 chunk 回退 retrying，恢复队列后由 reconcile 重投。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                transitioned = await connection.execute(
+                    text(
+                        "UPDATE sms_chunk SET status='retrying',vendor_code=:code,"
+                        "submitting_since=NULL,retry_not_before=now() "
+                        "WHERE id=:id AND status='submitting' RETURNING id"
+                    ),
+                    {"id": chunk_id, "code": code},
+                )
+                if transitioned.scalar_one_or_none() is None:
+                    return
+                await settle_live_test_attempt(connection, chunk_id, "released")
+        finally:
+            await engine.dispose()
+
     async def pause_queues(self, code: int) -> None:
         await self.redis.set("queue:paused:realtime", str(code))
         await self.redis.set("queue:paused:bulk", str(code))

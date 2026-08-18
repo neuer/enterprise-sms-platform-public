@@ -248,6 +248,140 @@ async def _lock_projection_keys(
     )
 
 
+def _frequency_projection_keys(
+    category: str,
+    app_id: int,
+    projection_hmac: str,
+) -> tuple[str, ...]:
+    if category == "verify":
+        return (f"freq:v:{projection_hmac}:m", f"freq:v:{projection_hmac}:d")
+    return (f"freq:m:{app_id}:{projection_hmac}:d",)
+
+
+async def _ensure_frequency_subject(
+    connection: AsyncConnection,
+    item: FrequencyDecisionItem,
+) -> tuple[UUID, str]:
+    """定位或创建频控主体，返回 (subject_id, projection_hmac)。"""
+
+    hmac_aliases = dict(item.hmac_aliases)
+    alias_result = await connection.execute(
+        text(
+            """
+            SELECT DISTINCT subject_id FROM usage_frequency_alias
+            WHERE phone_hmac=ANY(CAST(:digests AS char(64)[]))
+            """
+        ),
+        {"digests": list(hmac_aliases.values())},
+    )
+    subject_ids = {UUID(str(value)) for value in alias_result.scalars()}
+    if subject_ids:
+        preferred_subject = await connection.scalar(
+            text(
+                """
+                SELECT subject_id FROM usage_frequency_alias
+                WHERE phone_hmac=:preferred_digest
+                """
+            ),
+            {"preferred_digest": hmac_aliases[min(hmac_aliases)]},
+        )
+        subject_result = await connection.execute(
+            text(
+                """
+                SELECT id,projection_hmac FROM usage_frequency_subject
+                WHERE id=ANY(CAST(:subject_ids AS uuid[]))
+                ORDER BY projection_hmac,id
+                """
+            ),
+            {"subject_ids": list(subject_ids)},
+        )
+        subject_rows = list(subject_result.mappings())
+        if len(subject_rows) != len(subject_ids):
+            raise UsageReservationConflict("frequency subject unavailable")
+        preferred_subject_id = (
+            UUID(str(preferred_subject)) if preferred_subject is not None else None
+        )
+        canonical = next(
+            (row for row in subject_rows if UUID(str(row["id"])) == preferred_subject_id),
+            subject_rows[0],
+        )
+        subject_id = UUID(str(canonical["id"]))
+        projection_hmac = str(canonical["projection_hmac"])
+        for source in subject_rows:
+            source_id = UUID(str(source["id"]))
+            if source_id == subject_id:
+                continue
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_frequency_alias SET subject_id=:target_id
+                    WHERE subject_id=:source_id
+                    """
+                ),
+                {"target_id": subject_id, "source_id": source_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_frequency_entry SET subject_id=:target_id
+                    WHERE subject_id=:source_id
+                    """
+                ),
+                {"target_id": subject_id, "source_id": source_id},
+            )
+            await connection.execute(
+                text("DELETE FROM usage_frequency_subject WHERE id=:source_id"),
+                {"source_id": source_id},
+            )
+    else:
+        subject_id = uuid4()
+        projection_hmac = hmac_aliases[min(hmac_aliases)]
+        await connection.execute(
+            text(
+                """
+                INSERT INTO usage_frequency_subject(id,projection_hmac)
+                VALUES(:id,:projection_hmac)
+                """
+            ),
+            {"id": subject_id, "projection_hmac": projection_hmac},
+        )
+    alias_payload = json.dumps(
+        [
+            {"key_version": version, "phone_hmac": digest}
+            for version, digest in sorted(hmac_aliases.items())
+        ],
+        separators=(",", ":"),
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO usage_frequency_alias(
+              subject_id,key_version,phone_hmac
+            )
+            SELECT
+              :subject_id,alias.key_version,alias.phone_hmac
+            FROM jsonb_to_recordset(CAST(:aliases AS jsonb)) AS alias(
+              key_version smallint,phone_hmac char(64)
+            )
+            ON CONFLICT(phone_hmac) DO NOTHING
+            """
+        ),
+        {"subject_id": subject_id, "aliases": alias_payload},
+    )
+    alias_check = await connection.execute(
+        text(
+            """
+            SELECT count(DISTINCT subject_id) FROM usage_frequency_alias
+            WHERE phone_hmac=ANY(CAST(:digests AS char(64)[]))
+            """
+        ),
+        {"digests": list(hmac_aliases.values())},
+    )
+    if int(alias_check.scalar_one()) != 1:
+        raise UsageReservationConflict("frequency alias write conflict")
+    return subject_id, projection_hmac
+
+
 async def _change_projections(
     connection: AsyncConnection,
     changes: Sequence[_ProjectionChange],
@@ -676,59 +810,59 @@ class UsageLedgerService:
         if app_id < 0 or not dept or category not in {"verify", "notice", "market"}:
             raise ValueError("invalid usage reservation")
         engine = self._engine()
-        reservation_id = uuid4()
-        async with engine.begin() as connection:
-            result = await connection.execute(
-                text(
-                    """
-                    INSERT INTO usage_reservation(
-                      id,request_key,app_id,dept,category,usage_date,state
-                    ) VALUES(
-                      :id,:request_key,:app_id,:dept,:category,:usage_date,'reserved'
-                    )
-                    ON CONFLICT(request_key) WHERE state<>'released'
-                    DO UPDATE SET request_key=EXCLUDED.request_key
-                    RETURNING id,app_id,dept,category,usage_date,state
-                    """
-                ),
-                {
-                    "id": reservation_id,
-                    "request_key": request_key,
-                    "app_id": app_id,
-                    "dept": dept,
-                    "category": category,
-                    "usage_date": usage_date,
-                },
-            )
-            row = result.mappings().one()
-            expected = (app_id, dept, category, usage_date)
-            persisted = (
-                int(row["app_id"]),
-                str(row["dept"]),
-                str(row["category"]),
-                row["usage_date"],
-            )
-            if expected != persisted:
-                raise UsageReservationConflict("usage reservation contract changed")
-            persisted_id = UUID(str(row["id"]))
-            reused = persisted_id != reservation_id
-            reused_uncertain = reused and str(row["state"]) == "uncertain"
-        if reused_uncertain:
+        # uncertain 复用最多释放一次旧行后重建；有界循环替代递归，
+        # 终止性不依赖状态机偶然性。
+        for _ in range(2):
+            reservation_id = uuid4()
+            async with engine.begin() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        INSERT INTO usage_reservation(
+                          id,request_key,app_id,dept,category,usage_date,state
+                        ) VALUES(
+                          :id,:request_key,:app_id,:dept,:category,:usage_date,'reserved'
+                        )
+                        ON CONFLICT(request_key)
+                        WHERE state NOT IN ('released','release_requested')
+                        DO UPDATE SET request_key=EXCLUDED.request_key
+                        RETURNING id,app_id,dept,category,usage_date,state
+                        """
+                    ),
+                    {
+                        "id": reservation_id,
+                        "request_key": request_key,
+                        "app_id": app_id,
+                        "dept": dept,
+                        "category": category,
+                        "usage_date": usage_date,
+                    },
+                )
+                row = result.mappings().one()
+                expected = (app_id, dept, category, usage_date)
+                persisted = (
+                    int(row["app_id"]),
+                    str(row["dept"]),
+                    str(row["category"]),
+                    row["usage_date"],
+                )
+                if expected != persisted:
+                    raise UsageReservationConflict("usage reservation contract changed")
+                persisted_id = UUID(str(row["id"]))
+                reused = persisted_id != reservation_id
+                reused_uncertain = reused and str(row["state"]) == "uncertain"
+            if not reused_uncertain:
+                return UsageReservation(
+                    persisted_id,
+                    reused=reused,
+                )
+            # 旧 uncertain 行转入 release_requested 排水后不再占用活跃唯一
+            # 索引，下一轮 INSERT 即可重建全新预留。
             await self.request_unlinked_release(
                 persisted_id,
                 event_id=f"usage:{persisted_id}:uncertain-retry",
             )
-            return await self.start_reservation(
-                request_key=request_key,
-                app_id=app_id,
-                dept=dept,
-                category=category,
-                now=current,
-            )
-        return UsageReservation(
-            persisted_id,
-            reused=reused,
-        )
+        raise UsageReservationConflict("usage reservation retry drained")
 
     async def _mark_uncertain(self, reservation_id: UUID, error_type: str) -> None:
         safe_error = re.sub(r"[^A-Za-z0-9_.]", "", error_type)[:64] or "ProjectionError"
@@ -872,6 +1006,18 @@ class UsageLedgerService:
                 ),
                 {"id": reservation_id},
             )
+            # 先解析全部主体再一次性按序加锁，与释放侧同序，避免跨号码死锁（#351）。
+            freq_keys: list[str] = []
+            for item in items:
+                _, projection_hmac = await _ensure_frequency_subject(connection, item)
+                freq_keys.extend(
+                    _frequency_projection_keys(category, app_id, projection_hmac)
+                )
+            await _lock_projection_keys(
+                connection,
+                freq_keys,
+                namespace=43,
+            )
             allowed: list[bool] = []
             rows: list[ProjectionRow] = []
             for item in items:
@@ -887,6 +1033,7 @@ class UsageLedgerService:
                     day_window=day_window,
                     usage_date=usage_date,
                     day_expires=day_expires,
+                    lock_keys=False,
                 )
                 allowed.append(decision)
                 rows.extend(changed)
@@ -906,122 +1053,9 @@ class UsageLedgerService:
         day_window: str,
         usage_date: date,
         day_expires: datetime,
+        lock_keys: bool = True,
     ) -> tuple[bool, tuple[ProjectionRow, ...]]:
-        hmac_aliases = dict(item.hmac_aliases)
-        alias_result = await connection.execute(
-            text(
-                """
-                SELECT DISTINCT subject_id FROM usage_frequency_alias
-                WHERE phone_hmac=ANY(CAST(:digests AS char(64)[]))
-                """
-            ),
-            {"digests": list(hmac_aliases.values())},
-        )
-        subject_ids = {UUID(str(value)) for value in alias_result.scalars()}
-        if subject_ids:
-            preferred_subject = await connection.scalar(
-                text(
-                    """
-                    SELECT subject_id FROM usage_frequency_alias
-                    WHERE phone_hmac=:preferred_digest
-                    """
-                ),
-                {"preferred_digest": hmac_aliases[min(hmac_aliases)]},
-            )
-            subject_result = await connection.execute(
-                text(
-                    """
-                    SELECT id,projection_hmac FROM usage_frequency_subject
-                    WHERE id=ANY(CAST(:subject_ids AS uuid[]))
-                    ORDER BY projection_hmac,id
-                    """
-                ),
-                {"subject_ids": list(subject_ids)},
-            )
-            subject_rows = list(subject_result.mappings())
-            if len(subject_rows) != len(subject_ids):
-                raise UsageReservationConflict("frequency subject unavailable")
-            preferred_subject_id = (
-                UUID(str(preferred_subject)) if preferred_subject is not None else None
-            )
-            canonical = next(
-                (row for row in subject_rows if UUID(str(row["id"])) == preferred_subject_id),
-                subject_rows[0],
-            )
-            subject_id = UUID(str(canonical["id"]))
-            projection_hmac = str(canonical["projection_hmac"])
-            for source in subject_rows:
-                source_id = UUID(str(source["id"]))
-                if source_id == subject_id:
-                    continue
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE usage_frequency_alias SET subject_id=:target_id
-                        WHERE subject_id=:source_id
-                        """
-                    ),
-                    {"target_id": subject_id, "source_id": source_id},
-                )
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE usage_frequency_entry SET subject_id=:target_id
-                        WHERE subject_id=:source_id
-                        """
-                    ),
-                    {"target_id": subject_id, "source_id": source_id},
-                )
-                await connection.execute(
-                    text("DELETE FROM usage_frequency_subject WHERE id=:source_id"),
-                    {"source_id": source_id},
-                )
-        else:
-            subject_id = uuid4()
-            projection_hmac = hmac_aliases[min(hmac_aliases)]
-            await connection.execute(
-                text(
-                    """
-                    INSERT INTO usage_frequency_subject(id,projection_hmac)
-                    VALUES(:id,:projection_hmac)
-                    """
-                ),
-                {"id": subject_id, "projection_hmac": projection_hmac},
-            )
-        alias_payload = json.dumps(
-            [
-                {"key_version": version, "phone_hmac": digest}
-                for version, digest in sorted(hmac_aliases.items())
-            ],
-            separators=(",", ":"),
-        )
-        await connection.execute(
-            text(
-                """
-                INSERT INTO usage_frequency_alias(
-                  subject_id,key_version,phone_hmac
-                )
-                SELECT
-                  :subject_id,alias.key_version,alias.phone_hmac
-                FROM jsonb_to_recordset(CAST(:aliases AS jsonb)) AS alias(
-                  key_version smallint,phone_hmac char(64)
-                )
-                ON CONFLICT(phone_hmac) DO NOTHING
-                """
-            ),
-            {"subject_id": subject_id, "aliases": alias_payload},
-        )
-        alias_check = await connection.execute(
-            text(
-                """
-                SELECT count(DISTINCT subject_id) FROM usage_frequency_alias
-                WHERE phone_hmac=ANY(CAST(:digests AS char(64)[]))
-                """
-            ),
-            {"digests": list(hmac_aliases.values())},
-        )
-        if int(alias_check.scalar_one()) != 1:
-            raise UsageReservationConflict("frequency alias write conflict")
+        subject_id, projection_hmac = await _ensure_frequency_subject(connection, item)
 
         expected_windows = ("minute", "day") if category == "verify" else ("day",)
         existing = await connection.execute(
@@ -1054,20 +1088,21 @@ class UsageLedgerService:
             return all(existing_rows.values()), rows
         if existing_rows:
             raise UsageReservationConflict("partial frequency decision persisted")
+        keys = _frequency_projection_keys(category, app_id, projection_hmac)
         specs: tuple[tuple[str, str, str, int, datetime], ...]
         if category == "verify":
             specs = (
                 (
                     "minute",
                     minute_window,
-                    f"freq:v:{projection_hmac}:m",
+                    keys[0],
                     limits.verify_per_minute,
                     minute_expires,
                 ),
                 (
                     "day",
                     day_window,
-                    f"freq:v:{projection_hmac}:d",
+                    keys[1],
                     limits.verify_per_day,
                     day_expires,
                 ),
@@ -1077,16 +1112,13 @@ class UsageLedgerService:
                 (
                     "day",
                     day_window,
-                    f"freq:m:{app_id}:{projection_hmac}:d",
+                    keys[0],
                     limits.market_per_day,
                     day_expires,
                 ),
             )
-        await _lock_projection_keys(
-            connection,
-            [key for _, _, key, _, _ in specs],
-            namespace=43,
-        )
+        if lock_keys:
+            await _lock_projection_keys(connection, keys, namespace=43)
         spec_payload = json.dumps(
             [
                 {
@@ -1651,13 +1683,40 @@ class UsageLedgerService:
                 {"seconds": older_than_seconds},
             )
             reservation_ids = [UUID(str(value)) for value in result.scalars()]
+            stuck_result = await connection.execute(
+                text(
+                    """
+                    SELECT id FROM usage_reservation
+                    WHERE state='release_requested'
+                      AND updated_at < now()-make_interval(secs=>:seconds)
+                    ORDER BY updated_at LIMIT 500
+                    """
+                ),
+                {"seconds": older_than_seconds},
+            )
+            stuck_ids = [UUID(str(value)) for value in stuck_result.scalars()]
         recovered = 0
         for reservation_id in reservation_ids:
-            if await self.request_release(
-                reservation_id,
-                event_id=f"usage:{reservation_id}:orphan-recovery",
-            ):
+            try:
+                # 只回收尚未绑定批次的预留：扫描后、拿到行锁前预留可能已被
+                # 并发批次提交为 committed，无绑定检查的释放会造成配额双花。
+                released = await self.request_unlinked_release(
+                    reservation_id,
+                    event_id=f"usage:{reservation_id}:orphan-recovery",
+                )
+            except UsageReservationConflict:
+                # 单行竞态（并发终态迁移/事件已占用）不阻断整轮回收。
+                continue
+            if released:
                 recovered += 1
+        for reservation_id in stuck_ids:
+            try:
+                # usage.release 事件死信后 apply 永不再来（#350）：直接重驱
+                # apply_release。它按 DB 事实覆盖绝对投影且仅在
+                # release_requested 状态迁移，与迟到的 Outbox 消费幂等共存。
+                recovered += await self.apply_release(reservation_id)
+            except (UsageReservationConflict, UsageProjectionUnavailable):
+                continue
         return recovered
 
     async def explain(

@@ -14,6 +14,7 @@ from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
 from app.services.raw_spill import RawSpillStore
 from app.vendor.identifiers import (
+    degrade_vendor_identifier,
     protect_vendor_custom_id,
     protect_vendor_task_id,
     validate_vendor_custom_id,
@@ -214,6 +215,10 @@ class ReportIngestService:
         *,
         status_code: int,
     ) -> None:
+        # raw_vendor_log.http_status 约束为 100..599；异常路径缺失或越界时
+        # 记 200（响应体已被读到才可能超限），否则兜底落库必然违约失败。
+        if not 100 <= status_code <= 599:
+            status_code = 200
         payload_sha256 = hashlib.sha256(raw_payload).hexdigest()
         encrypted = self.crypto.encrypt_bound_bytes(
             raw_payload,
@@ -224,15 +229,14 @@ class ReportIngestService:
                 object_id=f"{source}:{payload_sha256}",
             ),
         )
-        if self.spill is not None:
-            self.spill.write(
-                source=source,
-                payload_sha256=payload_sha256,
-                key_version=encrypted.key_version,
-                http_status=status_code,
-                content_encoding="identity",
-                payload_enc=encrypted.payload,
-            )
+        await self._spill_write(
+            source=source,
+            payload_sha256=payload_sha256,
+            key_version=encrypted.key_version,
+            http_status=status_code,
+            content_encoding="identity",
+            payload_enc=encrypted.payload,
+        )
         raw_id = await self.repository.persist_raw(
             payload_enc=encrypted.payload,
             payload_sha256=payload_sha256,
@@ -242,8 +246,7 @@ class ReportIngestService:
             custom_ids=[],
             item_count=0,
         )
-        if self.spill is not None:
-            self.spill.remove(source, payload_sha256)
+        self._spill_remove(source, payload_sha256)
         await self.repository.mark_error(raw_id, f"{source} payload persisted after consume gap")
 
     async def _alert_consume_gap(self, source: str, error_type: str) -> None:
@@ -260,6 +263,63 @@ class ReportIngestService:
         except Exception as exc:
             LOGGER.error(
                 "vendor raw persist alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+
+    async def _spill_write(
+        self,
+        *,
+        source: str,
+        payload_sha256: str,
+        key_version: int,
+        http_status: int,
+        content_encoding: str,
+        payload_enc: bytes,
+    ) -> None:
+        """spill 是崩溃兜底而非硬依赖：写盘失败告警后继续 DB 落库。"""
+
+        if self.spill is None:
+            return
+        try:
+            self.spill.write(
+                source=source,
+                payload_sha256=payload_sha256,
+                key_version=key_version,
+                http_status=http_status,
+                content_encoding=content_encoding,
+                payload_enc=payload_enc,
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "raw spill write failed",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+            if self.alerts is None:
+                return
+            try:
+                await self.alerts.emit(
+                    alert_type="vendor_raw_spill_failed",
+                    level="crit",
+                    title="raw spill 写盘失败，崩溃兜底暂不可用",
+                    detail={"source": source, "error_type": type(exc).__name__},
+                    dedup_key=f"vendor_raw_spill_failed:{source}",
+                )
+            except Exception as alert_exc:
+                LOGGER.error(
+                    "raw spill alert unavailable",
+                    extra={"source": source, "error_type": type(alert_exc).__name__},
+                )
+
+    def _spill_remove(self, source: str, payload_sha256: str) -> None:
+        """DB 已落库后清理 spill；清理失败无害，只记日志。"""
+
+        if self.spill is None:
+            return
+        try:
+            self.spill.remove(source, payload_sha256)
+        except Exception as exc:
+            LOGGER.warning(
+                "raw spill cleanup failed",
                 extra={"source": source, "error_type": type(exc).__name__},
             )
 
@@ -315,18 +375,48 @@ class ReportIngestService:
         hmac_candidates = self.crypto.hmac_candidates(phone)
         phone_hmacs = tuple(hmac_candidates.values())
         report_desc = mask_phone_text(str(value["reportDescription"]))[:128]
-        raw_task_id, vendor_task_id = protect_vendor_task_id(
-            self.crypto,
-            value["taskId"],
-        )
-        match_custom_id, custom_id = protect_vendor_custom_id(
-            self.crypto,
-            value["customId"],
-        )
+        raw_task_value = value["taskId"]
+        if not isinstance(raw_task_value, str):
+            raise ValueError("taskId must be a string")
+        normalized_task = raw_task_value.strip()
+        try:
+            raw_task_id, vendor_task_id = protect_vendor_task_id(
+                self.crypto,
+                normalized_task,
+            )
+        except ValueError:
+            # 空/非法 taskId 不再整条丢弃：匹配不依赖 taskId，原值只进入
+            # 事件摘要与 HMAC 伪标识，报告事实照常保留。
+            raw_task_id = normalized_task
+            vendor_task_id = degrade_vendor_identifier(
+                self.crypto,
+                normalized_task,
+                domain="vendor-task-id",
+            )
+        raw_custom_value = value["customId"]
+        if not isinstance(raw_custom_value, str):
+            raise ValueError("customId must be a string")
+        normalized_custom = raw_custom_value.strip()
+        match_custom_id = ""
+        try:
+            if not normalized_custom:
+                raise ValueError("customId is empty")
+            match_custom_id, custom_id = protect_vendor_custom_id(
+                self.crypto,
+                normalized_custom,
+            )
+        except ValueError:
+            # 空/非法 customId 必非本平台在途消息：跳过批次匹配、直接落
+            # unmatched_report 保留事实，不再把整个 raw 钉死在重放循环。
+            custom_id = degrade_vendor_identifier(
+                self.crypto,
+                normalized_custom,
+                domain="vendor-custom-id",
+            )
         return ProtectedReport(
             event_key=_report_event_key(
                 vendor_task_id=raw_task_id,
-                custom_id=match_custom_id,
+                custom_id=normalized_custom,
                 canonical_phone_hmac=hmac_candidates[min(hmac_candidates)],
                 report_status=status,
                 report_desc=report_desc,
@@ -368,7 +458,7 @@ class ReportIngestService:
             except Exception as error:
                 await self._alert_consume_gap("report", type(error).__name__)
                 continue
-            self.spill.remove(record.source, record.payload_sha256)
+            self._spill_remove(record.source, record.payload_sha256)
             recovered += 1
         return recovered
 
@@ -381,7 +471,11 @@ class ReportIngestService:
         except VendorResponseTooLarge as error:
             await self._alert_consume_gap("report", type(error).__name__)
             if error.raw_body:
-                await self._persist_lost_payload("report", error.raw_body, status_code=0)
+                await self._persist_lost_payload(
+                    "report",
+                    error.raw_body,
+                    status_code=error.status_code if error.status_code is not None else 0,
+                )
             raise
         except Exception as error:
             await self._alert_consume_gap("report", type(error).__name__)
@@ -396,15 +490,14 @@ class ReportIngestService:
                 object_id=f"report:{payload_sha256}",
             ),
         )
-        if self.spill is not None:
-            self.spill.write(
-                source="report",
-                payload_sha256=payload_sha256,
-                key_version=encrypted.key_version,
-                http_status=pulled.status_code,
-                content_encoding=pulled.content_encoding,
-                payload_enc=encrypted.payload,
-            )
+        await self._spill_write(
+            source="report",
+            payload_sha256=payload_sha256,
+            key_version=encrypted.key_version,
+            http_status=pulled.status_code,
+            content_encoding=pulled.content_encoding,
+            payload_enc=encrypted.payload,
+        )
         try:
             raw_id = await self.repository.persist_raw(
                 payload_enc=encrypted.payload,
@@ -418,18 +511,9 @@ class ReportIngestService:
         except Exception as error:
             await self._alert_consume_gap("report", type(error).__name__)
             raise
-        if self.spill is not None:
-            self.spill.remove("report", payload_sha256)
+        self._spill_remove("report", payload_sha256)
         try:
             data = decode_pulled_payload(pulled, "GetReport")
-            if isinstance(data, list) and all(isinstance(item, dict) for item in data):
-                custom_ids = _collect_vendor_custom_ids(data)
-                custom_ids = await self.repository.filter_known_custom_ids(custom_ids)
-                await self.repository.update_metadata(
-                    raw_id,
-                    custom_ids=custom_ids,
-                    item_count=len(data),
-                )
         except Exception as error:
             await self.repository.mark_error(
                 raw_id,
@@ -439,11 +523,21 @@ class ReportIngestService:
         return await self.process_existing(raw_id, data)
 
     async def process_existing(self, raw_id: int, data: object) -> int:
-        """解析已独立提交的 raw；供轮询与受控重放共用。"""
+        """解析已独立提交的 raw；供轮询、spill 恢复与受控重放共用。"""
 
         try:
             if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                 raise ValueError("GetReport.data must be an object array")
+            # custom_ids 索引元数据在共享路径重建：spill 恢复与人工/自动重放
+            # 落库的 raw 同样要对 uncertain 定位可见（规则 4 数据源）。
+            custom_ids = await self.repository.filter_known_custom_ids(
+                _collect_vendor_custom_ids(data)
+            )
+            await self.repository.update_metadata(
+                raw_id,
+                custom_ids=custom_ids,
+                item_count=len(data),
+            )
             skipped = 0
             for index, item in enumerate(data):
                 try:
@@ -459,7 +553,12 @@ class ReportIngestService:
                         },
                     )
                     continue
-                applied = await self.repository.apply_report(raw_id, report)
+                if report.match_custom_id:
+                    applied = await self.repository.apply_report(raw_id, report)
+                else:
+                    # 空/非法 customId 无可匹配的平台批次；空串匹配可能
+                    # 误连旧发送的空 custom_id 分片，必须直接落 unmatched。
+                    applied = None
                 if applied is None:
                     await self.repository.persist_unmatched(raw_id, report)
                 elif applied.changed:

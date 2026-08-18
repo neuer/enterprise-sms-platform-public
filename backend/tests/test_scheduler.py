@@ -119,7 +119,7 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
                 "dispatch_scheduled",
                 "poll_balance",
                 "anomaly_scan",
-                "usage_projection_reconcile",
+                "reconcile_usage_projection",
             )
         } == {
             "poll_report": 17,
@@ -129,7 +129,7 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
             "dispatch_scheduled": 29,
             "poll_balance": 41,
             "anomaly_scan": 660,
-            "usage_projection_reconcile": 47,
+            "reconcile_usage_projection": 47,
         }
     finally:
         JOB_SPECS.clear()

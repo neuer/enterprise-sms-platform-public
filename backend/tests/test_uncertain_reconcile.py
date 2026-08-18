@@ -36,11 +36,11 @@ class FakeRepository:
         self.alerts.append(chunk.chunk_id)
 
 
-def raw(service: CryptoService, custom_id: str) -> RawCandidate:
+def raw(service: CryptoService, custom_id: str, *, task_id: str = "task-9") -> RawCandidate:
     payload = json.dumps(
         {
             "code": 0,
-            "data": [{"customId": custom_id, "taskId": "task-9", "phone": "13800138000"}],
+            "data": [{"customId": custom_id, "taskId": task_id, "phone": "13800138000"}],
         }
     ).encode()
     digest = hashlib.sha256(payload).hexdigest()
@@ -80,6 +80,41 @@ async def test_mismatched_raw_never_resolves_and_overdue_only_alerts() -> None:
     assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 0
     assert repository.resolved == []
     assert repository.alerts == [4]
+
+
+@pytest.mark.asyncio
+async def test_malformed_task_id_does_not_crash_reconcile_run() -> None:
+    service = crypto()
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    overdue = UncertainChunk(6, "custom-1", now - timedelta(hours=25))
+    repository = FakeRepository(
+        [overdue],
+        [raw(service, "custom-1", task_id="bad task:id!")],
+    )
+
+    assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 0
+
+    assert repository.resolved == []
+    assert repository.alerts == [6]
+
+
+@pytest.mark.asyncio
+async def test_malformed_task_id_candidate_is_skipped_for_valid_one() -> None:
+    service = crypto()
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    chunk = UncertainChunk(7, "custom-1", now - timedelta(minutes=5))
+    repository = FakeRepository(
+        [chunk],
+        [
+            raw(service, "custom-1", task_id="bad task:id!"),
+            raw(service, "custom-1", task_id="good9"),
+        ],
+    )
+
+    assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 1
+
+    assert len(repository.resolved) == 1
+    assert repository.resolved[0][0] == 7
 
 
 @pytest.mark.asyncio
