@@ -159,6 +159,63 @@ async def test_unknown_or_untracked_job_is_never_dispatched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tracked_but_not_allowlisted_job_is_404_without_audit() -> None:
+    events: list[str] = []
+    service = JobOpsService(
+        FakeJobRepository(events),
+        FakeSender(events),
+        {"process_chunk": JobSpec("process_chunk", 60)},
+        {"process_chunk": JobRoute("app.tasks.send.process_chunk", "realtime")},
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(JobNotFound):
+        await service.trigger("process_chunk", actor="admin01", ip="10.0.0.8")
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_security_daily_generate_manual_trigger_is_allowlisted() -> None:
+    events: list[str] = []
+    service = JobOpsService(
+        FakeJobRepository(events),
+        FakeSender(events),
+        {"security_daily_generate": JobSpec("security_daily_generate", 60)},
+        {
+            "security_daily_generate": JobRoute(
+                "app.tasks.security_daily_generate", "bulk"
+            )
+        },
+        clock=lambda: NOW,
+    )
+
+    await service.trigger("security_daily_generate", actor="admin01", ip="10.0.0.8")
+
+    assert events == [
+        "audit:security_daily_generate:admin01:10.0.0.8",
+        "send:app.tasks.security_daily_generate:bulk",
+    ]
+
+
+def test_every_beat_job_spec_and_route_key_pair_is_triggerable() -> None:
+    """跟踪名、路由键与允许清单三方一致，杜绝手动触发死路（#345/#346）。"""
+
+    from app.core.jobtrack import JOB_SPECS
+    from app.services.outbox import MANUAL_JOB_TASK_NAMES
+    from app.tasks import register_task_modules
+    from app.tasks.scheduler import build_beat_schedule
+
+    register_task_modules()
+    for value in build_beat_schedule({}).values():
+        task_name = str(value["task"])
+        if task_name not in MANUAL_JOB_TASK_NAMES:
+            continue
+        route_key = task_name.rsplit(".", 1)[-1]
+        assert route_key in JOB_SPECS, f"beat 任务 {task_name} 的路由键缺 JOB_SPECS 项"
+
+
+@pytest.mark.asyncio
 async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

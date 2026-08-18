@@ -60,8 +60,8 @@ async def test_token_refund_is_atomic_and_capped_at_vendor_qps() -> None:
     assert call[0] == TOKEN_REFUND_LUA
     assert call[1:] == (1, "vendor:tokens", "5", "12000")
     assert "math.min(capacity, tokens + 1)" in TOKEN_REFUND_LUA
-    assert "last_ms ~= lease_epoch" not in TOKEN_REFUND_LUA
-    assert "tokens == nil or last_ms == nil" in TOKEN_REFUND_LUA
+    # 跨秒退款直接丢弃：桶整秒已重灌，退款会造成单秒 vendor_qps+N 超发。
+    assert "tokens == nil or last_ms == nil or last_ms ~= lease_epoch" in TOKEN_REFUND_LUA
     assert "HINCRBY" not in TOKEN_BUCKET_LUA
     assert "HINCRBY" not in TOKEN_REFUND_LUA
     assert "return last_ms" in TOKEN_BUCKET_LUA

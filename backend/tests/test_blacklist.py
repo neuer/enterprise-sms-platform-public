@@ -5,9 +5,14 @@ import base64
 from collections.abc import Awaitable, Callable
 
 import pytest
+from redis.exceptions import LockError
 
+import app.services.blacklist as blacklist_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.blacklist import (
+    BLACKLIST_KEY,
+    BLACKLIST_LOADED_KEY,
+    BlacklistCacheUnavailable,
     BlacklistEntry,
     BlacklistPage,
     BlacklistService,
@@ -295,3 +300,115 @@ async def test_cache_rebuild_cannot_publish_stale_snapshot_after_mutation() -> N
 
 async def _immediate(values: set[str]) -> set[str]:
     return set(values)
+
+
+class _BusyLock:
+    async def __aenter__(self) -> _BusyLock:
+        raise LockError("busy")
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+class _FastPathRedis:
+    """已装载状态下读路径不得触碰分布式锁。"""
+
+    def __init__(self) -> None:
+        self.values = {BLACKLIST_LOADED_KEY: "1"}
+        self.members = {BLACKLIST_KEY: {"a" * 64}}
+
+    def lock(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("loaded fast path must not acquire the lock")
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def smismember(self, key: str, candidates: list[str]) -> list[bool]:
+        return [candidate in self.members.get(key, set()) for candidate in candidates]
+
+
+class _BusyLockRedis:
+    def __init__(self, *, set_exists: bool) -> None:
+        self.values: dict[str, str] = {}
+        self.members: dict[str, set[str]] = (
+            {BLACKLIST_KEY: {"a" * 64}} if set_exists else {}
+        )
+
+    def lock(self, *args: object, **kwargs: object) -> _BusyLock:
+        return _BusyLock()
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.members else 0
+
+    async def smismember(self, key: str, candidates: list[str]) -> list[bool]:
+        return [candidate in self.members.get(key, set()) for candidate in candidates]
+
+
+@pytest.mark.asyncio
+async def test_loaded_cache_read_takes_no_lock() -> None:
+    cache = RedisBlacklistCache(_FastPathRedis())
+    hit = "a" * 64
+
+    assert await cache.matches({hit, "b" * 64}, lambda: _immediate(set())) == {hit}
+
+
+@pytest.mark.asyncio
+async def test_busy_rebuild_lock_degrades_to_stale_snapshot() -> None:
+    cache = RedisBlacklistCache(_BusyLockRedis(set_exists=True))
+    hit = "a" * 64
+
+    assert await cache.matches({hit}, lambda: _immediate(set())) == {hit}
+
+
+@pytest.mark.asyncio
+async def test_busy_lock_with_missing_set_fails_closed() -> None:
+    cache = RedisBlacklistCache(_BusyLockRedis(set_exists=False))
+
+    with pytest.raises(BlacklistCacheUnavailable):
+        await cache.matches({"a" * 64}, lambda: _immediate(set()))
+
+
+@pytest.mark.asyncio
+async def test_busy_mutate_lock_maps_to_unavailable() -> None:
+    cache = RedisBlacklistCache(_BusyLockRedis(set_exists=True))
+
+    with pytest.raises(BlacklistCacheUnavailable):
+        await cache.mutate(lambda: _immediate(set()))
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lock_extends_with_absolute_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, object]] = []
+
+    class FakeLock:
+        async def __aenter__(self) -> FakeLock:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def extend(
+            self,
+            additional_time: object,
+            replace_ttl: bool = False,
+        ) -> None:
+            calls.append((additional_time, replace_ttl))
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(_delay: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(blacklist_module.asyncio, "sleep", fast_sleep)
+    async with blacklist_module._HeartbeatLock(FakeLock()):
+        for _ in range(50):
+            if calls:
+                break
+            await real_sleep(0)
+    assert calls
+    assert calls[0] == (120, True)

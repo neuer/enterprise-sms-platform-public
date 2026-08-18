@@ -24,6 +24,7 @@ from app.services.app_ratelimit import (
     ControlPlaneUnavailable,
 )
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
+from app.services.blacklist import BlacklistCacheUnavailable
 from app.services.category import CategoryNotAllowed
 from app.services.crypto import CryptoService, ProtectedPhone
 from app.services.freq import FrequencyFenceLost, FrequencyLimiter
@@ -359,6 +360,8 @@ def _error(error: Exception) -> ApiError:
         return ApiError(429, "RATE_LIMITED", str(error), None)
     if isinstance(error, ControlPlaneUnavailable):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
+    if isinstance(error, BlacklistCacheUnavailable):
+        return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, UsageProjectionUnavailable):
         return ApiError(
             503,
@@ -419,6 +422,7 @@ async def send_message(
         )
     except (
         AllFiltered,
+        BlacklistCacheUnavailable,
         CategoryNotAllowed,
         ConsentRequired,
         IdempotencyConflict,
@@ -541,6 +545,7 @@ async def send_vendor_test_api_uat(
         )
     except (
         AllFiltered,
+        BlacklistCacheUnavailable,
         CategoryNotAllowed,
         ConsentRequired,
         IdempotencyConflict,
@@ -676,6 +681,7 @@ async def reschedule_batch(
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
         429: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
     },
 )
 @audited("batch_resend_failed")

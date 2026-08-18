@@ -811,7 +811,7 @@ def check_usage_ledger_invariants() -> None:
         require_fragments(APP / relative, "request_usage_release_for_batch(")
     require_fragments(
         APP / "tasks/usage_projection.py",
-        '@tracked_job("usage_projection_reconcile", expect_interval_s=300)',
+        '@tracked_job("reconcile_usage_projection", expect_interval_s=300)',
         "recover_orphans()",
         "measure_drift()",
     )

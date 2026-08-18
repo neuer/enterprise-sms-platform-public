@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.58  2026-08-18
+-- v1.6.58：释放事件允许 uncertain-retry；活跃预留唯一索引排除 release_requested；
+--          raw_vendor_log 增加 replay_attempts 自动重放上限；
+--          stat_dirty_date 记录晚到回执归属日，统计聚合不再限固定 5 天窗口
 -- v1.6.57  2026-08-17
 -- v1.6.57：usage_projection.version 唯一；app 幂等作用域绑定 app_id
 -- v1.6.56  2026-08-12
@@ -685,6 +689,8 @@ CREATE TABLE raw_vendor_log (
     processed      BOOLEAN     NOT NULL DEFAULT FALSE,
     processing_started_at TIMESTAMPTZ,
     error          VARCHAR(256),
+    -- 自动重放消耗的认领次数；达到上限即退出自动重放，仅保留人工入口
+    replay_attempts INTEGER    NOT NULL DEFAULT 0 CHECK (replay_attempts>=0),
     fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_raw_vendor_http_status CHECK (http_status BETWEEN 100 AND 599),
     CONSTRAINT ck_raw_vendor_content_encoding
@@ -1510,12 +1516,15 @@ CREATE TABLE usage_reservation (
         ||'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
         ||'[89ab][0-9a-f]{3}-[0-9a-f]{12}[:]'
         ||'(acceptance-failed|all-filtered|idempotent-reuse|'
-        ||'orphan-recovery))$'
+        ||'orphan-recovery|uncertain-retry))$'
       )
     )
 );
+-- release_requested 仅排水（等待 outbox apply_release），排除出活跃唯一
+-- 空间使同 request_key 可在释放完成前重建预留（v1.6.58）。
 CREATE UNIQUE INDEX uk_usage_reservation_active_request
-    ON usage_reservation(request_key) WHERE state<>'released';
+    ON usage_reservation(request_key)
+    WHERE state NOT IN ('released','release_requested');
 CREATE INDEX idx_usage_reservation_recovery
     ON usage_reservation(updated_at)
     WHERE state IN ('reserved','uncertain','release_requested');
@@ -1632,6 +1641,13 @@ CREATE TABLE stat_daily (
     failed      INTEGER      NOT NULL DEFAULT 0,
     unknown_cnt INTEGER      NOT NULL DEFAULT 0,
     PRIMARY KEY (stat_date, dim_type, dim_value, category)
+);
+
+-- 晚到回执/人工修复触达的消息归属日脏集；聚合任务在固定近 5 天窗口
+-- 之外补算这些日期后删除行（v1.6.58）。
+CREATE TABLE stat_dirty_date (
+    stat_date  DATE PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ─────────────── 服务器安全日报 ───────────────
@@ -2192,6 +2208,7 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
 TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
+GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
 GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
@@ -2243,6 +2260,8 @@ GRANT INSERT, UPDATE ON security_daily_report TO sms_send;
 GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send;
 GRANT UPDATE, DELETE ON import_task TO sms_send;
 GRANT INSERT, DELETE ON import_phone TO sms_send;
+GRANT DELETE ON idempotency_record TO sms_send;
+GRANT SELECT, INSERT, DELETE ON stat_dirty_date TO sms_send;
 GRANT INSERT ON
     report_event, reply_event, worker_lease_event, audit_log
 TO sms_send;

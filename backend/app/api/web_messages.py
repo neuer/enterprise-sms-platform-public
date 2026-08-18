@@ -763,7 +763,12 @@ async def download_invalid_file(
 @router.post(
     "/billing/preview",
     response_model=BillingPreview,
-    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 422: ERROR_RESPONSE},
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        422: ERROR_RESPONSE,
+    },
 )
 async def billing_preview(
     payload: BillingPreviewRequest,

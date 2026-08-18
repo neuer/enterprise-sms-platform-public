@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeVar
 
+from redis.exceptions import LockError
+
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import PHONE_PATTERN, CryptoService
@@ -19,6 +21,10 @@ BLACKLIST_LOCK_KEY = "blacklist:phone_hmacs:lock"
 VALID_SOURCES = frozenset({"manual", "reply_optout", "import"})
 MAX_PAGE_SIZE = 100
 T = TypeVar("T")
+
+
+class BlacklistCacheUnavailable(RuntimeError):
+    """黑名单缓存锁或集合不可用；调用方必须 fail-closed 返回 503。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +118,27 @@ class RedisBlacklistCache:
     ) -> set[str]:
         if not candidates:
             return set()
-        async with self._lock() as _lock:
-            if not await self.redis.get(BLACKLIST_LOADED_KEY):
+        # 快路径：已装载即免锁点查。锁只保护重建与变更；受理读路径不再
+        # 全平台串行化。变更/重建期间读到的是旧快照（亚秒陈旧），事实源
+        # 始终是 PostgreSQL。
+        if not await self.redis.get(BLACKLIST_LOADED_KEY):
+            try:
+                await self._rebuild(loader)
+            except BlacklistCacheUnavailable:
+                # 锁被并发重建/变更占用：集合仍在时按旧快照点查即可；
+                # 集合缺失（Redis 清空）绝不允许把空缓存当作无黑名单。
+                if not await self.redis.exists(BLACKLIST_KEY):
+                    raise
+        flags = await self.redis.smismember(BLACKLIST_KEY, list(candidates))
+        return {
+            value for value, present in zip(candidates, flags, strict=True) if present
+        }
+
+    async def _rebuild(self, loader: Callable[[], Awaitable[set[str]]]) -> None:
+        try:
+            async with self._lock() as _lock:
+                if await self.redis.get(BLACKLIST_LOADED_KEY):
+                    return
                 members = await loader()
                 pipe = self.redis.pipeline(transaction=True)
                 pipe.delete(BLACKLIST_KEY)
@@ -121,20 +146,21 @@ class RedisBlacklistCache:
                     pipe.sadd(BLACKLIST_KEY, *members)
                 pipe.set(BLACKLIST_LOADED_KEY, "1")
                 await pipe.execute()
-            flags = await self.redis.smismember(BLACKLIST_KEY, list(candidates))
-            return {
-                value for value, present in zip(candidates, flags, strict=True) if present
-            }
+        except LockError as error:
+            raise BlacklistCacheUnavailable("黑名单缓存重建锁不可用") from error
 
     async def mutate(self, callback: Callable[[], Awaitable[T]]) -> T:
-        """以同一分布式锁串行化事实变更与缓存重建。"""
+        """以同一分布式锁串行化事实变更，并失效缓存待下次读重建。"""
 
-        async with self._lock() as _lock:
-            await self.redis.delete(BLACKLIST_LOADED_KEY)
-            try:
-                return await callback()
-            finally:
+        try:
+            async with self._lock() as _lock:
                 await self.redis.delete(BLACKLIST_LOADED_KEY)
+                try:
+                    return await callback()
+                finally:
+                    await self.redis.delete(BLACKLIST_LOADED_KEY)
+        except LockError as error:
+            raise BlacklistCacheUnavailable("黑名单缓存变更锁不可用") from error
 
     def _lock(self) -> Any:
         """有界租约锁，心跳续租避免崩溃后永久堵死。"""
@@ -156,7 +182,9 @@ class _HeartbeatLock:
             while not self._stop.is_set():
                 await asyncio.sleep(40)
                 try:
-                    await self._lock.extend(120)
+                    # replace_ttl=True 把剩余 TTL 重置为固定租期；缺省的
+                    # 累加语义会让长持有者的 TTL 无界增长。
+                    await self._lock.extend(120, replace_ttl=True)
                 except Exception:
                     return
 

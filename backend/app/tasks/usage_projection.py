@@ -24,7 +24,7 @@ async def _reconcile() -> int:
 
 
 @celery_app.task(name="app.tasks.reconcile_usage_projection")  # type: ignore[untyped-decorator]
-@tracked_job("usage_projection_reconcile", expect_interval_s=300)
+@tracked_job("reconcile_usage_projection", expect_interval_s=300)
 def reconcile_usage_projection() -> int:
     """只输出聚合数量；手机号 HMAC 维度不进入任务结果或日志。"""
 

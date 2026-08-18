@@ -80,6 +80,9 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0065_security_scan_round4",
         "0066_security_findings_hardening",
         "0067_usage_projection_idempotency_constraints",
+        "0068_usage_release_uncertain_retry",
+        "0069_raw_replay_attempts",
+        "0070_stat_dirty_date",
     ]
 
 
@@ -242,6 +245,10 @@ def test_rejects_destructive_sql_hidden_after_allowed_prefix(
             "DROP CONSTRAINT IF EXISTS ck_protected_data",
             "constraint drop is not replaced",
         ),
+        (
+            "DROP INDEX IF EXISTS uk_protected_data",
+            "index drop is not replaced",
+        ),
     ],
 )
 def test_rejects_unpaired_control_replacement(
@@ -288,6 +295,34 @@ def test_accepts_constraint_drop_replaced_by_same_named_unique_index(
         "               'DROP CONSTRAINT IF EXISTS uq_protected_date')\n"
         "    op.execute('CREATE UNIQUE INDEX uq_protected_date '\n"
         "               'ON protected_data(report_date) WHERE kind=\\'auto\\'')\n"
+        "def downgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    checked = check_expand_only(tmp_path, "0001_base", "0002_replacement")
+
+    assert [item.revision for item in checked] == ["0002_replacement"]
+
+
+def test_accepts_index_drop_replaced_by_same_named_unique_index(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\n"
+        "down_revision=None\n"
+        "def upgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_replacement.py").write_text(
+        "from alembic import op\n"
+        "revision='0002_replacement'\n"
+        "down_revision='0001_base'\n"
+        "def upgrade():\n"
+        "    op.execute('DROP INDEX IF EXISTS uk_protected_date')\n"
+        "    op.execute('CREATE UNIQUE INDEX uk_protected_date '\n"
+        "               'ON protected_data(request_key) WHERE state<>\\'released\\'')\n"
         "def downgrade():\n"
         "    pass\n",
         encoding="utf-8",

@@ -25,7 +25,7 @@ CONFIGURABLE_JOB_SCHEDULES = {
     "dispatch-scheduled": "dispatch_scheduled",
     "poll-balance": "poll_balance",
     "anomaly-scan": "anomaly_scan",
-    "usage-projection-reconcile": "usage_projection_reconcile",
+    "usage-projection-reconcile": "reconcile_usage_projection",
 }
 
 

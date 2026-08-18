@@ -283,14 +283,16 @@ class SqlReportRepository:
                             m.report_time IS NULL
                             OR (
                               CASE
-                                WHEN CAST(:report_status AS smallint) IN (1,2,99)
+                                WHEN CAST(:report_status AS smallint)=1 THEN 4
+                                WHEN CAST(:report_status AS smallint) IN (2,99)
                                   THEN 3
                                 WHEN CAST(:report_status AS smallint)=0 THEN 1
                                 ELSE 2
                               END
                               >
                               CASE
-                                WHEN m.report_status IN (1,2,99) THEN 3
+                                WHEN m.report_status=1 THEN 4
+                                WHEN m.report_status IN (2,99) THEN 3
                                 WHEN m.report_status=0 THEN 1
                                 WHEN m.report_status IS NULL THEN 0
                                 ELSE 2
@@ -298,14 +300,16 @@ class SqlReportRepository:
                             )
                             OR (
                               CASE
-                                WHEN CAST(:report_status AS smallint) IN (1,2,99)
+                                WHEN CAST(:report_status AS smallint)=1 THEN 4
+                                WHEN CAST(:report_status AS smallint) IN (2,99)
                                   THEN 3
                                 WHEN CAST(:report_status AS smallint)=0 THEN 1
                                 ELSE 2
                               END
                               =
                               CASE
-                                WHEN m.report_status IN (1,2,99) THEN 3
+                                WHEN m.report_status=1 THEN 4
+                                WHEN m.report_status IN (2,99) THEN 3
                                 WHEN m.report_status=0 THEN 1
                                 WHEN m.report_status IS NULL THEN 0
                                 ELSE 2
@@ -384,6 +388,23 @@ class SqlReportRepository:
                 )
                 if not changed:
                     return ReportApplyResult(batch_id, changed=False)
+                # 晚到回执可能落在固定聚合窗口之外：标记消息归属日为脏，
+                # 由 aggregate_stats 在近 5 天窗口之外补算（#342）。
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO stat_dirty_date(stat_date)
+                        VALUES (
+                          CAST(
+                            CAST(:created_at AS timestamptz)
+                            AT TIME ZONE 'Asia/Shanghai' AS date
+                          )
+                        )
+                        ON CONFLICT(stat_date) DO NOTHING
+                        """
+                    ),
+                    {"created_at": row["created_at"]},
+                )
                 await self._refresh_batch(
                     connection,
                     batch_id,
@@ -507,17 +528,26 @@ class SqlReportRepository:
                     updated = await connection.execute(
                         text(
                             """
-                            UPDATE sms_message m SET status='unknown'
-                            FROM sms_chunk c
-                            WHERE m.chunk_id=c.id AND m.batch_id=:batch_id
-                              AND m.status='sent'
-                              AND c.submitted_at < now()-make_interval(hours=>:hours)
-                            RETURNING m.id
+                            WITH expired AS (
+                              UPDATE sms_message m SET status='unknown'
+                              FROM sms_chunk c
+                              WHERE m.chunk_id=c.id AND m.batch_id=:batch_id
+                                AND m.status='sent'
+                                AND c.submitted_at < now()-make_interval(hours=>:hours)
+                              RETURNING m.created_at
+                            ), dirty AS (
+                              INSERT INTO stat_dirty_date(stat_date)
+                              SELECT DISTINCT CAST(
+                                created_at AT TIME ZONE 'Asia/Shanghai' AS date
+                              ) FROM expired
+                              ON CONFLICT(stat_date) DO NOTHING
+                            )
+                            SELECT count(*) FROM expired
                             """
                         ),
                         {"batch_id": batch_id, "hours": timeout_hours},
                     )
-                    if updated.mappings().first() is None:
+                    if int(updated.scalar_one()) == 0:
                         continue
                     await self._refresh_batch(connection, batch_id, batch_locked=True)
                     refreshed += 1

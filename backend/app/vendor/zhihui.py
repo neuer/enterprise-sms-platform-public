@@ -38,9 +38,15 @@ class VendorTransportError(VendorError):
 class VendorResponseTooLarge(VendorTransportError):
     """厂商响应超过硬上限；请求可能已被上游接收，保持结果未知。"""
 
-    def __init__(self, message: str, raw_body: bytes = b"") -> None:
+    def __init__(
+        self,
+        message: str,
+        raw_body: bytes = b"",
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.raw_body = raw_body
+        self.status_code = status_code
 
 
 class VendorTotalTimeout(VendorTransportError):
@@ -241,6 +247,7 @@ class ZhihuiClient:
                             raise VendorResponseTooLarge(
                                 "vendor response body exceeds hard limit",
                                 raw_body=b"".join(chunks),
+                                status_code=response.status_code,
                             )
                         chunks.append(chunk)
                     content = b"".join(chunks)
@@ -302,7 +309,10 @@ class ZhihuiClient:
             for name, value in response.headers.multi_items()
         )
         if header_bytes > self.max_response_header_bytes:
-            raise VendorResponseTooLarge("vendor response headers exceed hard limit")
+            raise VendorResponseTooLarge(
+                "vendor response headers exceed hard limit",
+                status_code=response.status_code,
+            )
         declared = response.headers.get("content-length")
         if declared is not None:
             try:
@@ -310,7 +320,10 @@ class ZhihuiClient:
             except ValueError:
                 raise VendorProtocolError("vendor content-length is invalid") from None
             if declared_length < 0 or declared_length > self.max_response_body_bytes:
-                raise VendorResponseTooLarge("vendor response body exceeds hard limit")
+                raise VendorResponseTooLarge(
+                    "vendor response body exceeds hard limit",
+                    status_code=response.status_code,
+                )
 
     async def send(
         self,

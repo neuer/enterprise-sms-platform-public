@@ -43,7 +43,7 @@ local capacity = tonumber(ARGV[1])
 local lease_epoch = tonumber(ARGV[2])
 local tokens = tonumber(redis.call('HGET', KEYS[1], 'tokens'))
 local last_ms = tonumber(redis.call('HGET', KEYS[1], 'last_ms'))
-if tokens == nil or last_ms == nil then
+if tokens == nil or last_ms == nil or last_ms ~= lease_epoch then
   return 0
 end
 tokens = math.min(capacity, tokens + 1)

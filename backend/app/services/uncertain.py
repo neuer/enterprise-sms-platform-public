@@ -108,16 +108,23 @@ class UncertainReconciler:
         resolved = 0
         now = self.clock()
         for chunk in await self.repository.list_uncertain():
-            task_id: str | None = None
+            task_pseudonym: str | None = None
             for candidate in await self.repository.raw_candidates(chunk.custom_id):
                 task_id = self._task_id(candidate, chunk.custom_id)
-                if task_id is not None:
-                    break
-            if task_id is not None:
-                _raw_task_id, task_pseudonym = protect_vendor_task_id(
-                    self.crypto,
-                    task_id,
-                )
+                if task_id is None:
+                    continue
+                try:
+                    _raw_task_id, task_pseudonym = protect_vendor_task_id(
+                        self.crypto,
+                        task_id,
+                    )
+                except ValueError:
+                    # 畸形 taskId 只否决该候选证据；单条毒丸不得拖垮整轮
+                    # 对账（uncertain 修复与 stale 重放等共用同一任务）。
+                    task_pseudonym = None
+                    continue
+                break
+            if task_pseudonym is not None:
                 await self.repository.resolve_submitted(
                     chunk.chunk_id,
                     task_pseudonym,
