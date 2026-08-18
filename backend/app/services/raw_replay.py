@@ -9,7 +9,6 @@ from typing import Protocol
 from app.services.crypto import EncryptionContext
 from app.vendor.zhihui import RawPulledPayload, VendorError, decode_pulled_payload
 
-
 # 自动重放认领次数上限；达到后仅保留 ops 人工重放入口（规则 5 的可重放
 # 语义不变），防止永久毒丸垄断每轮 LIMIT 窗口并无限重试。
 MAX_RAW_REPLAY_ATTEMPTS = 10
