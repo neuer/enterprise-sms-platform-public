@@ -8,6 +8,7 @@ import { useSessionStore } from "../stores/session"
 const router = useRouter()
 const session = useSessionStore()
 const providerCode = ref("")
+const providerHint = ref("")
 const username = ref("")
 const password = ref("")
 const loadingProviders = ref(true)
@@ -16,29 +17,83 @@ const errorMessage = ref("")
 const successMessage = ref("")
 const pendingChange = ref<{ token: string; expiresAt: number } | null>(null)
 
+/** 本期固定目录：始终画出 local / AD，服务端未返回的标未开通。 */
+const PROVIDER_CATALOG = [
+  {
+    code: "local",
+    name: "本地账号",
+    description: "管理员维护的平台内置账号",
+    offHint: "本地账号尚未开通",
+  },
+  {
+    code: "ad",
+    name: "AD 账号",
+    description: "通过企业目录验证身份",
+    offHint: "企业目录尚未开通",
+  },
+] as const
+
+const catalog = computed(() => {
+  const enabled = new Map(session.providers.map((provider) => [provider.code, provider]))
+  return PROVIDER_CATALOG.map((item) => {
+    const live = enabled.get(item.code)
+    return {
+      code: item.code,
+      name: live?.name ?? item.name,
+      enabled: live !== undefined,
+      description: item.description,
+      offHint: item.offHint,
+    }
+  })
+})
+
 const accountLabel = computed(() =>
   providerCode.value === "ad" ? "企业 AD 账号" : "账号",
 )
-const singleProvider = computed(() => session.providers.length === 1)
+const providerDescription = computed(() => {
+  if (providerHint.value) return providerHint.value
+  const current = catalog.value.find((item) => item.code === providerCode.value)
+  return current?.description ?? ""
+})
 
-/** 当前认证源一行说明；仅一个认证源时改为只读确认，不假装还能再选。 */
-function providerDescription(code: string): string {
-  if (session.providers.length === 1) return "当前唯一可用认证源"
-  if (code === "local") return "管理员维护的平台内置账号"
-  if (code === "ad") return "通过企业目录验证身份"
-  return ""
+let hintTimer = 0
+
+function isEnabled(code: string): boolean {
+  return catalog.value.some((item) => item.code === code && item.enabled)
+}
+
+function clearProviderHint(): void {
+  window.clearTimeout(hintTimer)
+  hintTimer = 0
+  providerHint.value = ""
+}
+
+/** 点未开通的认证源只提示，不改当前 provider_code。 */
+function showOffHint(code: string): void {
+  const item = catalog.value.find((entry) => entry.code === code)
+  providerHint.value = item?.offHint ?? "该认证源尚未开通"
+  window.clearTimeout(hintTimer)
+  hintTimer = window.setTimeout(() => {
+    providerHint.value = ""
+    hintTimer = 0
+  }, 1600)
 }
 
 function selectProvider(code: string): void {
-  if (singleProvider.value) return
+  if (!isEnabled(code)) {
+    showOffHint(code)
+    return
+  }
+  clearProviderHint()
   providerCode.value = code
 }
 
 onMounted(async () => {
   try {
     await session.loadProviders()
-    // 默认选中服务端返回的第一个认证源；提交仍只走当前选中的认证源，失败不自动回退
-    providerCode.value = session.providers[0]?.code ?? ""
+    // 默认选中服务端返回的第一个已知认证源；提交仍只走当前选中的认证源，失败不自动回退
+    const known = new Set<string>(PROVIDER_CATALOG.map((item) => item.code))
+    providerCode.value = session.providers.find((provider) => known.has(provider.code))?.code ?? ""
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "认证源列表加载失败"
   } finally {
@@ -46,6 +101,7 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  clearProviderHint()
   pendingChange.value = null
   password.value = ""
 })
@@ -53,7 +109,7 @@ onBeforeUnmount(() => {
 async function submit() {
   errorMessage.value = ""
   successMessage.value = ""
-  if (!providerCode.value) {
+  if (!providerCode.value || !isEnabled(providerCode.value)) {
     errorMessage.value = "暂无可用的认证源，请稍后重试"
     return
   }
@@ -117,27 +173,32 @@ function invalidateInitialPasswordChange(message: string): void {
           <template v-else>
             <div
               class="provider-switch"
-              :class="{ solo: singleProvider }"
               role="radiogroup"
               aria-labelledby="login-sources-label"
               aria-label="认证源"
             >
-              <template v-for="(provider, index) in session.providers" :key="provider.code">
+              <template v-for="(provider, index) in catalog" :key="provider.code">
                 <span v-if="index > 0" class="provider-switch-sep" aria-hidden="true">·</span>
-                <button
-                  :class="['provider-name', { on: providerCode === provider.code }]"
-                  :data-testid="`provider-${provider.code}`"
-                  type="button"
-                  role="radio"
-                  :aria-checked="providerCode === provider.code"
-                  :aria-disabled="singleProvider"
-                  @click="selectProvider(provider.code)"
-                >
-                  {{ provider.name }}
-                </button>
+                <div class="provider-switch-item" :class="{ 'is-off': !provider.enabled }">
+                  <button
+                    :class="['provider-name', { on: providerCode === provider.code }]"
+                    :data-testid="`provider-${provider.code}`"
+                    type="button"
+                    role="radio"
+                    :aria-checked="providerCode === provider.code"
+                    :aria-disabled="!provider.enabled"
+                    :aria-label="provider.enabled ? provider.name : `${provider.name}，未开通`"
+                    @click="selectProvider(provider.code)"
+                  >
+                    {{ provider.name }}
+                  </button>
+                  <small v-if="!provider.enabled" class="provider-off-note">未开通</small>
+                </div>
               </template>
             </div>
-            <p class="provider-switch-desc">{{ providerDescription(providerCode) }}</p>
+            <p class="provider-switch-desc" :class="{ 'is-hint': Boolean(providerHint) }">
+              {{ providerDescription }}
+            </p>
           </template>
         </div>
 
