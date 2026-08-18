@@ -9,7 +9,7 @@ import pytest
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.reply_ingest import ReplyIngestService
-from app.vendor.zhihui import RawPulledPayload
+from app.vendor.zhihui import RawPulledPayload, VendorResponseTooLarge
 
 
 def crypto() -> CryptoService:
@@ -131,16 +131,47 @@ async def test_reply_content_masks_embedded_phone_before_projection_persistence(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["taskId", "customId "])
-async def test_reply_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> None:
-    item = reply() | {field: "13800138000"}
+async def test_phone_like_reply_task_id_degrades_to_pseudonym() -> None:
+    item = reply() | {"taskId": "13800138000"}
     repository = FakeRepository()
 
     await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    assert not any(event[0] == "store" for event in repository.events)
-    assert any(event[0] == "error" for event in repository.events)
-    assert ("processed", 23) not in repository.events
+    stored = [value for event, value in repository.events if event == "store"]
+    assert len(stored) == 1
+    assert len(stored[0].vendor_task_id) == 64
+    assert "13800138000" not in stored[0].vendor_task_id
+    assert ("processed", 23) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_phone_like_reply_custom_id_is_dropped_without_plaintext() -> None:
+    item = reply() | {"customId ": "13800138000"}
+    repository = FakeRepository()
+
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    stored = [value for event, value in repository.events if event == "store"]
+    assert len(stored) == 1
+    assert stored[0].custom_id is None
+    assert stored[0].match_custom_id is None
+    assert ("processed", 23) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_empty_reply_custom_id_is_stored_without_pseudonym() -> None:
+    item = reply() | {"customId ": ""}
+    repository = FakeRepository()
+
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    stored = [value for event, value in repository.events if event == "store"]
+    assert len(stored) == 1
+    assert stored[0].custom_id is None
+    assert stored[0].match_custom_id is None
+    assert ("processed", 23) in repository.events
 
 
 @pytest.mark.asyncio
@@ -152,10 +183,48 @@ async def test_invalid_custom_id_does_not_abort_valid_reply_items() -> None:
 
     assert repository.events[1][1] == (23, ["custom1"], 2)
     stored = [value for event, value in repository.events if event == "store"]
-    assert len(stored) == 1
-    assert stored[0].match_custom_id == "custom1"
+    assert len(stored) == 2
+    assert stored[0].custom_id is None
+    assert stored[0].match_custom_id is None
+    assert stored[1].match_custom_id == "custom1"
+    assert not any(event[0] == "error" for event in repository.events)
+    assert ("processed", 23) in repository.events
+
+
+class OversizedReplyGateway:
+    def __init__(self, error: VendorResponseTooLarge) -> None:
+        self.error = error
+
+    async def get_reply_raw(self) -> RawPulledPayload:
+        raise self.error
+
+
+@pytest.mark.asyncio
+async def test_oversized_reply_fallback_persists_read_bytes_with_valid_status() -> None:
+    repository = FakeRepository()
+    gateway = OversizedReplyGateway(
+        VendorResponseTooLarge("too large", raw_body=b'{"code":0,"data":[', status_code=200),
+    )
+
+    with pytest.raises(VendorResponseTooLarge):
+        await ReplyIngestService(gateway, repository, crypto()).poll_once()
+
+    persisted = [value for event, value in repository.events if event == "persist_raw"]
+    assert len(persisted) == 1
+    assert persisted[0]["http_status"] == 200
+    assert b'{"code":0,"data":[' not in persisted[0]["payload_enc"]
     assert any(event[0] == "error" for event in repository.events)
-    assert ("processed", 23) not in repository.events
+
+
+@pytest.mark.asyncio
+async def test_oversized_reply_without_body_only_alerts() -> None:
+    repository = FakeRepository()
+    gateway = OversizedReplyGateway(VendorResponseTooLarge("headers too large"))
+
+    with pytest.raises(VendorResponseTooLarge):
+        await ReplyIngestService(gateway, repository, crypto()).poll_once()
+
+    assert not any(event[0] == "persist_raw" for event in repository.events)
 
 
 @pytest.mark.asyncio
@@ -301,3 +370,51 @@ async def test_naive_reply_time_is_interpreted_as_shanghai_local() -> None:
     stored = next(value for event, value in repository.events if event == "store")
     assert stored.reply_time.tzinfo is not None
     assert stored.reply_time.utcoffset() is not None
+
+
+class BrokenReplySpill:
+    """磁盘满/权限错等 spill 故障；不得反向阻断 DB 落库。"""
+
+    def write(self, **values: Any) -> None:
+        raise OSError("no space left on device")
+
+    def remove(self, source: str, payload_sha256: str) -> None:
+        raise OSError("no space left on device")
+
+    def list_pending(self) -> list[Any]:
+        return []
+
+
+class RecordingAlerts:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def emit(self, **values: Any) -> None:
+        self.events.append(values)
+
+
+@pytest.mark.asyncio
+async def test_reply_spill_write_failure_degrades_to_alert_and_db_persist_continues() -> None:
+    repository = FakeRepository()
+    alerts = RecordingAlerts()
+    service = ReplyIngestService(
+        FakeGateway([reply()]),
+        repository,
+        crypto(),
+        alerts=alerts,
+        spill=BrokenReplySpill(),  # type: ignore[arg-type]
+    )
+
+    assert await service.poll_once() == 1
+
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "store",
+        "processed",
+    ]
+    spill_alerts = [
+        event for event in alerts.events if event["alert_type"] == "vendor_raw_spill_failed"
+    ]
+    assert len(spill_alerts) == 1
+    assert spill_alerts[0]["level"] == "crit"

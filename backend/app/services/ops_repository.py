@@ -26,7 +26,11 @@ from app.services.ops import (
     UnmatchedQuery,
     UnmatchedRecord,
 )
-from app.services.raw_replay import RawReplayClaim, RawReplayRecord
+from app.services.raw_replay import (
+    MAX_RAW_REPLAY_ATTEMPTS,
+    RawReplayClaim,
+    RawReplayRecord,
+)
 from app.settings import Settings, get_settings
 
 
@@ -209,8 +213,17 @@ class SqlOpsRepository:
     async def clear_queue_pauses(self) -> None:
         await self.redis.delete("queue:paused:realtime", "queue:paused:bulk")
 
-    async def list_stale_unprocessed_raw_ids(self, *, limit: int = 20) -> list[int]:
-        """列出租约过期或尚未开始处理的未处理 raw，供自动重放。"""
+    async def list_stale_unprocessed_raw_ids(
+        self,
+        *,
+        limit: int = 20,
+        max_attempts: int = MAX_RAW_REPLAY_ATTEMPTS,
+    ) -> list[int]:
+        """列出租约过期或尚未开始处理的未处理 raw，供自动重放。
+
+        尝试次数少者优先，防止最老的永久毒丸垄断整个 LIMIT 窗口；达到
+        上限的 raw 退出自动重放，仅保留人工重放入口。
+        """
 
         engine = self._engine()
         try:
@@ -220,15 +233,16 @@ class SqlOpsRepository:
                         """
                         SELECT id FROM raw_vendor_log
                         WHERE processed=false
+                          AND replay_attempts<:max_attempts
                           AND (
                             processing_started_at IS NULL
                             OR processing_started_at<=now()-interval '15 minutes'
                           )
-                        ORDER BY id
+                        ORDER BY replay_attempts,id
                         LIMIT :limit
                         """
                     ),
-                    {"limit": limit},
+                    {"limit": limit, "max_attempts": max_attempts},
                 )
                 return [int(value) for value in result.scalars()]
         finally:
@@ -243,7 +257,8 @@ class SqlOpsRepository:
                         """
                         WITH claimed AS (
                           UPDATE raw_vendor_log
-                          SET processing_started_at=now(),error=NULL
+                          SET processing_started_at=now(),error=NULL,
+                            replay_attempts=replay_attempts+1
                           WHERE id=:raw_id AND processed=false
                             AND (
                               processing_started_at IS NULL
@@ -282,6 +297,30 @@ class SqlOpsRepository:
                     ),
                     claimed=bool(row["claimed"]),
                 )
+        finally:
+            await engine.dispose()
+
+    async def raw_replay_exhausted(
+        self,
+        raw_id: int,
+        *,
+        max_attempts: int = MAX_RAW_REPLAY_ATTEMPTS,
+    ) -> bool:
+        """该未处理 raw 是否已耗尽自动重放次数（告警一次并转人工）。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.scalar(
+                    text(
+                        """
+                        SELECT replay_attempts>=:max_attempts FROM raw_vendor_log
+                        WHERE id=:raw_id AND processed=false
+                        """
+                    ),
+                    {"raw_id": raw_id, "max_attempts": max_attempts},
+                )
+                return bool(result)
         finally:
             await engine.dispose()
 

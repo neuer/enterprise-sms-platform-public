@@ -42,6 +42,20 @@ LOGGER = logging.getLogger(__name__)
 PHONE_NUMBER = re.compile(r"^1\d{10}$")
 
 
+def _same_digest(left: str, right: str) -> bool:
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def _canonical_scheduled_at(value: datetime | None) -> str | None:
+    """把定时时刻归一为 UTC 瞬时，避免 +08:00 / Z 两种写法打出不同指纹。"""
+
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 class ConsentRequired(ValueError):
     """Web 营销未确认用户同意，对应 CONSENT_REQUIRED/422。"""
 
@@ -516,6 +530,8 @@ class SendPipeline:
         request: SendRequest,
     ) -> tuple[Literal["queued", "scheduled"], str | None, datetime | None]:
         if request.is_test:
+            if request.scheduled_at is not None:
+                raise ValueError("测试发送不支持定时投递")
             return "queued", None, None
         if request.category != "market":
             if request.scheduled_at is not None:
@@ -536,6 +552,7 @@ class SendPipeline:
         policy: CategoryPolicy,
         *,
         key_version: int | None = None,
+        normalize: bool = True,
     ) -> str:
         """生成版本化请求 HMAC，覆盖会改变真实短信副作用与作用域的字段。"""
 
@@ -574,12 +591,20 @@ class SendPipeline:
             "template_id": request.template_id,
             "template_params": list(request.template_params or ()),
             "sign_name": request.sign_name or app.default_sign,
-            "scheduled_at": request.scheduled_at.isoformat()
-            if request.scheduled_at is not None
-            else None,
+            "scheduled_at": _canonical_scheduled_at(request.scheduled_at)
+            if normalize
+            else (
+                request.scheduled_at.isoformat()
+                if request.scheduled_at is not None
+                else None
+            ),
             "consent_confirmed": request.consent_confirmed,
             "is_test": request.is_test,
-            "mobiles": list(request.mobiles or ()),
+            "mobiles": (
+                sorted(set(request.mobiles or ()))
+                if normalize
+                else list(request.mobiles or ())
+            ),
             "protected_phone_identity": protected_identity,
             "vendor_test_uat": request.vendor_test_uat,
             "resend_of": request.resend_of,
@@ -640,6 +665,8 @@ class SendPipeline:
         return IdempotencyScope("app", str(app.app_id))
 
     def _validate_schedule(self, request: SendRequest) -> None:
+        if request.is_test and request.scheduled_at is not None:
+            raise ValueError("测试发送不支持定时投递")
         if request.scheduled_at is None:
             return
         if request.scheduled_at.tzinfo is None or request.scheduled_at.utcoffset() is None:
@@ -668,16 +695,36 @@ class SendPipeline:
             raise IdempotencyConflict(
                 "同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id"
             )
-        request_hash = self._request_hash(
-            request,
-            app,
-            policy,
-            key_version=stored.key_version,
-        )
-        if not hmac.compare_digest(stored.digest, request_hash):
-            raise IdempotencyConflict(
-                "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+        try:
+            request_hash = self._request_hash(
+                request,
+                app,
+                policy,
+                key_version=stored.key_version,
             )
+            legacy_hash = self._request_hash(
+                request,
+                app,
+                policy,
+                key_version=stored.key_version,
+                normalize=False,
+            )
+        except ValueError:
+            # 记录绑定的 HMAC 版本已在轮换中退役：无法证明是同一请求。
+            # 若按 400 参数错误返回，调用方最自然的反应是换 biz_id 重发，
+            # 恰好击穿幂等要防的重复下发；因此按幂等冲突 409 处理。
+            raise IdempotencyConflict(
+                "同一幂等键的请求指纹版本已退役，无法验证同请求；"
+                "请先查询原批次状态，勿直接更换 biz_id 重发"
+            ) from None
+        if _same_digest(stored.digest, request_hash) or _same_digest(
+            stored.digest,
+            legacy_hash,
+        ):
+            return
+        raise IdempotencyConflict(
+            "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+        )
 
     @staticmethod
     def _quota_clock(now: datetime) -> tuple[str, int]:
@@ -732,7 +779,11 @@ class SendPipeline:
             policy,
             key_version=request_hash_key_version,
         )
-        if preauthorization is None and self.acceptance_limiter is not None:
+        if (
+            request.channel != "web"
+            and preauthorization is None
+            and self.acceptance_limiter is not None
+        ):
             await self.acceptance_limiter.check(
                 app_id=app.app_id,
                 limit_per_minute=app.rate_limit_per_min,
@@ -850,7 +901,8 @@ class SendPipeline:
         if self.recipient_guard is not None and has_plain:
             self.recipient_guard.require_allowed(request.mobiles)
         if (
-            preauthorization is None
+            request.channel != "web"
+            and preauthorization is None
             and self.acceptance_limiter is not None
             and not request.biz_id
         ):
@@ -989,9 +1041,9 @@ class SendPipeline:
                 )
 
         accepted: list[ProtectedPhone] = []
-        if ownership_check is not None:
-            await ownership_check()
         try:
+            if ownership_check is not None:
+                await ownership_check()
             frequency_batch = 200
             for offset in range(0, len(after_blacklist), frequency_batch):
                 if ownership_check is not None and offset > 0:
@@ -1039,8 +1091,6 @@ class SendPipeline:
             await release_usage("all-filtered")
             raise AllFiltered("全部号码已被过滤")
         quota_cost = prepared.segments * len(accepted)
-        if ownership_check is not None:
-            await ownership_check()
         if request.biz_id and idem_scope is not None:
             quota_reservation_key = (
                 self.idempotency.quota_result_key(idem_scope, request.biz_id, date_key)
@@ -1048,6 +1098,8 @@ class SendPipeline:
         else:
             quota_reservation_key = None
         try:
+            if ownership_check is not None:
+                await ownership_check()
             if self.usage_ledger is not None and usage_reservation_id is not None:
                 next_day = (now.astimezone(SHANGHAI) + timedelta(days=1)).replace(
                     hour=0,
@@ -1215,8 +1267,30 @@ class SendPipeline:
                 try:
                     existing = await self.idempotency.lookup(idem_scope, request.biz_id)
                 except Exception:
+                    await compensate_reservation()
                     raise original from None
                 if existing is not None:
+                    try:
+                        policy = self._resolve_policy(app, request, preauthorization)
+                        await self._ensure_same_request(
+                            idem_scope,
+                            request.biz_id,
+                            request,
+                            app,
+                            policy,
+                        )
+                    except Exception:
+                        await compensate_reservation()
+                        raise
+                    if not usage_reservation_reused:
+                        await release_usage("idempotent-reuse")
+                    return await self.store.response_for(existing)
+            await compensate_reservation()
+            raise
+        if stored.idempotent:
+            try:
+                if request.biz_id:
+                    assert idem_scope is not None
                     policy = self._resolve_policy(app, request, preauthorization)
                     await self._ensure_same_request(
                         idem_scope,
@@ -1225,28 +1299,13 @@ class SendPipeline:
                         app,
                         policy,
                     )
+                return await self.store.response_for(stored.batch_no)
+            finally:
+                if self.usage_ledger is not None:
                     if not usage_reservation_reused:
                         await release_usage("idempotent-reuse")
-                    return await self.store.response_for(existing)
-            await compensate_reservation()
-            raise
-        if stored.idempotent:
-            if request.biz_id:
-                assert idem_scope is not None
-                policy = self._resolve_policy(app, request, preauthorization)
-                await self._ensure_same_request(
-                    idem_scope,
-                    request.biz_id,
-                    request,
-                    app,
-                    policy,
-                )
-            if self.usage_ledger is not None:
-                if not usage_reservation_reused:
-                    await release_usage("idempotent-reuse")
-            elif not reservation_reused:
-                await compensate_reservation()
-            return await self.store.response_for(stored.batch_no)
+                elif not reservation_reused:
+                    await compensate_reservation()
         if request.biz_id:
             assert idem_scope is not None
             await self.idempotency.remember(idem_scope, request.biz_id, stored.batch_no)

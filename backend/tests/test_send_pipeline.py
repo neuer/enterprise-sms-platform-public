@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -59,9 +60,11 @@ class FakeIdempotency:
         existing: str | None = None,
         *,
         stored_request_hash: str | None = None,
+        stored_key_version: int = 1,
     ) -> None:
         self.existing = existing
         self.stored_request_hash = stored_request_hash
+        self.stored_key_version = stored_key_version
         self.remembered: list[tuple[IdempotencyScope, str, str]] = []
         self.released: list[str] = []
         self.lookup_calls: list[tuple[IdempotencyScope, str]] = []
@@ -75,7 +78,7 @@ class FakeIdempotency:
     ) -> IdempotencyFingerprint | None:
         if self.stored_request_hash is None:
             return None
-        return IdempotencyFingerprint(self.stored_request_hash, 1)
+        return IdempotencyFingerprint(self.stored_request_hash, self.stored_key_version)
 
     def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str:
         return f"idem:claim:{scope.key}:{biz_id}"
@@ -773,6 +776,38 @@ async def test_idempotency_same_key_different_hash_conflicts() -> None:
     )
 
     with pytest.raises(IdempotencyConflict, match="不同请求"):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                biz_id="biz-1",
+            ),
+        )
+    assert store.commands == []
+
+
+@pytest.mark.asyncio
+async def test_retired_fingerprint_key_version_maps_to_conflict_not_param_error() -> None:
+    """指纹绑定的 HMAC 版本退役后重试应 409 幂等冲突，不得 400 诱导换 biz_id 重发。"""
+
+    store = FakeStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(
+            "existing",
+            stored_request_hash="hash-of-retired-version",
+            stored_key_version=99,
+        ),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+
+    with pytest.raises(IdempotencyConflict, match="版本已退役"):
         await pipeline.accept(
             ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
             SendRequest(
@@ -1833,6 +1868,8 @@ async def test_frequency_batch_uses_allow_frequency_many_and_ownership_check() -
             SendRequest("verify", phones, content="验证码123456", biz_id="freq-batch"),
         )
     assert ledger.many_calls >= 1
+    assert ledger.releases
+    assert ledger.releases[0][1].endswith(":acceptance-failed")
 
 
 @pytest.mark.asyncio
@@ -1905,3 +1942,197 @@ async def test_protect_plain_phones_splits_beyond_one_thousand() -> None:
     assert candidates == {}
     assert hmacs == {}
     assert aliases == {}
+
+
+@pytest.mark.asyncio
+async def test_test_send_rejects_explicit_schedule() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        clock=lambda: datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="测试发送不支持定时投递"):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                is_test=True,
+                scheduled_at=datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
+            ),
+        )
+
+
+def test_request_hash_normalizes_mobile_order_and_timezone() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
+    policy = policy_for_category("notice", app.allowed_categories)
+    shanghai = datetime(2026, 8, 20, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    left = SendRequest(
+        "notice",
+        ["13900139000", "13800138000"],
+        content="通知",
+        scheduled_at=shanghai,
+        biz_id="same",
+    )
+    right = SendRequest(
+        "notice",
+        ["13800138000", "13900139000"],
+        content="通知",
+        scheduled_at=shanghai.astimezone(UTC),
+        biz_id="same",
+    )
+    assert pipeline._request_hash(left, app, policy, key_version=1) == pipeline._request_hash(
+        right,
+        app,
+        policy,
+        key_version=1,
+    )
+    assert pipeline._request_hash(
+        left,
+        app,
+        policy,
+        key_version=1,
+        normalize=False,
+    ) != pipeline._request_hash(left, app, policy, key_version=1)
+
+
+@pytest.mark.asyncio
+async def test_legacy_fingerprint_still_matches_same_request() -> None:
+    app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13900139000", "13800138000"],
+        content="通知",
+        scheduled_at=datetime(2026, 8, 20, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        biz_id="legacy-hash",
+    )
+    policy = policy_for_category(request.category, app.allowed_categories)
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    legacy = pipeline._request_hash(
+        request,
+        app,
+        policy,
+        key_version=1,
+        normalize=False,
+    )
+    pipeline.idempotency = FakeIdempotency("existing", stored_request_hash=legacy)
+    result = await pipeline.accept(app, request)
+    assert result.idempotent is True
+
+
+@pytest.mark.asyncio
+async def test_idempotent_fingerprint_conflict_releases_new_usage() -> None:
+    ledger = FakeUsageLedger()
+    pipeline = SendPipeline(
+        store=IdempotentStore(),
+        idempotency=FakeIdempotency(stored_request_hash="other-hash"),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        usage_ledger=ledger,
+        config=PipelineConfig(),
+    )
+    with pytest.raises(IdempotencyConflict, match="不同请求"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                biz_id="conflict-after-save",
+            ),
+        )
+    assert ledger.releases
+    assert ledger.releases[0][1].endswith(":idempotent-reuse")
+
+
+@pytest.mark.asyncio
+async def test_save_failure_lookup_error_still_releases_usage() -> None:
+    class LookupBoom(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lookups = 0
+
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            self.lookups += 1
+            if self.lookups >= 3:
+                raise RuntimeError("idempotency lookup unavailable")
+            return None
+
+    ledger = FakeUsageLedger()
+    pipeline = SendPipeline(
+        store=FailingStore(),
+        idempotency=LookupBoom(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        usage_ledger=ledger,
+        config=PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                biz_id="lookup-boom",
+            ),
+        )
+    assert ledger.releases
+    assert ledger.releases[0][1].endswith(":acceptance-failed")
+
+
+@pytest.mark.asyncio
+async def test_web_channel_skips_application_rate_limiter() -> None:
+    class BoomLimiter:
+        async def check(self, **_values: object) -> None:
+            raise AssertionError("Web 渠道不得走应用限流桶")
+
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=BoomLimiter(),  # type: ignore[arg-type]
+    )
+    result = await pipeline.accept(
+        ApiAppContext(0, "web", "平台部", frozenset({"notice"}), rate_limit_per_min=60),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="维护通知",
+            biz_id="web-no-app-limit",
+            channel="web",
+            actor=ADMIN,
+        ),
+    )
+    assert result.batch_no == "new-batch"

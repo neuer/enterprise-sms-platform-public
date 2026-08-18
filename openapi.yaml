@@ -399,6 +399,9 @@ paths:
         '429':
           description: 配额或频率超限
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: 限流/幂等 Redis 故障或配额投影不可用
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   # ───────────────────────── Web 侧（JWT） ─────────────────────────
   /api/v1/web/auth/providers:
@@ -570,7 +573,7 @@ paths:
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                 biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
-                is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗，v1.2） }
+                is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗；与 scheduled_at 同时出现返回 400，v1.2） }
                 consent_confirmed: { type: boolean, default: false, description: market 必须为 true（"已获用户同意"留痕，v1.2），否则 422 CONSENT_REQUIRED }
                 remark: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
       responses:
@@ -653,6 +656,7 @@ paths:
                   approval_required: { type: boolean }
                   unsubscribe_appended: { type: boolean }
                   deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+        '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: TEMPLATE_PARAM_MISMATCH 或 CONSENT_REQUIRED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

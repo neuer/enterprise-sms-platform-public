@@ -105,6 +105,8 @@ class ChunkStore(Protocol):
 
     async def balance_blocked(self, batch_id: int, chunk_id: int) -> None: ...
 
+    async def pause_blocked(self, chunk_id: int, code: int) -> None: ...
+
     async def pause_queues(self, code: int) -> None: ...
 
     async def split_once(self, chunk: ChunkPayload) -> list[ChunkPayload]: ...
@@ -213,7 +215,7 @@ class SendWorker:
                 extra={"error_type": type(exc).__name__},
             )
 
-    async def _token(self, lane: Literal["realtime", "bulk"]) -> int:
+    async def _token(self, lane: Literal["realtime", "bulk"]) -> int | None:
         while True:
             lease_epoch = await self.bucket.acquire(
                 lane=lane,
@@ -222,6 +224,9 @@ class SendWorker:
             )
             if lease_epoch is not None:
                 return lease_epoch
+            # 等令牌期间可能发生熔断暂停；每轮复查，暂停即停发（#349）。
+            if await self.store.is_paused(lane):
+                return None
             await self.sleeper(0.05)
 
     async def _refund_token(self, lease_epoch: int) -> None:
@@ -327,6 +332,8 @@ class SendWorker:
             if not await self._control_ready(chunk, claimed=False):
                 return
             lease_epoch = await self._token(lane)
+            if lease_epoch is None:
+                return
             if not await self._claim_after_token(
                 chunk,
                 lane,
@@ -380,7 +387,12 @@ class SendWorker:
                     await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
                     return
                 if policy.pause_queues:
+                    # 熔断码是账号/配置类可恢复故障（同 999 语义）：暂停双队列，
+                    # 在途 chunk 回退 retrying 等人工恢复后重投，不永久 failed。
+                    await self.store.pause_blocked(chunk.chunk_id, error.code)
                     await self.store.pause_queues(error.code)
+                    await self._record_failure(chunk, error.code)
+                    return
                 await self.store.mark_failed(
                     chunk.chunk_id,
                     error.code,

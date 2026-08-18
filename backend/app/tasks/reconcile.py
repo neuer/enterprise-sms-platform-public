@@ -88,7 +88,25 @@ async def _replay_stale_raw(settings: Settings) -> int:
                 system_producer=True,
             )
             replayed += 1
-        except (RawReplayNotFound, RawReplayConflict):
+            continue
+        except RawReplayNotFound:
+            continue
+        except RawReplayConflict:
+            pass
+        except Exception:
+            # 解析/入库失败已由 ingest 侧标记 error 保持可重放；这里只
+            # 保证单条毒丸不拖垮整轮对账的其余职责。
+            pass
+        try:
+            if await ops.raw_replay_exhausted(raw_id):
+                await alerts.emit(
+                    alert_type="raw_replay_exhausted",
+                    level="crit",
+                    title="raw 自动重放次数已耗尽，需人工重放或排查",
+                    detail={"raw_id": raw_id},
+                    dedup_key=f"raw_replay_exhausted:{raw_id}",
+                )
+        except Exception:
             continue
     return replayed
 

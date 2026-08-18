@@ -838,6 +838,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
             FakeResult(scalar=8),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
@@ -853,6 +854,10 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "report_event_key" in connection.calls[5][0]
     assert "m.report_status IS DISTINCT FROM 1" in connection.calls[5][0]
     assert "m.report_status = 1" not in connection.calls[5][0]
+    assert "WHEN CAST(:report_status AS smallint)=1 THEN 4" in connection.calls[5][0]
+    # 应用成功后把消息归属日标脏，供窗口外统计补算（#342）。
+    assert "stat_dirty_date" in connection.calls[7][0]
+    assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[7][0]
     assert callback_events == [
         ("batch", 3),
         ("message", (3, 8, report.report_time)),
@@ -906,10 +911,10 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         [
             FakeResult(scalars=[2, 3]),
             FakeResult(),
-            FakeResult(rows=[{"id": 8}]),
+            FakeResult(scalar=1),
             FakeResult(),
             FakeResult(),
-            FakeResult(rows=[{"id": 9}]),
+            FakeResult(scalar=1),
             FakeResult(),
         ]
     )
@@ -927,6 +932,7 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     assert connection.calls[0][0].lstrip().startswith("SELECT DISTINCT m.batch_id")
     assert "sms_batch" in connection.calls[1][0] and "FOR UPDATE" in connection.calls[1][0]
     assert "UPDATE sms_message" in connection.calls[2][0]
+    assert "stat_dirty_date" in connection.calls[2][0]
     assert connection.calls[1][1] == {"batch_id": 2}
     assert connection.calls[2][1] == {"batch_id": 2, "hours": 48}
     assert "sms_batch" in connection.calls[4][0] and "FOR UPDATE" in connection.calls[4][0]

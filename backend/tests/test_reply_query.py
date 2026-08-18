@@ -298,6 +298,7 @@ async def test_sql_optout_reprotects_phone_and_persists_all_hmac_aliases() -> No
 
     sql, params = connection.calls[0]
     assert "JOIN reply_event" in sql
+    assert "batch_id IS NOT NULL" not in sql
     assert params == {"reply_id": 5, "dept": "研发部"}
     assert any("INSERT INTO blacklist(" in call[0] for call in connection.calls)
     alias_call = next(

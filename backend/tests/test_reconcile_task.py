@@ -208,6 +208,9 @@ async def test_replay_stale_raw_marks_system_producer_for_audit(
         async def list_stale_unprocessed_raw_ids(self) -> list[int]:
             return [11, 12]
 
+        async def raw_replay_exhausted(self, raw_id: int) -> bool:
+            return False
+
     monkeypatch.setattr(task_module, "redis_client", lambda _url: "redis")
     monkeypatch.setattr(task_module, "SqlOpsRepository", FakeOps)
     monkeypatch.setattr(
@@ -241,3 +244,69 @@ async def test_replay_stale_raw_marks_system_producer_for_audit(
             "system_producer": True,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_replay_stale_raw_isolates_poison_and_alerts_once_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services.raw_replay import RawIntegrityConflict
+    from app.tasks import reconcile as task_module
+
+    alerts: list[dict[str, object]] = []
+
+    class Ops:
+        def __init__(self, settings: object, redis: object) -> None:
+            pass
+
+        async def list_stale_unprocessed_raw_ids(self) -> list[int]:
+            return [1, 2, 3]
+
+        async def raw_replay_exhausted(self, raw_id: int) -> bool:
+            return raw_id == 1
+
+    class Replay:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        async def replay(
+            self,
+            raw_id: int,
+            *,
+            actor: str,
+            ip: str,
+            system_producer: bool = False,
+        ) -> int:
+            if raw_id == 1:
+                raise RawIntegrityConflict("raw vendor envelope is invalid")
+            if raw_id == 2:
+                raise RuntimeError("process_existing write failed")
+            return 5
+
+    class Alerts:
+        def __init__(self, settings: object) -> None:
+            pass
+
+        async def emit(self, **kwargs: object) -> None:
+            alerts.append(kwargs)
+
+    monkeypatch.setattr(task_module, "redis_client", lambda url: object())
+    monkeypatch.setattr(task_module, "SqlOpsRepository", Ops)
+    monkeypatch.setattr(
+        task_module.CryptoService,
+        "from_settings",
+        lambda settings: object(),
+    )
+    monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
+    monkeypatch.setattr(task_module, "RawReplayService", Replay)
+    monkeypatch.setattr(task_module, "ReportIngestService", lambda *a, **k: object())
+    monkeypatch.setattr(task_module, "ReplyIngestService", lambda *a, **k: object())
+    monkeypatch.setattr(task_module, "SqlReportRepository", lambda settings: object())
+    monkeypatch.setattr(task_module, "SqlReplyRepository", lambda settings: object())
+
+    settings = SimpleNamespace(redis_control_url="redis://control/2")
+    assert await task_module._replay_stale_raw(settings) == 1
+    assert [alert["dedup_key"] for alert in alerts] == ["raw_replay_exhausted:1"]
+    assert alerts[0]["level"] == "crit"

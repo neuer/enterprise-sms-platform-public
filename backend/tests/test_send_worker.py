@@ -102,6 +102,9 @@ class FakeStore:
     async def balance_blocked(self, batch_id: int, chunk_id: int) -> None:
         self.events.append(("balance", (batch_id, chunk_id)))
 
+    async def pause_blocked(self, chunk_id: int, code: int) -> None:
+        self.events.append(("pause_blocked", (chunk_id, code)))
+
     async def pause_queues(self, code: int) -> None:
         self.events.append(("pause", code))
 
@@ -601,6 +604,27 @@ async def test_balance_error_blocks_batch_and_pauses_both_queues() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", [1000, 1009, 5000, 10003, 10004])
+async def test_pause_codes_requeue_chunk_instead_of_permanent_failed(code: int) -> None:
+    """熔断码与 999 语义对齐：暂停队列 + chunk 回退可重投，不 mark_failed。"""
+
+    store = FakeStore()
+    monitor = FakeVendorMonitor()
+
+    await SendWorker(
+        FakeGateway([VendorApiError(code, "account issue")]),
+        store,
+        FakeBucket(),
+        monitor=monitor,
+    ).submit(chunk(), lane="realtime")
+
+    assert ("pause_blocked", (3, code)) in store.events
+    assert ("pause", code) in store.events
+    assert all(event[0] != "failed" for event in store.events)
+    assert monitor.events == [("failure", (code, 3, 2))]
+
+
+@pytest.mark.asyncio
 async def test_1010_fails_chunk_without_pausing_queues_and_emits_critical_monitor_event() -> None:
     store = FakeStore()
     monitor = FakeVendorMonitor()
@@ -866,3 +890,34 @@ async def test_unexpected_error_after_vendor_starts_marks_uncertain() -> None:
 
     assert store.events == [("submitting", 3), ("uncertain", 3)]
     assert not any(event[0] == "release_unsent" for event in store.events)
+
+
+@pytest.mark.asyncio
+async def test_token_wait_aborts_when_lane_pauses_mid_wait() -> None:
+    class StarvingBucket(FakeBucket):
+        async def acquire(self, **kwargs: Any) -> int | None:
+            self.acquires += 1
+            return None
+
+    class PauseDuringWaitStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.checks = 0
+
+        async def is_paused(self, lane: str) -> bool:
+            self.checks += 1
+            return self.checks >= 2
+
+    store = PauseDuringWaitStore()
+    gateway = FakeGateway(["must-not-send"])
+    await SendWorker(
+        gateway,
+        store,
+        StarvingBucket(),
+        recipient_guard=AllowGuard(),
+        enforce_live_test_budget=True,
+    ).submit(chunk(), lane="realtime")
+
+    assert gateway.calls == 0
+    assert store.events == []
+    assert store.checks >= 2

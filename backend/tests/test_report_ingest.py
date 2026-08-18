@@ -16,7 +16,7 @@ from app.services.report_ingest import (
     ReportIngestService,
 )
 from app.services.report_repository import evaluate_failure_rate
-from app.vendor.zhihui import RawPulledPayload
+from app.vendor.zhihui import RawPulledPayload, VendorResponseTooLarge
 
 
 def crypto() -> CryptoService:
@@ -142,29 +142,90 @@ async def test_report_parser_tolerates_vendor_custom_id_key_typo() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["taskId", "customId"])
-async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> None:
-    item = report() | {field: "13800138000"}
+async def test_phone_like_task_id_degrades_to_pseudonym_and_still_applies() -> None:
+    item = report() | {"taskId": "13800138000"}
     repository = FakeRepository()
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
-    assert ("error", "skipped 1 invalid report items") in repository.events
-    assert ("processed", 12) not in repository.events
+    applied = [value for event, value in repository.events if event == "apply"]
+    assert len(applied) == 1
+    assert applied[0].match_custom_id == "custom1"
+    assert len(applied[0].vendor_task_id) == 64
+    assert "13800138000" not in applied[0].vendor_task_id
+    assert ("processed", 12) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
 
 
 @pytest.mark.asyncio
-async def test_empty_custom_id_report_is_skipped_not_crashed() -> None:
-    """平台外历史下发的报告可能带 customId=""；按无法归属跳过且 raw 可重放。"""
+async def test_phone_like_custom_id_is_preserved_as_unmatched_pseudonym() -> None:
+    item = report() | {"customId": "13800138000"}
+    repository = FakeRepository()
 
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert not any(event[0] == "apply" for event in repository.events)
+    unmatched = [value for event, value in repository.events if event == "unmatched"]
+    assert len(unmatched) == 1
+    assert unmatched[0].match_custom_id == ""
+    assert len(unmatched[0].custom_id) == 64
+    assert "13800138000" not in unmatched[0].custom_id
+    assert ("processed", 12) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_empty_custom_id_report_is_preserved_as_unmatched() -> None:
     item = report() | {"customId": ""}
     repository = FakeRepository()
 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
-    assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
-    assert ("error", "skipped 1 invalid report items") in repository.events
+    assert not any(event[0] == "apply" for event in repository.events)
+    unmatched = [value for event, value in repository.events if event == "unmatched"]
+    assert len(unmatched) == 1
+    assert unmatched[0].match_custom_id == ""
+    assert len(unmatched[0].custom_id) == 64
+    assert ("processed", 12) in repository.events
+    assert not any(event[0] == "error" for event in repository.events)
+
+
+class OversizedGateway:
+    def __init__(self, error: VendorResponseTooLarge) -> None:
+        self.error = error
+
+    async def get_report_raw(self) -> RawPulledPayload:
+        raise self.error
+
+
+@pytest.mark.asyncio
+async def test_oversized_report_fallback_persists_valid_http_status() -> None:
+    repository = FakeRepository()
+    gateway = OversizedGateway(
+        VendorResponseTooLarge("too large", raw_body=b'{"code":0,"data":['),
+    )
+
+    with pytest.raises(VendorResponseTooLarge):
+        await ReportIngestService(gateway, repository, crypto()).poll_once()
+
+    persisted = [value for event, value in repository.events if event == "persist_raw"]
+    assert len(persisted) == 1
+    assert persisted[0]["http_status"] == 200
+    assert any(event[0] == "error" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_oversized_report_fallback_keeps_vendor_http_status() -> None:
+    repository = FakeRepository()
+    gateway = OversizedGateway(
+        VendorResponseTooLarge("too large", raw_body=b"partial", status_code=502),
+    )
+
+    with pytest.raises(VendorResponseTooLarge):
+        await ReportIngestService(gateway, repository, crypto()).poll_once()
+
+    persisted = [value for event, value in repository.events if event == "persist_raw"]
+    assert persisted[0]["http_status"] == 502
 
 
 @pytest.mark.asyncio
@@ -191,8 +252,12 @@ async def test_invalid_custom_id_does_not_abort_valid_report_items() -> None:
     applied = [value for event, value in repository.events if event == "apply"]
     assert len(applied) == 1
     assert applied[0].match_custom_id == "custom1"
-    assert any(event[0] == "error" for event in repository.events)
-    assert ("processed", 12) not in repository.events
+    unmatched = [value for event, value in repository.events if event == "unmatched"]
+    assert len(unmatched) == 1
+    assert unmatched[0].match_custom_id == ""
+    assert "legacy-x" not in unmatched[0].custom_id
+    assert not any(event[0] == "error" for event in repository.events)
+    assert ("processed", 12) in repository.events
 
 
 @pytest.mark.asyncio
@@ -515,3 +580,44 @@ async def test_spill_survives_persist_gap_and_can_be_recovered(tmp_path: Any) ->
     assert await service.recover_spills() == 1
     assert spill.list_pending() == []
     assert repository.events[0][0] == "persist_raw"
+
+
+class BrokenSpill:
+    """磁盘满/权限错等 spill 故障；不得反向阻断 DB 落库。"""
+
+    def write(self, **values: Any) -> None:
+        raise OSError("no space left on device")
+
+    def remove(self, source: str, payload_sha256: str) -> None:
+        raise OSError("no space left on device")
+
+    def list_pending(self) -> list[Any]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_spill_write_failure_degrades_to_alert_and_db_persist_continues() -> None:
+    repository = FakeRepository()
+    alerts = FakeAlerts()
+    service = ReportIngestService(
+        FakeGateway([report()]),
+        repository,
+        crypto(),
+        alerts=alerts,
+        spill=BrokenSpill(),  # type: ignore[arg-type]
+    )
+
+    assert await service.poll_once() == 1
+
+    assert [event[0] for event in repository.events] == [
+        "persist_raw",
+        "metadata",
+        "apply",
+        "failure_rate",
+        "processed",
+    ]
+    spill_alerts = [
+        event for event in alerts.events if event["alert_type"] == "vendor_raw_spill_failed"
+    ]
+    assert len(spill_alerts) == 1
+    assert spill_alerts[0]["level"] == "crit"

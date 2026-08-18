@@ -18,6 +18,12 @@ class FakeRepository:
         self.dates.append(stat_date)
         return 1
 
+    async def list_dirty_dates(self) -> tuple[date, ...]:
+        return ()
+
+    async def clear_dirty_date(self, stat_date: date) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_stats_task_adapter_uses_recent_five_day_service() -> None:

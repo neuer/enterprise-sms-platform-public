@@ -64,6 +64,7 @@ MANUAL_JOB_TASK_NAMES = frozenset(
         "app.tasks.aggregate_stats",
         "app.tasks.housekeeping",
         "app.tasks.reconcile_usage_projection",
+        "app.tasks.security_daily_generate",
     }
 )
 FORBIDDEN_KEYS = {

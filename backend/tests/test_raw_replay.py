@@ -110,6 +110,18 @@ class FakeReportRepository:
     async def persist_raw(self, **values: Any) -> int:
         raise AssertionError("raw replay must not persist or refetch a report")
 
+    async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+        return custom_ids
+
+    async def update_metadata(
+        self,
+        raw_id: int,
+        *,
+        custom_ids: list[str],
+        item_count: int,
+    ) -> None:
+        self.events.append(("metadata", (raw_id, tuple(custom_ids), item_count)))
+
     async def apply_report(self, raw_id: int, report: object) -> ReportApplyResult:
         self.events.append(("apply", report))
         return ReportApplyResult(8, True)
@@ -222,8 +234,14 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
 
     assert await service.replay(9, actor="admin01", ip="10.0.0.8") == 1
 
-    assert [event[0] for event in report_repository.events] == ["apply", "processed"]
-    parsed = report_repository.events[0][1]
+    # 重放路径重建 custom_ids 索引元数据（#341），再应用回执。
+    assert [event[0] for event in report_repository.events] == [
+        "metadata",
+        "apply",
+        "processed",
+    ]
+    assert report_repository.events[0][1] == (9, ("custom1",), 1)
+    parsed = report_repository.events[1][1]
     assert parsed.report_time.isoformat() == "2026-07-21T16:41:51+08:00"
     assert replay_repository.audits == [
         {
