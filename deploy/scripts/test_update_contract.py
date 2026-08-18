@@ -280,6 +280,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/PERFORMANCE.md",
         "docs/TEST-MANUAL.md",
         "docs/UAT.md",
+        "docs/ui-design.md",
         "docs/api-test-playground.md",
         "docs/api-integration.md",
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
