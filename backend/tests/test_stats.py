@@ -29,6 +29,8 @@ def test_recent_dates_follow_shanghai_calendar_boundary() -> None:
         date(2026, 7, 12),
         date(2026, 7, 11),
         date(2026, 7, 10),
+        date(2026, 7, 9),
+        date(2026, 7, 8),
     )
     with pytest.raises(ValueError):
         recent_stat_dates(datetime(2026, 7, 12, 0, 0))
@@ -39,9 +41,11 @@ async def test_aggregation_service_rebuilds_three_dates_and_returns_row_count() 
     repository = FakeRepository()
     service = StatsAggregationService(repository)
 
-    assert await service.aggregate_recent(datetime(2026, 7, 11, 16, 5, tzinfo=UTC)) == 6
+    assert await service.aggregate_recent(datetime(2026, 7, 11, 16, 5, tzinfo=UTC)) == 10
     assert repository.dates == [
         date(2026, 7, 12),
         date(2026, 7, 11),
         date(2026, 7, 10),
+        date(2026, 7, 9),
+        date(2026, 7, 8),
     ]

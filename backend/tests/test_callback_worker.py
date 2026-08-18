@@ -286,7 +286,7 @@ async def test_retryable_statuses_keep_retry_schedule(status: int) -> None:
 @pytest.mark.asyncio
 async def test_classify_callback_http_status_is_conservative() -> None:
     assert classify_callback_http_status(200) == "success"
-    assert classify_callback_http_status(400) == "permanent"
+    assert classify_callback_http_status(400) == "retryable"
     assert classify_callback_http_status(429) == "retryable"
     assert classify_callback_http_status(599) == "retryable"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,6 +20,8 @@ from app.services.report_ingest import (
     ReportApplyResult,
 )
 from app.settings import Settings, get_settings
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SqlReportRepository:
@@ -204,7 +207,7 @@ class SqlReportRepository:
                         JOIN sms_message m ON m.chunk_id=c.id
                         WHERE c.custom_id=:match_custom_id
                           AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
-                        ORDER BY m.created_at DESC LIMIT 1
+                        ORDER BY m.created_at DESC LIMIT 2
                         """
                     ),
                     {
@@ -212,9 +215,16 @@ class SqlReportRepository:
                         "phone_hmacs": list(report.phone_hmacs),
                     },
                 )
-                row = result.mappings().one_or_none()
-                if row is None:
+                matches = list(result.mappings())
+                if not matches:
                     return None
+                if len(matches) > 1:
+                    LOGGER.warning(
+                        "ambiguous report match skipped",
+                        extra={"custom_id_len": len(report.match_custom_id)},
+                    )
+                    return None
+                row = matches[0]
                 batch_id = int(row["batch_id"])
                 await self._lock_batch(connection, batch_id)
                 locked_message = await connection.execute(
@@ -265,6 +275,10 @@ class SqlReportRepository:
                           report_time=:report_time,
                           report_event_key=CAST(:event_key AS char(64))
                         WHERE m.id=:id AND m.created_at=:created_at
+                          AND (
+                            m.report_status IS DISTINCT FROM 1
+                            OR CAST(:report_status AS smallint) NOT IN (2, 99)
+                          )
                           AND (
                             m.report_time IS NULL
                             OR (

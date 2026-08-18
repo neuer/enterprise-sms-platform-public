@@ -4,21 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
+from app.services.raw_spill import RawSpillStore
 from app.vendor.identifiers import (
     protect_vendor_custom_id,
     protect_vendor_task_id,
     validate_vendor_custom_id,
     validate_vendor_ext_code,
 )
-from app.vendor.zhihui import RawPulledPayload, decode_pulled_payload
+from app.vendor.zhihui import (
+    RawPulledPayload,
+    VendorResponseTooLarge,
+    decode_pulled_payload,
+)
 
 LOGGER = logging.getLogger(__name__)
+VENDOR_LOCAL_TIME = re.compile(
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?"
+)
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,10 +100,15 @@ class ReplyIngestService:
         gateway: ReplyGateway | None,
         repository: ReplyRepository,
         crypto: CryptoService,
+        *,
+        alerts: Any | None = None,
+        spill: RawSpillStore | None = None,
     ) -> None:
         self.gateway = gateway
         self.repository = repository
         self.crypto = crypto
+        self.alerts = alerts
+        self.spill = spill
 
     def _parse(self, item: dict[str, Any]) -> ProtectedReply:
         value = _normalized(item)
@@ -117,9 +133,17 @@ class ReplyIngestService:
         # 合同后丢弃，避免把 4–6 位 OTP 伪装成扩展号写入明文元数据列。
         validate_vendor_ext_code(value.get("extCode", ""))
         ext_value = ""
-        reply_time = datetime.fromisoformat(str(value["replyTime"]).replace("Z", "+00:00"))
-        if reply_time.tzinfo is None or reply_time.utcoffset() is None:
-            raise ValueError("replyTime must include timezone")
+        raw_reply_time = str(value["replyTime"])
+        try:
+            reply_time = datetime.fromisoformat(raw_reply_time.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("replyTime format is invalid") from None
+        if reply_time.tzinfo is None:
+            if VENDOR_LOCAL_TIME.fullmatch(raw_reply_time) is None:
+                raise ValueError("replyTime must include timezone")
+            reply_time = reply_time.replace(tzinfo=SHANGHAI_TIMEZONE)
+        if reply_time.utcoffset() is None:
+            raise ValueError("replyTime timezone must define an offset")
         phone = str(value["phone"])
         protected = self.crypto.protect_phone(phone, table="reply_event")
         hmac_candidates = self.crypto.hmac_candidates(phone)
@@ -163,10 +187,61 @@ class ReplyIngestService:
             dedup_key_version=dedup_key_version,
         )
 
+    async def _alert_consume_gap(self, error_type: str) -> None:
+        if self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_persist_failed",
+                level="crit",
+                title="厂商拉走即消费响应未能落库，需人工介入",
+                detail={"source": "reply", "error_type": error_type},
+                dedup_key="vendor_raw_persist_failed:reply",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw persist alert unavailable",
+                extra={"source": "reply", "error_type": type(exc).__name__},
+            )
+
+    async def recover_spills(self) -> int:
+        """把落库前崩溃留下的加密 spill 恢复进 raw_vendor_log。"""
+
+        if self.spill is None:
+            return 0
+        recovered = 0
+        for record in self.spill.list_pending():
+            if record.source != "reply":
+                continue
+            try:
+                await self.repository.persist_raw(
+                    payload_enc=record.payload_enc,
+                    payload_sha256=record.payload_sha256,
+                    key_version=record.key_version,
+                    http_status=record.http_status,
+                    content_encoding=record.content_encoding,
+                    custom_ids=[],
+                    item_count=0,
+                )
+            except Exception as error:
+                await self._alert_consume_gap(type(error).__name__)
+                continue
+            self.spill.remove(record.source, record.payload_sha256)
+            recovered += 1
+        return recovered
+
     async def poll_once(self) -> int:
         if self.gateway is None:
             raise RuntimeError("reply gateway is not configured")
-        pulled = await self.gateway.get_reply_raw()
+        await self.recover_spills()
+        try:
+            pulled = await self.gateway.get_reply_raw()
+        except VendorResponseTooLarge as error:
+            await self._alert_consume_gap(type(error).__name__)
+            raise
+        except Exception as error:
+            await self._alert_consume_gap(type(error).__name__)
+            raise
         payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()
         encrypted = self.crypto.encrypt_bound_bytes(
             pulled.raw_payload,
@@ -177,15 +252,30 @@ class ReplyIngestService:
                 object_id=f"reply:{payload_sha256}",
             ),
         )
-        raw_id = await self.repository.persist_raw(
-            payload_enc=encrypted.payload,
-            payload_sha256=payload_sha256,
-            key_version=encrypted.key_version,
-            http_status=pulled.status_code,
-            content_encoding=pulled.content_encoding,
-            custom_ids=[],
-            item_count=0,
-        )
+        if self.spill is not None:
+            self.spill.write(
+                source="reply",
+                payload_sha256=payload_sha256,
+                key_version=encrypted.key_version,
+                http_status=pulled.status_code,
+                content_encoding=pulled.content_encoding,
+                payload_enc=encrypted.payload,
+            )
+        try:
+            raw_id = await self.repository.persist_raw(
+                payload_enc=encrypted.payload,
+                payload_sha256=payload_sha256,
+                key_version=encrypted.key_version,
+                http_status=pulled.status_code,
+                content_encoding=pulled.content_encoding,
+                custom_ids=[],
+                item_count=0,
+            )
+        except Exception as error:
+            await self._alert_consume_gap(type(error).__name__)
+            raise
+        if self.spill is not None:
+            self.spill.remove("reply", payload_sha256)
         try:
             data = decode_pulled_payload(pulled, "GetReply")
             if isinstance(data, list) and all(isinstance(item, dict) for item in data):
@@ -210,13 +300,19 @@ class ReplyIngestService:
         try:
             if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                 raise ValueError("GetReply.data must be an object array")
-            for item in data:
+            skipped = 0
+            for index, item in enumerate(data):
                 try:
                     reply = self._parse(item)
                 except (ValueError, KeyError, TypeError) as error:
+                    skipped += 1
                     LOGGER.warning(
                         "skipping invalid reply item",
-                        extra={"error_type": type(error).__name__},
+                        extra={
+                            "raw_id": raw_id,
+                            "item_index": index,
+                            "error_type": type(error).__name__,
+                        },
                     )
                     continue
                 await self.repository.store_reply(raw_id, reply)
@@ -226,5 +322,29 @@ class ReplyIngestService:
                 f"{type(error).__name__}: reply parsing failed",
             )
             raise
+        if skipped:
+            await self.repository.mark_error(
+                raw_id,
+                f"skipped {skipped} invalid reply items",
+            )
+            if self.alerts is not None:
+                try:
+                    await self.alerts.emit(
+                        alert_type="raw_item_skipped",
+                        level="crit",
+                        title="厂商上行回复存在无法解析的条目，raw 保持可重放",
+                        detail={
+                            "raw_id": raw_id,
+                            "skipped_count": skipped,
+                            "source": "reply",
+                        },
+                        dedup_key=f"raw_item_skipped:reply:{raw_id}",
+                    )
+                except Exception as exc:
+                    LOGGER.error(
+                        "raw skip alert unavailable",
+                        extra={"raw_id": raw_id, "error_type": type(exc).__name__},
+                    )
+            return len(data)
         await self.repository.mark_processed(raw_id)
         return len(data)

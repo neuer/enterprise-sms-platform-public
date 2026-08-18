@@ -54,6 +54,7 @@ class FakeStore:
         self.claim_counts: list[int] = []
         self.claim_segments: list[int] = []
         self.claim_result = SubmissionClaim(SubmissionClaimStatus.CLAIMED)
+        self.paused = False
 
     async def claim_submission(
         self,
@@ -127,6 +128,12 @@ class FakeStore:
 
     async def release_control_claim(self, chunk_id: int) -> None:
         self.events.append(("control_release", chunk_id))
+
+    async def release_unsent(self, chunk_id: int) -> None:
+        self.events.append(("release_unsent", chunk_id))
+
+    async def is_paused(self, lane: str) -> bool:
+        return self.paused
 
 
 class FakeVendorMonitor:
@@ -831,3 +838,31 @@ async def test_successful_vendor_call_with_writeback_failure_is_never_retried() 
 
     assert gateway.calls == 1
     assert store.events == [("submitting", 3)]
+
+
+@pytest.mark.asyncio
+async def test_paused_lane_skips_token_claim_and_vendor() -> None:
+    store = FakeStore()
+    store.paused = True
+    gateway = FakeGateway(["must-not-send"])
+    bucket = FakeBucket()
+
+    await SendWorker(gateway, store, bucket).submit(chunk(), lane="realtime")
+
+    assert store.events == []
+    assert bucket.acquires == 0
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_after_vendor_starts_marks_uncertain() -> None:
+    store = FakeStore()
+    with pytest.raises(RuntimeError, match="vendor exploded"):
+        await SendWorker(
+            FakeGateway([RuntimeError("vendor exploded")]),
+            store,
+            FakeBucket(),
+        ).submit(chunk(), lane="realtime")
+
+    assert store.events == [("submitting", 3), ("uncertain", 3)]
+    assert not any(event[0] == "release_unsent" for event in store.events)

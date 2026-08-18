@@ -170,10 +170,10 @@ paths:
                 template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID（非厂商ID），配合 template_params }
                 template_params:
                   anyOf:
-                    - { type: array, items: { type: string } }
+                    - { type: array, items: { type: string, maxLength: 200 }, maxItems: 20 }
                     - { type: 'null' }
                   description: 模板 {1}..{n} 占位参数（v1.2，本期全批次同参，平台渲染后下发，个数不符返回 422 TEMPLATE_PARAM_MISMATCH）
-                sign_name: { anyOf: [{ type: string }, { type: 'null' }], description: 缺省用应用默认签名 }
+                sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 缺省用应用默认签名 }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                 biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
       responses:
@@ -199,7 +199,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: 类别越权（CATEGORY_NOT_ALLOWED）
+          description: CATEGORY_NOT_ALLOWED / IP_NOT_ALLOWED / VENDOR_TEST_CONSOLE_ONLY
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '409':
           description: 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT）
@@ -211,7 +211,7 @@ paths:
           description: 配额或频率超限
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '503':
-          description: 配额与频控事实投影不可用（USAGE_PROJECTION_UNAVAILABLE）
+          description: USAGE_PROJECTION_UNAVAILABLE / DEPENDENCY_UNAVAILABLE
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/messages/uat-send:
@@ -252,10 +252,10 @@ paths:
                 template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID，须已审核通过 }
                 template_params:
                   anyOf:
-                    - { type: array, items: { type: string } }
+                    - { type: array, maxItems: 20, items: { type: string, maxLength: 200 } }
                     - { type: 'null' }
                   description: 模板 {1}..{n} 占位参数
-                sign_name: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }
+                sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 biz_id: { type: string, minLength: 1, maxLength: 32 }
       responses:
         '200':
@@ -566,8 +566,8 @@ paths:
                 import_id: { anyOf: [{ type: string, format: uuid }, { type: 'null' }], description: 引用导入任务号码包 }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
                 template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
-                template_params: { anyOf: [{ type: array, items: { type: string } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
-                sign_name: { anyOf: [{ type: string }, { type: 'null' }] }
+                template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
+                sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                 biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
                 is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗，v1.2） }
@@ -623,8 +623,8 @@ paths:
                 category: { type: string, enum: [notice, market] }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
                 template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
-                template_params: { anyOf: [{ type: array, items: { type: string } }, { type: 'null' }] }
-                sign_name: { anyOf: [{ type: string }, { type: 'null' }] }
+                template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }] }
+                sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 accepted_count: { type: integer, minimum: 0, maximum: 50000 }
                 consent_confirmed: { type: boolean, default: false }
       responses:

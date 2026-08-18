@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from typing import Any
 
 from sqlalchemy import text
@@ -220,12 +222,18 @@ class SqlAppRepository:
                 result = await connection.execute(
                     text(
                         """
-                        UPDATE app SET status=0, api_key_prev_hash=NULL,
+                        UPDATE app SET status=0,
+                          api_key_hash=:revoked_hash,
+                          api_key_prefix='revoked0',
+                          api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           updated_at=now() WHERE id=:app_id
                         """
                     ),
-                    {"app_id": app_id},
+                    {
+                        "app_id": app_id,
+                        "revoked_hash": hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
+                    },
                 )
                 if result.rowcount != 1:
                     raise AppNotFound("应用不存在")

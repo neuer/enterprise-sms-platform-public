@@ -31,7 +31,7 @@ elseif lane == 'bulk' and tokens > reserved then
   allowed = 1
 end
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
-redis.call('PEXPIRE', KEYS[1], 3000)
+redis.call('PEXPIRE', KEYS[1], 60000)
 if allowed == 1 then
   return last_ms
 end
@@ -46,12 +46,9 @@ local last_ms = tonumber(redis.call('HGET', KEYS[1], 'last_ms'))
 if tokens == nil or last_ms == nil then
   return 0
 end
-if last_ms ~= lease_epoch then
-  return 0
-end
 tokens = math.min(capacity, tokens + 1)
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
-redis.call('PEXPIRE', KEYS[1], 3000)
+redis.call('PEXPIRE', KEYS[1], 60000)
 return 1
 """
 
@@ -61,7 +58,10 @@ class RedisEval(Protocol):
 
 
 class TokenBucket:
-    """容量 vendor_qps，每整秒补满；bulk 尊重 realtime 预留。"""
+    """容量 vendor_qps，每整秒补满；bulk 尊重 realtime 预留。
+
+    取令牌只使用 control Redis ACL 已放行的 HGET/HSET；成功时返回 last_ms 作为 lease。
+    """
 
     def __init__(self, redis: RedisEval, *, key: str = "ratelimit:vendor") -> None:
         self.redis = redis

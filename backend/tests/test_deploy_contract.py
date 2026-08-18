@@ -511,11 +511,12 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
     services = load_compose()["services"]
     assert "exportdata:/var/lib/sms/exports" in services["api"]["volumes"]
     assert "exportdata:/var/lib/sms/exports" in services["worker-bulk"]["volumes"]
+    assert "rawspill:/var/lib/sms/raw-spill" in services["worker-realtime"]["volumes"]
     for name in ("worker-realtime", "worker-callback", "outbox-dispatcher", "beat"):
         assert "exportdata:/var/lib/sms/exports" not in services[name].get("volumes", [])
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
-    assert "mkdir -p /var/lib/sms/imports /var/lib/sms/exports" in dockerfile
+    assert "mkdir -p /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill" in dockerfile
     assert "chown -R sms:sms /var/lib/sms" in dockerfile
 
 

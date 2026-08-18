@@ -128,6 +128,10 @@ class ChunkStore(Protocol):
 
     async def release_control_claim(self, chunk_id: int) -> None: ...
 
+    async def release_unsent(self, chunk_id: int) -> None: ...
+
+    async def is_paused(self, lane: str) -> bool: ...
+
 
 class RecipientGuard(Protocol):
     def require_allowed(self, phones: tuple[str, ...]) -> None: ...
@@ -316,6 +320,8 @@ class SendWorker:
     ) -> None:
         retry_index = chunk.retry_count
         while True:
+            if await self.store.is_paused(lane):
+                return
             if not await self._guard_chunk(chunk):
                 return
             if not await self._control_ready(chunk, claimed=False):
@@ -334,7 +340,9 @@ class SendWorker:
                 lease_epoch=lease_epoch,
             ):
                 return
+            vendor_invoked = False
             try:
+                vendor_invoked = True
                 task_id = await self.gateway.send(
                     chunk.phones,
                     chunk.content,
@@ -380,6 +388,12 @@ class SendWorker:
                 )
                 await self._record_failure(chunk, error.code)
                 return
+            except Exception:
+                if vendor_invoked:
+                    await self.store.mark_uncertain(chunk.chunk_id)
+                else:
+                    await self.store.release_unsent(chunk.chunk_id)
+                raise
             else:
                 await self.store.mark_submitted(chunk.chunk_id, task_id)
                 await self._record_success()
@@ -425,9 +439,13 @@ async def _process_batch(batch_no: str) -> int:
         chunks, lane = await store.prepare_chunks(batch_no, batch_size)
         if await store.is_paused(lane):
             return 0
+        submitted = 0
         for chunk in chunks:
+            if await store.is_paused(lane):
+                break
             await worker.submit(chunk, lane=lane)
-        return len(chunks)
+            submitted += 1
+        return submitted
     finally:
         await gateway.aclose()
 

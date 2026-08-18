@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 
 import app.services.report_ingest as report_ingest_module
-from app.services.crypto import CryptoService
+from app.services.crypto import CryptoService, EncryptionContext
+from app.services.raw_spill import RawSpillStore
 from app.services.report_ingest import (
     FailureRateAlert,
     ReportApplyResult,
@@ -149,7 +150,8 @@ async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> 
     await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
 
     assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
-    assert ("processed", 12) in repository.events
+    assert ("error", "skipped 1 invalid report items") in repository.events
+    assert ("processed", 12) not in repository.events
 
 
 @pytest.mark.asyncio
@@ -176,8 +178,8 @@ async def test_invalid_custom_id_does_not_abort_valid_report_items() -> None:
     applied = [value for event, value in repository.events if event == "apply"]
     assert len(applied) == 1
     assert applied[0].match_custom_id == "custom1"
-    assert ("processed", 12) in repository.events
-    assert not any(event[0] == "error" for event in repository.events)
+    assert any(event[0] == "error" for event in repository.events)
+    assert ("processed", 12) not in repository.events
 
 
 @pytest.mark.asyncio
@@ -268,7 +270,7 @@ async def test_invalid_report_time_is_skipped_without_leaking_phone(
     assert [event[0] for event in repository.events] == [
         "persist_raw",
         "metadata",
-        "processed",
+        "error",
     ]
     rendered = repr(repository.events) + caplog.text
     assert sensitive_value not in rendered
@@ -319,17 +321,26 @@ async def test_unmatched_report_is_preserved_with_phone_protection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parse_failure_skips_item_and_marks_raw_processed() -> None:
+async def test_parse_failure_skips_item_and_keeps_raw_replayable() -> None:
     broken = report() | {"phone": "invalid"}
     repository = FakeRepository()
+    alerts = FakeAlerts()
 
-    await ReportIngestService(FakeGateway([broken]), repository, crypto()).poll_once()
+    await ReportIngestService(
+        FakeGateway([broken]),
+        repository,
+        crypto(),
+        alerts=alerts,
+    ).poll_once()
 
     assert [event[0] for event in repository.events] == [
         "persist_raw",
         "metadata",
-        "processed",
+        "error",
     ]
+    assert alerts.events
+    assert alerts.events[0]["alert_type"] == "raw_item_skipped"
+    assert alerts.events[0]["level"] == "crit"
 
 
 @pytest.mark.asyncio
@@ -435,3 +446,59 @@ async def test_ignored_report_projection_does_not_recompute_failure_alert() -> N
 
     assert "failure_rate" not in [event for event, _value in repository.events]
     assert alerts.events == []
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_emits_crit_alert() -> None:
+    class FailingRepository(FakeRepository):
+        async def persist_raw(self, **values: Any) -> int:
+            raise RuntimeError("database unavailable")
+
+    alerts = FakeAlerts()
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await ReportIngestService(
+            FakeGateway([report()]),
+            FailingRepository(),
+            crypto(),
+            alerts=alerts,
+        ).poll_once()
+    assert alerts.events
+    assert alerts.events[0]["alert_type"] == "vendor_raw_persist_failed"
+    assert alerts.events[0]["level"] == "crit"
+
+
+@pytest.mark.asyncio
+async def test_spill_survives_persist_gap_and_can_be_recovered(tmp_path: Any) -> None:
+    import hashlib
+
+    repository = FakeRepository()
+    spill = RawSpillStore(tmp_path)
+    service = ReportIngestService(
+        FakeGateway([report()]),
+        repository,
+        crypto(),
+        spill=spill,
+    )
+    pulled = await FakeGateway([report()]).get_report_raw()
+    payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()
+    encrypted = crypto().encrypt_bound_bytes(
+        pulled.raw_payload,
+        EncryptionContext(
+            domain="vendor-raw",
+            table="raw_vendor_log",
+            column="payload_enc",
+            object_id=f"report:{payload_sha256}",
+        ),
+    )
+    spill.write(
+        source="report",
+        payload_sha256=payload_sha256,
+        key_version=encrypted.key_version,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=encrypted.payload,
+    )
+    assert spill.list_pending()
+    assert await service.recover_spills() == 1
+    assert spill.list_pending() == []
+    assert repository.events[0][0] == "persist_raw"

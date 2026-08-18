@@ -24,17 +24,17 @@ def success_rate(delivered: int, failed: int) -> float:
     return delivered / denominator if denominator else 0.0
 
 
-def recent_stat_dates(now: datetime) -> tuple[date, date, date]:
-    """返回上海时区今天及前两个自然日，覆盖 48 小时报告回补。"""
+def recent_stat_dates(now: datetime) -> tuple[date, ...]:
+    """返回上海时区今天及前四个自然日，覆盖迟到回执回补。"""
 
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("stats clock must be timezone-aware")
     today = now.astimezone(SHANGHAI).date()
-    return today, today - timedelta(days=1), today - timedelta(days=2)
+    return tuple(today - timedelta(days=offset) for offset in range(5))
 
 
 class StatsAggregationService:
-    """串行重建最近三个统计日并汇总写入行数。"""
+    """串行重建最近五个统计日并汇总写入行数。"""
 
     def __init__(self, repository: StatsRepository) -> None:
         self.repository = repository

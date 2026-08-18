@@ -21,6 +21,7 @@ from app.core.runtime_resources import redis_client
 from app.services.app_ratelimit import (
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
+    ControlPlaneUnavailable,
 )
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.category import CategoryNotAllowed
@@ -104,8 +105,11 @@ class SendRequestModel(BaseModel):
     )
     content: str | None = Field(default=None, max_length=500)
     template_id: int | None = None
-    template_params: list[str] | None = None
-    sign_name: str | None = None
+    template_params: list[Annotated[str, Field(max_length=200)]] | None = Field(
+        default=None,
+        max_length=20,
+    )
+    sign_name: str | None = Field(default=None, max_length=32)
     scheduled_at: datetime | None = None
     biz_id: str = Field(min_length=1, max_length=32)
 
@@ -160,8 +164,11 @@ class VendorTestApiUatRequestModel(BaseModel):
     )
     content: str | None = Field(default=None, max_length=500)
     template_id: int | None = None
-    template_params: list[str] | None = None
-    sign_name: str | None = Field(default=None, max_length=64)
+    template_params: list[Annotated[str, Field(max_length=200)]] | None = Field(
+        default=None,
+        max_length=20,
+    )
+    sign_name: str | None = Field(default=None, max_length=32)
     biz_id: str = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
@@ -350,6 +357,8 @@ def _error(error: Exception) -> ApiError:
         return ApiError(429, "QUOTA_EXCEEDED", str(error), None)
     if isinstance(error, ApplicationRateLimitExceeded):
         return ApiError(429, "RATE_LIMITED", str(error), None)
+    if isinstance(error, ControlPlaneUnavailable):
+        return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, UsageProjectionUnavailable):
         return ApiError(
             503,
@@ -415,6 +424,7 @@ async def send_message(
         IdempotencyConflict,
         InvalidContent,
         ApplicationRateLimitExceeded,
+        ControlPlaneUnavailable,
         QuotaExceeded,
         SensitiveWord,
         TemplateParamMismatch,
@@ -533,8 +543,10 @@ async def send_vendor_test_api_uat(
         AllFiltered,
         CategoryNotAllowed,
         ConsentRequired,
+        IdempotencyConflict,
         InvalidContent,
         ApplicationRateLimitExceeded,
+        ControlPlaneUnavailable,
         QuotaExceeded,
         SensitiveWord,
         TemplateParamMismatch,

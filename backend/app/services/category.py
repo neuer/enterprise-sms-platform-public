@@ -79,6 +79,8 @@ def coerce_market_dispatch(
     start_raw, end_raw = window.split("-", maxsplit=1)
     start = time.fromisoformat(start_raw)
     end = time.fromisoformat(end_raw)
+    if start >= end:
+        raise ValueError("market window must be a same-day half-open interval")
     reference = scheduled_at if scheduled_at is not None else now
     local = reference.astimezone(SHANGHAI)
     local_clock = local.time().replace(tzinfo=None)

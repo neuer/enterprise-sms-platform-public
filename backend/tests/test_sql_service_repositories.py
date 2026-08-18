@@ -851,6 +851,8 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "report_event_projection" in connection.calls[4][0]
     assert connection.calls[5][1]["status"] == "delivered"  # type: ignore[index]
     assert "report_event_key" in connection.calls[5][0]
+    assert "m.report_status IS DISTINCT FROM 1" in connection.calls[5][0]
+    assert "m.report_status = 1" not in connection.calls[5][0]
     assert callback_events == [
         ("batch", 3),
         ("message", (3, 8, report.report_time)),

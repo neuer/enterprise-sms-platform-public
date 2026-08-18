@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeVar
@@ -110,9 +112,7 @@ class RedisBlacklistCache:
     ) -> set[str]:
         if not candidates:
             return set()
-        # 变更可含 5 万行入库，锁不设 TTL，避免长事务中途过期后
-        # 旧快照在提交后反向覆盖。Redis 连接失败时调用会失败关闭。
-        async with self.redis.lock(BLACKLIST_LOCK_KEY, timeout=None, blocking_timeout=10):
+        async with self._lock() as _lock:
             if not await self.redis.get(BLACKLIST_LOADED_KEY):
                 members = await loader()
                 pipe = self.redis.pipeline(transaction=True)
@@ -129,12 +129,47 @@ class RedisBlacklistCache:
     async def mutate(self, callback: Callable[[], Awaitable[T]]) -> T:
         """以同一分布式锁串行化事实变更与缓存重建。"""
 
-        async with self.redis.lock(BLACKLIST_LOCK_KEY, timeout=None, blocking_timeout=10):
+        async with self._lock() as _lock:
             await self.redis.delete(BLACKLIST_LOADED_KEY)
             try:
                 return await callback()
             finally:
                 await self.redis.delete(BLACKLIST_LOADED_KEY)
+
+    def _lock(self) -> Any:
+        """有界租约锁，心跳续租避免崩溃后永久堵死。"""
+
+        return _HeartbeatLock(self.redis.lock(BLACKLIST_LOCK_KEY, timeout=120, blocking_timeout=10))
+
+
+class _HeartbeatLock:
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> Any:
+        await self._lock.__aenter__()
+        self._stop.clear()
+
+        async def _heartbeat() -> None:
+            while not self._stop.is_set():
+                await asyncio.sleep(40)
+                try:
+                    await self._lock.extend(120)
+                except Exception:
+                    return
+
+        self._task = asyncio.create_task(_heartbeat())
+        return self._lock
+
+    async def __aexit__(self, *args: object) -> None:
+        self._stop.set()
+        if self._task is not None:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+        await self._lock.__aexit__(*args)
 
 
 class BlacklistService:
