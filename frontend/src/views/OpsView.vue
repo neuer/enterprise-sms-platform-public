@@ -3,6 +3,7 @@ import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { useRoute, useRouter } from "vue-router"
 
 import {
   createUnmatchedExport,
@@ -40,7 +41,17 @@ import PhoneMask from "../components/PhoneMask.vue"
 import CallbackView from "./CallbackView.vue"
 
 type TabName = "alerts" | "callbacks" | "raw" | "uncertain" | "unmatched" | "jobs" | "queue" | "outbox"
-const activeTab = ref<TabName>("alerts")
+const OPS_TABS: TabName[] = ["alerts", "callbacks", "raw", "uncertain", "unmatched", "jobs", "queue", "outbox"]
+const route = useRoute()
+const router = useRouter()
+
+function tabFromQuery(raw: unknown): TabName | null {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (typeof value !== "string") return null
+  return OPS_TABS.includes(value as TabName) ? value as TabName : null
+}
+
+const activeTab = ref<TabName>(tabFromQuery(route.query.tab) ?? "alerts")
 const loading = ref(false)
 const errorMessage = ref("")
 const alerts = ref<AlertItem[]>([])
@@ -145,8 +156,11 @@ function duration(seconds: number): string {
   return `${Math.max(0, Math.round(seconds / 60))} 分钟`
 }
 
+let loadToken = 0
+
 async function load(tab: TabName = activeTab.value): Promise<void> {
   if (tab === "callbacks") return
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -157,6 +171,7 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
         level: alertLevel.value || undefined,
         ...rangeValues(alertRange.value),
       })
+      if (token !== loadToken || activeTab.value !== tab) return
       alerts.value = result.items
       alertPage.value = result.page
       alertTotal.value = result.total
@@ -167,12 +182,14 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
         source: rawSource.value || undefined,
         processed: rawProcessed.value === "" ? undefined : rawProcessed.value === "true",
       })
+      if (token !== loadToken || activeTab.value !== tab) return
       rawLogs.value = result.items
       rawPage.value = result.page
       rawTotal.value = result.total
     }
     if (tab === "uncertain") {
       const result = await listUncertain({ page: uncertainPage.value })
+      if (token !== loadToken || activeTab.value !== tab) return
       uncertain.value = result.items
       uncertainPage.value = result.page
       uncertainTotal.value = result.total
@@ -183,26 +200,37 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
         phone: unmatchedPhone.value,
         ...rangeValues(unmatchedRange.value),
       })
+      if (token !== loadToken || activeTab.value !== tab) return
       unmatched.value = result.items
       unmatchedPage.value = result.page
       unmatchedTotal.value = result.total
     }
-    if (tab === "jobs") jobs.value = await listJobs()
-    if (tab === "queue") queue.value = await getQueueStatus()
+    if (tab === "jobs") {
+      const items = await listJobs()
+      if (token !== loadToken || activeTab.value !== tab) return
+      jobs.value = items
+    }
+    if (tab === "queue") {
+      const snapshot = await getQueueStatus()
+      if (token !== loadToken || activeTab.value !== tab) return
+      queue.value = snapshot
+    }
     if (tab === "outbox") {
       const [stats, events] = await Promise.all([
         getOutboxStatus(),
         listOutboxEvents({ page: outboxPage.value, state: outboxState.value || undefined }),
       ])
+      if (token !== loadToken || activeTab.value !== tab) return
       outboxStats.value = stats
       outboxEvents.value = events.items
       outboxPage.value = events.page
       outboxTotal.value = events.total
     }
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "运维数据加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
@@ -376,7 +404,18 @@ async function recover(): Promise<void> {
   }
 }
 
-watch(activeTab, (value) => void load(value))
+watch(activeTab, (value) => {
+  void load(value)
+  if (tabFromQuery(route.query.tab) === value) return
+  const query = { ...route.query }
+  if (value === "alerts") delete query.tab
+  else query.tab = value
+  void router.replace({ query })
+})
+watch(() => route.query.tab, (raw) => {
+  const next = tabFromQuery(raw)
+  if (next && next !== activeTab.value) activeTab.value = next
+})
 onMounted(() => {
   void load()
   void getQueueStatus().then((result) => { queue.value = result }).catch(() => undefined)
@@ -434,7 +473,7 @@ onBeforeUnmount(stopExportPolling)
 
     <section v-else-if="activeTab === 'uncertain'" v-loading="loading" class="ops-panel">
       <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>只读核查；仅 reconcile 可迁移状态</small></div><span>{{ uncertainTotal }} 项</span></header>
-      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="180" /><el-table-column prop="custom_id" label="customId" min-width="180" /><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="120"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="进入时间" width="180"><template #default="{ row }">{{ time(row.uncertain_since) }}</template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
+      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="180" /><el-table-column label="customId" min-width="180"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="120"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="进入时间" width="180"><template #default="{ row }">{{ time(row.uncertain_since) }}</template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in uncertain" :key="item.chunk_id"><header><strong>{{ item.batch_no }}</strong><el-tag :type="item.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(item.age_seconds) }}</el-tag></header><code>{{ item.custom_id }}</code><p>{{ item.phone_count }} 个号码 · 禁止自动重发</p></article><EmptyState v-if="!uncertain.length" :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></div>
       <el-pagination v-if="uncertainTotal > 20" v-model:current-page="uncertainPage" data-testid="ops-uncertain-pagination" class="ops-pagination" :page-size="20" :total="uncertainTotal" layout="prev, pager, next, total" background @current-change="load('uncertain')" />
     </section>
@@ -443,7 +482,7 @@ onBeforeUnmount(stopExportPolling)
       <header class="ops-panel-title ops-filter-title"><div><strong>迁移期无主报告</strong><small>手机号精确查询只在内存转换 HMAC · 共 {{ unmatchedTotal }} 条</small></div><div class="filter-toolbar ops-query-filters"><el-input v-model="unmatchedPhone" maxlength="11" clearable placeholder="手机号精确查询" data-testid="ops-unmatched-phone" /><el-date-picker v-model="unmatchedRange" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" /><el-button data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button><el-checkbox v-model="exportDecrypted">授权明文</el-checkbox><el-button type="primary" :loading="exportBusy" @click="exportUnmatched">导出对账</el-button></div></header>
       <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" />
       <el-alert v-if="exportTask" :title="`导出任务 #${exportTask.id} · ${exportTask.status}`" :type="exportTask.status === 'failed' ? 'error' : 'success'" :closable="false"><template #default><div class="export-task-detail"><span v-if="exportTask.row_count !== null">{{ exportTask.row_count }} 行</span><span v-if="exportTask.expires_at">有效期至 {{ time(exportTask.expires_at) }}</span><el-button v-if="exportTask.status === 'done' && exportTask.download_url" data-testid="download-unmatched-export" type="primary" link @click="downloadUnmatchedExport">下载 CSV</el-button></div></template></el-alert>
-      <el-table :data="unmatched" class="ops-table"><el-table-column label="号码" width="140"><template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template></el-table-column><el-table-column prop="custom_id" label="customId" min-width="170" /><el-table-column prop="vendor_task_id" label="厂商任务" min-width="150" /><el-table-column prop="report_desc" label="结果" width="120" /><el-table-column label="报告时间" width="180"><template #default="{ row }">{{ time(row.report_time) }}</template></el-table-column><template #empty><EmptyState :title="unmatchedEmpty.title" :description="unmatchedEmpty.description" /></template></el-table>
+      <el-table :data="unmatched" class="ops-table"><el-table-column label="号码" width="140"><template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template></el-table-column><el-table-column label="customId" min-width="170"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id || ''">{{ row.custom_id || "—" }}</code></template></el-table-column><el-table-column label="厂商任务" min-width="150"><template #default="{ row }"><code class="ops-hash" :title="row.vendor_task_id || ''">{{ row.vendor_task_id || "—" }}</code></template></el-table-column><el-table-column prop="report_desc" label="结果" width="120" /><el-table-column label="报告时间" width="180"><template #default="{ row }">{{ time(row.report_time) }}</template></el-table-column><template #empty><EmptyState :title="unmatchedEmpty.title" :description="unmatchedEmpty.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in unmatched" :key="item.id"><header><PhoneMask :value="item.phone_mask" /><el-tag type="warning">unmatched</el-tag></header><code>{{ item.custom_id || '—' }}</code><p>{{ item.report_desc || '未知结果' }} · {{ time(item.report_time) }}</p></article><EmptyState v-if="!unmatched.length" :title="unmatchedEmpty.title" :description="unmatchedEmpty.description" /></div>
       <el-pagination v-if="unmatchedTotal > 20" v-model:current-page="unmatchedPage" data-testid="ops-unmatched-pagination" class="ops-pagination" :page-size="20" :total="unmatchedTotal" layout="prev, pager, next, total" background @current-change="load('unmatched')" />
     </section>

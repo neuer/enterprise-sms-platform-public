@@ -155,6 +155,19 @@ async def test_vendor_identifiers_cannot_persist_phone_plaintext(field: str) -> 
 
 
 @pytest.mark.asyncio
+async def test_empty_custom_id_report_is_skipped_not_crashed() -> None:
+    """平台外历史下发的报告可能带 customId=""；按无法归属跳过且 raw 可重放。"""
+
+    item = report() | {"customId": ""}
+    repository = FakeRepository()
+
+    await ReportIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert not any(event[0] in {"apply", "unmatched"} for event in repository.events)
+    assert ("error", "skipped 1 invalid report items") in repository.events
+
+
+@pytest.mark.asyncio
 async def test_platform_hex_custom_id_is_not_rejected_as_phone() -> None:
     custom_id = "390d6892939546adb08dc16600000001"
     item = report() | {"customId": custom_id}

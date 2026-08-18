@@ -177,4 +177,22 @@ describe("报表趋势图", () => {
     expect(option.series[1].data).toEqual([6, 13])
     wrapper.unmount()
   })
+
+  it("按日粒度把选定范围内的空日补零", async () => {
+    chart.setOption.mockClear()
+    const wrapper = mount(ReportTrendChart, {
+      props: {
+        items: [report.items[1]],
+        start: "2026-07-10",
+        end: "2026-07-12",
+        granularity: "day",
+      },
+    })
+    await flushPromises()
+    const option = chart.setOption.mock.calls.at(-1)?.[0]
+    expect(option.xAxis.data).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"])
+    expect(option.series[0].data).toEqual([0, 0, 10])
+    expect(option.series[1].data).toEqual([0, 0, 13])
+    wrapper.unmount()
+  })
 })

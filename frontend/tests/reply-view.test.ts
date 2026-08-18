@@ -57,6 +57,7 @@ describe("回复查询", () => {
     expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ page: 1 })
     expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     expect(wrapper.text()).toContain("TD")
+    expect(wrapper.get(".reply-content").classes()).toContain("is-optout")
     const optout = wrapper.findAll("button").find((button) => button.text().includes("退订加黑"))
     expect(optout).toBeTruthy()
     await optout!.trigger("click")
@@ -153,6 +154,21 @@ describe("回复查询", () => {
     await wrapper.get("[data-testid='reply-reset']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("尚未采集到上行回复")
+  })
+
+  it("普通回复文案不高亮为退订语", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ content: "请勿再发" })] })),
+    )
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(ReplyView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain("请勿再发")
+    expect(wrapper.get(".reply-content").classes()).not.toContain("is-optout")
+    wrapper.unmount()
   })
 
   it("只读角色不显示退订写操作", async () => {

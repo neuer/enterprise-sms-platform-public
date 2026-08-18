@@ -53,6 +53,7 @@ class RawReplayRepository(Protocol):
         items: int,
         actor: str,
         ip: str,
+        system_producer: bool = False,
     ) -> None: ...
 
 
@@ -89,7 +90,14 @@ class RawReplayService:
     async def _integrity_error(self, raw_id: int, message: str) -> None:
         await self.repository.mark_replay_error(raw_id, message)
 
-    async def replay(self, raw_id: int, *, actor: str, ip: str) -> int:
+    async def replay(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        system_producer: bool = False,
+    ) -> int:
         claim = await self.repository.claim_raw_for_replay(raw_id)
         if claim is None:
             raise RawReplayNotFound(raw_id)
@@ -135,5 +143,6 @@ class RawReplayService:
             items=count,
             actor=actor,
             ip=ip,
+            system_producer=system_producer,
         )
         return count

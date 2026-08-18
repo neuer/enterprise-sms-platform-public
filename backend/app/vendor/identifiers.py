@@ -82,7 +82,14 @@ def protect_vendor_custom_id(
     crypto: IdentifierFingerprint,
     value: object,
 ) -> tuple[str, str]:
-    """返回仅内存匹配原值与可持久化 customId 伪标识。"""
+    """返回仅内存匹配原值与可持久化 customId 伪标识。
+
+    厂商合同允许空 customId（旧发送、无关联上行）；空值没有可指纹的
+    原文，直接返回空对，交由调用方按"无 customId"处理，禁止对空字节
+    做 HMAC（会抛错并让整条合法报文被误判为无法解析）。
+    """
 
     raw = validate_vendor_custom_id(value)
+    if not raw:
+        return "", ""
     return raw, vendor_identifier_pseudonym(crypto, raw, domain="vendor-custom-id")

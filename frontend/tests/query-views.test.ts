@@ -123,6 +123,67 @@ describe("批次与号码查询", () => {
     vi.unstubAllGlobals()
   })
 
+  it("连点两个批次时抽屉只保留后一次打开的明细", async () => {
+    const batch = (batch_no: string, creator: string) => ({
+      batch_no, category: "notice", channel: "web", app_name: null,
+      creator, dept: "平台部", content: "系统通知", status: "completed",
+      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
+      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    })
+    const first = batch("BATCH-A", "operator-a")
+    const second = batch("BATCH-B", "operator-b")
+    let releaseFirst: ((value: unknown) => void) | undefined
+    const firstDetails = new Promise((resolve) => {
+      releaseFirst = resolve
+    })
+    const fetch = vi.fn(async (input: string) => {
+      const url = String(input)
+      if (url.includes("/web/batches?")) return response({ total: 2, items: [first, second] })
+      if (url.endsWith("/batches/BATCH-A")) return response(first)
+      if (url.endsWith("/batches/BATCH-B")) return response(second)
+      if (url.includes("/BATCH-A/details")) {
+        await firstDetails
+        return response({
+          total: 1,
+          items: [{
+            id: 1, phone: "138****0001", status: "delivered",
+            vendor_task_id: "task-a", report_desc: "DELIVRD", report_time: "2026-07-12T08:01:00+08:00",
+          }],
+        })
+      }
+      if (url.includes("/BATCH-B/details")) {
+        return response({
+          total: 1,
+          items: [{
+            id: 2, phone: "138****0002", status: "failed",
+            vendor_task_id: "task-b", report_desc: "FAIL", report_time: "2026-07-12T08:02:00+08:00",
+          }],
+        })
+      }
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    const openers = wrapper.findAll("button").filter((item) => item.text().includes("查看详情"))
+    await openers[0].trigger("click")
+    await openers[1].trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("138****0002")
+    expect(wrapper.text()).toContain("operator-b")
+    expect(wrapper.text()).not.toContain("138****0001")
+    releaseFirst?.(undefined)
+    await flushPromises()
+    expect(wrapper.text()).toContain("138****0002")
+    expect(wrapper.text()).not.toContain("138****0001")
+    vi.unstubAllGlobals()
+  })
+
   it("批次号模糊查询，抽屉明细支持状态筛选与分页", async () => {
     const batch = {
       batch_no: "BATCH-9", category: "notice", channel: "api", app_name: "通知应用",
@@ -198,6 +259,7 @@ describe("批次与号码查询", () => {
     await flushPromises()
     await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
     await flushPromises()
+    expect(wrapper.text()).toContain("仍有 30 条已提交未回执")
 
     const detailSelect = wrapper
       .findAllComponents({ name: "ElSelect" })

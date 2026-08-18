@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 
 from app.core.jobtrack import JobSpec
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.ops import (
     AlertLevel,
     AlertQuery,
@@ -308,10 +308,48 @@ class SqlOpsRepository:
         items: int,
         actor: str,
         ip: str,
+        system_producer: bool = False,
     ) -> None:
+        """记录 raw 重放审计。
+
+        API 触发时依赖请求事务注入的已签名人类上下文；后台任务（reconcile
+        自动重放）没有认证会话，必须绑定 system 生产者上下文并以
+        actor_subject_kind='system' 落库，否则审计触发器会拒绝写入并让
+        整个 reconcile 任务失败。
+        """
+
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                if system_producer:
+                    await bind_connection_system_audit(
+                        connection,
+                        actor_name=actor,
+                        action="raw_replay",
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(
+                              actor,actor_subject_kind,role,action,object_type,
+                              object_id,after_val
+                            ) VALUES(
+                              :actor,'system','system','raw_replay','raw_vendor_log',
+                              CAST(CAST(:raw_id AS bigint) AS text),jsonb_build_object(
+                                'source',CAST(:source AS text),
+                                'items',CAST(:items AS integer)
+                              )
+                            )
+                            """
+                        ),
+                        {
+                            "actor": actor,
+                            "raw_id": raw_id,
+                            "source": source,
+                            "items": items,
+                        },
+                    )
+                    return
                 await connection.execute(
                     text(
                         """

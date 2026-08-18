@@ -253,6 +253,21 @@ async def test_null_custom_id_is_preserved_without_raw_index_placeholder() -> No
 
 
 @pytest.mark.asyncio
+async def test_empty_string_custom_id_is_ingested_as_null() -> None:
+    """厂商对旧发送/无关联上行返回 customId=""，必须照常入库而不是判为无法解析。"""
+
+    item = reply() | {"customId ": ""}
+    repository = FakeRepository()
+
+    await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+    assert repository.events[1][1] == (23, [], 1)
+    stored = next(value for event, value in repository.events if event == "store")
+    assert stored.custom_id is None
+    assert [event[0] for event in repository.events][-1] == "processed"
+
+
+@pytest.mark.asyncio
 async def test_parse_failure_skips_item_and_keeps_raw_replayable() -> None:
     repository = FakeRepository()
     broken = reply() | {"contents": "x" * 501}

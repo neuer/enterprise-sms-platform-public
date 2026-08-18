@@ -16,6 +16,18 @@ vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }))
 import BalanceChart from "../src/components/BalanceChart.vue"
 import DashboardView from "../src/views/DashboardView.vue"
 
+const RouterLinkStub = {
+  name: "RouterLink",
+  props: { to: { type: [String, Object], required: true } },
+  template: `<a :href="typeof to === 'string' ? to : '#'"><slot /></a>`,
+}
+
+function mountDashboard() {
+  return mount(DashboardView, {
+    global: { plugins: [ElementPlus], stubs: { RouterLink: RouterLinkStub } },
+  })
+}
+
 function response(body: unknown, ok = true) {
   return {
     ok,
@@ -81,9 +93,16 @@ describe("仪表盘", () => {
     vi.stubGlobal("fetch", fetch)
     sessionStorage.setItem("sms_token", "jwt")
 
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
 
+    expect(wrapper.get("[data-testid='metric-messages']").attributes("href")).toBe("/reports")
+    expect(wrapper.get("[data-testid='metric-success']").attributes("href")).toBe("/reports")
+    expect(wrapper.get("[data-testid='metric-approvals']").attributes("href")).toBe("/approvals")
+    expect(wrapper.get("[data-testid='channel-monitor-link']").attributes("href")).toBe("/ops?tab=queue")
+    expect(wrapper.get("[data-testid='disposition-uncertain']").attributes("href")).toBe("/ops?tab=uncertain")
+    expect(wrapper.get("[data-testid='disposition-unmatched']").attributes("href")).toBe("/ops?tab=unmatched")
+    expect(wrapper.get("[data-testid='disposition-callback_dead']").attributes("href")).toBe("/ops?tab=callbacks")
     expect(wrapper.text()).toContain("今日消息")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19 计费条")
@@ -111,7 +130,7 @@ describe("仪表盘", () => {
 
   it("请求失败时提供可重试错误态", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "仪表盘暂不可用" }, false)))
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
     expect(wrapper.text()).toContain("仪表盘暂不可用")
     expect(wrapper.text()).toContain("重新加载")
@@ -124,7 +143,7 @@ describe("仪表盘", () => {
       .mockResolvedValueOnce(response(snapshot))
       .mockResolvedValueOnce(response({ message: "Redis 快照超时" }, false))
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
 
     await wrapper.get(".dashboard-refresh .el-button").trigger("click")
@@ -144,7 +163,7 @@ describe("仪表盘", () => {
       .mockResolvedValueOnce(response(snapshot))
       .mockResolvedValueOnce(response(incompleteSnapshot))
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
 
     await wrapper.get(".dashboard-refresh .el-button").trigger("click")
@@ -163,7 +182,7 @@ describe("仪表盘", () => {
       .mockResolvedValueOnce(response(incompleteSnapshot))
       .mockResolvedValueOnce(response(snapshot))
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
 
     expect(wrapper.text()).toContain("Redis 运行快照字段不完整")
@@ -180,7 +199,7 @@ describe("仪表盘", () => {
     const { operations: _operations, ...viewerSnapshot } = snapshot
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(viewerSnapshot)))
 
-    const wrapper = mount(DashboardView, { global: { plugins: [ElementPlus] } })
+    const wrapper = mountDashboard()
     await flushPromises()
 
     expect(wrapper.find("[data-testid='channel-monitor']").exists()).toBe(false)

@@ -61,7 +61,10 @@ function formatTime(value: string | null): string {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -72,13 +75,15 @@ async function load(): Promise<void> {
       batchNo: batchNo.value,
       page: page.value,
     })
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
     deadTotal.value = result.dead_total
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "回调任务加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
@@ -165,7 +170,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="批次 / 引用" min-width="178">
         <template #default="{ row }">
-          <code>{{ row.batch_no || "—" }}</code><small>{{ row.reference_count }} 条明细引用</small>
+          <code :title="row.batch_no || undefined">{{ row.batch_no || "—" }}</code><small>{{ row.reference_count }} 条明细引用</small>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="108">

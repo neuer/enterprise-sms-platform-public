@@ -114,7 +114,7 @@ def _normalized(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _collect_vendor_custom_ids(data: list[dict[str, Any]]) -> list[str]:
-    """逐条校验 customId；非法值跳过，避免一条坏数据打断整批索引。"""
+    """逐条校验 customId；非法或空值跳过，避免一条坏数据打断整批索引。"""
 
     collected: set[str] = set()
     for item in data:
@@ -122,9 +122,11 @@ def _collect_vendor_custom_ids(data: list[dict[str, Any]]) -> list[str]:
         if not isinstance(raw, str):
             continue
         try:
-            collected.add(validate_vendor_custom_id(raw))
+            normalized = validate_vendor_custom_id(raw)
         except ValueError:
             continue
+        if normalized:
+            collected.add(normalized)
     return sorted(collected)
 
 
@@ -323,6 +325,10 @@ class ReportIngestService:
             self.crypto,
             value["customId"],
         )
+        # report_event.custom_id 约束为非空 64-hex 伪标识；平台自发报文必带
+        # customId，空值只可能来自本平台之外的历史下发，按无法归属跳过。
+        if not match_custom_id:
+            raise ValueError("report customId must be non-empty")
         return ProtectedReport(
             event_key=_report_event_key(
                 vendor_task_id=raw_task_id,

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import base64
+
 import pytest
 
-from app.vendor.identifiers import validate_vendor_custom_id, validate_vendor_task_id
+from app.services.crypto import CryptoService
+from app.vendor.identifiers import (
+    protect_vendor_custom_id,
+    validate_vendor_custom_id,
+    validate_vendor_task_id,
+)
 
 
 @pytest.mark.parametrize(
@@ -34,3 +41,12 @@ def test_vendor_task_id_rejects_delimited_phone() -> None:
 )
 def test_vendor_custom_id_allows_hex_digit_collision(value: str) -> None:
     assert validate_vendor_custom_id(value) == value
+
+
+@pytest.mark.parametrize("value", ["", "  "])
+def test_protect_vendor_custom_id_returns_empty_pair_without_fingerprint(value: str) -> None:
+    """厂商合同允许空 customId（旧发送/无关联上行），不得对空字节做 HMAC 抛错。"""
+
+    key = base64.b64encode(b"u" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    assert protect_vendor_custom_id(crypto, value) == ("", "")

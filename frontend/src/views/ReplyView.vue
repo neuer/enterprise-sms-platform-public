@@ -21,6 +21,11 @@ const optingOutId = ref<number | null>(null)
 const canOptout = computed(() => session.role === "admin" || session.role === "operator")
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
 const PHONE_RE = /^1\d{10}$/
+const OPT_OUT_RE = /^(TD|T|退订)$/i
+
+function isOptOutContent(content: string): boolean {
+  return OPT_OUT_RE.test(content.trim())
+}
 
 const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value))
 const emptyState = computed(() =>
@@ -51,7 +56,10 @@ function formatTime(value: string): string {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -61,12 +69,14 @@ async function load(): Promise<void> {
       end: range.value?.[1].toISOString(),
       page: page.value,
     })
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "回复列表加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
@@ -170,7 +180,7 @@ onMounted(load)
         <template #default="{ row }"><PhoneMask :value="row.phone" /></template>
       </el-table-column>
       <el-table-column label="用户原文" min-width="260">
-        <template #default="{ row }"><span class="reply-content">{{ row.content }}</span></template>
+        <template #default="{ row }"><span class="reply-content" :class="{ 'is-optout': isOptOutContent(row.content) }">{{ row.content }}</span></template>
       </el-table-column>
       <el-table-column label="关联批次" min-width="170">
         <template #default="{ row }">
@@ -202,7 +212,7 @@ onMounted(load)
           <PhoneMask :value="item.phone" />
           <time class="mono-time">{{ formatTime(item.reply_time) }}</time>
         </header>
-        <p class="reply-content">{{ item.content }}</p>
+        <p class="reply-content" :class="{ 'is-optout': isOptOutContent(item.content) }">{{ item.content }}</p>
         <footer>
           <code v-if="item.batch_no" class="batch-code">{{ item.batch_no }}</code>
           <el-tag v-else type="warning" effect="plain">未关联</el-tag>

@@ -1,9 +1,20 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia } from "pinia"
+import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
 import OpsView from "../src/views/OpsView.vue"
+
+async function mountOps(query: Record<string, string> = {}) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: "/ops", component: { template: "<div />" } }],
+  })
+  await router.push({ path: "/ops", query })
+  await router.isReady()
+  return mount(OpsView, { global: { plugins: [createPinia(), ElementPlus, router] } })
+}
 
 const publicId = "c0a80101-0000-4000-8000-000000000134"
 const outboxEventId = "c0a80101-0000-4000-8000-000000000199"
@@ -52,7 +63,7 @@ describe("统一运维中心", () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = await mountOps()
     await flushPromises()
 
     expect(wrapper.text()).toContain("任务连续失败")
@@ -87,7 +98,7 @@ describe("统一运维中心", () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = await mountOps()
     await flushPromises()
 
     await tab(wrapper, "unmatched").trigger("click")
@@ -95,6 +106,7 @@ describe("统一运维中心", () => {
     expect(wrapper.get(".ops-filter-title > div:last-child").classes()).toContain("filter-toolbar")
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.find(".phone-mask").text()).toBe("138****8000")
+    expect(wrapper.findAll(".ops-hash").map((item) => item.attributes("title"))).toEqual(["legacy-1", "vendor-1"])
     await wrapper.findAll("button").find((item) => item.text().includes("导出对账"))!.trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain(`导出任务 #${publicId}`)
@@ -136,7 +148,7 @@ describe("统一运维中心", () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = await mountOps()
     await flushPromises()
 
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/outbox"))).toBe(false)
@@ -171,7 +183,7 @@ describe("统一运维中心", () => {
   it("告警行可打开详情抽屉查看结构化 detail", async () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = await mountOps()
     await flushPromises()
 
     await wrapper.get("[data-testid='alert-detail-1']").trigger("click")
@@ -188,11 +200,56 @@ describe("统一运维中心", () => {
     vi.restoreAllMocks()
   })
 
+  it("快速离开再回到告警页时，过期响应不得覆盖最新列表", async () => {
+    let releaseInitial: ((value: unknown) => void) | undefined
+    const initialAlerts = new Promise((resolve) => {
+      releaseInitial = resolve
+    })
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method || "GET"
+      if (method === "GET" && url.includes("/alerts")) {
+        if (fetch.mock.calls.filter(([item]) => String(item).includes("/alerts")).length === 1) {
+          await initialAlerts
+          return response({
+            items: [{
+              id: 99,
+              alert_type: "job_failed",
+              level: "crit",
+              title: "过期告警不应出现",
+              detail: { job_name: "stale" },
+              channels: "log-sink",
+              created_at: "2026-07-12T08:00:00+08:00",
+            }],
+            total: 1,
+            page: 1,
+            page_size: 20,
+          })
+        }
+      }
+      return response(result(url, method))
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = await mountOps()
+    await tab(wrapper, "uncertain").trigger("click")
+    await flushPromises()
+    await tab(wrapper, "告警记录").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("任务连续失败")
+    expect(wrapper.text()).not.toContain("过期告警不应出现")
+    releaseInitial?.(undefined)
+    await flushPromises()
+    expect(wrapper.text()).toContain("任务连续失败")
+    expect(wrapper.text()).not.toContain("过期告警不应出现")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("unmatched 手机号格式不合法时查询与导出均被提交前拦截", async () => {
     const warning = vi.spyOn(ElMessage, "warning")
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(OpsView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = await mountOps()
     await flushPromises()
 
     await tab(wrapper, "unmatched").trigger("click")
@@ -214,5 +271,18 @@ describe("统一运维中心", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it("从查询参数打开指定运维页签", async () => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = await mountOps({ tab: "uncertain" })
+    await flushPromises()
+    expect(wrapper.text()).toContain("CUSTOM-1")
+    expect(wrapper.text()).toContain("结果未知")
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/chunks/uncertain"))).toBe(true)
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/alerts"))).toBe(false)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 })

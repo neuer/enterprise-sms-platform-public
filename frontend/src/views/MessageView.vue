@@ -73,7 +73,10 @@ function showReport(item: MessageItem): boolean {
   return Boolean(item.report_desc) && (item.status === "failed" || item.status === "unknown")
 }
 
+let runToken = 0
+
 async function run(): Promise<void> {
+  const token = ++runToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -87,21 +90,25 @@ async function run(): Promise<void> {
         status: status.value || undefined,
         page: page.value,
       })
+      if (token !== runToken) return
       items.value = result.items
       total.value = result.total
       timeline.value = null
     } else {
-      timeline.value = await getTimeline(phone.value, start, end)
+      const next = await getTimeline(phone.value, start, end)
+      if (token !== runToken) return
+      timeline.value = next
       items.value = []
-      total.value = timeline.value.events.length
+      total.value = next.events.length
     }
   } catch (error) {
+    if (token !== runToken) return
     items.value = []
     timeline.value = null
     total.value = 0
     errorMessage.value = error instanceof Error ? error.message : "号码查询失败"
   } finally {
-    loading.value = false
+    if (token === runToken) loading.value = false
   }
 }
 
