@@ -759,6 +759,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
+            "docs/previews/login-redesign-prototype.html",
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
             "PROGRESS.md",
@@ -768,6 +769,25 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
     assert change.components == frozenset()
     assert change.runtime_changed is False
     assert change.risk == "none"
+
+
+def test_login_redesign_preview_does_not_block_web_only_update() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/login-redesign-prototype.html",
+            "frontend/src/styles/theme.css",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/LoginView.vue",
+            "frontend/src/views/PasswordChangeView.vue",
+            "frontend/tests/login-view.test.ts",
+            "frontend/tests/password-change-view.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "web-only"
+    assert change.migration_changed is False
 
 
 def test_repository_guidance_and_rehearsal_report_are_safe_non_runtime_inputs() -> None:
