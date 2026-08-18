@@ -100,7 +100,7 @@ button:focus-visible {
 }
 
 .login-card {
-  width: min(100%, 352px);
+  width: min(100%, 400px);
   padding: 36px 30px 30px;
   background: var(--card);
   border: 1px solid var(--line-2);
@@ -176,48 +176,114 @@ button:focus-visible {
   gap: 12px;
 }
 
-/* 认证源分段控件：显式单选，每次登录只走一个 Provider */
-.provider-seg {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
+/* 身份来源条：显式单选，每次登录只走一个 Provider */
+.provider-sources {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-sources-label {
+  margin: 0 2px;
+  color: var(--tx-3);
+  font: 10px/1 var(--mono);
+  letter-spacing: 0.16em;
+}
+
+.provider-lane {
+  display: grid;
+  grid-template-columns: 42px 1fr 16px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  padding: 9px 12px;
+  color: inherit;
+  text-align: left;
   background: var(--surface-strong);
   border: 1px solid var(--line);
   border-radius: 9px;
-}
-
-.provider-seg-option {
-  flex: 1;
-  min-height: 34px;
-  padding: 6px 0;
-  color: var(--tx-2);
-  font-size: 12.5px;
-  font-weight: 600;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
+  box-shadow: inset 2px 0 0 transparent;
   cursor: pointer;
-  transition: color 140ms cubic-bezier(0.25, 1, 0.5, 1),
-    background-color 140ms cubic-bezier(0.25, 1, 0.5, 1);
+  transition:
+    border-color 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    background-color 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    box-shadow 140ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
-.provider-seg-option:hover {
-  color: var(--tx-hi);
+.provider-lane:hover {
+  border-color: var(--hair);
 }
 
-.provider-seg-option.on {
-  color: #122019;
-  background: #e9f1ed;
+.provider-lane.on {
+  background: color-mix(in srgb, var(--verdi) 10%, var(--sink));
+  border-color: color-mix(in srgb, var(--verdi-l) 38%, var(--hair));
+  box-shadow: inset 2px 0 0 var(--verdi);
 }
 
-.provider-seg-option:focus-visible {
+.provider-lane[aria-disabled="true"] {
+  cursor: default;
+}
+
+.provider-lane:focus-visible {
   outline: 2px solid var(--verdi);
   outline-offset: 1px;
 }
 
+.provider-lane-mark {
+  display: grid;
+  height: 32px;
+  place-items: center;
+  color: var(--tx-3);
+  font: 9px/1 var(--mono);
+  letter-spacing: 0.08em;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+}
+
+.provider-lane.local .provider-lane-mark {
+  color: #7aa3cf;
+  border-color: color-mix(in srgb, var(--slate) 55%, transparent);
+}
+
+.provider-lane.ad .provider-lane-mark {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+}
+
+.provider-lane-copy {
+  min-width: 0;
+}
+
+.provider-lane-copy strong {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.provider-lane-copy small {
+  display: block;
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.provider-lane-radio {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--tx-3);
+  border-radius: 50%;
+}
+
+.provider-lane.on .provider-lane-radio {
+  border-color: var(--verdi-l);
+  box-shadow: inset 0 0 0 3.5px var(--verdi);
+}
+
 .provider-loading {
-  flex: 1;
-  padding: 8px 0;
+  padding: 10px 0;
   color: var(--tx-3);
   font-size: 11px;
   text-align: center;
@@ -1067,7 +1133,7 @@ main {
   .el-input__wrapper,
   .el-select__wrapper,
   .el-date-editor,
-  .provider-seg-option {
+  .provider-lane {
     min-height: 44px;
   }
 
@@ -1159,7 +1225,7 @@ main {
 }
 
 .login-card {
-  width: min(100%, 352px);
+  width: min(100%, 400px);
   padding: 36px 30px 30px;
   background: var(--panel);
   border: 1px solid var(--hair);
