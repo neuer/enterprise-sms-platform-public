@@ -16,21 +16,15 @@ const errorMessage = ref("")
 const successMessage = ref("")
 const pendingChange = ref<{ token: string; expiresAt: number } | null>(null)
 
-const selectedProvider = computed(() =>
-  session.providers.find((provider) => provider.code === providerCode.value),
-)
-const providerHint = computed(() => {
-  if (providerCode.value === "local") return "本地账号由管理员创建和维护，首次登录需要修改临时密码。"
-  if (providerCode.value === "ad") return "使用企业 AD 目录账号；平台不会回退到其他认证源。"
-  return "每次登录只使用你明确选择的认证源，不自动回退。"
-})
 const accountPlaceholder = computed(() =>
-  providerCode.value === "ad" ? "请输入企业 AD 账号" : "请输入平台账号",
+  providerCode.value === "ad" ? "企业 AD 账号" : "账号",
 )
 
 onMounted(async () => {
   try {
     await session.loadProviders()
+    // 默认选中服务端返回的第一个认证源；提交仍只走当前选中的认证源，失败不自动回退
+    providerCode.value = session.providers[0]?.code ?? ""
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "认证源列表加载失败"
   } finally {
@@ -46,7 +40,7 @@ async function submit() {
   errorMessage.value = ""
   successMessage.value = ""
   if (!providerCode.value) {
-    errorMessage.value = "请选择认证源"
+    errorMessage.value = "暂无可用的认证源，请稍后重试"
     return
   }
   if (!username.value.trim() || !password.value) {
@@ -96,58 +90,47 @@ function invalidateInitialPasswordChange(message: string): void {
   />
   <main v-else class="login-screen">
     <article class="login-card" aria-labelledby="login-title">
+      <h1 id="login-title" class="sr-only">登录青鸾控制台</h1>
       <div class="login-brand">
         <span class="login-seal" aria-hidden="true">鸾</span>
-        <div>
-          <strong>青鸾</strong>
-          <small>企业短信运营控制台</small>
-        </div>
-      </div>
-
-      <div class="login-context">
-        <p class="eyebrow">IDENTITY GATE / 身份认证</p>
-        <h1 id="login-title">登录控制台</h1>
-        <p>先选择认证源，再提交对应账号。登录、退出与权限变更均写入审计日志。</p>
+        <strong>青鸾</strong>
       </div>
 
       <form @submit.prevent="submit">
-        <fieldset class="provider-fieldset" :aria-busy="loadingProviders">
-          <legend>选择认证源</legend>
-          <div v-if="loadingProviders" class="provider-loading">正在读取可用认证源…</div>
-          <div v-else class="provider-options">
+        <div class="provider-seg" role="group" aria-label="认证源" :aria-busy="loadingProviders">
+          <span v-if="loadingProviders" class="provider-loading">正在读取认证源…</span>
+          <template v-else>
             <button
               v-for="provider in session.providers"
               :key="provider.code"
-              :class="['provider-option', { selected: providerCode === provider.code }]"
+              :class="['provider-seg-option', { on: providerCode === provider.code }]"
               :data-testid="`provider-${provider.code}`"
               type="button"
               :aria-pressed="providerCode === provider.code"
               @click="providerCode = provider.code"
             >
-              <span>{{ provider.name }}</span>
-              <small>{{ provider.code === 'local' ? '平台维护' : '企业目录' }}</small>
+              {{ provider.name }}
             </button>
-          </div>
-          <p class="provider-hint" aria-live="polite">{{ providerHint }}</p>
-        </fieldset>
+          </template>
+        </div>
 
-        <label for="login-username">{{ selectedProvider?.name || '账号' }}</label>
         <el-input
           id="login-username"
           v-model="username"
           data-testid="login-username"
           autocomplete="username"
           :placeholder="accountPlaceholder"
+          aria-label="账号"
           size="large"
         />
 
-        <label for="login-password">密码</label>
         <el-input
           id="login-password"
           v-model="password"
           data-testid="login-password"
           autocomplete="current-password"
-          placeholder="请输入密码"
+          placeholder="密码"
+          aria-label="密码"
           size="large"
           show-password
           type="password"
@@ -163,16 +146,9 @@ function invalidateInitialPasswordChange(message: string): void {
           size="large"
           type="primary"
         >
-          进入控制台
+          登录
         </el-button>
       </form>
-
-      <div class="login-assurance" aria-label="会话安全说明">
-        <span>显式认证源</span>
-        <span>Bearer JWT</span>
-        <span>操作全量审计</span>
-      </div>
-      <p class="login-footnote"><span aria-hidden="true"></span> 无开放注册 · 本地账号由管理员创建和维护</p>
     </article>
   </main>
 </template>
