@@ -25,8 +25,11 @@ export function resolveRouteAccess(route: RouteAccess, session: SessionAccess): 
   return undefined
 }
 
-export function installAuthGuard(target: Router, pinia: Pinia): void {
-  target.beforeEach((to) => {
+export function installAuthGuard(target: Router, pinia: Pinia, sessionReady?: Promise<unknown>): void {
+  target.beforeEach(async (to) => {
+    // 整页刷新后 access token 只在内存中，必须等 Cookie 会话恢复尝试结束再判定，
+    // 否则持有有效 refresh 会话的用户会被误判未登录而滞留在登录页。
+    if (sessionReady) await sessionReady
     const session = useSessionStore(pinia)
     return resolveRouteAccess(
       {

@@ -33,13 +33,11 @@ const revealed = ref<Record<number, string>>({})
 const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
 
 const categoryOptions = [
-  { value: "", label: "全部类别" },
   { value: "verify", label: "验证码" },
   { value: "notice", label: "通知" },
   { value: "market", label: "营销" },
 ]
 const statusOptions = [
-  { value: "", label: "全部状态" },
   { value: "pending", label: "待发送" },
   { value: "sent", label: "已提交" },
   { value: "delivered", label: "已送达" },
@@ -159,10 +157,10 @@ async function reveal(item: MessageItem): Promise<void> {
       <el-form-item class="filter-span-6" label="时间范围"><el-date-picker v-model="range" type="datetimerange" popper-class="qingluan-date-popper" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" /></el-form-item>
       <el-form-item class="query-filter-actions filter-actions filter-span-2"><el-button type="primary" native-type="submit" :loading="loading">查询</el-button></el-form-item>
       <el-form-item v-if="mode === 'list'" class="filter-span-2" label="类别">
-        <el-select v-model="category" data-testid="message-category-filter" @change="applyFilters"><el-option v-for="option in categoryOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
+        <el-select v-model="category" data-testid="message-category-filter" placeholder="全部类别" clearable @change="applyFilters"><el-option v-for="option in categoryOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
       </el-form-item>
       <el-form-item v-if="mode === 'list'" class="filter-span-2" label="状态">
-        <el-select v-model="status" data-testid="message-status-filter" @change="applyFilters"><el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
+        <el-select v-model="status" data-testid="message-status-filter" placeholder="全部状态" clearable @change="applyFilters"><el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
       </el-form-item>
     </el-form>
     <p class="query-privacy-note">查询参数不会进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 HMAC 候选。</p>
