@@ -40,7 +40,12 @@ const preview = ref<BillingPreview | null>(null)
 const busy = ref(false)
 const errorMessage = ref("")
 const successMessage = ref("")
-const idempotencyKey = ref(crypto.randomUUID())
+/** biz_id 契约上限 32 字符；UUID 必须去连字符（36→32），否则服务端 400。 */
+function newIdempotencyKey(): string {
+  return crypto.randomUUID().replaceAll("-", "")
+}
+
+const idempotencyKey = ref(newIdempotencyKey())
 const templates = ref<SmsTemplate[]>([])
 const templateParams = ref<string[]>([])
 const testSendMax = ref<number | null>(null)
@@ -62,6 +67,9 @@ const pastedMobiles = computed(() =>
     .filter(Boolean),
 )
 
+// 与服务端一致的 ^1\d{10}$；提交前即时暴露格式错误，避免整单被 400 拒绝却只看到笼统提示。
+const invalidMobiles = computed(() => pastedMobiles.value.filter((value) => !/^1\d{10}$/.test(value)))
+
 const recipientCount = computed(() =>
   form.source === "import" ? (imported.value?.valid ?? 0) : pastedMobiles.value.length,
 )
@@ -76,6 +84,7 @@ const sendDisabled = computed(
   () =>
     busy.value ||
     recipientCount.value === 0 ||
+    (form.source === "paste" && invalidMobiles.value.length > 0) ||
     !contentReady.value ||
     (form.category === "market" && !form.consentConfirmed),
 )
@@ -129,7 +138,7 @@ watch(
       importId: imported.value?.import_id ?? null,
     }),
   () => {
-    idempotencyKey.value = crypto.randomUUID()
+    idempotencyKey.value = newIdempotencyKey()
   },
 )
 
@@ -310,6 +319,9 @@ onMounted(() => {
             resize="vertical"
             placeholder="每行一个手机号，也支持逗号或空格分隔"
           />
+          <p v-if="form.source === 'paste' && invalidMobiles.length" class="mobiles-invalid-hint" data-testid="invalid-mobiles-hint">
+            {{ invalidMobiles.length }} 个号码格式无效（需为 1 开头的 11 位数字），例如「{{ invalidMobiles[0] }}」；请修正后再提交。
+          </p>
           <div v-else class="upload-zone">
             <el-upload
               drag

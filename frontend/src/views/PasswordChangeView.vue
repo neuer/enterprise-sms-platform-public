@@ -107,7 +107,7 @@ async function submit() {
         <strong>{{ policy.description }}</strong>
         <ul>
           <li>长度 {{ policy.min_length }}–{{ policy.max_length }} 位</li>
-          <li>至少包含三类字符：大写、小写、数字、特殊字符</li>
+          <li>至少包含 {{ policy.required_character_classes }} 类字符：大写、小写、数字、特殊字符</li>
           <li v-if="policy.forbid_username">不能包含用户名</li>
         </ul>
       </section>

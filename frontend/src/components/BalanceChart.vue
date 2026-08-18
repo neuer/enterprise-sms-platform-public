@@ -6,6 +6,7 @@ import { CanvasRenderer } from "echarts/renderers"
 import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { DashboardBalancePoint } from "../api/dashboard"
+import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
 
 echarts.use([LineChart, GridComponent, MarkLineComponent, TooltipComponent, CanvasRenderer])
 
@@ -21,19 +22,23 @@ function render(): void {
   chart.setOption({
     animation: false,
     grid: { top: 24, right: 22, bottom: 30, left: 58 },
-    tooltip: { trigger: "axis", valueFormatter: (value: unknown) => Number(value).toLocaleString() },
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (value: unknown) => Number(value).toLocaleString(),
+      ...CHART_TOOLTIP_STYLE,
+    },
     xAxis: {
       type: "category",
       boundaryGap: false,
       data: props.points.map((item) => item.stat_date.slice(5)),
-      axisLine: { lineStyle: { color: "#d3d8d1" } },
-      axisLabel: { color: "#8a948e", fontFamily: "IBM Plex Mono" },
+      axisLine: { lineStyle: { color: CHART_COLORS.axisLine } },
+      axisLabel: { color: CHART_COLORS.text, fontFamily: "IBM Plex Mono" },
     },
     yAxis: {
       type: "value",
       scale: true,
-      splitLine: { lineStyle: { color: "#e9ece8", type: "dashed" } },
-      axisLabel: { color: "#8a948e", formatter: (value: number) => value.toLocaleString() },
+      splitLine: { lineStyle: { color: CHART_COLORS.splitLine, type: "dashed" } },
+      axisLabel: { color: CHART_COLORS.text, formatter: (value: number) => value.toLocaleString() },
     },
     series: [{
       name: "剩余计费条",
@@ -42,14 +47,14 @@ function render(): void {
       symbol: "circle",
       symbolSize: 6,
       data: props.points.map((item) => item.balance),
-      lineStyle: { width: 2, color: "#0e7a63" },
-      itemStyle: { color: "#0e7a63" },
-      areaStyle: { color: "rgba(14, 122, 99, 0.08)" },
+      lineStyle: { width: 2, color: CHART_COLORS.green },
+      itemStyle: { color: CHART_COLORS.green },
+      areaStyle: { color: CHART_COLORS.greenArea },
       ...(props.threshold === null ? {} : { markLine: {
         silent: true,
         symbol: "none",
-        label: { formatter: "告警阈值", color: "#a8650b" },
-        lineStyle: { color: "#a8650b", type: "dashed" },
+        label: { formatter: "告警阈值", color: CHART_COLORS.amber },
+        lineStyle: { color: CHART_COLORS.amber, type: "dashed" },
         data: [{ yAxis: props.threshold }],
       } }),
     }],

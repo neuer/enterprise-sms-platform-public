@@ -59,19 +59,27 @@ const statusLabel: Record<ExportTask["status"], string> = {
   pending: "等待生成", running: "生成中", done: "已完成", failed: "生成失败",
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
-    result.value = await getReport(filters.value)
+    const next = await getReport(filters.value)
+    if (token !== loadToken) return
+    result.value = next
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "报表加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
 function schedulePoll(): void {
+  // 先清旧定时器：重复点击“导出”会开启新任务，否则新旧两条轮询链会同时存在。
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   if (!exportTask.value || ["done", "failed"].includes(exportTask.value.status)) return
   pollTimer = window.setTimeout(() => void refreshExport(), 2000)
 }
@@ -169,8 +177,15 @@ onBeforeUnmount(() => {
     </section>
 
     <el-card shadow="never" class="report-chart-card">
-      <template #header><div class="panel-title"><div><strong>双指标趋势</strong><small>{{ granularityLabel[result.granularity] }}粒度 · {{ result.group_by === 'app' ? '应用' : '部门' }}维度</small></div><span>{{ result.items.length }} 个数据点</span></div></template>
-      <ReportTrendChart v-if="result.items.length" :items="result.items" /><EmptyState v-else title="当前条件没有统计数据" description="调整日期、类别或分组方式后重新查询。" />
+      <template #header><div class="panel-title"><div><strong>双指标趋势</strong><small>{{ granularityLabel[result.granularity] }}粒度 · {{ result.group_by === 'app' ? '应用' : '部门' }}维度</small></div><span>{{ result.items.length }} 行分组</span></div></template>
+      <ReportTrendChart
+        v-if="result.items.length"
+        :items="result.items"
+        :start="result.start"
+        :end="result.end"
+        :granularity="result.granularity"
+      />
+      <EmptyState v-else title="当前条件没有统计数据" description="调整日期、类别或分组方式后重新查询。" />
     </el-card>
 
     <el-card shadow="never" class="report-table-card">

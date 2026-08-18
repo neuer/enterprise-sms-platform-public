@@ -97,17 +97,22 @@ function diffRows(before: Record<string, unknown> | null, after: Record<string, 
     .sort((a, b) => DIFF_RANK[a.state] - DIFF_RANK[b.state] || a.key.localeCompare(b.key))
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
     const result = await listAudits(filters)
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "审计日志加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 

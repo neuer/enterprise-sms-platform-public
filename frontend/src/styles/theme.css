@@ -284,6 +284,12 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.login-success {
+  margin: 4px 0 0;
+  color: var(--verdi-l);
+  font-size: 12px;
+}
+
 .login-submit {
   width: 100%;
   margin-top: 18px;

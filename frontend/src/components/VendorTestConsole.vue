@@ -49,6 +49,8 @@ let pollTimer: ReturnType<typeof setTimeout> | undefined
 let completionRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let loadGeneration = 0
 let disposed = false
+// 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每 1.6s 弹一条错误。
+let pollFailureNotified = false
 
 const OPERATION_SESSION_KEY = "sms-platform:vendor-test:operation:v1"
 const RESET_CONFIRMATION = "清空联调设置"
@@ -280,17 +282,23 @@ async function pollOperation(): Promise<void> {
       ? await getVendorTestUat(current.operation_id)
       : await getVendorTestOperation(current.operation_id)
     if (disposed || activeOperation.value?.operation_id !== next.operation_id) return
+    pollFailureNotified = false
     activeOperation.value = next
     if (terminal(next)) finishOperation(next)
     else pollTimer = setTimeout(() => void pollOperation(), 800)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "操作状态查询失败")
+    if (disposed) return
+    if (!pollFailureNotified) {
+      pollFailureNotified = true
+      ElMessage.error(error instanceof Error ? error.message : "操作状态查询失败")
+    }
     pollTimer = setTimeout(() => void pollOperation(), 1600)
   }
 }
 
 function trackOperation(operation: VendorTestOperation): void {
   stopPolling()
+  pollFailureNotified = false
   rememberOperation(operation)
   activeOperation.value = operation
   if (terminal(operation)) finishOperation(operation)

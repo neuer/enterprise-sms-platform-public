@@ -434,7 +434,7 @@ onMounted(() => void refresh())
 </script>
 
 <template>
-  <main class="workspace security-daily-page">
+  <div class="security-daily-page">
     <section class="page-heading security-daily-heading">
       <div>
         <p class="eyebrow">SECURITY DAILY / 安全日报</p>
@@ -480,8 +480,8 @@ onMounted(() => void refresh())
         <div class="card-heading">
           <div><span class="security-section-label">01 / REPORTS</span><strong>日报记录</strong></div>
           <div class="security-daily-filters">
-            <el-date-picker v-model="dateFrom" type="date" value-format="YYYY-MM-DD" clearable placeholder="起始日期" size="small" @change="applyFilters" />
-            <el-date-picker v-model="dateTo" type="date" value-format="YYYY-MM-DD" clearable placeholder="结束日期" size="small" @change="applyFilters" />
+            <el-date-picker v-model="dateFrom" type="date" value-format="YYYY-MM-DD" popper-class="qingluan-date-popper" clearable placeholder="起始日期" size="small" @change="applyFilters" />
+            <el-date-picker v-model="dateTo" type="date" value-format="YYYY-MM-DD" popper-class="qingluan-date-popper" clearable placeholder="结束日期" size="small" @change="applyFilters" />
             <el-select v-model="status" clearable placeholder="安全状态" size="small" @change="applyFilters">
               <el-option label="正常" value="normal" /><el-option label="关注" value="attention" /><el-option label="高风险" value="high" />
             </el-select>
@@ -579,5 +579,5 @@ onMounted(() => void refresh())
         <el-button type="primary" :loading="configSaving" @click="saveConfiguration">保存</el-button>
       </template>
     </el-dialog>
-  </main>
+  </div>
 </template>

@@ -160,6 +160,48 @@ async def test_raw_replay_audit_binds_numeric_id_without_asyncpg_text_coercion()
     sql, params = connection.calls[0]
     assert "CAST(CAST(:raw_id AS bigint) AS text)" in sql
     assert params["raw_id"] == 9
+    assert "actor_subject_kind" not in sql
+
+
+@pytest.mark.asyncio
+async def test_system_raw_replay_audit_binds_system_producer_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reconcile 自动重放必须走 system 主体，禁止伪造 admin 人类审计。"""
+
+    bound: list[dict[str, object]] = []
+
+    async def fake_bind(connection: object, *, actor_name: str, action: str) -> None:
+        bound.append({"actor_name": actor_name, "action": action, "connection": connection})
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_system_audit",
+        fake_bind,
+    )
+    repo, connection = repository([FakeResult()])
+
+    await repo.audit_raw_replay(
+        9,
+        source="reply",
+        items=2,
+        actor="system-reconcile",
+        ip="127.0.0.1",
+        system_producer=True,
+    )
+
+    assert bound == [
+        {
+            "actor_name": "system-reconcile",
+            "action": "raw_replay",
+            "connection": connection,
+        }
+    ]
+    sql, params = connection.calls[0]
+    assert "actor_subject_kind" in sql
+    assert "'system'" in sql
+    assert params["actor"] == "system-reconcile"
+    assert params["raw_id"] == 9
+    assert "ip" not in params
 
 
 @pytest.mark.asyncio

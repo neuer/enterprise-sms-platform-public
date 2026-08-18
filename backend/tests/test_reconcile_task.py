@@ -173,6 +173,80 @@ async def test_replay_stale_raw_skips_synthetic_settings_without_control_redis()
 
 
 @pytest.mark.asyncio
+async def test_replay_stale_raw_marks_system_producer_for_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.tasks import reconcile as task_module
+
+    replayed: list[dict[str, object]] = []
+
+    class FakeReplay:
+        async def replay(
+            self,
+            raw_id: int,
+            *,
+            actor: str,
+            ip: str,
+            system_producer: bool = False,
+        ) -> int:
+            replayed.append(
+                {
+                    "raw_id": raw_id,
+                    "actor": actor,
+                    "ip": ip,
+                    "system_producer": system_producer,
+                }
+            )
+            return 1
+
+    class FakeOps:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def list_stale_unprocessed_raw_ids(self) -> list[int]:
+            return [11, 12]
+
+        async def raw_replay_exhausted(self, raw_id: int) -> bool:
+            return False
+
+    monkeypatch.setattr(task_module, "redis_client", lambda _url: "redis")
+    monkeypatch.setattr(task_module, "SqlOpsRepository", FakeOps)
+    monkeypatch.setattr(
+        task_module.CryptoService,
+        "from_settings",
+        lambda settings: "crypto",
+    )
+    monkeypatch.setattr(task_module, "SqlAlertService", lambda settings: "alerts")
+    monkeypatch.setattr(task_module, "SqlReportRepository", lambda settings: "reports")
+    monkeypatch.setattr(task_module, "SqlReplyRepository", lambda settings: "replies")
+    monkeypatch.setattr(task_module, "ReportIngestService", lambda *a, **k: "report-ingest")
+    monkeypatch.setattr(task_module, "ReplyIngestService", lambda *a, **k: "reply-ingest")
+    monkeypatch.setattr(task_module, "RawReplayService", lambda *a, **k: FakeReplay())
+
+    count = await task_module._replay_stale_raw(
+        SimpleNamespace(redis_control_url="redis://control")
+    )
+
+    assert count == 2
+    assert replayed == [
+        {
+            "raw_id": 11,
+            "actor": "system-reconcile",
+            "ip": "127.0.0.1",
+            "system_producer": True,
+        },
+        {
+            "raw_id": 12,
+            "actor": "system-reconcile",
+            "ip": "127.0.0.1",
+            "system_producer": True,
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_replay_stale_raw_isolates_poison_and_alerts_once_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -197,7 +271,14 @@ async def test_replay_stale_raw_isolates_poison_and_alerts_once_exhausted(
         def __init__(self, *args: object) -> None:
             pass
 
-        async def replay(self, raw_id: int, *, actor: str, ip: str) -> int:
+        async def replay(
+            self,
+            raw_id: int,
+            *,
+            actor: str,
+            ip: str,
+            system_producer: bool = False,
+        ) -> int:
             if raw_id == 1:
                 raise RawIntegrityConflict("raw vendor envelope is invalid")
             if raw_id == 2:

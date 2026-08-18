@@ -115,7 +115,7 @@ def _normalized(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _collect_vendor_custom_ids(data: list[dict[str, Any]]) -> list[str]:
-    """逐条校验 customId；非法值跳过，避免一条坏数据打断整批索引。"""
+    """逐条校验 customId；非法或空值跳过，避免一条坏数据打断整批索引。"""
 
     collected: set[str] = set()
     for item in data:
@@ -123,9 +123,11 @@ def _collect_vendor_custom_ids(data: list[dict[str, Any]]) -> list[str]:
         if not isinstance(raw, str):
             continue
         try:
-            collected.add(validate_vendor_custom_id(raw))
+            normalized = validate_vendor_custom_id(raw)
         except ValueError:
             continue
+        if normalized:
+            collected.add(normalized)
     return sorted(collected)
 
 

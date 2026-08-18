@@ -51,7 +51,10 @@ function formatTime(value: string | null): string {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -60,10 +63,15 @@ async function load(): Promise<void> {
       keyword: filters.keyword.trim(),
       page: filters.page,
     })
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : "黑名单加载失败" }
-  finally { loading.value = false }
+  } catch (error) {
+    if (token !== loadToken) return
+    errorMessage.value = error instanceof Error ? error.message : "黑名单加载失败"
+  } finally {
+    if (token === loadToken) loading.value = false
+  }
 }
 
 function search(): void {

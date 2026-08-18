@@ -81,7 +81,12 @@ async def _replay_stale_raw(settings: Settings) -> int:
     replayed = 0
     for raw_id in await ops.list_stale_unprocessed_raw_ids():
         try:
-            await replay.replay(raw_id, actor="system-reconcile", ip="127.0.0.1")
+            await replay.replay(
+                raw_id,
+                actor="system-reconcile",
+                ip="127.0.0.1",
+                system_producer=True,
+            )
             replayed += 1
             continue
         except RawReplayNotFound:

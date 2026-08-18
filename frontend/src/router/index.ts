@@ -25,8 +25,11 @@ export function resolveRouteAccess(route: RouteAccess, session: SessionAccess): 
   return undefined
 }
 
-export function installAuthGuard(target: Router, pinia: Pinia): void {
-  target.beforeEach((to) => {
+export function installAuthGuard(target: Router, pinia: Pinia, sessionReady?: Promise<unknown>): void {
+  target.beforeEach(async (to) => {
+    // 整页刷新后 access token 只在内存中，必须等 Cookie 会话恢复尝试结束再判定，
+    // 否则持有有效 refresh 会话的用户会被误判未登录而滞留在登录页。
+    if (sessionReady) await sessionReady
     const session = useSessionStore(pinia)
     return resolveRouteAccess(
       {
@@ -163,6 +166,8 @@ const router = createRouter({
       component: () => import("../views/SensitiveWordView.vue"),
       meta: { title: "敏感词", group: "管理", roles: ["admin"] },
     },
+    // 未知路径回到仪表盘，避免空白工作区；未登录时由守卫接管重定向到登录页。
+    { path: "/:pathMatch(.*)*", redirect: "/dashboard" },
   ],
 })
 

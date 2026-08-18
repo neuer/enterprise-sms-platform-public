@@ -80,18 +80,20 @@ export interface TimelineResult {
   truncated: boolean
 }
 
+async function throwResponseError(response: Response): Promise<never> {
+  const body = await response.json().catch(() => ({})) as { message?: string; code?: string }
+  throw new Error(body.message || body.code || `请求失败（${response.status}）`)
+}
+
 async function directRequest<T>(url: string, init: RequestInit = { method: "GET" }): Promise<T> {
   const response = await authorizedFetch(url, init)
-  if (!response.ok) throw new Error(`请求失败（${response.status}）`)
+  if (!response.ok) await throwResponseError(response)
   return (await response.json()) as T
 }
 
 async function directVoid(url: string, init: RequestInit): Promise<void> {
   const response = await authorizedFetch(url, init)
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { message?: string; code?: string }
-    throw new Error(body.message || body.code || `请求失败（${response.status}）`)
-  }
+  if (!response.ok) await throwResponseError(response)
 }
 
 export function listBatches(filters: BatchFilters): Promise<BatchPage> {

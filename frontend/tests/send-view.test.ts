@@ -40,6 +40,27 @@ describe("人工发送工作台", () => {
     expect(wrapper.text()).toContain("13 / 67")
   })
 
+  it("粘贴号码格式无效时即时提示并禁止提交", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
+    vm.form.content = "维护通知"
+    // 10 位号码不满足 ^1\d{10}$，服务端必然 400；客户端必须先行拦截并说明原因。
+    vm.form.mobilesText = "13800138000\n1376660000"
+    await wrapper.vm.$nextTick()
+
+    const hint = wrapper.get("[data-testid='invalid-mobiles-hint']")
+    expect(hint.text()).toContain("1 个号码格式无效")
+    expect(hint.text()).toContain("1376660000")
+    expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeDefined()
+
+    vm.form.mobilesText = "13800138000\n13766600001"
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find("[data-testid='invalid-mobiles-hint']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeUndefined()
+    vi.unstubAllGlobals()
+  })
+
   it("营销发送未勾选同意时禁止提交", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }))
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
@@ -172,6 +193,8 @@ describe("人工发送工作台", () => {
 
     expect(sentBodies).toHaveLength(2)
     expect(sentBodies[0].biz_id).toBe(sentBodies[1].biz_id)
+    // 契约 biz_id 最长 32 字符：UUID 必须去掉连字符，否则服务端 400 INVALID_PARAM。
+    expect(sentBodies[0].biz_id).toMatch(/^[0-9a-f]{32}$/)
 
     vm.form.content = "维护通知（改期）"
     await wrapper.vm.$nextTick()

@@ -106,17 +106,22 @@ function deciderLabel(item: ApprovalItem): string | null {
   return null
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
     const result = await listApprovals(status.value, page.value)
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "审批列表加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 

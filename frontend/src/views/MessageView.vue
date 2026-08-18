@@ -33,13 +33,11 @@ const revealed = ref<Record<number, string>>({})
 const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
 
 const categoryOptions = [
-  { value: "", label: "全部类别" },
   { value: "verify", label: "验证码" },
   { value: "notice", label: "通知" },
   { value: "market", label: "营销" },
 ]
 const statusOptions = [
-  { value: "", label: "全部状态" },
   { value: "pending", label: "待发送" },
   { value: "sent", label: "已提交" },
   { value: "delivered", label: "已送达" },
@@ -75,7 +73,10 @@ function showReport(item: MessageItem): boolean {
   return Boolean(item.report_desc) && (item.status === "failed" || item.status === "unknown")
 }
 
+let runToken = 0
+
 async function run(): Promise<void> {
+  const token = ++runToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -89,21 +90,25 @@ async function run(): Promise<void> {
         status: status.value || undefined,
         page: page.value,
       })
+      if (token !== runToken) return
       items.value = result.items
       total.value = result.total
       timeline.value = null
     } else {
-      timeline.value = await getTimeline(phone.value, start, end)
+      const next = await getTimeline(phone.value, start, end)
+      if (token !== runToken) return
+      timeline.value = next
       items.value = []
-      total.value = timeline.value.events.length
+      total.value = next.events.length
     }
   } catch (error) {
+    if (token !== runToken) return
     items.value = []
     timeline.value = null
     total.value = 0
     errorMessage.value = error instanceof Error ? error.message : "号码查询失败"
   } finally {
-    loading.value = false
+    if (token === runToken) loading.value = false
   }
 }
 
@@ -159,10 +164,10 @@ async function reveal(item: MessageItem): Promise<void> {
       <el-form-item class="filter-span-6" label="时间范围"><el-date-picker v-model="range" type="datetimerange" popper-class="qingluan-date-popper" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" /></el-form-item>
       <el-form-item class="query-filter-actions filter-actions filter-span-2"><el-button type="primary" native-type="submit" :loading="loading">查询</el-button></el-form-item>
       <el-form-item v-if="mode === 'list'" class="filter-span-2" label="类别">
-        <el-select v-model="category" data-testid="message-category-filter" @change="applyFilters"><el-option v-for="option in categoryOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
+        <el-select v-model="category" data-testid="message-category-filter" placeholder="全部类别" clearable @change="applyFilters"><el-option v-for="option in categoryOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
       </el-form-item>
       <el-form-item v-if="mode === 'list'" class="filter-span-2" label="状态">
-        <el-select v-model="status" data-testid="message-status-filter" @change="applyFilters"><el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
+        <el-select v-model="status" data-testid="message-status-filter" placeholder="全部状态" clearable @change="applyFilters"><el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" /></el-select>
       </el-form-item>
     </el-form>
     <p class="query-privacy-note">查询参数不会进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 HMAC 候选。</p>
@@ -179,7 +184,7 @@ async function reveal(item: MessageItem): Promise<void> {
       <el-table-column label="提交方" min-width="120"><template #default="{ row }">{{ row.sender || '—' }}</template></el-table-column>
       <template #empty><EmptyState :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'" :description="searched ? '可调整类别、状态或时间范围后重试。' : '输入完整手机号后查询跨批次收发轨迹。'" /></template>
     </el-table>
-    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" /></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><el-button v-if="canDecrypt" link type="primary" @click="reveal(item)">{{ revealed[item.id] || '授权查看' }}</el-button></footer></article></div>
+    <div class="query-mobile-list"><article v-for="item in items" :key="item.id"><header><PhoneMask :value="item.phone" /><StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" /></header><p>{{ item.content }}</p><p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p><footer><code>{{ item.batch_no }}</code><strong v-if="revealed[item.id]" class="revealed-phone">{{ revealed[item.id] }}</strong><el-button v-else-if="canDecrypt" link type="primary" @click="reveal(item)">授权查看</el-button></footer></article></div>
     <footer class="query-pagination"><span>共 {{ total }} 条记录</span><el-pagination v-if="total > 20" v-model:current-page="page" data-testid="message-pagination" :page-size="20" :total="total" layout="prev, pager, next" @current-change="changePage" /></footer>
   </el-card>
 

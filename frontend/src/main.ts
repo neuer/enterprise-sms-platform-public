@@ -76,8 +76,9 @@ import { useSessionStore } from "./stores/session"
 
 const pinia = createPinia()
 useSessionStore(pinia).restore()
-void useSessionStore(pinia).restoreFromCookie()
-installAuthGuard(router, pinia)
+// 守卫会等待这次恢复；restoreFromCookie 内部消化所有异常，只以布尔值收敛。
+const sessionReady = useSessionStore(pinia).restoreFromCookie()
+installAuthGuard(router, pinia, sessionReady)
 
 const application = createApp(App).use(pinia).use(router)
 for (const plugin of [

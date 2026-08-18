@@ -27,6 +27,7 @@ const batchNo = ref("")
 const apps = ref<ManagedApp[]>([])
 const loading = ref(false)
 const errorMessage = ref("")
+const retryingId = ref<number | null>(null)
 const hasFilter = computed(() =>
   Boolean(status.value || appId.value || event.value || batchNo.value.trim()),
 )
@@ -60,7 +61,10 @@ function formatTime(value: string | null): string {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
+let loadToken = 0
+
 async function load(): Promise<void> {
+  const token = ++loadToken
   loading.value = true
   errorMessage.value = ""
   try {
@@ -71,13 +75,15 @@ async function load(): Promise<void> {
       batchNo: batchNo.value,
       page: page.value,
     })
+    if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
     deadTotal.value = result.dead_total
   } catch (error) {
+    if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "回调任务加载失败"
   } finally {
-    loading.value = false
+    if (token === loadToken) loading.value = false
   }
 }
 
@@ -95,12 +101,16 @@ function filter(): void {
 }
 
 async function retry(item: CallbackTask): Promise<void> {
+  if (retryingId.value !== null) return
+  retryingId.value = item.id
   try {
     await retryCallback(item.id)
     ElMessage.success("回调任务已重新入队")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "手动重推失败")
+  } finally {
+    retryingId.value = null
   }
 }
 
@@ -160,7 +170,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="批次 / 引用" min-width="178">
         <template #default="{ row }">
-          <code>{{ row.batch_no || "—" }}</code><small>{{ row.reference_count }} 条明细引用</small>
+          <code :title="row.batch_no || undefined">{{ row.batch_no || "—" }}</code><small>{{ row.reference_count }} 条明细引用</small>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="108">
@@ -194,7 +204,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="操作" width="104" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'dead'" link type="danger" @click="retry(row)">手动重推</el-button>
+          <el-button v-if="row.status === 'dead'" link type="danger" :loading="retryingId === row.id" @click="retry(row)">手动重推</el-button>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
@@ -220,7 +230,7 @@ onMounted(() => {
         </dl>
         <footer>
           <time>{{ formatTime(item.created_at) }}</time>
-          <el-button v-if="item.status === 'dead'" link type="danger" @click="retry(item)">手动重推</el-button>
+          <el-button v-if="item.status === 'dead'" link type="danger" :loading="retryingId === item.id" @click="retry(item)">手动重推</el-button>
         </footer>
       </article>
       <EmptyState v-if="!items.length" :title="hasFilter ? '没有符合筛选的回调任务' : '当前没有回调任务'" :description="hasFilter ? '可调整状态、应用、事件或批次号后重试。' : '启用应用回调后，投递任务会出现在这里。'" />

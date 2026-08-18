@@ -72,7 +72,14 @@ class FakeRepository:
         self.errors.append((raw_id, error))
 
     async def audit_raw_replay(
-        self, raw_id: int, *, source: str, items: int, actor: str, ip: str
+        self,
+        raw_id: int,
+        *,
+        source: str,
+        items: int,
+        actor: str,
+        ip: str,
+        system_producer: bool = False,
     ) -> None:
         self.audits.append(
             {
@@ -81,6 +88,7 @@ class FakeRepository:
                 "items": items,
                 "actor": actor,
                 "ip": ip,
+                "system_producer": system_producer,
             }
         )
 
@@ -158,9 +166,39 @@ async def test_raw_replay_verifies_hash_routes_existing_payload_and_audits_metad
             "items": 1,
             "actor": "admin01",
             "ip": "10.0.0.8",
+            "system_producer": False,
         }
     ]
     assert "payload" not in str(repository.audits).lower()
+
+
+@pytest.mark.asyncio
+async def test_system_replay_requests_system_audit_producer() -> None:
+    """reconcile 自动重放没有认证会话，审计必须显式声明 system 生产者。"""
+
+    raw = payload([{"customId": "safe-custom-id"}])
+    repository = FakeRepository(
+        RawReplayRecord(9, "reply", b"ciphertext", hashlib.sha256(raw).hexdigest(), 2, False)
+    )
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        FakeProcessor("report", []),
+        FakeProcessor("reply", []),
+    )
+
+    await service.replay(9, actor="system-reconcile", ip="127.0.0.1", system_producer=True)
+
+    assert repository.audits == [
+        {
+            "raw_id": 9,
+            "source": "reply",
+            "items": 1,
+            "actor": "system-reconcile",
+            "ip": "127.0.0.1",
+            "system_producer": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -212,6 +250,7 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
             "items": 1,
             "actor": "admin01",
             "ip": "10.0.0.8",
+            "system_producer": False,
         }
     ]
 
