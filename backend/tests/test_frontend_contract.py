@@ -55,7 +55,9 @@ def test_qingluan_is_the_only_root_spa() -> None:
         "/apps",
         "/blacklist",
         "/sensitive-words",
+        "/:pathMatch(.*)*",
     }
+    assert '{ path: "/:pathMatch(.*)*", redirect: "/dashboard" }' in router
 
 
 def test_single_spa_keeps_the_browser_session_contract() -> None:
