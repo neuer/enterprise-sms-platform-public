@@ -760,6 +760,13 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
             "docs/previews/login-redesign-prototype.html",
+            "docs/previews/login-redesign-shots.md",
+            "docs/previews/login-redesign-shots/ad.png",
+            "docs/previews/login-redesign-shots/choose.png",
+            "docs/previews/login-redesign-shots/compare.png",
+            "docs/previews/login-redesign-shots/error.png",
+            "docs/previews/login-redesign-shots/local.png",
+            "docs/previews/login-redesign-shots/only.png",
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
             "PROGRESS.md",
@@ -775,6 +782,8 @@ def test_login_redesign_preview_does_not_block_web_only_update() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/login-redesign-prototype.html",
+            "docs/previews/login-redesign-shots.md",
+            "docs/previews/login-redesign-shots/compare.png",
             "frontend/src/styles/theme.css",
             "frontend/src/styles/workspace.css",
             "frontend/src/views/LoginView.vue",
