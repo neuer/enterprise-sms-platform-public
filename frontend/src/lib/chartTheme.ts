@@ -12,6 +12,8 @@ export const CHART_COLORS = {
   /** --verdi-l：深底上的主序列绿 */
   green: "#2fa184",
   greenArea: "rgba(47, 161, 132, 0.14)",
+  /** 次类目蓝：与 category-strip 的 --slate 同源、深底下调亮 */
+  blue: "#6f9bcf",
   /** --amber：次序列与阈值线 */
   amber: "#d8a35c",
 } as const

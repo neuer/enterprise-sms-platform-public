@@ -895,6 +895,24 @@ main {
   gap: 14px;
 }
 
+.zone-label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+}
+
+.zone-label::after {
+  flex: 1;
+  height: 1px;
+  content: "";
+  background: var(--hair-2);
+}
+
 .dashboard-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -917,13 +935,11 @@ main {
 }
 
 .metric-link:hover .metric-card,
-.disposition-link:hover .disposition-card,
 .channel-monitor-link:hover .channel-monitor {
   border-color: color-mix(in srgb, var(--verdi) 45%, var(--line));
 }
 
 .metric-link:focus-visible .metric-card,
-.disposition-link:focus-visible .disposition-card,
 .channel-monitor-link:focus-visible .channel-monitor {
   outline: 2px solid var(--verdi);
   outline-offset: 2px;
@@ -1013,14 +1029,123 @@ main {
   background: var(--amber);
 }
 
+.rate-rows {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.rate-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 44px;
+  gap: 8px;
+  align-items: center;
+}
+
+.rate-row span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.rate-track {
+  height: 4px;
+  overflow: hidden;
+  background: var(--surface-strong);
+  border-radius: 2px;
+}
+
+.rate-track i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.rate-track .verify {
+  background: var(--verdi);
+}
+
+.rate-track .notice {
+  background: var(--slate);
+}
+
+.rate-track .market {
+  background: var(--amber);
+}
+
+.rate-row b {
+  color: var(--tx-2);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.balance-runway {
+  color: var(--tx-2);
+}
+
 .dashboard-main-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.75fr);
   gap: 14px;
 }
 
+.dashboard-main-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
 .dashboard-panel {
   border-color: var(--line);
+}
+
+.trend-chart {
+  width: 100%;
+  height: 260px;
+}
+
+.balance-summary {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.balance-now {
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.balance-meta > div {
+  display: grid;
+  gap: 1px;
+  padding: 7px 10px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.balance-meta span {
+  color: var(--tx-3);
+  font-size: 9px;
+}
+
+.balance-meta b {
+  color: var(--tx);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-title {
@@ -1103,50 +1228,73 @@ main {
   font-size: 9px;
 }
 
-.disposition-grid {
+.ops-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.disposition-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.disposition-row {
+  display: flex;
   gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-2);
+  border-radius: 7px;
+  transition: border-color 0.15s;
 }
 
-.disposition-card {
-  position: relative;
-  overflow: hidden;
+.disposition-row.active {
+  border-left-color: var(--el-color-danger);
 }
 
-.disposition-card::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 3px;
-  content: "";
-  background: var(--line-2);
+.disposition-row strong {
+  min-width: 22px;
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 18px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
-.disposition-card.active::before {
-  background: var(--el-color-danger);
-}
-
-.disposition-card span {
-  color: var(--tx-3);
+.disposition-row span {
+  color: var(--tx-2);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
   text-transform: uppercase;
 }
 
-.disposition-card strong {
-  display: block;
-  margin: 3px 0;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 25px;
-  font-weight: 400;
+.disposition-row small {
+  margin-left: auto;
+  color: var(--tx-3);
+  font-size: 9.5px;
+  text-align: right;
 }
 
-.disposition-card p {
+.disposition-link:hover .disposition-row {
+  border-color: color-mix(in srgb, var(--verdi) 45%, var(--line));
+}
+
+.disposition-link:focus-visible .disposition-row {
+  outline: 2px solid var(--verdi);
+  outline-offset: 2px;
+}
+
+.job-grid.stalled-only {
+  grid-template-columns: 1fr;
+}
+
+.jobs-ok {
   margin: 0;
   color: var(--tx-2);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .job-grid {
@@ -1231,6 +1379,10 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+
   .job-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1243,7 +1395,7 @@ main {
   }
 
   .dashboard-metrics,
-  .disposition-grid {
+  .ops-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3653,7 +3805,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .channel-monitor-link:hover .channel-monitor,
 .metric-link:hover .metric-card,
-.disposition-link:hover .disposition-card { border-color: rgba(113, 196, 173, 0.45); }
+.disposition-link:hover .disposition-row { border-color: rgba(113, 196, 173, 0.45); }
 .panel-jump { color: var(--tx-2); }
 .panel-jump:hover { color: var(--tx-hi); }
 .dashboard-metrics { gap: 14px; }
@@ -3666,9 +3818,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .metric-card span,
 .metric-card small { color: var(--tx-2); }
 .dashboard-panel,
-.disposition-card,
 .jobs-panel { background: var(--panel); border-color: var(--hair); }
-.disposition-card.active { background: linear-gradient(180deg, #241a17, #1a1513); border-color: rgba(228, 106, 79, 0.5); }
+.disposition-row.active { background: linear-gradient(180deg, #241a17, #1a1513); border-color: rgba(228, 106, 79, 0.5); }
 
 .send-workbench { grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
 .send-editor,

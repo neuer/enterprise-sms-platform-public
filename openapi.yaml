@@ -3514,6 +3514,15 @@ components:
         stat_date: { type: string, format: date }
         balance: { type: integer }
 
+    DashboardTrendPointModel:
+      type: object
+      required: [stat_date, verify, notice, market]
+      properties:
+        stat_date: { type: string, format: date }
+        verify: { type: integer }
+        notice: { type: integer }
+        market: { type: integer }
+
     DashboardAlertModel:
       type: object
       required: [level, title, created_at]
@@ -3580,7 +3589,7 @@ components:
 
     DashboardModel:
       type: object
-      required: [refreshed_at, categories, overall_success_rate, pending_approvals, ui_policy]
+      required: [refreshed_at, categories, overall_success_rate, pending_approvals, trend, ui_policy]
       properties:
         refreshed_at: { type: string, format: date-time }
         categories:
@@ -3588,6 +3597,9 @@ components:
           items: { $ref: '#/components/schemas/DashboardCategoryModel' }
         overall_success_rate: { type: number }
         pending_approvals: { type: integer }
+        trend:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardTrendPointModel' }
         ui_policy: { $ref: '#/components/schemas/DashboardUiPolicyModel' }
         operations:
           anyOf:

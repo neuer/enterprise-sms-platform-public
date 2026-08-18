@@ -101,6 +101,10 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
                 "category": "notice", "total": 2, "total_segments": 3,
                 "delivered": 1, "failed": 1, "unknown_cnt": 0,
             }]),
+            FakeResult(rows=[
+                {"stat_date": date(2026, 7, 11), "category": "notice", "total": 5},
+                {"stat_date": date(2026, 7, 12), "category": "notice", "total": 2},
+            ]),
             FakeResult(scalar=9000),
             FakeResult(rows=[{"stat_date": date(2026, 7, 12), "balance": 9000}]),
             FakeResult(scalar=2),
@@ -139,6 +143,10 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
     )
 
     assert facts.categories[0].total_segments == 3
+    assert [(item.stat_date, item.category, item.total) for item in facts.trend] == [
+        (date(2026, 7, 11), "notice", 5),
+        (date(2026, 7, 12), "notice", 2),
+    ]
     assert facts.pending_approvals == 2 and facts.operations is not None
     assert facts.operations.current_balance == 9000
     assert (
@@ -155,11 +163,15 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
     stats_sql, stats_params = connection.calls[0]
     assert "dim_type=:dim_type" in stats_sql
     assert stats_params["dim_type"] == "dept" and stats_params["dim_value"] == "业务一部"
-    balance_sql = connection.calls[2][0]
+    trend_sql, trend_params = connection.calls[1]
+    assert "BETWEEN :start_date AND :today" in trend_sql
+    assert trend_params["start_date"] == date(2026, 7, 6)
+    assert trend_params["dim_type"] == "dept" and trend_params["dim_value"] == "业务一部"
+    balance_sql = connection.calls[3][0]
     assert "DISTINCT ON" in balance_sql and "Asia/Shanghai" in balance_sql
-    pending_sql = connection.calls[3][0]
+    pending_sql = connection.calls[4][0]
     assert "CAST(:scope_dept AS varchar(128)) IS NULL" in pending_sql
-    count_sql = connection.calls[5][0]
+    count_sql = connection.calls[6][0]
     assert "unmatched_report" in count_sql and "callback_task" in count_sql
     assert "sms_chunk" in count_sql and "app.dept" in count_sql
     assert repository.redis.calls == [("ratelimit:vendor", "tokens")]  # type: ignore[attr-defined]
@@ -171,6 +183,7 @@ async def test_repository_marks_channel_stale_when_redis_snapshot_times_out() ->
     now = datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
     connection = FakeConnection(
         [
+            FakeResult(rows=[]),
             FakeResult(rows=[]),
             FakeResult(scalar=None),
             FakeResult(rows=[]),
@@ -211,6 +224,7 @@ async def test_repository_treats_absent_token_snapshot_as_idle_full_bucket() -> 
     connection = FakeConnection(
         [
             FakeResult(rows=[]),
+            FakeResult(rows=[]),
             FakeResult(scalar=None),
             FakeResult(rows=[]),
             FakeResult(scalar=0),
@@ -245,6 +259,7 @@ async def test_repository_treats_absent_token_snapshot_as_idle_full_bucket() -> 
 async def test_repository_treats_zero_queue_and_qps_usage_as_real_zero() -> None:
     connection = FakeConnection(
         [
+            FakeResult(rows=[]),
             FakeResult(rows=[]),
             FakeResult(scalar=None),
             FakeResult(rows=[]),
@@ -281,6 +296,7 @@ async def test_non_admin_repository_skips_all_global_operational_queries() -> No
     connection = FakeConnection(
         [
             FakeResult(rows=[]),
+            FakeResult(rows=[]),
             FakeResult(scalar=2),
         ]
     )
@@ -297,7 +313,7 @@ async def test_non_admin_repository_skips_all_global_operational_queries() -> No
 
     assert facts.pending_approvals == 2
     assert facts.operations is None
-    assert len(connection.calls) == 2
+    assert len(connection.calls) == 3
     sql = "\n".join(item[0] for item in connection.calls)
     for global_table in (
         "balance_snapshot",

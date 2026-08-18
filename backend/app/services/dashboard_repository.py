@@ -20,6 +20,7 @@ from app.services.dashboard import (
     DashboardFacts,
     DashboardOperationsFacts,
     JobLatest,
+    TrendDayTotals,
 )
 from app.services.runtime_policy import RuntimePolicy
 from app.settings import Settings, get_settings
@@ -99,6 +100,33 @@ class SqlDashboardRepository:
                     )
                     for row in stats_result.mappings()
                 )
+                trend_result = await connection.execute(
+                    text(
+                        """
+                        SELECT stat_date,category,total
+                        FROM stat_daily
+                        WHERE stat_date BETWEEN :start_date AND :today
+                          AND dim_type=:dim_type
+                          AND dim_value=:dim_value
+                          AND category IN ('verify','notice','market')
+                        ORDER BY stat_date,category
+                        """
+                    ),
+                    {
+                        "start_date": today - timedelta(days=6),
+                        "today": today,
+                        "dim_type": dim_type,
+                        "dim_value": dim_value,
+                    },
+                )
+                trend = tuple(
+                    TrendDayTotals(
+                        row["stat_date"],
+                        cast(Category, str(row["category"])),
+                        int(row["total"]),
+                    )
+                    for row in trend_result.mappings()
+                )
                 if not include_operations:
                     pending_result = await connection.execute(
                         text(
@@ -117,6 +145,7 @@ class SqlDashboardRepository:
                     return DashboardFacts(
                         categories=categories,
                         pending_approvals=int(pending_result.scalar_one()),
+                        trend=trend,
                     )
                 current_result = await connection.execute(
                     text(
@@ -272,6 +301,7 @@ class SqlDashboardRepository:
                     categories=categories,
                     pending_approvals=pending,
                     test_send_max=policy.test_send_max,
+                    trend=trend,
                     operations=DashboardOperationsFacts(
                         current_balance,
                         balances,

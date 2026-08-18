@@ -9,11 +9,12 @@ const chart = vi.hoisted(() => ({
 }))
 
 vi.mock("echarts/core", () => ({ init: vi.fn(() => chart), use: vi.fn() }))
-vi.mock("echarts/charts", () => ({ LineChart: {} }))
-vi.mock("echarts/components", () => ({ GridComponent: {}, MarkLineComponent: {}, TooltipComponent: {} }))
+vi.mock("echarts/charts", () => ({ LineChart: {}, BarChart: {} }))
+vi.mock("echarts/components", () => ({ GridComponent: {}, MarkLineComponent: {}, TooltipComponent: {}, LegendComponent: {} }))
 vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }))
 
 import BalanceChart from "../src/components/BalanceChart.vue"
+import TrendChart from "../src/components/TrendChart.vue"
 import DashboardView from "../src/views/DashboardView.vue"
 
 const RouterLinkStub = {
@@ -46,6 +47,15 @@ const snapshot = {
   ],
   overall_success_rate: 11 / 14,
   pending_approvals: 2,
+  trend: [
+    { stat_date: "2026-07-06", verify: 2, notice: 8, market: 1 },
+    { stat_date: "2026-07-07", verify: 3, notice: 9, market: 2 },
+    { stat_date: "2026-07-08", verify: 2, notice: 9, market: 1 },
+    { stat_date: "2026-07-09", verify: 3, notice: 10, market: 2 },
+    { stat_date: "2026-07-10", verify: 2, notice: 8, market: 1 },
+    { stat_date: "2026-07-11", verify: 3, notice: 9, market: 2 },
+    { stat_date: "2026-07-12", verify: 3, notice: 10, market: 2 },
+  ],
   ui_policy: { test_send_max: 7 },
   operations: {
     current_balance: 9000,
@@ -103,21 +113,36 @@ describe("仪表盘", () => {
     expect(wrapper.get("[data-testid='disposition-uncertain']").attributes("href")).toBe("/ops?tab=uncertain")
     expect(wrapper.get("[data-testid='disposition-unmatched']").attributes("href")).toBe("/ops?tab=unmatched")
     expect(wrapper.get("[data-testid='disposition-callback_dead']").attributes("href")).toBe("/ops?tab=callbacks")
+    expect(wrapper.text()).toContain("业务成果")
+    expect(wrapper.text()).toContain("运行健康")
     expect(wrapper.text()).toContain("今日消息")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19 计费条")
     expect(wrapper.text()).toContain("78.6%")
+    expect(wrapper.text()).toContain("80.0%")
     expect(wrapper.text()).toContain("9,000")
     expect(wrapper.text()).toContain("告警阈值 8,800")
+    expect(wrapper.text()).toContain("日均消耗 ≈ 800")
+    expect(wrapper.text()).toContain("预计可用约 11 天")
     expect(wrapper.text()).toContain("4")
     expect(wrapper.text()).toContain("5 / 8")
     expect(wrapper.text()).not.toContain("令牌容量未接入当前 API")
-    const dashboardChartOption = chart.setOption.mock.calls.at(-1)?.[0]
-    expect(dashboardChartOption.series[0].markLine.data[0].yAxis).toBe(8800)
+    const balanceOption = chart.setOption.mock.calls
+      .map((call) => call[0])
+      .find((option) => option.series?.[0]?.markLine)
+    expect(balanceOption.series[0].markLine.data[0].yAxis).toBe(8800)
+    const trendOption = chart.setOption.mock.calls
+      .map((call) => call[0])
+      .find((option) => Array.isArray(option.series) && option.series.length === 3)
+    expect(trendOption.series.map((serie: { name: string }) => serie.name)).toEqual(["验证码", "通知", "营销"])
+    expect(trendOption.series[0].stack).toBe("total")
+    expect(trendOption.series[0].data).toEqual([2, 3, 2, 3, 2, 3, 3])
     expect(wrapper.text()).toContain("余额较低")
     expect(wrapper.text()).toContain("uncertain")
+    expect(wrapper.text()).toContain("1 / 2 正常")
     expect(wrapper.text()).toContain("aggregate_stats")
     expect(wrapper.text()).toContain("聚合最近三日的消息统计并写入每日统计数据")
+    expect(wrapper.findAll(".job-item")).toHaveLength(1)
     expect(wrapper.findAll(".job-dot.danger")).toHaveLength(1)
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/reports/dashboard",
@@ -230,5 +255,19 @@ describe("余额图表", () => {
     const option = chart.setOption.mock.calls.at(-1)?.[0]
     expect(option.series[0].markLine).toBeUndefined()
     wrapper.unmount()
+  })
+})
+
+describe("发送趋势图", () => {
+  it("按类目渲染七日堆叠柱并在卸载时释放", async () => {
+    const wrapper = mount(TrendChart, { props: { points: snapshot.trend } })
+    await flushPromises()
+    const option = chart.setOption.mock.calls.at(-1)?.[0]
+    expect(option.series).toHaveLength(3)
+    expect(option.series.map((serie: { name: string }) => serie.name)).toEqual(["验证码", "通知", "营销"])
+    expect(option.series[0].stack).toBe("total")
+    expect(option.xAxis.data).toHaveLength(7)
+    wrapper.unmount()
+    expect(chart.dispose).toHaveBeenCalled()
   })
 })

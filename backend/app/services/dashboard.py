@@ -30,6 +30,21 @@ class CategoryMetric(CategoryTotals):
 
 
 @dataclass(frozen=True, slots=True)
+class TrendDayTotals:
+    stat_date: date
+    category: Category
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrendDay:
+    stat_date: date
+    verify: int
+    notice: int
+    market: int
+
+
+@dataclass(frozen=True, slots=True)
 class BalancePoint:
     stat_date: date
     balance: int
@@ -117,6 +132,7 @@ class DashboardFacts:
     pending_approvals: int
     test_send_max: int = 5
     operations: DashboardOperationsFacts | None = None
+    trend: tuple[TrendDayTotals, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +141,7 @@ class DashboardSnapshot:
     categories: tuple[CategoryMetric, ...]
     overall_success_rate: float
     pending_approvals: int
+    trend: tuple[TrendDay, ...] = ()
     ui_policy: DashboardUiPolicy = DashboardUiPolicy(5)
     operations: DashboardOperations | None = None
 
@@ -181,6 +198,18 @@ class DashboardService:
                     success_rate(category_totals.delivered, category_totals.failed),
                 )
             )
+        trend_totals: dict[date, dict[Category, int]] = {}
+        for item in facts.trend:
+            trend_totals.setdefault(item.stat_date, {})[item.category] = item.total
+        trend = tuple(
+            TrendDay(
+                day,
+                trend_totals.get(day, {}).get("verify", 0),
+                trend_totals.get(day, {}).get("notice", 0),
+                trend_totals.get(day, {}).get("market", 0),
+            )
+            for day in (today - timedelta(days=offset) for offset in range(6, -1, -1))
+        )
         operation_facts = facts.operations
         operations: DashboardOperations | None = None
         if operation_facts is not None:
@@ -227,6 +256,7 @@ class DashboardService:
                 sum(item.failed for item in categories),
             ),
             facts.pending_approvals,
+            trend,
             DashboardUiPolicy(facts.test_send_max),
             operations,
         )

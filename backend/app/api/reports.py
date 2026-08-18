@@ -100,6 +100,13 @@ class DashboardCategoryModel(BaseModel):
     success_rate: float
 
 
+class DashboardTrendPointModel(BaseModel):
+    stat_date: date
+    verify: int
+    notice: int
+    market: int
+
+
 class DashboardBalancePointModel(BaseModel):
     stat_date: date
     balance: int
@@ -153,6 +160,7 @@ class DashboardModel(BaseModel):
     categories: list[DashboardCategoryModel]
     overall_success_rate: float
     pending_approvals: int
+    trend: list[DashboardTrendPointModel]
     ui_policy: DashboardUiPolicyModel
     operations: DashboardOperationsModel | None = None
 
@@ -276,6 +284,10 @@ def _dashboard_response(snapshot: DashboardSnapshot) -> DashboardModel:
         ],
         overall_success_rate=snapshot.overall_success_rate,
         pending_approvals=snapshot.pending_approvals,
+        trend=[
+            DashboardTrendPointModel.model_validate(item, from_attributes=True)
+            for item in snapshot.trend
+        ],
         ui_policy=DashboardUiPolicyModel.model_validate(
             snapshot.ui_policy,
             from_attributes=True,

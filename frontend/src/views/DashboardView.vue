@@ -12,6 +12,7 @@ import {
 import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
+import TrendChart from "../components/TrendChart.vue"
 import { jobDescription } from "../lib/jobDescriptions"
 
 const snapshot = ref<DashboardSnapshot | null>(null)
@@ -33,6 +34,30 @@ const balanceThreshold = computed(() => operations.value?.balance_alert_threshol
 const balanceThresholdLabel = computed(() => balanceThreshold.value === null
   ? "告警阈值暂不可用"
   : `告警阈值 ${balanceThreshold.value.toLocaleString()}`)
+const stalledJobs = computed(() => operations.value?.jobs.filter((item) => item.stalled) ?? [])
+const healthyJobCount = computed(() => (operations.value?.jobs.length ?? 0) - stalledJobs.value.length)
+
+/** 由 14 日余额快照推导日均消耗与预计可用天数；余额回升或样本不足时不估算。 */
+const balanceStats = computed(() => {
+  const ops = operations.value
+  if (!ops || ops.balances.length < 2) return null
+  const first = ops.balances[0]
+  const last = ops.balances[ops.balances.length - 1]
+  const days = (Date.parse(last.stat_date) - Date.parse(first.stat_date)) / 86_400_000
+  const consumed = first.balance - last.balance
+  if (days < 1 || consumed <= 0) return null
+  const daily = consumed / days
+  const runway = ops.current_balance === null ? null : Math.floor(ops.current_balance / daily)
+  return { daily, runway }
+})
+
+const balanceRunwayLabel = computed(() => {
+  if (!operations.value) return ""
+  const stats = balanceStats.value
+  if (stats === null) return "近 14 日消耗速率暂不可估算"
+  const runway = stats.runway === null ? "" : ` · 预计可用约 ${stats.runway} 天`
+  return `日均消耗 ≈ ${Math.round(stats.daily).toLocaleString()}${runway}`
+})
 
 function formatTime(value: string | null): string {
   if (!value) return "尚未运行"
@@ -113,24 +138,7 @@ onBeforeUnmount(() => {
   </el-alert>
 
   <div v-if="snapshot" v-loading="loading && !snapshot" class="dashboard-shell">
-    <router-link
-      v-if="operations"
-      to="/ops?tab=queue"
-      class="channel-monitor-link"
-      data-testid="channel-monitor-link"
-    >
-      <ChannelMonitor
-        :realtime-queue="operations.channel_monitor.realtime_queue"
-        :bulk-queue="operations.channel_monitor.bulk_queue"
-        :qps-used="operations.channel_monitor.qps_used"
-        :qps-rate="operations.channel_monitor.qps_rate"
-        :reserved-realtime-qps="operations.channel_monitor.reserved_realtime_qps"
-        :stale="operations.channel_monitor.stale"
-        :degraded-reason="operations.channel_monitor.degraded_reason"
-        :refreshed-at="snapshot.refreshed_at"
-        :last-successful-at="lastChannelSuccessAt"
-      />
-    </router-link>
+    <div class="zone-label"><span>业务成果 · 今日</span></div>
     <section class="dashboard-metrics" aria-label="今日关键指标">
       <router-link to="/reports" class="metric-link" data-testid="metric-messages">
         <el-card shadow="never" class="metric-card primary">
@@ -145,7 +153,14 @@ onBeforeUnmount(() => {
       <router-link to="/reports" class="metric-link" data-testid="metric-success">
         <el-card shadow="never" class="metric-card">
           <span>送达成功率</span><strong>{{ (snapshot.overall_success_rate * 100).toFixed(1) }}%</strong>
-          <small>delivered / (delivered + failed)</small><p>unknown / other 不进入分母</p>
+          <small>delivered / (delivered + failed)</small>
+          <div class="rate-rows" aria-label="分类目成功率">
+            <div v-for="item in snapshot.categories" :key="item.category" class="rate-row">
+              <span>{{ categoryLabels[item.category] }}</span>
+              <div class="rate-track"><i :class="item.category" :style="{ width: `${Math.min(100, item.success_rate * 100)}%` }"></i></div>
+              <b>{{ (item.success_rate * 100).toFixed(1) }}%</b>
+            </div>
+          </div>
         </el-card>
       </router-link>
       <router-link to="/approvals" class="metric-link" data-testid="metric-approvals">
@@ -162,54 +177,94 @@ onBeforeUnmount(() => {
       >
         <span>厂商余额</span><strong>{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
         <small>计费条</small><p>{{ balanceThresholdLabel }}</p>
+        <p class="balance-runway">{{ balanceRunwayLabel }}</p>
       </el-card>
     </section>
 
-    <section v-if="operations" class="dashboard-main-grid">
-      <el-card shadow="never" class="dashboard-panel balance-panel">
-        <template #header><div class="panel-title"><div><strong>余额走势</strong><small>最近 14 个自然日 · 每日末值</small></div><span>单位：计费条</span></div></template>
-        <BalanceChart
-          v-if="operations.balances.length"
-          :points="operations.balances"
-          :threshold="balanceThreshold"
-        />
+    <section class="dashboard-main-grid" :class="{ 'single-column': !operations }">
+      <el-card shadow="never" class="dashboard-panel trend-panel">
+        <template #header><div class="panel-title"><div><strong>近 7 日发送趋势</strong><small>按类目 · 消息条数</small></div><router-link to="/reports" class="panel-jump">报表 →</router-link></div></template>
+        <TrendChart v-if="snapshot.trend?.length" :points="snapshot.trend" />
+        <EmptyState v-else title="趋势暂不可用" description="统计聚合任务每日运行后生成趋势。" />
+      </el-card>
+      <el-card v-if="operations" shadow="never" class="dashboard-panel balance-panel">
+        <template #header><div class="panel-title"><div><strong>厂商余额</strong><small>近 14 个自然日 · 每日末值</small></div><span>单位：计费条</span></div></template>
+        <template v-if="operations.balances.length">
+          <div class="balance-summary">
+            <strong class="balance-now">{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
+            <div class="balance-meta">
+              <div><span>告警阈值</span><b>{{ balanceThreshold?.toLocaleString() ?? '—' }}</b></div>
+              <div><span>日均消耗</span><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : '—' }}</b></div>
+              <div><span>预计可用</span><b>{{ balanceStats?.runway != null ? `≈ ${balanceStats.runway} 天` : '—' }}</b></div>
+            </div>
+          </div>
+          <BalanceChart :points="operations.balances" :threshold="balanceThreshold" />
+        </template>
         <EmptyState v-else title="尚无余额快照" description="余额轮询任务成功后会生成每日趋势。" />
       </el-card>
-      <el-card shadow="never" class="dashboard-panel alert-panel">
-        <template #header><div class="panel-title"><div><strong>今日告警</strong><small>仅展示标题，不暴露载荷</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
-        <ul v-if="operations.alerts.length" class="alert-list">
-          <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatTime(item.created_at).slice(11) }}</time></div></li>
-        </ul>
-        <EmptyState v-else title="今日没有告警" description="新的异常、余额或任务告警会出现在这里。" />
-      </el-card>
     </section>
 
-    <section v-if="operations" class="disposition-grid" aria-label="待处置运行项">
+    <template v-if="operations">
+      <div class="zone-label"><span>运行健康 · 实时</span></div>
       <router-link
-        v-for="item in [
-          { key: 'uncertain', tab: 'uncertain', label: 'uncertain', value: operations.dispositions.uncertain, note: '结果未知分片，禁止自动重发' },
-          { key: 'unmatched', tab: 'unmatched', label: 'unmatched', value: operations.dispositions.unmatched, note: '无主回执，等待迁移对账' },
-          { key: 'callback_dead', tab: 'callbacks', label: 'callback dead', value: operations.dispositions.callback_dead, note: '回调五次失败，需人工重推' },
-        ]"
-        :key="item.key"
-        class="disposition-link"
-        :to="`/ops?tab=${item.tab}`"
-        :data-testid="`disposition-${item.key}`"
+        to="/ops?tab=queue"
+        class="channel-monitor-link"
+        data-testid="channel-monitor-link"
       >
-        <el-card shadow="never" class="disposition-card" :class="{ active: item.value > 0 }">
-          <span>{{ item.label }}</span><strong>{{ item.value }}</strong><p>{{ item.note }}</p>
-        </el-card>
+        <ChannelMonitor
+          :realtime-queue="operations.channel_monitor.realtime_queue"
+          :bulk-queue="operations.channel_monitor.bulk_queue"
+          :qps-used="operations.channel_monitor.qps_used"
+          :qps-rate="operations.channel_monitor.qps_rate"
+          :reserved-realtime-qps="operations.channel_monitor.reserved_realtime_qps"
+          :stale="operations.channel_monitor.stale"
+          :degraded-reason="operations.channel_monitor.degraded_reason"
+          :refreshed-at="snapshot.refreshed_at"
+          :last-successful-at="lastChannelSuccessAt"
+        />
       </router-link>
-    </section>
 
-    <el-card v-if="operations" shadow="never" class="dashboard-panel jobs-panel">
-      <template #header><div class="panel-title"><div><strong>后台任务健康</strong><small>超过预期间隔 ×2 或最近失败显示红点</small></div><router-link to="/ops?tab=jobs" class="panel-jump">{{ operations.jobs.filter(item => !item.stalled).length }} / {{ operations.jobs.length }} 健康</router-link></div></template>
-      <div class="job-grid">
-        <article v-for="job in operations.jobs" :key="job.job_name" :class="['job-item', job.stalled && 'stalled']">
-          <i :class="['job-dot', job.stalled ? 'danger' : 'healthy']"></i><div><code>{{ job.job_name }}</code><p class="job-description">{{ jobDescription(job.job_name) }}</p><time>{{ formatTime(job.last_run_at) }}</time></div>
-        </article>
-      </div>
-    </el-card>
+      <section class="ops-grid" aria-label="运行健康明细">
+        <el-card shadow="never" class="dashboard-panel alert-panel">
+          <template #header><div class="panel-title"><div><strong>今日告警</strong><small>仅展示标题，不暴露载荷</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
+          <ul v-if="operations.alerts.length" class="alert-list">
+            <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatTime(item.created_at).slice(11) }}</time></div></li>
+          </ul>
+          <EmptyState v-else title="今日没有告警" description="新的异常、余额或任务告警会出现在这里。" />
+        </el-card>
+
+        <el-card shadow="never" class="dashboard-panel disposition-panel">
+          <template #header><div class="panel-title"><div><strong>待处置</strong><small>需人工跟进的运行项</small></div><router-link to="/ops" class="panel-jump">运维台</router-link></div></template>
+          <div class="disposition-rows">
+            <router-link
+              v-for="item in [
+                { key: 'uncertain', tab: 'uncertain', label: 'uncertain', value: operations.dispositions.uncertain, note: '结果未知分片，禁止自动重发' },
+                { key: 'unmatched', tab: 'unmatched', label: 'unmatched', value: operations.dispositions.unmatched, note: '无主回执，等待迁移对账' },
+                { key: 'callback_dead', tab: 'callbacks', label: 'callback dead', value: operations.dispositions.callback_dead, note: '回调五次失败，需人工重推' },
+              ]"
+              :key="item.key"
+              class="disposition-link"
+              :to="`/ops?tab=${item.tab}`"
+              :data-testid="`disposition-${item.key}`"
+            >
+              <div class="disposition-row" :class="{ active: item.value > 0 }">
+                <strong>{{ item.value }}</strong><span>{{ item.label }}</span><small>{{ item.note }}</small>
+              </div>
+            </router-link>
+          </div>
+        </el-card>
+
+        <el-card shadow="never" class="dashboard-panel jobs-panel">
+          <template #header><div class="panel-title"><div><strong>任务健康</strong><small>超过预期间隔 ×2 或最近失败为异常</small></div><router-link to="/ops?tab=jobs" class="panel-jump">{{ healthyJobCount }} / {{ operations.jobs.length }} 正常</router-link></div></template>
+          <div v-if="stalledJobs.length" class="job-grid stalled-only">
+            <article v-for="job in stalledJobs" :key="job.job_name" class="job-item stalled">
+              <i class="job-dot danger"></i><div><code>{{ job.job_name }}</code><p class="job-description">{{ jobDescription(job.job_name) }}</p><time>{{ formatTime(job.last_run_at) }}</time></div>
+            </article>
+          </div>
+          <p v-else class="jobs-ok">全部任务均在预期间隔内运行。</p>
+        </el-card>
+      </section>
+    </template>
   </div>
 
   <el-card v-else-if="!errorMessage" v-loading="loading" shadow="never" class="empty-panel dashboard-loading"><el-skeleton :rows="8" animated /></el-card>
