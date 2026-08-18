@@ -53,9 +53,11 @@ describe("登录页", () => {
 
     expect(wrapper.findAll("main")).toHaveLength(1)
     expect(wrapper.get("main.login-screen").find(".login-card").exists()).toBe(true)
-    expect(wrapper.find("[role='group'][aria-label='认证源']").exists()).toBe(true)
+    expect(wrapper.find("[role='radiogroup'][aria-label='认证源']").exists()).toBe(true)
     expect(wrapper.text()).toContain("本地账号")
+    expect(wrapper.text()).toContain("当前唯一可用认证源")
     expect(wrapper.text()).not.toContain("AD 账号")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("true")
   })
 
   it("默认选中第一个认证源，未切换时按默认源提交", async () => {
@@ -82,7 +84,8 @@ describe("登录页", () => {
     const { router, wrapper } = await mountLogin()
 
     expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
-    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-pressed")).toBe("true")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-checked")).toBe("true")
+    expect(wrapper.text()).toContain("管理员维护的平台内置账号")
     await wrapper.get("[data-testid='login-username']").setValue("admin")
     await wrapper.get("[data-testid='login-password']").setValue("Temp@Password123")
     await wrapper.get("form").trigger("submit")
@@ -181,6 +184,9 @@ describe("登录页", () => {
     const { wrapper } = await mountLogin()
 
     await wrapper.get("[data-testid='provider-ad']").trigger("click")
+    expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-checked")).toBe("true")
+    expect(wrapper.text()).toContain("通过企业目录验证身份")
     expect(wrapper.get("[data-testid='login-username']").attributes("placeholder")).toBe(
       "企业 AD 账号",
     )
