@@ -58,6 +58,26 @@ describe("首次登录修改密码", () => {
     expect(wrapper.text()).toContain("完成后请使用新密码重新登录")
   })
 
+  it("规则要点跟随服务端类别数量而非硬编码三类", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          min_length: 16,
+          max_length: 64,
+          required_character_classes: 4,
+          forbid_username: true,
+          description: "16–64 位，四类字符全部必须出现，不能包含用户名",
+        }),
+      ),
+    )
+
+    const { wrapper } = await mountView()
+
+    expect(wrapper.text()).toContain("长度 16–64 位")
+    expect(wrapper.text()).toContain("至少包含 4 类字符")
+  })
+
   it("确认密码不一致时不调用改密接口", async () => {
     const fetch = vi.fn().mockResolvedValue(
       response({

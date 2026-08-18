@@ -164,7 +164,7 @@ function buildDemoScript(language: DemoLanguage, context: DemoContext): string {
       `# 正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
       `# 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）`,
       `curl -X POST '${base}/messages/send' \\`,
-      `  -H 'X-Api-Key: $SMS_API_KEY' \\`,
+      `  -H "X-Api-Key: $SMS_API_KEY" \\`,
       `  -H 'Content-Type: application/json' \\`,
       `  -d '${payloadJson(context)}'`,
     ].filter(Boolean).join("\n")

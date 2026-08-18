@@ -118,6 +118,45 @@ describe("统计报表页", () => {
     vi.restoreAllMocks()
   })
 
+  it("重复点击导出只保留一条轮询链", async () => {
+    vi.useFakeTimers()
+    const pending = { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url) === "/api/v1/web/reports/export" && init?.method === "POST") {
+        return Promise.resolve(response(pending, 202))
+      }
+      if (String(url) === `/api/v1/web/reports/export/${publicId}`) {
+        return Promise.resolve(response(pending))
+      }
+      return Promise.resolve(response(report))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    const statusCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url) === `/api/v1/web/reports/export/${publicId}`).length
+    const exportButton = wrapper.findAll("button").find((item) => item.text().includes("导出明细 CSV"))
+    await exportButton!.trigger("click")
+    await flushPromises()
+    await exportButton!.trigger("click")
+    await flushPromises()
+    expect(statusCalls()).toBe(2)
+
+    // 若旧定时器未清除，这里会出现两条并行轮询链，每 2s 各查一次。
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(statusCalls()).toBe(3)
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    expect(statusCalls()).toBe(4)
+
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it("请求失败时显示可重试错误", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "报表暂不可用" }, 500)))
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })

@@ -72,6 +72,8 @@ async function load(): Promise<void> {
 }
 
 function schedulePoll(): void {
+  // 先清旧定时器：重复点击“导出”会开启新任务，否则新旧两条轮询链会同时存在。
+  if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   if (!exportTask.value || ["done", "failed"].includes(exportTask.value.status)) return
   pollTimer = window.setTimeout(() => void refreshExport(), 2000)
 }

@@ -438,7 +438,8 @@ describe("管理员治理页面", () => {
     expect(wrapper.find("[data-testid='demo-template-select']").exists()).toBe(true)
     expect(wrapper.get("[data-testid='demo-template-info']").text()).toContain("尊敬的{1}，您的工单{2}已创建")
     const curlBody = wrapper.get("[data-testid='demo-script-body-curl']")
-    expect(curlBody.text()).toContain("X-Api-Key")
+    // 必须用双引号包裹，shell 才会展开 $SMS_API_KEY；单引号会把字面量发给服务端。
+    expect(curlBody.text()).toContain('-H "X-Api-Key: $SMS_API_KEY"')
     expect(curlBody.text()).toContain('"template_id":12')
     expect(curlBody.text()).toContain('"template_params":["示例参数1","示例参数2"]')
     expect(curlBody.text()).toContain("138****8000")
