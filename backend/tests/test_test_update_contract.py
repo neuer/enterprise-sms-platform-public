@@ -785,6 +785,7 @@ def test_login_redesign_preview_does_not_block_web_only_update() -> None:
             "docs/previews/login-redesign-prototype.html",
             "docs/previews/login-redesign-shots.md",
             "docs/previews/login-redesign-shots/compare.png",
+            "docs/ui-design.md",
             "frontend/src/styles/theme.css",
             "frontend/src/styles/workspace.css",
             "frontend/src/views/LoginView.vue",
