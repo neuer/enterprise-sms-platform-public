@@ -46,7 +46,7 @@ describe("登录页", () => {
     vi.unstubAllGlobals()
   })
 
-  it("先显示服务端启用的认证源并隐藏未启用 AD", async () => {
+  it("始终显示两种认证源，未启用 AD 标未开通", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
 
     const { wrapper } = await mountLogin()
@@ -54,13 +54,24 @@ describe("登录页", () => {
     expect(wrapper.findAll("main")).toHaveLength(1)
     expect(wrapper.get("main.login-screen").find(".login-card").exists()).toBe(true)
     expect(wrapper.find("[role='radiogroup'][aria-label='认证源']").exists()).toBe(true)
-    expect(wrapper.find(".provider-switch.solo").exists()).toBe(true)
+    expect(wrapper.find(".provider-switch.solo").exists()).toBe(false)
     expect(wrapper.text()).toContain("本地账号")
-    expect(wrapper.text()).toContain("当前唯一可用认证源")
-    expect(wrapper.text()).not.toContain("AD 账号")
+    expect(wrapper.text()).toContain("AD 账号")
+    expect(wrapper.text()).toContain("未开通")
+    expect(wrapper.text()).toContain("管理员维护的平台内置账号")
+    expect(wrapper.text()).not.toContain("当前唯一可用认证源")
     expect(wrapper.text()).not.toContain("LOCAL")
     expect(wrapper.find(".provider-lane").exists()).toBe(false)
-    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("true")
+    expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("false")
+    expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-disabled")).toBe("true")
+    expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-label")).toBe("AD 账号，未开通")
+
+    await wrapper.get("[data-testid='provider-ad']").trigger("click")
+    expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='provider-ad']").classes()).not.toContain("on")
+    expect(wrapper.text()).toContain("企业目录尚未开通")
+    expect(wrapper.get(".login-field-label").text()).toBe("账号")
   })
 
   it("默认选中第一个认证源，未切换时按默认源提交", async () => {
@@ -88,9 +99,13 @@ describe("登录页", () => {
 
     expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
     expect(wrapper.get("[data-testid='provider-local']").attributes("aria-checked")).toBe("true")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("false")
+    expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-disabled")).toBe("false")
     expect(wrapper.find(".provider-switch-sep").exists()).toBe(true)
+    expect(wrapper.find(".provider-off-note").exists()).toBe(false)
     expect(wrapper.text()).toContain("管理员维护的平台内置账号")
     expect(wrapper.text()).not.toContain("LOCAL")
+    expect(wrapper.text()).not.toContain("未开通")
     await wrapper.get("[data-testid='login-username']").setValue("admin")
     await wrapper.get("[data-testid='login-password']").setValue("Temp@Password123")
     await wrapper.get("form").trigger("submit")
@@ -149,6 +164,48 @@ describe("登录页", () => {
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
     expect(localStorage.getItem("sms_token")).toBeNull()
+  })
+
+  it("仅 AD 开通时本地标未开通且默认走 AD", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([adProvider]))
+      .mockResolvedValueOnce(
+        response({
+          token: "jwt",
+          expires_in: 900,
+          refresh_expires_in: 604800,
+          user: {
+            account_id: 8,
+            identity_id: 18,
+            provider_code: "ad",
+            username: "operator01",
+            display_name: "目录用户",
+            dept: "平台部",
+            role: "operator",
+          },
+        }),
+      )
+    vi.stubGlobal("fetch", fetch)
+    const { router, wrapper } = await mountLogin()
+
+    expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("true")
+    expect(wrapper.get(".login-field-label").text()).toBe("企业 AD 账号")
+    expect(wrapper.text()).toContain("通过企业目录验证身份")
+    await wrapper.get("[data-testid='provider-local']").trigger("click")
+    expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
+    expect(wrapper.text()).toContain("本地账号尚未开通")
+    await wrapper.get("[data-testid='login-username']").setValue("operator01")
+    await wrapper.get("[data-testid='login-password']").setValue("Temp@Password123")
+    await wrapper.get("form").trigger("submit")
+    await flushPromises()
+
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+      provider_code: "ad",
+      username: "operator01",
+    })
+    expect(router.currentRoute.value.path).toBe("/dashboard")
   })
 
   it("首次登录把改密令牌仅保留在登录组件内并原位显示改密表单", async () => {
