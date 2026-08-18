@@ -53,24 +53,47 @@ describe("登录页", () => {
 
     expect(wrapper.findAll("main")).toHaveLength(1)
     expect(wrapper.get("main.login-screen").find(".login-card").exists()).toBe(true)
-    expect(wrapper.text()).toContain("选择认证源")
+    expect(wrapper.find("[role='group'][aria-label='认证源']").exists()).toBe(true)
     expect(wrapper.text()).toContain("本地账号")
     expect(wrapper.text()).not.toContain("AD 账号")
-    expect(wrapper.text()).toContain("本地账号由管理员创建和维护")
-    expect(wrapper.text()).toContain("Bearer JWT")
   })
 
-  it("未显式选择认证源时阻止提交", async () => {
-    const fetch = vi.fn().mockResolvedValue(response([localProvider, adProvider]))
+  it("默认选中第一个认证源，未切换时按默认源提交", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([localProvider, adProvider]))
+      .mockResolvedValueOnce(
+        response({
+          token: "jwt",
+          expires_in: 900,
+          refresh_expires_in: 604800,
+          user: {
+            account_id: 8,
+            identity_id: 18,
+            provider_code: "local",
+            username: "admin",
+            display_name: "平台管理员",
+            dept: "平台部",
+            role: "admin",
+          },
+        }),
+      )
     vi.stubGlobal("fetch", fetch)
-    const { wrapper } = await mountLogin()
+    const { router, wrapper } = await mountLogin()
 
+    expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='provider-local']").attributes("aria-pressed")).toBe("true")
     await wrapper.get("[data-testid='login-username']").setValue("admin")
     await wrapper.get("[data-testid='login-password']").setValue("Temp@Password123")
     await wrapper.get("form").trigger("submit")
+    await flushPromises()
 
-    expect(wrapper.get("[role='alert']").text()).toContain("请选择认证源")
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+      provider_code: "local",
+      username: "admin",
+      password: "Temp@Password123",
+    })
+    expect(router.currentRoute.value.path).toBe("/dashboard")
   })
 
   it("把显式认证源与凭据提交给服务端并进入仪表盘", async () => {
@@ -141,7 +164,7 @@ describe("登录页", () => {
     await flushPromises()
 
     expect(router.currentRoute.value.path).toBe("/login")
-    expect(wrapper.text()).toContain("首次登录必须修改密码")
+    expect(wrapper.text()).toContain("设置新密码")
     expect(wrapper.find("[data-testid='new-password']").exists()).toBe(true)
     expect(JSON.stringify(sessionStorage)).not.toContain("change-once")
     expect(JSON.stringify(localStorage)).not.toContain("change-once")
@@ -149,7 +172,7 @@ describe("登录页", () => {
     expect(sessionStorage.getItem("sms_user")).toBeNull()
   })
 
-  it("根据所选认证源显示说明并呈现服务端中文错误", async () => {
+  it("切换认证源后更新账号占位并呈现服务端中文错误", async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(response([localProvider, adProvider]))
@@ -158,7 +181,9 @@ describe("登录页", () => {
     const { wrapper } = await mountLogin()
 
     await wrapper.get("[data-testid='provider-ad']").trigger("click")
-    expect(wrapper.text()).toContain("企业 AD 目录")
+    expect(wrapper.get("[data-testid='login-username']").attributes("placeholder")).toBe(
+      "企业 AD 账号",
+    )
     await wrapper.get("[data-testid='login-username']").setValue("operator01")
     await wrapper.get("[data-testid='login-password']").setValue("wrong")
     await wrapper.get("form").trigger("submit")

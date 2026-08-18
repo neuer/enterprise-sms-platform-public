@@ -90,52 +90,37 @@ async function submit() {
     <article class="login-card password-change-card" aria-labelledby="password-change-title">
       <div class="login-brand">
         <span class="login-seal" aria-hidden="true">鸾</span>
-        <div>
-          <strong>青鸾</strong>
-          <small>LOCAL CREDENTIAL / 本地凭据</small>
-        </div>
+        <strong>青鸾</strong>
       </div>
 
-      <div class="login-context">
-        <p class="eyebrow">FIRST SIGN-IN / 首次登录</p>
-        <h1 id="password-change-title">首次登录必须修改密码</h1>
-        <p>临时密码仅用于建立这次改密会话，不能访问控制台其他功能。</p>
-      </div>
-
-      <section class="password-policy" aria-labelledby="password-policy-title">
-        <p id="password-policy-title">密码规则</p>
-        <strong>{{ policy.description }}</strong>
-        <ul>
-          <li>长度 {{ policy.min_length }}–{{ policy.max_length }} 位</li>
-          <li>至少包含 {{ policy.required_character_classes }} 类字符：大写、小写、数字、特殊字符</li>
-          <li v-if="policy.forbid_username">不能包含用户名</li>
-        </ul>
-      </section>
+      <h1 id="password-change-title" class="mode-title">设置新密码</h1>
 
       <form @submit.prevent="submit">
-        <label for="new-password">新密码</label>
         <el-input
           id="new-password"
           v-model="newPassword"
           data-testid="new-password"
           autocomplete="new-password"
-          placeholder="请输入符合规则的新密码"
+          placeholder="新密码"
+          aria-label="新密码"
           size="large"
           show-password
           type="password"
         />
 
-        <label for="confirm-password">确认新密码</label>
         <el-input
           id="confirm-password"
           v-model="confirmPassword"
           data-testid="confirm-password"
           autocomplete="new-password"
-          placeholder="再次输入新密码"
+          placeholder="确认新密码"
+          aria-label="确认新密码"
           size="large"
           show-password
           type="password"
         />
+
+        <p class="password-policy">密码要求：{{ policy.description }}</p>
 
         <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
 
@@ -146,11 +131,9 @@ async function submit() {
           size="large"
           type="primary"
         >
-          保存新密码
+          确认修改
         </el-button>
       </form>
-
-      <p class="login-footnote"><span aria-hidden="true"></span> 完成后请使用新密码重新登录</p>
     </article>
   </main>
 </template>

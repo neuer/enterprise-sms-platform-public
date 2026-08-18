@@ -51,11 +51,10 @@ describe("首次登录修改密码", () => {
 
     const { wrapper } = await mountView()
 
-    expect(wrapper.text()).toContain("首次登录必须修改密码")
+    expect(wrapper.text()).toContain("设置新密码")
     expect(wrapper.text()).toContain("12–128 位")
     expect(wrapper.text()).toContain("至少包含三类字符")
     expect(wrapper.text()).toContain("不能包含用户名")
-    expect(wrapper.text()).toContain("完成后请使用新密码重新登录")
   })
 
   it("规则要点跟随服务端类别数量而非硬编码三类", async () => {
@@ -74,8 +73,8 @@ describe("首次登录修改密码", () => {
 
     const { wrapper } = await mountView()
 
-    expect(wrapper.text()).toContain("长度 16–64 位")
-    expect(wrapper.text()).toContain("至少包含 4 类字符")
+    expect(wrapper.text()).toContain("16–64 位")
+    expect(wrapper.text()).toContain("四类字符全部必须出现")
   })
 
   it("确认密码不一致时不调用改密接口", async () => {
