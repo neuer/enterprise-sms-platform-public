@@ -1,6 +1,8 @@
 import "@fontsource/ibm-plex-mono/400.css"
 import "@fontsource/ibm-plex-mono/500.css"
 import "@fontsource/ibm-plex-mono/600.css"
+import "@fontsource-variable/noto-sans-sc/index.css"
+import "@fontsource-variable/noto-serif-sc/index.css"
 import "element-plus/theme-chalk/base.css"
 import "element-plus/theme-chalk/el-alert.css"
 import "element-plus/theme-chalk/el-button.css"

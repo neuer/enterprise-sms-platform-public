@@ -41,7 +41,7 @@ body {
   height: 40px;
   place-items: center;
   color: #eef3ef;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 20px;
   background: var(--ink);
   border: 1px solid var(--ink);
@@ -50,7 +50,7 @@ body {
 
 .login-brand strong {
   display: block;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 20px;
   letter-spacing: 0.18em;
 }
@@ -68,7 +68,7 @@ body {
 .login-context h1 {
   margin: 0;
   color: var(--ink);
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: clamp(28px, 7vw, 36px);
   font-weight: 600;
 }
@@ -209,7 +209,7 @@ button:focus-visible {
   height: 34px;
   place-items: center;
   color: #f0f4ef;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 18px;
   border: 1px solid #68766f;
   border-radius: 50%;
@@ -217,7 +217,7 @@ button:focus-visible {
 
 .brand strong {
   display: block;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 17px;
   font-weight: 600;
   letter-spacing: 0.12em;

@@ -25,6 +25,8 @@
   --surface-strong: var(--sink);
   --ink-soft: var(--tx-2);
   --muted: var(--tx-3);
+  --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --mono: "IBM Plex Mono", monospace;
   --green: var(--verdi);
   --red: var(--verm);
@@ -54,11 +56,13 @@
   --el-disabled-border-color: #2a3d37;
   --el-mask-color: rgba(6, 12, 9, 0.66);
   color: var(--tx);
-  font-family: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: var(--sans);
   font-size: 13px;
   line-height: 1.6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
@@ -128,7 +132,7 @@ button:focus-visible {
   height: 40px;
   place-items: center;
   color: #eef3ef;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 20px;
   background: var(--ink);
   border: 1px solid var(--ink);
@@ -137,7 +141,7 @@ button:focus-visible {
 
 .login-brand strong {
   display: block;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 20px;
   letter-spacing: 0.18em;
 }
@@ -155,7 +159,7 @@ button:focus-visible {
 .login-context h1 {
   margin: 0;
   color: var(--ink);
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: clamp(28px, 7vw, 36px);
   font-weight: 600;
 }
@@ -402,7 +406,7 @@ button:focus-visible {
   height: 34px;
   place-items: center;
   color: #f0f4ef;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 18px;
   border: 1px solid #68766f;
   border-radius: 50%;
@@ -410,7 +414,7 @@ button:focus-visible {
 
 .brand strong {
   display: block;
-  font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+  font-family: var(--serif);
   font-size: 17px;
   font-weight: 600;
   letter-spacing: 0.12em;
