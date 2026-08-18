@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark">
-<title>青鸾 · 登录页重设计原型 v3（评审稿）</title>
+<title>青鸾 · 登录页重设计原型 v4（评审稿）</title>
 <style>
 :root{
   color-scheme:dark;
   --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
   --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
   --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
-  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
   --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
   --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
@@ -21,50 +21,94 @@ body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;l
 button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
 input{font:inherit;color:var(--tx-hi)}
 ::placeholder{color:var(--tx-3)}
+:focus-visible{outline:2px solid var(--verdi);outline-offset:2px}
 
 /* ═══════════ 评审辅助（非设计本体） ═══════════ */
-.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
 .review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
 .review-bar span{color:var(--tx-3);font-size:11px}
 .review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
 .stage-label,.variant-caption{font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
 .stage-label{padding:22px 28px 0}
+.variant-caption{display:block}
+.stage-lead{max-width:720px;margin:8px 28px 0;color:var(--tx-2);font-size:12.5px;line-height:1.7}
+.toolbar{display:flex;gap:6px;margin:12px 28px 0}
+.toolbar button{
+  padding:5px 10px;border:1px solid var(--hair);border-radius:6px;background:var(--panel-2);
+  color:var(--tx-2);font:10px/1.4 var(--mono);letter-spacing:.08em;
+}
+.toolbar button.on{color:var(--tx-hi);border-color:rgba(47,161,132,.45);background:color-mix(in srgb,var(--verdi) 16%,var(--panel))}
 
-/* ═══════════ A. 主效果：模拟真实页面 ═══════════ */
+/* ═══════════ A. 主效果 ═══════════ */
 .viewport{margin:14px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
 .login-screen{
-  min-height:560px;display:grid;place-items:center;padding:40px 20px;
+  min-height:600px;display:grid;place-items:center;padding:44px 20px;
   background:
     radial-gradient(720px 340px at 50% -8%, rgba(14,122,99,.14), transparent 70%),
     var(--bg);
 }
 
-/* ── 登录卡（设计本体） ── */
 .login-card{
-  width:352px;padding:36px 30px 30px;
+  width:400px;padding:36px 32px 30px;
   background:var(--panel);border:1px solid var(--hair);border-radius:14px;
   box-shadow:0 24px 60px rgba(0,0,0,.35);
 }
-/* 品牌：居中堆叠，即卡片头部，不再单设「登录」标题 */
+
 .brand{display:grid;justify-items:center;gap:13px;margin-bottom:28px}
-.brand-seal{width:40px;height:40px;display:grid;place-items:center;border-radius:11px;
+.brand-seal{
+  width:40px;height:40px;display:grid;place-items:center;border-radius:11px;
   background:linear-gradient(145deg,#128268,#0a5a49);color:#eaf5f0;
-  font-family:var(--serif);font-size:19px;font-weight:700}
+  font-family:var(--serif);font-size:19px;font-weight:700;
+}
 .brand b{font-family:var(--serif);font-size:17px;font-weight:600;letter-spacing:.22em;text-indent:.22em;color:var(--tx-hi)}
-/* 改密等模式标题（登录模式无标题，语义标题实现时以 sr-only 保留） */
 .mode-title{margin:-16px 0 22px;text-align:center;font-family:var(--serif);font-size:18px;font-weight:600;color:var(--tx-hi)}
 
-/* 认证源：分段控件 */
-.seg{display:flex;padding:3px;gap:2px;margin-bottom:8px;background:var(--sink);border:1px solid var(--hair-2);border-radius:9px}
-.seg button{
-  flex:1;padding:8px 0;border-radius:6px;color:var(--tx-2);font-size:12.5px;font-weight:600;
-  transition:background .15s,color .15s;
+/* 身份来源条：与配置页 LOCAL / AD 标记同构，不是分段开关 */
+.sources{display:grid;gap:6px;margin-bottom:4px}
+.sources-label{
+  margin:0 2px 6px;color:var(--tx-3);
+  font:10px/1 var(--mono);letter-spacing:.16em;
 }
-.seg button:hover{color:var(--tx-hi)}
-.seg button.on{background:#e9f1ed;color:#122019}
-.seg button:focus-visible{outline:2px solid var(--verdi);outline-offset:1px}
+.lane{
+  display:grid;grid-template-columns:42px 1fr 16px;align-items:center;gap:10px;
+  width:100%;padding:9px 12px;text-align:left;
+  background:var(--sink);border:1px solid var(--hair-2);border-radius:9px;
+  box-shadow:inset 2px 0 0 transparent;
+  transition:border-color .15s, background .15s, box-shadow .15s;
+}
+.lane:hover{border-color:var(--hair);color:var(--tx-hi)}
+.lane.on{
+  background:color-mix(in srgb,var(--verdi) 10%,var(--sink));
+  border-color:color-mix(in srgb,var(--verdi-l) 38%,var(--hair));
+  box-shadow:inset 2px 0 0 var(--verdi);
+}
+.lane[aria-disabled="true"]{cursor:default}
+.lane[aria-disabled="true"]:hover{border-color:color-mix(in srgb,var(--verdi-l) 38%,var(--hair))}
+.mark{
+  display:grid;place-items:center;height:32px;
+  border:1px solid var(--hair);border-radius:6px;background:var(--panel);
+  color:var(--tx-3);font:9px/1 var(--mono);letter-spacing:.08em;
+}
+.mark.local{border-color:color-mix(in srgb,var(--slate) 55%,transparent);color:#7aa3cf}
+.mark.ad{border-color:color-mix(in srgb,var(--amber) 55%,transparent);color:var(--amber)}
+.lane.on .mark.local{color:#9dc0e2}
+.lane.on .mark.ad{color:#e6bf84}
+.lane-copy{min-width:0}
+.lane-copy strong{display:block;color:var(--tx-hi);font-size:13px;font-weight:600}
+.lane-copy small{display:block;margin-top:1px;color:var(--tx-3);font-size:10.5px;line-height:1.45}
+.radio{
+  width:14px;height:14px;border:1px solid var(--tx-3);border-radius:50%;
+  box-shadow:inset 0 0 0 3px transparent;
+}
+.lane.on .radio{border-color:var(--verdi-l);box-shadow:inset 0 0 0 3.5px var(--verdi)}
+.sources-loading{display:grid;gap:6px}
+.skel{
+  height:56px;border-radius:9px;border:1px solid var(--hair-2);background:var(--sink);
+  background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.03),transparent);
+  background-size:160px 100%;animation:shimmer 1.2s linear infinite;
+}
+@keyframes shimmer{to{background-position:200px 0}}
 
-/* 输入框 */
 .field{margin-top:12px;position:relative}
 .field input{
   width:100%;height:46px;padding:0 14px;background:var(--sink);
@@ -76,12 +120,10 @@ input{font:inherit;color:var(--tx-hi)}
 .field .eye:hover{color:var(--tx-hi)}
 .field.has-eye input{padding-right:42px}
 
-/* 错误 */
 .login-error{display:none;align-items:center;gap:7px;margin:14px 1px 0;font-size:12px;color:var(--verm)}
 .login-error::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--verm);flex:none}
 .login-card.is-error .login-error{display:flex}
 
-/* 提交 */
 .submit{
   width:100%;height:46px;margin-top:20px;border-radius:8px;
   background:var(--verdi);color:#eaf5f0;font-size:14px;font-weight:600;letter-spacing:.3em;text-indent:.3em;
@@ -91,27 +133,50 @@ input{font:inherit;color:var(--tx-hi)}
 .submit:focus-visible{outline:2px solid var(--verdi-l);outline-offset:2px}
 .submit:disabled{opacity:.55;cursor:default}
 
-/* 改密策略（仅改密变体保留的功能性信息） */
 .policy{margin:10px 1px 0;font-size:10.5px;color:var(--tx-3);line-height:1.7;text-align:center}
 .policy b{color:var(--tx-2);font-weight:600}
 
-/* ═══════════ B. 状态变体 ═══════════ */
-.variants{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;padding:26px 28px 8px}
+/* 两步流 */
+.choose-lead{margin:-8px 0 18px;text-align:center;color:var(--tx-2);font-size:12.5px}
+.back{
+  display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;
+  color:var(--tx-2);font-size:12px;
+}
+.back:hover{color:var(--tx-hi)}
+.chosen{
+  display:grid;grid-template-columns:42px 1fr;gap:12px;align-items:center;
+  margin-bottom:6px;padding:10px 12px;border:1px solid var(--hair-2);border-radius:9px;background:var(--sink);
+}
+
+/* 现状分段（对照用） */
+.seg{display:flex;padding:3px;gap:2px;margin-bottom:8px;background:var(--sink);border:1px solid var(--hair-2);border-radius:9px}
+.seg button{flex:1;padding:8px 0;border-radius:6px;color:var(--tx-2);font-size:12.5px;font-weight:600}
+.seg button.on{background:#e9f1ed;color:#122019}
+
+/* ═══════════ B / D 变体 ═══════════ */
+.variants{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px;padding:26px 28px 8px}
 .variant{display:grid;gap:10px}
-.variant .frame{display:grid;place-items:center;padding:30px 16px;background:var(--bg);border:1px solid var(--hair-2);border-radius:12px;
-  background-image:radial-gradient(480px 220px at 50% -10%, rgba(14,122,99,.12), transparent 70%)}
-.variant .login-card{transform:scale(.92)}
+.variant .frame{
+  display:grid;place-items:center;padding:30px 16px;border:1px solid var(--hair-2);border-radius:12px;
+  background:var(--bg);
+  background-image:radial-gradient(480px 220px at 50% -10%, rgba(14,122,99,.12), transparent 70%);
+}
+.variant .login-card{transform:scale(.92);transform-origin:top center}
 .loading-dot{display:inline-block;width:13px;height:13px;margin-right:9px;vertical-align:-2px;border-radius:50%;
   border:2px solid rgba(234,245,240,.35);border-top-color:#eaf5f0;animation:spin 1s linear infinite}
 @keyframes spin{to{rotate:360deg}}
 
-/* ═══════════ C. 变更说明 ═══════════ */
-.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;padding:26px 28px 40px}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:18px 28px 8px}
+.compare .frame{min-height:520px}
+@media (max-width:860px){.compare{grid-template-columns:1fr}}
+
+/* ═══════════ E. 说明 ═══════════ */
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;padding:26px 28px 48px}
 .note-col{border:1px solid var(--hair-2);border-radius:12px;background:#0e1411;padding:18px 20px}
 .note-col h2{font-size:12px;font-weight:700;letter-spacing:.1em;margin-bottom:12px}
-.note-col.removed h2{color:var(--verm)}
+.note-col.why h2{color:var(--verdi-l)}
 .note-col.changed h2{color:var(--amber)}
-.note-col.kept h2{color:var(--verdi-l)}
+.note-col.kept h2{color:var(--tx-2)}
 .note-col li{margin:0 0 9px 16px;font-size:12px;color:var(--tx-2);line-height:1.7}
 .note-col li::marker{color:var(--tx-3)}
 .note-col code{font-family:var(--mono);font-size:10.5px;color:var(--tx);background:var(--panel-2);padding:1px 5px;border-radius:4px}
@@ -121,57 +186,85 @@ input{font:inherit;color:var(--tx-hi)}
 <body>
 
 <header class="review-bar">
-  <b>登录页重设计 · 原型 v3</b>
-  <span>静态评审稿，不接入真实接口；视觉令牌取自 theme.css</span>
+  <b>登录页重设计 · 原型 v4</b>
+  <span>静态评审稿，不接入真实接口。主推「身份来源条」，对照现网分段控件。</span>
   <em>2026-08-18 · docs/previews/login-redesign-prototype.html</em>
 </header>
 
-<!-- A ═══════════ 默认状态 -->
-<p class="stage-label">A · 主效果（默认状态 / 本地账号）</p>
+<p class="stage-label">A · 主推（同屏来源条 / 默认同现网：选中服务端首项）</p>
+<p class="stage-lead">
+  认证源不再做成分段开关。它是一次身份来源选择，视觉上与系统配置页的
+  <code style="font-family:var(--mono);font-size:11px;color:var(--tx)">LOCAL / AD</code>
+  标记同构：名称、一行区别、单选。失败仍只走当前所选，不自动回退。
+</p>
+<div class="toolbar" role="group" aria-label="主效果场景">
+  <button type="button" class="on" data-scene="dual">双认证源</button>
+  <button type="button" data-scene="local">仅本地</button>
+  <button type="button" data-scene="loading">读取中</button>
+  <button type="button" data-scene="error">错误态</button>
+</div>
+
 <div class="viewport">
   <main class="login-screen">
-    <article class="login-card" id="demo-card">
+    <article class="login-card" id="hero">
+      <h1 class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">登录青鸾控制台</h1>
       <div class="brand">
         <span class="brand-seal" aria-hidden="true">鸾</span>
         <b>青鸾</b>
       </div>
 
-      <div class="seg" role="group" aria-label="认证源">
-        <button type="button" class="on" data-p="local">本地账号</button>
-        <button type="button" data-p="ad">企业 AD</button>
+      <div class="sources" id="hero-sources">
+        <p class="sources-label" id="hero-sources-label">身份来源</p>
+        <div class="sources-loading" id="hero-loading" hidden>
+          <div class="skel"></div>
+          <div class="skel"></div>
+        </div>
+        <div role="radiogroup" aria-labelledby="hero-sources-label" id="hero-group">
+          <button type="button" class="lane on" role="radio" aria-checked="true" data-p="local">
+            <span class="mark local">LOCAL</span>
+            <span class="lane-copy">
+              <strong>本地账号</strong>
+              <small data-local-desc>管理员维护的平台内置账号</small>
+            </span>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="lane" role="radio" aria-checked="false" data-p="ad" id="hero-ad">
+            <span class="mark ad">AD</span>
+            <span class="lane-copy">
+              <strong>AD 账号</strong>
+              <small>通过企业目录验证身份</small>
+            </span>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
+        </div>
       </div>
 
       <div class="field">
-        <input id="demo-account" type="text" placeholder="账号" autocomplete="username" aria-label="账号">
+        <input id="hero-account" type="text" placeholder="账号" autocomplete="username" aria-label="账号">
       </div>
       <div class="field has-eye">
-        <input type="password" placeholder="密码" autocomplete="current-password" aria-label="密码">
-        <button type="button" class="eye" aria-label="显示密码" tabindex="-1">
+        <input id="hero-password" type="password" placeholder="密码" autocomplete="current-password" aria-label="密码">
+        <button type="button" class="eye" aria-label="显示密码">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
       </div>
 
       <p class="login-error" role="alert">认证失败：账号或密码错误</p>
-
       <button class="submit" type="button">登 录</button>
     </article>
   </main>
 </div>
 
-<!-- B ═══════════ 状态变体 -->
 <section class="variants">
-
   <div class="variant">
-    <span class="variant-caption">B1 · 切换「企业 AD」</span>
+    <span class="variant-caption">B1 · 选中 AD 账号</span>
     <div class="frame">
       <article class="login-card">
-        <div class="brand">
-          <span class="brand-seal" aria-hidden="true">鸾</span>
-          <b>青鸾</b>
-        </div>
-        <div class="seg" role="group" aria-label="认证源">
-          <button type="button">本地账号</button>
-          <button type="button" class="on">企业 AD</button>
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div class="sources">
+          <p class="sources-label">身份来源</p>
+          <button type="button" class="lane"><span class="mark local">LOCAL</span><span class="lane-copy"><strong>本地账号</strong><small>管理员维护的平台内置账号</small></span><span class="radio"></span></button>
+          <button type="button" class="lane on"><span class="mark ad">AD</span><span class="lane-copy"><strong>AD 账号</strong><small>通过企业目录验证身份</small></span><span class="radio"></span></button>
         </div>
         <div class="field"><input type="text" placeholder="企业 AD 账号" aria-label="企业 AD 账号"></div>
         <div class="field"><input type="password" placeholder="密码" aria-label="密码"></div>
@@ -181,20 +274,16 @@ input{font:inherit;color:var(--tx-hi)}
   </div>
 
   <div class="variant">
-    <span class="variant-caption">B2 · 错误态（内联，不弹窗）</span>
+    <span class="variant-caption">B2 · 仅本地（AD 未启用，来源条只读）</span>
     <div class="frame">
-      <article class="login-card is-error">
-        <div class="brand">
-          <span class="brand-seal" aria-hidden="true">鸾</span>
-          <b>青鸾</b>
+      <article class="login-card">
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div class="sources">
+          <p class="sources-label">身份来源</p>
+          <button type="button" class="lane on" aria-disabled="true"><span class="mark local">LOCAL</span><span class="lane-copy"><strong>本地账号</strong><small>当前唯一可用认证源</small></span><span class="radio"></span></button>
         </div>
-        <div class="seg" role="group" aria-label="认证源">
-          <button type="button" class="on">本地账号</button>
-          <button type="button">企业 AD</button>
-        </div>
-        <div class="field"><input type="text" placeholder="账号" value="zhang.wei" aria-label="账号"></div>
-        <div class="field"><input type="password" placeholder="密码" value="········" aria-label="密码"></div>
-        <p class="login-error" role="alert">认证失败：账号或密码错误</p>
+        <div class="field"><input type="text" placeholder="账号" aria-label="账号"></div>
+        <div class="field"><input type="password" placeholder="密码" aria-label="密码"></div>
         <button class="submit" type="button">登 录</button>
       </article>
     </div>
@@ -204,89 +293,236 @@ input{font:inherit;color:var(--tx-hi)}
     <span class="variant-caption">B3 · 提交中</span>
     <div class="frame">
       <article class="login-card">
-        <div class="brand">
-          <span class="brand-seal" aria-hidden="true">鸾</span>
-          <b>青鸾</b>
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div class="sources">
+          <p class="sources-label">身份来源</p>
+          <button type="button" class="lane on"><span class="mark local">LOCAL</span><span class="lane-copy"><strong>本地账号</strong><small>管理员维护的平台内置账号</small></span><span class="radio"></span></button>
+          <button type="button" class="lane"><span class="mark ad">AD</span><span class="lane-copy"><strong>AD 账号</strong><small>通过企业目录验证身份</small></span><span class="radio"></span></button>
         </div>
-        <div class="seg" role="group" aria-label="认证源">
-          <button type="button" class="on">本地账号</button>
-          <button type="button">企业 AD</button>
-        </div>
-        <div class="field"><input type="text" placeholder="账号" value="zhang.wei" aria-label="账号"></div>
-        <div class="field"><input type="password" placeholder="密码" value="········" aria-label="密码"></div>
+        <div class="field"><input type="text" value="zhang.wei" aria-label="账号"></div>
+        <div class="field"><input type="password" value="········" aria-label="密码"></div>
         <button class="submit" type="button" disabled><span class="loading-dot"></span>正在验证</button>
       </article>
     </div>
   </div>
 
   <div class="variant">
-    <span class="variant-caption">B4 · 首次登录 · 强制改密（同卡片框架内切换，保留模式标题）</span>
+    <span class="variant-caption">B4 · 首次登录强制改密（同卡片，无认证源）</span>
     <div class="frame">
       <article class="login-card">
-        <div class="brand">
-          <span class="brand-seal" aria-hidden="true">鸾</span>
-          <b>青鸾</b>
-        </div>
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
         <h1 class="mode-title">设置新密码</h1>
-        <div class="field"><input type="password" placeholder="新密码" autocomplete="new-password" aria-label="新密码"></div>
-        <div class="field"><input type="password" placeholder="确认新密码" autocomplete="new-password" aria-label="确认新密码"></div>
-        <p class="policy">密码要求：<b>≥ 8 位</b>，含字母与数字，不得包含用户名</p>
+        <div class="field"><input type="password" placeholder="新密码" aria-label="新密码"></div>
+        <div class="field"><input type="password" placeholder="确认新密码" aria-label="确认新密码"></div>
+        <p class="policy">密码要求：<b>12–128 位</b>，大小写字母、数字、特殊字符至少三类，不得包含用户名</p>
         <button class="submit" type="button">确认修改</button>
       </article>
     </div>
   </div>
-
 </section>
 
-<!-- C ═══════════ 变更说明 -->
+<p class="stage-label">C · 备选：先选来源，再出凭据</p>
+<p class="stage-lead">
+  更贴「必须显式选择」的字面：未选定前不出现账号密码。日常多一次点击。
+  仅一个认证源时跳过第一步，直接进入凭据。主推仍是 A 的同屏方案。
+</p>
+<div class="viewport">
+  <main class="login-screen">
+    <article class="login-card" id="step-card">
+      <div class="brand">
+        <span class="brand-seal" aria-hidden="true">鸾</span>
+        <b>青鸾</b>
+      </div>
+
+      <div id="step-choose">
+        <p class="choose-lead">选择本次登录使用的身份来源</p>
+        <div class="sources" role="list">
+          <button type="button" class="lane" data-step-p="local">
+            <span class="mark local">LOCAL</span>
+            <span class="lane-copy"><strong>本地账号</strong><small>管理员维护的平台内置账号</small></span>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="lane" data-step-p="ad">
+            <span class="mark ad">AD</span>
+            <span class="lane-copy"><strong>AD 账号</strong><small>通过企业目录验证身份</small></span>
+            <span class="radio" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+
+      <div id="step-creds" hidden>
+        <button type="button" class="back" id="step-back">← 更换身份来源</button>
+        <div class="chosen">
+          <span class="mark" id="step-mark">LOCAL</span>
+          <span class="lane-copy">
+            <strong id="step-name">本地账号</strong>
+            <small id="step-desc">管理员维护的平台内置账号</small>
+          </span>
+        </div>
+        <div class="field"><input id="step-account" type="text" placeholder="账号" aria-label="账号"></div>
+        <div class="field"><input type="password" placeholder="密码" aria-label="密码"></div>
+        <button class="submit" type="button">登 录</button>
+      </div>
+    </article>
+  </main>
+</div>
+
+<p class="stage-label">D · 对照：现网分段控件（v3，已落地）</p>
+<p class="stage-lead">同一套品牌与输入，只换认证源控件。左侧是现网，右侧是主推。分段把两种来源压成同等权重的开关；来源条把它说成一次身份选择。</p>
+<div class="compare">
+  <div class="variant">
+    <span class="variant-caption">现网</span>
+    <div class="frame">
+      <article class="login-card" style="width:352px">
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div class="seg" role="group" aria-label="认证源">
+          <button type="button" class="on">本地账号</button>
+          <button type="button">AD 账号</button>
+        </div>
+        <div class="field"><input type="text" placeholder="账号" aria-label="账号"></div>
+        <div class="field"><input type="password" placeholder="密码" aria-label="密码"></div>
+        <button class="submit" type="button">登 录</button>
+      </article>
+    </div>
+  </div>
+  <div class="variant">
+    <span class="variant-caption">主推</span>
+    <div class="frame">
+      <article class="login-card">
+        <div class="brand"><span class="brand-seal" aria-hidden="true">鸾</span><b>青鸾</b></div>
+        <div class="sources">
+          <p class="sources-label">身份来源</p>
+          <button type="button" class="lane on"><span class="mark local">LOCAL</span><span class="lane-copy"><strong>本地账号</strong><small>管理员维护的平台内置账号</small></span><span class="radio"></span></button>
+          <button type="button" class="lane"><span class="mark ad">AD</span><span class="lane-copy"><strong>AD 账号</strong><small>通过企业目录验证身份</small></span><span class="radio"></span></button>
+        </div>
+        <div class="field"><input type="text" placeholder="账号" aria-label="账号"></div>
+        <div class="field"><input type="password" placeholder="密码" aria-label="密码"></div>
+        <button class="submit" type="button">登 录</button>
+      </article>
+    </div>
+  </div>
+</div>
+
 <section class="notes">
-  <div class="note-col removed">
-    <h2>移除（降噪）</h2>
+  <div class="note-col why">
+    <h2>为什么改</h2>
     <ul>
-      <li>独立「登录」标题：与品牌行构成双标题堆叠，且无信息增量（语义标题在实现时以 sr-only 保留，不影响无障碍）</li>
-      <li>品牌副标题「企业短信运营控制台」</li>
-      <li>认证源下方的说明提示行</li>
-      <li>卡片底部说明行（无开放注册 / 审计提示）</li>
-      <li>眉题 <code>IDENTITY GATE / 身份认证</code>、登录说明段、三条 assurance 徽章</li>
-      <li>认证源大卡片、输入框文字 label</li>
+      <li>现网分段控件是「模式开关」语义，认证源是「这次用哪套身份系统」。二者不是同一件事。</li>
+      <li>配置页已经用 <code>LOCAL / AD</code> 标记 + 名称 + 一行说明。登录页应复用这套对象语言，而不是另做一种控件。</li>
+      <li>说明写在选项内部，不再单独占一行提示，也不恢复 v2 的大卡片、assurance 徽章和审计脚注。</li>
+      <li>仅一个认证源时，分段会剩下一枚孤钮；来源条可以收成只读确认，不假装还有得选。</li>
     </ul>
   </div>
   <div class="note-col changed">
-    <h2>变更（需评审确认）</h2>
+    <h2>变更（待评审）</h2>
     <ul>
-      <li><b>品牌改为居中堆叠</b>（印章在上、青鸾在下），即卡片头部；与下方满宽表单轴线一致，消除双标题和右侧死空间</li>
-      <li><b>默认选中第一个认证源</b>：规则 31 的核心是「只用所选认证源、失败不自动回退」，默认选中不违反；若坚持「必须主动点击才算显式选择」，可不默认选中</li>
-      <li>审计照常在后端记录，界面不再提示</li>
-      <li>改密模式保留居中的「设置新密码」模式标题——它承载状态信息，非装饰</li>
+      <li>认证源由分段改为<strong>身份来源条</strong>：单选、左侧 verdi 细条、配置页同源标记。</li>
+      <li>卡片从 352px 放宽到约 <code>400px</code>，给标记和说明留行宽；仍是单卡、无插画，接近 <code>ui-design.md</code> 的 430px 口径。</li>
+      <li>无障碍建议：<code>radiogroup / radio</code>，比 <code>aria-pressed</code> 更贴单选。</li>
+      <li>默认仍选中服务端返回的第一项。规则 31 的硬约束是「失败不回退」，不是「禁止预选」。</li>
+      <li>备选 C 两步流不作为默认实现，除非评审认为「未选定前不出现凭据」更重要。</li>
     </ul>
   </div>
   <div class="note-col kept">
-    <h2>保留（功能与安全语义不动）</h2>
+    <h2>不动</h2>
     <ul>
-      <li>显式认证源选择，每次登录只走一个 Provider</li>
-      <li>输入框 placeholder 仍区分「账号 / 企业 AD 账号」</li>
-      <li>首次登录强制改密流程、5 分钟短期令牌、密码策略提示（防提交失败的功能性信息）</li>
-      <li>错误提示内联展示，账号锁定 / IP 限流错误同位置承载</li>
-      <li>深色主题、serif 品牌字、verdi 主色等视觉令牌</li>
+      <li>每次登录只提交一个 <code>provider_code</code>，失败不自动改走另一源。</li>
+      <li>账号框占位仍区分「账号 / 企业 AD 账号」；展示名仍用服务端 <code>name</code>（本地账号 / AD 账号）。</li>
+      <li>首次改密仍在同卡片内切换，短期令牌只留组件内存。</li>
+      <li>错误内联，锁定 / 限流同一位置；不弹窗，不把审计当页脚文案。</li>
+      <li>深色令牌、serif 品牌、verdi 主色；本期只交原型，不改 Vue 实现。</li>
     </ul>
   </div>
 </section>
 
 <script>
-// 仅主效果卡片的演示交互：认证源切换 + 密码可见性
-(function(){
+(function () {
   var placeholders = { local: "账号", ad: "企业 AD 账号" };
-  var card = document.getElementById("demo-card");
-  var segBtns = card.querySelectorAll(".seg button");
-  segBtns.forEach(function(btn){
-    btn.addEventListener("click", function(){
-      segBtns.forEach(function(b){ b.classList.toggle("on", b === btn); });
-      document.getElementById("demo-account").placeholder = placeholders[btn.dataset.p];
+  var hero = document.getElementById("hero");
+  var group = document.getElementById("hero-group");
+  var loading = document.getElementById("hero-loading");
+  var adLane = document.getElementById("hero-ad");
+  var account = document.getElementById("hero-account");
+  var localDesc = hero.querySelector("[data-local-desc]");
+  var lanes = [].slice.call(group.querySelectorAll(".lane"));
+
+  function selectProvider(code) {
+    lanes.forEach(function (lane) {
+      var on = lane.getAttribute("data-p") === code;
+      lane.classList.toggle("on", on);
+      lane.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    account.placeholder = placeholders[code] || "账号";
+    account.setAttribute("aria-label", placeholders[code] || "账号");
+  }
+
+  lanes.forEach(function (lane) {
+    lane.addEventListener("click", function () {
+      if (lane.getAttribute("aria-disabled") === "true") return;
+      selectProvider(lane.getAttribute("data-p"));
     });
   });
-  card.querySelector(".eye").addEventListener("click", function(){
-    var input = this.parentElement.querySelector("input");
+
+  group.addEventListener("keydown", function (event) {
+    var current = lanes.indexOf(document.activeElement);
+    if (current < 0) return;
+    var next = current;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % lanes.length;
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current - 1 + lanes.length) % lanes.length;
+    else return;
+    event.preventDefault();
+    if (lanes[next].hidden || lanes[next].getAttribute("aria-disabled") === "true") return;
+    lanes[next].focus();
+    selectProvider(lanes[next].getAttribute("data-p"));
+  });
+
+  document.querySelectorAll(".toolbar button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".toolbar button").forEach(function (item) {
+        item.classList.toggle("on", item === btn);
+      });
+      var scene = btn.getAttribute("data-scene");
+      hero.classList.toggle("is-error", scene === "error");
+      var isLoading = scene === "loading";
+      loading.hidden = !isLoading;
+      group.hidden = isLoading;
+      adLane.hidden = scene === "local";
+      lanes.forEach(function (lane) {
+        var onlyLocal = scene === "local" && lane.getAttribute("data-p") === "local";
+        lane.setAttribute("aria-disabled", onlyLocal ? "true" : "false");
+      });
+      localDesc.textContent = scene === "local" ? "当前唯一可用认证源" : "管理员维护的平台内置账号";
+      if (scene === "local" || scene === "dual" || scene === "error") selectProvider("local");
+    });
+  });
+
+  hero.querySelector(".eye").addEventListener("click", function () {
+    var input = document.getElementById("hero-password");
     input.type = input.type === "password" ? "text" : "password";
+  });
+
+  var meta = {
+    local: { name: "本地账号", desc: "管理员维护的平台内置账号", mark: "LOCAL", markClass: "mark local", ph: "账号" },
+    ad: { name: "AD 账号", desc: "通过企业目录验证身份", mark: "AD", markClass: "mark ad", ph: "企业 AD 账号" }
+  };
+  var choose = document.getElementById("step-choose");
+  var creds = document.getElementById("step-creds");
+  document.querySelectorAll("[data-step-p]").forEach(function (lane) {
+    lane.addEventListener("click", function () {
+      var item = meta[lane.getAttribute("data-step-p")];
+      document.getElementById("step-name").textContent = item.name;
+      document.getElementById("step-desc").textContent = item.desc;
+      var mark = document.getElementById("step-mark");
+      mark.textContent = item.mark;
+      mark.className = item.markClass;
+      document.getElementById("step-account").placeholder = item.ph;
+      choose.hidden = true;
+      creds.hidden = false;
+    });
+  });
+  document.getElementById("step-back").addEventListener("click", function () {
+    creds.hidden = true;
+    choose.hidden = false;
   });
 })();
 </script>
