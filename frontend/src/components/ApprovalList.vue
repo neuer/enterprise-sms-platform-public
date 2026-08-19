@@ -40,7 +40,8 @@ function triggerRule(item: ApprovalListItem): string {
   if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
     return "历史阈值不可确认"
   }
-  return `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
+  const base = `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
+  return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
 }
 
 function formatTime(value: string): string {
@@ -191,8 +192,10 @@ function confirmQuick(item: ApprovalListItem): void {
             <span class="approval-sched-chip">{{ scheduleChip(item) }}</span>
           </div>
           <p class="approval-row-facts">
-            {{ item.applicant }} · {{ item.dept }} · {{ formatTime(item.created_at) }} 提交 ·
-            受众 {{ item.total.toLocaleString() }} 号码 · 预计计费 {{ formatSegments(item.estimated_segments) }}
+            {{ item.applicant }} · {{ item.dept }}
+            <em>·</em>{{ formatTime(item.created_at) }} 提交
+            <em>·</em>受众 <b>{{ item.total.toLocaleString() }}</b> 号码
+            <em>·</em>预计计费 <b>{{ formatSegments(item.estimated_segments) }}</b>
           </p>
           <p class="approval-row-rule">触发规则 {{ triggerRule(item) }}</p>
         </div>

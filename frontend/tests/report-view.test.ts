@@ -59,17 +59,27 @@ describe("统计报表页", () => {
 
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    // 周期 / 维度 / 趋势指标切换共三组分段控件
-    expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(3)
+    expect(wrapper.findAll(".report-seg")).toHaveLength(2)
+    expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(0)
     expect(wrapper.text()).toContain("统计报表")
     expect(wrapper.text()).toContain("当前口径")
+    expect(wrapper.text()).toContain("周期")
+    expect(wrapper.text()).toContain("维度")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19")
     expect(wrapper.text()).toContain("78.6%")
+    expect(wrapper.text()).toContain("12 天")
+    expect(wrapper.text()).toContain("unknown 不入分母")
     expect(wrapper.text()).toContain("结果构成")
     expect(wrapper.text()).toContain("维度排行")
     expect(wrapper.text()).toContain("OA应用")
+    expect(wrapper.text()).toContain("失败")
+    expect(wrapper.text()).toContain("未知")
+    expect(wrapper.text()).not.toContain("周期起始")
     expect(wrapper.text()).not.toContain("含明文手机号")
+    expect(wrapper.text()).not.toContain("app/")
+    expect(wrapper.text()).not.toContain("长短信主要来自营销类模板")
+    expect(wrapper.find(".trend-legend").text()).toContain("OA应用")
 
     const exportButton = wrapper.findAll("button").find((item) => item.text().includes("导出明细 CSV"))
     await exportButton!.trigger("click")
@@ -174,8 +184,7 @@ describe("统计报表页", () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain("筛选条件已变更")
 
-    const segmented = wrapper.findAllComponents({ name: "ElSegmented" })
-    await segmented[1].vm.$emit("update:modelValue", "dept")
+    await wrapper.get('[data-testid="report-group-dept"]').trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("筛选条件已变更")
     // 只有首次加载的一次请求，改条件不触发新查询
@@ -205,6 +214,7 @@ describe("报表趋势图", () => {
     expect(option.series[0].name).toBe("OA应用")
     expect(option.series[0].data).toEqual([5, 10])
     expect(option.series[0].stack).toBe("total")
+    expect(option.legend).toBeUndefined()
 
     await wrapper.setProps({ metric: "total_segments" })
     await flushPromises()
