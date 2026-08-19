@@ -139,10 +139,9 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     checkout = next(
         step for step in changes["steps"] if step["name"] == "Checkout full history"
     )
-    assert checkout["with"] == {
-        "fetch-depth": 0,
-        "ref": "${{ steps.dispatch.outputs.candidate }}",
-    }
+    assert checkout["with"] == {"fetch-depth": 0}
+    assert "ref" not in checkout["with"]
+    assert "echo \"candidate=$GITHUB_SHA\"" not in dispatch["run"]
     changes_commands = job_commands(changes)
     for command in (
         "scripts/check_spec_consistency.py",
@@ -195,8 +194,16 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
             for step in jobs[job_name]["steps"]
             if step.get("name") == "Checkout"
         )
-        assert job_checkout["with"]["ref"] == (
-            "${{ needs.changes.outputs.candidate_sha }}"
+        assert "ref" not in (job_checkout.get("with") or {})
+        bind = next(
+            step
+            for step in jobs[job_name]["steps"]
+            if "Bind" in str(step.get("name", ""))
+        )
+        assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in bind["run"]
+        assert (
+            'test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"'
+            in bind["run"]
         )
 
     frontend_commands = job_commands(jobs["frontend"])
@@ -264,6 +271,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     source = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "secrets." not in source
     assert "upload-artifact" not in source
+    assert "ref: ${{ needs.changes.outputs.candidate_sha }}" not in source
+    assert "ref: ${{ steps.dispatch.outputs.candidate }}" not in source
 
 
 def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
