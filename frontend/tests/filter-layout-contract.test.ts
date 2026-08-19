@@ -11,10 +11,11 @@ const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue", "BatchView.vue"].map(
+const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue"].map(
   (name) => read(`src/views/${name}`),
 )
 const approvalView = read("src/views/ApprovalView.vue")
+const batchView = read("src/views/BatchView.vue")
 
 describe("全站筛选布局契约", () => {
   it("使用共享十二列网格与语义跨度", () => {
@@ -61,6 +62,22 @@ describe("全站筛选布局契约", () => {
   it("轻量筛选统一使用紧凑工具栏", () => {
     for (const source of compactViews) expect(source).toContain("filter-toolbar")
     expect(css).toMatch(/\.filter-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
+  })
+
+  it("批次列表使用方案 A 单行胶囊筛选条", () => {
+    expect(batchView).toContain("batch-filter-bar")
+    expect(batchView).toContain("batch-seg")
+    expect(batchView).toContain("更多筛选")
+    expect(batchView).not.toContain("filter-toolbar")
+    expect(batchView).not.toContain("filter-grid")
+    expect(batchView).not.toContain("<el-segmented")
+    expect(batchView).not.toContain("query-total")
+    expect(batchView).toContain("batch-scope")
+    expect(batchView).toContain("batch-facts")
+    expect(batchView).toContain("共 {{ total }} 个批次 · 每页 20")
+    expect(css).toMatch(/\.batch-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.batch-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.compose\s*\{[^}]*height:\s*7px/s)
   })
 
   it("审批中心使用方案 A 单行胶囊筛选条", () => {

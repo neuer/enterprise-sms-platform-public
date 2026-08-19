@@ -61,7 +61,12 @@ describe("批次与号码查询", () => {
     useSessionStore().role = "admin"
     const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    expect(wrapper.get("form.batch-filter").classes()).toContain("filter-toolbar")
+    expect(wrapper.find("form.batch-filter-bar").exists()).toBe(true)
+    expect(wrapper.find(".filter-toolbar").exists()).toBe(false)
+    expect(wrapper.find(".query-total").exists()).toBe(false)
+    expect(wrapper.find(".query-table-card").exists()).toBe(false)
+    expect(wrapper.text()).toContain("当前口径 · 管理员")
+    expect(wrapper.text()).toContain("共 1 个批次 · 每页 20")
     expect(wrapper.text()).toContain("批次列表")
     expect(wrapper.text()).toContain("BATCH-1")
     expect(wrapper.find(".category-tag--notice").exists()).toBe(true)
@@ -77,6 +82,9 @@ describe("批次与号码查询", () => {
     expect(wrapper.text()).toContain("operator-a")
     expect(wrapper.text()).toContain("计费条")
     expect(wrapper.text()).toContain("构成 = 占受理总数的份额，不是成功率")
+    expect(wrapper.find(".batch-facts").exists()).toBe(true)
+    expect(wrapper.find(".batch-meta").exists()).toBe(false)
+    expect(wrapper.find(".el-alert").exists()).toBe(false)
     expect(wrapper.text()).not.toContain(`${Math.round(1 / 2 * 100)}%`)
     expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
     expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("重发失败")
@@ -388,10 +396,11 @@ describe("批次与号码查询", () => {
     vi.unstubAllGlobals()
   })
 
-  it("号码列表保持掩码并允许 approver 单条授权查看", async () => {
+  it("号码列表保持掩码并允许 approver 在徽标条授权查看", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(response({
         total: 1,
+        badge: { blacklisted: false, blacklist_source: null, recv_30d: 1 },
         items: [{
           id: 9,
           phone: "138****8000",
@@ -417,14 +426,14 @@ describe("批次与号码查询", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.text()).toContain("未在黑名单")
     expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
     expect(wrapper.text()).not.toContain("13800138000")
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages")
     expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST" }))
     expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ phone: "13800138000", page: 1 })
     expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
-    const reveal = wrapper.findAll("button").find((item) => item.text().includes("授权查看"))
-    await reveal!.trigger("click")
+    await wrapper.get("[data-testid='message-phone-reveal']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("13800138000")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/messages/9/phone/decrypt")
@@ -434,6 +443,7 @@ describe("批次与号码查询", () => {
   it("号码列表支持类别状态筛选、分页并展示失败回报", async () => {
     const fetch = vi.fn().mockResolvedValue(response({
       total: 45,
+      badge: { blacklisted: false, blacklist_source: null, recv_30d: 45 },
       items: [{
         id: 9,
         phone: "138****8000",
@@ -511,17 +521,68 @@ describe("批次与号码查询", () => {
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(MessageView, { global: { plugins: [createPinia(), ElementPlus] } })
     await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
-    const timeline = wrapper.findAll("button").find((item) => item.text().includes("时间线"))
-    await timeline!.trigger("click")
+    wrapper.getComponent({ name: "ElSegmented" }).vm.$emit("change", "timeline")
     await flushPromises()
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/messages/timeline")
     expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST" }))
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({ phone: "13800138000" })
     expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     expect(wrapper.text()).toContain("已在黑名单")
-    expect(wrapper.text()).toContain("近30日 3 条")
+    expect(wrapper.text()).toContain("近30日接收")
+    expect(wrapper.text()).toContain("3 条")
     expect(wrapper.text()).toContain("↩ 用户回复")
     expect(wrapper.text()).toContain("仅显示最近 500 条")
+    vi.unstubAllGlobals()
+  })
+
+  it("时间线视图授权查看复用首条消息 id 完成解密", async () => {
+    const badge = { blacklisted: false, blacklist_source: null, recv_30d: 1 }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({
+        badge,
+        truncated: false,
+        events: [{
+          ts: "2026-07-12T08:02:00+08:00",
+          direction: "out",
+          category: "notice",
+          batch_no: "BATCH-1",
+          content: "系统通知",
+          status: "delivered",
+          sender: "通知应用",
+        }],
+      }))
+      .mockResolvedValueOnce(response({
+        total: 1,
+        badge,
+        items: [{
+          id: 9,
+          phone: "138****8000",
+          status: "delivered",
+          report_desc: null,
+          report_time: null,
+          created_at: "2026-07-12T08:02:00+08:00",
+          batch_no: "BATCH-1",
+          category: "notice",
+          content: "系统通知",
+          sender: "通知应用",
+        }],
+      }))
+      .mockResolvedValueOnce(response({ phone: "13800138000" }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(MessageView, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
+    wrapper.getComponent({ name: "ElSegmented" }).vm.$emit("change", "timeline")
+    await flushPromises()
+
+    await wrapper.get("[data-testid='message-phone-reveal']").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/messages")
+    expect(fetch.mock.calls[2][0]).toBe("/api/v1/web/messages/9/phone/decrypt")
+    expect(wrapper.text()).toContain("13800138000")
+    expect(wrapper.text()).toContain("已解密")
     vi.unstubAllGlobals()
   })
 })

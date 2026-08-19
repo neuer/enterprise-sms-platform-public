@@ -71,6 +71,7 @@ class FakeOperations:
                     "通知应用",
                 ),
             ),
+            PhoneBadge(True, "reply_optout", 3),
         )
 
     async def timeline(self, **values: object) -> Timeline:
@@ -184,6 +185,11 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
 
     assert search.status_code == 200
     assert search.json()["items"][0]["phone"] == "138****8000"
+    assert search.json()["badge"] == {
+        "blacklisted": True,
+        "blacklist_source": "reply_optout",
+        "recv_30d": 3,
+    }
     assert "phone_hmac" not in search.text and "phone_enc" not in search.text
     assert timeline.status_code == 200
     assert timeline.json()["badge"] == {
