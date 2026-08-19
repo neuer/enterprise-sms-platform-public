@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import text
 
@@ -18,6 +18,9 @@ from app.services.crypto import CryptoService
 from app.settings import Settings, get_settings
 
 PAGE_SIZE = 20
+
+# 处置筛选：all 全部 / pending_optout 退订语且未加黑 / blacklisted 已加黑。
+ReplyDisposition = Literal["all", "pending_optout", "blacklisted"]
 
 
 class ReplyNotFound(LookupError):
@@ -49,6 +52,7 @@ class ReplyQueryRepository(Protocol):
         end: datetime | None,
         page: int,
         dept: str | None,
+        disposition: ReplyDisposition,
     ) -> ReplyPage: ...
 
     async def optout(
@@ -86,6 +90,7 @@ class ReplyQueryService:
         end: datetime | None,
         page: int,
         dept: str | None,
+        disposition: ReplyDisposition = "all",
     ) -> ReplyPage:
         if page < 1:
             raise ValueError("page must be positive")
@@ -103,6 +108,7 @@ class ReplyQueryService:
             end=end,
             page=page,
             dept=dept,
+            disposition=disposition,
         )
 
     async def optout(
@@ -147,12 +153,27 @@ class SqlReplyQueryRepository:
         end: datetime | None,
         page: int,
         dept: str | None,
+        disposition: ReplyDisposition = "all",
     ) -> ReplyPage:
         where = """
           (CAST(:dept AS text) IS NULL OR b.dept=CAST(:dept AS text))
           AND (:has_phone=false OR r.phone_hmac = ANY(CAST(:phone_hmacs AS char(64)[])))
           AND (CAST(:start AS timestamptz) IS NULL OR r.reply_time>=CAST(:start AS timestamptz))
           AND (CAST(:end AS timestamptz) IS NULL OR r.reply_time<=CAST(:end AS timestamptz))
+          AND (
+            CAST(:disposition AS text)='all'
+            OR (CAST(:disposition AS text)='blacklisted' AND EXISTS(
+              SELECT 1 FROM blacklist_hmac_alias ba
+              WHERE ba.hmac_digest=r.phone_hmac
+            ))
+            OR (CAST(:disposition AS text)='pending_optout' AND EXISTS(
+              SELECT 1 FROM reply_event fe
+              WHERE fe.event_key=r.event_key AND fe.is_optout
+            ) AND NOT EXISTS(
+              SELECT 1 FROM blacklist_hmac_alias ba
+              WHERE ba.hmac_digest=r.phone_hmac
+            ))
+          )
         """
         params = {
             "dept": dept,
@@ -160,6 +181,7 @@ class SqlReplyQueryRepository:
             "phone_hmacs": list(phone_hmacs),
             "start": start,
             "end": end,
+            "disposition": disposition,
             "limit": PAGE_SIZE,
             "offset": (page - 1) * PAGE_SIZE,
         }

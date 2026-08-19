@@ -258,35 +258,6 @@ button:focus-visible {
   align-items: end;
 }
 
-.reply-total {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 0 8px;
-  align-items: baseline;
-  min-width: 150px;
-  padding: 7px 0 7px 18px;
-  border-left: 1px solid var(--line-2);
-}
-
-.reply-total span {
-  grid-column: 1 / -1;
-  color: var(--tx-3);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-}
-
-.reply-total strong {
-  color: var(--verdi);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: clamp(22px, 3vw, 34px);
-  font-weight: 400;
-  line-height: 1;
-}
-
-.reply-total small {
-  color: var(--tx-2);
-}
-
 .reply-filter-card {
   margin-bottom: 14px;
 }
@@ -352,6 +323,31 @@ button:focus-visible {
   background: transparent;
 }
 
+.reply-batch-link {
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+.reply-batch-link:hover {
+  text-decoration: underline;
+}
+
+.reply-unlinked-group {
+  display: inline-grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.reply-unlinked {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.reply-status-none {
+  color: var(--tx-3);
+}
+
 .reply-pagination {
   display: flex;
   justify-content: space-between;
@@ -377,23 +373,12 @@ button:focus-visible {
     align-items: start;
   }
 
-  .reply-total {
-    min-width: 120px;
-  }
-
   .reply-filter-actions .el-form-item__content {
     justify-content: flex-end;
   }
 }
 
 @media (max-width: 560px) {
-  .reply-total {
-    width: 100%;
-    padding-left: 0;
-    border-top: 1px solid var(--line-2);
-    border-left: 0;
-  }
-
   .reply-pagination {
     align-items: flex-start;
     flex-direction: column;

@@ -129,6 +129,8 @@ async def test_reply_insert_is_database_idempotent_and_associates_custom_before_
     assert "m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))" in normalized_sql
     assert "CAST(:phone_hmac AS char(64))" in normalized_sql
     assert "CAST(:content_enc AS bytea)" in normalized_sql
+    assert "is_optout" in normalized_sql
+    assert params["is_optout"] is True
     assert "CAST(:reply_time AS timestamptz)" in normalized_sql
     assert (
         "CASE WHEN c.custom_id=CAST(:match_custom_id AS varchar(32)) THEN 0 ELSE 1 END"

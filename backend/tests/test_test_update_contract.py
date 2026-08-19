@@ -771,7 +771,13 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/login-redesign-shots/error.png",
             "docs/previews/login-redesign-shots/local.png",
             "docs/previews/login-redesign-shots/only.png",
+            "docs/previews/messages-redesign-prototype.html",
+            "docs/previews/messages-redesign-shots.md",
+            "docs/previews/messages-redesign-shots/full.png",
             "docs/previews/report-redesign-prototype.html",
+            "docs/previews/replies-redesign-prototype.html",
+            "docs/previews/replies-redesign-shots.md",
+            "docs/previews/replies-redesign-shots/full.png",
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
             "docs/previews/send-redesign-prototype.html",
@@ -870,6 +876,45 @@ def test_batch_preview_does_not_block_classified_update() -> None:
             "backend/app/services/batch_query.py",
             "docs/previews/batch-redesign-prototype.html",
             "frontend/src/views/BatchView.vue",
+            "openapi.yaml",
+        ]
+    )
+
+    assert "web" in change.components
+    assert "api" in change.components
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.migration_changed is False
+
+
+def test_messages_preview_does_not_block_classified_update() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/web_messages.py",
+            "docs/previews/messages-redesign-prototype.html",
+            "docs/previews/messages-redesign-shots.md",
+            "docs/previews/messages-redesign-shots/full.png",
+            "frontend/src/views/MessageView.vue",
+            "openapi.yaml",
+        ]
+    )
+
+    assert "web" in change.components
+    assert "api" in change.components
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.migration_changed is False
+
+
+def test_replies_preview_does_not_block_classified_update() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/replies.py",
+            "backend/app/services/reply_query.py",
+            "docs/previews/replies-redesign-prototype.html",
+            "docs/previews/replies-redesign-shots.md",
+            "docs/previews/replies-redesign-shots/full.png",
+            "frontend/src/views/ReplyView.vue",
             "openapi.yaml",
         ]
     )

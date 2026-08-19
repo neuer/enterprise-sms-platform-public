@@ -3,12 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 import app.api.replies as api
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
-from app.core.errors import ApiError, api_error_handler
+from app.core.errors import (
+    ApiError,
+    api_error_handler,
+    validation_error_handler,
+)
 from app.services.reply_query import ReplyItem, ReplyNotFound, ReplyPage
 
 
@@ -72,6 +77,7 @@ def client(
 ) -> TestClient:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[api.get_reply_service] = lambda: service
@@ -104,8 +110,29 @@ def test_viewer_plus_lists_only_masked_reply_fields_with_department_scope() -> N
     }
     assert service.list_calls[0]["dept"] == "研发部"
     assert service.list_calls[0]["phone"] == "13800138000"
+    assert service.list_calls[0]["disposition"] == "all"
     assert auditor.calls[0]["action"] == "reply_content_read"
     assert auditor.calls[0]["count"] == 1
+
+
+def test_list_forwards_disposition_and_rejects_unknown_value() -> None:
+    service = FakeService()
+    response = client(service, "operator").post(
+        "/api/v1/web/replies",
+        headers={"Authorization": "Bearer jwt"},
+        json={"disposition": "pending_optout", "page": 1},
+    )
+
+    assert response.status_code == 200
+    assert service.list_calls[0]["disposition"] == "pending_optout"
+
+    bad = client(FakeService(), "operator").post(
+        "/api/v1/web/replies",
+        headers={"Authorization": "Bearer jwt"},
+        json={"disposition": "archived"},
+    )
+    assert bad.status_code == 400
+    assert bad.json()["code"] == "INVALID_PARAM"
 
 
 def test_operator_can_optout_but_viewer_is_forbidden() -> None:

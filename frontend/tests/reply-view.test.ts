@@ -54,7 +54,7 @@ describe("回复查询", () => {
     expect(wrapper.text()).toContain("138****8000")
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/replies")
     expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST" }))
-    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ page: 1 })
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ page: 1, disposition: "all" })
     expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     expect(wrapper.text()).toContain("TD")
     expect(wrapper.get(".reply-content").classes()).toContain("is-optout")
@@ -64,6 +64,7 @@ describe("回复查询", () => {
     await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(confirm.mock.calls[0][0]).toContain("138****8000")
+    expect(confirm.mock.calls[0][0]).toContain("加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/replies/5/blacklist")
     expect(fetch.mock.calls[1][1].method).toBe("POST")
   })
@@ -87,7 +88,7 @@ describe("回复查询", () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
-  it("已加黑的回复显示状态标签且不再提供加黑入口", async () => {
+  it("已加黑的回复在状态列显示已加黑且不再提供加黑入口", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ blacklisted: true })] })),
@@ -101,13 +102,16 @@ describe("回复查询", () => {
     })
     await flushPromises()
 
+    const headers = wrapper.findAll(".reply-table th").map((header) => header.text())
+    expect(headers).toContain("状态")
+    expect(headers).toContain("处置")
     expect(wrapper.text()).toContain("已加黑")
     expect(
       wrapper.findAll("button").find((button) => button.text().includes("退订加黑")),
     ).toBeUndefined()
   })
 
-  it("手机号格式不合法时提交前拦截且不发起查询请求", async () => {
+  it("手机号格式不合法时内联提示、提交前拦截且不发起查询请求", async () => {
     const warning = vi.spyOn(ElMessage, "warning")
     const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
@@ -122,6 +126,10 @@ describe("回复查询", () => {
     expect(fetch).toHaveBeenCalledTimes(1)
 
     await wrapper.get("[data-testid='reply-filter-phone']").setValue("12345")
+    // el-form-item 的 error 展示经 100ms refDebounced，等待其生效
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    await flushPromises()
+    expect(wrapper.text()).toContain("手机号须为 11 位以 1 开头的数字")
     await wrapper.get("form.reply-filter").trigger("submit")
     await flushPromises()
 
@@ -148,12 +156,17 @@ describe("回复查询", () => {
     expect(wrapper.text()).toContain("没有符合筛选条件的回复")
     expect(wrapper.text()).not.toContain("尚未采集到上行回复")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/replies")
-    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({ page: 1, phone: "13800138000" })
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
+      page: 1,
+      phone: "13800138000",
+      disposition: "all",
+    })
     expect(String(fetch.mock.calls[1][0])).not.toContain("phone=")
 
     await wrapper.get("[data-testid='reply-reset']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("尚未采集到上行回复")
+    expect(JSON.parse(String(fetch.mock.calls[2][1].body))).toEqual({ page: 1, disposition: "all" })
   })
 
   it("普通回复文案不高亮为退订语", async () => {
@@ -171,14 +184,58 @@ describe("回复查询", () => {
     wrapper.unmount()
   })
 
-  it("只读角色不显示退订写操作", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ total: 0, items: [] })))
+  it("viewer 角色可见状态列但隐藏处置列与加黑入口", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ blacklisted: true })] })),
+    )
     const pinia = createPinia()
     setActivePinia(pinia)
     useSessionStore().role = "viewer"
     const wrapper = mount(ReplyView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
+
+    const headers = wrapper.findAll(".reply-table th").map((header) => header.text())
+    expect(headers).toContain("状态")
+    expect(headers).not.toContain("处置")
+    expect(wrapper.text()).toContain("已加黑")
+    expect(wrapper.find("[data-testid='reply-optout-5']").exists()).toBe(false)
     expect(wrapper.text()).not.toContain("退订加黑")
-    expect(wrapper.text()).toContain("尚未采集到上行回复")
+  })
+
+  it("处置 seg 切换按 all/pending_optout/blacklisted 传参并回到第一页", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+
+    const wrapper = mount(ReplyView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ page: 1, disposition: "all" })
+
+    const seg = wrapper.get("[data-testid='reply-disposition-seg']")
+    expect(seg.text()).toContain("全部")
+    expect(seg.text()).toContain("待加黑退订")
+    expect(seg.text()).toContain("已加黑")
+
+    const inputs = () => wrapper.findAll("[data-testid='reply-disposition-seg'] .el-segmented__item-input")
+    await inputs()[1].trigger("change")
+    await flushPromises()
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
+      page: 1,
+      disposition: "pending_optout",
+    })
+
+    await inputs()[2].trigger("change")
+    await flushPromises()
+    expect(JSON.parse(String(fetch.mock.calls[2][1].body))).toEqual({
+      page: 1,
+      disposition: "blacklisted",
+    })
+
+    await inputs()[0].trigger("change")
+    await flushPromises()
+    expect(JSON.parse(String(fetch.mock.calls[3][1].body))).toEqual({ page: 1, disposition: "all" })
   })
 })

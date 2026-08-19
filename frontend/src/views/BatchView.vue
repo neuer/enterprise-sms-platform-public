@@ -3,6 +3,7 @@ import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref, watch } from "vue"
+import { useRoute } from "vue-router"
 
 import PhoneMask from "../components/PhoneMask.vue"
 import CategoryTag from "../components/CategoryTag.vue"
@@ -23,6 +24,8 @@ import {
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
+// 测试环境未安装路由时 useRoute 返回 undefined；仅用于消费 /batches?batch_no= 深链。
+const route = useRoute()
 
 const items = ref<BatchItem[]>([])
 const total = ref(0)
@@ -307,6 +310,13 @@ function reset(): void {
 
 onMounted(() => {
   void load()
+  // 深链 /batches?batch_no=xxx：从回复页等入口直达批次详情抽屉
+  const target = typeof route?.query.batch_no === "string" ? route.query.batch_no.trim() : ""
+  if (target) {
+    getBatch(target)
+      .then((batch) => openBatch(batch))
+      .catch(() => ElMessage.error("未找到对应批次或无权限查看"))
+  }
 })
 
 // 应用下拉仅管理员可用（应用管理接口为管理员域）；懒加载，首次打开更多筛选时拉取

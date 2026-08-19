@@ -95,7 +95,7 @@ class SqlReplyRepository:
                           INSERT INTO reply_event(
                             event_key,event_key_version,raw_id,vendor_task_id,custom_id,
                             phone_enc,phone_hmac,phone_mask,key_version,
-                            ext_code,content,content_enc,reply_time
+                            ext_code,content,content_enc,is_optout,reply_time
                           ) VALUES (
                             CAST(:dedup_hash AS char(64)),
                             CAST(:dedup_key_version AS smallint),:raw_id,
@@ -106,6 +106,7 @@ class SqlReplyRepository:
                             CAST(:key_version AS smallint),
                             CAST(:ext_code AS varchar(8)),
                             '[encrypted]',CAST(:content_enc AS bytea),
+                            CAST(:is_optout AS boolean),
                             CAST(:reply_time AS timestamptz)
                           )
                           ON CONFLICT(event_key) DO NOTHING
@@ -151,6 +152,7 @@ class SqlReplyRepository:
                         "key_version": reply.key_version,
                         "ext_code": reply.ext_code,
                         "content_enc": reply.content_enc,
+                        "is_optout": reply.is_optout,
                         "reply_time": reply.reply_time,
                         "dedup_hash": reply.dedup_hash,
                         "dedup_key_version": reply.dedup_key_version,
