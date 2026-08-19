@@ -76,6 +76,7 @@ const snapshot = {
     dispositions: { uncertain: 1, unmatched: 3, callback_dead: 4 },
     jobs: [
       { job_name: "poll_report", last_run_at: "2026-07-12T07:59:30+08:00", last_status: "success", stalled: false },
+      { job_name: "poll_balance", last_run_at: "2026-07-12T09:20:00+08:00", last_status: "success", stalled: false },
       { job_name: "aggregate_stats", last_run_at: null, last_status: null, stalled: true },
     ],
   },
@@ -109,6 +110,7 @@ describe("仪表盘", () => {
     expect(wrapper.get("[data-testid='metric-messages']").attributes("href")).toBe("/reports")
     expect(wrapper.get("[data-testid='metric-success']").attributes("href")).toBe("/reports")
     expect(wrapper.get("[data-testid='metric-approvals']").attributes("href")).toBe("/approvals")
+    expect(wrapper.get("[data-testid='metric-balance']").attributes("href")).toBe("/reports")
     expect(wrapper.get("[data-testid='channel-monitor-link']").attributes("href")).toBe("/ops?tab=queue")
     expect(wrapper.get("[data-testid='disposition-uncertain']").attributes("href")).toBe("/ops?tab=uncertain")
     expect(wrapper.get("[data-testid='disposition-unmatched']").attributes("href")).toBe("/ops?tab=unmatched")
@@ -124,13 +126,12 @@ describe("仪表盘", () => {
     expect(wrapper.text()).toContain("告警阈值 8,800")
     expect(wrapper.text()).toContain("日均消耗 ≈ 800")
     expect(wrapper.text()).toContain("预计可用约 11 天")
+    expect(wrapper.text()).toContain("余额轮询")
+    expect(wrapper.text()).toContain("正常 · 09:20")
     expect(wrapper.text()).toContain("4")
     expect(wrapper.text()).toContain("5 / 8")
     expect(wrapper.text()).not.toContain("令牌容量未接入当前 API")
-    const balanceOption = chart.setOption.mock.calls
-      .map((call) => call[0])
-      .find((option) => option.series?.[0]?.markLine)
-    expect(balanceOption.series[0].markLine.data[0].yAxis).toBe(8800)
+    expect(wrapper.get("[data-testid='balance-spark']").attributes("height")).toBe("64")
     const trendOption = chart.setOption.mock.calls
       .map((call) => call[0])
       .find((option) => Array.isArray(option.series) && option.series.length === 3)
@@ -139,11 +140,11 @@ describe("仪表盘", () => {
     expect(trendOption.series[0].data).toEqual([2, 3, 2, 3, 2, 3, 3])
     expect(wrapper.text()).toContain("余额较低")
     expect(wrapper.text()).toContain("uncertain")
-    expect(wrapper.text()).toContain("1 / 2 正常")
+    expect(wrapper.text()).toContain("2 / 3")
+    expect(wrapper.text()).toContain("正常")
     expect(wrapper.text()).toContain("aggregate_stats")
     expect(wrapper.text()).toContain("聚合最近三日的消息统计并写入每日统计数据")
-    expect(wrapper.findAll(".job-item")).toHaveLength(1)
-    expect(wrapper.findAll(".job-dot.danger")).toHaveLength(1)
+    expect(wrapper.findAll(".job-alert")).toHaveLength(1)
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/reports/dashboard",
       expect.objectContaining({ method: "GET" }),
@@ -235,25 +236,14 @@ describe("仪表盘", () => {
 })
 
 describe("余额图表", () => {
-  it("配置 14 日折线与余额阈值并在卸载时释放", async () => {
+  it("用 64px sparkline 画出 14 日余额走势", () => {
     const wrapper = mount(BalanceChart, {
-      props: { points: snapshot.operations.balances, threshold: 10000 },
+      props: { points: snapshot.operations.balances },
     })
-    await flushPromises()
-    expect(chart.setOption).toHaveBeenCalled()
-    const option = chart.setOption.mock.calls.at(-1)?.[0]
-    expect(option.series[0].markLine.data[0].yAxis).toBe(10000)
-    expect(option.series[0].data).toEqual([9800, 9000])
-    wrapper.unmount()
-    expect(chart.dispose).toHaveBeenCalled()
-  })
-
-  it("未提供动态阈值时不绘制固定告警线", async () => {
-    chart.setOption.mockClear()
-    const wrapper = mount(BalanceChart, { props: { points: snapshot.operations.balances } })
-    await flushPromises()
-    const option = chart.setOption.mock.calls.at(-1)?.[0]
-    expect(option.series[0].markLine).toBeUndefined()
+    const spark = wrapper.get("[data-testid='balance-spark']")
+    expect(spark.attributes("height")).toBe("64")
+    expect(wrapper.get("polyline").attributes("points")).toContain(",")
+    expect(wrapper.get("polygon").attributes("points")).toContain("280,64")
     wrapper.unmount()
   })
 })

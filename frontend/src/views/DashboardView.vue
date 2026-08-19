@@ -36,6 +36,15 @@ const balanceThresholdLabel = computed(() => balanceThreshold.value === null
   : `告警阈值 ${balanceThreshold.value.toLocaleString()}`)
 const stalledJobs = computed(() => operations.value?.jobs.filter((item) => item.stalled) ?? [])
 const healthyJobCount = computed(() => (operations.value?.jobs.length ?? 0) - stalledJobs.value.length)
+const balancePollJob = computed(() => operations.value?.jobs.find((item) => item.job_name === "poll_balance") ?? null)
+const balancePollLabel = computed(() => {
+  const job = balancePollJob.value
+  if (!job) return "尚未登记"
+  const clock = job.last_run_at ? formatTime(job.last_run_at).slice(11, 16) : ""
+  if (job.stalled) return clock ? `异常 · ${clock}` : "异常"
+  if (!job.last_run_at) return "尚未运行"
+  return `正常 · ${clock}`
+})
 
 /** 由 14 日余额快照推导日均消耗与预计可用天数；余额回升或样本不足时不估算。 */
 const balanceStats = computed(() => {
@@ -142,7 +151,9 @@ onBeforeUnmount(() => {
     <section class="dashboard-metrics" aria-label="今日关键指标">
       <router-link to="/reports" class="metric-link" data-testid="metric-messages">
         <el-card shadow="never" class="metric-card primary">
-          <span>今日消息</span><strong>{{ totalMessages.toLocaleString() }}</strong>
+          <span>今日消息</span>
+          <span class="kpi-go">→ 报表</span>
+          <strong>{{ totalMessages.toLocaleString() }}</strong>
           <small>{{ totalSegments.toLocaleString() }} 计费条</small>
           <div class="category-strip" aria-label="分类消息量">
             <span v-for="item in snapshot.categories" :key="item.category" :class="item.category" :style="{ flexGrow: Math.max(item.total, 1) }" :title="`${categoryLabels[item.category]} ${item.total}`"></span>
@@ -152,7 +163,9 @@ onBeforeUnmount(() => {
       </router-link>
       <router-link to="/reports" class="metric-link" data-testid="metric-success">
         <el-card shadow="never" class="metric-card">
-          <span>送达成功率</span><strong>{{ (snapshot.overall_success_rate * 100).toFixed(1) }}%</strong>
+          <span>送达成功率</span>
+          <span class="kpi-go">→ 报表</span>
+          <strong>{{ (snapshot.overall_success_rate * 100).toFixed(1) }}%</strong>
           <small>delivered / (delivered + failed)</small>
           <div class="rate-rows" aria-label="分类目成功率">
             <div v-for="item in snapshot.categories" :key="item.category" class="rate-row">
@@ -165,40 +178,51 @@ onBeforeUnmount(() => {
       </router-link>
       <router-link to="/approvals" class="metric-link" data-testid="metric-approvals">
         <el-card shadow="never" class="metric-card warning">
-          <span>待审批</span><strong>{{ snapshot.pending_approvals.toLocaleString() }}</strong>
+          <span>待审批</span>
+          <span class="kpi-go">→ 审批</span>
+          <strong>{{ snapshot.pending_approvals.toLocaleString() }}</strong>
           <small>当前权限范围</small><p>及时处理避免发送窗口顺延</p>
         </el-card>
       </router-link>
-      <el-card
-        v-if="operations"
-        shadow="never"
-        class="metric-card"
-        :class="{ danger: operations.current_balance !== null && balanceThreshold !== null && operations.current_balance < balanceThreshold }"
-      >
-        <span>厂商余额</span><strong>{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
-        <small>计费条</small><p>{{ balanceThresholdLabel }}</p>
-        <p class="balance-runway">{{ balanceRunwayLabel }}</p>
-      </el-card>
+      <router-link v-if="operations" to="/reports" class="metric-link" data-testid="metric-balance">
+        <el-card
+          shadow="never"
+          class="metric-card"
+          :class="{ danger: operations.current_balance !== null && balanceThreshold !== null && operations.current_balance < balanceThreshold }"
+        >
+          <span>厂商余额</span>
+          <span class="kpi-go">→ 余额</span>
+          <strong>{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
+          <small>计费条 · {{ balanceThresholdLabel }}</small>
+          <p class="balance-runway">{{ balanceRunwayLabel }}</p>
+        </el-card>
+      </router-link>
     </section>
 
     <section class="dashboard-main-grid" :class="{ 'single-column': !operations }">
       <el-card shadow="never" class="dashboard-panel trend-panel">
         <template #header><div class="panel-title"><div><strong>近 7 日发送趋势</strong><small>按类目 · 消息条数</small></div><router-link to="/reports" class="panel-jump">报表 →</router-link></div></template>
         <TrendChart v-if="snapshot.trend?.length" :points="snapshot.trend" />
+        <div v-if="snapshot.trend?.length" class="trend-legend">
+          <span><i class="verify"></i>验证码</span>
+          <span><i class="notice"></i>通知</span>
+          <span><i class="market"></i>营销</span>
+        </div>
         <EmptyState v-else title="趋势暂不可用" description="统计聚合任务每日运行后生成趋势。" />
       </el-card>
       <el-card v-if="operations" shadow="never" class="dashboard-panel balance-panel">
-        <template #header><div class="panel-title"><div><strong>厂商余额</strong><small>近 14 个自然日 · 每日末值</small></div><span>单位：计费条</span></div></template>
+        <template #header><div class="panel-title"><div><strong>厂商余额</strong><small>近 14 日 · 每日末值</small></div><router-link to="/reports" class="panel-jump">详情 →</router-link></div></template>
         <template v-if="operations.balances.length">
           <div class="balance-summary">
-            <strong class="balance-now">{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
+            <strong class="balance-now">{{ operations.current_balance?.toLocaleString() ?? '—' }}<small>计费条</small></strong>
+            <BalanceChart :points="operations.balances" />
             <div class="balance-meta">
               <div><span>告警阈值</span><b>{{ balanceThreshold?.toLocaleString() ?? '—' }}</b></div>
-              <div><span>日均消耗</span><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : '—' }}</b></div>
-              <div><span>预计可用</span><b>{{ balanceStats?.runway != null ? `≈ ${balanceStats.runway} 天` : '—' }}</b></div>
+              <div><span>日均消耗（14 日）</span><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : '—' }}</b></div>
+              <div><span>预计可用</span><b :class="{ warn: balanceStats?.runway != null && balanceStats.runway <= 30 }">{{ balanceStats?.runway != null ? `≈ ${balanceStats.runway} 天` : '—' }}</b></div>
+              <div><span>余额轮询</span><b :class="{ warn: balancePollJob?.stalled }">{{ balancePollLabel }}</b></div>
             </div>
           </div>
-          <BalanceChart :points="operations.balances" :threshold="balanceThreshold" />
         </template>
         <EmptyState v-else title="尚无余额快照" description="余额轮询任务成功后会生成每日趋势。" />
       </el-card>
@@ -255,13 +279,17 @@ onBeforeUnmount(() => {
         </el-card>
 
         <el-card shadow="never" class="dashboard-panel jobs-panel">
-          <template #header><div class="panel-title"><div><strong>任务健康</strong><small>超过预期间隔 ×2 或最近失败为异常</small></div><router-link to="/ops?tab=jobs" class="panel-jump">{{ healthyJobCount }} / {{ operations.jobs.length }} 正常</router-link></div></template>
-          <div v-if="stalledJobs.length" class="job-grid stalled-only">
-            <article v-for="job in stalledJobs" :key="job.job_name" class="job-item stalled">
-              <i class="job-dot danger"></i><div><code>{{ job.job_name }}</code><p class="job-description">{{ jobDescription(job.job_name) }}</p><time>{{ formatTime(job.last_run_at) }}</time></div>
-            </article>
+          <template #header><div class="panel-title"><div><strong>任务健康</strong><small>超过预期间隔 ×2 或最近失败为异常</small></div><router-link to="/ops?tab=jobs" class="panel-jump">全部任务 →</router-link></div></template>
+          <div class="jobs-sum">
+            <b>{{ healthyJobCount }}<span> / {{ operations.jobs.length }}</span></b>
+            <span>正常</span>
           </div>
-          <p v-else class="jobs-ok">全部任务均在预期间隔内运行。</p>
+          <article v-for="job in stalledJobs" :key="job.job_name" class="job-alert">
+            <code>{{ job.job_name }}</code>
+            <p>{{ jobDescription(job.job_name) }}</p>
+            <time>最后运行 {{ formatTime(job.last_run_at) }}</time>
+          </article>
+          <p class="jobs-ok">{{ stalledJobs.length ? '其余任务均在预期间隔内运行；默认只显示异常项，不再平铺全部。' : '全部任务均在预期间隔内运行。' }}</p>
         </el-card>
       </section>
     </template>

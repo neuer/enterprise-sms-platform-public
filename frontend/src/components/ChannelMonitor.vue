@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed } from "vue"
 
 const props = withDefaults(defineProps<{
   realtimeQueue?: number | null
@@ -23,9 +23,6 @@ const props = withDefaults(defineProps<{
   stale: true,
 })
 
-const clock = ref("")
-let clockTimer: number | undefined
-
 const realtimeLoad = computed(() => `${Math.min(100, (props.realtimeQueue ?? 0) * 2.2)}%`)
 const bulkLoad = computed(() => `${Math.min(100, (props.bulkQueue ?? 0) / 60)}%`)
 const usedTokens = computed(() => {
@@ -39,19 +36,24 @@ const degradedMessage = computed(() => {
   if (props.degradedReason === "redis_unavailable") return "Redis 运行快照读取失败（控制快照不可用）"
   return "Redis 运行快照暂不可用"
 })
+const qpsTitle = computed(() => {
+  if (props.reservedRealtimeQps === null) return undefined
+  return `实时通道预留 ${props.reservedRealtimeQps} QPS`
+})
 
 function displayNumber(value: number | null): string {
   return value === null ? "—" : value.toLocaleString()
 }
 
-function updateClock(): void {
-  clock.value = new Intl.DateTimeFormat("zh-CN", {
+function formatClock(value: string | null): string {
+  if (!value) return "—"
+  return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
-  }).format(new Date())
+  }).format(new Date(value))
 }
 
 function formatTimestamp(value: string | null): string {
@@ -67,15 +69,6 @@ function formatTimestamp(value: string | null): string {
     hour12: false,
   }).format(new Date(value)).replaceAll("/", "-")
 }
-
-onMounted(() => {
-  updateClock()
-  clockTimer = window.setInterval(updateClock, 1_000)
-})
-
-onBeforeUnmount(() => {
-  if (clockTimer !== undefined) window.clearInterval(clockTimer)
-})
 </script>
 
 <template>
@@ -84,64 +77,50 @@ onBeforeUnmount(() => {
     :class="['channel-monitor', { 'monitor-stale': stale }]"
     aria-label="短信信道实时监视"
   >
-    <header class="monitor-header">
-      <span class="monitor-live"><i aria-hidden="true"></i>{{ stale ? '数据暂不可用' : 'LIVE' }}</span>
-      <time class="num">{{ clock }}</time>
-    </header>
+    <span class="monitor-live"><i aria-hidden="true"></i>{{ stale ? '数据暂不可用' : 'LIVE' }}</span>
 
-    <div class="monitor-lanes">
-      <article class="monitor-lane realtime">
-        <div><span>REALTIME / 实时通道</span><strong class="num">{{ displayNumber(realtimeQueue) }}</strong></div>
-        <div class="monitor-track" aria-hidden="true"><i :style="{ width: realtimeLoad }"></i></div>
-        <small>{{ realtimeQueue === null ? '队列深度暂不可用' : stale ? '上一成功快照' : '验证码与通知优先通道' }}</small>
-      </article>
+    <article class="monitor-lane realtime">
+      <span>REALTIME / 实时通道</span>
+      <strong class="num">{{ displayNumber(realtimeQueue) }}</strong>
+      <div class="monitor-track" aria-hidden="true"><i :style="{ width: realtimeLoad }"></i></div>
+    </article>
 
-      <article class="monitor-lane bulk">
-        <div><span>BULK / 批量通道</span><strong class="num">{{ displayNumber(bulkQueue) }}</strong></div>
-        <div class="monitor-track" aria-hidden="true"><i :style="{ width: bulkLoad }"></i></div>
-        <small>{{ bulkQueue === null ? '队列深度暂不可用' : stale ? '上一成功快照' : '营销批量通道' }}</small>
-      </article>
+    <article class="monitor-lane bulk">
+      <span>BULK / 批量通道</span>
+      <strong class="num">{{ displayNumber(bulkQueue) }}</strong>
+      <div class="monitor-track" aria-hidden="true"><i :style="{ width: bulkLoad }"></i></div>
+    </article>
 
-      <article class="monitor-qps">
-        <div><span>QPS TOKEN</span><strong class="num">{{ qpsUsed ?? '—' }} / {{ qpsRate ?? '—' }}</strong></div>
-        <div class="token-grid" aria-label="QPS 令牌占用">
-          <i v-for="index in 5" :key="index" :class="{ used: !stale && index <= usedTokens }"></i>
-        </div>
-        <small>{{ qpsUsed === null ? '令牌占用暂不可用' : stale ? '上一成功快照' : `实时通道预留 ${reservedRealtimeQps ?? 0} QPS` }}</small>
-      </article>
-    </div>
+    <article class="monitor-qps" :title="qpsTitle">
+      <div>
+        <span>QPS TOKEN</span>
+        <strong class="num">{{ qpsUsed ?? '—' }} / {{ qpsRate ?? '—' }}</strong>
+      </div>
+      <div class="token-grid" aria-label="QPS 令牌占用">
+        <i v-for="index in 5" :key="index" :class="{ used: !stale && index <= usedTokens }"></i>
+      </div>
+    </article>
+
+    <time class="chan-time num">最近更新 {{ formatClock(stale ? lastSuccessfulAt : refreshedAt) }}</time>
 
     <p v-if="stale" class="monitor-degraded">
       {{ degradedMessage }}；界面保留灰态并隐藏未知值，不伪造运行指标。
       <span>最近成功：{{ formatTimestamp(lastSuccessfulAt) }}；可点击顶部“刷新”重试。</span>
     </p>
-    <span v-else-if="refreshedAt" class="monitor-refreshed num">最近更新 {{ formatTimestamp(refreshedAt) }}</span>
   </section>
 </template>
 
 <style scoped>
 .channel-monitor {
-  position: relative;
-  padding: 18px 22px;
-  overflow: hidden;
+  display: grid;
+  grid-template-columns: auto 1fr 1fr 190px auto;
+  gap: 16px 24px;
+  align-items: center;
+  padding: 13px 20px;
   color: var(--tx);
-  background:
-    radial-gradient(700px 140px at 88% -30%, rgba(18, 130, 104, 0.16), transparent 70%),
-    linear-gradient(180deg, var(--panel), var(--panel-2));
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
   border: 1px solid var(--hair);
   border-radius: 12px;
-}
-
-.monitor-header,
-.monitor-lane > div:first-child,
-.monitor-qps > div:first-child {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.monitor-header {
-  margin-bottom: 13px;
 }
 
 .monitor-live {
@@ -164,28 +143,23 @@ onBeforeUnmount(() => {
   animation: monitor-pulse 2.4s infinite;
 }
 
-.monitor-header time,
-.monitor-refreshed {
-  color: var(--tx-2);
-  font-size: 10px;
-}
-
-.monitor-lanes {
-  display: grid;
-  grid-template-columns: 1fr 1fr 320px;
-  gap: 28px;
-}
-
 .monitor-lane,
 .monitor-qps {
   min-width: 0;
+}
+
+.monitor-lane {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: center;
 }
 
 .monitor-lane span,
 .monitor-qps span {
   color: #71c4ad;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
 }
 
@@ -196,23 +170,22 @@ onBeforeUnmount(() => {
 .monitor-lane strong,
 .monitor-qps strong {
   color: var(--tx-hi);
-  font-size: 21px;
+  font-size: 16px;
   font-weight: 600;
 }
 
-.monitor-lane small,
-.monitor-qps small {
-  color: var(--tx-2);
-  font-size: 10.5px;
+.monitor-qps strong {
+  font-size: 13px;
 }
 
 .monitor-track {
-  height: 10px;
-  margin: 8px 0 6px;
+  grid-column: 1 / -1;
+  height: 6px;
+  margin-top: 5px;
   overflow: hidden;
   background: var(--sink);
-  border: 1px solid var(--hair);
-  border-radius: 5px;
+  border: 1px solid var(--hair-2);
+  border-radius: 3px;
 }
 
 .monitor-track i {
@@ -220,39 +193,47 @@ onBeforeUnmount(() => {
   height: 100%;
   background: linear-gradient(90deg, var(--verdi), var(--verdi-l));
   transition: width 900ms cubic-bezier(0.4, 0, 0.2, 1);
-  transform-origin: left;
 }
 
 .monitor-lane.bulk .monitor-track i {
   background: linear-gradient(90deg, #8a5309, var(--amber));
 }
 
-.monitor-qps {
-  padding-left: 28px;
-  border-left: 1px solid var(--hair);
+.monitor-qps > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .token-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
-  margin: 8px 0 6px;
+  gap: 5px;
+  margin-top: 5px;
 }
 
 .token-grid i {
-  height: 26px;
+  height: 14px;
   background: var(--sink);
-  border: 1px solid var(--hair);
-  border-radius: 5px;
+  border: 1px solid var(--hair-2);
+  border-radius: 4px;
 }
 
 .token-grid i.used {
   background: linear-gradient(180deg, #12a17e, #0a5a49);
-  box-shadow: 0 0 12px rgba(18, 161, 126, 0.4);
+  box-shadow: 0 0 10px rgba(18, 161, 126, 0.35);
+}
+
+.chan-time {
+  color: var(--tx-3);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .monitor-degraded {
-  margin: 13px 0 0;
+  grid-column: 1 / -1;
+  margin: 0;
   color: var(--tx-2);
   font-size: 10.5px;
 }
@@ -282,13 +263,25 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1080px) {
-  .monitor-lanes { grid-template-columns: 1fr 1fr; }
-  .monitor-qps { grid-column: 1 / -1; padding: 14px 0 0; border-top: 1px solid var(--hair); border-left: 0; }
+  .channel-monitor {
+    grid-template-columns: auto 1fr 1fr;
+  }
+
+  .monitor-qps,
+  .chan-time {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 680px) {
-  .channel-monitor { padding: 16px; }
-  .monitor-lanes { grid-template-columns: 1fr; gap: 16px; }
-  .monitor-qps { grid-column: auto; }
+  .channel-monitor {
+    grid-template-columns: 1fr;
+    padding: 14px 16px;
+  }
+
+  .monitor-qps,
+  .chan-time {
+    grid-column: auto;
+  }
 }
 </style>

@@ -18,11 +18,12 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
     for (const path of ["src/components/ReportTrendChart.vue", "src/components/BalanceChart.vue"]) {
       const component = source(path)
       expect(component).toContain('from "../lib/chartTheme"')
-      expect(component).toContain("CHART_TOOLTIP_STYLE")
+      expect(component).toContain("CHART_COLORS")
       for (const lightHex of ["#0e7a63", "#a8650b", "#5b6862", "#d3d8d1", "#e9ece8"]) {
         expect(component).not.toContain(lightHex)
       }
     }
+    expect(source("src/components/ReportTrendChart.vue")).toContain("CHART_TOOLTIP_STYLE")
   })
 
   it("工作区页面不自带 main 包装：骨架只由 App.vue 提供", () => {
