@@ -26,9 +26,22 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("批次详情使用 560px 抽屉和结果构成区", () => {
     const view = source("src/views/BatchView.vue")
+    const workspace = source("src/styles/workspace.css")
     expect(view).toContain('size="min(560px, 92vw)"')
     expect(view).toContain('class="batch-hero"')
     expect(view).toContain("构成非成功率")
+    expect(view).toContain("batch-filter-bar")
+    expect(view).toContain("batch-facts")
+    expect(view).toContain("batch-scope")
+    expect(view).toContain("共 {{ total }} 个批次 · 每页 20")
+    expect(view).toContain("当前口径 ·")
+    expect(view).toContain("class=\"batch-note\"")
+    expect(view).not.toContain("batch-donut")
+    expect(view).not.toContain("<el-segmented")
+    expect(view).not.toContain("退订语")
+    expect(view).not.toContain("risk_first")
+    expect(workspace).toMatch(/\.compose\s*\{[^}]*height:\s*7px/s)
+    expect(workspace).toMatch(/\.batch-facts\s*\{[^}]*grid-template-columns:\s*1fr 1fr/s)
   })
 
   it("审批中心使用单一列表组件并按需解密正文", () => {
