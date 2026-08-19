@@ -1,86 +1,45 @@
 <script setup lang="ts">
-import { LineChart } from "echarts/charts"
-import { GridComponent, MarkLineComponent, TooltipComponent } from "echarts/components"
-import * as echarts from "echarts/core"
-import { CanvasRenderer } from "echarts/renderers"
-import { onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed } from "vue"
 
 import type { DashboardBalancePoint } from "../api/dashboard"
-import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
+import { CHART_COLORS } from "../lib/chartTheme"
 
-echarts.use([LineChart, GridComponent, MarkLineComponent, TooltipComponent, CanvasRenderer])
+const props = defineProps<{ points: DashboardBalancePoint[] }>()
 
-const props = withDefaults(defineProps<{ points: DashboardBalancePoint[]; threshold?: number | null }>(), {
-  threshold: null,
-})
+const WIDTH = 280
+const HEIGHT = 64
+const PAD_TOP = 4
+const PAD_BOTTOM = 12
 
-const root = ref<HTMLElement | null>(null)
-let chart: echarts.ECharts | null = null
-
-function render(): void {
-  if (!chart) return
-  chart.setOption({
-    animation: false,
-    grid: { top: 24, right: 22, bottom: 30, left: 58 },
-    tooltip: {
-      trigger: "axis",
-      valueFormatter: (value: unknown) => Number(value).toLocaleString(),
-      ...CHART_TOOLTIP_STYLE,
-    },
-    xAxis: {
-      type: "category",
-      boundaryGap: false,
-      data: props.points.map((item) => item.stat_date.slice(5)),
-      axisLine: { lineStyle: { color: CHART_COLORS.axisLine } },
-      axisLabel: { color: CHART_COLORS.text, fontFamily: "IBM Plex Mono" },
-    },
-    yAxis: {
-      type: "value",
-      scale: true,
-      splitLine: { lineStyle: { color: CHART_COLORS.splitLine, type: "dashed" } },
-      axisLabel: { color: CHART_COLORS.text, formatter: (value: number) => value.toLocaleString() },
-    },
-    series: [{
-      name: "剩余计费条",
-      type: "line",
-      smooth: 0.2,
-      symbol: "circle",
-      symbolSize: 6,
-      data: props.points.map((item) => item.balance),
-      lineStyle: { width: 2, color: CHART_COLORS.green },
-      itemStyle: { color: CHART_COLORS.green },
-      areaStyle: { color: CHART_COLORS.greenArea },
-      ...(props.threshold === null ? {} : { markLine: {
-        silent: true,
-        symbol: "none",
-        label: { formatter: "告警阈值", color: CHART_COLORS.amber },
-        lineStyle: { color: CHART_COLORS.amber, type: "dashed" },
-        data: [{ yAxis: props.threshold }],
-      } }),
-    }],
+const spark = computed(() => {
+  const values = props.points.map((item) => item.balance)
+  if (values.length === 0) return { line: "", area: "" }
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = max - min || 1
+  const plotHeight = HEIGHT - PAD_TOP - PAD_BOTTOM
+  const last = values.length - 1
+  const coords = values.map((value, index) => {
+    const x = last === 0 ? WIDTH / 2 : (index / last) * WIDTH
+    const y = PAD_TOP + (1 - (value - min) / span) * plotHeight
+    return `${x.toFixed(1)},${y.toFixed(1)}`
   })
-}
-
-function resize(): void {
-  chart?.resize()
-}
-
-onMounted(() => {
-  if (!root.value) return
-  chart = echarts.init(root.value)
-  render()
-  window.addEventListener("resize", resize)
-})
-
-watch(() => [props.points, props.threshold], render, { deep: true })
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", resize)
-  chart?.dispose()
-  chart = null
+  const line = coords.join(" ")
+  return { line, area: `${line} ${WIDTH},${HEIGHT} 0,${HEIGHT}` }
 })
 </script>
 
 <template>
-  <div ref="root" class="balance-chart" role="img" aria-label="最近十四日厂商余额走势"></div>
+  <svg
+    class="balance-spark"
+    data-testid="balance-spark"
+    viewBox="0 0 280 64"
+    width="100%"
+    height="64"
+    role="img"
+    aria-label="最近十四日厂商余额走势"
+  >
+    <polygon :points="spark.area" :fill="CHART_COLORS.greenArea" />
+    <polyline :points="spark.line" fill="none" :stroke="CHART_COLORS.green" stroke-width="1.6" />
+  </svg>
 </template>

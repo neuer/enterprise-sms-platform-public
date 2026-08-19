@@ -912,7 +912,7 @@ main {
   margin-top: 4px;
   color: var(--tx-3);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.14em;
 }
 
@@ -970,11 +970,19 @@ main {
 }
 
 .metric-card {
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   border-top: 3px solid var(--line-2);
+}
+
+.kpi-go {
+  color: var(--tx-3);
+  font-size: 11px;
+  letter-spacing: 0;
+  justify-self: end;
 }
 
 .metric-card.primary {
@@ -1024,8 +1032,8 @@ main {
 .category-strip {
   grid-column: 1 / -1;
   display: flex;
-  gap: 2px;
-  height: 5px;
+  gap: 1px;
+  height: 6px;
   margin: 12px 0 7px;
   overflow: hidden;
   border-radius: 3px;
@@ -1107,8 +1115,9 @@ main {
 
 .dashboard-main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.75fr);
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
   gap: 14px;
+  align-items: stretch;
 }
 
 .dashboard-main-grid.single-column {
@@ -1119,28 +1128,89 @@ main {
   border-color: var(--line);
 }
 
+.trend-panel,
+.balance-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.trend-panel .el-card__body,
+.balance-panel .el-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .trend-chart {
+  flex: 1 1 auto;
   width: 100%;
-  height: 260px;
+  min-height: 158px;
+}
+
+.trend-legend {
+  display: flex;
+  flex-shrink: 0;
+  gap: 16px;
+  margin-top: 10px;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.trend-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+
+.trend-legend .verify {
+  background: var(--verdi-l);
+}
+
+.trend-legend .notice {
+  background: var(--slate);
+}
+
+.trend-legend .market {
+  background: var(--amber);
 }
 
 .balance-summary {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 10px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .balance-now {
   color: var(--ink);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 600;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
+}
+
+.balance-now small {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.balance-spark {
+  display: block;
+  width: 100%;
+  height: 64px;
 }
 
 .balance-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
 
@@ -1166,6 +1236,10 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.balance-meta b.warn {
+  color: var(--amber);
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -1187,11 +1261,6 @@ main {
   color: var(--tx-3);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
-}
-
-.balance-chart {
-  width: 100%;
-  height: 260px;
 }
 
 .alert-list {
@@ -1305,14 +1374,62 @@ main {
   outline-offset: 2px;
 }
 
-.job-grid.stalled-only {
-  grid-template-columns: 1fr;
+.jobs-sum {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.jobs-sum b {
+  color: var(--ink);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.jobs-sum b span {
+  color: var(--tx-3);
+  font-size: 15px;
+}
+
+.jobs-sum > span {
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
+.job-alert {
+  margin-top: 10px;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 30%, var(--line));
+  border-radius: 8px;
+}
+
+.job-alert code {
+  color: var(--el-color-danger);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.job-alert p {
+  margin: 2px 0 0;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.job-alert time {
+  display: block;
+  margin-top: 2px;
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
 }
 
 .jobs-ok {
-  margin: 0;
-  color: var(--tx-2);
-  font-size: 11px;
+  margin: 10px 0 0;
+  color: var(--tx-3);
+  font-size: 10.5px;
 }
 
 .job-grid {
@@ -1423,10 +1540,6 @@ main {
 
   .job-grid {
     grid-template-columns: 1fr;
-  }
-
-  .balance-chart {
-    height: 230px;
   }
 
   .panel-title {
@@ -4835,6 +4948,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .page-heading.send-heading { margin-bottom: 14px; }
 .send-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
 .send-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
+.dashboard-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
+.dashboard-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
 
 .el-card,
 .el-dialog,
@@ -4902,15 +5017,19 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .panel-jump:hover { color: var(--tx-hi); }
 .dashboard-metrics { gap: 14px; }
 .metric-card { border-top: 1px solid var(--hair); }
-.metric-card.primary,
-.metric-card.warning,
-.metric-card.danger { border-top-width: 1px; }
+.metric-card.primary { border-top-width: 1px; }
+.metric-card.warning { border-top: 2px solid var(--amber); }
+.metric-card.danger { border-top: 2px solid var(--verm); }
 .metric-card .el-card__body { min-height: 142px; padding: 15px 17px; }
-.metric-card strong { color: var(--tx-hi); font-size: 27px; font-weight: 600; }
+.metric-card strong { color: var(--tx-hi); font-size: 26px; font-weight: 600; }
 .metric-card span,
 .metric-card small { color: var(--tx-2); }
+.kpi-go { color: var(--tx-3); }
 .dashboard-panel,
 .jobs-panel { background: var(--panel); border-color: var(--hair); }
+.jobs-sum b { color: var(--tx-hi); }
+.job-alert { background: rgba(228, 106, 79, 0.06); border-color: rgba(228, 106, 79, 0.3); }
+.job-alert code { color: var(--verm); }
 .disposition-row.active { background: linear-gradient(180deg, #241a17, #1a1513); border-color: rgba(228, 106, 79, 0.5); }
 
 .batch-donut-row { display: flex; gap: 22px; align-items: center; padding: 16px 0; margin-bottom: 16px; border-block: 1px solid var(--hair); }

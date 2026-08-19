@@ -69,7 +69,10 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(monitor).not.toContain("qpsRate: 200")
     expect(monitor).not.toContain("1 格 = 40 条/秒")
     expect(monitor).toContain("transition: width 900ms")
-    expect(monitor).toMatch(/\.monitor-lane small,[\s\S]*?\.monitor-qps small[^}]*color:\s*var\(--tx-2\)/s)
+    expect(monitor).toMatch(/grid-template-columns:\s*auto\s+1fr\s+1fr\s+190px\s+auto/)
+    expect(monitor).toMatch(/\.monitor-track\s*\{[^}]*height:\s*6px/s)
+    expect(monitor).toMatch(/\.token-grid i\s*\{[^}]*height:\s*14px/s)
+    expect(monitor).toMatch(/\.monitor-lane strong,[\s\S]*?\.monitor-qps strong[^}]*font-size:\s*16px/s)
     expect(monitor).toMatch(/\.monitor-degraded[^}]*color:\s*var\(--tx-2\)/s)
   })
 
