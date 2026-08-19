@@ -1,81 +1,56 @@
 <script setup lang="ts">
 import type { SegmentPart } from "../api/webMessages"
 
-defineProps<{ parts: SegmentPart[] }>()
+defineProps<{
+  parts: SegmentPart[]
+  nextHint?: string
+}>()
 </script>
 
 <template>
-  <div class="segment-list" aria-label="服务端计费分段">
-    <div
-      v-for="(part, index) in parts"
-      :key="index"
-      class="segment-part"
-      data-testid="segment-part"
-    >
-      <span
-        class="segment-fill"
-        :class="{ partial: part.partial }"
-        :style="{ width: `${(part.used / part.capacity) * 100}%` }"
-      ></span>
-      <b>{{ index + 1 }}</b>
-      <small>{{ part.used }} / {{ part.capacity }}</small>
-    </div>
-    <div class="segment-part segment-ghost" aria-hidden="true">
-      <b>+1</b>
-      <small>下一段</small>
+  <div class="seg-viz" aria-label="服务端计费分段">
+    <div class="seg-cells">
+      <i
+        v-for="(part, index) in parts"
+        :key="index"
+        class="segment-part"
+        data-testid="segment-part"
+        :class="{ part: part.partial, 'segment-fill': true, partial: part.partial }"
+        :title="`第 ${index + 1} 段 · ${part.used}/${part.capacity} 字`"
+      ></i>
+      <i class="ghost segment-ghost" aria-hidden="true" :title="nextHint || '下一段'"></i>
     </div>
   </div>
 </template>
 
 <style scoped>
-.segment-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
-  gap: 7px;
+.seg-viz {
+  margin: 4px 0 8px;
 }
 
-.segment-part {
-  position: relative;
+.seg-cells {
   display: flex;
-  justify-content: space-between;
-  min-height: 34px;
-  padding: 8px 9px;
-  overflow: hidden;
-  color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
-  border: 1px solid var(--line-2);
-  border-radius: 5px;
+  gap: 4px;
 }
 
-.segment-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  background: color-mix(in srgb, var(--verdi) 14%, transparent);
+.seg-cells i {
+  flex: 1;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--verdi);
 }
 
-.segment-fill.partial {
+.seg-cells i.part {
   background: repeating-linear-gradient(
     135deg,
-    color-mix(in srgb, var(--verdi) 24%, transparent) 0 4px,
-    color-mix(in srgb, var(--verdi) 8%, transparent) 4px 8px
+    var(--verdi) 0 4px,
+    rgba(14, 122, 99, 0.35) 4px 8px
   );
 }
 
-.segment-part b,
-.segment-part small {
-  position: relative;
-}
-
-.segment-part b {
-  color: var(--verdi);
-}
-
-.segment-ghost {
-  border-style: dashed;
-  opacity: 0.55;
-}
-
-.segment-ghost b {
-  color: var(--tx-3);
+.seg-cells i.ghost {
+  flex: 0.6;
+  background: var(--sink);
+  border: 1px dashed var(--hair);
 }
 </style>

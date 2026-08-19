@@ -21,7 +21,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("const submitLabel = computed")
     expect(view).toContain("提交审批")
     expect(view).toContain("立即发送")
-    expect(view).toContain('class="send-preview precheck"')
+    expect(view).toContain("send-preview precheck send-rail")
   })
 
   it("批次详情使用 560px 抽屉和状态统计环", () => {

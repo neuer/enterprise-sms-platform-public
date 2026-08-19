@@ -19,7 +19,7 @@ describe("人工发送工作台", () => {
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.text()).toContain("最多 7 个号码")
+    expect(wrapper.text()).toContain("≤7 个号码")
     expect(wrapper.text()).not.toContain("号码上限以系统参数为准")
     wrapper.unmount()
     vi.unstubAllGlobals()
@@ -35,9 +35,10 @@ describe("人工发送工作台", () => {
       },
     })
 
-    expect(wrapper.findAll("[data-testid='segment-part']")).toHaveLength(2)
-    expect(wrapper.text()).toContain("67 / 67")
-    expect(wrapper.text()).toContain("13 / 67")
+    const parts = wrapper.findAll("[data-testid='segment-part']")
+    expect(parts).toHaveLength(2)
+    expect(parts[0].attributes("title")).toContain("67/67")
+    expect(parts[1].attributes("title")).toContain("13/67")
     // 设计规范：末段斜纹填充，恒显 1 个灰色 ghost 块提示下一段边界
     expect(wrapper.findAll(".segment-fill.partial")).toHaveLength(1)
     expect(wrapper.findAll(".segment-ghost")).toHaveLength(1)
@@ -70,9 +71,9 @@ describe("人工发送工作台", () => {
 
     await wrapper.get("[data-testid='category-market']").trigger("click")
 
-    expect(wrapper.get("[data-testid='market-consent']").text()).toContain("明确同意")
+    expect(wrapper.get("[data-testid='market-consent']").text()).toContain("已同意接收营销信息")
     expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeDefined()
-    expect(wrapper.text()).toContain("同意状态将写入审计")
+    expect(wrapper.text()).toContain("勾选行为与操作人将写入审计日志")
     vi.unstubAllGlobals()
   })
 
@@ -411,9 +412,11 @@ describe("人工发送工作台", () => {
     await pending
     await flushPromises()
 
-    expect(wrapper.text()).toContain("3 有效")
-    expect(wrapper.text()).toContain("1 无效")
-    expect(wrapper.text()).toContain("有效期至")
+    const ready = wrapper.get("[data-testid='import-ready']")
+    expect(ready.text()).toContain("有效")
+    expect(ready.text()).toContain("3")
+    expect(ready.text()).toContain("格式无效")
+    expect(ready.text()).toContain("24 小时内有效")
     wrapper.unmount()
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -437,7 +440,7 @@ describe("人工发送工作台", () => {
     await vi.advanceTimersByTimeAsync(650)
     await flushPromises()
 
-    expect(wrapper.text()).toContain("当前处于营销发送时间窗内")
+    expect(wrapper.text()).toContain("当前处于营销时间窗内")
     const button = wrapper.get("[data-testid='send-button']")
     expect(button.classes()).toContain("approval")
     expect(button.text()).toContain("提交审批")
@@ -468,7 +471,7 @@ describe("人工发送工作台", () => {
     await flushPromises()
 
     expect(bodies.at(-1)?.accepted_count).toBe(2)
-    expect(wrapper.text()).toContain("重复 1 个，提交时由服务端剔除")
+    expect(wrapper.get("[data-testid='audience-removed']").text()).toMatch(/重复\s*1/)
     wrapper.unmount()
     vi.useRealTimers()
     vi.unstubAllGlobals()
