@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 人工发送重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --verdi-08:rgba(14,122,99,.20);
+  --slate:#4574a3; --slate-l:#6f9bcf; --slate-08:rgba(69,116,163,.20);
+  --amber:#d8a35c; --amber-08:rgba(216,163,92,.14);
+  --verm:#e46a4f; --verm-08:rgba(228,106,79,.14);
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--verdi);outline-offset:1px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1180px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1180px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes h3{font-size:12px;color:var(--tx-hi);margin:10px 0 4px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px;white-space:nowrap}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:var(--slate-l);border-color:rgba(111,155,207,.45)}
+
+/* ═══════════ 共享：发送页画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.send{background:var(--bg);padding:20px 26px 28px;min-width:960px}
+.send-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.send-head h1{font-family:var(--serif);font-size:20px;font-weight:600;color:var(--tx-hi)}
+.send-head .sub{color:var(--tx-3);font-size:11px;margin-top:1px}
+.sec-note{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:5px 11px;background:var(--panel-2)}
+.sec-note i{width:7px;height:7px;border-radius:50%;background:var(--verdi-l);box-shadow:0 0 8px rgba(47,161,132,.6)}
+
+.workbench{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:14px;align-items:start}
+.form-col{display:grid;gap:14px}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 18px}
+.panel-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+.panel-head .idx{font:10px/1 var(--mono);color:var(--tx-3);letter-spacing:.1em}
+.panel-head b{color:var(--tx-hi);font-size:13px;font-weight:600}
+.panel-head small{color:var(--tx-3);font-size:10.5px;font-weight:400}
+.panel-head .side{margin-left:auto;font-size:11px;color:var(--tx-3)}
+
+/* 类别卡片 */
+.cat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.cat-card{position:relative;text-align:left;border:1px solid var(--hair);border-radius:10px;background:var(--panel-2);padding:12px 14px 11px 17px;transition:border-color .12s}
+.cat-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:10px 0 0 10px}
+.cat-card.notice::before{background:var(--slate)}
+.cat-card.market::before{background:var(--amber)}
+.cat-card.verify::before{background:var(--verdi)}
+.cat-card b{display:block;font-size:12.5px;color:var(--tx-hi);font-weight:600}
+.cat-card small{display:block;font-size:10.5px;color:var(--tx-3);margin-top:2px;line-height:1.5}
+.cat-card .cat-tag{font:10px/1.9 var(--mono);padding:0 7px;border-radius:4px;margin-left:8px;vertical-align:1px}
+.cat-card.notice .cat-tag{color:var(--slate-l);background:var(--slate-08)}
+.cat-card.market .cat-tag{color:var(--amber);background:var(--amber-08)}
+.cat-card.verify .cat-tag{color:var(--verdi-l);background:var(--verdi-08)}
+.cat-card.on{border-color:var(--amber);background:linear-gradient(180deg,rgba(216,163,92,.07),transparent 60%)}
+.cat-card.notice.on{border-color:var(--slate);background:linear-gradient(180deg,rgba(69,116,163,.09),transparent 60%)}
+.cat-card[disabled]{opacity:.42;cursor:not-allowed}
+.cat-card .why{display:block;margin-top:5px;font-size:10px;color:var(--tx-3)}
+
+/* 分段切换 */
+.seg{display:inline-flex;background:var(--sink);border:1px solid var(--hair);border-radius:8px;padding:2px;gap:2px}
+.seg button{padding:4px 14px;border-radius:6px;font-size:11.5px;color:var(--tx-2)}
+.seg button.on{background:var(--panel);color:var(--tx-hi);border:1px solid var(--hair)}
+
+/* 输入控件 */
+textarea,select,.ipt{width:100%;background:var(--sink);border:1px solid var(--hair);border-radius:8px;color:var(--tx);padding:9px 12px;font:inherit;font-size:12.5px;resize:vertical}
+textarea:focus,select:focus,.ipt:focus{border-color:var(--verdi);outline:none}
+textarea::placeholder,.ipt::placeholder{color:var(--tx-3)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* 号码统计行 */
+.phone-stats{display:flex;align-items:center;gap:16px;margin-top:8px;padding:8px 12px;background:var(--panel-2);border:1px solid var(--hair-2);border-radius:8px;font-size:11.5px;color:var(--tx-2)}
+.phone-stats b{font-family:var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.phone-stats .bad b{color:var(--verm)}
+.phone-stats .act{margin-left:auto;display:flex;gap:12px}
+.phone-stats .act button{font-size:11px;color:var(--verdi-l)}
+
+/* 导入状态 */
+.import-box{margin-top:10px;border:1px dashed var(--hair);border-radius:10px;padding:14px}
+.import-ready{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.import-ready .cell span{display:block;font-size:10px;color:var(--tx-3)}
+.import-ready .cell b{font:15px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.import-ready .cell.bad b{color:var(--verm)}
+.import-ready .act{margin-left:auto;display:flex;gap:12px}
+.import-ready .act button{font-size:11px;color:var(--verdi-l)}
+.import-meta{margin-top:10px;font-size:10.5px;color:var(--tx-3)}
+.import-processing{display:flex;align-items:center;gap:12px}
+.import-processing .spin{width:14px;height:14px;border:2px solid var(--hair);border-top-color:var(--verdi-l);border-radius:50%}
+.import-processing p{font-size:12px;color:var(--tx-2)}
+.import-processing small{font-size:10.5px;color:var(--tx-3)}
+
+/* 模板参数 */
+.tpl-params{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.tpl-render{margin-top:10px;background:var(--sink);border:1px solid var(--hair-2);border-radius:8px;padding:10px 12px}
+.tpl-render span{font-size:10px;color:var(--tx-3);letter-spacing:.08em}
+.tpl-render p{font-size:12.5px;color:var(--tx);margin-top:3px}
+.tpl-render p em{font-style:normal;color:var(--slate-l);background:var(--slate-08);border-radius:3px;padding:0 3px}
+
+/* 选项区 */
+.opt-row{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+.opt{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--tx)}
+.opt small{display:block;color:var(--tx-3);font-size:10.5px}
+.opt input[type=checkbox]{margin-top:3px;accent-color:var(--verdi)}
+.opt .bad{color:var(--verm)}
+
+/* ═══════════ 右栏：确认区 ═══════════ */
+.rail{position:sticky;top:14px;display:grid;gap:12px}
+.rail .panel{padding:13px 16px}
+.rail .panel-head{margin-bottom:9px}
+.rail .panel-head b{font-size:12px}
+
+/* 最终内容预览 */
+.final-body{background:var(--sink);border:1px solid var(--hair-2);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.7;color:var(--tx-hi)}
+.final-body .sign{color:var(--verdi-l);border-bottom:1px dashed rgba(47,161,132,.5)}
+.final-body .suffix{color:var(--amber);border-bottom:1px dashed rgba(216,163,92,.55)}
+.final-meta{display:flex;justify-content:space-between;align-items:center;margin-top:7px;font-size:10.5px;color:var(--tx-3)}
+.final-meta .legend{display:flex;gap:12px}
+.final-meta .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.final-meta .legend .g{background:var(--verdi-l)}
+.final-meta .legend .a{background:var(--amber)}
+
+/* 受众 */
+.audience{display:flex;align-items:baseline;gap:10px}
+.audience strong{font:600 26px/1.1 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.audience span{font-size:11px;color:var(--tx-3)}
+.removed{display:flex;gap:14px;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-2)}
+.removed b{font-family:var(--mono);color:var(--tx)}
+.removed small{color:var(--tx-3)}
+
+/* 计费 */
+.seg-viz{margin:4px 0 8px}
+.seg-cells{display:flex;gap:4px}
+.seg-cells i{flex:1;height:16px;border-radius:4px;background:var(--verdi)}
+.seg-cells i.part{background:repeating-linear-gradient(135deg,var(--verdi) 0 4px,rgba(14,122,99,.35) 4px 8px)}
+.seg-cells i.ghost{flex:.6;background:var(--sink);border:1px dashed var(--hair)}
+.cost-line{display:flex;align-items:baseline;gap:8px;margin-top:6px}
+.cost-line .fx{font:11.5px var(--mono);color:var(--tx-2);font-variant-numeric:tabular-nums}
+.cost-line strong{font:600 20px/1 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.cost-line strong small{font-size:10.5px;color:var(--tx-3);font-weight:400;margin-left:4px}
+.boundary{font-size:10.5px;color:var(--tx-3);margin-top:5px}
+
+/* 配额 */
+.quota-row{display:flex;justify-content:space-between;font-size:11px;color:var(--tx-2);margin-bottom:5px}
+.quota-row b{font-family:var(--mono);color:var(--tx);font-variant-numeric:tabular-nums}
+.quota-bar{height:7px;border-radius:4px;background:var(--sink);border:1px solid var(--hair-2);overflow:hidden;display:flex}
+.quota-bar .used{height:100%;background:var(--slate)}
+.quota-bar .this{height:100%;background:repeating-linear-gradient(135deg,var(--amber) 0 4px,rgba(216,163,92,.45) 4px 8px)}
+.quota-foot{display:flex;justify-content:space-between;margin-top:5px;font-size:10px;color:var(--tx-3)}
+.quota-degraded{padding:8px 10px;background:var(--panel-2);border:1px solid var(--hair-2);border-radius:8px;font-size:11px;color:var(--tx-2)}
+.quota-degraded b{color:var(--amber);font-weight:500}
+
+/* 风险合规行 */
+.risk-lines{display:grid;gap:6px}
+.risk{display:flex;gap:8px;align-items:flex-start;font-size:11.5px;padding:7px 10px;border-radius:8px;border:1px solid var(--hair-2);background:var(--panel-2)}
+.risk i{flex:none;width:7px;height:7px;border-radius:50%;margin-top:6px}
+.risk.warn{border-color:rgba(216,163,92,.4);background:var(--amber-08)}
+.risk.warn i{background:var(--amber)}
+.risk.ok i{background:var(--verdi-l)}
+.risk.info i{background:var(--slate-l)}
+.risk b{color:var(--tx-hi);font-weight:500}
+.risk small{display:block;color:var(--tx-2);font-size:10.5px}
+
+/* 同意框 */
+.consent{border:1px solid rgba(216,163,92,.5);background:var(--amber-08);border-radius:10px;padding:11px 14px;display:flex;gap:9px;align-items:flex-start}
+.consent input{margin-top:3px;accent-color:var(--amber)}
+.consent b{color:var(--tx-hi);font-size:12px;font-weight:600}
+.consent p{font-size:10.5px;color:var(--tx-2);margin-top:2px}
+
+/* 提交 */
+.submit{width:100%;height:40px;border-radius:9px;background:var(--verdi);color:#eaf1ed;font-size:13.5px;font-weight:600;transition:background .12s}
+.submit:hover{background:#0f8a6f}
+.submit[disabled]{background:var(--panel-2);color:var(--tx-3);border:1px solid var(--hair);cursor:not-allowed;font-weight:500}
+.submit.warn{background:#9a6b2a}
+.submit.warn:hover{background:#b07c33}
+.submit-foot{text-align:center;font-size:10.5px;color:var(--tx-3);margin-top:7px}
+
+/* 成功结果卡 */
+.result{border:1px solid rgba(47,161,132,.45);background:linear-gradient(180deg,rgba(14,122,99,.12),transparent 70%);border-radius:10px;padding:12px 14px}
+.result .r-head{display:flex;align-items:center;gap:8px}
+.result .r-head i{width:8px;height:8px;border-radius:50%;background:var(--verdi-l);box-shadow:0 0 8px rgba(47,161,132,.6)}
+.result .r-head b{color:var(--tx-hi);font-size:12.5px}
+.result .batch{display:flex;align-items:center;gap:8px;margin-top:9px;background:var(--sink);border:1px solid var(--hair-2);border-radius:7px;padding:7px 10px}
+.result .batch code{font:12px var(--mono);color:var(--tx-hi)}
+.result .batch button{margin-left:auto;font-size:10.5px;color:var(--verdi-l);border:1px solid var(--hair);border-radius:5px;padding:2px 8px}
+.result .r-stats{display:flex;gap:13px;margin-top:9px;font-size:10.5px;color:var(--tx-2)}
+.result .r-stats b{font-family:var(--mono);color:var(--tx)}
+.result .r-acts{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}
+.result .r-acts button{height:30px;border-radius:7px;font-size:11.5px;border:1px solid var(--hair);background:var(--panel);color:var(--tx)}
+.result .r-acts button.pri{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+
+/* ═══════════ 状态带 ═══════════ */
+.state-band{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:0 28px}
+.state-cell{border:1px solid var(--hair-2);border-radius:12px;background:var(--bg);padding:12px}
+.state-cell>h4{font:10px/1.5 var(--mono);letter-spacing:.12em;color:var(--tx-3);font-weight:400;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--hair-2)}
+
+/* ═══════════ 方案 B：向导 ═══════════ */
+.steps{display:flex;gap:0;margin-bottom:16px;border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+.step{flex:1;display:flex;align-items:center;gap:10px;padding:11px 16px;background:var(--panel-2);border-right:1px solid var(--hair-2)}
+.step:last-child{border-right:0}
+.step .n{font:11px/1 var(--mono);width:22px;height:22px;border-radius:50%;border:1px solid var(--hair);display:grid;place-items:center;color:var(--tx-3)}
+.step b{font-size:12px;color:var(--tx-2);font-weight:500}
+.step small{display:block;font-size:10px;color:var(--tx-3)}
+.step.now{background:var(--panel)}
+.step.now .n{border-color:var(--verdi-l);color:var(--verdi-l)}
+.step.now b{color:var(--tx-hi)}
+.step.done .n{background:var(--verdi);border-color:var(--verdi);color:#eaf1ed}
+.wiz-foot{display:flex;justify-content:space-between;margin-top:14px}
+.wiz-foot .btn{padding:8px 22px;border:1px solid var(--hair);border-radius:8px;background:var(--panel);font-size:12.5px}
+.wiz-foot .btn.pri{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+
+/* ═══════════ 对比表 ═══════════ */
+.cmp-wrap{margin:14px 28px 30px;max-width:1180px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:18px 0 8px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{border:1px solid var(--hair-2);padding:8px 12px;text-align:left;vertical-align:top;color:var(--tx-2)}
+.cmp th{color:var(--tx-hi);background:var(--panel-2);font-weight:600}
+.cmp td b{color:var(--tx)}
+.cmp code{font-family:var(--mono);font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>人工发送 · 重设计原型</b>
+  <span>评审稿 v1 · 仅结构与交互设计，示例数据为虚构 · 设计令牌以 docs/ui-design.md 为准</span>
+  <em>2026-08-19 · docs/previews/send-redesign-prototype.html</em>
+</div>
+
+<div class="notes">
+  <h2>为什么重构：现状问题清单（均对照 frontend/src/views/SendView.vue 与后端契约核实）</h2>
+  <h3>P0 · 正确性</h3>
+  <ul>
+    <li><b>窗外转定时提交后才知道</b>：<code>deferred_reason</code> 已在 preview 契约中声明，但服务端 build_billing_preview 恒返回 null，营销窗外提交前无任何提示。<span class="need ext">preview 实算</span></li>
+  </ul>
+  <h3>P1 · 体验断点</h3>
+  <ul>
+    <li><b>文件导入无过程反馈</b>：api 层 uploadPhones 已有轮询，但 <code>:show-file-list="false"</code> 下最长 120s 页面毫无动静；解析失败还丢弃服务端 <code>error</code> 原因，只给笼统文案。需要显式的 解析中 → 就绪/失败 状态机。<span class="need ok">端点已有，前端补状态机</span></li>
+    <li>预检依赖手动点"更新预检"，表单变更后旧结果无 stale 标记，用户可能看着过期预检提交。<span class="need calc">防抖自动预检 + 过期标记</span></li>
+    <li>用户看不到<b>最终下发内容</b>（签名前置 + 退订语自动追加后的完整文本），预检只有数字；退订语 suffix 文本在服务端 sys_config，前端无法自拼。<span class="need ext">preview 返回 final_content</span></li>
+    <li>配额余量提交前不可见，超额只能等提交后 429。<span class="need ext">preview 返回部门配额摘要</span></li>
+    <li>提交成功只有一行 alert：无批次号复制、无批次跳转、无"再发一批"重置，幂等命中淹没在长文本里。<span class="need ok">纯前端</span></li>
+    <li>签名为自由文本输入，易写错格式（缺【】、未过审）。<span class="need ok">改已过审签名下拉，GET /web/signs 已有</span></li>
+    <li>测试发送 ≤5 号码上限只在提交时被服务端拒绝，页面无联动校验。<span class="need calc">前端即时校验</span></li>
+    <li>粘贴号码无实时统计（总数/去重/格式无效），剔除结果提交后才知道。<span class="need calc">前端实时统计</span></li>
+  </ul>
+  <h3>P2 · 表达</h3>
+  <ul>
+    <li>market 同意勾选挂在类别区，离其声明对象（本次发送的号码+内容整体）太远；移到提交前与审计说明同屏，语义更准。</li>
+    <li>提交成功后按钮文案变成"已受理 · 写入审计"但表单未重置，状态语义混乱；改为显式结果卡。</li>
+  </ul>
+  <h3>方案概览</h3>
+  <ul>
+    <li><b>方案 A · 确认式双栏（推荐）</b>：保留现状左右分栏骨架，左栏只负责"填"，右栏 sticky 收敛为"确认区"——最终内容预览 → 受众与剔除 → 计费算式 → 配额条 → 风险合规行 → 同意勾选 → 提交。提交前一切需确认的信息在同一栏一屏内。</li>
+    <li><b>方案 B · 三步向导</b>：类别号码 → 内容签名 → 预检提交，每步校验门禁。对新操作员更友好，但牺牲密度、与平台"信息密度优先"立场相悖，作对照。</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════ 方案 A ═══════════════════ -->
+<div class="stage-label">方案 A — 确认式双栏　FORM LEFT · CONFIRM RAIL RIGHT（推荐 · 主态：营销类需审批）</div>
+<p class="variant-caption">
+  主态故意选信息最全的场景：营销类 + 粘贴 5,003 行 + 内容 86 字（2 计费段）+ 达审批阈值。右栏即"提交前确认单"：用户实收内容、剔除、计费、配额、合规风险、同意声明与提交动作纵向收敛。预检改为输入防抖 600ms 自动触发，下方所有数据同源一次 preview 调用。
+</p>
+<div class="viewport">
+  <div class="send">
+    <header class="send-head">
+      <div>
+        <p class="eyebrow">DELIVERY / 人工下发</p>
+        <h1>人工发送</h1>
+        <p class="sub">号码仅在受控内存中处理，计费、审批与时间窗均由服务端裁决。</p>
+      </div>
+      <span class="sec-note"><i></i> 敏感数据保护已启用 · 预检自动更新</span>
+    </header>
+
+    <div class="workbench">
+      <!-- ──── 左栏：填写区 ──── -->
+      <div class="form-col">
+
+        <section class="panel">
+          <div class="panel-head"><span class="idx">01</span><b>消息类别</b><small>类别策略矩阵决定队列、时间窗、审批与频控</small></div>
+          <div class="cat-grid">
+            <button class="cat-card notice">
+              <b>通知短信<span class="cat-tag">NOTICE</span></b>
+              <small>实时通道 · 黑名单默认拦截<br>≥100 号码需审批</small>
+            </button>
+            <button class="cat-card market on">
+              <b>营销短信<span class="cat-tag">MARKET</span></b>
+              <small>批量通道 · 08:00–21:00 · 强制退订语<br>≥50 号码需审批 · 同号同应用 1 条/天</small>
+            </button>
+            <button class="cat-card verify" disabled>
+              <b>验证码<span class="cat-tag">VERIFY</span></b>
+              <small>仅 API 渠道开放</small>
+              <span class="why">Web 人工发送不可用</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><span class="idx">02</span><b>收信号码</b><small>单次最多 50,000 个</small>
+            <span class="side"><span class="seg"><button class="on">手工粘贴</button><button>文件导入</button></span></span>
+          </div>
+          <textarea rows="5" placeholder="每行一个手机号，也支持逗号或空格分隔">&lt;测试号码1&gt;
+&lt;测试号码2&gt;
+&lt;测试号码3&gt;
+…（共 5,003 行）</textarea>
+          <div class="phone-stats">
+            <span>共 <b>5,003</b></span>
+            <span>去重后 <b>4,986</b></span>
+            <span class="bad">格式无效 <b>0</b></span>
+            <span>重复 <b>17</b></span>
+            <span class="act"><button>移除重复</button></span>
+            <span class="need calc">前端实时统计</span>
+          </div>
+
+          <!-- 导入态（默认收起，此处并置供评审；实现时与粘贴互斥） -->
+          <div class="import-box" style="margin-top:12px">
+            <div class="import-ready">
+              <div class="cell"><span>有效</span><b>48,112</b></div>
+              <div class="cell bad"><span>格式无效</span><b>326</b></div>
+              <div class="cell bad"><span>重复</span><b>1,204</b></div>
+              <div class="cell bad"><span>黑名单</span><b>58</b></div>
+              <div class="act"><button>下载剔除清单</button><button>重新上传</button></div>
+            </div>
+            <p class="import-meta">members-0820.xlsx · 解析完成 · 导入包 24 小时内有效（至 2026-08-20 09:41）· 频控剔除在受理时判定<span class="need ok">导入状态机 · 端点已有</span></p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><span class="idx">03</span><b>发送内容</b><small>最终内容（含签名与退订语）不超过 500 字</small>
+            <span class="side"><span class="seg"><button class="on">直接编辑</button><button>审核模板</button></span></span>
+          </div>
+          <textarea rows="4" maxlength="500">盛夏会员日，全场茶礼 8 折起，储值再加赠 10%。活动时间 8 月 20 日至 8 月 31 日，会员中心与线下门店同步参与，详询门店店员。</textarea>
+
+          <!-- 模板态（并置供评审，实现时互斥） -->
+          <div class="tpl-params" style="margin-top:10px;opacity:.55">
+            <select disabled><option>T-018 会员活动邀约（已过审）· 模板态示意</option></select>
+            <input class="ipt" disabled placeholder="参数 {1}，最多 10 字">
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+            <div>
+              <select><option>签名：【示例集团】（已过审）</option><option>签名：【示例集团市场部】（已过审）</option><option>不指定 · 用应用默认签名</option></select>
+              <span class="need ok">改下拉 · GET /web/signs 已有</span>
+            </div>
+            <input class="ipt" placeholder="发送备注（可选，写入批次与审计）" maxlength="200">
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><span class="idx">04</span><b>发送选项</b></div>
+          <div class="opt-row">
+            <label class="opt"><input type="checkbox"><span>定时发送<small>不勾选为立即发送；营销窗外自动转定时</small></span></label>
+            <input class="ipt" style="max-width:230px" placeholder="选择时间（可选）" value="">
+            <label class="opt"><input type="checkbox"><span>测试发送<small>≤5 个号码 · 豁免营销时间窗 · 其余管控照常</small></span></label>
+          </div>
+        </section>
+      </div>
+
+      <!-- ──── 右栏：确认区（sticky） ──── -->
+      <aside class="rail">
+
+        <section class="panel">
+          <div class="panel-head"><b>最终内容预览</b><small>用户实收</small><span class="need ext">preview 返回 final_content</span></div>
+          <div class="final-body"><span class="sign">【示例集团】</span>盛夏会员日，全场茶礼 8 折起，储值再加赠 10%。活动时间 8 月 20 日至 8 月 31 日，会员中心与线下门店同步参与，详询门店店员。<span class="suffix">回T退订</span></div>
+          <div class="final-meta">
+            <div class="legend"><span><i class="g"></i>签名</span><span><i class="a"></i>退订语 · 服务端自动追加</span></div>
+            <span class="mono">86 字 · 2 段</span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><b>受众</b></div>
+          <div class="audience"><strong>4,982</strong><span>受理号码（去重与黑名单剔除后）</span></div>
+          <div class="removed">
+            <span>重复 <b>17</b></span>
+            <span>黑名单 <b>4</b></span>
+            <span>频控 <small>受理时判定</small></span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><b>计费</b><small>services/billing.py 单点口径</small></div>
+          <div class="seg-viz">
+            <div class="seg-cells"><i></i><i class="part" title="第 2 段 · 19/67 字"></i><i class="ghost" title="再 49 字进入第 3 段"></i></div>
+          </div>
+          <div class="cost-line">
+            <span class="fx">4,982 × 2 段 =</span>
+            <strong>9,964<small>计费条</small></strong>
+          </div>
+          <p class="boundary">第 2 段已用 19/67 字，再增加 49 字进入第 3 段。</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><b>部门日配额</b><span class="need ext">preview 返回配额摘要</span></div>
+          <div class="quota-row"><span>今日已用 / 上限</span><b>3,412 / 20,000</b></div>
+          <div class="quota-bar"><i class="used" style="width:17%"></i><i class="this" style="width:50%"></i></div>
+          <div class="quota-foot"><span>斜纹 = 本批预扣 9,964</span><span>提交后 13,376 / 20,000（67%）</span></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><b>风险与合规</b></div>
+          <div class="risk-lines">
+            <div class="risk warn"><i></i><div><b>达到营销审批阈值（≥50 号码）</b><small>提交后进入待审批队列，通过后排期发送；驳回自动回补配额。</small></div></div>
+            <div class="risk ok"><i></i><div><b>退订语已自动追加</b><small>最终内容末尾由服务端补齐「回T退订」，计费在打码与追加后文本上进行。</small></div></div>
+            <div class="risk info"><i></i><div><b>当前处于营销时间窗内（08:00–21:00）</b><small>窗外提交将自动转次日窗口起点定时，预检会提前提示。</small></div></div>
+          </div>
+        </section>
+
+        <label class="consent">
+          <input type="checkbox" checked>
+          <span><b>我确认以上收信人已同意接收营销信息。</b>
+          <p>勾选行为与操作人将写入审计日志；未确认时平台拒绝受理（422 CONSENT_REQUIRED）。</p></span>
+        </label>
+
+        <div>
+          <button class="submit warn">提交审批 · 9,964 计费条</button>
+          <p class="submit-foot">提交即生成批次并预扣配额 · 24h 幂等键防重复下发</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ 状态带 ═══════════════════ -->
+<div class="stage-label">方案 A · 关键状态带（确认区 / 号码区变体，与主态同构）</div>
+<p class="variant-caption">六张变体覆盖主态之外的全部关键分支：按钮文案随场景切换（立即发送 / 安排发送 / 提交审批）、配额投影降级、导入异步状态机、测试发送联动与提交成功闭环。</p>
+<div class="viewport" style="background:#0b100d">
+  <div class="state-band" style="padding:14px">
+
+    <div class="state-cell">
+      <h4>变体 1 · 通知类免审批 — 立即发送</h4>
+      <div class="risk ok" style="margin-bottom:8px"><i></i><div><b>未达审批阈值（23 &lt; 100）</b><small>提交后直接入队实时通道。</small></div></div>
+      <button class="submit">立即发送 · 23 计费条</button>
+      <p class="submit-foot">预检 600ms 防抖自动更新 · 无需审批</p>
+    </div>
+
+    <div class="state-cell">
+      <h4>变体 2 · 营销窗外 — 自动转定时<span class="need ext">deferred_reason 实算</span></h4>
+      <div class="risk warn" style="margin-bottom:8px"><i></i><div><b>当前处于营销时间窗外（21:00–08:00）</b><small>提交后将转为次日 08:00 定时发送，响应返回 deferred_reason=market_window，到点前可取消。</small></div></div>
+      <button class="submit">安排发送 · 明日 08:00</button>
+      <p class="submit-foot">预检阶段即提示，不再等到提交后</p>
+    </div>
+
+    <div class="state-cell">
+      <h4>变体 3 · 配额投影降级<span class="need ext">配额摘要</span></h4>
+      <div class="quota-degraded" style="margin-bottom:8px"><b>配额投影暂不可确认。</b>用量账本重建中，预览不阻断；提交时以发送入口判定为准（投影缺失时发送入口按规约 503 失败关闭）。</div>
+      <button class="submit">立即发送 · 46 计费条</button>
+      <p class="submit-foot">预览降级 ≠ 发送放行，两口径分离</p>
+    </div>
+
+    <div class="state-cell">
+      <h4>变体 4 · 导入解析中 → 就绪<span class="need ok">GET /messages/import/{id} 轮询</span></h4>
+      <div class="import-box" style="margin-top:0">
+        <div class="import-processing">
+          <span class="spin"></span>
+          <div><p>正在解析 numbers.xlsx …</p><small>已登记 202 · 每 2s 轮询状态 · 大文件流式解析防炸弹</small></div>
+        </div>
+      </div>
+      <p class="submit-foot" style="text-align:left">解析完成切换为主态所示四类计数；失败显示服务端原因并可重新上传。现状 api 层已有轮询但页面无任何过程反馈，本变体补齐状态机。</p>
+    </div>
+
+    <div class="state-cell">
+      <h4>变体 5 · 测试发送联动<span class="need calc">前端即时校验</span></h4>
+      <div class="phone-stats" style="margin-top:0">
+        <span>共 <b>7</b></span><span>去重后 <b>7</b></span>
+        <span class="bad">超出测试上限 <b>7 / 5</b></span>
+      </div>
+      <div class="risk warn" style="margin:8px 0"><i></i><div><b>测试发送最多 5 个号码</b><small>请删减号码，或取消测试发送按正式批次提交。</small></div></div>
+      <button class="submit" disabled>测试发送 · 号码超限</button>
+    </div>
+
+    <div class="state-cell">
+      <h4>变体 6 · 提交成功闭环<span class="need ok">纯前端</span></h4>
+      <div class="result">
+        <div class="r-head"><i></i><b>已受理 · 待审批</b></div>
+        <div class="batch"><code>c81ad02e-…-0007</code><button>复制批次号</button></div>
+        <div class="r-stats"><span>受理 <b>4,982</b></span><span>剔除 <b>21</b></span><span>预扣 <b>9,964</b> 条</span></div>
+        <div class="r-acts"><button class="pri">查看批次</button><button>再发一批</button></div>
+      </div>
+      <p class="submit-foot" style="text-align:left">幂等命中时头部明示"返回历史批次，未重复发送"；「再发一批」重置表单并轮换幂等键。</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════ 方案 B ═══════════════════ -->
+<div class="stage-label">方案 B — 三步向导　GUIDED STEPS（对照方案）</div>
+<p class="variant-caption">
+  把方案 A 的确认区整体后置为第 3 步，前两步每步门禁校验（号码有效才放行、内容非空才放行）。适合低频或新入职操作员；代价是同一信息分三屏、密度低、熟练用户每次多点两下，与平台"信息密度优先"立场相悖，仅作对照。
+</p>
+<div class="viewport">
+  <div class="send">
+    <header class="send-head">
+      <div>
+        <p class="eyebrow">DELIVERY / 人工下发</p>
+        <h1>人工发送</h1>
+        <p class="sub">向导模式 · 每步校验通过后方可继续。</p>
+      </div>
+      <span class="sec-note"><i></i> 敏感数据保护已启用</span>
+    </header>
+
+    <div class="steps">
+      <div class="step now"><span class="n">1</span><div><b>类别与号码</b><small>营销 · 粘贴或导入</small></div></div>
+      <div class="step"><span class="n">2</span><div><b>内容与签名</b><small>模板或自由编辑</small></div></div>
+      <div class="step"><span class="n">3</span><div><b>预检与提交</b><small>方案 A 确认区全宽版</small></div></div>
+    </div>
+
+    <section class="panel">
+      <div class="panel-head"><span class="idx">1/3</span><b>消息类别与收信号码</b></div>
+      <div class="cat-grid" style="margin-bottom:12px">
+        <button class="cat-card notice"><b>通知短信<span class="cat-tag">NOTICE</span></b><small>实时通道 · ≥100 需审批</small></button>
+        <button class="cat-card market on"><b>营销短信<span class="cat-tag">MARKET</span></b><small>批量通道 · 08:00–21:00 · ≥50 需审批</small></button>
+        <button class="cat-card verify" disabled><b>验证码<span class="cat-tag">VERIFY</span></b><small>仅 API 渠道开放</small></button>
+      </div>
+      <textarea rows="5" placeholder="每行一个手机号，也支持逗号或空格分隔"></textarea>
+      <div class="phone-stats">
+        <span>共 <b>5,003</b></span><span>去重后 <b>4,986</b></span><span class="bad">格式无效 <b>0</b></span><span>重复 <b>17</b></span>
+      </div>
+      <div class="wiz-foot">
+        <span></span>
+        <button class="btn pri">下一步 · 内容与签名</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ═══════════════════ 对比与数据需求 ═══════════════════ -->
+<div class="stage-label">方案对比与数据需求</div>
+<div class="cmp-wrap">
+  <h2>布局对比</h2>
+  <table class="cmp">
+    <tr><th style="width:120px"></th><th>现状</th><th>方案 A · 确认式双栏（推荐）</th><th>方案 B · 三步向导</th></tr>
+    <tr><td>骨架</td><td>左表单 + 右预检（数字平铺）</td><td>骨架不变，右栏重构为"确认单"：内容预览/受众/计费/配额/合规/提交纵向收敛</td><td>三步骤串行，确认区后置为第 3 步</td></tr>
+    <tr><td>预检触发</td><td>手动点"更新预检"，过期无提示</td><td>输入防抖 600ms 自动预检 + 失败/过期显式状态</td><td>同 A（第 3 步进入时强制刷新一次）</td></tr>
+    <tr><td>最终内容</td><td>不可见，只有字符数</td><td>mono 预览块，签名/退订语构成高亮</td><td>同 A（第 3 步）</td></tr>
+    <tr><td>文件导入</td><td>上传后计数恒 0，从不轮询，实质不可用</td><td>完整状态机：解析中 → 就绪（四类计数+有效期+剔除清单）→ 失败重传</td><td>同 A（第 1 步内）</td></tr>
+    <tr><td>提交闭环</td><td>一行 alert，无跳转无重置</td><td>结果卡：批次号复制 + 状态 + 剔除明细 + 查看批次 + 再发一批</td><td>同 A</td></tr>
+    <tr><td>适用</td><td>—</td><td>默认形态，熟练操作员高频使用</td><td>新手/低频场景，或培训材料</td></tr>
+  </table>
+
+  <h2>数据需求（对后端的影响：3 项扩展全部集中在 <code>POST /api/v1/web/billing/preview</code> 响应，无新端点）</h2>
+  <table class="cmp">
+    <tr><th style="width:120px">需求</th><th>内容</th><th style="width:400px">来源与说明</th></tr>
+    <tr><td><span class="need ok">现有字段</span></td><td>计费四要素（final_length / est_segments / quota_cost / segment_parts / next_segment_at）、approval_required、unsubscribe_appended；导入四类计数与状态轮询；签名列表；test_send_max</td><td><code>billing/preview</code>、<code>GET /messages/import/{id}</code>、<code>GET /web/signs</code>、dashboard ui_policy —— 全部已有，前端补状态机与轮询即可</td></tr>
+    <tr><td><span class="need calc">前端推导</span></td><td>粘贴实时统计（总数/去重/无效/重复）、测试发送 ≤5 联动校验、600ms 防抖与 stale 管理、结果卡与"再发一批"重置（含幂等键轮换，沿用现有 watch 逻辑）</td><td>纯前端，无后端改动</td></tr>
+    <tr><td><span class="need ext">接口扩展 ×3</span></td><td>① <code>final_content</code>：拼接后全文（签名+正文+退订语），用户本人输入 + 服务端公开配置文本，无新增敏感面；② <code>deferred_reason</code> 实算：market_window 判定所需 policy.market_window 已在 preview 加载链路中，dataclass 字段已预留恒 null；③ <code>quota: {used, limit, remaining}</code> 部门日配额摘要：读用量事实投影，投影不可用时字段为 null，前端配额块降级显示（预览是只读估算，不触发发送入口 fail-closed 规约）</td><td>三处均为响应体增量字段，契约按 AGENTS.md 规则 25 同 commit 回填 openapi.yaml；不改请求体、不改既有字段语义</td></tr>
+  </table>
+
+  <h2>不变量（重构不改变的行为）</h2>
+  <table class="cmp">
+    <tr><td>安全与合规</td><td>手机号不出现在任何持久层与日志（粘贴内容仅内存与当次请求体）；market 未勾选同意 → 422，勾选写审计；测试发送 ≤test_send_max 且仅豁免营销时间窗；审计载荷不含号码列表；批次号/手机号/时间戳一律 mono + tabular-nums。</td></tr>
+    <tr><td>可靠性</td><td>幂等键仍在任何表单变更时轮换（≤32 字符去连字符 UUID），24h 幂等命中返回历史批次；导入 reservation 的 consume/release 语义不变；uncertain 绝不自动重发。</td></tr>
+    <tr><td>契约</td><td>类别仅 notice/market（verify 卡片禁用占位保留）；定时 value-format +08:00；发送与预检的请求体字段不变；现有 data-testid 测试挂钩在实现时保留或迁移，qingluan 结构机判同步更新。</td></tr>
+  </table>
+</div>
+
+</body>
+</html>

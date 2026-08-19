@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import text
@@ -25,7 +26,7 @@ from app.services.outbox_repository import enqueue_outbox
 from app.services.pipeline import BatchCommand, BatchResponse, StoredBatch
 from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_index
 from app.services.template import render_template
-from app.services.usage_ledger import commit_usage_reservation
+from app.services.usage_ledger import commit_usage_reservation, shanghai_day
 from app.settings import Settings, get_settings
 
 
@@ -48,6 +49,26 @@ class SqlPipelineStore:
             )
             config["dept_daily_quota"] = str(quota_result.scalar_one_or_none() or 0)
             return config
+
+    async def read_dept_quota_usage(self, dept: str, *, now: datetime | None = None) -> int:
+        """读取部门当日配额投影绝对值；usage_projection 与事实同事务一致，无行即零。
+
+        只读路径，供发送预检展示配额摘要；发送入口的配额判定仍以
+        usage_ledger 串行事实为准，二者不得互相替代。
+        """
+
+        date_key, _, _ = shanghai_day(now or datetime.now(UTC))
+        async with self._engine().connect() as connection:
+            value = await connection.scalar(
+                text(
+                    """
+                    SELECT value FROM usage_projection
+                    WHERE dimension_key=:key AND expires_at>now()
+                    """
+                ),
+                {"key": f"quota:dept:{dept}:{date_key}"},
+            )
+            return int(value or 0)
 
     async def response_for(self, batch_no: str) -> BatchResponse:
         async with self._engine().connect() as connection:

@@ -12,9 +12,17 @@ defineProps<{ parts: SegmentPart[] }>()
       class="segment-part"
       data-testid="segment-part"
     >
-      <span class="segment-fill" :style="{ width: `${(part.used / part.capacity) * 100}%` }"></span>
+      <span
+        class="segment-fill"
+        :class="{ partial: part.partial }"
+        :style="{ width: `${(part.used / part.capacity) * 100}%` }"
+      ></span>
       <b>{{ index + 1 }}</b>
       <small>{{ part.used }} / {{ part.capacity }}</small>
+    </div>
+    <div class="segment-part segment-ghost" aria-hidden="true">
+      <b>+1</b>
+      <small>下一段</small>
     </div>
   </div>
 </template>
@@ -45,6 +53,14 @@ defineProps<{ parts: SegmentPart[] }>()
   background: color-mix(in srgb, var(--verdi) 14%, transparent);
 }
 
+.segment-fill.partial {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--verdi) 24%, transparent) 0 4px,
+    color-mix(in srgb, var(--verdi) 8%, transparent) 4px 8px
+  );
+}
+
 .segment-part b,
 .segment-part small {
   position: relative;
@@ -52,5 +68,14 @@ defineProps<{ parts: SegmentPart[] }>()
 
 .segment-part b {
   color: var(--verdi);
+}
+
+.segment-ghost {
+  border-style: dashed;
+  opacity: 0.55;
+}
+
+.segment-ghost b {
+  color: var(--tx-3);
 }
 </style>

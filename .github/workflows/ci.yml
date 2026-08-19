@@ -86,12 +86,10 @@ jobs:
             mode=post_merge
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "candidate=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: Checkout full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ steps.dispatch.outputs.candidate }}
       - name: Bind checkout to workflow candidate
         id: bind
         run: |
@@ -160,13 +158,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # 只检出本 run 的 github.sha，不用 job output 当 ref。
+      # workflow_dispatch/schedule 可写默认分支 cache；CodeQL 把 needs.*.outputs
+      # 视为不可信检出，执行仓库脚本时会报 cache poisoning。candidate_sha 仍由
+      # bind 断言等于 HEAD 与 GITHUB_SHA，保证分类与组件证据绑定同一提交。
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind backend evidence to candidate
         id: bind
         run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up Python and uv
@@ -260,11 +261,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind frontend evidence to candidate
         id: bind
         run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up Node.js
@@ -293,11 +293,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind security evidence to candidate
         id: bind
         run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up Python and uv
@@ -343,11 +342,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.changes.outputs.candidate_sha }}
       - name: Bind G2 evidence to candidate
         id: bind
         run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Set up Python and uv
@@ -436,8 +434,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.changes.outputs.candidate_sha }}
+      - name: Bind checkout to workflow candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
       - name: Verify selective CI results
         run: |
           python3 scripts/verify_ci_results.py \
