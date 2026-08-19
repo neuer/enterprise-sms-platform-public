@@ -1428,51 +1428,280 @@ main {
   margin-bottom: 18px;
 }
 
-.report-export-actions {
-  display: flex;
-  gap: 12px;
+.report-scope {
+  display: inline-flex;
   align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--tx-2);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.report-scope i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--verdi-l);
 }
 
 .report-filter-card,
 .report-error,
-.report-summary,
-.report-chart-card,
-.report-table-card {
+.report-kpis,
+.report-main-grid,
+.report-table-card,
+.export-strip {
   margin-bottom: 14px;
 }
 
-.report-summary {
+.report-decrypted {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.report-dirty-hint {
+  margin: 2px 4px 0;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+/* 导出状态条：内联跟随筛选条，替代沉底的独立卡片 */
+.export-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  border-left: 3px solid var(--verdi);
+  font-size: 11.5px;
+  color: var(--tx-2);
+}
+
+.export-strip .export-id,
+.export-strip strong,
+.export-strip small {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.export-strip .export-id {
+  color: var(--tx-3);
+}
+
+.export-strip .export-mode {
+  font-size: 10px;
+  color: var(--tx-3);
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+
+.export-strip .export-download {
+  margin-left: auto;
+}
+
+.export-strip .export-strip-error {
+  flex: 1;
+}
+
+/* KPI 总览：消息数 / 计费条 / 成功率拆解 / 结果构成 */
+.report-kpis {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
-.report-summary .el-card {
-  border-top: 3px solid var(--verdi);
-}
-
-.report-summary .el-card:nth-child(2) {
-  border-top-color: var(--amber);
-}
-
-.report-summary .el-card:nth-child(3) {
-  border-top-color: #35618f;
-}
-
-.report-summary span,
-.report-summary small {
+.report-kpi span,
+.report-kpi small {
   display: block;
   color: var(--tx-3);
   font-size: 10px;
 }
 
-.report-summary strong {
+.report-kpi strong {
   display: block;
   margin: 5px 0 2px;
   font-family: "IBM Plex Mono", monospace;
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-kpi .strong-note {
+  display: inline;
+  margin-left: 7px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.report-kpi .kpi-foot {
+  margin: 8px 0 0;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.report-kpi .kpi-kv {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.report-kpi .kpi-kv b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.report-kpi .kpi-kv b.neg {
+  color: var(--el-color-danger);
+}
+
+.compose-strip {
+  display: flex;
+  gap: 1px;
+  height: 6px;
+  margin-top: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.compose-strip i {
+  display: block;
+  height: 100%;
+}
+
+.compose-strip .d {
+  background: var(--verdi-l);
+}
+
+.compose-strip .f {
+  background: var(--el-color-danger);
+}
+
+.compose-strip .u {
+  background: var(--tx-3);
+}
+
+.kpi-kv.compose {
+  justify-content: space-between;
+}
+
+/* 趋势 + 维度排行 */
+.report-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.report-main-grid .report-chart-card,
+.report-main-grid .report-rank-card {
+  margin-bottom: 0;
+}
+
+.metric-switch {
+  flex: none;
+}
+
+.rank-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rank-list li {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(40px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.rank-list li:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.rank-name {
+  overflow: hidden;
+  color: var(--tx);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.rank-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--verdi-l);
+}
+
+.rank-num {
+  text-align: right;
+}
+
+.rank-num b {
+  display: block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-num small {
+  display: block;
+  color: var(--tx-3);
+  font-size: 9.5px;
+}
+
+.rate-chip {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  line-height: 1.8;
+  white-space: nowrap;
+}
+
+.rate-chip.g {
+  background: rgba(47, 161, 132, 0.13);
+  color: #71c4ad;
+}
+
+.rate-chip.y {
+  background: rgba(216, 163, 92, 0.13);
+  color: var(--amber);
+}
+
+.rate-chip.r {
+  background: rgba(228, 106, 79, 0.13);
+  color: var(--el-color-danger);
+}
+
+.rank-note {
+  margin: 10px 0 0;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.report-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px;
 }
 
 .report-trend-chart {
@@ -1484,46 +1713,44 @@ main {
   padding: 0;
 }
 
+.report-table-card .el-card__header {
+  padding: 12px 18px;
+}
+
+.report-table-card .report-table,
+.report-table-card .report-pager {
+  margin: 0 6px;
+}
+
+.report-table-card .report-table {
+  width: calc(100% - 12px);
+}
+
 .report-mobile-list {
   display: none;
 }
 
-.export-status-card {
-  margin-bottom: 14px;
-  border-left: 3px solid var(--verdi);
-}
+@media (max-width: 1100px) {
+  .report-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 
-.export-status-card > .el-card__body > div {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-}
-
-.export-status-card span,
-.export-status-card strong,
-.export-status-card small {
-  font-family: "IBM Plex Mono", monospace;
-}
-
-.export-status-card small {
-  color: var(--tx-3);
-}
-
-.export-status-card .el-button {
-  margin-left: auto;
+  .report-main-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
-  .report-export-actions {
-    justify-content: space-between;
-    margin-top: 12px;
-  }
-
-  .report-summary {
+  .report-kpis {
     grid-template-columns: 1fr;
   }
 
   .report-filter .filter-actions .el-button {
+    width: 100%;
+  }
+
+  .export-strip .export-download {
+    margin-left: 0;
     width: 100%;
   }
 
@@ -1571,16 +1798,6 @@ main {
     margin: 0;
     color: var(--tx-2);
     font-size: 10px;
-  }
-
-  .export-status-card > .el-card__body > div {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .export-status-card .el-button {
-    width: 100%;
-    margin-left: 0;
   }
 }
 

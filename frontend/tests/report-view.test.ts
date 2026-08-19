@@ -5,7 +5,7 @@ import { vi } from "vitest"
 
 const chart = vi.hoisted(() => ({ setOption: vi.fn(), resize: vi.fn(), dispose: vi.fn() }))
 vi.mock("echarts/core", () => ({ init: vi.fn(() => chart), use: vi.fn() }))
-vi.mock("echarts/charts", () => ({ LineChart: {} }))
+vi.mock("echarts/charts", () => ({ BarChart: {} }))
 vi.mock("echarts/components", () => ({ GridComponent: {}, LegendComponent: {}, TooltipComponent: {} }))
 vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }))
 
@@ -30,6 +30,9 @@ const report = {
   end: "2026-07-12",
   can_export_decrypted: false,
   summary: { total: 15, total_segments: 19, delivered: 11, failed: 3, unknown: 1, success_rate: 11 / 14 },
+  dim_summary: [
+    { dim_value: "7", dim_label: "OA应用", total: 15, total_segments: 19, delivered: 11, failed: 3, unknown: 1, success_rate: 11 / 14 },
+  ],
   items: [
     { period_start: "2026-07-11", dim_value: "7", dim_label: "OA应用", total: 5, total_segments: 6, delivered: 4, failed: 1, unknown: 0, success_rate: 0.8 },
     { period_start: "2026-07-12", dim_value: "7", dim_label: "OA应用", total: 10, total_segments: 13, delivered: 7, failed: 2, unknown: 1, success_rate: 7 / 9 },
@@ -38,7 +41,7 @@ const report = {
 const publicId = "c0a80101-0000-4000-8000-000000000134"
 
 describe("统计报表页", () => {
-  it("展示服务端摘要、双指标和异步明细导出", async () => {
+  it("展示服务端摘要、维度排行和异步明细导出", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(response(report))
       .mockResolvedValueOnce(response({ id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }, 202))
@@ -56,18 +59,25 @@ describe("统计报表页", () => {
 
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(2)
+    // 周期 / 维度 / 趋势指标切换共三组分段控件
+    expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(3)
     expect(wrapper.text()).toContain("统计报表")
+    expect(wrapper.text()).toContain("当前口径")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19")
     expect(wrapper.text()).toContain("78.6%")
+    expect(wrapper.text()).toContain("结果构成")
+    expect(wrapper.text()).toContain("维度排行")
     expect(wrapper.text()).toContain("OA应用")
     expect(wrapper.text()).not.toContain("含明文手机号")
 
     const exportButton = wrapper.findAll("button").find((item) => item.text().includes("导出明细 CSV"))
     await exportButton!.trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("15 行")
+    const strip = wrapper.find('[data-testid="export-strip"]')
+    expect(strip.exists()).toBe(true)
+    expect(strip.text()).toContain("15 行")
+    expect(strip.text()).toContain("掩码导出")
     const downloadButton = wrapper.findAll("button").find((item) => item.text().includes("下载 CSV"))
     await downloadButton!.trigger("click")
     await flushPromises()
@@ -157,6 +167,23 @@ describe("统计报表页", () => {
     vi.unstubAllGlobals()
   })
 
+  it("修改筛选条件后提示已变更且不自动重查", async () => {
+    const fetch = vi.fn().mockResolvedValue(response(report))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain("筛选条件已变更")
+
+    const segmented = wrapper.findAllComponents({ name: "ElSegmented" })
+    await segmented[1].vm.$emit("update:modelValue", "dept")
+    await flushPromises()
+    expect(wrapper.text()).toContain("筛选条件已变更")
+    // 只有首次加载的一次请求，改条件不触发新查询
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes("/reports/stats"))).toHaveLength(1)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("请求失败时显示可重试错误", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "报表暂不可用" }, 500)))
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
@@ -169,12 +196,20 @@ describe("统计报表页", () => {
 })
 
 describe("报表趋势图", () => {
-  it("按周期汇总消息数与计费条双折线", async () => {
-    const wrapper = mount(ReportTrendChart, { props: { items: report.items } })
+  it("按维度堆叠并随指标切换改数", async () => {
+    const wrapper = mount(ReportTrendChart, { props: { items: report.items, metric: "total" } })
     await flushPromises()
-    const option = chart.setOption.mock.calls.at(-1)?.[0]
+    let option = chart.setOption.mock.calls.at(-1)?.[0]
+    expect(option.xAxis.data).toEqual(["2026-07-11", "2026-07-12"])
+    expect(option.series).toHaveLength(1)
+    expect(option.series[0].name).toBe("OA应用")
     expect(option.series[0].data).toEqual([5, 10])
-    expect(option.series[1].data).toEqual([6, 13])
+    expect(option.series[0].stack).toBe("total")
+
+    await wrapper.setProps({ metric: "total_segments" })
+    await flushPromises()
+    option = chart.setOption.mock.calls.at(-1)?.[0]
+    expect(option.series[0].data).toEqual([6, 13])
     wrapper.unmount()
   })
 
@@ -183,6 +218,7 @@ describe("报表趋势图", () => {
     const wrapper = mount(ReportTrendChart, {
       props: {
         items: [report.items[1]],
+        metric: "total",
         start: "2026-07-10",
         end: "2026-07-12",
         granularity: "day",
@@ -192,7 +228,30 @@ describe("报表趋势图", () => {
     const option = chart.setOption.mock.calls.at(-1)?.[0]
     expect(option.xAxis.data).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"])
     expect(option.series[0].data).toEqual([0, 0, 10])
-    expect(option.series[1].data).toEqual([0, 0, 13])
+    wrapper.unmount()
+  })
+
+  it("维度超过六个时 Top 5 之外归并为其他", async () => {
+    chart.setOption.mockClear()
+    const items = [70, 60, 50, 40, 30, 20, 10].map((total, index) => ({
+      period_start: "2026-07-12",
+      dim_value: String(index + 1),
+      dim_label: `应用${index + 1}`,
+      total,
+      total_segments: total,
+      delivered: total,
+      failed: 0,
+      unknown: 0,
+      success_rate: 1,
+    }))
+    const wrapper = mount(ReportTrendChart, { props: { items, metric: "total" } })
+    await flushPromises()
+    const option = chart.setOption.mock.calls.at(-1)?.[0]
+    expect(option.series).toHaveLength(6)
+    expect(option.series.map((serie: { name: string }) => serie.name)).toEqual([
+      "应用1", "应用2", "应用3", "应用4", "应用5", "其他",
+    ])
+    expect(option.series[5].data).toEqual([30])
     wrapper.unmount()
   })
 })
