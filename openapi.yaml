@@ -892,11 +892,16 @@ paths:
   /api/v1/web/approvals:
     get:
       tags: [approval]
-      summary: 待审批/已审批列表
+      summary: 待审批/已审批列表（不含正文；正文走详情端点）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: status, in: query, required: false, schema: { type: string, enum: [pending, approved, rejected, expired], default: pending } }
+        - { name: category, in: query, required: false, schema: { anyOf: [{ type: string, enum: [notice, market] }, { type: 'null' }] } }
+        - { name: dept, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64, description: 按部门模糊匹配（ILIKE） }, { type: 'null' }] } }
+        - { name: q, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64, description: 按申请人模糊匹配（ILIKE） }, { type: 'null' }] } }
+        - { name: sort, in: query, required: false, schema: { anyOf: [{ type: string, enum: [expires_asc, created_desc, decided_desc], description: 缺省：status=pending 按 expires_asc（临期优先），其余按 decided_desc }, { type: 'null' }] } }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 50 } }
       responses:
         '200':
           description: OK
@@ -904,14 +909,28 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [total, items]
+                required: [total, counts, items]
                 properties:
                   total: { type: integer }
+                  counts: { $ref: '#/components/schemas/ApprovalCounts' }
                   items:
                     type: array
-                    items: { $ref: '#/components/schemas/Approval' }
+                    items: { $ref: '#/components/schemas/ApprovalListItem' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/approvals/{id}:
+    get:
+      tags: [approval]
+      summary: 审批单详情（含解密正文，逐条记敏感读审计）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/web/approvals/{id}/decision:
     post:
@@ -931,7 +950,7 @@ paths:
                 action: { type: string, enum: [approve, reject] }
                 reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }], description: 驳回时必填（去空白后非空）；通过时可选填审批意见 }
       responses:
-        '200': { description: 处理成功 }
+        '200': { description: 处理成功, content: { application/json: { schema: { $ref: '#/components/schemas/DecisionOutcome' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -3727,9 +3746,9 @@ components:
         report_desc: { anyOf: [{ type: string }, { type: 'null' }] }
         report_time: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
 
-    Approval:
+    ApprovalListItem:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, content, status, approver, reason, expires_at, decided_at, created_at]
+      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
@@ -3744,13 +3763,59 @@ components:
           anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }]
           description: 审批单创建时固化的号码阈值；旧记录无法重建时为 null
         trigger_threshold_source: { type: string, enum: [snapshot, legacy_unknown] }
-        content: { type: string }
+        batch_status: { type: string, description: 关联批次当前状态 }
+        deferred_reason: { anyOf: [{ type: string }, { type: 'null' }], description: 营销窗外改派定时的原因 }
         status: { type: string, enum: [pending, approved, rejected, expired] }
         approver: { anyOf: [{ type: string }, { type: 'null' }] }
         reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }] }
         expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
         decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
         created_at: { type: string, format: date-time }
+
+    ApprovalDetail:
+      type: object
+      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
+      properties:
+        id: { type: integer }
+        batch_no: { type: string }
+        category: { type: string }
+        applicant: { type: string }
+        dept: { type: string }
+        total: { type: integer }
+        segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
+        estimated_segments: { type: integer, minimum: 1, description: 本批次预计总计费条数 }
+        scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        trigger_threshold:
+          anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }]
+          description: 审批单创建时固化的号码阈值；旧记录无法重建时为 null
+        trigger_threshold_source: { type: string, enum: [snapshot, legacy_unknown] }
+        batch_status: { type: string, description: 关联批次当前状态 }
+        deferred_reason: { anyOf: [{ type: string }, { type: 'null' }], description: 营销窗外改派定时的原因 }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        approver: { anyOf: [{ type: string }, { type: 'null' }] }
+        reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }] }
+        expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
+        decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
+        created_at: { type: string, format: date-time }
+        content: { type: string, description: 解密后的展示正文；仅详情端点返回并逐条记敏感读审计 }
+
+    ApprovalCounts:
+      type: object
+      required: [pending, approved, rejected, expired, pending_urgent]
+      properties:
+        pending: { type: integer }
+        approved: { type: integer }
+        rejected: { type: integer }
+        expired: { type: integer }
+        pending_urgent: { type: integer, description: 待审批且 2 小时内到期的数量 }
+
+    DecisionOutcome:
+      type: object
+      required: [status, batch_status, deferred_reason]
+      properties:
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        batch_status: { type: string, description: 决策后批次状态（queued/scheduled/rejected） }
+        deferred_reason: { anyOf: [{ type: string }, { type: 'null' }], description: 营销窗外改派定时的原因 }
 
     Template:
       type: object

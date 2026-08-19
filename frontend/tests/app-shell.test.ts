@@ -5,6 +5,7 @@ import { vi } from "vitest"
 
 import App from "../src/App.vue"
 import { getDashboard, type DashboardSnapshot } from "../src/api/dashboard"
+import { useApprovalBadgeStore } from "../src/stores/approvalBadge"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "../src/stores/session"
 
 vi.mock("../src/api/dashboard", () => ({ getDashboard: vi.fn() }))
@@ -203,6 +204,54 @@ describe("应用骨架", () => {
     expect(navigation).toContain("签名管理")
     expect(navigation).not.toContain("人工发送")
     expect(navigation).not.toContain("运维中心")
+  })
+
+  it("审批员导航在审批中心项展示待审计数角标，零待审不渲染", async () => {
+    const counts = { pending: 12, approved: 0, rejected: 0, expired: 0, pending_urgent: 3 }
+    const fetch = vi.fn(async (url: string) => {
+      expect(String(url)).toContain("/api/v1/web/approvals?")
+      expect(String(url)).toContain("status=pending")
+      expect(String(url)).toContain("size=1")
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ total: 12, counts, items: [] }),
+      }
+    })
+    vi.stubGlobal("fetch", fetch)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/", component: { template: "<div />" } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 3,
+      identity_id: 13,
+      provider_code: "local",
+      username: "approver01",
+      display_name: "开发审批员",
+      dept: "业务一部",
+      role: "approver",
+    })
+    await router.push("/")
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    await flushPromises()
+
+    const badge = wrapper.get("a[href='/approvals'] .nav-badge")
+    expect(badge.text()).toBe("12")
+    expect(badge.attributes("aria-label")).toContain("12 条待审批")
+
+    useApprovalBadgeStore(pinia).pending = 0
+    await flushPromises()
+    expect(wrapper.find(".nav-badge").exists()).toBe(false)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it("移动导航支持打开、路由后关闭和 Escape 关闭", async () => {

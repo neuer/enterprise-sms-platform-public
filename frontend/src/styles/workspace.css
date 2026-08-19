@@ -142,6 +142,16 @@ button:focus-visible {
   border-color: #3c826f;
 }
 
+.nav-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  color: var(--amber);
+  font: 600 10px/1.6 "IBM Plex Mono", monospace;
+  background: rgba(216, 163, 92, 0.12);
+  border: 1px solid rgba(216, 163, 92, 0.35);
+  border-radius: 999px;
+}
+
 .sidebar-foot {
   margin: auto 8px 0;
   padding-top: 20px;
@@ -2123,6 +2133,32 @@ main {
   margin-bottom: 18px;
 }
 
+.approval-head-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.approval-counts-pill {
+  padding: 5px 11px;
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.approval-counts-pill b {
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.approval-counts-pill .is-hot {
+  color: var(--red);
+}
+
 .approval-role {
   padding: 5px 9px;
   color: var(--verdi);
@@ -2143,22 +2179,71 @@ main {
 }
 
 .approval-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 18px;
+  gap: 10px 14px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--line);
 }
 
-.approval-toolbar > span {
+.approval-status-seg {
+  flex: none;
+}
+
+.approval-seg-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  color: var(--tx-3);
+  font: 9.5px/1.5 "IBM Plex Mono", monospace;
+  background: color-mix(in srgb, var(--tx-3) 12%, transparent);
+  border-radius: 4px;
+}
+
+.approval-seg-count.is-hot {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+}
+
+.approval-seg-urgent {
+  margin-left: 4px;
+  color: var(--red);
+  font: 9.5px/1.5 "IBM Plex Mono", monospace;
+}
+
+.approval-toolbar-fields {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.approval-toolbar-fields > label {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.approval-toolbar .el-select {
+  width: 128px;
+}
+
+.approval-toolbar .el-input {
+  width: 150px;
+}
+
+.approval-toolbar-side {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.approval-poll-hint {
   color: var(--tx-3);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
-}
-
-.approval-toolbar > span b {
-  color: var(--tx);
-  font-size: 15px;
+  white-space: nowrap;
 }
 
 .approval-card .el-alert {
@@ -2166,21 +2251,243 @@ main {
   width: auto;
 }
 
-.approval-card .el-table {
-  --el-table-header-bg-color: #f3f5f2;
-  --el-table-row-hover-bg-color: #f5faf7;
+/* 待审队列与已办表格共用同一列表标记：断点只改布局，不切换 DOM。 */
+.approval-rows {
+  display: grid;
+  gap: 10px;
+  padding: 14px 18px;
 }
 
-.approval-card .el-table__row {
+.approval-queue-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.approval-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.approval-row.is-urgent {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--red) 7%, var(--card)), var(--card) 34%);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+}
+
+.approval-row.is-soon {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
+}
+
+.approval-row.is-mine {
+  opacity: 0.74;
+}
+
+.approval-cd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-cd b {
+  color: var(--tx);
+  font: 600 14px "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-cd span {
+  color: var(--tx-3);
+  font-size: 9.5px;
+}
+
+.approval-row.is-urgent .approval-cd b {
+  color: var(--red);
+}
+
+.approval-row.is-soon .approval-cd b {
+  color: var(--amber);
+}
+
+.approval-row-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.approval-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.approval-batch-no {
+  color: var(--tx);
+  font: 11.5px "IBM Plex Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.approval-sched-chip {
+  padding: 1px 7px;
+  color: var(--tx-3);
+  font: 10px/1.7 "IBM Plex Mono", monospace;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.approval-row-facts {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.approval-row-rule {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.approval-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.approval-expand {
+  padding: 0;
+  color: var(--verdi-l);
+  font-size: 11.5px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
   cursor: pointer;
 }
 
-.approval-mobile-list {
-  display: none;
+.approval-expand:hover {
+  text-decoration: underline;
 }
 
-.batch-cell {
+.approval-avoid-note {
+  padding: 5px 11px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border: 1px dashed var(--line-2);
+  border-radius: 7px;
+}
+
+.approval-quick {
   display: grid;
+  gap: 10px;
+}
+
+.approval-quick-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.approval-quick-tip {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-quick-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approval-rows.is-table {
+  display: block;
+  padding: 0;
+}
+
+.approval-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.approval-table th {
+  padding: 9px 12px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-align: left;
+  white-space: nowrap;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-table td {
+  padding: 10px 12px;
+  color: var(--tx-2);
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-table tbody tr {
+  cursor: pointer;
+}
+
+.approval-table tbody tr:hover {
+  background: color-mix(in srgb, var(--verdi) 5%, var(--card));
+}
+
+.approval-batch-cell {
+  display: grid;
+}
+
+.approval-batch-cell code {
+  color: var(--tx);
+  font: 11px "IBM Plex Mono", monospace;
+}
+
+.approval-batch-cell small,
+.approval-decider small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-decider {
+  display: grid;
+}
+
+.approval-decider b {
+  color: var(--tx);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.approval-dest {
+  color: var(--tx);
+  font-size: 11.5px;
+}
+
+.approval-dest small {
+  display: block;
+  max-width: 230px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--tx-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .table-row-detail {
@@ -2204,39 +2511,6 @@ main {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.batch-cell b {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 11px;
-}
-
-.batch-cell small {
-  color: var(--tx-3);
-  font-size: 10px;
-}
-
-.decider-cell {
-  display: grid;
-}
-
-.decider-cell b {
-  font-size: 12px;
-}
-
-.decider-cell small {
-  color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-}
-
-.approval-expiry.urgent {
-  color: var(--red);
-}
-
-.self-note {
-  color: var(--tx-3);
-  font-size: 11px;
 }
 
 .approval-card .el-pagination {
@@ -2303,12 +2577,48 @@ main {
   border-left-color: var(--amber);
 }
 
-.drawer-actions {
+.approval-content-head {
   display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.approval-content-head em {
+  padding: 1px 6px;
+  color: var(--slate);
+  font: 9px/1.6 "IBM Plex Mono", monospace;
+  font-style: normal;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--slate) 40%, var(--line));
+  border-radius: 4px;
+}
+
+.approval-content-body {
+  min-height: 60px;
+}
+
+.approval-decide-box {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 13px 14px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.approval-decide-hint {
+  display: flex;
+  justify-content: space-between;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-decide-actions {
+  display: flex;
+  gap: 9px;
   justify-content: flex-end;
-  margin-top: 22px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
 }
 
 .template-heading {
@@ -2525,7 +2835,7 @@ main {
     padding-top: 14px;
   }
 
-  .approval-mobile-list,
+  .approval-rows,
   .sign-mobile-list,
   .sensitive-mobile-list,
   .blacklist-mobile-list {
@@ -2767,88 +3077,86 @@ main {
     margin-top: 12px;
   }
 
-  .approval-role {
-    display: inline-block;
+  .approval-head-side {
+    justify-content: flex-start;
     margin-top: 12px;
   }
 
   .approval-toolbar {
     align-items: flex-start;
-    gap: 12px;
-    overflow-x: auto;
   }
 
-  .approval-card .el-table {
-    display: none;
+  .approval-toolbar-side {
+    width: 100%;
+    margin-left: 0;
   }
 
-  .approval-mobile-list {
+  .approval-rows {
+    padding: 12px;
+  }
+
+  .approval-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .approval-cd {
+    flex-direction: row;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .approval-row-actions {
+    justify-content: flex-start;
+  }
+
+  .approval-rows.is-table {
     display: grid;
     gap: 10px;
     padding: 12px;
   }
 
-  .approval-mobile-list article {
-    min-width: 0;
-    padding: 14px;
-    background: var(--surface-soft);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-  }
-
-  .approval-mobile-list article > header,
-  .approval-mobile-list article > footer {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 10px;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .approval-mobile-list article > strong,
-  .approval-mobile-list article > time {
+  .approval-table,
+  .approval-table tbody,
+  .approval-table tr,
+  .approval-table td {
     display: block;
-    margin-top: 10px;
-    overflow-wrap: anywhere;
+    width: 100%;
   }
 
-  .approval-mobile-list article > strong {
-    font-family: var(--mono);
+  .approval-table thead {
+    display: none;
   }
 
-  .approval-mobile-list article > time,
-  .approval-mobile-list dt {
-    color: var(--muted);
-    font-size: 10px;
-  }
-
-  .approval-mobile-list dl {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
-    margin: 12px 0;
-    background: var(--line);
-  }
-
-  .approval-mobile-list dl > div {
+  .approval-table tr {
     min-width: 0;
-    padding: 9px;
+    padding: 12px 14px;
     background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
   }
 
-  .approval-mobile-list dd {
-    margin: 3px 0 0;
-    overflow-wrap: anywhere;
+  .approval-table td {
+    padding: 4px 0;
+    border: 0;
   }
 
-  .approval-mobile-list article > footer {
-    padding-top: 8px;
-    border-top: 1px solid var(--line);
+  .approval-table td::before {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--tx-3);
+    font-size: 9.5px;
+    content: attr(data-label);
   }
 
-  .approval-mobile-actions {
-    display: flex;
-    gap: 8px;
+  .approval-table .approval-open-cell::before {
+    content: none;
+  }
+
+  .approval-dest small {
+    max-width: none;
+    white-space: normal;
   }
 
   .approval-detail-grid {
@@ -3994,7 +4302,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .el-table td.el-table__cell { border-bottom-color: var(--hair-2); }
 
 /* 基础层按卡片定制的浅色表头变量特异性高于上面的 .el-table，需在深色层同特异性收编。 */
-.approval-card .el-table,
 .sign-card .el-table {
   --el-table-header-bg-color: var(--panel-2);
   --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
@@ -4086,20 +4393,42 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .batch-donut-row dt { color: var(--tx-3); }
 .batch-donut-row dd { margin: 0; color: var(--tx); font-family: var(--mono); }
 
-.approval-queue { display: grid; gap: 12px; max-width: 880px; margin-top: 16px; }
-.approval-item { padding: 16px 18px; background: var(--panel); border: 1px solid var(--hair); border-radius: 12px; }
-.approval-item > header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.approval-item > header > span { color: var(--tx-2); font-size: 12px; }
-.approval-item > header time { margin-left: auto; color: var(--tx-3); font: 10.5px var(--mono); }
-.approval-batch { padding: 0; color: #71c4ad; font: 600 13px var(--mono); background: none; border: 0; cursor: pointer; }
-.approval-facts { display: flex; gap: 26px; margin: 12px 0; flex-wrap: wrap; }
-.approval-facts dt { color: var(--tx-3); font-size: 10.5px; letter-spacing: 0.06em; }
-.approval-facts dd { margin: 2px 0 0; color: var(--tx-hi); font: 600 15px var(--mono); }
-.approval-quote { padding: 10px 13px; margin: 0; color: var(--tx); line-height: 1.6; background: var(--panel-2); border: 0; border-left: 2px solid var(--verdi); border-radius: 0 8px 8px 0; }
-.approval-item > footer { display: flex; gap: 10px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
-.approval-compliance { display: flex; gap: 7px; flex-wrap: wrap; }
-.approval-actions { display: flex; gap: 9px; margin-left: auto; }
-.approval-avoid { margin-left: auto; color: var(--amber); background: rgba(216, 163, 92, 0.1); border: 1px dashed rgba(216, 163, 92, 0.4); border-radius: 7px; }
+.approval-counts-pill { color: var(--tx-3); background: var(--panel-2); border-color: var(--hair); }
+.approval-counts-pill b { color: var(--tx-hi); }
+.approval-counts-pill .is-hot { color: var(--verm); }
+.approval-toolbar { border-bottom-color: var(--hair); }
+.approval-toolbar-fields > label,
+.approval-poll-hint { color: var(--tx-3); }
+.approval-seg-count { color: var(--tx-3); background: rgba(255, 255, 255, 0.06); }
+.approval-seg-count.is-hot { color: var(--verm); background: rgba(228, 106, 79, 0.16); }
+.approval-seg-urgent { color: var(--verm); }
+.approval-row { background: var(--panel); border-color: var(--hair); }
+.approval-row.is-urgent { background: linear-gradient(90deg, rgba(228, 106, 79, 0.07), var(--panel) 34%); border-color: rgba(228, 106, 79, 0.45); }
+.approval-row.is-soon { border-color: rgba(216, 163, 92, 0.4); }
+.approval-cd b { color: var(--tx-hi); }
+.approval-cd span { color: var(--tx-3); }
+.approval-row.is-urgent .approval-cd b { color: var(--verm); }
+.approval-row.is-soon .approval-cd b { color: var(--amber); }
+.approval-batch-no { color: #71c4ad; }
+.approval-sched-chip { color: var(--tx-2); border-color: var(--hair); }
+.approval-row-facts { color: var(--tx-2); }
+.approval-row-rule { color: var(--tx-3); }
+.approval-expand { color: var(--verdi-l); }
+.approval-avoid-note { color: var(--tx-3); border-color: var(--hair); }
+.approval-quick-title { color: var(--tx-hi); }
+.approval-quick-tip { color: var(--tx-3); }
+.approval-table th { color: var(--tx-3); background: var(--panel-2); border-bottom-color: var(--hair); }
+.approval-table td { color: var(--tx-2); border-bottom-color: var(--hair-2); }
+.approval-table tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+.approval-batch-cell code { color: var(--tx); }
+.approval-batch-cell small,
+.approval-decider small { color: var(--tx-3); }
+.approval-decider b { color: var(--tx); }
+.approval-dest { color: var(--tx); }
+.approval-dest small { color: var(--tx-3); }
+.approval-decide-box { background: var(--panel-2); border-color: var(--hair); }
+.approval-decide-hint { color: var(--tx-3); }
+.approval-content-head em { color: #93b6e0; border-color: rgba(111, 155, 207, 0.4); }
 
 .circuit-banner { display: flex; gap: 18px; align-items: center; padding: 16px 20px; margin-bottom: 16px; color: #f0e2cb; background: linear-gradient(180deg, #241d12, #1b160f); border: 1px solid rgba(216, 163, 92, 0.4); border-radius: 12px; }
 .circuit-banner.recovered { color: #d9eee7; background: linear-gradient(180deg, #162b23, #13221c); border-color: rgba(47, 161, 132, 0.45); }
