@@ -203,15 +203,16 @@ class MessageQueryModel(BaseModel):
     sender: str | None
 
 
-class MessageQueryPageModel(BaseModel):
-    total: int
-    items: list[MessageQueryModel]
-
-
 class PhoneBadgeModel(BaseModel):
     blacklisted: bool
     blacklist_source: str | None
     recv_30d: int
+
+
+class MessageQueryPageModel(BaseModel):
+    total: int
+    badge: PhoneBadgeModel
+    items: list[MessageQueryModel]
 
 
 class TimelineEventModel(BaseModel):
@@ -529,6 +530,11 @@ async def search_web_messages(
     )
     return MessageQueryPageModel(
         total=result.total,
+        badge=PhoneBadgeModel(
+            blacklisted=result.badge.blacklisted,
+            blacklist_source=result.badge.blacklist_source,
+            recv_30d=result.badge.recv_30d,
+        ),
         items=[
             MessageQueryModel(
                 id=item.id,

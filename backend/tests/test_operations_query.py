@@ -66,7 +66,7 @@ class FakeRepository:
 
     async def search_messages(self, **values: object) -> MessageQueryPage:
         self.calls.append(("search", values))
-        return MessageQueryPage(0, ())
+        return MessageQueryPage(0, (), PhoneBadge(False, None, 0))
 
     async def timeline(self, **values: object) -> Timeline:
         self.calls.append(("timeline", values))
@@ -264,7 +264,12 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
         "display_content_enc": batch_content("BATCH-1", "系统通知"),
         "sender": "通知应用",
     }
-    connection = FakeConnection([FakeResult(scalar=1), FakeResult(rows=[row])])
+    connection = FakeConnection([
+        FakeResult(scalar=1),
+        FakeResult(rows=[row]),
+        FakeResult(rows=[{"source": "manual"}]),
+        FakeResult(scalar=7),
+    ])
     bind(repository, connection)
 
     page = await repository.search_messages(
@@ -279,20 +284,22 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
     )
 
     assert page.total == 1 and page.items[0].phone_mask == "138****8000"
+    assert page.badge == PhoneBadge(True, "manual", 7)
     sql = " ".join(item[0] for item in connection.calls)
     assert "b.dept=:scope_dept" in sql
     assert "b.category=:category" in sql and "m.status=:status" in sql
-    assert all(item[1]["category"] == "notice" for item in connection.calls)
-    assert all(item[1]["status"] == "delivered" for item in connection.calls)
+    search_calls = connection.calls[:2]
+    assert all(item[1]["category"] == "notice" for item in search_calls)
+    assert all(item[1]["status"] == "delivered" for item in search_calls)
     assert "phone_mask" in sql
     assert "phone_enc" not in sql and "phone_hmac AS" not in sql
     assert "13800138000" not in repr(connection.calls)
     assert all(
         "CAST(:start AS timestamptz) IS NULL" in statement
-        for statement, _params in connection.calls
+        for statement, _params in search_calls
     )
     assert all(
-        "CAST(:end AS timestamptz) IS NULL" in statement for statement, _params in connection.calls
+        "CAST(:end AS timestamptz) IS NULL" in statement for statement, _params in search_calls
     )
 
 

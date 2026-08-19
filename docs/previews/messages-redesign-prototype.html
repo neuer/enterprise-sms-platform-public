@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 号码搜索重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:560px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 检索条（单卡片单行） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.phone-input{display:flex;align-items:center;gap:8px;width:250px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px}
+.phone-input:focus-within{border-color:var(--verdi-l);box-shadow:0 0 0 2px rgba(47,161,132,.18)}
+.phone-input b{font:13px var(--mono);letter-spacing:.06em;color:var(--tx-hi);font-weight:500}
+.phone-input .caret{width:1px;height:16px;background:var(--verdi-l)}
+.phone-input .ph{font:12px var(--mono);color:var(--tx-3)}
+.dates{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font:11.5px var(--mono);color:var(--tx)}
+.dates i{color:var(--tx-3);font-style:normal}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search-bar .go{height:34px;display:inline-flex;align-items:center;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 号码徽标条 ═══════════ */
+.phone-badge{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 18px;background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--hair);border-radius:12px}
+.phone-badge .num{font:17px var(--mono);letter-spacing:.08em;color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.phone-badge .num small{font-size:10px;color:var(--tx-3);letter-spacing:.14em;display:block}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.verm{background:rgba(228,106,79,.15);color:#ef9b89;border:1px solid rgba(228,106,79,.35)}
+.tag.gray{background:rgba(255,255,255,.05);color:var(--tx-2);border:1px solid var(--hair)}
+.tag.verdi{background:rgba(47,161,132,.13);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.badge-stat{display:grid;gap:1px}
+.badge-stat span{font-size:10px;color:var(--tx-3)}
+.badge-stat b{font:13px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums;font-weight:500}
+.badge-sep{width:1px;align-self:stretch;background:var(--hair-2)}
+.phone-badge .reveal{margin-left:auto;display:flex;align-items:center;gap:10px}
+.phone-badge .reveal small{font-size:10px;color:var(--tx-3)}
+
+/* toast 样例 */
+.toast{position:absolute;top:18px;right:22px;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.rel{position:relative}
+
+/* ═══════════ 列表视图 ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:9px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t-time{font:11.5px var(--mono);color:var(--tx);white-space:nowrap}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:1px}
+.batch-code{font:10.5px var(--mono);color:var(--tx-2)}
+.cat{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--tx);white-space:nowrap}
+.cat::before{content:"";width:3px;height:12px;border-radius:2px}
+.cat.verify::before{background:var(--verdi-l)} .cat.notice::before{background:var(--slate)} .cat.market::before{background:var(--amber)}
+.msg-content{color:var(--tx);font-size:12.5px;max-width:430px}
+.msg-content .masked{font-family:var(--mono);letter-spacing:.04em}
+.report-desc{display:block;font-size:10.5px;color:var(--verm);margin-top:3px}
+.st{display:inline-block;font:10.5px/1.9 var(--mono);padding:0 8px;border-radius:5px;white-space:nowrap}
+.st.ok{background:rgba(47,161,132,.13);color:#71c4ad}
+.st.bad{background:rgba(228,106,79,.14);color:#ef9b89}
+.st.amb{background:rgba(216,163,92,.13);color:var(--amber)}
+.st.info{background:rgba(255,255,255,.06);color:var(--tx-2)}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{margin-left:auto;display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 时间线视图 ═══════════ */
+.timeline{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:6px 20px 18px}
+.trunc{display:flex;align-items:center;gap:8px;margin:12px 0 0;padding:8px 14px;border:1px solid rgba(216,163,92,.35);background:rgba(216,163,92,.07);border-radius:8px;font-size:11.5px;color:var(--amber)}
+.day{margin-top:16px}
+.day-head{display:flex;align-items:baseline;gap:10px;padding-bottom:8px}
+.day-head h2{font-size:13px;font-weight:600;color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.day-head span{font:10px var(--mono);color:var(--tx-3)}
+.day-head::after{content:"";flex:1;height:1px;background:var(--hair-2);align-self:center}
+.day-body{position:relative;padding-left:18px}
+.day-body::before{content:"";position:absolute;left:5px;top:4px;bottom:8px;width:1px;background:var(--hair)}
+.ev{position:relative;padding:9px 0 9px 12px}
+.ev::before{content:"";position:absolute;left:-16.5px;top:16px;width:7px;height:7px;border-radius:50%;background:var(--panel);border:2px solid var(--tx-3)}
+.ev.out.verify::before{border-color:var(--verdi-l)}
+.ev.out.notice::before{border-color:var(--slate)}
+.ev.out.market::before{border-color:var(--amber)}
+.ev.in{margin-left:24px}
+.ev.in::before{border-color:var(--tx-2)}
+.ev-card{background:var(--panel-2);border:1px solid var(--hair-2);border-radius:9px;padding:9px 13px;max-width:640px}
+.ev.in .ev-card{background:var(--sink)}
+.ev-head{display:flex;align-items:center;gap:10px;margin-bottom:3px}
+.ev-head b{font-size:11.5px;font-weight:600;color:var(--tx-hi)}
+.ev-head time{margin-left:auto;font:10.5px var(--mono);color:var(--tx-3)}
+.ev-card p{font-size:12.5px;color:var(--tx)}
+.ev-foot{display:flex;align-items:center;gap:10px;margin-top:6px;font-size:10.5px;color:var(--tx-3)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+
+@media (max-width:1100px){ .screen{min-width:0} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 号码搜索重设计原型</b>
+  <span>v1 评审稿 · 对应 docs/ui-design.md §7-3a · 路由 /messages</span>
+  <em>2026-08-19 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>视图切换收进检索条</b>：列表 / 时间线改为 seg 分段控件，与统计报表筛选条同一语言；页头不再放两个大按钮。<span class="need calc">前端</span></li>
+  <li><b>号码徽标条两种视图常驻</b>：检索成功后，黑名单状态（verm tag）+ 退订来源 + 近 30 日接收量（mono）固定在结果区顶部，FR-26 要求不再只在时间线可见。列表视图需 <code>/web/messages</code> 响应带回同一 badge 对象。<span class="need ext">契约</span></li>
+  <li><b>授权查看提升到徽标条</b>：精确搜索下号码恒定，解密从逐行眼睛改为徽标条一次操作一次审计；实现复用现有 <code>POST /messages/{id}/phone/decrypt</code>（取当前结果任一行 id；时间线视图先静默拉一页列表取 id），无契约变更；行内不再重复入口。<span class="need ok">现有</span></li>
+  <li><b>列表去重列</b>：移除恒定的「号码」列，时间合并为 mono 单行 + 批次号副行；类别竖条、verify 内容 OTP 等长打码（<code>******</code>）沿用既有规约；failed/unknown 内联厂商回报原文。<span class="need ok">现有</span></li>
+  <li><b>时间线</b>：日分组头（日期 + 星期 + 事件数）+ 1px 垂直细线 + 类别色圆点；下行左对齐带类别竖条，上行回复右缩进 24px、sink 底、前缀「↩ 用户回复」；truncated 时用琥珀提示条如实告知 500 条上限。<span class="need ok">现有</span></li>
+  <li><b>类别/状态筛选收进结果区页脚</b>：与分页同行，只服务当前列表，不再随视图切换显隐。<span class="need calc">前端</span></li>
+  <li><b>空态两行规约</b>：初始态讲「这里会出现什么」，无结果态讲「下一步怎么调」。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：初始态 ════════════════ -->
+<div class="stage-label">SCREEN A · 初始态（未查询）</div>
+<div class="variant-caption">检索条单行承载全部条件；隐私说明沉入条底细字，不占独立卡片。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">PHONE TRACE / 号码轨迹</div>
+      <h1>号码搜索</h1>
+      <div class="sub">跨批次检索单个号码的下行与回复轨迹。手机号只在内存计算 HMAC 精确匹配，不明文持久化。</div>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><span class="ph">输入 11 位手机号</span><span class="caret"></span></div>
+    </label>
+    <label class="fld"><span>时间范围（可选）</span>
+      <div class="dates">开始时间 <i>→</i> 结束时间</div>
+    </label>
+    <label class="fld"><span>视图</span>
+      <div class="seg"><b class="on">列表</b><b>时间线</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+    <p class="privacy-note">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。类别与状态筛选在列表视图结果区提供。</p>
+  </div>
+
+  <div class="empty">
+    <b>尚未查询号码记录</b>
+    <span>输入完整手机号后，这里会出现该号码跨批次的收发轨迹；切换到时间线可一屏还原「我们发了什么、用户回了什么」。</span>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：列表视图（含解密态） ════════════════ -->
+<div class="stage-label">SCREEN B · 列表视图（检索成功 · 未在黑名单 · 已授权解密）</div>
+<div class="variant-caption">徽标条常驻；解密在徽标条完成（approver/admin 可见入口），toast 提示审计留痕；failed/unknown 行内联厂商回报。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast">已解密 · 本次授权查看已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">PHONE TRACE / 号码轨迹</div>
+      <h1>号码搜索</h1>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><b>138 0000 2041</b></div>
+    </label>
+    <label class="fld"><span>时间范围（可选）</span>
+      <div class="dates">2026-08-01 00:00 <i>→</i> 2026-08-19 23:59</div>
+    </label>
+    <label class="fld"><span>视图</span>
+      <div class="seg"><b class="on">列表</b><b>时间线</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+  </div>
+
+  <div class="phone-badge">
+    <div class="num"><small>当前号码 · 已解密</small>138 0000 2041</div>
+    <span class="tag gray">未在黑名单</span>
+    <span class="badge-sep"></span>
+    <div class="badge-stat"><span>近 30 日接收</span><b>47 条</b></div>
+    <div class="badge-sep"></div>
+    <div class="badge-stat"><span>本页结果</span><b>23 / 47 条</b></div>
+    <div class="reveal"><small>解密明文仅存页面内存，刷新即失效</small><span class="btn" disabled>已授权查看</span></div>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr>
+        <th style="width:180px">时间 / 批次</th><th style="width:76px">类别</th><th>内容摘要</th><th style="width:150px">状态</th><th style="width:110px">提交方</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-time">2026-08-19 14:02:11</span><span class="batch-code cell-sub">M20260819003</span></td>
+          <td><span class="cat market">营销</span></td>
+          <td class="msg-content">【青鸾商城】会员日全场满 200 减 40，今晚 24 点截止，回 TD 退订</td>
+          <td><span class="st amb">在途</span></td>
+          <td>运营-王卉</td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-18 09:31:47</span><span class="batch-code cell-sub">N20260818112</span></td>
+          <td><span class="cat notice">通知</span></td>
+          <td class="msg-content">【青鸾物流】您的包裹已到达杭州转运中心，预计明日送达。</td>
+          <td><span class="st ok">已送达</span></td>
+          <td>api · mall-prod</td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-17 20:14:03</span><span class="batch-code cell-sub">V20260817088</span></td>
+          <td><span class="cat verify">验证码</span></td>
+          <td class="msg-content">【青鸾】验证码 <span class="masked">******</span>，5 分钟内有效。请勿泄露。</td>
+          <td><span class="st bad">失败</span><span class="report-desc" title="厂商回报 2026-08-17 20:14:31">UNDELIV · 空号</span></td>
+          <td>api · account-svc</td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-16 11:52:26</span><span class="batch-code cell-sub">N20260816041</span></td>
+          <td><span class="cat notice">通知</span></td>
+          <td class="msg-content">【青鸾物流】您的包裹已签收，如有问题请联系快递员。</td>
+          <td><span class="st info">未知</span><span class="report-desc" title="厂商回报 2026-08-17 23:00:04">72h 未回报，以 reconcile 结论为准</span></td>
+          <td>api · mall-prod</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 47 条记录 · 每页 20</span>
+      <span style="display:flex;gap:8px">
+        <span class="pill" style="font-size:11px;color:var(--tx-2);border:1px solid var(--hair);border-radius:6px;padding:2px 10px">类别：全部 ▾</span>
+        <span class="pill" style="font-size:11px;color:var(--tx-2);border:1px solid var(--hair);border-radius:6px;padding:2px 10px">状态：全部 ▾</span>
+      </span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：时间线视图（黑名单 + 截断） ════════════════ -->
+<div class="stage-label">SCREEN C · 时间线视图（已在黑名单 · 事件截断）</div>
+<div class="variant-caption">日分组 + 垂直细线串联；下行类别色圆点与竖条，回复右缩进 24px；truncated 琥珀条如实告知 500 条上限。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">PHONE TRACE / 号码轨迹</div>
+      <h1>号码搜索</h1>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><b>139****8862</b></div>
+    </label>
+    <label class="fld"><span>时间范围（可选）</span>
+      <div class="dates">2026-07-20 00:00 <i>→</i> 2026-08-19 23:59</div>
+    </label>
+    <label class="fld"><span>视图</span>
+      <div class="seg"><b>列表</b><b class="on">时间线</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+  </div>
+
+  <div class="phone-badge">
+    <div class="num"><small>当前号码</small>139****8862</div>
+    <span class="tag verm">已在黑名单</span>
+    <div class="badge-stat"><span>退订来源</span><b style="font-family:var(--sans)">回复 TD 退订 · 2026-08-18</b></div>
+    <span class="badge-sep"></span>
+    <div class="badge-stat"><span>近 30 日接收</span><b>512 条</b></div>
+    <div class="reveal"><span class="btn">授权查看</span></div>
+  </div>
+
+  <div class="timeline">
+    <div class="trunc">事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</div>
+
+    <section class="day">
+      <div class="day-head"><h2>2026-08-18</h2><span>周二 · 4 事件</span></div>
+      <div class="day-body">
+        <div class="ev out market">
+          <div class="ev-card">
+            <div class="ev-head"><span class="cat market">营销</span><b>下行</b><span class="st ok">已送达</span><time>21:03:44</time></div>
+            <p>【青鸾商城】秋季新品首发，会员专享 8 折起，回 TD 退订</p>
+            <div class="ev-foot"><span class="batch-code">M20260818007</span><span>运营-王卉</span></div>
+          </div>
+        </div>
+        <div class="ev in">
+          <div class="ev-card">
+            <div class="ev-head"><b>↩ 用户回复</b><time>21:17:02</time></div>
+            <p class="mono">TD</p>
+            <div class="ev-foot"><span>已触发退订 · 加入黑名单</span></div>
+          </div>
+        </div>
+        <div class="ev out market">
+          <div class="ev-card">
+            <div class="ev-head"><span class="cat market">营销</span><b>下行</b><span class="st bad">失败</span><time>21:31:20</time></div>
+            <p>【青鸾商城】秋季新品首发，会员专享 8 折起，回 TD 退订</p>
+            <div class="ev-foot"><span class="batch-code">M20260818007</span><span class="report-desc">黑名单拦截 · 未下发厂商</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="day">
+      <div class="day-head"><h2>2026-08-17</h2><span>周一 · 2 事件</span></div>
+      <div class="day-body">
+        <div class="ev out notice">
+          <div class="ev-card">
+            <div class="ev-head"><span class="cat notice">通知</span><b>下行</b><span class="st ok">已送达</span><time>10:05:19</time></div>
+            <p>【青鸾物流】您的包裹已从义乌发出。</p>
+            <div class="ev-foot"><span class="batch-code">N20260817015</span><span>api · mall-prod</span></div>
+          </div>
+        </div>
+        <div class="ev in">
+          <div class="ev-card">
+            <div class="ev-head"><b>↩ 用户回复</b><time>12:40:55</time></div>
+            <p>请问什么时候到？</p>
+            <div class="ev-foot"><span>已入回复查询 · /replies</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：无结果态 ════════════════ -->
+<div class="stage-label">SCREEN D · 无结果态</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路。</div>
+<div class="viewport"><div class="screen">
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><b>137****0000</b></div>
+    </label>
+    <label class="fld"><span>视图</span>
+      <div class="seg"><b class="on">列表</b><b>时间线</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+  </div>
+  <div class="empty">
+    <b>未找到符合条件的记录</b>
+    <span>该号码在所选时间范围内没有收发记录；可扩大时间范围，或核对号码后重试。</span>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表字段全部来自 <code>POST /web/messages</code>（id / phone mask / status / report_desc / report_time / created_at / batch_no / category / content / sender，分页 20）。<span class="need ok">现有</span></li>
+  <li>徽标条黑名单三字段来自 <code>POST /web/messages/timeline</code> 的 badge；列表视图常驻需要该端点或 /web/messages 同步返回 badge，二选一，倾向后者（本实现已采用）。<span class="need ext">契约</span></li>
+  <li>时间线事件（ts / direction / category / batch_no / content / status / sender）与 truncated 均为现有字段；「回复触发退订加黑」摘要在后端事件流已可表达（blacklist_source），不新增字段。<span class="need ok">现有</span></li>
+  <li>解密仍走 <code>POST /messages/{id}/phone/decrypt</code>，仅 approver/admin 可见入口；明文只存页面内存。<span class="need ok">现有</span></li>
+  <li>verify 内容入库前已等长打码（规则 27），界面不二次处理；审计载荷不含号码（规则 21）。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>
