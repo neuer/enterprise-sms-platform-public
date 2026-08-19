@@ -23,7 +23,11 @@ export interface BatchItem {
   created_at: string
 }
 
-export interface BatchPage { total: number; items: BatchItem[] }
+export interface BatchPage {
+  total: number
+  status_counts?: Record<string, number>
+  items: BatchItem[]
+}
 
 export interface BatchFilters {
   category?: string

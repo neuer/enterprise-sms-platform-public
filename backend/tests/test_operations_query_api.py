@@ -46,7 +46,7 @@ class FakeBatchQueries:
 
     async def list_batches(self, **values: object) -> dict[str, object]:
         self.calls.append(values)
-        return {"total": 0, "items": []}
+        return {"total": 0, "status_counts": {}, "items": []}
 
 
 class FakeOperations:
@@ -148,6 +148,18 @@ def test_non_admin_cannot_request_another_department() -> None:
     )
     assert response.status_code == 403
     assert response.json()["code"] == "FORBIDDEN"
+
+
+def test_batch_status_filter_accepts_comma_separated_groups() -> None:
+    client, batches, _, _ = make_client()
+    response = client.get(
+        "/api/v1/web/batches?status=queued,sending",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status_counts"] == {}
+    assert batches.calls[0]["statuses"] == ("queued", "sending")
 
 
 def test_message_search_and_timeline_return_masked_contract() -> None:
