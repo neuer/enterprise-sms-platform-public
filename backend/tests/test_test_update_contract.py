@@ -769,8 +769,10 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/login-redesign-shots/error.png",
             "docs/previews/login-redesign-shots/local.png",
             "docs/previews/login-redesign-shots/only.png",
+            "docs/previews/report-redesign-prototype.html",
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
+            "docs/previews/send-redesign-prototype.html",
             "PROGRESS.md",
         ]
     )
@@ -810,6 +812,26 @@ def test_dashboard_redesign_preview_does_not_block_classified_update() -> None:
             "docs/previews/dashboard-redesign-prototype.html",
             "frontend/src/views/DashboardView.vue",
             "frontend/tests/dashboard-view.test.ts",
+            "openapi.yaml",
+        ]
+    )
+
+    assert "web" in change.components
+    assert "api" in change.components
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.migration_changed is False
+
+
+def test_report_and_send_previews_do_not_block_classified_update() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/reports.py",
+            "backend/app/api/web_messages.py",
+            "docs/previews/report-redesign-prototype.html",
+            "docs/previews/send-redesign-prototype.html",
+            "frontend/src/views/ReportView.vue",
+            "frontend/src/views/SendView.vue",
             "openapi.yaml",
         ]
     )
