@@ -1,54 +1,112 @@
 <script setup lang="ts">
 import "../styles/workspace.css"
 
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import {
   decideApproval,
+  getApproval,
   listApprovals,
-  type ApprovalItem,
+  type ApprovalAction,
+  type ApprovalCounts,
+  type ApprovalDetail,
+  type ApprovalListItem,
+  type ApprovalSort,
   type ApprovalStatus,
+  type DecisionOutcome,
 } from "../api/approvals"
-import { ApiRequestError } from "../api/webMessages"
-import { useSessionStore } from "../stores/session"
-import CategoryTag from "../components/CategoryTag.vue"
-import EmptyState from "../components/EmptyState.vue"
+import { ApiRequestError, type Category } from "../api/webMessages"
+import ApprovalList from "../components/ApprovalList.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { useApprovalBadgeStore } from "../stores/approvalBadge"
+import { useSessionStore } from "../stores/session"
 
 const REASON_MAX_LENGTH = 256
+const PAGE_SIZE = 20
+const POLL_INTERVAL_MS = 30_000
+const TICK_INTERVAL_MS = 1_000
 
 const session = useSessionStore()
+const approvalBadge = useApprovalBadgeStore()
+
 const status = ref<ApprovalStatus>("pending")
+const category = ref<Category | "">("")
+const dept = ref("")
+const q = ref("")
+const sort = ref<ApprovalSort>("expires_asc")
 const page = ref(1)
 const total = ref(0)
-const items = ref<ApprovalItem[]>([])
-const selected = ref<ApprovalItem | null>(null)
-const drawerOpen = ref(false)
+const counts = ref<ApprovalCounts>({
+  pending: 0,
+  approved: 0,
+  rejected: 0,
+  expired: 0,
+  pending_urgent: 0,
+})
+const items = ref<ApprovalListItem[]>([])
 const loading = ref(false)
-const deciding = ref(false)
 const errorMessage = ref("")
+const decidingId = ref<number | null>(null)
+const now = ref(Date.now())
 
-const tabs: Array<{ value: ApprovalStatus; label: string }> = [
-  { value: "pending", label: "待我审批" },
+const drawerOpen = ref(false)
+const selected = ref<ApprovalListItem | null>(null)
+const detail = ref<ApprovalDetail | null>(null)
+const detailLoading = ref(false)
+const decisionReason = ref("")
+
+const statusTabs: Array<{ value: ApprovalStatus; label: string }> = [
+  { value: "pending", label: "待审批" },
   { value: "approved", label: "已通过" },
   { value: "rejected", label: "已驳回" },
   { value: "expired", label: "已过期" },
+]
+
+const sortOptions: Array<{ value: ApprovalSort; label: string }> = [
+  { value: "expires_asc", label: "临期优先" },
+  { value: "created_desc", label: "最新提交" },
+  { value: "decided_desc", label: "最近决策" },
 ]
 
 const canApprove = computed(
   () => session.role !== null && ["approver", "admin"].includes(session.role),
 )
 
-function canDecide(item: ApprovalItem): boolean {
-  return canApprove.value && item.status === "pending" && item.applicant !== session.username
+const decisionReasonTrimmed = computed(() => decisionReason.value.trim())
+
+const canDecideSelected = computed(
+  () =>
+    canApprove.value &&
+    selected.value !== null &&
+    selected.value.status === "pending" &&
+    selected.value.applicant !== session.username,
+)
+
+const selectedCountdown = computed(() => {
+  if (!selected.value?.expires_at || selected.value.status !== "pending") return null
+  const remaining = new Date(selected.value.expires_at).getTime() - now.value
+  if (Number.isNaN(remaining) || remaining <= 0) return "已临期截止"
+  const totalSeconds = Math.floor(remaining / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return [hours, minutes, seconds].map((unit) => String(unit).padStart(2, "0")).join(":")
+})
+
+function countOf(value: unknown): number {
+  return counts.value[String(value) as ApprovalStatus] ?? 0
 }
 
-function categoryLabel(category: ApprovalItem["category"]): string {
+function urgentOf(value: unknown): number {
+  return value === "pending" ? counts.value.pending_urgent : 0
+}
+
+function categoryLabel(category: Category): string {
   return category === "market" ? "营销" : "通知"
 }
 
-function triggerRule(item: ApprovalItem): string {
+function triggerRule(item: ApprovalListItem): string {
   if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
     return "历史阈值不可确认"
   }
@@ -70,8 +128,7 @@ function formatTime(value: string): string {
     .replaceAll("/", "-")
 }
 
-function formatSchedule(value: string | null | undefined): string {
-  if (value === undefined) return "计划暂不可用"
+function formatSchedule(value: string | null): string {
   return value ? formatTime(value) : "立即发送"
 }
 
@@ -79,44 +136,36 @@ function formatSegments(value: number | null): string {
   return value === null ? "—" : `${value.toLocaleString()} 条`
 }
 
-interface ExpiryInfo {
-  text: string
-  urgent: boolean
-}
-
-function expiryInfo(item: ApprovalItem): ExpiryInfo | null {
-  if (item.status !== "pending") return null
-  if (!item.expires_at) return { text: "有效期暂不可用", urgent: false }
-  const remainingMs = new Date(item.expires_at).getTime() - Date.now()
-  if (Number.isNaN(remainingMs)) return { text: "有效期暂不可用", urgent: false }
-  if (remainingMs <= 0) return { text: "即将由服务端过期关闭", urgent: true }
-  const minutes = Math.floor(remainingMs / 60000)
-  if (minutes < 60) return { text: `剩余 ${Math.max(minutes, 1)} 分钟`, urgent: true }
-  const hours = Math.floor(minutes / 60)
-  const rest = minutes % 60
-  return {
-    text: rest > 0 ? `剩余 ${hours} 小时 ${rest} 分` : `剩余 ${hours} 小时`,
-    urgent: hours < 2,
-  }
-}
-
-function deciderLabel(item: ApprovalItem): string | null {
+function deciderLabel(item: ApprovalListItem): string | null {
   if (item.approver) return item.approver
   if (item.status === "expired") return "系统自动"
   return null
 }
 
 let loadToken = 0
+let detailToken = 0
+let pollTimer: number | undefined
+let tickTimer: number | undefined
 
-async function load(): Promise<void> {
+async function load(options: { silent?: boolean } = {}): Promise<void> {
   const token = ++loadToken
-  loading.value = true
+  if (!options.silent) loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listApprovals(status.value, page.value)
+    const result = await listApprovals({
+      status: status.value,
+      page: page.value,
+      size: PAGE_SIZE,
+      category: category.value || undefined,
+      dept: dept.value,
+      q: q.value,
+      sort: sort.value,
+    })
     if (token !== loadToken) return
     items.value = result.items
     total.value = result.total
+    counts.value = result.counts
+    approvalBadge.pending = result.counts.pending
   } catch (error) {
     if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "审批列表加载失败"
@@ -125,112 +174,126 @@ async function load(): Promise<void> {
   }
 }
 
-async function changeStatus(value: string | number): Promise<void> {
-  status.value = String(value) as ApprovalStatus
+function onStatusChange(value: string | number): void {
+  const next = String(value) as ApprovalStatus
+  if (next === status.value) return
+  status.value = next
+  sort.value = next === "pending" ? "expires_asc" : "decided_desc"
   page.value = 1
-  await load()
+  void load()
 }
 
-function showDetail(item: ApprovalItem): void {
+function applyFilters(): void {
+  page.value = 1
+  void load()
+}
+
+function onPageChange(): void {
+  void load()
+}
+
+async function showDetail(item: ApprovalListItem): Promise<void> {
   selected.value = item
+  detail.value = null
+  decisionReason.value = ""
   drawerOpen.value = true
+  const token = ++detailToken
+  detailLoading.value = true
+  try {
+    const result = await getApproval(item.id)
+    if (token !== detailToken) return
+    detail.value = result
+  } catch (error) {
+    if (token !== detailToken) return
+    drawerOpen.value = false
+    if (error instanceof ApiRequestError && error.status === 409) {
+      ElMessage.warning("该审批单已被处理或状态已变化，列表已刷新")
+    } else if (error instanceof ApiRequestError && error.status === 404) {
+      ElMessage.warning("该审批单已不存在，列表已刷新")
+    } else {
+      ElMessage.error(error instanceof Error ? error.message : "审批详情加载失败，请稍后重试")
+    }
+    void load({ silent: true })
+  } finally {
+    if (token === detailToken) detailLoading.value = false
+  }
 }
 
 function closeDrawer(): void {
   drawerOpen.value = false
   selected.value = null
+  detail.value = null
+  decisionReason.value = ""
+  detailToken += 1
 }
 
-function isCancel(error: unknown): boolean {
-  return error === "cancel" || error === "close"
+/** 决策后去向文案：以 decision 响应回带的 batch_status / deferred_reason 为准，不靠猜。 */
+function outcomeText(outcome: DecisionOutcome, lane: string): string {
+  if (outcome.batch_status === "scheduled") {
+    return outcome.deferred_reason === "market_window"
+      ? "当前处于营销时间窗外，批次已改派为定时发送"
+      : "批次已进入定时发送计划"
+  }
+  if (outcome.batch_status === "queued") return `批次已进入发送队列（${lane}）`
+  return "批次已受理进入发送流程"
 }
 
-async function submitDecision(
-  item: ApprovalItem,
-  action: "approve" | "reject",
-  reason?: string,
-): Promise<void> {
-  if (deciding.value) return
-  deciding.value = true
+function laneOf(id: number): string {
+  const item = items.value.find((entry) => entry.id === id) ?? detail.value ?? selected.value
+  return item?.category === "market" ? "bulk" : "realtime"
+}
+
+async function submitDecision(id: number, action: ApprovalAction, reason?: string): Promise<void> {
+  if (decidingId.value !== null) return
+  decidingId.value = id
   try {
-    await decideApproval(item.id, action, reason)
+    const outcome = await decideApproval(id, action, reason)
     if (action === "approve") {
-      ElMessage.success(
-        item.scheduled_at
-          ? "审批已通过，批次进入定时发送计划"
-          : "审批已通过，批次将按类别进入发送队列",
-      )
+      ElMessage.success(`审批已通过，${outcomeText(outcome, laneOf(id))}`)
     } else {
       ElMessage.success("审批已驳回，配额将由服务端幂等回补")
     }
+    closeDrawer()
+    await load({ silent: true })
   } catch (error) {
     if (error instanceof ApiRequestError && error.status === 409) {
       ElMessage.warning("该审批单已被处理或状态已变化，列表已刷新")
+      closeDrawer()
+      await load({ silent: true })
+    } else if (error instanceof ApiRequestError && error.status === 403) {
+      ElMessage.error(error.message || "不能审批本人提交的审批单")
     } else {
       ElMessage.error(error instanceof Error ? error.message : "审批操作失败，请稍后重试")
     }
   } finally {
-    deciding.value = false
-    closeDrawer()
-    await load()
+    decidingId.value = null
   }
 }
 
-async function approve(item: ApprovalItem): Promise<void> {
-  let reason: string | undefined
-  try {
-    const result = await ElMessageBox.prompt(
-      `确认通过批次 ${item.batch_no}？可补充审批意见，将写入审批记录。`,
-      "审批确认",
-      {
-        confirmButtonText: "确认通过",
-        cancelButtonText: "取消",
-        inputPlaceholder: `审批意见（选填，≤${REASON_MAX_LENGTH} 字）`,
-        inputValidator: (value: string) =>
-          (value ?? "").trim().length <= REASON_MAX_LENGTH ||
-          `审批意见不能超过 ${REASON_MAX_LENGTH} 字`,
-      },
-    )
-    reason = result.value?.trim() || undefined
-  } catch (error) {
-    if (!isCancel(error)) {
-      ElMessage.error("审批确认框出现异常，请重试")
-    }
-    return
-  }
-  await submitDecision(item, "approve", reason)
+function onQuick(item: ApprovalListItem, action: ApprovalAction, reason?: string): void {
+  void submitDecision(item.id, action, reason)
 }
 
-async function reject(item: ApprovalItem): Promise<void> {
-  let reason: string
-  try {
-    const result = await ElMessageBox.prompt(
-      `请填写驳回批次 ${item.batch_no} 的明确原因，将写入审批记录。`,
-      "驳回审批",
-      {
-        confirmButtonText: "确认驳回",
-        cancelButtonText: "取消",
-        inputType: "textarea",
-        inputPlaceholder: `驳回原因（必填，≤${REASON_MAX_LENGTH} 字）`,
-        inputValidator: (value: string) => {
-          const trimmed = (value ?? "").trim()
-          if (!trimmed) return "驳回原因不能为空"
-          if (trimmed.length > REASON_MAX_LENGTH) return `驳回原因不能超过 ${REASON_MAX_LENGTH} 字`
-          return true
-        },
-      },
-    )
-    reason = result.value.trim()
-  } catch (error) {
-    if (!isCancel(error)) {
-      ElMessage.error("驳回原因填写出现异常，请重试")
-    }
-    return
-  }
-  await submitDecision(item, "reject", reason)
+function submitDrawerDecision(action: ApprovalAction): void {
+  if (!selected.value) return
+  const reason = decisionReasonTrimmed.value
+  if (action === "reject" && !reason) return
+  if (reason.length > REASON_MAX_LENGTH) return
+  void submitDecision(selected.value.id, action, reason || undefined)
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  pollTimer = window.setInterval(() => void load({ silent: true }), POLL_INTERVAL_MS)
+  tickTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, TICK_INTERVAL_MS)
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer !== undefined) window.clearInterval(pollTimer)
+  if (tickTimer !== undefined) window.clearInterval(tickTimer)
+})
 </script>
 
 <template>
@@ -238,159 +301,94 @@ onMounted(load)
     <div>
       <p class="eyebrow">GOVERNANCE / 审批流转</p>
       <h1>审批中心</h1>
-      <p>查看短信内容、受众规模与申请人，决策动作全量留痕且禁止自审。</p>
+      <p>Web 发送达阈值进入审批；超时未决自动过期并释放配额。</p>
     </div>
-    <span class="approval-role">当前身份 · {{ session.roleLabel }}</span>
+    <div class="approval-head-side">
+      <span class="approval-counts-pill" data-testid="approval-counts-pill"><b>{{ counts.pending }}</b> 待审 · <span :class="{ 'is-hot': counts.pending_urgent > 0 }">{{ counts.pending_urgent }} 临期</span></span>
+      <span class="approval-role">当前身份 · {{ session.roleLabel }}</span>
+    </div>
   </section>
 
   <el-card shadow="never" class="approval-card">
     <div class="approval-toolbar filter-toolbar">
       <el-segmented
         :model-value="status"
-        :options="tabs"
-        value-key="value"
-        label-key="label"
-        @change="changeStatus"
-      />
-      <span><b>{{ total }}</b> 条记录</span>
+        :options="statusTabs"
+        class="approval-status-seg"
+        data-testid="approval-status-seg"
+        @change="onStatusChange"
+      >
+        <template #default="{ item }">
+          <span>{{ item.label }}</span>
+          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(item.value) > 0 }">{{ countOf(item.value) }}</span>
+          <span v-if="urgentOf(item.value) > 0" class="approval-seg-urgent">{{ urgentOf(item.value) }} 临期</span>
+        </template>
+      </el-segmented>
+      <div class="approval-toolbar-fields">
+        <label for="approval-category">类别</label>
+        <el-select id="approval-category" v-model="category" data-testid="approval-category-filter" @change="applyFilters">
+          <el-option label="全部类别" value="" />
+          <el-option label="通知" value="notice" />
+          <el-option label="营销" value="market" />
+        </el-select>
+        <label for="approval-dept">部门</label>
+        <el-input
+          id="approval-dept"
+          v-model="dept"
+          placeholder="模糊匹配部门"
+          clearable
+          maxlength="32"
+          data-testid="approval-dept-filter"
+          @change="applyFilters"
+          @clear="applyFilters"
+        />
+        <label for="approval-q">申请人</label>
+        <el-input
+          id="approval-q"
+          v-model="q"
+          placeholder="登录名"
+          clearable
+          maxlength="32"
+          data-testid="approval-q-filter"
+          @change="applyFilters"
+          @clear="applyFilters"
+        />
+        <label for="approval-sort">排序</label>
+        <el-select id="approval-sort" v-model="sort" data-testid="approval-sort-filter" @change="applyFilters">
+          <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
+      </div>
+      <div class="approval-toolbar-side">
+        <el-button data-testid="approval-refresh" :loading="loading" @click="void load()">刷新</el-button>
+        <span class="approval-poll-hint">30s 自动</span>
+      </div>
     </div>
 
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
 
-    <section v-if="status === 'pending'" v-loading="loading" class="approval-queue">
-      <article v-for="item in items" :key="item.id" class="approval-item">
-        <header>
-          <CategoryTag :category="item.category" />
-          <button
-            :data-testid="`approval-detail-${item.id}`"
-            class="approval-batch"
-            type="button"
-            :aria-label="`查看批次 ${item.batch_no} 的审批详情`"
-            @click="showDetail(item)"
-          >{{ item.batch_no }}</button>
-          <span>提交人 {{ item.applicant }}</span>
-          <span>部门 {{ item.dept }}</span>
-          <time>{{ formatTime(item.created_at) }}</time>
-        </header>
-        <dl class="approval-facts">
-          <div><dt>受理号码</dt><dd>{{ item.total.toLocaleString() }}</dd></div>
-          <div><dt>预计计费</dt><dd>{{ formatSegments(item.estimated_segments) }}</dd></div>
-          <div><dt>发送计划</dt><dd>{{ formatSchedule(item.scheduled_at) }}</dd></div>
-          <div><dt>触发规则</dt><dd>{{ triggerRule(item) }}</dd></div>
-          <div v-if="expiryInfo(item)" :data-testid="`approval-expiry-${item.id}`">
-            <dt>审批有效期</dt>
-            <dd class="approval-expiry" :class="{ urgent: expiryInfo(item)?.urgent }">
-              {{ expiryInfo(item)?.text }}
-            </dd>
-          </div>
-        </dl>
-        <blockquote class="approval-quote">{{ item.content }}</blockquote>
-        <footer>
-          <div class="approval-compliance"><el-tag effect="plain">服务端预检</el-tag><el-tag effect="plain">决策写审计</el-tag><el-tag effect="plain">禁止本人审批</el-tag></div>
-          <div v-if="canDecide(item)" :data-testid="`approval-actions-${item.id}`" class="approval-actions">
-            <el-button plain type="danger" :disabled="deciding" @click="reject(item)">驳回</el-button>
-            <el-button type="primary" :disabled="deciding" @click="approve(item)">通过</el-button>
-          </div>
-          <span v-else class="self-note approval-avoid">本人提交 · 按规则回避，待其他管理员审批</span>
-        </footer>
-      </article>
-      <EmptyState v-if="!loading && !items.length" title="当前没有待审批记录" description="新的审批申请会出现在这里。" />
-    </section>
-
-    <el-table v-else v-loading="loading" :data="items" row-key="id" @row-click="showDetail">
-      <el-table-column label="批次 / 申请时间" min-width="190">
-        <template #default="{ row }">
-          <button
-            :data-testid="`approval-detail-${row.id}`"
-            class="table-row-detail batch-cell"
-            type="button"
-            :aria-label="`查看批次 ${row.batch_no} 的审批详情`"
-            @click.stop="showDetail(row)"
-            @keydown.enter.stop.prevent="showDetail(row)"
-            @keydown.space.stop.prevent="showDetail(row)"
-          >
-            <b>{{ row.batch_no }}</b><small>{{ formatTime(row.created_at) }}</small>
-          </button>
-        </template>
-      </el-table-column>
-      <el-table-column label="类别" width="86">
-        <template #default="{ row }"><CategoryTag :category="row.category" /></template>
-      </el-table-column>
-      <el-table-column prop="applicant" label="申请人" min-width="120" />
-      <el-table-column prop="dept" label="部门" min-width="130" />
-      <el-table-column prop="total" label="受众" width="100" align="right" />
-      <el-table-column label="状态" width="105">
-        <template #default="{ row }"><StatusTag :status="row.status" /></template>
-      </el-table-column>
-      <el-table-column label="审批人 / 决策时间" min-width="165">
-        <template #default="{ row }">
-          <div class="decider-cell">
-            <b>{{ deciderLabel(row) ?? "—" }}</b>
-            <small>{{ row.decided_at ? formatTime(row.decided_at) : "—" }}</small>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="168" fixed="right">
-        <template #default="{ row }">
-          <div v-if="canDecide(row)" :data-testid="`approval-actions-${row.id}`" @click.stop>
-            <el-button link type="primary" :disabled="deciding" @click="approve(row)">通过</el-button>
-            <el-button link type="danger" :disabled="deciding" @click="reject(row)">驳回</el-button>
-          </div>
-          <span v-else-if="row.status === 'pending' && row.applicant === session.username" class="self-note">本人提交</span>
-          <el-button v-else link @click.stop="showDetail(row)">查看</el-button>
-        </template>
-      </el-table-column>
-      <template #empty><EmptyState title="当前分类没有审批记录" description="新的审批申请会出现在这里。" /></template>
-    </el-table>
-
-    <div v-if="status !== 'pending'" v-loading="loading" class="approval-mobile-list">
-      <article v-for="item in items" :key="item.id">
-        <header>
-          <CategoryTag :category="item.category" />
-          <StatusTag :status="item.status" />
-        </header>
-        <strong>{{ item.batch_no }}</strong>
-        <time>{{ formatTime(item.created_at) }}</time>
-        <dl>
-          <div><dt>申请人</dt><dd>{{ item.applicant }}</dd></div>
-          <div><dt>所属部门</dt><dd>{{ item.dept }}</dd></div>
-          <div><dt>接收数量</dt><dd>{{ item.total.toLocaleString() }}</dd></div>
-          <div v-if="deciderLabel(item)"><dt>审批人</dt><dd>{{ deciderLabel(item) }}</dd></div>
-          <div v-if="item.decided_at"><dt>决策时间</dt><dd>{{ formatTime(item.decided_at) }}</dd></div>
-        </dl>
-        <footer>
-          <el-button
-            :data-testid="`mobile-approval-detail-${item.id}`"
-            link
-            type="primary"
-            @click="showDetail(item)"
-          >查看详情</el-button>
-          <div
-            v-if="canDecide(item)"
-            :data-testid="`mobile-approval-actions-${item.id}`"
-            class="approval-mobile-actions"
-            @click.stop
-          >
-            <el-button :data-testid="`mobile-approval-approve-${item.id}`" link type="primary" :disabled="deciding" @click="approve(item)">通过</el-button>
-            <el-button :data-testid="`mobile-approval-reject-${item.id}`" link type="danger" :disabled="deciding" @click="reject(item)">驳回</el-button>
-          </div>
-          <span v-else-if="item.status === 'pending' && item.applicant === session.username" class="self-note">本人提交</span>
-        </footer>
-      </article>
-      <EmptyState v-if="!loading && !items.length" title="当前分类没有审批记录" description="新的审批申请会出现在这里。" />
-    </div>
+    <ApprovalList
+      v-loading="loading"
+      :status="status"
+      :items="items"
+      :now="now"
+      :loading="loading"
+      :deciding-id="decidingId"
+      :current-username="session.username"
+      @detail="showDetail"
+      @quick="onQuick"
+    />
 
     <el-pagination
-      v-if="total > 20"
+      v-if="total > PAGE_SIZE"
       v-model:current-page="page"
-      :page-size="20"
+      :page-size="PAGE_SIZE"
       :total="total"
       layout="prev, pager, next"
-      @current-change="load"
+      @current-change="onPageChange"
     />
   </el-card>
 
-  <el-drawer v-model="drawerOpen" title="审批详情" size="min(480px, 92vw)">
+  <el-drawer v-model="drawerOpen" title="审批详情" size="min(480px, 92vw)" @close="closeDrawer">
     <template v-if="selected">
       <div class="approval-detail-head">
         <StatusTag :status="selected.status" />
@@ -398,32 +396,61 @@ onMounted(load)
       </div>
       <dl class="approval-detail-grid">
         <div><dt>消息类别</dt><dd>{{ categoryLabel(selected.category) }}</dd></div>
-        <div><dt>接收数量</dt><dd>{{ selected.total.toLocaleString() }}</dd></div>
-        <div><dt>单号计费</dt><dd>{{ formatSegments(selected.segments) }}</dd></div>
-        <div><dt>预计计费</dt><dd>{{ formatSegments(selected.estimated_segments) }}</dd></div>
         <div><dt>发送计划</dt><dd>{{ formatSchedule(selected.scheduled_at) }}</dd></div>
+        <div><dt>受理号码</dt><dd>{{ selected.total.toLocaleString() }}</dd></div>
+        <div><dt>预计计费</dt><dd>{{ formatSegments(selected.estimated_segments) }}</dd></div>
         <div><dt>触发规则</dt><dd>{{ triggerRule(selected) }}</dd></div>
-        <div v-if="expiryInfo(selected)" data-testid="drawer-approval-expiry">
-          <dt>审批有效期</dt>
-          <dd class="approval-expiry" :class="{ urgent: expiryInfo(selected)?.urgent }">
-            {{ expiryInfo(selected)?.text }}
-          </dd>
-        </div>
         <div><dt>申请人</dt><dd>{{ selected.applicant }}</dd></div>
         <div><dt>所属部门</dt><dd>{{ selected.dept }}</dd></div>
         <div><dt>申请时间</dt><dd>{{ formatTime(selected.created_at) }}</dd></div>
+        <div v-if="selected.expires_at" data-testid="drawer-approval-expiry">
+          <dt>审批有效期</dt>
+          <dd>至 {{ formatTime(selected.expires_at) }}<template v-if="selectedCountdown">（剩 {{ selectedCountdown }}）</template></dd>
+        </div>
         <div v-if="deciderLabel(selected)"><dt>审批人</dt><dd>{{ deciderLabel(selected) }}</dd></div>
         <div v-if="selected.decided_at"><dt>决策时间</dt><dd>{{ formatTime(selected.decided_at) }}</dd></div>
       </dl>
-      <div class="content-proof"><span>待审内容</span><p>{{ selected.content }}</p></div>
+      <div class="content-proof">
+        <div class="approval-content-head">
+          <span>待审内容（OTP 已等长打码）</span>
+          <em>按需解密 · 本次查看已写敏感读审计</em>
+        </div>
+        <p v-loading="detailLoading" class="approval-content-body" data-testid="approval-detail-content">{{ detail?.content ?? "" }}</p>
+      </div>
       <div v-if="selected.reason" class="reason-proof"><span>审批意见</span><p>{{ selected.reason }}</p></div>
-      <div v-if="canDecide(selected)" class="drawer-actions">
-        <el-button type="danger" plain :disabled="deciding" @click="reject(selected)">驳回</el-button>
-        <el-button type="primary" :disabled="deciding" @click="approve(selected)">通过并入队</el-button>
+      <div v-if="canDecideSelected" class="approval-decide-box" data-testid="drawer-decide-box">
+        <el-input
+          v-model="decisionReason"
+          type="textarea"
+          :rows="3"
+          maxlength="256"
+          show-word-limit
+          placeholder="审批意见（通过选填 · 驳回必填，≤256 字）"
+          data-testid="drawer-decision-reason"
+        />
+        <div class="approval-decide-hint">
+          <span>决策写审计 · 409 冲突自动刷新队列</span>
+          <span>驳回时意见必填</span>
+        </div>
+        <div class="approval-decide-actions">
+          <el-button
+            type="danger"
+            plain
+            :disabled="decidingId !== null || !decisionReasonTrimmed"
+            data-testid="drawer-reject"
+            @click="submitDrawerDecision('reject')"
+          >驳回</el-button>
+          <el-button
+            type="primary"
+            :disabled="decidingId !== null"
+            data-testid="drawer-approve"
+            @click="submitDrawerDecision('approve')"
+          >通过</el-button>
+        </div>
       </div>
       <el-alert
         v-else-if="selected.status === 'pending' && selected.applicant === session.username"
-        title="这是本人提交的审批单，平台已隐藏决策操作"
+        title="本人提交 · 按规则回避，平台已隐藏决策操作"
         type="warning"
         :closable="false"
       />

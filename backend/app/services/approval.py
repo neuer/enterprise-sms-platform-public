@@ -33,6 +33,7 @@ class ApprovalCase:
     applicant_account_id: int | None = None
     applicant_identity_id: int | None = None
     outbox_persisted: bool = False
+    deferred_reason: str | None = None
 
 
 class ApprovalRepository(Protocol):

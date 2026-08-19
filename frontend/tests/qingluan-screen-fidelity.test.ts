@@ -31,15 +31,19 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("送达 / 失败 / 未知")
   })
 
-  it("待审批使用卡片流并保留本人回避状态", () => {
+  it("审批中心使用单一列表组件并按需解密正文", () => {
     const view = source("src/views/ApprovalView.vue")
-    expect(view).toContain('class="approval-queue"')
-    expect(view).toContain('class="approval-item"')
-    expect(view).toContain("本人提交 · 按规则回避")
-    expect(view).toContain('class="approval-quote"')
-    expect(view).toContain("formatSegments(item.estimated_segments)")
-    expect(view).toContain("item.trigger_threshold")
-    expect(view).toContain("formatSchedule(item.scheduled_at)")
+    const list = source("src/components/ApprovalList.vue")
+    expect(view).toContain("ApprovalList")
+    expect(view).toContain("getApproval")
+    expect(view).toContain("按需解密 · 本次查看已写敏感读审计")
+    expect(view).toContain("approval-decide-box")
+    expect(list).toContain('class="approval-rows"')
+    expect(list).toContain("approval-cd")
+    expect(list).toContain("本人提交 · 按规则回避")
+    expect(list).toContain("approval-dest")
+    expect(view).not.toContain("approval-mobile-list")
+    expect(view).not.toContain("approval-queue")
   })
 
   it("运维中心在标签页上方呈现熔断恢复横幅", () => {

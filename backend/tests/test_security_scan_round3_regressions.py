@@ -211,7 +211,7 @@ def test_every_user_visible_sensitive_content_route_calls_read_auditor() -> None
         web_messages.list_web_batches,
         web_messages.search_web_messages,
         web_messages.message_timeline,
-        approvals.list_approvals,
+        approvals.get_approval,
         replies.list_replies,
         templates.list_templates,
         templates.get_template,

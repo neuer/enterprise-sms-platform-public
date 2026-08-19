@@ -457,7 +457,7 @@ async def test_approval_list_interpolates_scoped_source_clause() -> None:
     select_sql, params = connection.calls[1]
     assert "{source}" not in select_sql
     assert "FROM approval p JOIN sms_batch b" in select_sql
-    assert "AND p.dept=:dept" in select_sql
+    assert "AND p.dept ILIKE :dept" in select_sql
     assert params["dept"] == "业务一部"
 
 
