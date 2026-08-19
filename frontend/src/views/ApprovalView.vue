@@ -18,7 +18,6 @@ import {
 } from "../api/approvals"
 import { ApiRequestError, type Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
-import StatusTag from "../components/StatusTag.vue"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
@@ -62,6 +61,13 @@ const statusTabs: Array<{ value: ApprovalStatus; label: string }> = [
   { value: "rejected", label: "已驳回" },
   { value: "expired", label: "已过期" },
 ]
+const statusText: Record<ApprovalStatus, string> = {
+  pending: "待审批",
+  approved: "已通过",
+  rejected: "已驳回",
+  expired: "已过期",
+}
+const lastUpdatedAt = ref<string | null>(null)
 
 const sortOptions: Array<{ value: ApprovalSort; label: string }> = [
   { value: "expires_asc", label: "临期优先" },
@@ -110,8 +116,39 @@ function triggerRule(item: ApprovalListItem): string {
   if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
     return "历史阈值不可确认"
   }
-  return `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
+  const base = `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
+  return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
 }
+
+function laneLabel(category: Category): string {
+  return category === "market" ? "bulk" : "realtime"
+}
+
+/** 通过前预告：只依据 scheduled_at / 类别，不预判营销窗。 */
+function previewDecision(item: ApprovalListItem): string {
+  if (item.scheduled_at) return `通过后 → scheduled · ${formatSchedule(item.scheduled_at)}`
+  return `通过后 → queued / ${laneLabel(item.category)}`
+}
+
+const contentMeta = computed(() => {
+  const content = detail.value?.content
+  const segments = selected.value?.segments
+  if (!content) return null
+  const parts = [`${content.length} 字`]
+  if (segments !== null && segments !== undefined) parts.push(`计费 ${segments} 条/号码`)
+  return parts.join(" · ")
+})
+
+const drawerStatusLine = computed(() => {
+  if (!selected.value) return ""
+  if (selected.value.status === "pending" && selectedCountdown.value && selectedCountdown.value !== "已临期截止") {
+    return `${statusText.pending} · 剩 ${selectedCountdown.value}`
+  }
+  if (selected.value.status === "pending" && selectedCountdown.value === "已临期截止") {
+    return `${statusText.pending} · 已临期截止`
+  }
+  return statusText[selected.value.status]
+})
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -126,6 +163,10 @@ function formatTime(value: string): string {
   })
     .format(new Date(value))
     .replaceAll("/", "-")
+}
+
+function formatClock(value: string): string {
+  return formatTime(value).slice(11)
 }
 
 function formatSchedule(value: string | null): string {
@@ -166,6 +207,7 @@ async function load(options: { silent?: boolean } = {}): Promise<void> {
     total.value = result.total
     counts.value = result.counts
     approvalBadge.pending = result.counts.pending
+    lastUpdatedAt.value = new Date().toISOString()
   } catch (error) {
     if (token !== loadToken) return
     errorMessage.value = error instanceof Error ? error.message : "审批列表加载失败"
@@ -305,79 +347,89 @@ onBeforeUnmount(() => {
     </div>
     <div class="approval-head-side">
       <span class="approval-counts-pill" data-testid="approval-counts-pill"><b>{{ counts.pending }}</b> 待审 · <span :class="{ 'is-hot': counts.pending_urgent > 0 }">{{ counts.pending_urgent }} 临期</span></span>
-      <span class="approval-role">当前身份 · {{ session.roleLabel }}</span>
+      <span class="approval-role"><i></i>当前身份 · {{ session.roleLabel }}</span>
     </div>
   </section>
 
-  <el-card shadow="never" class="approval-card">
-    <div class="approval-toolbar filter-toolbar">
-      <el-segmented
-        :model-value="status"
-        :options="statusTabs"
-        class="approval-status-seg"
-        data-testid="approval-status-seg"
-        @change="onStatusChange"
-      >
-        <template #default="{ item }">
-          <span>{{ item.label }}</span>
-          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(item.value) > 0 }">{{ countOf(item.value) }}</span>
-          <span v-if="urgentOf(item.value) > 0" class="approval-seg-urgent">{{ urgentOf(item.value) }} 临期</span>
-        </template>
-      </el-segmented>
-      <div class="approval-toolbar-fields">
-        <label for="approval-category">类别</label>
-        <el-select id="approval-category" v-model="category" data-testid="approval-category-filter" @change="applyFilters">
-          <el-option label="全部类别" value="" />
-          <el-option label="通知" value="notice" />
-          <el-option label="营销" value="market" />
-        </el-select>
-        <label for="approval-dept">部门</label>
-        <el-input
-          id="approval-dept"
-          v-model="dept"
-          placeholder="模糊匹配部门"
-          clearable
-          maxlength="32"
-          data-testid="approval-dept-filter"
-          @change="applyFilters"
-          @clear="applyFilters"
-        />
-        <label for="approval-q">申请人</label>
-        <el-input
-          id="approval-q"
-          v-model="q"
-          placeholder="登录名"
-          clearable
-          maxlength="32"
-          data-testid="approval-q-filter"
-          @change="applyFilters"
-          @clear="applyFilters"
-        />
-        <label for="approval-sort">排序</label>
-        <el-select id="approval-sort" v-model="sort" data-testid="approval-sort-filter" @change="applyFilters">
-          <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
-        </el-select>
-      </div>
-      <div class="approval-toolbar-side">
-        <el-button data-testid="approval-refresh" :loading="loading" @click="void load()">刷新</el-button>
-        <span class="approval-poll-hint">30s 自动</span>
+  <div class="approval-filter-bar">
+    <div class="approval-fld">
+      <span>状态</span>
+      <div class="approval-seg" role="group" aria-label="审批状态" data-testid="approval-status-seg">
+        <button
+          v-for="opt in statusTabs"
+          :key="opt.value"
+          type="button"
+          :class="{ on: status === opt.value }"
+          :data-testid="`approval-status-${opt.value}`"
+          @click="onStatusChange(opt.value)"
+        >
+          {{ opt.label }}
+          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(opt.value) > 0 }">{{ countOf(opt.value) }}</span>
+        </button>
       </div>
     </div>
+    <div class="approval-fld">
+      <label for="approval-category">类别</label>
+      <el-select id="approval-category" v-model="category" class="approval-pill-select" data-testid="approval-category-filter" @change="applyFilters">
+        <el-option label="全部类别" value="" />
+        <el-option label="通知" value="notice" />
+        <el-option label="营销" value="market" />
+      </el-select>
+    </div>
+    <div class="approval-fld">
+      <label for="approval-dept">部门</label>
+      <el-input
+        id="approval-dept"
+        v-model="dept"
+        placeholder="模糊匹配部门"
+        clearable
+        maxlength="32"
+        data-testid="approval-dept-filter"
+        @change="applyFilters"
+        @clear="applyFilters"
+      />
+    </div>
+    <div class="approval-fld">
+      <label for="approval-q">申请人</label>
+      <el-input
+        id="approval-q"
+        v-model="q"
+        placeholder="登录名"
+        clearable
+        maxlength="32"
+        data-testid="approval-q-filter"
+        @change="applyFilters"
+        @clear="applyFilters"
+      />
+    </div>
+    <div class="approval-fld">
+      <label for="approval-sort">排序</label>
+      <el-select id="approval-sort" v-model="sort" class="approval-pill-select" data-testid="approval-sort-filter" @change="applyFilters">
+        <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
+      </el-select>
+    </div>
+    <div class="approval-filter-go">
+      <el-button data-testid="approval-refresh" :loading="loading" @click="void load()">刷新</el-button>
+      <span class="approval-poll-hint">30s 自动</span>
+    </div>
+  </div>
 
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="approval-error" />
 
-    <ApprovalList
-      v-loading="loading"
-      :status="status"
-      :items="items"
-      :now="now"
-      :loading="loading"
-      :deciding-id="decidingId"
-      :current-username="session.username"
-      @detail="showDetail"
-      @quick="onQuick"
-    />
+  <ApprovalList
+    v-loading="loading"
+    :status="status"
+    :items="items"
+    :now="now"
+    :loading="loading"
+    :deciding-id="decidingId"
+    :current-username="session.username"
+    @detail="showDetail"
+    @quick="onQuick"
+  />
 
+  <div class="approval-list-foot">
+    <span>共 {{ total }} 条 · 每页 {{ PAGE_SIZE }}</span>
     <el-pagination
       v-if="total > PAGE_SIZE"
       v-model:current-page="page"
@@ -386,39 +438,80 @@ onBeforeUnmount(() => {
       layout="prev, pager, next"
       @current-change="onPageChange"
     />
-  </el-card>
+    <span class="approval-poll-status">
+      <i></i>30s 轮询中<template v-if="lastUpdatedAt"> · 上次更新 {{ formatClock(lastUpdatedAt) }}</template>
+    </span>
+  </div>
 
-  <el-drawer v-model="drawerOpen" title="审批详情" size="min(480px, 92vw)" @close="closeDrawer">
-    <template v-if="selected">
-      <div class="approval-detail-head">
-        <StatusTag :status="selected.status" />
-        <b>{{ selected.batch_no }}</b>
+  <el-drawer v-model="drawerOpen" title="审批详情" size="min(560px, 92vw)" @close="closeDrawer">
+    <template #header>
+      <div class="approval-drawer-head">
+        <strong>审批详情</strong>
+        <code v-if="selected">{{ selected.batch_no }}</code>
+        <span v-if="selected" class="approval-drawer-sub">{{ drawerStatusLine }}</span>
       </div>
-      <dl class="approval-detail-grid">
-        <div><dt>消息类别</dt><dd>{{ categoryLabel(selected.category) }}</dd></div>
-        <div><dt>发送计划</dt><dd>{{ formatSchedule(selected.scheduled_at) }}</dd></div>
-        <div><dt>受理号码</dt><dd>{{ selected.total.toLocaleString() }}</dd></div>
-        <div><dt>预计计费</dt><dd>{{ formatSegments(selected.estimated_segments) }}</dd></div>
-        <div><dt>触发规则</dt><dd>{{ triggerRule(selected) }}</dd></div>
-        <div><dt>申请人</dt><dd>{{ selected.applicant }}</dd></div>
-        <div><dt>所属部门</dt><dd>{{ selected.dept }}</dd></div>
-        <div><dt>申请时间</dt><dd>{{ formatTime(selected.created_at) }}</dd></div>
-        <div v-if="selected.expires_at" data-testid="drawer-approval-expiry">
-          <dt>审批有效期</dt>
-          <dd>至 {{ formatTime(selected.expires_at) }}<template v-if="selectedCountdown">（剩 {{ selectedCountdown }}）</template></dd>
+    </template>
+    <template v-if="selected">
+      <dl class="approval-facts">
+        <div>
+          <dt>类别 / 通道</dt>
+          <dd>{{ categoryLabel(selected.category) }} / {{ laneLabel(selected.category) }}</dd>
         </div>
-        <div v-if="deciderLabel(selected)"><dt>审批人</dt><dd>{{ deciderLabel(selected) }}</dd></div>
-        <div v-if="selected.decided_at"><dt>决策时间</dt><dd>{{ formatTime(selected.decided_at) }}</dd></div>
+        <div>
+          <dt>发送计划</dt>
+          <dd>{{ formatSchedule(selected.scheduled_at) }}</dd>
+        </div>
+        <div>
+          <dt>受理号码</dt>
+          <dd>{{ selected.total.toLocaleString() }}</dd>
+        </div>
+        <div>
+          <dt>预计计费</dt>
+          <dd>
+            {{ formatSegments(selected.estimated_segments) }}
+            <template v-if="selected.segments !== null"> · {{ selected.segments }} 条/号码</template>
+          </dd>
+        </div>
+        <div class="is-wide">
+          <dt>触发规则</dt>
+          <dd>{{ triggerRule(selected) }}</dd>
+        </div>
+        <div>
+          <dt>申请人 / 部门</dt>
+          <dd>{{ selected.applicant }} · {{ selected.dept }}</dd>
+        </div>
+        <div>
+          <dt>申请时间</dt>
+          <dd>{{ formatTime(selected.created_at) }}</dd>
+        </div>
+        <div v-if="selected.expires_at" class="is-wide" data-testid="drawer-approval-expiry">
+          <dt>审批有效期</dt>
+          <dd>
+            至 {{ formatTime(selected.expires_at) }}
+            <template v-if="selectedCountdown">（剩 {{ selectedCountdown }}）</template>
+            。过期自动作废并释放配额
+          </dd>
+        </div>
+        <div v-if="deciderLabel(selected)">
+          <dt>审批人</dt>
+          <dd>{{ deciderLabel(selected) }}</dd>
+        </div>
+        <div v-if="selected.decided_at">
+          <dt>决策时间</dt>
+          <dd>{{ formatTime(selected.decided_at) }}</dd>
+        </div>
       </dl>
-      <div class="content-proof">
+      <div class="approval-proof">
         <div class="approval-content-head">
           <span>待审内容（OTP 已等长打码）</span>
           <em>按需解密 · 本次查看已写敏感读审计</em>
         </div>
         <p v-loading="detailLoading" class="approval-content-body" data-testid="approval-detail-content">{{ detail?.content ?? "" }}</p>
+        <p v-if="contentMeta" class="approval-proof-meta">{{ contentMeta }}</p>
       </div>
       <div v-if="selected.reason" class="reason-proof"><span>审批意见</span><p>{{ selected.reason }}</p></div>
       <div v-if="canDecideSelected" class="approval-decide-box" data-testid="drawer-decide-box">
+        <p class="approval-outcome">{{ previewDecision(selected) }}</p>
         <el-input
           v-model="decisionReason"
           type="textarea"

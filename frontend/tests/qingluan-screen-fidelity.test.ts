@@ -34,6 +34,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
   it("审批中心使用单一列表组件并按需解密正文", () => {
     const view = source("src/views/ApprovalView.vue")
     const list = source("src/components/ApprovalList.vue")
+    const workspace = source("src/styles/workspace.css")
     expect(view).toContain("ApprovalList")
     expect(view).toContain("getApproval")
     expect(view).toContain("按需解密 · 本次查看已写敏感读审计")
@@ -44,6 +45,12 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(list).toContain("approval-dest")
     expect(view).not.toContain("approval-mobile-list")
     expect(view).not.toContain("approval-queue")
+    expect(view).toContain("approval-filter-bar")
+    expect(view).toContain('size="min(560px, 92vw)"')
+    expect(view).toContain("previewDecision")
+    expect(view).not.toContain("已剔除")
+    expect(view).not.toContain("近 7 天")
+    expect(workspace).toMatch(/\.approval-row\s*\{[^}]*grid-template-columns:\s*86px[^}]*border-radius:\s*12px/s)
   })
 
   it("运维中心在标签页上方呈现熔断恢复横幅", () => {
