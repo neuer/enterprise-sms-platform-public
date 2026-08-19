@@ -69,7 +69,7 @@ class Uat:
 
     async def preview(self, **values: object) -> BillingPreview:
         self.values = values
-        return BillingPreview(12, 1, 1, [SegmentPart(12, 70, True)], 59, False, False)
+        return BillingPreview(12, 1, 1, [SegmentPart(12, 70, True)], 59, False, False, "签名内容")
 
 
 class State:

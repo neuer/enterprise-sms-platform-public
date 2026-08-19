@@ -200,6 +200,10 @@ class FakePipeline:
 
 
 class FakeConfigStore:
+    def __init__(self, *, quota_usage: int = 3412, quota_fails: bool = False) -> None:
+        self.quota_usage = quota_usage
+        self.quota_fails = quota_fails
+
     async def load_config(self, dept: str) -> dict[str, str]:
         assert dept == "业务一部"
         return {
@@ -208,11 +212,18 @@ class FakeConfigStore:
             "market_approval_threshold": "50",
         }
 
+    async def read_dept_quota_usage(self, dept: str) -> int:
+        assert dept == "业务一部"
+        if self.quota_fails:
+            raise RuntimeError("projection unavailable")
+        return self.quota_usage
+
 
 def make_client(
     *,
     repository: FakeImportRepository | None = None,
     role: str = "operator",
+    store: FakeConfigStore | None = None,
 ) -> TestClient:
     application = FastAPI()
     application.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
@@ -227,7 +238,9 @@ def make_client(
         repository or FakeImportRepository()
     )
     application.dependency_overrides[api.get_crypto_service] = lambda: FakeCrypto()
-    application.dependency_overrides[api.get_pipeline_store] = lambda: FakeConfigStore()
+    application.dependency_overrides[api.get_pipeline_store] = lambda: (
+        store or FakeConfigStore()
+    )
     return TestClient(application)
 
 
@@ -314,6 +327,21 @@ def test_preview_uses_server_billing_and_requires_market_consent() -> None:
     assert allowed.status_code == 200
     assert allowed.json()["quota_cost"] == 2
     assert allowed.json()["unsubscribe_appended"] is True
+    assert allowed.json()["final_content"] == "活动回T退订"
+    assert allowed.json()["quota"] == {"used": 3412, "limit": 0, "remaining": None}
+    assert "deferred_reason" in allowed.json()
+
+
+def test_preview_quota_summary_degrades_without_blocking() -> None:
+    client = make_client(store=FakeConfigStore(quota_fails=True))
+    response = client.post(
+        "/api/v1/web/billing/preview",
+        headers={"Authorization": "Bearer jwt"},
+        json={"category": "notice", "content": "通知", "accepted_count": 1},
+    )
+    assert response.status_code == 200
+    assert response.json()["quota"] is None
+    assert response.json()["final_content"] == "通知"
 
 
 def test_send_reserves_import_and_decrypts_only_for_pipeline(
