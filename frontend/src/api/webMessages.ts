@@ -15,6 +15,12 @@ export interface SegmentPart {
   partial: boolean
 }
 
+export interface QuotaSummary {
+  used: number
+  limit: number
+  remaining: number | null
+}
+
 export interface BillingPreview {
   final_length: number
   est_segments: number
@@ -23,7 +29,9 @@ export interface BillingPreview {
   next_segment_at: number
   approval_required: boolean
   unsubscribe_appended: boolean
+  final_content: string
   deferred_reason: string | null
+  quota: QuotaSummary | null
 }
 
 export interface ImportResult {
@@ -60,6 +68,11 @@ export interface SendResult {
   quota_cost: number
   idempotent: boolean
   deferred_reason: string | null
+  removed_duplicate?: number
+  removed_blacklist?: number
+  removed_freq_limit?: number
+  est_segments?: number
+  scheduled_at?: string | null
 }
 
 interface ApiErrorBody {
@@ -289,7 +302,9 @@ export async function uploadPhones(file: File): Promise<ImportResult> {
     })
     delay = Math.min(1_000, delay * 2)
   }
-  if (result.status === "failed") throw new Error("号码文件解析失败，请检查格式后重试")
+  if (result.status === "failed") {
+    throw new Error(result.error || "号码文件解析失败，请检查格式后重试")
+  }
   return result
 }
 

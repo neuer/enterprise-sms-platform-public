@@ -637,7 +637,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended]
+                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended, final_content]
                 properties:
                   final_length: { type: integer }
                   est_segments: { type: integer }
@@ -655,7 +655,18 @@ paths:
                   next_segment_at: { type: integer, description: 再增加多少字符进入下一计费段 }
                   approval_required: { type: boolean }
                   unsubscribe_appended: { type: boolean }
-                  deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+                  final_content: { type: string, description: 签名前置并自动追加退订语后的完整下发文本（提交人本人内容的回显） }
+                  deferred_reason: { anyOf: [{ type: string }, { type: 'null' }], description: 立即发送落在营销窗口外时为 market_window }
+                  quota:
+                    description: 部门日配额只读摘要；投影不可用时为 null，前端降级展示且不得当作零
+                    anyOf:
+                      - type: object
+                        required: [used, limit, remaining]
+                        properties:
+                          used: { type: integer }
+                          limit: { type: integer, description: 0 表示不限 }
+                          remaining: { anyOf: [{ type: integer }, { type: 'null' }], description: limit 为 0（不限）时为 null }
+                      - type: 'null'
         '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
@@ -2030,7 +2041,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended]
+                required: [final_length, est_segments, quota_cost, segment_parts, next_segment_at, approval_required, unsubscribe_appended, final_content]
                 properties:
                   final_length: { type: integer }
                   est_segments: { type: integer }
@@ -2047,7 +2058,18 @@ paths:
                   next_segment_at: { type: integer }
                   approval_required: { type: boolean }
                   unsubscribe_appended: { type: boolean }
+                  final_content: { type: string, description: 签名前置并自动追加退订语后的完整下发文本 }
                   deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
+                  quota:
+                    description: 部门日配额只读摘要；UAT 预览不读取投影，恒为 null
+                    anyOf:
+                      - type: object
+                        required: [used, limit, remaining]
+                        properties:
+                          used: { type: integer }
+                          limit: { type: integer }
+                          remaining: { anyOf: [{ type: integer }, { type: 'null' }] }
+                      - type: 'null'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

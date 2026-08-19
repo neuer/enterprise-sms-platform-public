@@ -27,7 +27,11 @@ from app.core.correlation import correlation_headers
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
 from app.services.batch_query import BatchAccessScope, BatchQueryService
-from app.services.billing_preview import BillingPreview, build_billing_preview
+from app.services.billing_preview import (
+    BillingPreview,
+    QuotaSummary,
+    build_billing_preview,
+)
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
@@ -370,6 +374,30 @@ async def _render(
         payload.template_params or (),
         dept,
     )
+
+
+async def _dept_quota_summary(
+    store: SqlPipelineStore,
+    dept: str,
+    values: dict[str, Any],
+) -> QuotaSummary | None:
+    """部门日配额只读摘要；投影读取失败降级为 None，不阻断预检。
+
+    预检是只读估算，发送入口的配额判定仍以 usage_ledger 事实账本为准；
+    摘要不可用时前端仅降级展示，不得把缺失当作零。
+    """
+
+    try:
+        limit = int(values.get("dept_daily_quota", "0"))
+        used = await store.read_dept_quota_usage(dept)
+    except Exception as error:
+        LOGGER.warning(
+            "dept quota summary unavailable; preview degrades",
+            extra={"error_type": type(error).__name__},
+        )
+        return None
+    remaining = max(0, limit - used) if limit > 0 else None
+    return QuotaSummary(used=used, limit=limit, remaining=remaining)
 
 
 def _import_response(stored: StoredImport) -> ImportResponse:
@@ -784,6 +812,7 @@ async def billing_preview(
         values = await store.load_config(claims.dept)
         policy = RuntimePolicy.from_mapping(values)
         sign_name = await signs.resolve(payload.sign_name) if payload.sign_name else None
+        quota = await _dept_quota_summary(store, claims.dept, values)
         return build_billing_preview(
             category=payload.category,
             content=content,
@@ -795,6 +824,8 @@ async def billing_preview(
             verify_otp_mask=policy.verify_otp_mask,
             notice_threshold=policy.approval_threshold,
             market_threshold=policy.market_approval_threshold,
+            market_window=policy.market_send_window,
+            quota=quota,
         )
     except (ConsentRequired, TemplateParamMismatch, ValueError) as error:
         raise _error(error) from None

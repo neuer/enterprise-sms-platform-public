@@ -290,4 +290,163 @@ describe("人工发送工作台", () => {
     vi.unstubAllGlobals()
     sessionStorage.removeItem("sms_token")
   })
+
+  const basePreview = {
+    final_length: 12,
+    est_segments: 1,
+    quota_cost: 2,
+    segment_parts: [{ used: 12, capacity: 70, partial: true }],
+    next_segment_at: 59,
+    approval_required: false,
+    unsubscribe_appended: false,
+    final_content: "【平台】维护通知",
+    deferred_reason: null,
+    quota: { used: 3412, limit: 20000, remaining: 16588 } as { used: number; limit: number; remaining: number | null } | null,
+  }
+
+  function stubPreviewFetch(previewBody: unknown) {
+    return vi.fn(async (url: string) => {
+      const target = String(url)
+      if (target.endsWith("/billing/preview")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => previewBody }
+      }
+      if (target.endsWith("/reports/dashboard")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ui_policy: { test_send_max: 5 } }) }
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
+    })
+  }
+
+  it("自动预检展示最终内容、计费算式与配额摘要", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", stubPreviewFetch(basePreview))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string; signName: string } }
+    vm.form.mobilesText = "13800138000\n13800138001"
+    vm.form.content = "维护通知"
+    vm.form.signName = "平台"
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='final-content']").text()).toBe("【平台】维护通知")
+    expect(wrapper.text()).toContain("2 × 1 段 =")
+    expect(wrapper.text()).toContain("3,412 / 20,000")
+    expect(wrapper.get("[data-testid='send-button']").text()).toContain("立即发送")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it("配额投影不可用时降级展示而不阻断预检", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", stubPreviewFetch({ ...basePreview, quota: null }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
+    vm.form.mobilesText = "13800138000"
+    vm.form.content = "维护通知"
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("配额投影暂不可确认")
+    expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeUndefined()
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it("文件导入展示解析状态并回填四类计数", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    const readyBody = {
+      import_id: "imp-9",
+      valid: 3,
+      invalid: 1,
+      duplicate: 1,
+      blacklisted: 0,
+      invalid_download_url: null,
+      expires_at: "2026-08-20T09:41:00+08:00",
+      status: "ready",
+      error: null,
+    }
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url)
+      if (target.endsWith("/messages/import") && init?.method === "POST") {
+        return {
+          ok: true,
+          status: 202,
+          headers: { get: () => null },
+          json: async () => ({ ...readyBody, valid: 0, status: "pending" }),
+        }
+      }
+      if (target.endsWith("/messages/import/imp-9")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => readyBody }
+      }
+      if (target.endsWith("/reports/dashboard")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ui_policy: { test_send_max: 5 } }) }
+      }
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    ;(wrapper.vm as unknown as { form: { source: string } }).form.source = "import"
+    await wrapper.vm.$nextTick()
+    const upload = wrapper.findComponent({ name: "ElUpload" })
+    const request = upload.props("httpRequest") as (options: object) => Promise<void>
+    const pending = request({ file: new File(["phone"], "phones.csv"), onSuccess: vi.fn() })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get("[data-testid='import-parsing']").text()).toContain("phones.csv")
+    await vi.advanceTimersByTimeAsync(300)
+    await pending
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("3 有效")
+    expect(wrapper.text()).toContain("1 无效")
+    expect(wrapper.text()).toContain("有效期至")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it("测试发送超出号码上限即时提示并禁止提交", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => String(url).endsWith("/reports/dashboard")
+        ? { ui_policy: { test_send_max: 1 } }
+        : [],
+    })))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { mobilesText: string; content: string; isTest: boolean; scheduledAt: string }
+    }
+    vm.form.mobilesText = "13800138000\n13800138001"
+    vm.form.content = "维护通知"
+    vm.form.scheduledAt = "2026-08-20T09:00:00+08:00"
+    vm.form.isTest = true
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get("[data-testid='test-limit-hint']").text()).toContain("最多 1 个号码")
+    expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeDefined()
+    // 测试发送与定时互斥：勾选即清除已选时间
+    expect(vm.form.scheduledAt).toBe("")
+
+    vm.form.isTest = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find("[data-testid='test-limit-hint']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='send-button']").attributes("disabled")).toBeUndefined()
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
 })
