@@ -30,10 +30,45 @@ CASE_SELECT = """
 SELECT p.id approval_id,trim(b.batch_no) batch_no,p.applicant,
   p.applicant_account_id,p.applicant_identity_id,b.app_id,b.dept,
   to_char(b.created_at AT TIME ZONE 'Asia/Shanghai','YYYYMMDD') quota_date,
-  b.quota_cost,b.category,p.status,b.status batch_status
+  b.quota_cost,b.category,p.status,b.status batch_status,b.deferred_reason
 FROM approval p JOIN sms_batch b ON b.id=p.batch_id
 """
+ITEM_COLUMNS = """
+p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.dept,
+  b.total,b.segments,b.quota_cost estimated_segments,
+  b.scheduled_at,p.trigger_threshold,
+  p.trigger_threshold_source,b.status batch_status,b.deferred_reason,
+  p.status,p.approver,p.reason,p.expires_at,p.decided_at,p.created_at
+"""
+CASE_SOURCE = "FROM approval p JOIN sms_batch b ON b.id=p.batch_id"
+LIST_ORDERS = {
+    "expires_asc": "ORDER BY p.expires_at ASC",
+    "decided_desc": "ORDER BY p.decided_at DESC NULLS LAST",
+}
+DEFAULT_ORDER = "ORDER BY p.created_at DESC"
 LOGGER = logging.getLogger(__name__)
+
+
+def _list_filters(
+    *,
+    dept: str | None,
+    category: str | None,
+    q: str | None,
+) -> tuple[str, dict[str, object]]:
+    """审批列表/计数的共享过滤条件；dept 与 q 由调用方预包裹 ILIKE 通配符。"""
+
+    clauses = ""
+    params: dict[str, object] = {}
+    if dept is not None:
+        clauses += " AND p.dept ILIKE :dept"
+        params["dept"] = dept
+    if category is not None:
+        clauses += " AND b.category=:category"
+        params["category"] = category
+    if q is not None:
+        clauses += " AND p.applicant ILIKE :q"
+        params["q"] = q
+    return clauses, params
 
 
 async def record_pending_approval_alert(
@@ -75,6 +110,7 @@ async def record_pending_approval_alert(
 
 
 def _case(row: Any, *, outbox_persisted: bool = False) -> ApprovalCase:
+    deferred = row.get("deferred_reason")
     return ApprovalCase(
         int(row["approval_id"]),
         str(row["batch_no"]),
@@ -89,6 +125,7 @@ def _case(row: Any, *, outbox_persisted: bool = False) -> ApprovalCase:
         (int(row["applicant_account_id"]) if row["applicant_account_id"] is not None else None),
         (int(row["applicant_identity_id"]) if row["applicant_identity_id"] is not None else None),
         outbox_persisted,
+        deferred_reason=str(deferred) if deferred is not None else None,
     )
 
 
@@ -108,48 +145,98 @@ class SqlApprovalRepository:
         self,
         *,
         status: str,
-        dept: str | None,
+        dept: str | None = None,
+        category: str | None = None,
+        q: str | None = None,
+        sort: str | None = None,
         page: int,
         size: int = 20,
     ) -> dict[str, object]:
-        dept_filter = "" if dept is None else "AND p.dept=:dept"
-        params: dict[str, object] = {
-            "status": status,
-            "dept": dept,
-            "limit": size,
-            "offset": (page - 1) * size,
-        }
-        source = f"""
-          FROM approval p JOIN sms_batch b ON b.id=p.batch_id
-          WHERE p.status=:status {dept_filter}
-        """
+        """分页查询审批列表；列表不取密文正文，正文仅详情端点按需解密。"""
+
+        filters, params = _list_filters(dept=dept, category=category, q=q)
+        params.update({"status": status, "limit": size, "offset": (page - 1) * size})
+        source = f"{CASE_SOURCE} WHERE p.status=:status{filters}"
+        order = LIST_ORDERS.get(sort or "", DEFAULT_ORDER)
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 total = await connection.scalar(text(f"SELECT count(*) {source}"), params)
                 result = await connection.execute(
                     text(
+                        f"SELECT {ITEM_COLUMNS} {source} {order}"
+                        " LIMIT :limit OFFSET :offset"
+                    ),
+                    params,
+                )
+                items = [dict(row) for row in result.mappings()]
+                return {"total": int(total or 0), "items": items}
+        finally:
+            await engine.dispose()
+
+    async def counts(
+        self,
+        *,
+        dept: str | None = None,
+        category: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, int]:
+        """按状态聚合计数（与列表同过滤、不含 status 条件），含 2 小时临期待办。"""
+
+        filters, params = _list_filters(dept=dept, category=category, q=q)
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
                         f"""
-                        SELECT p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.dept,
-                          b.total,b.segments,b.quota_cost estimated_segments,
-                          b.scheduled_at,p.trigger_threshold,
-                          p.trigger_threshold_source,b.display_content_enc,p.status,
-                          p.approver,p.reason,p.expires_at,p.decided_at,p.created_at
-                        {source} ORDER BY p.created_at DESC LIMIT :limit OFFSET :offset
+                        SELECT p.status,count(*) n,
+                          count(*) FILTER (
+                            WHERE p.expires_at<=now()+interval '2 hours'
+                          ) urgent
+                        {CASE_SOURCE} WHERE 1=1{filters} GROUP BY p.status
                         """
                     ),
                     params,
                 )
-                items: list[dict[str, object]] = []
-                for row in result.mappings():
-                    item = dict(row)
-                    item["content"] = decrypt_batch_display_content(
-                        self.crypto,
-                        item.pop("display_content_enc"),
-                        str(item["batch_no"]),
-                    )
-                    items.append(item)
-                return {"total": int(total or 0), "items": items}
+                by_status = {
+                    str(row["status"]): (int(row["n"]), int(row["urgent"]))
+                    for row in result.mappings()
+                }
+                pending, pending_urgent = by_status.get("pending", (0, 0))
+                return {
+                    "pending": pending,
+                    "approved": by_status.get("approved", (0, 0))[0],
+                    "rejected": by_status.get("rejected", (0, 0))[0],
+                    "expired": by_status.get("expired", (0, 0))[0],
+                    "pending_urgent": pending_urgent,
+                }
+        finally:
+            await engine.dispose()
+
+    async def get_detail(self, approval_id: int) -> dict[str, object] | None:
+        """单条审批详情；审批域唯一的正文解密点，由详情端点配合敏感读审计调用。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        f"SELECT {ITEM_COLUMNS},b.display_content_enc"
+                        f" {CASE_SOURCE} WHERE p.id=:id"
+                    ),
+                    {"id": approval_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return None
+                item = dict(row)
+                item["content"] = decrypt_batch_display_content(
+                    self.crypto,
+                    item.pop("display_content_enc"),
+                    str(item["batch_no"]),
+                )
+                return item
         finally:
             await engine.dispose()
 
@@ -281,7 +368,11 @@ class SqlApprovalRepository:
                                 },
                             )
                             enqueue_ready = False
-                            case = replace(case, batch_status="scheduled")
+                            case = replace(
+                                case,
+                                batch_status="scheduled",
+                                deferred_reason=deferred,
+                            )
                     if enqueue_ready:
                         await enqueue_outbox(
                             connection,

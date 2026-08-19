@@ -55,7 +55,7 @@ def test_openapi_exposes_qingluan_runtime_and_approval_facts() -> None:
     assert "channel_monitor" in set(
         schemas["DashboardOperationsModel"]["required"]
     )
-    approval = schemas["Approval"]
+    approval = schemas["ApprovalListItem"]
     assert {
         "segments",
         "estimated_segments",

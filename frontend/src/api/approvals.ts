@@ -2,7 +2,19 @@ import { apiRequest, type Category } from "./webMessages"
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired"
 
-export interface ApprovalItem {
+export type ApprovalSort = "expires_asc" | "created_desc" | "decided_desc"
+
+export type ApprovalAction = "approve" | "reject"
+
+export interface ApprovalCounts {
+  pending: number
+  approved: number
+  rejected: number
+  expired: number
+  pending_urgent: number
+}
+
+export interface ApprovalListItem {
   id: number
   batch_no: string
   category: Category
@@ -11,69 +23,66 @@ export interface ApprovalItem {
   total: number
   segments: number | null
   estimated_segments: number | null
-  scheduled_at?: string | null
+  scheduled_at: string | null
   trigger_threshold: number | null
   trigger_threshold_source: "snapshot" | "legacy_unknown"
-  content: string
   status: ApprovalStatus
   approver: string | null
   reason: string | null
-  expires_at?: string | null
-  decided_at?: string | null
+  expires_at: string | null
+  decided_at: string | null
   created_at: string
+  batch_status: string
+  deferred_reason: string | null
+}
+
+export interface ApprovalDetail extends ApprovalListItem {
+  content: string
+}
+
+export interface ApprovalQuery {
+  status: ApprovalStatus
+  page?: number
+  size?: number
+  category?: Category
+  dept?: string
+  q?: string
+  sort?: ApprovalSort
 }
 
 export interface ApprovalPage {
   total: number
-  items: ApprovalItem[]
+  counts: ApprovalCounts
+  items: ApprovalListItem[]
 }
 
-type ApprovalWireItem = Omit<
-  ApprovalItem,
-  | "segments"
-  | "estimated_segments"
-  | "scheduled_at"
-  | "trigger_threshold"
-  | "trigger_threshold_source"
-  | "expires_at"
-  | "decided_at"
-> & Partial<Pick<
-  ApprovalItem,
-  | "segments"
-  | "estimated_segments"
-  | "scheduled_at"
-  | "trigger_threshold"
-  | "trigger_threshold_source"
-  | "expires_at"
-  | "decided_at"
->>
+export interface DecisionOutcome {
+  status: ApprovalStatus
+  batch_status: string
+  deferred_reason: string | null
+}
 
-export async function listApprovals(status: ApprovalStatus, page = 1): Promise<ApprovalPage> {
-  const query = new URLSearchParams({ status, page: String(page) })
-  const result = await apiRequest<{ total: number; items: ApprovalWireItem[] }>(
-    `/approvals?${query}`,
-    { method: "GET" },
-  )
-  return {
-    total: result.total,
-    items: result.items.map((item) => ({
-      ...item,
-      segments: item.segments ?? null,
-      estimated_segments: item.estimated_segments ?? null,
-      trigger_threshold: item.trigger_threshold ?? null,
-      trigger_threshold_source: item.trigger_threshold_source ?? "legacy_unknown",
-      expires_at: item.expires_at ?? null,
-      decided_at: item.decided_at ?? null,
-    })),
-  }
+export async function listApprovals(query: ApprovalQuery): Promise<ApprovalPage> {
+  const params = new URLSearchParams({ status: query.status })
+  if (query.page !== undefined) params.set("page", String(query.page))
+  if (query.size !== undefined) params.set("size", String(query.size))
+  if (query.category) params.set("category", query.category)
+  if (query.dept?.trim()) params.set("dept", query.dept.trim())
+  if (query.q?.trim()) params.set("q", query.q.trim())
+  if (query.sort) params.set("sort", query.sort)
+  return apiRequest<ApprovalPage>(`/approvals?${params}`, { method: "GET" })
+}
+
+export async function getApproval(id: number): Promise<ApprovalDetail> {
+  return apiRequest<ApprovalDetail>(`/approvals/${id}`, { method: "GET" })
 }
 
 export async function decideApproval(
   id: number,
-  action: "approve" | "reject",
+  action: ApprovalAction,
   reason?: string,
-): Promise<void> {
-  await apiRequest<unknown>(`/approvals/${id}/decision`, {
+): Promise<DecisionOutcome> {
+  return apiRequest<DecisionOutcome>(`/approvals/${id}/decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, reason: reason || null }),

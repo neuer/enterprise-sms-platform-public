@@ -8,7 +8,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
     const workspace = source("src/styles/workspace.css")
     const darkLayer = workspace.slice(workspace.indexOf("青鸾 Console 深色监视台"))
     expect(darkLayer).toMatch(
-      /\.approval-card \.el-table,\s*\.sign-card \.el-table\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s,
+      /\.sign-card \.el-table\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s,
     )
   })
 

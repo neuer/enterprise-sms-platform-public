@@ -1,4 +1,4 @@
-"""审批列表与决策接口。"""
+"""审批列表、详情与决策接口。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
@@ -31,8 +31,10 @@ from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/approvals", tags=["approval"])
 
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 
-class ApprovalItem(BaseModel):
+
+class ApprovalListItem(BaseModel):
     id: int
     batch_no: str
     category: str
@@ -44,8 +46,9 @@ class ApprovalItem(BaseModel):
     scheduled_at: datetime | None
     trigger_threshold: int | None = Field(ge=1)
     trigger_threshold_source: Literal["snapshot", "legacy_unknown"]
-    content: str
-    status: Literal["pending", "approved", "rejected", "expired"]
+    batch_status: str
+    deferred_reason: str | None
+    status: ApprovalStatus
     approver: str | None
     reason: str | None = Field(max_length=256)
     expires_at: datetime
@@ -53,9 +56,28 @@ class ApprovalItem(BaseModel):
     created_at: datetime
 
 
+class ApprovalDetail(ApprovalListItem):
+    content: str
+
+
+class ApprovalCounts(BaseModel):
+    pending: int
+    approved: int
+    rejected: int
+    expired: int
+    pending_urgent: int
+
+
 class ApprovalPage(BaseModel):
     total: int
-    items: list[ApprovalItem]
+    counts: ApprovalCounts
+    items: list[ApprovalListItem]
+
+
+class DecisionOutcome(BaseModel):
+    status: ApprovalStatus
+    batch_status: str
+    deferred_reason: str | None
 
 
 class DecisionRequest(BaseModel):
@@ -100,36 +122,74 @@ async def _approver(
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
 )
 async def list_approvals(
+    repository: Annotated[SqlApprovalRepository, Depends(get_approval_repository)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    status: Annotated[ApprovalStatus, Query()] = "pending",
+    category: Annotated[Literal["notice", "market"] | None, Query()] = None,
+    dept: Annotated[str | None, Query(max_length=64)] = None,
+    q: Annotated[str | None, Query(max_length=64)] = None,
+    sort: Annotated[
+        Literal["expires_asc", "created_desc", "decided_desc"] | None, Query()
+    ] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> dict[str, object]:
+    """分页审批列表；正文不在列表解密，敏感读审计只保留在详情端点。"""
+
+    await _approver(facade, credentials)
+    effective_sort = sort or ("expires_asc" if status == "pending" else "decided_desc")
+    dept_pattern = f"%{dept}%" if dept is not None else None
+    keyword = f"%{q}%" if q is not None else None
+    result = await repository.list_page(
+        status=status,
+        dept=dept_pattern,
+        category=category,
+        q=keyword,
+        sort=effective_sort,
+        page=page,
+        size=size,
+    )
+    counts = await repository.counts(dept=dept_pattern, category=category, q=keyword)
+    return {
+        "total": result["total"],
+        "counts": counts,
+        "items": result["items"],
+    }
+
+
+@router.get(
+    "/{id}",
+    response_model=ApprovalDetail,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE},
+)
+async def get_approval(
+    id: int,
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     repository: Annotated[SqlApprovalRepository, Depends(get_approval_repository)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    status: Annotated[
-        Literal["pending", "approved", "rejected", "expired"], Query()
-    ] = "pending",
-    page: Annotated[int, Query(ge=1)] = 1,
 ) -> dict[str, object]:
+    """审批单详情；唯一正文解密出口，逐条记录敏感读审计。"""
+
     await _approver(facade, credentials)
-    result = await repository.list_page(
-        status=status,
-        dept=None,
-        page=page,
-    )
-    items = result.get("items", [])
+    detail = await repository.get_detail(id)
+    if detail is None:
+        raise ApiError(404, "NOT_FOUND", "审批单不存在", None)
     await auditor.record(
         action="approval_content_read",
-        object_type="approval_page",
-        object_id=status,
+        object_type="approval",
+        object_id=str(id),
         ip=trusted_client_ip(request),
-        count=len(items) if isinstance(items, list) else 0,
+        count=1,
     )
-    return result
+    return detail
 
 
 @router.post(
     "/{id}/decision",
-    response_class=Response,
+    response_model=DecisionOutcome,
     responses={400: ERROR_RESPONSE, 403: ERROR_RESPONSE, 409: ERROR_RESPONSE},
 )
 @audited("approval_decision")
@@ -140,10 +200,10 @@ async def decide_approval(
     service: Annotated[ApprovalService, Depends(get_approval_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> Response:
+) -> DecisionOutcome:
     claims = await _approver(facade, credentials)
     try:
-        await service.decide(
+        case = await service.decide(
             id,
             action=payload.action,
             principal=claims.principal,
@@ -155,4 +215,8 @@ async def decide_approval(
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
-    return Response(status_code=200)
+    return DecisionOutcome(
+        status=cast(ApprovalStatus, case.status),
+        batch_status=case.batch_status,
+        deferred_reason=case.deferred_reason,
+    )

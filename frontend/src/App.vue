@@ -6,11 +6,13 @@ import { useRoute, useRouter } from "vue-router"
 import type { UserRole } from "./api/auth"
 import { getDashboard } from "./api/dashboard"
 import DailyPasswordChangeDialog from "./components/DailyPasswordChangeDialog.vue"
+import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
 
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
+const approvalBadge = useApprovalBadgeStore()
 const publicRoute = computed(() => Boolean(route.meta.public))
 const pageTitle = computed(() => String(route.meta.title || "仪表盘"))
 const pageGroup = computed(() => String(route.meta.group || "概览"))
@@ -19,6 +21,7 @@ const currentBalance = ref<number | null>(null)
 const passwordDialogOpen = ref(false)
 const authenticatedShell = computed(() => !publicRoute.value && session.isAuthenticated)
 const dashboardRoute = computed(() => route.path === "/dashboard")
+const approverRole = computed(() => session.role === "approver" || session.role === "admin")
 const balanceLabel = computed(() =>
   currentBalance.value === null
     ? "厂商余额暂无数据"
@@ -143,8 +146,17 @@ function syncBalancePolling(): void {
   if (!dashboardRoute.value) startBalancePolling()
 }
 
+function syncApprovalBadgePolling(): void {
+  if (authenticatedShell.value && approverRole.value) {
+    approvalBadge.start()
+  } else {
+    approvalBadge.stop()
+  }
+}
+
 watch(() => route.fullPath, closeNavigation)
 watch([authenticatedShell, dashboardRoute], syncBalancePolling, { immediate: true })
+watch([authenticatedShell, approverRole], syncApprovalBadgePolling, { immediate: true })
 
 onBeforeMount(() => {
   window.addEventListener("sms:dashboard-balance", handleDashboardBalance)
@@ -163,6 +175,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleKeydown)
   window.removeEventListener("sms:dashboard-balance", handleDashboardBalance)
   stopBalancePolling()
+  approvalBadge.stop()
 })
 
 async function logout() {
@@ -209,6 +222,11 @@ async function handlePasswordChanged(): Promise<void> {
               >
                 <span class="nav-marker" aria-hidden="true">{{ item.marker }}</span>
                 {{ item.label }}
+                <span
+                  v-if="item.path === '/approvals' && approvalBadge.pending > 0"
+                  class="nav-badge"
+                  :aria-label="`${approvalBadge.pending} 条待审批`"
+                >{{ approvalBadge.pending }}</span>
               </router-link>
             </template>
           </section>

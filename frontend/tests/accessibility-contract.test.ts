@@ -104,8 +104,16 @@ describe("无障碍样式契约", () => {
 
   it("移动治理列表在加载期间保留可见高度", () => {
     expect(css).toMatch(
-      /\.approval-mobile-list,[\s\S]*\.sign-mobile-list,[\s\S]*\.blacklist-mobile-list\s*\{[^}]*min-height:\s*120px/s,
+      /\.approval-rows,[\s\S]*\.sign-mobile-list,[\s\S]*\.blacklist-mobile-list\s*\{[^}]*min-height:\s*120px/s,
     )
+  })
+
+  it("审批列表为单一标记，断点只折叠布局不切换 DOM", () => {
+    const view = readFileSync(resolve(process.cwd(), "src/views/ApprovalView.vue"), "utf8")
+    const list = readFileSync(resolve(process.cwd(), "src/components/ApprovalList.vue"), "utf8")
+    expect(view).not.toContain("approval-mobile-list")
+    expect(list).not.toContain("approval-mobile-list")
+    expect(css).toMatch(/@media \(max-width: 959px\)[\s\S]*\.approval-table thead\s*\{[^}]*display:\s*none/s)
   })
 
   it("窄屏长文本、浮层和分页不会撑破视口", () => {
