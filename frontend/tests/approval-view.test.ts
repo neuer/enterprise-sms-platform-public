@@ -135,14 +135,14 @@ describe("审批中心", () => {
     for (const count of ["12", "46", "7", "3"]) {
       expect(segmented.text()).toContain(count)
     }
-    expect(segmented.text()).toContain("3 临期")
-
     const pill = wrapper.get("[data-testid='approval-counts-pill']")
     expect(pill.text()).toContain("12")
     expect(pill.text()).toContain("3 临期")
     expect(wrapper.text()).toContain("当前身份 · 审批员")
     expect(wrapper.text()).toContain("30s 自动")
-    expect(wrapper.get(".approval-toolbar").classes()).toContain("filter-toolbar")
+    expect(wrapper.find(".approval-filter-bar").exists()).toBe(true)
+    expect(wrapper.find(".filter-toolbar").exists()).toBe(false)
+    expect(wrapper.findComponent({ name: "ElSegmented" }).exists()).toBe(false)
 
     expect(useApprovalBadgeStore().pending).toBe(12)
     expect(listCalls(fetchMock)[0]).toContain("status=pending")
@@ -186,7 +186,7 @@ describe("审批中心", () => {
     await flushPromises()
     expect(listCalls(fetchMock).at(-1)).toContain("sort=created_desc")
 
-    wrapper.getComponent({ name: "ElSegmented" }).vm.$emit("change", "approved")
+    await wrapper.get("[data-testid='approval-status-approved']").trigger("click")
     await flushPromises()
     const decided = listCalls(fetchMock).at(-1)!
     expect(decided).toContain("status=approved")
@@ -316,6 +316,11 @@ describe("审批中心", () => {
     expect(wrapper.get("[data-testid='approval-detail-content']").text()).toContain("会员日活动，回T退订")
     expect(wrapper.text()).toContain("按需解密 · 本次查看已写敏感读审计")
     expect(wrapper.text()).toContain("待审内容（OTP 已等长打码）")
+    expect(wrapper.text()).toContain("营销 / bulk")
+    expect(wrapper.text()).toContain("通过后 → queued / bulk")
+    expect(wrapper.text()).toContain("过期自动作废并释放配额")
+    expect(wrapper.text()).not.toContain("已剔除")
+    expect(drawer.props("size")).toBe("min(560px, 92vw)")
 
     const rejectButton = wrapper.get("[data-testid='drawer-reject']")
     expect(rejectButton.attributes("disabled")).toBeDefined()
@@ -398,7 +403,7 @@ describe("审批中心", () => {
 
     const wrapper = mountApproverView()
     await flushPromises()
-    wrapper.getComponent({ name: "ElSegmented" }).vm.$emit("change", "approved")
+    await wrapper.get("[data-testid='approval-status-approved']").trigger("click")
     await flushPromises()
 
     expect(wrapper.get(".approval-table").text()).toContain("审批人 / 决策时间")

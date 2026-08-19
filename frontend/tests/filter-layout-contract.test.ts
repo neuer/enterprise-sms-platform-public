@@ -3,7 +3,7 @@ import { resolve } from "node:path"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 const css = read("src/styles/workspace.css")
-const standardQueryViews = ["BatchView.vue", "MessageView.vue", "ReplyView.vue"].map((name) =>
+const standardQueryViews = ["MessageView.vue", "ReplyView.vue"].map((name) =>
   read(`src/views/${name}`),
 )
 const auditView = read("src/views/AuditView.vue")
@@ -11,9 +11,10 @@ const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews = ["CallbackView.vue", "ApprovalView.vue", "TemplateView.vue", "OpsView.vue"].map(
+const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue", "BatchView.vue"].map(
   (name) => read(`src/views/${name}`),
 )
+const approvalView = read("src/views/ApprovalView.vue")
 
 describe("全站筛选布局契约", () => {
   it("使用共享十二列网格与语义跨度", () => {
@@ -60,6 +61,16 @@ describe("全站筛选布局契约", () => {
   it("轻量筛选统一使用紧凑工具栏", () => {
     for (const source of compactViews) expect(source).toContain("filter-toolbar")
     expect(css).toMatch(/\.filter-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
+  })
+
+  it("审批中心使用方案 A 单行胶囊筛选条", () => {
+    expect(approvalView).toContain("approval-filter-bar")
+    expect(approvalView).toContain('data-testid="approval-status-seg"')
+    expect(approvalView).not.toContain("filter-toolbar")
+    expect(approvalView).not.toContain("filter-grid")
+    expect(approvalView).not.toContain("<el-segmented")
+    expect(css).toMatch(/\.approval-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.approval-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("治理录入表单使用统一操作区并在手机端提供满宽主按钮", () => {

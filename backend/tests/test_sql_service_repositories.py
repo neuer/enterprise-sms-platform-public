@@ -1079,13 +1079,15 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    connection = FakeConnection(
+        [FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])]
+    )
     bind_engine(monkeypatch, service, connection)
 
     result = await service.list_batches(
         scope=BatchAccessScope(dept="业务一部"),
         category=None,
-        status="' OR 1=1--",
+        statuses=["' OR 1=1--"],
         channel=None,
         app_id=None,
         is_test=None,
@@ -1096,16 +1098,60 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
         size=20,
     )
 
-    assert result == {"total": 0, "items": []}
-    for sql, params in connection.calls:
+    assert result == {"total": 0, "status_counts": {}, "items": []}
+    for sql, params in (connection.calls[0], connection.calls[2]):
         assert "IS NULL" not in sql
-        assert "b.status=:status" in sql
+        assert "b.status=ANY(:statuses)" in sql
         assert params == {
             "scope_dept": "业务一部",
-            "status": "' OR 1=1--",
+            "statuses": ["' OR 1=1--"],
             "limit": 20,
             "offset": 0,
         }
+    counts_sql, counts_params = connection.calls[1]
+    assert "GROUP BY b.status" in counts_sql
+    assert ":statuses" not in counts_sql
+    assert counts_params == {"scope_dept": "业务一部"}
+
+
+@pytest.mark.asyncio
+async def test_batch_list_status_counts_are_faceted_without_status_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BatchQueryService()
+    connection = FakeConnection(
+        [
+            FakeResult(scalar=3),
+            FakeResult(
+                rows=[
+                    {"status": "sending", "n": 2},
+                    {"status": "balance_blocked", "n": 1},
+                ]
+            ),
+            FakeResult(rows=[]),
+        ]
+    )
+    bind_engine(monkeypatch, service, connection)
+
+    result = await service.list_batches(
+        scope=BatchAccessScope(all_departments=True),
+        category="notice",
+        statuses=["sending", "queued"],
+        channel=None,
+        app_id=None,
+        is_test=None,
+        batch_no=None,
+        start=None,
+        end=None,
+        page=1,
+        size=20,
+    )
+
+    assert result["status_counts"] == {"sending": 2, "balance_blocked": 1}
+    counts_sql, counts_params = connection.calls[1]
+    assert "b.category=:category" in counts_sql
+    assert ":statuses" not in counts_sql
+    assert counts_params == {"category": "notice"}
 
 
 @pytest.mark.asyncio
@@ -1113,13 +1159,15 @@ async def test_batch_list_batch_no_filter_escapes_like_wildcards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    connection = FakeConnection(
+        [FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])]
+    )
     bind_engine(monkeypatch, service, connection)
 
     await service.list_batches(
         scope=BatchAccessScope(dept="业务一部"),
         category=None,
-        status=None,
+        statuses=None,
         channel=None,
         app_id=None,
         is_test=None,

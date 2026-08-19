@@ -761,6 +761,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/test-fast-update.md",
             "docs/previews/approval-redesign-prototype.html",
+            "docs/previews/batch-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/login-redesign-prototype.html",
             "docs/previews/login-redesign-shots.md",
@@ -851,6 +852,24 @@ def test_approval_preview_does_not_block_classified_update() -> None:
             "backend/app/services/approval.py",
             "docs/previews/approval-redesign-prototype.html",
             "frontend/src/views/ApprovalView.vue",
+            "openapi.yaml",
+        ]
+    )
+
+    assert "web" in change.components
+    assert "api" in change.components
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.migration_changed is False
+
+
+def test_batch_preview_does_not_block_classified_update() -> None:
+    change = classify_changed_paths(
+        [
+            "backend/app/api/web_messages.py",
+            "backend/app/services/batch_query.py",
+            "docs/previews/batch-redesign-prototype.html",
+            "frontend/src/views/BatchView.vue",
             "openapi.yaml",
         ]
     )

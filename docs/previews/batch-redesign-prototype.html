@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 批次列表重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf; --violet:#9b7ed9;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+ul{list-style:none}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1180px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1180px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px;white-space:nowrap}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:var(--slate);border-color:rgba(111,155,207,.45)}
+
+/* ═══════════ 共享：页面画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.blv{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:1080px}
+.blv-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.blv-head h1{font-family:var(--serif);font-size:20px;font-weight:600;color:var(--tx-hi)}
+.blv-head .sub{color:var(--tx-3);font-size:11px}
+.head-side{display:flex;align-items:center;gap:10px}
+.role-tag{display:inline-flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:5px 11px;background:var(--panel)}
+.role-tag i{width:6px;height:6px;border-radius:50%;background:var(--verdi-l)}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.ghost{background:transparent}
+.btn.danger{border-color:rgba(228,106,79,.5);color:var(--verm);background:transparent}
+.btn[disabled]{opacity:.38}
+
+/* 筛选工具条（单行 + 更多筛选折叠） */
+.filter-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:11px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.filter-bar .fld{display:flex;align-items:center;gap:8px}
+.filter-bar .fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.seg b{padding:4px 13px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.pill-select{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx)}
+.search{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx-3);min-width:150px}
+.dates{font:11.5px var(--mono);color:var(--tx);border:1px solid var(--hair);border-radius:7px;background:var(--sink);padding:4px 11px}
+.filter-bar .go{margin-left:auto;display:flex;align-items:center;gap:10px}
+.dirty-hint{font:10px var(--mono);color:var(--amber)}
+
+/* 状态分组 chips（列表工具行） */
+.chips-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 4px}
+.chips-row .lbl{font-size:10.5px;color:var(--tx-3);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:6px;font:11px/1.7 var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:2px 10px;background:var(--sink)}
+.chip b{color:var(--tx);font-weight:600}
+.chip.on{border-color:rgba(47,161,132,.55);color:#71c4ad;background:rgba(14,122,99,.14)}
+.chip.on b{color:#71c4ad}
+.chip.hot{border-color:rgba(228,106,79,.55);color:#f0a08c}
+.chip.hot b{color:var(--verm)}
+.chips-row .meta{margin-left:auto;font:10px var(--mono);color:var(--tx-3)}
+
+/* 结果构成条（四段：送达/失败/待回执/未提交） */
+.compose{display:flex;height:7px;border-radius:4px;overflow:hidden;gap:1px;background:var(--sink)}
+.compose i{display:block;height:100%}
+.compose .d{background:var(--verdi-l)} .compose .f{background:var(--verm)}
+.compose .u{background:var(--slate)} .compose .p{background:var(--tx-3)}
+.compose-legend{display:flex;gap:12px;font-size:10px;color:var(--tx-3)}
+.compose-legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+
+/* 类别 / 状态标签 */
+.cat{font:10px/1.7 var(--mono);padding:0 7px;border-radius:4px;white-space:nowrap}
+.cat.verify{background:rgba(155,126,217,.15);color:#b7a1e8}
+.cat.notice{background:rgba(111,155,207,.15);color:#93b6e0}
+.cat.market{background:rgba(216,163,92,.15);color:var(--amber)}
+.stag{font:10px/1.8 var(--mono);padding:0 8px;border-radius:5px;white-space:nowrap}
+.stag.info{background:rgba(111,155,207,.14);color:#93b6e0}
+.stag.ok{background:rgba(47,161,132,.14);color:#71c4ad}
+.stag.warn{background:rgba(216,163,92,.14);color:var(--amber)}
+.stag.bad{background:rgba(228,106,79,.14);color:#c9856f}
+.stag.dark{background:rgba(228,106,79,.28);color:#f6b5a4;border:1px solid rgba(228,106,79,.4)}
+.stag.mute{background:var(--panel-2);color:var(--tx-3)}
+.test-badge{font:9px/1.6 var(--mono);padding:0 6px;border-radius:4px;border:1px dashed rgba(155,126,217,.5);color:#b7a1e8;white-space:nowrap}
+.sched-chip{font:9.5px/1.7 var(--mono);padding:0 7px;border-radius:4px;border:1px solid rgba(216,163,92,.4);color:var(--amber);white-space:nowrap}
+.resend-chip{font:9.5px/1.7 var(--mono);padding:0 7px;border-radius:4px;border:1px solid var(--hair);color:var(--tx-2);white-space:nowrap}
+
+/* 账本表格（方案 A） */
+.ledger{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:4px 8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{font-size:10.5px;font-weight:400;color:var(--tx-3);text-align:left;padding:9px 10px;border-bottom:1px solid var(--hair);white-space:nowrap}
+.tbl td{padding:10px;border-bottom:1px solid var(--hair-2);vertical-align:middle;color:var(--tx-2)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .c-no code{font:11.5px var(--mono);color:var(--tx-hi);display:block}
+.tbl .c-no small{font:10px var(--mono);color:var(--tx-3)}
+.tbl .c-no .flags{margin-top:3px;display:flex;gap:5px}
+.tbl .c-content{max-width:320px}
+.tbl .c-content .l1{display:flex;align-items:center;gap:7px}
+.tbl .c-content p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx);font-size:11.5px;margin-top:3px}
+.tbl .c-src{color:var(--tx);font-size:11.5px}
+.tbl .c-src small{display:block;color:var(--tx-3);font-size:10px}
+.tbl .c-result{min-width:170px}
+.tbl .c-result .nums{display:flex;justify-content:space-between;font:10.5px var(--mono);color:var(--tx-3);margin-bottom:4px}
+.tbl .c-result .nums b{color:var(--tx);font-weight:400}
+.tbl .c-result .nums .f-bad{color:#f0a08c}
+.tbl .c-status small{display:block;font-size:10px;color:var(--amber);margin-top:3px}
+.tbl .c-quota{font:12px var(--mono);color:var(--tx);text-align:right}
+.tbl .c-op a{color:var(--verdi-l);font-size:11.5px;white-space:nowrap}
+.tbl tr.is-blocked td{background:linear-gradient(90deg,rgba(228,106,79,.05),transparent 40%)}
+.pager{display:flex;align-items:center;gap:14px;padding:10px 4px 0}
+.pager span{font:10.5px var(--mono);color:var(--tx-3)}
+.pager .pages{margin-left:auto;display:flex;gap:6px}
+.pager .pages b{min-width:24px;text-align:center;font:11px/1.9 var(--mono);border:1px solid var(--hair);border-radius:6px;color:var(--tx-2);background:var(--sink);padding:0 6px}
+.pager .pages b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 详情抽屉（方案 A 第二视口） ═══════════ */
+.drawer-zone{display:grid;grid-template-columns:5fr 7fr;gap:14px;align-items:start}
+.side-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 18px}
+.side-panel h3{font-size:13px;color:var(--tx-hi);font-weight:600;margin-bottom:4px}
+.side-panel h3 small{color:var(--tx-3);font-size:10px;font-weight:400;margin-left:8px}
+.side-panel .hint{font-size:11px;color:var(--tx-3);margin:8px 0 0}
+.mini-tbl{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:10px}
+.mini-tbl th{font-size:10px;font-weight:400;color:var(--tx-3);text-align:left;padding:6px 8px;border-bottom:1px solid var(--hair)}
+.mini-tbl td{padding:6px 8px;border-bottom:1px solid var(--hair-2);color:var(--tx-2)}
+.mini-tbl td:first-child{white-space:nowrap}
+.mini-tbl .y{color:#71c4ad}.mini-tbl .n{color:var(--tx-3)}
+.mini-tbl tr:last-child td{border-bottom:0}
+.drawer{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:18px 20px;display:grid;gap:13px;max-width:600px;justify-self:end;width:100%}
+.drawer-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--hair-2);padding-bottom:11px}
+.drawer-head code{font:12px var(--mono);color:var(--tx-hi);display:block;margin-top:2px}
+.drawer-head .sub2{font-size:10.5px;color:var(--tx-3)}
+.d-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.d-actions .why{font-size:10px;color:var(--tx-3);width:100%;text-align:right}
+.d-hero{display:grid;gap:11px;padding:14px 16px;background:linear-gradient(180deg,var(--panel-2),var(--sink));border:1px solid var(--hair);border-radius:10px}
+.d-hero .compose{height:9px}
+.d-nums{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.d-nums>div>span{font-size:10px;color:var(--tx-3)}
+.d-nums>div>b{display:block;font:600 18px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.d-nums>div>b.bad{color:#f0a08c}
+.d-nums>div>small{font-size:9.5px;color:var(--tx-3)}
+.d-hero .d-quotas{display:flex;gap:16px;font:10.5px var(--mono);color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:9px}
+.d-hero .d-quotas b{color:var(--tx);font-weight:400}
+.d-note{font-size:11px;color:#93b6e0;border:1px solid rgba(111,155,207,.35);background:rgba(111,155,207,.08);border-radius:8px;padding:8px 12px}
+.d-content{border:1px solid var(--hair);border-radius:10px;padding:11px 14px;display:grid;gap:6px}
+.d-content .l1{display:flex;align-items:center;gap:8px}
+.d-content p{font-size:12.5px;color:var(--tx-hi);line-height:1.7}
+.d-content small{font-size:10px;color:var(--tx-3)}
+.fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px 18px}
+.fact-grid dt{font-size:10.5px;color:var(--tx-3)}
+.fact-grid dd{font-size:12px;color:var(--tx);margin-top:1px}
+.fact-grid dd a{color:var(--verdi-l);font-family:var(--mono);font-size:11px}
+.d-detail-head{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--hair-2);padding-top:11px}
+.d-detail-head b{color:var(--tx-hi);font-size:12.5px}
+.d-detail-head .pill-select{font-size:10.5px;padding:3px 10px}
+.d-pager{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--tx-3)}
+
+/* ═══════════ 方案 B：密度表格 + 行内展开 ═══════════ */
+.dense .tbl td{padding:6px 10px;font-size:11.5px}
+.dense .tbl .c-content p{margin-top:1px}
+.dense .compose{height:5px}
+.dense .c-result{min-width:130px}
+.xrow td{background:var(--panel-2);border-bottom:1px solid var(--hair)}
+.xpanel{display:grid;grid-template-columns:7fr 5fr;gap:18px;padding:8px 6px}
+.xpanel .x-main{display:grid;gap:8px}
+.xpanel .x-main p{font-size:12.5px;color:var(--tx-hi);line-height:1.7}
+.xpanel .x-main .compose{height:8px}
+.xpanel .x-meta{display:grid;gap:4px;font-size:11px;color:var(--tx-2);align-content:start}
+.xpanel .x-meta span{color:var(--tx-3);margin-right:8px}
+.xpanel .x-actions{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.xlink{color:var(--verdi-l);font-size:11.5px}
+.exp-ind{color:var(--verdi-l);font-family:var(--mono)}
+
+/* ═══════════ 对比与数据需求 ═══════════ */
+.cmp-wrap{margin:14px 28px 40px;max-width:1180px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:22px 0 10px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{padding:8px 12px;border:1px solid var(--hair-2);text-align:left;vertical-align:top}
+.cmp th{background:var(--panel);color:var(--tx-hi);font-weight:600}
+.cmp td:first-child{font:10.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+.cmp td{color:var(--tx-2)}
+.cmp td b{color:var(--tx)}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 批次列表重设计原型 v1</b>
+  <span>评审稿 · 所有数据均为虚构 mock · 纯静态，零外部依赖</span>
+  <em>2026-08-19</em>
+</div>
+
+<section class="notes">
+  <h2>现状诊断（当前 BatchView）</h2>
+  <ul>
+    <li><b>「进度」列语义错位</b>：进度条只填 delivered/total，把「送达回执」当「发送进度」。发送中批次回执延迟时进度条长时间低位、形似卡死；待审批 / 定时 / 取消批次恒为 0，该列对一半以上的状态没有任何信息；failed 量在列表完全不可见。</li>
+    <li><b>筛选卡 8 个字段平铺独占一层</b>：批次号 / 类别 / 状态 / 测试 / 渠道 / 应用 ID / 部门 / 时间同权重铺开，低频字段（测试发送、应用 ID、部门）常年空置却占据首屏；应用 ID 要求用户手填数字 ID。</li>
+    <li><b>发了什么不可见</b>：列表接口已返回 content，页面却不展示；定位「哪个批次发了什么内容」只能逐个开抽屉。verify 内容入库前已经 OTP 等长打码（硬性规则 27），列表展示是安全的。</li>
+    <li><b>状态上下文缺失</b>：定时批次的 scheduled_at 在列表不可见（只有创建时间）；deferred_reason（营销窗外转定时）只在抽屉 alert；is_test 无任何视觉标记；重发批次的 resend_of 溯源不可跳转。</li>
+    <li><b>抽屉信息松散</b>：donut 构成比占了首屏却只表达三个数，与列表进度条重复；元信息、告警、号码明细、操作平铺一列，560px 内滚动很长；取消 / 改期 / 重发失败无状态显隐逻辑，点了才被 409 顶回来。</li>
+    <li><b>操作矩阵从未明示</b>：服务端约束是「仅 scheduled 可取消 / 改期」，界面没有任何地方告诉用户这一点。</li>
+  </ul>
+</section>
+
+<div class="stage-label">方案 A — 账本工作台（推荐）　GROUP → LEDGER → DRAWER</div>
+<p class="variant-caption">
+  三层递进：状态分组 chips（一眼看到待处理量）→ 构成感知账本表（四段构成条替代单段进度条 + 内容摘要列）→ 分区抽屉（结果概览 / 内容 / 元信息 / 号码明细）。
+  筛选压缩为单行工具条，低频字段收进「更多筛选」；应用 ID 输入框改为应用名下拉（取自现有应用管理接口）。
+  新增 ① 状态分组 chips 及计数<span class="need ext">计数需接口扩展</span><span class="need calc">分组为前端推导</span>② 四段构成条<span class="need calc">前端推导</span>③ 内容摘要列<span class="need ok">现有字段</span>④ scheduled_at / deferred / is_test / resend_of 列表徽记<span class="need ok">现有字段</span>⑤ 操作按钮按状态显隐<span class="need calc">前端推导</span>。
+</p>
+<div class="viewport">
+  <div class="blv">
+
+    <header class="blv-head">
+      <div>
+        <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+        <h1>批次列表</h1>
+        <p class="sub">按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+      </div>
+      <div class="head-side">
+        <span class="role-tag"><i></i>当前口径：全平台 · admin</span>
+      </div>
+    </header>
+
+    <div class="filter-bar">
+      <div class="fld"><span>批次号</span><span class="search">WB2026081…</span></div>
+      <div class="fld"><span>类别</span><div class="seg"><b class="on">全部</b><b>验证码</b><b>通知</b><b>营销</b></div></div>
+      <div class="fld"><span>渠道</span><div class="seg"><b class="on">全部</b><b>API</b><b>Web</b></div></div>
+      <div class="fld"><span>创建时间</span><span class="dates">2026-08-13 → 2026-08-19</span></div>
+      <div class="fld"><span class="pill-select">更多筛选 ▾</span><small style="font-size:10px;color:var(--tx-3)">测试 / 应用 / 部门</small></div>
+      <div class="go">
+        <span class="dirty-hint">● 条件已变更</span>
+        <button class="btn primary">查询</button>
+        <button class="btn ghost">重置</button>
+      </div>
+    </div>
+
+    <div class="chips-row">
+      <span class="lbl">状态</span>
+      <span class="chip on">全部 <b>86</b></span>
+      <span class="chip">进行中 <b>14</b></span>
+      <span class="chip">待审批 <b>3</b></span>
+      <span class="chip">定时中 <b>2</b></span>
+      <span class="chip hot">余额阻断 <b>1</b></span>
+      <span class="chip">已完成 <b>61</b></span>
+      <span class="chip">其他终态 <b>5</b></span>
+      <span class="meta">分组 = 进行中(queued+sending) · 待审批 · 定时中 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)<span class="need calc">前端推导</span><span class="need ext">计数 status_counts</span></span>
+    </div>
+
+    <div class="ledger">
+      <table class="tbl">
+        <tr>
+          <th style="width:200px">批次 / 时间</th>
+          <th>类别 / 内容</th>
+          <th style="width:130px">来源</th>
+          <th style="width:180px">结果构成<span style="color:var(--tx-3)">（非成功率）</span></th>
+          <th style="width:110px">状态</th>
+          <th style="width:76px;text-align:right">计费条</th>
+          <th style="width:70px"></th>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>WB20260819000042</code><small>08-19 10:24:31</small></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat notice">通知</span></div>
+            <p>【青鸾云】您的订单 202608190021 已发货，请注意查收。</p>
+          </td>
+          <td class="c-src">Web · 张晓<small>运营部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>935</b> / 1,280</span><span class="f-bad">失败 12</span></div>
+            <div class="compose"><i class="d" style="width:73%"></i><i class="f" style="width:1%"></i><i class="u" style="width:15.6%"></i><i class="p" style="width:10.4%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag info">发送中</span></td>
+          <td class="c-quota">1,280</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>AB20260819000007</code><small>08-19 09:58:02</small></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat verify">验证码</span></div>
+            <p>【青鸾云】您的验证码为 ******，5 分钟内有效，请勿泄露。</p>
+          </td>
+          <td class="c-src">API · 支付网关<small>技术部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>8,173</b> / 8,204</span><span class="f-bad">失败 31</span></div>
+            <div class="compose"><i class="d" style="width:99.6%"></i><i class="f" style="width:0.4%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">8,204</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>WB20260819000039</code><small>08-19 09:12:47</small>
+            <div class="flags"><span class="sched-chip">定时 08-19 20:00</span></div></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat market">营销</span></div>
+            <p>【青鸾云】会员日全场 8 折，仅限今日，回 T 退订。</p>
+          </td>
+          <td class="c-src">Web · 李岚<small>市场部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>0</b> / 2,400</span><span>待进入流水线</span></div>
+            <div class="compose"><i class="p" style="width:100%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag warn">定时中</span><small>窗外转定时</small></td>
+          <td class="c-quota">2,400</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr class="is-blocked">
+          <td class="c-no"><code>AB20260818001203</code><small>08-18 17:41:20</small></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat notice">通知</span></div>
+            <p>【青鸾云】您尾号 8821 的账户本期账单已生成，请及时查看。</p>
+          </td>
+          <td class="c-src">API · 客服系统<small>客服部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>2,104</b> / 5,000</span><span class="f-bad">失败 88</span></div>
+            <div class="compose"><i class="d" style="width:42.1%"></i><i class="f" style="width:1.8%"></i><i class="u" style="width:3%"></i><i class="p" style="width:53.1%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag dark">余额阻断</span><small>待人工恢复</small></td>
+          <td class="c-quota">5,000</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>AB20260818001156</code><small>08-18 16:05:11</small></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat market">营销</span></div>
+            <p>【青鸾云】夏季清仓最后 3 天，全场低至 5 折，回 T 退订。</p>
+          </td>
+          <td class="c-src">API · 会员营销<small>市场部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>10,812</b> / 12,006</span><span class="f-bad">失败 1,194</span></div>
+            <div class="compose"><i class="d" style="width:90.1%"></i><i class="f" style="width:9.9%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">13,207</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>RB20260818000009</code><small>08-18 16:40:55</small>
+            <div class="flags"><span class="resend-chip">重发自 AB…1156 ↗</span></div></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat market">营销</span></div>
+            <p>【青鸾云】夏季清仓最后 3 天，全场低至 5 折，回 T 退订。</p>
+          </td>
+          <td class="c-src">API · 会员营销<small>市场部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>1,150</b> / 1,188</span><span class="f-bad">失败 38</span></div>
+            <div class="compose"><i class="d" style="width:96.8%"></i><i class="f" style="width:3.2%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">1,188</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>WB20260818000028</code><small>08-18 15:22:08</small></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat notice">通知</span></div>
+            <p>【青鸾云】本周系统维护窗口为周六 02:00–04:00，期间服务短暂中断。</p>
+          </td>
+          <td class="c-src">Web · 张晓<small>运营部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>0</b> / 350</span><span>待审批</span></div>
+            <div class="compose"><i class="p" style="width:100%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag warn">待审批</span></td>
+          <td class="c-quota">350</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+
+        <tr>
+          <td class="c-no"><code>WB20260818000002</code><small>08-18 11:03:36</small>
+            <div class="flags"><span class="test-badge">测试</span></div></td>
+          <td class="c-content">
+            <div class="l1"><span class="cat notice">通知</span></div>
+            <p>【青鸾云】联调测试：通知链路验证，请勿回复。</p>
+          </td>
+          <td class="c-src">Web · 王工<small>技术部</small></td>
+          <td class="c-result">
+            <div class="nums"><span><b>3</b> / 3</span><span></span></div>
+            <div class="compose"><i class="d" style="width:100%"></i></div>
+          </td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">3</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+      </table>
+      <div class="pager">
+        <span>共 86 个批次 · 每页 20 个</span>
+        <div class="pages"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>4</b><b>5</b><b>›</b></div>
+      </div>
+    </div>
+
+    <div class="chips-row" style="padding-top:0">
+      <span class="lbl">图例</span>
+      <span class="compose-legend">
+        <span><i style="background:var(--verdi-l)"></i>送达 delivered</span>
+        <span><i style="background:var(--verm)"></i>失败 failed</span>
+        <span><i style="background:var(--slate)"></i>待回执 unknown</span>
+        <span><i style="background:var(--tx-3)"></i>未提交 pending</span>
+      </span>
+      <span class="meta">构成 = 占受理总数的份额，四段均由列表现有字段减法得出，不涉及成功率口径<span class="need calc">前端推导</span></span>
+    </div>
+
+  </div>
+</div>
+
+<div class="stage-label">方案 A · 详情抽屉（右侧面板 mock，实现为 el-drawer 560px）</div>
+<p class="variant-caption">
+  抽屉分四区：结果概览（大构成条 + 四计数 + 计费口径）→ 内容卡（全文 + 类别/打码说明）→ 元信息两列网格（resend_of 可点击跳回源批次）→ 号码明细（状态筛选 + 分页，沿用现有接口与授权查看）。
+  操作按钮按状态显隐并附原因文案，不再裸等 409；左侧为操作 × 状态矩阵，供评审确认。
+</p>
+<div class="viewport">
+  <div class="blv">
+    <div class="drawer-zone">
+
+      <div class="side-panel">
+        <h3>操作 × 状态矩阵<small>按钮显隐 = UX 提示，服务端 409 仍为最终裁决</small></h3>
+        <table class="mini-tbl">
+          <tr><th>批次状态</th><th>取消</th><th>改期</th><th>重发失败</th></tr>
+          <tr><td><span class="stag warn">定时中</span></td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td></tr>
+          <tr><td><span class="stag warn">待审批</span></td><td class="n">—（审批中心处理）</td><td class="n">—</td><td class="n">—</td></tr>
+          <tr><td><span class="stag info">排队中 / 发送中</span></td><td class="n">—</td><td class="n">—</td><td>有 failed 即可</td></tr>
+          <tr><td><span class="stag dark">余额阻断</span></td><td class="n">—</td><td class="n">—</td><td>有 failed 即可</td></tr>
+          <tr><td><span class="stag ok">已完成</span></td><td class="n">—</td><td class="n">—</td><td>有 failed 即可</td></tr>
+          <tr><td><span class="stag mute">已取消 / 已驳回 / 已过期</span></td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr>
+        </table>
+        <p class="hint">依据：SchedulingService.cancel / reschedule 仅接受 scheduled（其余 409 STATE_CONFLICT）；ResendService 不限批次状态、按 failed 明细重建新批次并完整重走频控 / 审批 / 时间窗。写操作仅 operator / admin 可见（canWrite），授权查看仅 approver / admin（canDecrypt）。</p>
+        <h3 style="margin-top:18px">抽屉分区说明</h3>
+        <table class="mini-tbl">
+          <tr><td>① 结果概览</td><td>替代 donut：大构成条 + 四计数 + 计费口径一行；sending 时附未终态说明</td></tr>
+          <tr><td>② 内容卡</td><td>content 全文；verify 标注「验证码已等长打码」，market 标注退订语来源（自动追加 / 模板自带）</td></tr>
+          <tr><td>③ 元信息</td><td>两列网格；resend_of 渲染为链接，点击 = 按源批次号筛选并关闭抽屉<span class="need calc">前端推导</span></td></tr>
+          <tr><td>④ 号码明细</td><td>与现状一致：状态筛选 / 掩码 + 授权查看 / 分页；手机号永不离开掩码边界</td></tr>
+        </table>
+      </div>
+
+      <div class="drawer">
+        <div class="drawer-head">
+          <div>
+            <span class="stag info">发送中</span>
+            <code>WB20260819000042</code>
+            <span class="sub2">创建于 2026-08-19 10:24:31 · Web · 运营部</span>
+          </div>
+          <span style="color:var(--tx-3)">✕</span>
+        </div>
+
+        <div class="d-actions">
+          <button class="btn danger" disabled>取消批次</button>
+          <button class="btn" disabled>改期</button>
+          <button class="btn">重发失败（12）</button>
+          <span class="why">取消 / 改期仅「定时中」可用；重发失败将生成新批次并完整重走频控、审批与时间窗。</span>
+        </div>
+
+        <section class="d-hero">
+          <div class="compose"><i class="d" style="width:73%"></i><i class="f" style="width:1%"></i><i class="u" style="width:15.6%"></i><i class="p" style="width:10.4%"></i></div>
+          <div class="d-nums">
+            <div><span>送达</span><b>935</b><small>73.0%</small></div>
+            <div><span>失败</span><b class="bad">12</b><small>0.9%</small></div>
+            <div><span>待回执</span><b>200</b><small>15.6%</small></div>
+            <div><span>未提交</span><b>133</b><small>10.4%</small></div>
+          </div>
+          <div class="d-quotas"><span>受理 <b>1,280</b></span><span>计费条 <b>1,280</b></span><span>单条 <b>1</b> 条</span><span>频控剔除 <b>0</b></span></div>
+        </section>
+
+        <p class="d-note">仍有 333 条未终态（待回执 200 + 未提交 133），批次保持发送中，直至回执到达或报告超时。构成非成功率，成功率口径见统计报表。</p>
+
+        <section class="d-content">
+          <div class="l1"><span class="cat notice">通知</span></div>
+          <p>【青鸾云】您的订单 202608190021 已发货，请注意查收。</p>
+          <small>内容长度 26 字 · 单条 1 计费条</small>
+        </section>
+
+        <dl class="fact-grid">
+          <div><dt>渠道</dt><dd>Web</dd></div>
+          <div><dt>应用</dt><dd>—</dd></div>
+          <div><dt>创建人</dt><dd>张晓</dd></div>
+          <div><dt>部门</dt><dd>运营部</dd></div>
+          <div><dt>创建时间</dt><dd>2026-08-19 10:24:31</dd></div>
+          <div><dt>定时时间</dt><dd>—</dd></div>
+          <div><dt>重发溯源</dt><dd>—</dd></div>
+          <div><dt>标记</dt><dd>正式发送</dd></div>
+        </dl>
+
+        <div class="d-detail-head">
+          <b>号码明细</b>
+          <span class="pill-select">全部状态 ▾</span>
+        </div>
+        <table class="tbl">
+          <tr><th>手机号</th><th>状态</th><th>回执</th><th>回执时间</th></tr>
+          <tr><td style="font-family:var(--mono);color:var(--tx)">138****2041 <a class="xlink">授权查看</a></td><td><span class="stag ok">已送达</span></td><td>DELIVRD</td><td>08-19 10:24:36</td></tr>
+          <tr><td style="font-family:var(--mono);color:var(--tx)">159****7730 <a class="xlink">授权查看</a></td><td><span class="stag ok">已送达</span></td><td>DELIVRD</td><td>08-19 10:24:36</td></tr>
+          <tr><td style="font-family:var(--mono);color:var(--tx)">186****0518 <a class="xlink">授权查看</a></td><td><span class="stag bad">失败</span></td><td>MBBLACK</td><td>08-19 10:24:41</td></tr>
+          <tr><td style="font-family:var(--mono);color:var(--tx)">137****9902 <a class="xlink">授权查看</a></td><td><span class="stag info">已提交</span></td><td>—</td><td>—</td></tr>
+        </table>
+        <div class="d-pager"><span>共 1,280 条 · 每页 20 条</span><span>‹ 1 / 64 ›</span></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="stage-label">方案 B — 排障密度视图　COMPACT: SCAN → EXPAND → DRILL</div>
+<p class="variant-caption">
+  面向运维连扫场景：行高压缩、构成条细线化，点击行首箭头就地展开「内容全文 + 宽构成条 + 元信息 + 操作」，只有号码明细仍进右侧抽屉（抽屉因此只承载明细，不再重复概要）。
+  与方案 A 共用筛选、构成条与字段，差异仅在密度与详情承载。代价：行内展开偏离全站「详情一律右侧 el-drawer」约定（AGENTS.md 前端 UI 约定），需要评审确认放行；
+  「异常优先」排序（余额阻断 &gt; 高失败 &gt; 发送中 &gt; 其余按时间）需要列表接口加 sort 参数<span class="need ext">需接口扩展</span>，不加则退回创建时间倒序。
+</p>
+<div class="viewport">
+  <div class="blv dense">
+
+    <div class="filter-bar">
+      <div class="fld"><span>批次号</span><span class="search">模糊匹配</span></div>
+      <div class="fld"><span>类别</span><div class="seg"><b class="on">全部</b><b>验证码</b><b>通知</b><b>营销</b></div></div>
+      <div class="fld"><span>渠道</span><div class="seg"><b class="on">全部</b><b>API</b><b>Web</b></div></div>
+      <div class="fld"><span>创建时间</span><span class="dates">2026-08-13 → 2026-08-19</span></div>
+      <div class="fld"><span class="pill-select">更多筛选 ▾</span></div>
+      <div class="fld"><span>排序</span><span class="pill-select">异常优先 ▾<span class="need ext">sort</span></span></div>
+      <div class="go"><button class="btn primary">查询</button><button class="btn ghost">重置</button></div>
+    </div>
+
+    <div class="ledger">
+      <table class="tbl">
+        <tr>
+          <th style="width:26px"></th>
+          <th style="width:188px">批次 / 时间</th>
+          <th>类别 / 内容</th>
+          <th style="width:120px">来源</th>
+          <th style="width:140px">结果构成</th>
+          <th style="width:96px">状态</th>
+          <th style="width:72px;text-align:right">计费条</th>
+        </tr>
+
+        <tr class="is-blocked">
+          <td><span class="exp-ind">▾</span></td>
+          <td class="c-no"><code>AB20260818001203</code><small>08-18 17:41:20</small></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span></div><p>【青鸾云】您尾号 8821 的账户本期账单已生成…</p></td>
+          <td class="c-src">API · 客服系统</td>
+          <td class="c-result"><div class="compose"><i class="d" style="width:42.1%"></i><i class="f" style="width:1.8%"></i><i class="u" style="width:3%"></i><i class="p" style="width:53.1%"></i></div></td>
+          <td><span class="stag dark">余额阻断</span></td>
+          <td class="c-quota">5,000</td>
+        </tr>
+        <tr class="xrow">
+          <td></td>
+          <td colspan="6">
+            <div class="xpanel">
+              <div class="x-main">
+                <p>【青鸾云】您尾号 8821 的账户本期账单已生成，请及时查看。</p>
+                <div class="compose"><i class="d" style="width:42.1%"></i><i class="f" style="width:1.8%"></i><i class="u" style="width:3%"></i><i class="p" style="width:53.1%"></i></div>
+                <div class="compose-legend">
+                  <span><i style="background:var(--verdi-l)"></i>送达 2,104</span>
+                  <span><i style="background:var(--verm)"></i>失败 88</span>
+                  <span><i style="background:var(--slate)"></i>待回执 150</span>
+                  <span><i style="background:var(--tx-3)"></i>未提交 2,658</span>
+                </div>
+              </div>
+              <div class="x-meta">
+                <div><span>创建</span>2026-08-18 17:41:20 · 客服系统 / 客服部</div>
+                <div><span>阻断原因</span>厂商余额不足（999）· 队列已暂停，待人工恢复</div>
+                <div><span>计费</span>5,000 条 · 单条 1 · 频控剔除 12</div>
+                <div class="x-actions">
+                  <button class="btn danger" disabled>取消批次</button>
+                  <button class="btn" disabled>改期</button>
+                  <button class="btn">重发失败（88）</button>
+                  <a class="xlink">号码明细 →</a>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+
+        <tr>
+          <td><span class="exp-ind" style="color:var(--tx-3)">▸</span></td>
+          <td class="c-no"><code>AB20260818001156</code><small>08-18 16:05:11</small></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span></div><p>【青鸾云】夏季清仓最后 3 天，全场低至 5 折…</p></td>
+          <td class="c-src">API · 会员营销</td>
+          <td class="c-result"><div class="compose"><i class="d" style="width:90.1%"></i><i class="f" style="width:9.9%"></i></div></td>
+          <td><span class="stag ok">已完成</span></td>
+          <td class="c-quota">13,207</td>
+        </tr>
+        <tr>
+          <td><span class="exp-ind" style="color:var(--tx-3)">▸</span></td>
+          <td class="c-no"><code>WB20260819000042</code><small>08-19 10:24:31</small></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span></div><p>【青鸾云】您的订单 202608190021 已发货…</p></td>
+          <td class="c-src">Web · 运营部</td>
+          <td class="c-result"><div class="compose"><i class="d" style="width:73%"></i><i class="f" style="width:1%"></i><i class="u" style="width:15.6%"></i><i class="p" style="width:10.4%"></i></div></td>
+          <td><span class="stag info">发送中</span></td>
+          <td class="c-quota">1,280</td>
+        </tr>
+        <tr>
+          <td colspan="7" style="text-align:center;color:var(--tx-3);font-size:11px;padding:8px">… 其余行同构；展开行为就地、可多条同时展开，号码明细仍走右侧抽屉 …</td>
+        </tr>
+      </table>
+      <div class="pager">
+        <span>共 86 个批次 · 每页 20 个</span>
+        <div class="pages"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>4</b><b>5</b><b>›</b></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="stage-label">方案对比与数据需求</div>
+<div class="cmp-wrap">
+  <h2>布局对比</h2>
+  <table class="cmp">
+    <tr><th style="width:110px"></th><th>现状</th><th>方案 A · 账本工作台（推荐）</th><th>方案 B · 排障密度视图</th></tr>
+    <tr><td>信息主线</td><td>筛选大卡 → 平铺表 → 抽屉找操作</td><td><b>状态分组 → 构成账本 → 分区抽屉</b></td><td>密度表连扫 → 行内展开 → 明细抽屉</td></tr>
+    <tr><td>进度表达</td><td>单段 delivered/total，被误读为进度</td><td>四段构成条（送达/失败/待回执/未提交）+ 失败计数红显，明示「非成功率」</td><td>同 A，细线化；展开行给宽条与计数</td></tr>
+    <tr><td>内容可见性</td><td>无，逐开抽屉</td><td>内容摘要列（verify 已打码，安全）</td><td>摘要 + 行内展开全文</td></tr>
+    <tr><td>状态上下文</td><td>scheduled_at / deferred / is_test / resend_of 不可见</td><td>定时 chip、转定时副文案、测试徽记、重发溯源 chip（可跳）</td><td>同 A，细节入行内展开</td></tr>
+    <tr><td>筛选</td><td>8 字段平铺一层</td><td>单行工具条 + 更多筛选折叠 + 状态分组 chips + 条件变更提示</td><td>同 A + 异常优先排序</td></tr>
+    <tr><td>抽屉</td><td>donut + 平铺 meta + 明细一列到底</td><td>四分区：概览 / 内容 / 元信息 / 号码明细；操作按状态显隐并附原因</td><td>抽屉只承载号码明细</td></tr>
+    <tr><td>约定符合度</td><td>—</td><td>完全符合「列表 + el-drawer」约定</td><td>行内展开偏离该约定，需评审放行</td></tr>
+    <tr><td>适用场景</td><td>—</td><td>默认形态：日常查账、定位批次、审计回溯</td><td>运维排障、阻断处置连扫</td></tr>
+  </table>
+
+  <h2>数据需求（对 <code style="font-family:var(--mono)">GET /messages/batches</code> 的影响）</h2>
+  <table class="cmp">
+    <tr><th style="width:110px">需求</th><th>内容</th><th style="width:380px">来源</th></tr>
+    <tr><td><span class="need ok">现有字段</span></td><td>content（内容摘要列 / 抽屉内容卡）、scheduled_at、deferred_reason、is_test、resend_of、failed、unknown、total、quota_cost、segments、removed_freq_limit、channel、app_name、creator、dept——列表接口已全量返回；应用下拉取自现有应用管理接口，替代手填数字 ID</td><td>两方案的核心收益均无需后端改动</td></tr>
+    <tr><td><span class="need calc">前端推导</span></td><td>状态分组映射（进行中=queued+sending 等）；构成条四段 = delivered / failed / unknown / total−前三者（减法，非口径）；resend_of 跳转 = 复用 batch_no 筛选；操作按钮按状态显隐（与服务端 409 文案一致）；「条件已变更」提示</td><td>对现有字段的确定性变换，不产生新口径</td></tr>
+    <tr><td><span class="need ext">接口扩展 ①</span></td><td>列表响应增加 <code style="font-family:var(--mono)">status_counts:{queued,sending,pending_approval,scheduled,balance_blocked,completed,cancelled,rejected,expired}</code>——当前筛选条件下的同事务计数，供状态分组 chips 显示数字</td><td>不加则 chips 退化为无数字的快捷筛选，其余不受影响</td></tr>
+    <tr><td><span class="need ext">接口扩展 ②</span></td><td><code style="font-family:var(--mono)">sort=risk_first</code>（余额阻断 &gt; 高失败 &gt; 发送中 &gt; 创建时间倒序），仅方案 B 使用</td><td>可选；不加则方案 B 退回创建时间倒序</td></tr>
+  </table>
+
+  <h2>不变量（两方案均保留）</h2>
+  <table class="cmp">
+    <tr><td>号码安全</td><td>列表与抽屉只出现掩码号码；授权查看走既有 decrypt 接口 + 审计；verify 内容入库前已 OTP 等长打码（硬性规则 27），content 展示不产生新的暴露面；审计载荷不含号码（规则 21）。</td></tr>
+    <tr><td>口径</td><td>批次域只表达「构成」，页面任何位置不出现成功率；构成条与计数旁固定标注「非成功率」，成功率归统计报表页且取服务端 stats.py 口径（规则 28）。</td></tr>
+    <tr><td>状态机</td><td>取消 / 改期仅 scheduled（服务端 409 STATE_CONFLICT 为最终裁决，按钮显隐只是提示）；重发失败生成新批次并完整重走频控 / 审批 / 时间窗；balance_blocked 只提示「待人工恢复」，不提供界面恢复入口。</td></tr>
+    <tr><td>交互</td><td>查询仍手动触发（改条件给「条件已变更」提示，不自动重查）；分页 20；测试批次徽记与正式批次视觉隔离；时间一律 +08:00；移动端保留卡片式列表并同步构成条、徽记与 chips 筛选。</td></tr>
+  </table>
+</div>
+
+</body>
+</html>

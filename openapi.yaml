@@ -746,7 +746,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: category, in: query, required: false, schema: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] } }
-        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string }, { type: 'null' }] } }
+        - { name: status, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] }, description: "支持逗号分隔多值（如 queued,sending）" }
         - { name: channel, in: query, required: false, schema: { anyOf: [{ type: string, enum: [api, web] }, { type: 'null' }] } }
         - { name: app_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] } }
         - { name: dept, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] } }
@@ -763,9 +763,13 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [total, items]
+                required: [total, status_counts, items]
                 properties:
                   total: { type: integer }
+                  status_counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                    description: 各状态批次计数（分面语义：与列表同过滤但不含 status 条件）
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/Batch' }

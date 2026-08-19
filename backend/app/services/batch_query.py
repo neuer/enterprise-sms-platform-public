@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -71,7 +72,7 @@ class BatchQueryService:
         *,
         scope: BatchAccessScope,
         category: str | None,
-        status: str | None,
+        statuses: Sequence[str] | None,
         channel: str | None,
         app_id: int | None,
         is_test: bool | None,
@@ -81,7 +82,11 @@ class BatchQueryService:
         page: int,
         size: int,
     ) -> dict[str, object]:
-        """按权限与运营筛选分页；只返回批次级无手机号字段。"""
+        """按权限与运营筛选分页；只返回批次级无手机号字段。
+
+        status_counts 为分面计数：与列表同过滤但不含状态条件，
+        供前端状态分组 chips 在任意状态筛选下都显示完整分布。
+        """
 
         if page < 1 or size < 1:
             raise ValueError("page and size must be positive")
@@ -91,15 +96,10 @@ class BatchQueryService:
         if start is not None and end is not None and start > end:
             raise ValueError("start must not be later than end")
         predicate, scope_params = scope.sql()
-        clauses = [predicate]
-        params: dict[str, object] = {
-            "limit": size,
-            "offset": (page - 1) * size,
-            **scope_params,
-        }
+        base_clauses = [predicate]
+        base_params: dict[str, object] = {**scope_params}
         filters: tuple[tuple[str, object | None, str], ...] = (
             ("category", category, "b.category=:category"),
-            ("status", status, "b.status=:status"),
             ("channel", channel, "b.channel=:channel"),
             ("app_id", app_id, "b.app_id=:app_id"),
             ("is_test", is_test, "b.is_test=:is_test"),
@@ -108,18 +108,35 @@ class BatchQueryService:
         )
         for name, value, clause in filters:
             if value is not None:
-                clauses.append(clause)
-                params[name] = value
+                base_clauses.append(clause)
+                base_params[name] = value
         if batch_no is not None and batch_no.strip():
-            clauses.append("trim(b.batch_no) ILIKE :batch_no")
-            params["batch_no"] = f"%{_escape_like(batch_no.strip())}%"
+            base_clauses.append("trim(b.batch_no) ILIKE :batch_no")
+            base_params["batch_no"] = f"%{_escape_like(batch_no.strip())}%"
+        clauses = list(base_clauses)
+        params: dict[str, object] = {
+            "limit": size,
+            "offset": (page - 1) * size,
+            **base_params,
+        }
+        if statuses:
+            clauses.append("b.status=ANY(:statuses)")
+            params["statuses"] = list(statuses)
         where = "\n AND ".join(clauses)
+        base_where = "\n AND ".join(base_clauses)
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 count_result = await connection.execute(
                     text("SELECT count(*) FROM sms_batch b WHERE " + where),
                     params,
+                )
+                counts_result = await connection.execute(
+                    text(
+                        "SELECT b.status AS status,count(*) AS n"
+                        " FROM sms_batch b WHERE " + base_where + " GROUP BY b.status"
+                    ),
+                    base_params,
                 )
                 rows_result = await connection.execute(
                     text(
@@ -140,6 +157,10 @@ class BatchQueryService:
                 )
                 return {
                     "total": int(count_result.scalar_one()),
+                    "status_counts": {
+                        str(row["status"]): int(row["n"])
+                        for row in counts_result.mappings()
+                    },
                     "items": [self._batch(row) for row in rows_result.mappings()],
                 }
         finally:

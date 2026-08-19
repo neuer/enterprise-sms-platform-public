@@ -186,6 +186,7 @@ class WebSendResponse(BaseModel):
 
 class BatchPageModel(BaseModel):
     total: int
+    status_counts: dict[str, int]
     items: list[BatchModel]
 
 
@@ -450,7 +451,7 @@ async def list_web_batches(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     category: Annotated[Literal["verify", "notice", "market"] | None, Query()] = None,
-    status: Annotated[str | None, Query()] = None,
+    status: Annotated[str | None, Query(max_length=128)] = None,
     channel: Annotated[Literal["api", "web"] | None, Query()] = None,
     app_id: Annotated[int | None, Query(ge=1)] = None,
     dept: Annotated[str | None, Query(max_length=128)] = None,
@@ -462,11 +463,16 @@ async def list_web_batches(
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
     claims = await _reader(facade, credentials)
+    statuses = (
+        tuple(part.strip() for part in status.split(",") if part.strip())
+        if status
+        else None
+    )
     try:
         result = await service.list_batches(
             scope=_query_scope(claims, dept),
             category=category,
-            status=status,
+            statuses=statuses,
             channel=channel,
             app_id=app_id,
             is_test=is_test,

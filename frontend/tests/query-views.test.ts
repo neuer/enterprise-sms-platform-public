@@ -61,25 +61,25 @@ describe("批次与号码查询", () => {
     useSessionStore().role = "admin"
     const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    expect(wrapper.get("form.query-filter").classes()).toContain("filter-grid")
+    expect(wrapper.get("form.batch-filter").classes()).toContain("filter-toolbar")
     expect(wrapper.text()).toContain("批次列表")
     expect(wrapper.text()).toContain("BATCH-1")
     expect(wrapper.find(".category-tag--notice").exists()).toBe(true)
     expect(wrapper.find(".status-tag--completed").exists()).toBe(true)
-    const optionLabels = wrapper.findAllComponents({ name: "ElOption" }).map((item) => item.props("label"))
-    for (const label of ["待审批", "已驳回", "定时中", "排队中", "发送中", "已完成", "已取消", "余额阻断", "已过期"]) {
-      expect(optionLabels).toContain(label)
+    const chips = wrapper.get("[data-testid='batch-status-chips']").text()
+    for (const label of ["全部", "进行中", "待审批", "定时中", "余额阻断", "已完成", "其他终态"]) {
+      expect(chips).toContain(label)
     }
     const detail = wrapper.findAll("button").find((item) => item.text().includes("查看详情"))
     await detail!.trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.text()).toContain("operator-a")
-    expect(wrapper.text()).toContain("单条计费条")
-    expect(wrapper.text()).toContain("构成比（送达 / 失败 / 其余 占受理总数），不是成功率")
+    expect(wrapper.text()).toContain("计费条")
+    expect(wrapper.text()).toContain("构成 = 占受理总数的份额，不是成功率")
     expect(wrapper.text()).not.toContain(`${Math.round(1 / 2 * 100)}%`)
     expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
-    expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("失败号码重发")
+    expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("重发失败")
     await wrapper.get("[data-testid='batch-phone-decrypt-9']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("13800138000")
@@ -211,7 +211,7 @@ describe("批次与号码查询", () => {
     await flushPromises()
 
     await wrapper.find('input[placeholder="模糊匹配批次号"]').setValue("BATCH-9")
-    await wrapper.find("form.query-filter").trigger("submit")
+    await wrapper.find("form.batch-filter").trigger("submit")
     await flushPromises()
     expect(fetch.mock.calls[1][0]).toContain("/api/v1/web/batches?")
     expect(fetch.mock.calls[1][0]).toContain("batch_no=BATCH-9")
@@ -259,7 +259,7 @@ describe("批次与号码查询", () => {
     await flushPromises()
     await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("仍有 30 条已提交未回执")
+    expect(wrapper.text()).toContain("仍有 30 条未终态（待回执 0 + 未提交 30）")
 
     const detailSelect = wrapper
       .findAllComponents({ name: "ElSelect" })
@@ -308,6 +308,84 @@ describe("批次与号码查询", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it("状态分组 chips 展示分面计数并按组筛选", async () => {
+    const batch = {
+      batch_no: "BATCH-1", category: "notice", channel: "web", app_name: null,
+      creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
+      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
+      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const counts = { queued: 1, sending: 2, balance_blocked: 1, completed: 5 }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 1, status_counts: counts, items: [batch] }))
+      .mockResolvedValueOnce(response({ total: 3, status_counts: counts, items: [batch] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='batch-chip-active']").text()).toContain("3")
+    expect(wrapper.get("[data-testid='batch-chip-all']").text()).toContain("9")
+    expect(wrapper.get("[data-testid='batch-chip-balance_blocked']").classes()).toContain("hot")
+
+    await wrapper.get("[data-testid='batch-chip-active']").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls[1][0]).toContain("status=queued%2Csending")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("筛选条件变更后提示需重新查询", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 0, status_counts: {}, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.find("[data-testid='batch-filters-dirty']").exists()).toBe(false)
+    await wrapper.find('input[placeholder="模糊匹配批次号"]').setValue("AB12")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find("[data-testid='batch-filters-dirty']").exists()).toBe(true)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("重发溯源链接按源批次号重新筛选", async () => {
+    const batch = {
+      batch_no: "BATCH-R", category: "market", channel: "api", app_name: "会员营销",
+      creator: "operator-a", dept: "市场部", content: "营销内容", status: "completed",
+      deferred_reason: null, resend_of: "BATCH-0", is_test: false, segments: 1, quota_cost: 5,
+      total: 5, removed_freq_limit: 0, delivered: 4, failed: 1, unknown: 0,
+      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ total: 1, status_counts: {}, items: [batch] }))
+      .mockResolvedValueOnce(response(batch))
+      .mockResolvedValueOnce(response({ total: 0, items: [] }))
+      .mockResolvedValueOnce(response({ total: 1, status_counts: {}, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "admin"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await flushPromises()
+
+    const trace = wrapper.findAll("button").find((item) => item.text().includes("BATCH-0 ↗"))!
+    await trace.trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls[3][0]).toContain("batch_no=BATCH-0")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it("号码列表保持掩码并允许 approver 在徽标条授权查看", async () => {
