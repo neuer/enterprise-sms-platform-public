@@ -263,6 +263,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "PROGRESS.md",
         "deploy/README.md",
         "docs/previews/approval-redesign-prototype.html",
+        "docs/previews/batch-redesign-prototype.html",
         "docs/previews/dashboard-redesign-prototype.html",
         "docs/previews/login-redesign-prototype.html",
         "docs/previews/login-redesign-shots.md",
