@@ -16,7 +16,23 @@ export const CHART_COLORS = {
   blue: "#6f9bcf",
   /** --amber：次序列与阈值线 */
   amber: "#d8a35c",
+  /** 维度堆叠第四序列紫（--violet 同源） */
+  violet: "#9b7ed9",
+  /** 维度堆叠第五序列灰绿 */
+  teal: "#5b8c7b",
+  /** 维度堆叠「其他」归并序列：--tx-3 同源灰 */
+  dimOther: "#6d7a72",
 } as const
+
+/** 报表趋势图维度堆叠序列的固定取色顺序（Top 5 + 其他）。 */
+export const CHART_DIM_PALETTE = [
+  CHART_COLORS.green,
+  CHART_COLORS.blue,
+  CHART_COLORS.amber,
+  CHART_COLORS.violet,
+  CHART_COLORS.teal,
+  CHART_COLORS.dimOther,
+] as const
 
 /** 深色面板风格的 tooltip 外观（--panel-2 / --hair / --tx）。 */
 export const CHART_TOOLTIP_STYLE = {

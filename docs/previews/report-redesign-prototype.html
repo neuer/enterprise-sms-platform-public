@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 统计报表重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf; --violet:#9b7ed9;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+ul{list-style:none}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1100px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:var(--slate);border-color:rgba(111,155,207,.45)}
+
+/* ═══════════ 共享：报表画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.rpt{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px}
+.rpt-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.rpt-head h1{font-family:var(--serif);font-size:20px;font-weight:600;color:var(--tx-hi)}
+.rpt-head .sub{color:var(--tx-3);font-size:11px}
+.scope-tag{display:inline-flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:5px 11px;background:var(--panel)}
+.scope-tag i{width:6px;height:6px;border-radius:50%;background:var(--verdi-l)}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.zone-label{display:flex;align-items:center;gap:10px;font:10px/1 var(--mono);letter-spacing:.14em;color:var(--tx-3);margin-top:4px}
+.zone-label::after{content:"";flex:1;height:1px;background:var(--hair-2)}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 18px}
+.panel-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.panel-head b{color:var(--tx-hi);font-size:13px;font-weight:600}
+.panel-head small{color:var(--tx-3);font-size:10px;margin-left:8px;font-weight:400}
+.panel-head a{color:var(--verdi-l);font-size:11px}
+
+/* 筛选工具条（单行） */
+.filter-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:11px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.filter-bar .fld{display:flex;align-items:center;gap:8px}
+.filter-bar .fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.seg b{padding:4px 13px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.pill-select{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx)}
+.dates{font:11.5px var(--mono);color:var(--tx);border:1px solid var(--hair);border-radius:7px;background:var(--sink);padding:4px 11px}
+.filter-bar .go{margin-left:auto}
+
+/* 导出状态条（内联，替代页脚卡片） */
+.export-strip{display:flex;align-items:center;gap:12px;padding:8px 16px;background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--hair);border-radius:10px;font-size:11.5px;color:var(--tx-2)}
+.export-strip code{font:10.5px var(--mono);color:var(--tx-3)}
+.export-strip .tag{font:9.5px/1.8 var(--mono);padding:0 8px;border-radius:4px;background:rgba(47,161,132,.14);color:#71c4ad}
+.export-strip .mask{font-size:10px;color:var(--tx-3);border:1px dashed var(--hair);border-radius:5px;padding:1px 7px}
+.export-strip .dl{margin-left:auto;color:var(--verdi-l);font-size:11.5px}
+
+/* KPI 卡 */
+.kpi-band{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.kpi{position:relative;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px 13px}
+.kpi>span{color:var(--tx-2);font-size:11.5px}
+.kpi>strong{display:block;font-size:26px;font-weight:600;color:var(--tx-hi);margin:1px 0 0;font-variant-numeric:tabular-nums}
+.kpi>small{color:var(--tx-3);font-size:10.5px}
+.kpi .foot{margin-top:8px;font-size:10.5px;color:var(--tx-2)}
+.strip{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-top:10px;gap:1px}
+.strip i{display:block;height:100%}
+.strip .d,.bar .d,.legend .d{background:var(--verdi-l)}
+.strip .f,.bar .f,.legend .f{background:var(--verm)}
+.strip .u,.bar .u,.legend .u{background:var(--tx-3)}
+.kv{display:flex;justify-content:space-between;font-size:10.5px;color:var(--tx-2);margin-top:6px}
+.kv b{font-variant-numeric:tabular-nums;color:var(--tx)}
+
+/* 趋势 + 排行 */
+.row-main{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+.metric-switch{display:flex;gap:4px;border:1px solid var(--hair);border-radius:6px;padding:2px}
+.metric-switch b{padding:2px 10px;font-size:10.5px;font-weight:400;color:var(--tx-3);border-radius:5px}
+.metric-switch b.on{background:var(--sink);color:var(--tx-hi)}
+.bars{display:flex;align-items:flex-end;gap:10px;height:170px;padding:8px 4px 0}
+.bar-col{flex:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:6px}
+.bar{width:min(76%,30px);display:flex;flex-direction:column-reverse;border-radius:4px 4px 0 0;overflow:hidden}
+.bar i{display:block;width:100%}
+.bar-col span{font:9px var(--mono);color:var(--tx-3)}
+.bar-col.today span{color:var(--tx-2)}
+.c1{background:var(--verdi-l)} .c2{background:var(--slate)} .c3{background:var(--amber)} .c4{background:var(--violet)} .c5{background:#5b8c7b}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:10.5px;color:var(--tx-2)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.legend em{margin-left:auto;font:10px var(--mono);color:var(--tx-3);font-style:normal}
+.rank li{display:grid;grid-template-columns:86px 1fr auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--hair-2)}
+.rank li:first-child{border-top:0;padding-top:2px}
+.rank .nm{font-size:11.5px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rank .nm small{display:block;font:9.5px var(--mono);color:var(--tx-3)}
+.rank .track{height:5px;background:var(--sink);border-radius:3px;overflow:hidden}
+.rank .track i{display:block;height:100%;border-radius:3px}
+.rank .num{text-align:right}
+.rank .num b{display:block;font:12px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.rank .num small{font-size:9.5px;color:var(--tx-3)}
+.rate-chip{font:10px/1.7 var(--mono);padding:0 7px;border-radius:5px;display:inline-block;margin-top:2px}
+.rate-chip.g{background:rgba(47,161,132,.13);color:#71c4ad}
+.rate-chip.y{background:rgba(216,163,92,.13);color:var(--amber)}
+
+/* 明细表 */
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{font-size:10.5px;font-weight:400;color:var(--tx-3);text-align:right;padding:7px 10px;border-bottom:1px solid var(--hair);white-space:nowrap}
+.tbl th:first-child,.tbl th:nth-child(2){text-align:left}
+.tbl th .sort{color:var(--verdi-l)}
+.tbl td{padding:8px 10px;border-bottom:1px solid var(--hair-2);text-align:right;font-variant-numeric:tabular-nums;color:var(--tx-2)}
+.tbl td:first-child{font:11px var(--mono);color:var(--tx-3);text-align:left}
+.tbl td:nth-child(2){color:var(--tx);text-align:left}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .cell-rate{font:11px var(--mono)}
+
+/* ═══════════ 方案 B 专用 ═══════════ */
+.hero{display:grid;grid-template-columns:1.1fr 1fr 1fr 1.2fr;gap:14px;align-items:stretch;padding:18px 22px;background:radial-gradient(720px 150px at 12% -40%,rgba(18,130,104,.16),transparent 70%),linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--hair);border-radius:12px}
+.hero .big>span{font-size:11px;color:var(--tx-2)}
+.hero .big>strong{display:block;font:600 34px/1.25 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.hero .big>small{font-size:10.5px;color:var(--tx-3)}
+.hero .big.rate>strong{color:#71c4ad}
+.hero .verdict{border-left:1px solid var(--hair);padding-left:20px;display:flex;flex-direction:column;justify-content:center}
+.hero .verdict p{font-family:var(--serif);font-size:14px;color:var(--tx-hi);line-height:1.7}
+.hero .verdict small{margin-top:8px;font-size:10.5px;color:var(--tx-3)}
+.b-grid{display:grid;grid-template-columns:5fr 7fr;gap:14px;align-items:start}
+.donut-wrap{display:flex;align-items:center;gap:22px}
+.donut{flex:none;width:150px;height:150px;border-radius:50%;background:conic-gradient(var(--verdi-l) 0 38%,var(--slate) 38% 60.1%,var(--amber) 60.1% 77.1%,var(--violet) 77.1% 90.1%,#5b8c7b 90.1% 100%);position:relative}
+.donut::after{content:"";position:absolute;inset:26px;background:var(--panel);border-radius:50%}
+.donut-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1}
+.donut-c b{font:600 17px var(--mono);color:var(--tx-hi)}
+.donut-c span{font-size:9.5px;color:var(--tx-3)}
+.donut-legend{display:grid;gap:8px;font-size:11px;color:var(--tx-2)}
+.donut-legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+.donut-legend b{font:11px var(--mono);color:var(--tx);float:right}
+.collapse-row{display:flex;justify-content:center;padding:11px;border:1px dashed var(--hair);border-radius:10px;font-size:11.5px;color:var(--tx-2)}
+.spark{display:flex;align-items:flex-end;gap:4px;height:44px}
+.spark i{flex:1;border-radius:2px 2px 0 0;background:linear-gradient(180deg,var(--verdi-l),var(--verdi))}
+
+/* ═══════════ 对比与数据需求 ═══════════ */
+.cmp-wrap{margin:14px 28px 40px;max-width:1100px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:22px 0 10px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{padding:8px 12px;border:1px solid var(--hair-2);text-align:left;vertical-align:top}
+.cmp th{background:var(--panel);color:var(--tx-hi);font-weight:600}
+.cmp td:first-child{font:10.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+.cmp td{color:var(--tx-2)}
+.cmp td b{color:var(--tx)}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 统计报表重设计原型 v1</b>
+  <span>评审稿 · 所有数据均为虚构 mock · 纯静态，零外部依赖</span>
+  <em>2026-08-18</em>
+</div>
+
+<section class="notes">
+  <h2>现状诊断（当前 ReportView）</h2>
+  <ul>
+    <li><b>汇总只用了 3 个字段</b>：接口 summary 已返回 delivered / failed / unknown，页面只展示消息数、计费条、成功率——失败与未知的绝对量级不可见，unknown 口径说明也无处安放。</li>
+    <li><b>趋势图丢失分组维度</b>：筛选选了「按应用 / 按部门」，图表仍把所有维度加总成一条双指标线；维度对比只能靠肉眼扫表，图表和筛选互相割裂。</li>
+    <li><b>明细表行数 = 周期数 × 维度数</b>：30 天 × 5 个应用即 150 行平铺，无排序、无占比、成功率是裸数字，低成功率行不醒目。</li>
+    <li><b>筛选卡独占一整层</b>，且改完条件必须手动点「查询」，页面内容会悄悄过期，没有「条件已变更」的提示。</li>
+    <li><b>导出流程视线断裂</b>：入口在页头、任务状态卡沉在页脚，创建导出后要滚屏才能看到进度。</li>
+    <li><b>数据权限口径无提示</b>：operator / viewer 仅见本部门数据，页面没有任何地方说明当前统计口径。</li>
+  </ul>
+</section>
+
+<div class="stage-label">方案 A — 分析工作台（推荐）　SUMMARY → COMPARE → DETAIL</div>
+<p class="variant-caption">
+  三层递进：KPI 总览（补齐 delivered / failed / unknown）→ 维度对比（趋势按维度堆叠 + 排行榜）→ 明细表（可排序、成功率着色）。
+  筛选压缩为单行工具条，导出状态改为内联状态条紧跟工具条。
+  新增 ① 结果构成卡<span class="need ok">现有字段</span>② 趋势维度堆叠<span class="need calc">前端推导</span>③ 维度排行（含服务端口径成功率）<span class="need ext">需接口扩展</span>④ 权限口径标签<span class="need ok">现有字段</span>。
+</p>
+<div class="viewport">
+  <div class="rpt">
+
+    <header class="rpt-head">
+      <div>
+        <p class="eyebrow">ANALYTICS / 统计报表</p>
+        <h1>统计报表</h1>
+        <p class="sub">日、周、月多维聚合，消息数与计费条使用同一事实源。</p>
+      </div>
+      <span class="scope-tag"><i></i>当前口径：全平台 · admin</span>
+    </header>
+
+    <div class="filter-bar">
+      <div class="fld"><span>周期</span><div class="seg"><b class="on">日</b><b>周</b><b>月</b></div></div>
+      <div class="fld"><span>维度</span><div class="seg"><b class="on">应用</b><b>部门</b></div></div>
+      <div class="fld"><span>类别</span><span class="pill-select">全部类别 ▾</span></div>
+      <div class="fld"><span>范围</span><span class="dates">2026-07-20 → 2026-08-18</span></div>
+      <button class="btn primary go">查询</button>
+      <button class="btn">导出明细 CSV ▾</button>
+    </div>
+
+    <div class="export-strip">
+      <span class="tag">已完成</span>
+      <span>导出明细 <code>#a3f9…c21d</code></span>
+      <strong style="color:var(--tx)">84,206 行</strong>
+      <span class="mask">掩码导出 · 不含明文手机号</span>
+      <small>保留至 2026-08-25</small>
+      <a class="dl">下载 CSV ↓</a>
+    </div>
+
+    <section class="kpi-band">
+      <div class="kpi">
+        <span>消息数</span>
+        <strong>1,849,920</strong>
+        <small>2026-07-20 — 2026-08-18 · 30 天</small>
+        <p class="foot">日均 61,664 · 峰值 08-12（78,204）</p>
+      </div>
+      <div class="kpi">
+        <span>计费条</span>
+        <strong>2,038,412</strong>
+        <small>最终内容计费口径 · 与厂商账单对账</small>
+        <p class="foot">条 / 消息 1.10，长短信主要来自营销类模板。</p>
+      </div>
+      <div class="kpi">
+        <span>送达成功率</span>
+        <strong>98.2%</strong>
+        <small>delivered / (delivered + failed)，unknown 不入分母</small>
+        <div class="kv"><span>送达 delivered</span><b>1,812,655</b></div>
+        <div class="kv"><span>失败 failed</span><b style="color:var(--verm)">33,401</b></div>
+      </div>
+      <div class="kpi">
+        <span>结果构成<span class="need ok">现有字段</span></span>
+        <strong>3,864<small style="font-size:11px;color:var(--tx-3);font-weight:400;margin-left:7px">unknown 待终态</small></strong>
+        <div class="strip" title="结果构成">
+          <i class="d" style="width:98%" title="送达 1,812,655"></i><i class="f" style="width:1.8%" title="失败 33,401"></i><i class="u" style="width:0.2%" title="未知 3,864"></i>
+        </div>
+        <div class="kv"><span>送达 98.0%</span><span>失败 1.8%</span><span>未知 0.2%</span></div>
+      </div>
+    </section>
+
+    <section class="row-main">
+      <div class="panel">
+        <div class="panel-head">
+          <b>发送趋势 · 按应用堆叠<small>日粒度 · 近 14 天（mock 截断显示）</small></b>
+          <span class="metric-switch"><b class="on">消息数</b><b>计费条</b></span>
+        </div>
+        <div class="bars">
+          <div class="bar-col"><div class="bar" style="height:118px" title="08-05 · 59,860"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-05</span></div>
+          <div class="bar-col"><div class="bar" style="height:124px" title="08-06 · 62,940"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-06</span></div>
+          <div class="bar-col"><div class="bar" style="height:83px" title="08-07 周五 · 44,120"><i class="c1" style="height:39%"></i><i class="c2" style="height:21%"></i><i class="c3" style="height:16%"></i><i class="c4" style="height:14%"></i><i class="c5" style="height:10%"></i></div><span>08-07</span></div>
+          <div class="bar-col"><div class="bar" style="height:76px" title="08-08 周六 · 40,655"><i class="c1" style="height:40%"></i><i class="c2" style="height:20%"></i><i class="c3" style="height:15%"></i><i class="c4" style="height:15%"></i><i class="c5" style="height:10%"></i></div><span>08-08</span></div>
+          <div class="bar-col"><div class="bar" style="height:126px" title="08-09 · 63,980"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-09</span></div>
+          <div class="bar-col"><div class="bar" style="height:131px" title="08-10 · 66,410"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-10</span></div>
+          <div class="bar-col"><div class="bar" style="height:135px" title="08-11 · 68,320"><i class="c1" style="height:37%"></i><i class="c2" style="height:23%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-11</span></div>
+          <div class="bar-col"><div class="bar" style="height:154px" title="08-12 · 78,204"><i class="c1" style="height:36%"></i><i class="c2" style="height:25%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:12%"></i><i class="c5" style="height:10%"></i></div><span>08-12</span></div>
+          <div class="bar-col"><div class="bar" style="height:129px" title="08-13 · 65,230"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-13</span></div>
+          <div class="bar-col"><div class="bar" style="height:79px" title="08-14 周六 · 41,980"><i class="c1" style="height:40%"></i><i class="c2" style="height:20%"></i><i class="c3" style="height:15%"></i><i class="c4" style="height:15%"></i><i class="c5" style="height:10%"></i></div><span>08-14</span></div>
+          <div class="bar-col"><div class="bar" style="height:74px" title="08-15 周日 · 39,410"><i class="c1" style="height:40%"></i><i class="c2" style="height:20%"></i><i class="c3" style="height:15%"></i><i class="c4" style="height:15%"></i><i class="c5" style="height:10%"></i></div><span>08-15</span></div>
+          <div class="bar-col"><div class="bar" style="height:127px" title="08-16 · 64,120"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-16</span></div>
+          <div class="bar-col"><div class="bar" style="height:132px" title="08-17 · 66,870"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-17</span></div>
+          <div class="bar-col today"><div class="bar" style="height:138px" title="今天 · 69,502"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>今天</span></div>
+        </div>
+        <div class="legend">
+          <span><i class="c1"></i>订单中心</span><span><i class="c2"></i>会员营销</span><span><i class="c3"></i>支付网关</span><span><i class="c4"></i>客服系统</span><span><i class="c5"></i>IoT 平台</span>
+          <em>Top 5 + 其他归并 · 加法聚合<span class="need calc">前端推导</span> · 实现用 ECharts 堆叠柱</em>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><b>维度排行 · 应用<small>按消息数 · 范围为整个筛选区间</small></b><span class="need ext">需接口扩展 dim_summary[]</span></div>
+        <ul class="rank">
+          <li><span class="nm">订单中心<small>app/order-center</small></span><div class="track"><i class="c1" style="width:100%"></i></div><span class="num"><b>703,912</b><small>38.0% · 计费条 762,455</small><span class="rate-chip g">98.9%</span></span></li>
+          <li><span class="nm">会员营销<small>app/member-mkt</small></span><div class="track"><i class="c2" style="width:58%"></i></div><span class="num"><b>408,214</b><small>22.1% · 计费条 521,030</small><span class="rate-chip y">96.4%</span></span></li>
+          <li><span class="nm">支付网关<small>app/pay-gateway</small></span><div class="track"><i class="c3" style="width:45%"></i></div><span class="num"><b>313,986</b><small>17.0% · 计费条 336,102</small><span class="rate-chip g">99.2%</span></span></li>
+          <li><span class="nm">客服系统<small>app/call-center</small></span><div class="track"><i class="c4" style="width:34%"></i></div><span class="num"><b>240,603</b><small>13.0% · 计费条 252,887</small><span class="rate-chip g">98.0%</span></span></li>
+          <li><span class="nm">IoT 平台<small>app/iot-platform</small></span><div class="track"><i class="c5" style="width:26%"></i></div><span class="num"><b>183,205</b><small>9.9% · 计费条 165,938</small><span class="rate-chip y">97.5%</span></span></li>
+        </ul>
+        <p style="margin-top:10px;font-size:10px;color:var(--tx-3)">成功率由服务端按 stats.py 口径随 dim_summary 返回；芯片着色（≥98 绿 / 95–98 黄 / &lt;95 红）只是展示阈值，不涉及口径计算。</p>
+      </div>
+    </section>
+
+    <div class="panel">
+      <div class="panel-head"><b>明细 · 周期 × 应用<small>点击列头排序 · 默认周期倒序</small></b><span>共 150 行 · 已折叠为分页 20 / 页</span></div>
+      <table class="tbl">
+        <tr><th>周期<span class="sort"> ↓</span></th><th>应用</th><th>消息数<span class="sort">⇅</span></th><th>计费条</th><th>送达</th><th>失败</th><th>未知</th><th>成功率</th></tr>
+        <tr><td>2026-08-18</td><td>订单中心</td><td>24,812</td><td>27,104</td><td>24,512</td><td>287</td><td>13</td><td class="cell-rate"><span class="rate-chip g">98.8%</span></td></tr>
+        <tr><td>2026-08-18</td><td>会员营销</td><td>14,206</td><td>18,302</td><td>13,655</td><td>521</td><td>30</td><td class="cell-rate"><span class="rate-chip y">96.3%</span></td></tr>
+        <tr><td>2026-08-18</td><td>支付网关</td><td>11,034</td><td>11,980</td><td>10,944</td><td>85</td><td>5</td><td class="cell-rate"><span class="rate-chip g">99.2%</span></td></tr>
+        <tr><td>2026-08-18</td><td>客服系统</td><td>9,412</td><td>9,860</td><td>9,221</td><td>188</td><td>3</td><td class="cell-rate"><span class="rate-chip g">98.0%</span></td></tr>
+        <tr><td>2026-08-18</td><td>IoT 平台</td><td>7,038</td><td>6,102</td><td>6,862</td><td>169</td><td>7</td><td class="cell-rate"><span class="rate-chip y">97.6%</span></td></tr>
+        <tr><td>2026-08-17</td><td>订单中心</td><td>24,105</td><td>26,332</td><td>23,842</td><td>251</td><td>12</td><td class="cell-rate"><span class="rate-chip g">99.0%</span></td></tr>
+        <tr><td>2026-08-17</td><td>会员营销</td><td>13,980</td><td>17,655</td><td>13,492</td><td>458</td><td>30</td><td class="cell-rate"><span class="rate-chip y">96.7%</span></td></tr>
+        <tr><td colspan="8" style="text-align:center;color:var(--tx-3);font-size:11px;padding:10px">… 其余 143 行分页加载，排序仅前端重排已返回数据 …</td></tr>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+<div class="stage-label">方案 B — 管理汇报视图　EXECUTIVE: VERDICT → SHARE → RANK</div>
+<p class="variant-caption">
+  面向管理与周报场景：首屏直接给结论（大字 KPI + 一句话判读），其次是份额 donut 与排行榜，趋势退居 sparkline，明细默认收起。
+  与方案 A 数据完全相同，只是组织顺序相反——A 从明细往上汇总，B 从结论往下钻取。适合 admin / approver 的周期性查看，不适合排障。
+</p>
+<div class="viewport">
+  <div class="rpt">
+
+    <header class="rpt-head">
+      <div>
+        <p class="eyebrow">ANALYTICS / 统计报表</p>
+        <h1>统计报表 · 汇报视图</h1>
+        <p class="sub">2026-07-20 — 2026-08-18 · 按应用 · 全部类别</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="scope-tag"><i></i>当前口径：全平台 · admin</span>
+        <button class="btn">导出明细 CSV ▾</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="big"><span>消息数</span><strong>1,849,920</strong><small>计费条 2,038,412 · 条/消息 1.10</small></div>
+      <div class="big"><span>送达成功率</span><strong style="color:#71c4ad">98.2%</strong><small>失败 33,401 · 未知 3,864（待终态）</small></div>
+      <div class="big"><span>日均消息</span><strong>61,664</strong><small>峰值 08-12 · 78,204</small></div>
+      <div class="verdict">
+        <p>整体运行平稳；营销类成功率连续两周低于 97%，建议核查会员营销通道的退订与黑名单命中。</p>
+        <small>判读文案为 mock · 实现时不做自动结论，仅展示指标</small>
+      </div>
+    </section>
+
+    <section class="b-grid">
+      <div class="panel">
+        <div class="panel-head"><b>应用份额<small>按消息数</small></b><span class="need calc">前端推导</span></div>
+        <div class="donut-wrap">
+          <div class="donut"><div class="donut-c"><b>5</b><span>个应用</span></div></div>
+          <div class="donut-legend">
+            <span><i class="c1"></i>订单中心<b>38.0%</b></span>
+            <span><i class="c2"></i>会员营销<b>22.1%</b></span>
+            <span><i class="c3"></i>支付网关<b>17.0%</b></span>
+            <span><i class="c4"></i>客服系统<b>13.0%</b></span>
+            <span><i class="c5"></i>IoT 平台<b>9.9%</b></span>
+          </div>
+        </div>
+        <div class="panel-head" style="margin-top:18px"><b>趋势速览<small>日 · 消息数</small></b></div>
+        <div class="spark">
+          <i style="height:76%"></i><i style="height:80%"></i><i style="height:54%"></i><i style="height:50%"></i><i style="height:81%"></i><i style="height:84%"></i><i style="height:86%"></i><i style="height:100%"></i><i style="height:82%"></i><i style="height:52%"></i><i style="height:48%"></i><i style="height:80%"></i><i style="height:84%"></i><i style="height:88%"></i>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><b>应用排行<small>整个筛选区间汇总</small></b><span class="need ext">dim_summary[]</span></div>
+        <table class="tbl">
+          <tr><th>应用</th><th>消息数</th><th>计费条</th><th>占比</th><th>成功率</th></tr>
+          <tr><td>订单中心</td><td>703,912</td><td>762,455</td><td>38.0%</td><td class="cell-rate"><span class="rate-chip g">98.9%</span></td></tr>
+          <tr><td>会员营销</td><td>408,214</td><td>521,030</td><td>22.1%</td><td class="cell-rate"><span class="rate-chip y">96.4%</span></td></tr>
+          <tr><td>支付网关</td><td>313,986</td><td>336,102</td><td>17.0%</td><td class="cell-rate"><span class="rate-chip g">99.2%</span></td></tr>
+          <tr><td>客服系统</td><td>240,603</td><td>252,887</td><td>13.0%</td><td class="cell-rate"><span class="rate-chip g">98.0%</span></td></tr>
+          <tr><td>IoT 平台</td><td>183,205</td><td>165,938</td><td>9.9%</td><td class="cell-rate"><span class="rate-chip y">97.5%</span></td></tr>
+        </table>
+        <p style="margin-top:10px;font-size:10px;color:var(--tx-3)">点击行可下钻到该应用的日明细（交互等同方案 A 明细表按维度过滤）。</p>
+      </div>
+    </section>
+
+    <div class="collapse-row">▾ 展开周期 × 应用明细（150 行）与筛选条件</div>
+
+  </div>
+</div>
+
+<div class="stage-label">方案对比与数据需求</div>
+<div class="cmp-wrap">
+  <h2>布局对比</h2>
+  <table class="cmp">
+    <tr><th style="width:110px"></th><th>现状</th><th>方案 A · 分析工作台（推荐）</th><th>方案 B · 管理汇报视图</th></tr>
+    <tr><td>信息主线</td><td>筛选 → 三总数 → 单线图 → 大表</td><td><b>结论 → 对比 → 明细</b>，层层下钻</td><td>结论与份额优先，明细收起</td></tr>
+    <tr><td>汇总卡</td><td>3 个总数，失败/未知量级不可见</td><td>4 卡：消息 / 计费条 / 成功率（含分母拆解）/ 结果构成条</td><td>hero 大字 + 判读位</td></tr>
+    <tr><td>趋势图</td><td>所有维度加总成一条线，与分组筛选脱节</td><td>按维度堆叠柱（Top 5 + 其他），消息数 / 计费条可切换</td><td>sparkline 速览，不配维度</td></tr>
+    <tr><td>维度对比</td><td>无，靠扫表</td><td>排行面板：占比条 + 服务端口径成功率芯片</td><td>同 A，表格化呈现</td></tr>
+    <tr><td>明细表</td><td>全量平铺、裸数字</td><td>可排序 + 成功率着色 + 分页</td><td>默认收起，点击展开（同 A 组件）</td></tr>
+    <tr><td>导出</td><td>入口页头、状态页脚，视线断裂</td><td>内联状态条紧跟工具条</td><td>页头动作 + 同一内联状态条</td></tr>
+    <tr><td>权限口径</td><td>无提示</td><td>页头 scope-tag（全平台 / 本部门）</td><td>同 A</td></tr>
+    <tr><td>适用场景</td><td>—</td><td>默认形态：排障、对账、日常分析</td><td>管理汇报 / 周报截图 / 投屏</td></tr>
+  </table>
+
+  <h2>数据需求（对 <code style="font-family:var(--mono)">GET /reports/stats</code> 的影响）</h2>
+  <table class="cmp">
+    <tr><th style="width:110px">需求</th><th>内容</th><th style="width:360px">来源</th></tr>
+    <tr><td><span class="need ok">现有字段</span></td><td>summary.delivered / failed / unknown（接口已返回，页面未使用）；items 全字段；can_export_decrypted；JWT claims 的 role / dept（权限口径标签）</td><td>两个方案均无需后端改动</td></tr>
+    <tr><td><span class="need calc">前端推导</span></td><td>趋势按维度堆叠与 Top N + 其他归并（消息数 / 计费条为加法聚合）；份额占比（加法 + 除法，<b>非成功率口径</b>）；成功率芯片着色阈值（纯展示逻辑）；明细表排序重排</td><td>对现有 items 做确定性变换，不产生新口径</td></tr>
+    <tr><td><span class="need ext">接口扩展</span></td><td><code style="font-family:var(--mono)">dim_summary: [{dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate}]</code>——维度在整个区间的汇总。成功率必须沿用 services/stats.py 口径在服务端算好（硬性规则 28：前端不得自行用 delivered/failed 重算成功率），与 items 同事务同事实源</td><td>两方案共同依赖的唯一新增项；不加则排行退化为「仅消息数 / 计费条」，成功率列留空</td></tr>
+  </table>
+
+  <h2>不变量（两方案均保留）</h2>
+  <table class="cmp">
+    <tr><td>口径</td><td>页面出现的任何成功率一律取自服务端 success_rate 字段；前端只做加法与占比，绝不自行计算 delivered/(delivered+failed)；unknown 永远单列、不进分母。</td></tr>
+    <tr><td>导出</td><td>can_export_decrypted 控制明文勾选；明文导出维持 5 分钟单次 step-up 令牌流；导出文件 AES-GCM 落盘、下载流式解密；报表页任何状态不出现手机号。</td></tr>
+    <tr><td>约束</td><td>范围上限 366 天、默认近 30 天不变；operator / viewer 固定本部门口径且页面明示；查询仍为手动触发（改条件给「条件已变更」提示，不自动重查）；移动端保留卡片式明细列表。</td></tr>
+  </table>
+</div>
+
+</body>
+</html>

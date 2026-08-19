@@ -3620,9 +3620,23 @@ components:
         unknown: { type: integer }
         success_rate: { type: number }
 
+    ReportingDimSummaryModel:
+      type: object
+      description: 维度级区间汇总；success_rate 为服务端 stats.py 口径，前端不得自行重算
+      required: [dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate]
+      properties:
+        dim_value: { type: string }
+        dim_label: { type: string }
+        total: { type: integer }
+        total_segments: { type: integer }
+        delivered: { type: integer }
+        failed: { type: integer }
+        unknown: { type: integer }
+        success_rate: { type: number }
+
     ReportingModel:
       type: object
-      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, items]
+      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, dim_summary, items]
       properties:
         granularity: { type: string, enum: [day, week, month] }
         group_by: { type: string, enum: [app, dept] }
@@ -3631,6 +3645,9 @@ components:
         end: { type: string, format: date }
         can_export_decrypted: { type: boolean }
         summary: { $ref: '#/components/schemas/ReportingSummaryModel' }
+        dim_summary:
+          type: array
+          items: { $ref: '#/components/schemas/ReportingDimSummaryModel' }
         items:
           type: array
           items: { $ref: '#/components/schemas/ReportingRowModel' }

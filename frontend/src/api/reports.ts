@@ -3,6 +3,8 @@ import { apiRequest, authorization, authorizedFetch } from "./webMessages"
 export type ReportGranularity = "day" | "week" | "month"
 export type ReportGroupBy = "app" | "dept"
 export type ReportCategory = "verify" | "notice" | "market" | "all"
+/** 趋势堆叠可选指标：消息数或计费条。 */
+export type ReportTrendMetric = "total" | "total_segments"
 
 export interface ReportRow {
   period_start: string
@@ -25,6 +27,17 @@ export interface ReportSummary {
   success_rate: number
 }
 
+export interface ReportDimSummary {
+  dim_value: string
+  dim_label: string
+  total: number
+  total_segments: number
+  delivered: number
+  failed: number
+  unknown: number
+  success_rate: number
+}
+
 export interface ReportResult {
   granularity: ReportGranularity
   group_by: ReportGroupBy
@@ -33,6 +46,7 @@ export interface ReportResult {
   end: string
   can_export_decrypted: boolean
   summary: ReportSummary
+  dim_summary: ReportDimSummary[]
   items: ReportRow[]
 }
 

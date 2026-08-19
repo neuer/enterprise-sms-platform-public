@@ -186,6 +186,19 @@ class ReportingSummaryModel(BaseModel):
     success_rate: float
 
 
+class ReportingDimSummaryModel(BaseModel):
+    """维度级区间汇总；success_rate 为服务端 stats.py 口径。"""
+
+    dim_value: str
+    dim_label: str
+    total: int
+    total_segments: int
+    delivered: int
+    failed: int
+    unknown: int
+    success_rate: float
+
+
 class ReportingModel(BaseModel):
     granularity: Granularity
     group_by: GroupBy
@@ -194,6 +207,7 @@ class ReportingModel(BaseModel):
     end: date
     can_export_decrypted: bool
     summary: ReportingSummaryModel
+    dim_summary: list[ReportingDimSummaryModel]
     items: list[ReportingRowModel]
 
 
@@ -344,6 +358,10 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
             result.summary,
             from_attributes=True,
         ),
+        dim_summary=[
+            ReportingDimSummaryModel.model_validate(item, from_attributes=True)
+            for item in result.dim_summary
+        ],
         items=[
             ReportingRowModel.model_validate(item, from_attributes=True)
             for item in result.items
