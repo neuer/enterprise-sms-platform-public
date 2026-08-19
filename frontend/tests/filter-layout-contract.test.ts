@@ -3,7 +3,7 @@ import { resolve } from "node:path"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 const css = read("src/styles/workspace.css")
-const standardQueryViews = ["BatchView.vue", "MessageView.vue", "ReplyView.vue"].map((name) =>
+const standardQueryViews = ["MessageView.vue", "ReplyView.vue"].map((name) =>
   read(`src/views/${name}`),
 )
 const auditView = read("src/views/AuditView.vue")
@@ -11,7 +11,7 @@ const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue"].map(
+const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue", "BatchView.vue"].map(
   (name) => read(`src/views/${name}`),
 )
 const approvalView = read("src/views/ApprovalView.vue")

@@ -24,11 +24,11 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("send-preview precheck send-rail")
   })
 
-  it("批次详情使用 560px 抽屉和状态统计环", () => {
+  it("批次详情使用 560px 抽屉和结果构成区", () => {
     const view = source("src/views/BatchView.vue")
     expect(view).toContain('size="min(560px, 92vw)"')
-    expect(view).toContain('class="batch-donut"')
-    expect(view).toContain("送达 / 失败 / 未知")
+    expect(view).toContain('class="batch-hero"')
+    expect(view).toContain("构成非成功率")
   })
 
   it("审批中心使用单一列表组件并按需解密正文", () => {
