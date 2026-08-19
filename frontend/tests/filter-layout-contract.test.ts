@@ -41,13 +41,20 @@ describe("全站筛选布局契约", () => {
     }
   })
 
-  it("管理与报表筛选遵循同一表单语义", () => {
-    for (const source of [auditView, userView, reportView]) {
+  it("管理筛选遵循同一表单语义", () => {
+    for (const source of [auditView, userView]) {
       expect(source).toContain("filter-grid")
     }
     expect(auditView).not.toMatch(/<el-form[^>]*\binline\b/)
     expect(userView).not.toMatch(/<el-form[^>]*\binline\b/)
-    expect(reportView).toContain("<el-segmented")
+  })
+
+  it("统计报表使用方案 A 单行工具条", () => {
+    expect(reportView).toContain("report-filter-bar")
+    expect(reportView).toContain("含明文手机号")
+    expect(reportView).not.toContain("filter-grid")
+    expect(reportView).not.toContain("<el-segmented")
+    expect(css).toMatch(/\.report-filter-bar\s*\{[^}]*display:\s*flex/s)
   })
 
   it("轻量筛选统一使用紧凑工具栏", () => {

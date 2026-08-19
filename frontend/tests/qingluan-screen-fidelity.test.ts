@@ -53,6 +53,24 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("禁止自动重发")
   })
 
+  it("统计报表按方案 A 压成单行工具条、柱下图例和拆列明细", () => {
+    const view = source("src/views/ReportView.vue")
+    const workspace = source("src/styles/workspace.css")
+    expect(view).toContain("report-filter-bar")
+    expect(view).toContain("含明文手机号")
+    expect(view).toContain("unknown 不入分母")
+    expect(view).toContain('label="周期"')
+    expect(view).toContain('label="送达"')
+    expect(view).toContain('label="失败"')
+    expect(view).toContain('label="未知"')
+    expect(view).not.toContain("filter-grid")
+    expect(view).not.toContain("周期起始")
+    expect(view).not.toContain("长短信主要来自营销类模板")
+    expect(workspace).toMatch(/\.report-trend-chart\s*\{[^}]*min-height:\s*170px/s)
+    expect(workspace).toMatch(/\.report-kpi strong\s*\{[^}]*font-size:\s*26px/s)
+    expect(workspace).toMatch(/\.export-strip\s*\{\s*display:\s*flex;[\s\S]*?border-radius:\s*10px/)
+  })
+
   it("应用与密钥使用三列卡片而非主表格", () => {
     const view = source("src/views/AppManagementView.vue")
     expect(view).toContain('class="app-card-grid"')
