@@ -52,6 +52,20 @@ class ReportingSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ReportingDimSummary:
+    """维度在整个筛选区间的汇总；success_rate 只经 services/stats.py 计算。"""
+
+    dim_value: str
+    dim_label: str
+    total: int
+    total_segments: int
+    delivered: int
+    failed: int
+    unknown: int
+    success_rate: float
+
+
+@dataclass(frozen=True, slots=True)
 class ReportingResult:
     granularity: Granularity
     group_by: GroupBy
@@ -60,11 +74,43 @@ class ReportingResult:
     end: date
     can_export_decrypted: bool
     summary: ReportingSummary
+    dim_summary: tuple[ReportingDimSummary, ...]
     items: tuple[ReportingRow, ...]
 
 
 class ReportingRepository(Protocol):
     async def query(self, query: ReportingQuery) -> tuple[ReportingTotals, ...]: ...
+
+
+def _dim_summary(totals: tuple[ReportingTotals, ...]) -> tuple[ReportingDimSummary, ...]:
+    """把周期×维度明细按维度加总为区间汇总，按消息数降序。
+
+    与 items 共用同一批聚合行（同一事实源）；成功率不在此重造口径，
+    仍调用 services/stats.py 的 success_rate。
+    """
+    buckets: dict[tuple[str, str], list[int]] = {}
+    for item in totals:
+        bucket = buckets.setdefault((item.dim_value, item.dim_label), [0, 0, 0, 0, 0])
+        bucket[0] += item.total
+        bucket[1] += item.total_segments
+        bucket[2] += item.delivered
+        bucket[3] += item.failed
+        bucket[4] += item.unknown
+    return tuple(
+        ReportingDimSummary(
+            dim_value,
+            dim_label,
+            sums[0],
+            sums[1],
+            sums[2],
+            sums[3],
+            sums[4],
+            success_rate(sums[2], sums[3]),
+        )
+        for (dim_value, dim_label), sums in sorted(
+            buckets.items(), key=lambda pair: (-pair[1][0], pair[0][1])
+        )
+    )
 
 
 class ReportingService:
@@ -125,6 +171,7 @@ class ReportingService:
                 sum(item.unknown for item in totals),
                 success_rate(delivered, failed),
             ),
+            _dim_summary(totals),
             tuple(
                 ReportingRow(
                     item.period_start,

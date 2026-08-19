@@ -9,7 +9,12 @@ from app.api import reports as module
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler
-from app.services.reporting import ReportingResult, ReportingRow, ReportingSummary
+from app.services.reporting import (
+    ReportingDimSummary,
+    ReportingResult,
+    ReportingRow,
+    ReportingSummary,
+)
 
 
 class FakeFacade:
@@ -27,6 +32,7 @@ class FakeReportingService:
             "week", "app", "notice", date(2026, 7, 1), date(2026, 7, 12),
             False,
             ReportingSummary(10, 12, 8, 2, 1, 0.8),
+            (ReportingDimSummary("7", "OA应用", 10, 12, 8, 2, 1, 0.8),),
             (ReportingRow(date(2026, 7, 6), "7", "OA应用", 10, 12, 8, 2, 1, 0.8),),
         )
 
@@ -56,6 +62,13 @@ def test_stats_endpoint_passes_typed_filters_and_returns_server_rate() -> None:
     assert body["items"][0]["success_rate"] == 0.8
     assert body["items"][0]["total_segments"] == 12
     assert body["summary"]["success_rate"] == 0.8
+    assert body["dim_summary"] == [
+        {
+            "dim_value": "7", "dim_label": "OA应用", "total": 10,
+            "total_segments": 12, "delivered": 8, "failed": 2,
+            "unknown": 1, "success_rate": 0.8,
+        }
+    ]
     assert body["can_export_decrypted"] is False
     assert service.calls[0]["role"] == "viewer"
     assert service.calls[0]["dept"] == "业务一部"
