@@ -38,6 +38,9 @@ describe("人工发送工作台", () => {
     expect(wrapper.findAll("[data-testid='segment-part']")).toHaveLength(2)
     expect(wrapper.text()).toContain("67 / 67")
     expect(wrapper.text()).toContain("13 / 67")
+    // 设计规范：末段斜纹填充，恒显 1 个灰色 ghost 块提示下一段边界
+    expect(wrapper.findAll(".segment-fill.partial")).toHaveLength(1)
+    expect(wrapper.findAll(".segment-ghost")).toHaveLength(1)
   })
 
   it("粘贴号码格式无效时即时提示并禁止提交", async () => {
@@ -411,6 +414,61 @@ describe("人工发送工作台", () => {
     expect(wrapper.text()).toContain("3 有效")
     expect(wrapper.text()).toContain("1 无效")
     expect(wrapper.text()).toContain("有效期至")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it("营销窗内显示提示行且达审批阈值时主按钮呈审批语义", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", stubPreviewFetch({ ...basePreview, approval_required: true }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: { category: string; mobilesText: string; content: string; consentConfirmed: boolean }
+    }
+    vm.form.category = "market"
+    vm.form.mobilesText = "13800138000\n13800138001"
+    vm.form.content = "维护通知"
+    vm.form.consentConfirmed = true
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("当前处于营销发送时间窗内")
+    const button = wrapper.get("[data-testid='send-button']")
+    expect(button.classes()).toContain("approval")
+    expect(button.text()).toContain("提交审批")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
+  it("粘贴预检按去重后口径预估计费", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    const bodies: Array<{ accepted_count: number }> = []
+    const base = stubPreviewFetch(basePreview)
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/billing/preview")) {
+        bodies.push(JSON.parse(String(init?.body)) as { accepted_count: number })
+      }
+      return base(url)
+    }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
+    vm.form.mobilesText = "13800138000\n13800138001\n13800138000"
+    vm.form.content = "维护通知"
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+
+    expect(bodies.at(-1)?.accepted_count).toBe(2)
+    expect(wrapper.text()).toContain("重复 1 个，提交时由服务端剔除")
     wrapper.unmount()
     vi.useRealTimers()
     vi.unstubAllGlobals()
