@@ -131,6 +131,27 @@ async def test_reply_content_masks_embedded_phone_before_projection_persistence(
 
 
 @pytest.mark.asyncio
+async def test_optout_intent_is_flagged_on_masked_content() -> None:
+    cases = {
+        "TD": True,
+        "退订": True,
+        " t ": True,
+        "td": True,
+        "TDTD": False,
+        "请问怎么退订？": False,
+        "已收到": False,
+    }
+    for content, expected in cases.items():
+        repository = FakeRepository()
+        item = reply() | {"contents": content}
+
+        await ReplyIngestService(FakeGateway([item]), repository, crypto()).poll_once()
+
+        protected = repository.events[2][1]
+        assert protected.is_optout is expected, content
+
+
+@pytest.mark.asyncio
 async def test_phone_like_reply_task_id_degrades_to_pseudonym() -> None:
     item = reply() | {"taskId": "13800138000"}
     repository = FakeRepository()

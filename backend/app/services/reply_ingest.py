@@ -30,6 +30,9 @@ LOGGER = logging.getLogger(__name__)
 VENDOR_LOCAL_TIME = re.compile(
     r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?"
 )
+# 退订语判定与前端 ReplyView 的 OPT_OUT_RE 同规则；在打码后内容上判定，
+# 打码只替换数字，不影响 TD/T/退订 识别。
+OPT_OUT_CONTENT = re.compile(r"(?:TD|T|退订)", re.IGNORECASE)
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -45,6 +48,7 @@ class ProtectedReply:
     phone_hmacs: tuple[str, ...]
     ext_code: str
     content_enc: bytes
+    is_optout: bool
     reply_time: datetime
     dedup_hash: str
     dedup_key_version: int
@@ -171,6 +175,7 @@ class ReplyIngestService:
         protected = self.crypto.protect_phone(phone, table="reply_event")
         hmac_candidates = self.crypto.hmac_candidates(phone)
         masked_content = mask_phone_text(content)
+        is_optout = OPT_OUT_CONTENT.fullmatch(masked_content.strip()) is not None
         dedup_source = "\x1f".join(
             (
                 raw_task_id,
@@ -205,6 +210,7 @@ class ReplyIngestService:
             phone_hmacs=tuple(hmac_candidates.values()),
             ext_code=ext_value,
             content_enc=content_enc,
+            is_optout=is_optout,
             reply_time=reply_time,
             dedup_hash=dedup_hash,
             dedup_key_version=dedup_key_version,

@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.59  2026-08-19
+-- v1.6.59：reply_event 增加 is_optout（打码后内容判定的退订语标记），
+--          支撑回复查询处置筛选；存量行保持 FALSE
 -- v1.6.58  2026-08-18
 -- v1.6.58：释放事件允许 uncertain-retry；活跃预留唯一索引排除 release_requested；
 --          raw_vendor_log 增加 replay_attempts 自动重放上限；
@@ -782,6 +785,7 @@ CREATE TABLE reply_event (
     ext_code        VARCHAR(8) NOT NULL DEFAULT '',
     content         VARCHAR(500) NOT NULL DEFAULT '[encrypted]',
     content_enc     BYTEA NOT NULL,
+    is_optout       BOOLEAN NOT NULL DEFAULT FALSE,
     reply_time      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_reply_event_content_marker CHECK (content='[encrypted]'),

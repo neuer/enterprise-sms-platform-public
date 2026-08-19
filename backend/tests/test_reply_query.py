@@ -239,6 +239,65 @@ async def test_sql_query_filters_hmac_time_department_and_returns_mask_only() ->
 
 
 @pytest.mark.asyncio
+async def test_disposition_is_forwarded_to_repository() -> None:
+    repository = FakeRepository()
+    service = ReplyQueryService(repository, FakeCache(), crypto())
+
+    await service.list_page(
+        phone=None,
+        start=None,
+        end=None,
+        page=1,
+        dept=None,
+        disposition="pending_optout",
+    )
+
+    assert repository.list_calls[0]["disposition"] == "pending_optout"
+
+
+@pytest.mark.asyncio
+async def test_sql_disposition_predicates_apply_to_count_and_rows() -> None:
+    repository = SqlReplyQueryRepository()
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    bind(repository, connection)
+
+    await repository.list_page(
+        phone_hmacs=(),
+        start=None,
+        end=None,
+        page=1,
+        dept=None,
+        disposition="pending_optout",
+    )
+
+    for sql, params in connection.calls:
+        assert params["disposition"] == "pending_optout"
+        assert "fe.event_key=r.event_key AND fe.is_optout" in sql
+        assert "NOT EXISTS" in sql
+        assert "ba.hmac_digest=r.phone_hmac" in sql
+
+
+@pytest.mark.asyncio
+async def test_sql_blacklisted_disposition_filters_alias_only() -> None:
+    repository = SqlReplyQueryRepository()
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])
+    bind(repository, connection)
+
+    await repository.list_page(
+        phone_hmacs=(),
+        start=None,
+        end=None,
+        page=1,
+        dept=None,
+        disposition="blacklisted",
+    )
+
+    sql = connection.calls[0][0]
+    assert "'blacklisted'" in sql
+    assert "fe.is_optout" not in sql.split("'blacklisted'")[0]
+
+
+@pytest.mark.asyncio
 async def test_sql_query_casts_nullable_filters_for_asyncpg() -> None:
     repository = SqlReplyQueryRepository()
     connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[])])

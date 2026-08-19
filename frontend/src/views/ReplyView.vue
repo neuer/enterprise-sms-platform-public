@@ -3,18 +3,22 @@ import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
+import { useRouter } from "vue-router"
 
 import PhoneMask from "../components/PhoneMask.vue"
 import EmptyState from "../components/EmptyState.vue"
-import { blacklistReply, listReplies, type ReplyItem } from "../api/replies"
+import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
+// 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
+const router = useRouter()
 const items = ref<ReplyItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const phone = ref("")
 const range = ref<[Date, Date] | null>(null)
+const disposition = ref<ReplyDisposition>("all")
 const loading = ref(false)
 const errorMessage = ref("")
 const optingOutId = ref<number | null>(null)
@@ -23,16 +27,30 @@ const canOptout = computed(() => session.role === "admin" || session.role === "o
 const PHONE_RE = /^1\d{10}$/
 const OPT_OUT_RE = /^(TD|T|退订)$/i
 
+const dispositionOptions: { label: string; value: ReplyDisposition }[] = [
+  { label: "全部", value: "all" },
+  { label: "待加黑退订", value: "pending_optout" },
+  { label: "已加黑", value: "blacklisted" },
+]
+
 function isOptOutContent(content: string): boolean {
   return OPT_OUT_RE.test(content.trim())
 }
 
-const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value))
+/** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示。 */
+const phoneError = computed<string | undefined>(() => {
+  const value = phone.value.trim()
+  return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
+})
+
+const filtering = computed(
+  () => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all",
+)
 const emptyState = computed(() =>
   filtering.value
     ? {
         title: "没有符合筛选条件的回复",
-        description: "调整回复时间或手机号后重新查询，也可重置筛选查看全部回复。",
+        description: "调整回复时间、手机号或处置口径后重新查询，也可重置筛选查看全部回复。",
       }
     : {
         title: "尚未采集到上行回复",
@@ -67,6 +85,7 @@ async function load(): Promise<void> {
       phone: phone.value.trim() || undefined,
       start: range.value?.[0].toISOString(),
       end: range.value?.[1].toISOString(),
+      disposition: disposition.value,
       page: page.value,
     })
     if (token !== loadToken) return
@@ -80,14 +99,9 @@ async function load(): Promise<void> {
   }
 }
 
-function phoneProblem(value: string): string | null {
-  return value === "" || PHONE_RE.test(value) ? null : "手机号须为 11 位以 1 开头的数字"
-}
-
 function search(): void {
-  const issue = phoneProblem(phone.value.trim())
-  if (issue) {
-    ElMessage.warning(issue)
+  if (phoneError.value) {
+    ElMessage.warning(phoneError.value)
     return
   }
   page.value = 1
@@ -97,14 +111,20 @@ function search(): void {
 function reset(): void {
   phone.value = ""
   range.value = null
+  disposition.value = "all"
   page.value = 1
   void load()
+}
+
+/** 跳转批次列表并直达该批次详情抽屉（批次页消费 batch_no 查询参数）。 */
+function openBatch(batchNo: string): void {
+  void router?.push({ name: "batches", query: { batch_no: batchNo } })
 }
 
 async function optout(item: ReplyItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `将回复号码 ${item.phone} 加入退订黑名单？后续发送将自动剔除该号码。`,
+      `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志。`,
       "退订加黑确认",
       { confirmButtonText: "加入黑名单", cancelButtonText: "取消", type: "warning" },
     )
@@ -133,16 +153,11 @@ onMounted(load)
       <h1>上行回复</h1>
       <p>厂商回复先以完整密文归档，再按掩码号码进入查询与退订处置。</p>
     </div>
-    <div class="reply-total" aria-label="回复总数">
-      <span>当前结果</span>
-      <strong>{{ total }}</strong>
-      <small>条回复</small>
-    </div>
   </section>
 
   <el-card shadow="never" class="reply-filter-card">
     <el-form class="reply-filter filter-grid" label-position="top" @submit.prevent="search">
-      <el-form-item class="filter-span-4" label="手机号精确查询">
+      <el-form-item class="filter-span-3" label="手机号精确查询" :error="phoneError">
         <el-input
           v-model="phone"
           data-testid="reply-filter-phone"
@@ -152,7 +167,7 @@ onMounted(load)
           inputmode="numeric"
         />
       </el-form-item>
-      <el-form-item class="filter-span-6" label="回复时间">
+      <el-form-item class="filter-span-4" label="回复时间">
         <el-date-picker
           v-model="range"
           type="datetimerange"
@@ -160,6 +175,14 @@ onMounted(load)
           start-placeholder="开始时间"
           end-placeholder="结束时间"
           range-separator="至"
+        />
+      </el-form-item>
+      <el-form-item class="filter-span-3" label="处置">
+        <el-segmented
+          v-model="disposition"
+          :options="dispositionOptions"
+          data-testid="reply-disposition-seg"
+          @change="search"
         />
       </el-form-item>
       <el-form-item class="reply-filter-actions filter-actions filter-span-2">
@@ -182,23 +205,38 @@ onMounted(load)
       <el-table-column label="用户原文" min-width="260">
         <template #default="{ row }"><span class="reply-content" :class="{ 'is-optout': isOptOutContent(row.content) }">{{ row.content }}</span></template>
       </el-table-column>
-      <el-table-column label="关联批次" min-width="170">
+      <el-table-column label="关联批次" min-width="190">
         <template #default="{ row }">
-          <code v-if="row.batch_no" class="batch-code">{{ row.batch_no }}</code>
-          <el-tag v-else type="warning" effect="plain">未关联</el-tag>
+          <button
+            v-if="row.batch_no"
+            type="button"
+            class="batch-code reply-batch-link"
+            :title="`查看批次 ${row.batch_no}`"
+            @click="openBatch(row.batch_no)"
+          >{{ row.batch_no }} ↗</button>
+          <span v-else class="reply-unlinked-group">
+            <el-tag type="warning" effect="plain">未关联</el-tag>
+            <small class="reply-unlinked">未匹配到平台批次</small>
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="96">
+        <template #default="{ row }">
+          <el-tag v-if="row.blacklisted" type="info" effect="plain">已加黑</el-tag>
+          <span v-else class="reply-status-none">—</span>
         </template>
       </el-table-column>
       <el-table-column v-if="canOptout" label="处置" width="108" fixed="right">
         <template #default="{ row }">
-          <el-tag v-if="row.blacklisted" type="info" effect="plain">已加黑</el-tag>
           <el-button
-            v-else
+            v-if="!row.blacklisted"
             link
             type="danger"
             :loading="optingOutId === row.id"
             :data-testid="`reply-optout-${row.id}`"
             @click="optout(row)"
           >退订加黑</el-button>
+          <span v-else class="reply-status-none">—</span>
         </template>
       </el-table-column>
       <template #empty>
@@ -214,9 +252,18 @@ onMounted(load)
         </header>
         <p class="reply-content" :class="{ 'is-optout': isOptOutContent(item.content) }">{{ item.content }}</p>
         <footer>
-          <code v-if="item.batch_no" class="batch-code">{{ item.batch_no }}</code>
-          <el-tag v-else type="warning" effect="plain">未关联</el-tag>
-          <el-tag v-if="item.blacklisted && canOptout" type="info" effect="plain">已加黑</el-tag>
+          <button
+            v-if="item.batch_no"
+            type="button"
+            class="batch-code reply-batch-link"
+            :title="`查看批次 ${item.batch_no}`"
+            @click="openBatch(item.batch_no)"
+          >{{ item.batch_no }} ↗</button>
+          <span v-else class="reply-unlinked-group">
+            <el-tag type="warning" effect="plain">未关联</el-tag>
+            <small class="reply-unlinked">未匹配到平台批次</small>
+          </span>
+          <el-tag v-if="item.blacklisted" type="info" effect="plain">已加黑</el-tag>
           <el-button
             v-else-if="canOptout"
             link
@@ -231,7 +278,7 @@ onMounted(load)
     </div>
 
     <footer class="reply-pagination">
-      <span>第 {{ page }} 页 · 每页 20 条</span>
+      <span>共 {{ total }} 条记录 · 每页 20 条</span>
       <el-pagination
         v-model:current-page="page"
         :page-size="20"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
@@ -53,6 +53,7 @@ class ReplyListRequest(BaseModel):
     phone: Annotated[str, Field(pattern=r"^1\d{10}$")] | None = None
     start: datetime | None = None
     end: datetime | None = None
+    disposition: Literal["all", "pending_optout", "blacklisted"] = "all"
     page: int = Field(default=1, ge=1)
 
 
@@ -108,6 +109,7 @@ async def list_replies(
             end=body.end,
             page=body.page,
             dept=None if claims.role in {"approver", "admin"} else claims.dept,
+            disposition=body.disposition,
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None

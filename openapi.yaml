@@ -1168,6 +1168,11 @@ paths:
                 phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
                 start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                 end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                disposition:
+                  type: string
+                  enum: [all, pending_optout, blacklisted]
+                  default: all
+                  description: 处置筛选；pending_optout=退订语且未加黑（reply_event.is_optout），blacklisted=已加黑
                 page: { type: integer, minimum: 1, default: 1 }
       responses:
         '200':

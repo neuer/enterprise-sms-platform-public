@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 上行回复重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:560px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{background:none;color:#ef9b89}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 检索条（单卡片单行） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.phone-input{display:flex;align-items:center;gap:8px;width:250px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px}
+.phone-input:focus-within{border-color:var(--verdi-l);box-shadow:0 0 0 2px rgba(47,161,132,.18)}
+.phone-input b{font:13px var(--mono);letter-spacing:.06em;color:var(--tx-hi);font-weight:500}
+.phone-input .caret{width:1px;height:16px;background:var(--verdi-l)}
+.phone-input .ph{font:12px var(--mono);color:var(--tx-3)}
+.dates{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font:11.5px var(--mono);color:var(--tx)}
+.dates i{color:var(--tx-3);font-style:normal}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search-bar .go{height:34px;display:inline-flex;align-items:center;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 结果面板 ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:9px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t-time{font:11.5px var(--mono);color:var(--tx);white-space:nowrap}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:1px}
+.batch-code{font:10.5px var(--mono);color:var(--verdi-l);border-bottom:1px dashed rgba(47,161,132,.4);cursor:default}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.gray{background:rgba(255,255,255,.05);color:var(--tx-2);border:1px solid var(--hair)}
+.tag.amb{background:rgba(216,163,92,.13);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.reply-content{color:var(--tx);font-size:12.5px;max-width:430px}
+.reply-content.optout{color:#ef9b89;font-family:var(--mono);letter-spacing:.04em}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{margin-left:auto;display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-family:var(--mono);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.empty-duo .empty{display:grid;align-content:center}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-duo{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 上行回复重设计原型</b>
+  <span>v1 评审稿 · 对应 docs/ui-design.md §7-3b · 路由 /replies</span>
+  <em>2026-08-19 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>筛选收进单行检索条</b>：手机号精确查询 + 回复时间 + 处置筛选 seg + 查询，与号码搜索、统计报表同一语言；隐私说明沉为条底细字，独立筛选卡片取消。<span class="need calc">前端</span></li>
+  <li><b>状态列全角色可见</b>：「已加黑 / —」从处置列拆出，viewer/approver 也能看到加黑结果（响应本已返回 <code>blacklisted</code>，纯显隐变化）；处置按钮仍仅 operator/admin。<span class="need ok">现有</span></li>
+  <li><b>关联批次可点击</b>：跳转 /batches 对应批次详情 Drawer 上下文，与号码搜索页同一动线；未关联保留琥珀 tag 并附一行小字说明原因。<span class="need calc">前端</span></li>
+  <li><b>总数沉入结果底栏</b>：移除页头右侧「当前结果」计数块，底栏「共 N 条 · 每页 20」与分页器同行。<span class="need calc">前端</span></li>
+  <li><b>处置筛选 seg（可选扩展）</b>：全部 / 待加黑退订 / 已加黑。「已加黑」过滤走 <code>blacklist_hmac_alias</code> EXISTS，成本低；「待加黑退订」需 ingest 时在 <code>reply_event</code> 增加 <code>is_optout</code> 布尔列（在打码后内容上判定，不涉明文号码，手写迁移 + openapi 回填）。评审不过则整项砍掉，行内 verm 高亮已能支撑人工识别。<span class="need ext">契约+库表</span></li>
+  <li><b>加黑确认如实告知留痕</b>：对话框文案明确「加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志」，成功 toast 同步提示已记审计。<span class="need ok">现有</span></li>
+  <li><b>移动端</b>：保留卡片流，实现时与桌面合并为单一数据源组件，消除现网双份渲染；空态维持两行规约（一行结论 + 一行出路）。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认列表（operator 视角） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认列表（operator 视角 · 全量要素）</div>
+<div class="variant-caption">检索条单行承载全部条件；状态列对所有读角色可见，处置按钮仅 operator/admin；批次号可点击跳详情。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">UPLINK / 用户回声</div>
+      <h1>上行回复</h1>
+      <div class="sub">厂商回复先以完整密文归档，再按掩码号码进入查询与退订处置；轮询约每 5 分钟采集一次。</div>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><span class="ph">输入 11 位手机号</span><span class="caret"></span></div>
+    </label>
+    <label class="fld"><span>回复时间（可选）</span>
+      <div class="dates">开始时间 <i>→</i> 结束时间</div>
+    </label>
+    <label class="fld"><span>处置</span>
+      <div class="seg"><b class="on">全部</b><b>待加黑退订</b><b>已加黑</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+    <p class="privacy-note">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。本页无解密端点，号码恒以掩码展示。</p>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr>
+        <th style="width:170px">回复时间</th><th style="width:140px">回复号码</th><th>用户原文</th><th style="width:170px">关联批次</th><th style="width:92px">状态</th><th style="width:96px">处置</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-time">2026-08-19 14:22:31</span></td>
+          <td class="mono">138****2041</td>
+          <td class="reply-content optout">TD</td>
+          <td><a class="batch-code">M20260819003</a><span class="cell-sub">营销 · 运营-王卉</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+          <td><span class="btn link danger">退订加黑</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-19 11:05:47</span></td>
+          <td class="mono">137****8862</td>
+          <td class="reply-content">请问发票什么时候能开？</td>
+          <td><a class="batch-code">N20260818112</a><span class="cell-sub">通知 · api · mall-prod</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+          <td><span class="btn link danger">退订加黑</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-18 21:17:02</span></td>
+          <td class="mono">139****6655</td>
+          <td class="reply-content optout">退订</td>
+          <td><a class="batch-code">M20260818007</a><span class="cell-sub">营销 · 运营-王卉</span></td>
+          <td><span class="tag gray">已加黑</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-18 09:40:15</span></td>
+          <td class="mono">135****3310</td>
+          <td class="reply-content">已收到，谢谢。</td>
+          <td><span class="tag amb">未关联</span><span class="cell-sub">厂商未回传 customId</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+          <td><span class="btn link danger">退订加黑</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-17 16:58:20</span></td>
+          <td class="mono">150****7721</td>
+          <td class="reply-content optout">T</td>
+          <td><a class="batch-code">M20260817021</a><span class="cell-sub">营销 · 运营-李漫</span></td>
+          <td><span class="tag gray">已加黑</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 128 条记录 · 每页 20</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>…</b><b>7</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：退订加黑确认 + 成功 toast ════════════════ -->
+<div class="stage-label">SCREEN B · 退订加黑确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认如实告知后果与审计留痕；确认后行内按钮原位变为「已加黑」tag，不刷新整表。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast">已加入退订黑名单 · 本次操作已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">UPLINK / 用户回声</div>
+      <h1>上行回复</h1>
+    </div>
+  </div>
+
+  <div class="result-panel dim">
+    <table>
+      <thead><tr>
+        <th style="width:170px">回复时间</th><th style="width:140px">回复号码</th><th>用户原文</th><th style="width:170px">关联批次</th><th style="width:92px">状态</th><th style="width:96px">处置</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-time">2026-08-19 14:22:31</span></td>
+          <td class="mono">138****2041</td>
+          <td class="reply-content optout">TD</td>
+          <td><a class="batch-code">M20260819003</a></td>
+          <td><span class="tag gray">已加黑</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-19 11:05:47</span></td>
+          <td class="mono">137****8862</td>
+          <td class="reply-content">请问发票什么时候能开？</td>
+          <td><a class="batch-code">N20260818112</a></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+          <td><span class="btn link danger">退订加黑</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal">
+    <h3>退订加黑确认</h3>
+    <p>将回复号码 <b>138****2041</b> 加入退订黑名单？加入后发送将自动剔除该号码。</p>
+    <p class="audit-hint">加黑行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">加入黑名单</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：筛选态（精确手机号 + 待加黑退订） ════════════════ -->
+<div class="stage-label">SCREEN C · 筛选态（手机号精确 + 待加黑退订 · viewer 视角无处置列）</div>
+<div class="variant-caption">处置 seg 选中「待加黑退订」时仅列出退订语且未加黑的回复，便于 operator 逐条处置；该 seg 为契约扩展项，未采纳则不出现。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">UPLINK / 用户回声</div>
+      <h1>上行回复</h1>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号精确查询</span>
+      <div class="phone-input"><b>138****2041</b></div>
+    </label>
+    <label class="fld"><span>回复时间（可选）</span>
+      <div class="dates">2026-08-01 00:00 <i>→</i> 2026-08-19 23:59</div>
+    </label>
+    <label class="fld"><span>处置</span>
+      <div class="seg"><b>全部</b><b class="on">待加黑退订</b><b>已加黑</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span></span>
+    <p class="privacy-note">手机号只在内存计算 HMAC 精确匹配，不明文持久化；页面不展示明文、不提供解密入口。</p>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr>
+        <th style="width:170px">回复时间</th><th style="width:140px">回复号码</th><th>用户原文</th><th style="width:170px">关联批次</th><th style="width:92px">状态</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-time">2026-08-19 14:22:31</span></td>
+          <td class="mono">138****2041</td>
+          <td class="reply-content optout">TD</td>
+          <td><a class="batch-code">M20260819003</a><span class="cell-sub">营销 · 运营-王卉</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-time">2026-08-02 08:13:59</span></td>
+          <td class="mono">138****2041</td>
+          <td class="reply-content optout">TD</td>
+          <td><a class="batch-code">M20260802011</a><span class="cell-sub">营销 · 运营-李漫</span></td>
+          <td><span style="color:var(--tx-3)">—</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 2 条记录 · 每页 20</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：空态（双变体） ════════════════ -->
+<div class="stage-label">SCREEN D · 空态（左：未采集到回复 · 右：筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；未采集态如实告知轮询周期，筛选态引导重置。</div>
+<div class="viewport"><div class="screen">
+  <div class="empty-duo">
+    <div class="empty">
+      <div><b>尚未采集到上行回复</b>
+      <span>厂商回复轮询约每 5 分钟运行一次；也可按时间或手机号缩小查询范围。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合筛选条件的回复</b>
+      <span>调整回复时间或手机号后重新查询，也可重置筛选查看全部回复。</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表字段全部来自 <code>POST /api/v1/web/replies</code> 现有响应（id / phone 掩码 / content / batch_no / reply_time / blacklisted，分页固定 20）；不新增解密端点、不新增导出（PRD FR-07）。<span class="need ok">现有</span></li>
+  <li>状态列全角色可见仅改变前端显隐，响应字段不变；处置按钮角色门槛不变（operator/admin）。<span class="need ok">现有</span></li>
+  <li>批次跳转为纯前端路由（/batches + Drawer 上下文），无契约变更。<span class="need calc">前端</span></li>
+  <li>处置筛选 seg 为扩展：<code>blacklisted</code> 过滤仅加查询参数；「待加黑退订」需 <code>reply_event.is_optout</code> 列（ingest 在打码后内容上判定，不含明文号码）。若采纳：迁移手写、schema.sql 注释同步、openapi.yaml 同 commit 回填（规则 17/25/35）。<span class="need ext">契约+库表</span></li>
+  <li>审计沿用 <code>reply_content_read</code>（只记条数）与 <code>reply_optout</code>（@audited）；审计载荷不含号码列表（规则 21）。<span class="need ok">现有</span></li>
+  <li>手机号全程掩码、无解密路径（规则 2）；查询参数走 POST body 不进访问日志（D072）；回复正文入库前已打码，界面不二次处理（规则 27）。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>
