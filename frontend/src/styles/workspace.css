@@ -1941,6 +1941,29 @@ main {
   font-size: 13px;
 }
 
+.cat-tag {
+  margin-left: 6px;
+  padding: 0 6px;
+  font: 10px/1.8 "IBM Plex Mono", monospace;
+  vertical-align: 1px;
+  border-radius: 4px;
+}
+
+.cat-tag.verify {
+  color: #71c4ad;
+  background: rgba(14, 122, 99, 0.2);
+}
+
+.cat-tag.notice {
+  color: #6c9bce;
+  background: rgba(69, 116, 163, 0.2);
+}
+
+.cat-tag.market {
+  color: var(--amber);
+  background: rgba(216, 163, 92, 0.18);
+}
+
 .category-switch span {
   color: var(--tx-2);
   font-size: 11px;
@@ -2269,6 +2292,14 @@ main {
   font-size: 11px;
 }
 
+.audience-note {
+  margin: 8px 0 0;
+  padding-top: 8px;
+  color: var(--tx-2);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
 .cost-line {
   display: flex;
   gap: 8px;
@@ -2482,6 +2513,15 @@ main {
 
 .send-submit {
   width: 100%;
+}
+
+.send-submit.el-button--primary.approval {
+  --el-button-bg-color: #9a6b2a;
+  --el-button-border-color: #9a6b2a;
+  --el-button-hover-bg-color: #b07c33;
+  --el-button-hover-border-color: #b07c33;
+  --el-button-active-bg-color: #9a6b2a;
+  --el-button-active-border-color: #9a6b2a;
 }
 
 .submit-foot {

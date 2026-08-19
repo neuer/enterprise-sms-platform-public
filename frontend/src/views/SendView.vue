@@ -88,6 +88,12 @@ const recipientCount = computed(() =>
   form.source === "import" ? (imported.value?.valid ?? 0) : pastedMobiles.value.length,
 )
 
+// 预检受众口径：导入取预检后有效数，粘贴取客户端去重后数量，与服务端批内去重对齐；
+// 黑名单与频控剔除只有服务端受理时可判定，预检不做虚假精确。
+const previewCount = computed(() =>
+  form.source === "import" ? recipientCount.value : dedupedCount.value,
+)
+
 const contentReady = computed(() =>
   form.contentMode === "content"
     ? form.content.trim().length > 0
@@ -154,7 +160,7 @@ const previewKey = computed(() =>
     category: form.category,
     ...contentPayload(),
     signName: form.signName,
-    count: recipientCount.value,
+    count: previewCount.value,
     consent: form.consentConfirmed,
   }),
 )
@@ -191,7 +197,7 @@ async function runPreview(key: string): Promise<void> {
       category: form.category,
       ...contentPayload(),
       sign_name: form.signName || undefined,
-      accepted_count: recipientCount.value,
+      accepted_count: previewCount.value,
       consent_confirmed: form.consentConfirmed,
     })
     if (key !== previewKey.value) return
@@ -255,6 +261,12 @@ const quotaThisPct = computed(() => {
   if (!quota || quota.limit <= 0) return 0
   return Math.min(Math.max(0, 100 - quotaUsedPct.value), (cost / quota.limit) * 100)
 })
+const quotaAfterPct = computed(() => {
+  const quota = preview.value?.quota
+  const cost = preview.value?.quota_cost ?? 0
+  if (!quota || quota.limit <= 0) return 0
+  return Math.round(((quota.used + cost) / quota.limit) * 100)
+})
 
 // ── 风险与合规行 ──
 interface RiskLine {
@@ -276,6 +288,18 @@ const riskLines = computed<RiskLine[]>(() => {
       tone: "warn",
       title: "当前处于营销时间窗外（默认 08:00–21:00）",
       desc: "提交后将自动转为下一发送窗口起点定时，到点前可取消。",
+    })
+  } else if (
+    form.category === "market" &&
+    !form.isTest &&
+    !form.scheduledAt &&
+    preview.value &&
+    preview.value.deferred_reason === null
+  ) {
+    lines.push({
+      tone: "info",
+      title: "当前处于营销发送时间窗内",
+      desc: "窗外提交将自动转下一窗口起点定时，预检会提前提示。",
     })
   }
   if (preview.value?.unsubscribe_appended) {
@@ -495,7 +519,7 @@ onBeforeUnmount(() => {
       <h1>人工发送</h1>
       <p>号码仅在受控内存中处理，计费、审批与时间窗均由服务端裁决。</p>
     </div>
-    <span class="security-note"><i></i> 敏感数据保护已启用</span>
+    <span class="security-note"><i></i> 敏感数据保护已启用 · 预检自动更新</span>
   </section>
 
   <div class="send-workbench">
@@ -509,7 +533,7 @@ onBeforeUnmount(() => {
             disabled
             aria-describedby="verify-web-hint"
           >
-            <b>验证码短信</b><span id="verify-web-hint">仅 API 渠道开放</span>
+            <b>验证码短信<span class="cat-tag verify">VERIFY</span></b><span id="verify-web-hint">仅 API 渠道开放</span>
           </button>
           <button
             type="button"
@@ -517,7 +541,7 @@ onBeforeUnmount(() => {
             :class="{ selected: form.category === 'notice' }"
             @click="chooseCategory('notice')"
           >
-            <b>通知短信</b><span>实时通道 · 黑名单拦截 · ≥100 需审批</span>
+            <b>通知短信<span class="cat-tag notice">NOTICE</span></b><span>实时通道 · 黑名单默认拦截 · ≥100 需审批</span>
           </button>
           <button
             type="button"
@@ -525,7 +549,7 @@ onBeforeUnmount(() => {
             :class="{ selected: form.category === 'market' }"
             @click="chooseCategory('market')"
           >
-            <b>营销短信</b><span>批量通道 · 08:00–21:00 · ≥50 需审批</span>
+            <b>营销短信<span class="cat-tag market">MARKET</span></b><span>批量通道 · 08:00–21:00 · 强制退订语 · ≥50 需审批</span>
           </button>
         </div>
       </section>
@@ -660,13 +684,16 @@ onBeforeUnmount(() => {
           <strong data-testid="recipient-count">{{ recipientCount.toLocaleString() }}</strong>
           <span>{{ form.source === "import" ? "导入有效号码" : "粘贴号码（受理时去重与剔除）" }}</span>
         </div>
+        <p v-if="form.source === 'paste' && duplicateCount > 0" class="audience-note">
+          重复 {{ duplicateCount.toLocaleString() }} 个，提交时由服务端剔除；黑名单与频控剔除在受理时判定。
+        </p>
       </section>
 
       <section v-if="preview" class="rail-card">
         <header>计费 <small>services/billing.py 单点口径</small></header>
         <SegmentBar :parts="preview.segment_parts" />
         <div class="cost-line">
-          <span class="fx">{{ recipientCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
+          <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small> 计费条</small></strong>
         </div>
         <p class="boundary-hint">再增加 {{ preview.next_segment_at }} 个字符进入下一计费段</p>
@@ -680,7 +707,7 @@ onBeforeUnmount(() => {
         </div>
         <template v-if="preview.quota.limit > 0">
           <div class="quota-bar"><i class="used" :style="{ width: `${quotaUsedPct}%` }"></i><i class="this" :style="{ width: `${quotaThisPct}%` }"></i></div>
-          <p class="quota-foot">斜纹为本批预扣 {{ preview.quota_cost.toLocaleString() }}；提交后 {{ (preview.quota.used + preview.quota_cost).toLocaleString() }} / {{ preview.quota.limit.toLocaleString() }}</p>
+          <p class="quota-foot">斜纹为本批预扣 {{ preview.quota_cost.toLocaleString() }}；提交后 {{ (preview.quota.used + preview.quota_cost).toLocaleString() }} / {{ preview.quota.limit.toLocaleString() }}（{{ quotaAfterPct }}%）</p>
         </template>
         <p v-else class="quota-foot">上限不限；本批预扣 {{ preview.quota_cost.toLocaleString() }} 计费条</p>
       </section>
@@ -729,6 +756,7 @@ onBeforeUnmount(() => {
         type="primary"
         size="large"
         class="send-submit"
+        :class="{ approval: preview?.approval_required }"
         data-testid="send-button"
         :disabled="sendDisabled"
         :loading="busy"
