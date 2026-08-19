@@ -793,14 +793,21 @@ paths:
                 size: { type: integer, default: 20, minimum: 1, maximum: 100 }
       responses:
         '200':
-          description: 该号码的收发记录（下行明细+关联批次，权限内）
+          description: 该号码的收发记录（下行明细+关联批次，权限内）+ 号码状态徽标
           content:
             application/json:
               schema:
                 type: object
-                required: [total, items]
+                required: [total, badge, items]
                 properties:
                   total: { type: integer }
+                  badge:
+                    type: object
+                    required: [blacklisted, blacklist_source, recv_30d]
+                    properties:
+                      blacklisted: { type: boolean }
+                      blacklist_source: { anyOf: [{ type: string }, { type: 'null' }] }
+                      recv_30d: { type: integer, description: 近30日接收量 }
                   items:
                     type: array
                     items:

@@ -43,16 +43,17 @@ class MessageQueryItem:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageQueryPage:
-    total: int
-    items: tuple[MessageQueryItem, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class PhoneBadge:
     blacklisted: bool
     blacklist_source: str | None
     recv_30d: int
+
+
+@dataclass(frozen=True, slots=True)
+class MessageQueryPage:
+    total: int
+    items: tuple[MessageQueryItem, ...]
+    badge: PhoneBadge
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +208,58 @@ class SqlOperationsQueryRepository:
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
+    async def _phone_badge(
+        self,
+        connection: Any,
+        phone_hmacs: tuple[str, ...],
+        predicate: str,
+        scope_params: dict[str, Any],
+    ) -> PhoneBadge:
+        """黑名单状态与近30日接收量；仅当权限内存在该号码记录时才暴露黑名单状态。"""
+        params = {"phone_hmacs": list(phone_hmacs), **scope_params}
+        blacklist_result = await connection.execute(
+            text(
+                f"""
+                SELECT bl.source FROM blacklist bl
+                JOIN blacklist_hmac_alias ba
+                  ON ba.blacklist_digest=bl.phone_hmac
+                WHERE ba.hmac_digest=ANY(CAST(:phone_hmacs AS char(64)[]))
+                  AND EXISTS (
+                    SELECT 1 FROM sms_message m
+                    JOIN sms_batch b ON b.id=m.batch_id
+                    WHERE m.phone_hmac=ANY(
+                      CAST(:phone_hmacs AS char(64)[])
+                    ) AND {predicate}
+                    UNION ALL
+                    SELECT 1 FROM sms_reply r
+                    LEFT JOIN sms_batch b ON b.id=r.batch_id
+                    WHERE r.phone_hmac=ANY(
+                      CAST(:phone_hmacs AS char(64)[])
+                    ) AND {predicate}
+                  )
+                ORDER BY bl.created_at DESC LIMIT 1
+                """
+            ),
+            params,
+        )
+        blacklist_row = blacklist_result.mappings().first()
+        received_result = await connection.execute(
+            text(
+                f"""
+                SELECT count(*) FROM sms_message m
+                JOIN sms_batch b ON b.id=m.batch_id
+                WHERE m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
+                  AND m.created_at>=now()-interval '30 days' AND {predicate}
+                """
+            ),
+            params,
+        )
+        return PhoneBadge(
+            blacklist_row is not None,
+            str(blacklist_row["source"]) if blacklist_row is not None else None,
+            int(received_result.scalar_one()),
+        )
+
     async def search_messages(
         self,
         *,
@@ -270,7 +323,8 @@ class SqlOperationsQueryRepository:
                         str(values["batch_no"]),
                     )
                     items.append(MessageQueryItem(content=content, **values))
-                return MessageQueryPage(int(count_result.scalar_one()), tuple(items))
+                badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
+                return MessageQueryPage(int(count_result.scalar_one()), tuple(items), badge)
         finally:
             await engine.dispose()
 
@@ -293,43 +347,7 @@ class SqlOperationsQueryRepository:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                blacklist_result = await connection.execute(
-                    text(
-                        f"""
-                        SELECT bl.source FROM blacklist bl
-                        JOIN blacklist_hmac_alias ba
-                          ON ba.blacklist_digest=bl.phone_hmac
-                        WHERE ba.hmac_digest=ANY(CAST(:phone_hmacs AS char(64)[]))
-                          AND EXISTS (
-                            SELECT 1 FROM sms_message m
-                            JOIN sms_batch b ON b.id=m.batch_id
-                            WHERE m.phone_hmac=ANY(
-                              CAST(:phone_hmacs AS char(64)[])
-                            ) AND {predicate}
-                            UNION ALL
-                            SELECT 1 FROM sms_reply r
-                            LEFT JOIN sms_batch b ON b.id=r.batch_id
-                            WHERE r.phone_hmac=ANY(
-                              CAST(:phone_hmacs AS char(64)[])
-                            ) AND {predicate}
-                          )
-                        ORDER BY bl.created_at DESC LIMIT 1
-                        """
-                    ),
-                    params,
-                )
-                blacklist_row = blacklist_result.mappings().first()
-                received_result = await connection.execute(
-                    text(
-                        f"""
-                        SELECT count(*) FROM sms_message m
-                        JOIN sms_batch b ON b.id=m.batch_id
-                        WHERE m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
-                          AND m.created_at>=now()-interval '30 days' AND {predicate}
-                        """
-                    ),
-                    params,
-                )
+                badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
                 events_result = await connection.execute(
                     text(
                         f"""
@@ -417,11 +435,7 @@ class SqlOperationsQueryRepository:
                     )
                 truncated = len(events) > TIMELINE_EVENT_LIMIT
                 return Timeline(
-                    PhoneBadge(
-                        blacklist_row is not None,
-                        str(blacklist_row["source"]) if blacklist_row is not None else None,
-                        int(received_result.scalar_one()),
-                    ),
+                    badge,
                     tuple(events[:TIMELINE_EVENT_LIMIT]),
                     truncated,
                 )

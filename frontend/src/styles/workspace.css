@@ -4124,13 +4124,6 @@ main {
 .batch-detail-head h3 { margin: 0; font-size: 13px; }
 .batch-detail-pagination { margin-top: 10px; }
 
-.view-switch {
-  display: flex;
-  padding: 4px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-}
-
 .query-privacy-note {
   margin: 12px 0 0;
   color: var(--muted);
@@ -4138,8 +4131,55 @@ main {
 }
 
 .message-results { margin-top: 18px; }
-.message-content { margin: 7px 0 0; color: var(--ink-soft); }
-.phone-mask + .el-button { margin-left: 6px; }
+.message-content { margin: 0; color: var(--ink-soft); }
+
+/* 号码徽标条：列表与时间线视图共用，检索成功后常驻。 */
+.phone-badge-card { margin-top: 18px; }
+
+.phone-badge {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.phone-badge-num { display: grid; gap: 2px; }
+.phone-badge-num small { color: var(--muted); font-size: 10px; letter-spacing: .14em; }
+.phone-badge-num .phone-mask,
+.phone-badge-num .revealed-phone {
+  color: var(--ink, var(--tx-hi));
+  font-family: var(--mono);
+  font-size: 17px;
+  letter-spacing: .06em;
+  font-variant-numeric: tabular-nums;
+}
+
+.phone-badge-tag { flex-shrink: 0; }
+.phone-badge-source { color: var(--muted); font-size: 12px; }
+
+.phone-badge-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+}
+
+.phone-badge-stat { display: grid; gap: 2px; }
+.phone-badge-stat span { color: var(--muted); font-size: 10px; }
+.phone-badge-stat strong {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.phone-badge-reveal {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.phone-badge-reveal small { color: var(--muted); font-size: 10px; }
+
+.result-filters { display: flex; align-items: center; gap: 8px; }
 
 .report-desc {
   margin: 5px 0 0;
@@ -4163,23 +4203,18 @@ main {
   background: var(--surface);
 }
 
-.phone-badges {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-}
-
-.phone-badges strong {
-  margin-left: auto;
-  font-family: var(--mono);
-  color: var(--ink);
-}
-
 .timeline-day { position: relative; max-width: 820px; margin: 24px auto; }
-.timeline-day h2 { margin: 0 0 12px; color: var(--muted); font: 12px/1 var(--mono); letter-spacing: .08em; }
+.timeline-day h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 12px;
+  color: var(--ink, var(--tx-hi));
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-day-meta { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; }
 
 .timeline-event {
   position: relative;
@@ -4219,6 +4254,14 @@ main {
   box-shadow: 0 0 0 1px var(--cyan);
 }
 
+.timeline-event.verify { border-left-color: var(--verdi); }
+.timeline-event.notice { border-left-color: var(--slate); }
+.timeline-event.market { border-left-color: var(--amber); }
+
+.timeline-event.verify .timeline-dot { background: var(--verdi); box-shadow: 0 0 0 1px var(--verdi); }
+.timeline-event.notice .timeline-dot { background: var(--slate); box-shadow: 0 0 0 1px var(--slate); }
+.timeline-event.market .timeline-dot { background: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+
 .incoming .timeline-dot { background: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
 .timeline-event header,
 .timeline-event footer { display: flex; align-items: center; gap: 10px; }
@@ -4231,7 +4274,6 @@ main {
   .query-heading,
   .message-heading { align-items: stretch; }
   .query-total { align-self: stretch; }
-  .view-switch { align-self: flex-start; }
   .query-table { display: none; }
   .query-mobile-list { display: grid; gap: 10px; }
   .query-mobile-list article { padding: 14px; border: 1px solid var(--line); background: var(--surface-soft); }
@@ -4242,8 +4284,9 @@ main {
   .query-pagination { align-items: flex-start; gap: 10px; }
   .batch-summary { grid-template-columns: 1fr; }
   .batch-meta { grid-template-columns: 1fr; }
-  .phone-badges { align-items: flex-start; flex-wrap: wrap; }
-  .phone-badges strong { width: 100%; margin-left: 0; }
+  .phone-badge { align-items: flex-start; flex-wrap: wrap; }
+  .phone-badge-sep { display: none; }
+  .phone-badge-reveal { width: 100%; margin-left: 0; }
   .timeline-panel { padding: 14px 10px; }
   .timeline-event,
   .timeline-event.incoming { width: calc(100% - 26px); margin-left: 20px; }

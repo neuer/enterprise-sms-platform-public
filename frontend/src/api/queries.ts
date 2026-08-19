@@ -62,7 +62,13 @@ export interface MessageItem {
   sender: string | null
 }
 
-export interface MessagePage { total: number; items: MessageItem[] }
+export interface PhoneBadge {
+  blacklisted: boolean
+  blacklist_source: string | null
+  recv_30d: number
+}
+
+export interface MessagePage { total: number; badge: PhoneBadge; items: MessageItem[] }
 
 export interface TimelineEvent {
   ts: string
@@ -75,7 +81,7 @@ export interface TimelineEvent {
 }
 
 export interface TimelineResult {
-  badge: { blacklisted: boolean; blacklist_source: string | null; recv_30d: number }
+  badge: PhoneBadge
   events: TimelineEvent[]
   truncated: boolean
 }
