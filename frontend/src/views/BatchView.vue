@@ -84,13 +84,13 @@ const detailStatusOptions = [
   { label: "其他", value: "other" },
 ]
 const categoryOptions = [
-  { label: "全部类别", value: "" },
+  { label: "全部", value: "" },
   { label: "验证码", value: "verify" },
   { label: "通知", value: "notice" },
   { label: "营销", value: "market" },
 ]
 const channelOptions = [
-  { label: "全部渠道", value: "" },
+  { label: "全部", value: "" },
   { label: "API", value: "api" },
   { label: "Web", value: "web" },
 ]
@@ -113,6 +113,10 @@ function formatSchedule(value: string): string {
     timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(new Date(value)).replaceAll("/", "-")
+}
+
+function shortBatchNo(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 2)}…${value.slice(-4)}` : value
 }
 
 /** 结果构成 = 占受理总数的份额（前端减法推导），不是成功率口径 */
@@ -317,24 +321,64 @@ watch(moreOpen, (open) => {
 </script>
 
 <template>
-  <section class="page-heading query-heading">
-    <div><p class="eyebrow">BATCH LEDGER / 发送账本</p><h1>批次列表</h1><p>按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p></div>
-    <div class="query-total"><span>当前结果</span><strong>{{ total }}</strong><small>个批次</small></div>
+  <section class="page-heading batch-heading">
+    <div>
+      <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+      <h1>批次列表</h1>
+      <p>按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+    </div>
+    <span class="batch-scope"><i></i>当前口径 · {{ session.roleLabel }}</span>
   </section>
 
-  <el-card shadow="never" class="query-filter-card">
-    <el-form class="batch-filter filter-toolbar" label-position="top" @submit.prevent="search">
+  <form class="batch-filter batch-filter-bar" @submit.prevent="search">
+    <div class="batch-fld">
+      <span>批次号</span>
       <el-input v-model="batchNo" class="batch-filter-search" placeholder="模糊匹配批次号" clearable maxlength="64" />
-      <el-segmented v-model="category" :options="categoryOptions" class="batch-filter-seg" data-testid="batch-category-filter" />
-      <el-segmented v-model="channel" :options="channelOptions" class="batch-filter-seg" data-testid="batch-channel-filter" />
+    </div>
+    <div class="batch-fld">
+      <span>类别</span>
+      <div class="batch-seg" role="group" aria-label="类别" data-testid="batch-category-filter">
+        <button
+          v-for="opt in categoryOptions"
+          :key="opt.value"
+          type="button"
+          :class="{ on: category === opt.value }"
+          @click="category = opt.value"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+    <div class="batch-fld">
+      <span>渠道</span>
+      <div class="batch-seg" role="group" aria-label="渠道" data-testid="batch-channel-filter">
+        <button
+          v-for="opt in channelOptions"
+          :key="opt.value"
+          type="button"
+          :class="{ on: channel === opt.value }"
+          @click="channel = opt.value"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+    <div class="batch-fld">
+      <span>创建时间</span>
       <el-date-picker v-model="range" type="datetimerange" popper-class="qingluan-date-popper" start-placeholder="创建开始" end-placeholder="创建结束" range-separator="至" class="batch-filter-dates" />
+    </div>
+    <div class="batch-fld">
       <el-popover v-model:visible="moreOpen" placement="bottom-end" :width="320" trigger="click">
         <template #reference>
-          <el-button :class="{ 'is-more-active': moreActive }" data-testid="batch-more-filters">更多筛选<template v-if="moreActive"> ·</template></el-button>
+          <button type="button" class="batch-more-trigger" :class="{ 'is-more-active': moreActive }" data-testid="batch-more-filters">更多筛选 ▾</button>
         </template>
         <div class="batch-more">
           <label>测试发送</label>
-          <el-segmented v-model="isTest" :options="isTestOptions" data-testid="batch-is-test-filter" />
+          <div class="batch-seg" role="group" aria-label="测试发送" data-testid="batch-is-test-filter">
+            <button
+              v-for="opt in isTestOptions"
+              :key="opt.value"
+              type="button"
+              :class="{ on: isTest === opt.value }"
+              @click="isTest = opt.value"
+            >{{ opt.label }}</button>
+          </div>
           <label>应用</label>
           <el-select v-if="appOptions.length" v-model="appId" placeholder="全部应用" clearable filterable data-testid="batch-app-filter">
             <el-option v-for="app in appOptions" :key="app.id" :label="`${app.name}（${app.dept}）`" :value="String(app.id)" />
@@ -346,15 +390,17 @@ watch(moreOpen, (open) => {
           </template>
         </div>
       </el-popover>
-      <div class="batch-filter-actions">
-        <span v-if="filtersDirty" class="batch-dirty" data-testid="batch-filters-dirty">● 条件已变更</span>
-        <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
-        <el-button @click="reset">重置</el-button>
-      </div>
-    </el-form>
-  </el-card>
+      <small class="batch-more-hint">测试 / 应用 / 部门</small>
+    </div>
+    <div class="batch-filter-actions">
+      <span v-if="filtersDirty" class="batch-dirty" data-testid="batch-filters-dirty">● 条件已变更</span>
+      <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
+      <el-button @click="reset">重置</el-button>
+    </div>
+  </form>
 
   <div class="batch-chips" data-testid="batch-status-chips" role="group" aria-label="按状态分组筛选">
+    <span class="batch-chips-lbl">状态</span>
     <button
       v-for="group in statusGroups"
       :key="group.key"
@@ -366,11 +412,11 @@ watch(moreOpen, (open) => {
     >
       {{ group.label }}<b v-if="groupCount(group.key, group.statuses) !== null">{{ groupCount(group.key, group.statuses) }}</b>
     </button>
-    <span class="batch-chips-meta">进行中 = 排队中 + 发送中 · 其他终态 = 已取消 + 已驳回 + 已过期</span>
+    <span class="batch-chips-meta">分组 = 进行中(queued+sending) · 待审批 · 定时中 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span>
   </div>
 
-  <el-card shadow="never" class="query-table-card">
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
+  <div class="batch-ledger">
     <el-table v-loading="loading" :data="items" row-key="batch_no" class="query-table">
       <el-table-column label="批次 / 时间" min-width="200">
         <template #default="{ row }">
@@ -379,7 +425,7 @@ watch(moreOpen, (open) => {
           <div v-if="row.scheduled_at && row.status === 'scheduled' || row.is_test || row.resend_of" class="cell-flags">
             <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched">定时 {{ formatSchedule(row.scheduled_at) }}</span>
             <span v-if="row.is_test" class="cell-flag cell-flag--test">测试</span>
-            <button v-if="row.resend_of" type="button" class="cell-flag cell-flag--resend" :title="`重发自 ${row.resend_of}`" @click="traceResendOf(row.resend_of)">重发溯源 ↗</button>
+            <button v-if="row.resend_of" type="button" class="cell-flag cell-flag--resend" :title="`重发自 ${row.resend_of}`" @click="traceResendOf(row.resend_of)">重发自 {{ shortBatchNo(row.resend_of) }} ↗</button>
           </div>
         </template>
       </el-table-column>
@@ -451,8 +497,11 @@ watch(moreOpen, (open) => {
       <span><i class="compose-p"></i>未提交</span>
       <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
     </div>
-    <footer class="query-pagination"><span>第 {{ page }} 页 · 每页 20 条</span><el-pagination v-model:current-page="page" :page-size="20" :total="total" layout="prev, pager, next" @current-change="load" /></footer>
-  </el-card>
+    <footer class="batch-pager">
+      <span>共 {{ total }} 个批次 · 每页 20</span>
+      <el-pagination v-model:current-page="page" :page-size="20" :total="total" layout="prev, pager, next" @current-change="load" />
+    </footer>
+  </div>
 
   <el-drawer v-model="drawer" size="min(560px, 92vw)" :teleported="false" class="batch-drawer">
     <template #header>
@@ -487,14 +536,11 @@ watch(moreOpen, (open) => {
         <p class="batch-hero-quotas">受理 <b>{{ selected.total.toLocaleString() }}</b> · 计费条 <b>{{ selected.quota_cost.toLocaleString() }}</b> · 单条 <b>{{ selected.segments }}</b> 条 · 频控剔除 <b>{{ selected.removed_freq_limit.toLocaleString() }}</b></p>
       </section>
 
-      <el-alert
+      <p
         v-if="selected.status === 'sending' && composeOf(selected).unknown + composeOf(selected).pending > 0"
-        class="batch-deferred"
-        :title="`仍有 ${(composeOf(selected).unknown + composeOf(selected).pending).toLocaleString()} 条未终态（待回执 ${composeOf(selected).unknown.toLocaleString()} + 未提交 ${composeOf(selected).pending.toLocaleString()}），批次保持发送中，直至回执到达或报告超时。构成非成功率。`"
-        type="info"
-        :closable="false"
-      />
-      <el-alert v-if="selected.deferred_reason === 'market_window'" class="batch-deferred" title="营销时间窗外，已转为定时发送；到达营销窗口后自动进入队列。" type="warning" :closable="false" />
+        class="batch-note"
+      >仍有 {{ (composeOf(selected).unknown + composeOf(selected).pending).toLocaleString() }} 条未终态（待回执 {{ composeOf(selected).unknown.toLocaleString() }} + 未提交 {{ composeOf(selected).pending.toLocaleString() }}），批次保持发送中，直至回执到达或报告超时。构成非成功率。</p>
+      <p v-if="selected.deferred_reason === 'market_window'" class="batch-note is-warn">营销时间窗外，已转为定时发送；到达营销窗口后自动进入队列。</p>
 
       <section class="batch-content-card">
         <CategoryTag :category="selected.category" />
@@ -502,7 +548,7 @@ watch(moreOpen, (open) => {
         <small>内容长度 {{ selected.content.length }} 字 · 单条 {{ selected.segments }} 计费条<template v-if="selected.category === 'verify'"> · 验证码已等长打码</template></small>
       </section>
 
-      <dl class="batch-meta">
+      <dl class="batch-facts">
         <div><dt>渠道</dt><dd>{{ channelLabel[selected.channel] || selected.channel }}</dd></div>
         <div><dt>应用</dt><dd>{{ selected.app_name || "—" }}</dd></div>
         <div><dt>创建人</dt><dd>{{ selected.creator || "—" }}</dd></div>
@@ -518,7 +564,7 @@ watch(moreOpen, (open) => {
 
       <div class="batch-detail-head"><h3>号码明细</h3><el-select v-model="detailStatus" data-testid="batch-detail-status" style="width: 128px" placeholder="全部状态" clearable @change="filterDetails"><el-option v-for="option in detailStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></div>
       <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><strong v-if="revealed[row.id]" class="revealed-phone">{{ revealed[row.id] }}</strong><PhoneMask v-else :value="row.phone" /><el-button v-if="canDecrypt && !revealed[row.id]" :data-testid="`batch-phone-decrypt-${row.id}`" link type="primary" @click="revealPhone(row)">授权查看</el-button></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
-      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条</span><el-pagination v-model:current-page="detailPage" :page-size="20" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
+      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20 条</span><el-pagination v-model:current-page="detailPage" :page-size="20" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
     </template>
   </el-drawer>
   <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"><el-date-picker v-model="scheduledAt" type="datetime" popper-class="qingluan-date-popper" value-format="YYYY-MM-DDTHH:mm:ss+08:00" placeholder="选择新的发送时间" /><template #footer><el-button @click="rescheduleOpen=false">取消</el-button><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template></el-dialog>
