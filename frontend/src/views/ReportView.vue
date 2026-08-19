@@ -20,6 +20,8 @@ import {
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { CHART_DIM_PALETTE } from "../lib/chartTheme"
+import { reportTrendDims } from "../lib/reportTrend"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -105,6 +107,26 @@ const segmentsPerMessage = computed(() => {
   const summary = result.value?.summary
   if (!summary || summary.total === 0) return "—"
   return (summary.total_segments / summary.total).toFixed(2)
+})
+const rangeDays = computed(() => {
+  if (!result.value) return null
+  const ms = Date.parse(result.value.end) - Date.parse(result.value.start)
+  if (!Number.isFinite(ms) || ms < 0) return null
+  return Math.round(ms / 86_400_000) + 1
+})
+const trendLegend = computed(() =>
+  result.value ? reportTrendDims(result.value.items, metric.value) : [],
+)
+
+function dimColor(index: number): string {
+  return CHART_DIM_PALETTE[index % CHART_DIM_PALETTE.length]
+}
+
+const averageLabel = computed(() => {
+  const grain = result.value?.granularity
+  if (grain === "week") return "周均"
+  if (grain === "month") return "月均"
+  return "日均"
 })
 
 type SortProp = "period_start" | "total" | "total_segments" | "success_rate"
@@ -266,29 +288,67 @@ onBeforeUnmount(() => {
     <span class="report-scope" data-testid="report-scope"><i></i>当前口径：{{ scopeLabel }}</span>
   </section>
 
-  <el-card shadow="never" class="report-filter-card">
-    <el-form class="report-filter filter-grid" label-position="top" @submit.prevent="load">
-      <el-form-item class="filter-span-2" label="统计周期"><el-segmented v-model="granularity" :options="granularityOptions" /></el-form-item>
-      <el-form-item class="filter-span-2" label="分组维度"><el-segmented v-model="groupBy" :options="groupByOptions" /></el-form-item>
-      <el-form-item class="filter-span-2" label="消息类别"><el-select v-model="category"><el-option label="全部类别" value="all" /><el-option label="验证码" value="verify" /><el-option label="通知" value="notice" /><el-option label="营销" value="market" /></el-select></el-form-item>
-      <el-form-item class="filter-span-3" label="日期范围"><el-date-picker v-model="dateRange" type="daterange" popper-class="qingluan-date-popper" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" /></el-form-item>
-      <el-form-item class="filter-actions filter-span-3">
-        <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
-        <el-button :loading="exportLoading" @click="createExport">导出明细 CSV</el-button>
-        <el-checkbox v-if="canDecrypt" v-model="decrypted" class="report-decrypted">含明文手机号</el-checkbox>
-      </el-form-item>
-    </el-form>
-    <p v-if="filtersDirty" class="report-dirty-hint">筛选条件已变更，点击「查询」刷新结果。</p>
-  </el-card>
+  <form class="report-filter-bar" @submit.prevent="load">
+    <div class="report-fld">
+      <span>周期</span>
+      <div class="report-seg" role="group" aria-label="周期">
+        <button
+          v-for="opt in granularityOptions"
+          :key="opt.value"
+          type="button"
+          :class="{ on: granularity === opt.value }"
+          @click="granularity = opt.value"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+    <div class="report-fld">
+      <span>维度</span>
+      <div class="report-seg" role="group" aria-label="维度">
+        <button
+          v-for="opt in groupByOptions"
+          :key="opt.value"
+          type="button"
+          :class="{ on: groupBy === opt.value }"
+          :data-testid="`report-group-${opt.value}`"
+          @click="groupBy = opt.value"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+    <div class="report-fld">
+      <span>类别</span>
+      <el-select v-model="category" class="report-pill-select">
+        <el-option label="全部类别" value="all" />
+        <el-option label="验证码" value="verify" />
+        <el-option label="通知" value="notice" />
+        <el-option label="营销" value="market" />
+      </el-select>
+    </div>
+    <div class="report-fld">
+      <span>范围</span>
+      <el-date-picker
+        v-model="dateRange"
+        type="daterange"
+        popper-class="qingluan-date-popper"
+        value-format="YYYY-MM-DD"
+        range-separator="→"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+      />
+    </div>
+    <el-button type="primary" native-type="submit" class="report-filter-go" :loading="loading">查询</el-button>
+    <el-button :loading="exportLoading" @click="createExport">导出明细 CSV</el-button>
+    <el-checkbox v-if="canDecrypt" v-model="decrypted" class="report-decrypted">含明文手机号</el-checkbox>
+  </form>
+  <p v-if="filtersDirty" class="report-dirty-hint">筛选条件已变更，点击「查询」刷新结果。</p>
 
   <div v-if="exportTask || exportError" class="export-strip" data-testid="export-strip">
     <template v-if="exportTask">
-      <el-tag size="small" :type="exportTask.status === 'done' ? 'success' : exportTask.status === 'failed' ? 'danger' : 'warning'">{{ statusLabel[exportTask.status] }}</el-tag>
-      <span class="export-id">导出明细 #{{ exportTask.id.slice(0, 8) }}</span>
-      <strong v-if="exportTask.row_count !== null">{{ exportTask.row_count }} 行</strong>
+      <span class="export-tag" :class="exportTask.status">{{ statusLabel[exportTask.status] }}</span>
+      <span class="export-id">导出明细 <code>#{{ exportTask.id.slice(0, 8) }}</code></span>
+      <strong v-if="exportTask.row_count !== null">{{ exportTask.row_count.toLocaleString() }} 行</strong>
       <span class="export-mode">{{ exportTask.decrypted ? "明文导出 · 已记审计" : "掩码导出 · 不含明文手机号" }}</span>
       <small v-if="exportTask.expires_at">保留至 {{ exportTask.expires_at.slice(0, 10) }}</small>
-      <el-button v-if="exportTask.download_url" type="primary" size="small" class="export-download" @click="download">下载 CSV</el-button>
+      <el-button v-if="exportTask.download_url" link type="primary" class="export-download" @click="download">下载 CSV ↓</el-button>
     </template>
     <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" class="export-strip-error" />
   </div>
@@ -300,10 +360,10 @@ onBeforeUnmount(() => {
       <el-card shadow="never" class="report-kpi">
         <span>消息数</span>
         <strong>{{ result.summary.total.toLocaleString() }}</strong>
-        <small>{{ result.start }} — {{ result.end }}</small>
+        <small>{{ result.start }} — {{ result.end }}{{ rangeDays === null ? "" : ` · ${rangeDays} 天` }}</small>
         <p class="kpi-foot">
-          周期均值 {{ periodAverage === null ? "—" : periodAverage.toLocaleString() }}
-          · 峰值 {{ periodPeak === null ? "—" : `${periodPeak[0]} · ${periodPeak[1].toLocaleString()}` }}
+          {{ averageLabel }} {{ periodAverage === null ? "—" : periodAverage.toLocaleString() }}
+          · 峰值 {{ periodPeak === null ? "—" : `${periodPeak[0].slice(5)}（${periodPeak[1].toLocaleString()}）` }}
         </p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
@@ -315,7 +375,7 @@ onBeforeUnmount(() => {
       <el-card shadow="never" class="report-kpi">
         <span>送达成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
-        <small>delivered / (delivered + failed)</small>
+        <small>delivered / (delivered + failed)，unknown 不入分母</small>
         <div class="kpi-kv"><span>送达 delivered</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div>
         <div class="kpi-kv"><span>失败 failed</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div>
       </el-card>
@@ -334,7 +394,15 @@ onBeforeUnmount(() => {
         <template #header>
           <div class="panel-title">
             <div><strong>发送趋势 · 按{{ dimLabel }}堆叠</strong><small>{{ granularityLabel[result.granularity] }}粒度 · Top 5 + 其他归并</small></div>
-            <el-segmented v-model="metric" :options="metricOptions" size="small" class="metric-switch" />
+            <div class="metric-switch" role="group" aria-label="趋势指标">
+              <button
+                v-for="opt in metricOptions"
+                :key="opt.value"
+                type="button"
+                :class="{ on: metric === opt.value }"
+                @click="metric = opt.value"
+              >{{ opt.label }}</button>
+            </div>
           </div>
         </template>
         <ReportTrendChart
@@ -345,6 +413,12 @@ onBeforeUnmount(() => {
           :end="result.end"
           :granularity="result.granularity"
         />
+        <div v-if="result.items.length" class="trend-legend">
+          <span v-for="(dim, index) in trendLegend" :key="dim.key">
+            <i :style="{ background: dimColor(index) }"></i>{{ dim.label }}
+          </span>
+          <em>Top 5 + 其他归并 · 加法聚合</em>
+        </div>
         <EmptyState v-else title="当前条件没有统计数据" description="调整日期、类别或分组方式后重新查询。" />
       </el-card>
 
@@ -356,9 +430,9 @@ onBeforeUnmount(() => {
           </div>
         </template>
         <ul v-if="result.dim_summary.length" class="rank-list">
-          <li v-for="dim in result.dim_summary" :key="dim.dim_value">
+          <li v-for="(dim, index) in result.dim_summary" :key="dim.dim_value">
             <span class="rank-name" :title="dim.dim_label">{{ dim.dim_label }}</span>
-            <div class="rank-track"><i :style="{ width: rankWidth(dim.total) }"></i></div>
+            <div class="rank-track"><i :style="{ width: rankWidth(dim.total), background: dimColor(index) }"></i></div>
             <span class="rank-num">
               <b>{{ dim.total.toLocaleString() }}</b>
               <small>{{ shareOf(dim.total) }} · 计费条 {{ dim.total_segments.toLocaleString() }}</small>
@@ -384,11 +458,13 @@ onBeforeUnmount(() => {
         :default-sort="{ prop: 'period_start', order: 'descending' }"
         @sort-change="onSortChange"
       >
-        <el-table-column prop="period_start" label="周期起始" width="130" sortable="custom" />
-        <el-table-column prop="dim_label" :label="dimLabel" min-width="150" />
-        <el-table-column prop="total" label="消息数" width="110" align="right" sortable="custom"><template #default="{ row }">{{ row.total.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="total_segments" label="计费条" width="110" align="right" sortable="custom"><template #default="{ row }">{{ row.total_segments.toLocaleString() }}</template></el-table-column>
-        <el-table-column label="送达 / 失败 / 未知" min-width="170"><template #default="{ row }">{{ row.delivered.toLocaleString() }} / {{ row.failed.toLocaleString() }} / {{ row.unknown.toLocaleString() }}</template></el-table-column>
+        <el-table-column prop="period_start" label="周期" width="120" sortable="custom" />
+        <el-table-column prop="dim_label" :label="dimLabel" min-width="140" />
+        <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"><template #default="{ row }">{{ row.total.toLocaleString() }}</template></el-table-column>
+        <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"><template #default="{ row }">{{ row.total_segments.toLocaleString() }}</template></el-table-column>
+        <el-table-column prop="delivered" label="送达" width="90" align="right"><template #default="{ row }">{{ row.delivered.toLocaleString() }}</template></el-table-column>
+        <el-table-column prop="failed" label="失败" width="80" align="right"><template #default="{ row }">{{ row.failed.toLocaleString() }}</template></el-table-column>
+        <el-table-column prop="unknown" label="未知" width="80" align="right"><template #default="{ row }">{{ row.unknown.toLocaleString() }}</template></el-table-column>
         <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"><template #default="{ row }"><span class="rate-chip" :class="rateClass(row.success_rate)">{{ formatRate(row.success_rate) }}</span></template></el-table-column>
       </el-table>
       <div v-if="result.items.length > pageSize" class="report-pager">
