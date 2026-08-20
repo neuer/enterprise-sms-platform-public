@@ -29,27 +29,43 @@ function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof c
   return pinia
 }
 
+function mockList(payload: unknown) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => payload,
+    }),
+  )
+}
+
+/** VTU mocks 不写入 appContext.globalProperties，$router 必须以插件方式安装。 */
+function routerPlugin(router: unknown) {
+  return {
+    install(app: { config: { globalProperties: Record<string, unknown> } }) {
+      app.config.globalProperties.$router = router
+    },
+  }
+}
+
 describe("模板管理", () => {
-  it("展示平台占位、变量长度和厂商审核状态", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        headers: { get: () => null },
-        json: async () => [template],
-      }),
-    )
+  it("内容列内联渲染变量片，状态列区分待审核双阶段", async () => {
+    mockList([template])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.get(".template-toolbar").classes()).toContain("filter-toolbar")
-    expect(wrapper.text()).toContain("验证码{1}")
-    expect(wrapper.text()).toContain("待审核")
-    expect(wrapper.text()).toContain("最大 6 字")
+    const chip = wrapper.get(".template-table .var-chip")
+    expect(chip.text()).toBe("{1}≤6")
+    expect(chip.attributes("title")).toContain("最大 6 字")
+    expect(wrapper.get(".template-table").text()).toContain("验证码")
+    expect(wrapper.get(".template-table").text()).toContain("待审核")
+    // 已绑定厂商编号的 pending 显示「厂商审核中」；未绑定显示「提交厂商中」
+    expect(wrapper.get(".template-table").text()).toContain("厂商审核中 · #21")
     expect(wrapper.find(".status-tag--pending").exists()).toBe(true)
-    expect(wrapper.find(".template-table").exists()).toBe(true)
     expect(wrapper.find(".template-mobile-list").exists()).toBe(true)
     expect(wrapper.get("[data-testid='template-mobile-detail-1']").attributes("aria-label")).toContain("验证码")
 
@@ -62,10 +78,20 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
+  it("待审核未绑定厂商编号时不提供手动同步入口", async () => {
+    mockList([{ ...template, id: 9, vendor_template_id: null }])
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get(".template-table").text()).toContain("提交厂商中…")
+    expect(wrapper.find("[data-testid='template-sync-9']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-delete-9']").exists()).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
   it("审批员只能查看模板且不会看到任何写操作", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
-    }))
+    mockList([template])
     const pinia = applyRole("approver")
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
@@ -79,9 +105,7 @@ describe("模板管理", () => {
   })
 
   it("操作员可看到模板写操作", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
-    }))
+    mockList([template])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
@@ -91,57 +115,84 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("状态筛选包含草稿选项", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [{ ...template, vendor_state: "draft" }],
-    }))
+  it("状态筛选包含草稿选项并展示各状态计数", async () => {
+    mockList([template, { ...template, id: 5, vendor_state: "draft" }])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.get(".template-toolbar").text()).toContain("草稿")
-    expect(wrapper.get(".template-toolbar").text()).toContain("待审核")
+    const toolbar = wrapper.get(".template-toolbar")
+    expect(toolbar.text()).toContain("草稿")
+    expect(toolbar.text()).toContain("待审核")
+    expect(wrapper.get("[data-testid='template-state-pending']").text()).toContain("1")
+    expect(wrapper.get("[data-testid='template-state-draft']").text()).toContain("1")
+    expect(wrapper.get("[data-testid='template-state-all']").text()).toContain("2")
+
+    await wrapper.get("[data-testid='template-state-draft']").trigger("click")
+    await flushPromises()
+    expect(wrapper.findAll(".template-table .el-table__row")).toHaveLength(1)
+    expect(wrapper.get(".template-foot").text()).toContain("共 1 个模板")
     vi.unstubAllGlobals()
   })
 
-  it("已通过模板操作列显示占位且无可用写操作", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null },
-      json: async () => [{ ...template, id: 3, vendor_state: "approved" }],
-    }))
+  it("关键词按名称与内容前端过滤", async () => {
+    mockList([template, { ...template, id: 6, name: "停机公告", content: "系统维护{1}" }])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='template-keyword']").setValue("停机")
+    await flushPromises()
+    expect(wrapper.findAll(".template-table .el-table__row")).toHaveLength(1)
+    expect(wrapper.get(".template-table").text()).toContain("停机公告")
+    expect(wrapper.get(".template-foot").text()).toContain("共 1 个模板")
+    vi.unstubAllGlobals()
+  })
+
+  it("已通过模板提供「用于发送」跳转且无其它写操作", async () => {
+    mockList([{ ...template, id: 3, vendor_state: "approved" }])
+    const push = vi.fn()
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, {
+      global: {
+        plugins: [pinia, ElementPlus, routerPlugin({ push, currentRoute: { value: { query: {} } } })],
+      },
+    })
     await flushPromises()
 
     expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='template-edit-3']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='template-delete-3']").exists()).toBe(false)
-    const actionCell = wrapper.get(".template-table .el-table__row td:last-child")
-    expect(actionCell.text()).toBe("—")
-    expect(actionCell.get(".muted").attributes("title")).toContain("已通过审核")
+    const use = wrapper.get("[data-testid='template-use-3']")
+    expect(use.text()).toContain("用于发送")
+    await use.trigger("click")
+    expect(push).toHaveBeenCalledWith({ path: "/send", query: { template_id: "3" } })
     vi.unstubAllGlobals()
   })
 
-  it("部门为空时列表与移动卡片均显示占位", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null },
-      json: async () => [{ ...template, id: 4, dept: "" }],
-    }))
-    const pinia = applyRole("admin")
-    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+  it("部门列仅 admin 渲染，为空时列表与移动卡片均显示占位", async () => {
+    mockList([{ ...template, id: 4, dept: "" }])
+    const operatorPinia = applyRole("operator")
+    const operatorWrapper = mount(TemplateView, { global: { plugins: [operatorPinia, ElementPlus] } })
+    await flushPromises()
+    expect(operatorWrapper.get(".template-table thead").text()).not.toContain("部门")
+    expect(operatorWrapper.find(".template-mobile-list dl").exists()).toBe(false)
+    operatorWrapper.unmount()
+
+    const adminPinia = applyRole("admin")
+    const wrapper = mount(TemplateView, { global: { plugins: [adminPinia, ElementPlus] } })
     await flushPromises()
 
-    const deptCell = wrapper.get(".template-table .el-table__row td:nth-child(4)")
+    // 列序：名称 / 内容 / 部门 / 厂商状态 / 操作
+    const deptCell = wrapper.get(".template-table .el-table__row td:nth-child(3)")
     expect(deptCell.text()).toBe("—")
     expect(deptCell.get("span").classes()).toContain("muted")
     expect(wrapper.get(".template-mobile-list dl > div:last-child dd").text()).toBe("—")
     vi.unstubAllGlobals()
   })
 
-  it("编辑器内联提示占位与变量声明不一致，并可从内容识别变量", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
-    }))
+  it("编辑器变量随内容自动识别并保留已设长度，非法与断档占位内联报错", async () => {
+    mockList([template])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
@@ -150,25 +201,47 @@ describe("模板管理", () => {
     await flushPromises()
     const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
     expect(textarea).toBeTruthy()
+
+    // 输入合法占位：变量行自动识别，厂商格式预览实时重算，不再依赖手动「从内容识别」
     textarea.value = "尊敬的{1}，验证码{2}"
     textarea.dispatchEvent(new Event("input"))
-    // el-form-item 的错误状态经 100ms 防抖后才渲染
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    await flushPromises()
-    expect(document.body.textContent).toContain("未声明变量最大长度")
-
-    ;(document.querySelector("[data-testid='template-sync-vars']") as HTMLElement).click()
     await new Promise((resolve) => setTimeout(resolve, 150))
     await flushPromises()
     expect(document.body.textContent).not.toContain("未声明变量最大长度")
     expect(document.querySelectorAll(".variable-row")).toHaveLength(2)
+    expect(document.body.textContent).toContain("尊敬的{s10}，验证码{s10}")
 
-    // 改为跳号占位后提示必须从 {1} 连续编号
+    // 跳号占位：提示必须从 {1} 连续编号，变量行跟随内容只剩 {2}
     textarea.value = "验证码{2}"
     textarea.dispatchEvent(new Event("input"))
     await new Promise((resolve) => setTimeout(resolve, 150))
     await flushPromises()
     expect(document.body.textContent).toContain("必须从 {1} 开始连续编号")
+    expect(document.querySelectorAll(".variable-row")).toHaveLength(1)
+
+    // 非法 {} 片段：内联报错且变量行清空
+    textarea.value = "验证码{}"
+    textarea.dispatchEvent(new Event("input"))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await flushPromises()
+    expect(document.body.textContent).toContain("仅允许使用 {1}..{n} 格式占位")
+    expect(document.querySelectorAll(".variable-row")).toHaveLength(0)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("驳回模板重新提交时回显上次厂商驳回原因", async () => {
+    mockList([{ ...template, id: 7, vendor_state: "rejected", vendor_reject_reason: "含未报备营销内容" }])
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get(".template-table").text()).toContain("含未报备营销内容")
+    await wrapper.get("[data-testid='template-edit-7']").trigger("click")
+    await flushPromises()
+    expect(document.body.textContent).toContain("上次厂商驳回：含未报备营销内容")
+    expect(document.body.textContent).toContain("重新提交审核")
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 
@@ -189,6 +262,7 @@ describe("模板管理", () => {
 
     expect(warning).toHaveBeenCalledWith("请填写模板名称")
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/templates")).length).toBe(1)
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 
@@ -208,6 +282,9 @@ describe("模板管理", () => {
     await flushPromises()
 
     expect(ElMessageBox.confirm).toHaveBeenCalled()
+    const confirmMessage = vi.mocked(ElMessageBox.confirm).mock.calls[0][0] as string
+    expect(confirmMessage).toContain("写入审计日志")
+    expect(confirmMessage).toContain("已被批次引用的模板不可删除")
     expect(error).not.toHaveBeenCalled()
     expect(
       fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,

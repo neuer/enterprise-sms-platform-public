@@ -3559,17 +3559,68 @@ main {
 
 .template-toolbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 18px;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--line);
 }
 
-.template-toolbar > span,
 .muted {
   color: var(--tx-3);
   font-family: "IBM Plex Mono", monospace;
   font-size: 10px;
+}
+
+.template-filter-group {
+  display: grid;
+  gap: 5px;
+}
+
+.template-filter-label {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.template-keyword {
+  width: 220px;
+}
+
+.template-state-seg {
+  display: flex;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+}
+
+.template-state-seg button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0 13px;
+  color: var(--tx-2);
+  font-size: 11.5px;
+  background: var(--sink);
+  border: 0;
+  cursor: pointer;
+}
+
+.template-state-seg button i {
+  color: var(--tx-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.template-state-seg button.on {
+  color: var(--tx-hi);
+  background: var(--verdi);
+}
+
+.template-state-seg button.on i {
+  color: color-mix(in srgb, var(--tx-hi) 75%, transparent);
 }
 
 .template-card .el-alert {
@@ -3585,22 +3636,52 @@ main {
   display: none;
 }
 
-.template-content {
+.template-inline-content {
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .var-chip {
-  display: inline-block;
-  margin: 2px 5px 2px 0;
-  padding: 2px 6px;
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+  margin: 0 1px;
+  padding: 0 5px;
   color: var(--verdi-l);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-  background: color-mix(in srgb, var(--verdi) 12%, var(--card));
-  border: 1px solid color-mix(in srgb, var(--verdi) 35%, var(--line));
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 45%, transparent);
   border-radius: 4px;
+}
+
+.var-chip i {
+  color: var(--tx-3);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.cell-sub-verm {
+  color: var(--verm);
+}
+
+.cell-sub-mono,
+.mono-id {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.template-foot {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 16px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border-top: 1px solid var(--line);
 }
 
 .template-detail-title {
@@ -3611,8 +3692,102 @@ main {
   border-bottom: 1px solid var(--line);
 }
 
-.template-detail-vars {
+.template-trail {
+  display: flex;
+  align-items: center;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.trail-step {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+}
+
+.trail-step .dot {
+  flex: none;
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  background: var(--tx-3);
+  border-radius: 50%;
+}
+
+.trail-step.done .dot {
+  background: var(--verdi-l);
+}
+
+.trail-step.fail .dot {
+  background: var(--verm);
+}
+
+.trail-step.wait .dot {
+  background: transparent;
+  border: 2px solid var(--tx-3);
+}
+
+.trail-txt b {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trail-txt small {
+  color: var(--tx-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.trail-step.fail .trail-txt b {
+  color: var(--verm);
+}
+
+.trail-connector {
+  flex: 1;
+  min-width: 16px;
+  height: 1px;
+  margin: 0 12px;
+  background: var(--line-2);
+}
+
+.template-reject-banner {
+  margin-top: 14px;
+}
+
+.template-proof-hint {
+  display: block;
   margin-top: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.template-vendor-preview {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  border-left-color: var(--tx-3) !important;
+}
+
+.template-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.template-detail-actions .why {
+  width: 100%;
+  color: var(--tx-3);
+  font-size: 10px;
 }
 
 .template-form {
@@ -3631,6 +3806,11 @@ main {
   margin: 8px 0;
 }
 
+.variable-head-note {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
 .variable-row {
   padding: 8px 10px;
   background: var(--surface-soft);
@@ -3640,11 +3820,37 @@ main {
 .variable-row code {
   width: 38px;
   color: var(--verdi-l);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
 }
 
-.variable-row .el-button {
+.variable-note {
   margin-left: auto;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.variable-empty {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.template-editor-preview {
+  margin-top: 14px;
+}
+
+.template-editor-foot {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.template-editor-foot small {
+  max-width: 320px;
+  color: var(--tx-3);
+  font-size: 10px;
 }
 
 .form-hint {
@@ -5239,12 +5445,19 @@ main {
     padding: 14px;
   }
 
-  .template-toolbar .el-segmented {
+  .template-keyword {
     width: 100%;
   }
 
-  .template-toolbar > span {
-    justify-self: start;
+  .template-state-seg {
+    overflow-x: auto;
+  }
+
+  .template-state-seg button {
+    flex: 1;
+    justify-content: center;
+    padding: 0 8px;
+    white-space: nowrap;
   }
 
   .template-table {
@@ -5279,16 +5492,14 @@ main {
     font-weight: 600;
   }
 
-  .template-mobile-list > article > code {
+  .template-mobile-list > article > .template-inline-content {
     display: block;
-    margin-top: 12px;
-    padding: 10px;
-    overflow-wrap: anywhere;
-    color: var(--tx);
-    font-family: var(--mono);
-    white-space: pre-wrap;
-    background: var(--card);
-    border-left: 3px solid var(--verdi);
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .template-mobile-list > article > .cell-sub {
+    margin-top: 6px;
   }
 
   .template-mobile-list dl {
@@ -5320,6 +5531,11 @@ main {
     margin-top: 12px;
     padding-top: 8px;
     border-top: 1px solid var(--line);
+  }
+
+  .template-trail {
+    flex-wrap: wrap;
+    gap: 8px 0;
   }
 
 }

@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 模板管理重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1160px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.notes code,.variant-caption code{font:10.5px var(--mono);color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:620px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{background:none;color:#ef9b89}
+
+/* ═══════════ 工具条（单行：状态 seg 带计数 + 关键词） ═══════════ */
+.tool-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;gap:6px;padding:0 13px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b i{font:10px var(--mono);font-style:normal;color:var(--tx-3);font-variant-numeric:tabular-nums}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.seg b.on i{color:rgba(234,241,237,.75)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px}
+.kw-input .ph{font:12px var(--sans);color:var(--tx-3)}
+.tool-bar .count{margin-left:auto;align-self:center;font:11px var(--mono);color:var(--tx-3)}
+
+/* ═══════════ 结果面板 ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:10px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:2px}
+.cell-sub.verm{color:#ef9b89}
+.cell-sub .mono{font-size:10px}
+.t-name{color:var(--tx-hi);font-size:12.5px;border-bottom:1px dashed rgba(47,161,132,.4);cursor:default}
+.t-content{color:var(--tx);font-size:12.5px;max-width:520px;line-height:1.75}
+.vc{display:inline-flex;align-items:baseline;gap:3px;font:11px var(--mono);color:#71c4ad;border:1px solid rgba(47,161,132,.45);border-radius:4px;padding:0 5px;margin:0 1px;white-space:nowrap}
+.vc i{font:9px var(--mono);font-style:normal;color:var(--tx-3)}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px;white-space:nowrap}
+.tag.gray{background:rgba(255,255,255,.05);color:var(--tx-2);border:1px solid var(--hair)}
+.tag.amb{background:rgba(216,163,92,.13);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.tag.verm{background:rgba(228,106,79,.15);color:#ef9b89;border:1px solid rgba(228,106,79,.35)}
+.tag.verdi{background:rgba(47,161,132,.13);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.result-foot .mono{font-size:10.5px}
+
+/* ═══════════ 抽屉（实现为 el-drawer 560px） ═══════════ */
+.drawer-zone{display:grid;grid-template-columns:5fr 7fr;gap:14px;align-items:start}
+.side-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 18px}
+.side-panel h3{font-size:13px;color:var(--tx-hi);font-weight:600;margin-bottom:4px}
+.side-panel h3 small{color:var(--tx-3);font-size:10px;font-weight:400;margin-left:8px}
+.side-panel .hint{font-size:11px;color:var(--tx-3);margin:8px 0 0}
+.mini-tbl{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:10px}
+.mini-tbl th{font-size:10px;font-weight:400;color:var(--tx-3);text-align:left;padding:6px 8px;border-bottom:1px solid var(--hair)}
+.mini-tbl td{padding:6px 8px;border-bottom:1px solid var(--hair-2);color:var(--tx-2)}
+.mini-tbl tr:last-child td{border-bottom:0}
+.mini-tbl .y{color:#71c4ad}.mini-tbl .n{color:var(--tx-3)}
+.drawer{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:18px 20px;display:grid;gap:13px;max-width:600px;justify-self:end;width:100%}
+.drawer-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--hair-2);padding-bottom:11px}
+.drawer-head .tt{font-size:13.5px;color:var(--tx-hi);font-weight:600}
+.drawer-head code{font:11px var(--mono);color:var(--tx-3);display:block;margin-top:3px}
+.d-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.d-actions .why{font-size:10px;color:var(--tx-3);width:100%}
+.banner-verm{border:1px solid rgba(228,106,79,.4);background:rgba(228,106,79,.08);border-radius:8px;padding:9px 13px;font-size:11.5px;color:#ef9b89}
+.banner-verm small{display:block;font-size:10px;color:var(--tx-3);margin-top:2px}
+
+/* 审核轨迹 */
+.steps{display:flex;align-items:center;padding:12px 14px;background:var(--sink);border:1px solid var(--hair-2);border-radius:10px}
+.step{display:flex;align-items:center;gap:8px}
+.step .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.step.done .dot{background:var(--verdi-l)}
+.step.fail .dot{background:var(--verm)}
+.step.wait .dot{border:2px solid var(--tx-3)}
+.step .txt b{display:block;font-size:11.5px;font-weight:600;color:var(--tx-hi);white-space:nowrap}
+.step .txt small{font-size:10px;color:var(--tx-3);white-space:nowrap}
+.step.fail .txt b{color:#ef9b89}
+.connector{flex:1;height:1px;background:var(--hair);margin:0 12px;min-width:20px}
+
+/* 内容块（平台 / 厂商双格式） */
+.content-block{border:1px solid var(--hair);border-radius:10px;padding:11px 14px;display:grid;gap:6px}
+.content-block>span{font-size:10px;letter-spacing:.12em;color:var(--tx-3)}
+.content-block p{font-size:12.5px;color:var(--tx-hi);line-height:1.8}
+.content-block p.mono{font-size:11.5px;color:var(--tx)}
+.content-block small{font-size:10px;color:var(--tx-3)}
+.fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px 18px}
+.fact-grid dt{font-size:10.5px;color:var(--tx-3)}
+.fact-grid dd{font-size:12px;color:var(--tx);margin-top:1px}
+.fact-grid dd .mono{font-size:11.5px}
+
+/* 编辑器表单 */
+.form-fld{display:grid;gap:6px}
+.form-fld>span{font-size:11px;color:var(--tx-2)}
+.form-fld>span i{font-style:normal;color:var(--tx-3);font-size:10px;margin-left:6px}
+.f-input{display:flex;align-items:center;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12.5px;color:var(--tx-hi)}
+.f-textarea{background:var(--sink);border:1px solid var(--verdi-l);border-radius:8px;padding:10px 12px;font-size:12.5px;color:var(--tx-hi);line-height:1.8;box-shadow:0 0 0 2px rgba(47,161,132,.14)}
+.f-textarea .count{display:block;text-align:right;font:10px var(--mono);color:var(--tx-3);margin-top:4px}
+.spec-card{border:1px solid var(--hair);border-radius:10px;padding:11px 14px;display:grid;gap:9px}
+.spec-card>.head{display:flex;justify-content:space-between;align-items:baseline}
+.spec-card>.head b{font-size:12px;color:var(--tx-hi);font-weight:600}
+.spec-card>.head span{font-size:10px;color:var(--tx-3)}
+.spec-row{display:flex;align-items:center;gap:10px}
+.spec-row code{font:11.5px var(--mono);color:#71c4ad}
+.numbox{display:flex;align-items:center;justify-content:space-between;width:92px;height:30px;padding:0 9px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font:12px var(--mono);color:var(--tx-hi)}
+.numbox i{font-style:normal;font-size:8px;color:var(--tx-3);letter-spacing:-1px}
+.spec-row .u{font-size:11px;color:var(--tx-3)}
+.spec-row .note{margin-left:auto;font-size:10px;color:var(--tx-3)}
+.spec-err{font-size:11px;color:#ef9b89;display:flex;gap:6px;align-items:center}
+.drawer-foot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--hair-2);padding-top:12px}
+.drawer-foot small{font-size:10px;color:var(--tx-3);max-width:320px}
+.drawer-foot .btns{display:flex;gap:10px}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5;border-radius:12px}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.empty-duo .empty{display:grid;align-content:center}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-duo{grid-template-columns:1fr} .drawer-zone{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 模板管理重设计原型</b>
+  <span>v1 评审稿 · 路由 /templates · docs/ui-design.md §7 待新增条目（评审通过后回填）</span>
+  <em>2026-08-20 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>筛选条单行化</b>：状态 seg（全部 / 待审核 / 已通过 / 已拒绝 / 草稿）<b>带计数</b>，与名称/内容关键词输入同行；两者均为全量列表响应的前端推导，不新增查询参数（接口无分页，不过滤时底栏仅「共 N 个模板」）。<span class="need calc">前端</span></li>
+  <li><b>内容列即变量列</b>：正文中 <code>{n}</code> 渲染为 verdi 描边变量片并角标最大长度（<code>{1}≤8</code>），独立「变量约束」列取消；标题下小字只保留平台编号。<span class="need ok">现有</span></li>
+  <li><b>待审核细分双阶段</b>：<code>vendor_template_id</code> 为空 → 副行「提交厂商中」（同步按钮不出现，避免空轮询）；已有编号 → 「厂商审核中 · #编号」+ 可手动同步。全部由现有字段推导。<span class="need calc">前端</span></li>
+  <li><b>驳回原因上浮</b>：已拒绝行状态列副行直接显示 <code>vendor_reject_reason</code> 摘要（现网藏在详情抽屉），修复动线少一步。<span class="need ok">现有</span></li>
+  <li><b>详情抽屉加审核轨迹</b>：已提交 → 已绑定厂商编号 → 审核结果 三段步骤条，驳回原因 verm 块置顶；附「厂商格式预览」（平台 <code>{n}</code> → 厂商 <code>{s最大长度}</code> 的确定性转换展示，唯一转换实现仍在服务端 <code>services/template.py</code>，前端只做预览）。<span class="need calc">前端</span></li>
+  <li><b>编辑器变量自动识别</b>：变量行随内容实时增删并保留已设 max_len，取消手动「从内容识别 / 添加变量」按钮；非法占位与断档编号内联报错；抽屉内嵌厂商格式实时预览；驳回后重交时顶部 verm 条展示上次驳回原因，按钮文案「重新提交审核」并如实告知将生成新厂商编号。<span class="need calc">前端</span></li>
+  <li><b>已通过模板给出路</b>：行操作「用于发送」跳 <code>/send?template_id=N</code> 预选该模板（SendView 读取 query，纯前端路由扩展，评审不过则砍掉）。<span class="need ext">前端扩展</span></li>
+  <li><b>部门列仅 admin 可见</b>：operator/approver 响应恒为本部门，该列无信息量；admin 跨部门视图才渲染。<span class="need calc">前端</span></li>
+  <li><b>删除确认如实告知</b>：已通过或已被批次引用的模板不可删除（服务端 409 裁决，按钮显隐只是提示）；删除行为与操作人写入审计，toast 同步提示留痕。移动端合并为单一数据源卡片流。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认列表（operator 视角） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认列表（operator 视角 · 全量要素）</div>
+<div class="variant-caption">
+  状态 seg 计数来自全量列表前端统计；内容与变量合一列；待审核区分「提交厂商中 / 厂商审核中」；已拒绝行内显示驳回原因摘要。
+  operator/approver 不渲染部门列（恒为本部门），viewer 无本页权限（接口读门槛 operator+）。
+</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">ASSETS / 内容治理</div>
+      <h1>模板管理</h1>
+      <div class="sub">平台使用 {1}..{n} 占位并为每个变量登记最大长度；提交后由服务端统一转换为厂商 {s长度} 格式送审，仅厂商审核通过的模板可在发送中使用。</div>
+    </div>
+    <span class="btn primary">新建模板</span>
+  </div>
+
+  <div class="tool-bar">
+    <label class="fld"><span>厂商状态</span>
+      <div class="seg">
+        <b class="on">全部 <i>6</i></b><b>待审核 <i>2</i></b><b>已通过 <i>2</i></b><b>已拒绝 <i>1</i></b><b>草稿 <i>1</i></b>
+      </div>
+    </label>
+    <label class="fld"><span>关键词</span>
+      <div class="kw-input"><span class="ph">名称 / 内容</span></div>
+    </label>
+    <span class="count">接口全量返回 · 前端过滤</span>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr>
+        <th style="width:220px">模板名称</th><th>内容</th><th style="width:170px">厂商状态</th><th style="width:130px">操作</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-name">会员积分到账通知</span><span class="cell-sub mono">平台 #1012</span></td>
+          <td class="t-content">尊敬的<span class="vc">{1}<i>≤8</i></span>，您的账户已入账<span class="vc">{2}<i>≤6</i></span>积分，有效期至<span class="vc">{3}<i>≤10</i></span>，请及时使用。</td>
+          <td><span class="tag verdi">已通过</span><span class="cell-sub">厂商 <span class="mono">#88201</span></span></td>
+          <td><span class="btn link">用于发送</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">验证码短信</span><span class="cell-sub mono">平台 #1015</span></td>
+          <td class="t-content">您的验证码为<span class="vc">{1}<i>≤6</i></span>，<span class="vc">{2}<i>≤2</i></span>分钟内有效，请勿泄露。</td>
+          <td><span class="tag verdi">已通过</span><span class="cell-sub">厂商 <span class="mono">#88240</span></span></td>
+          <td><span class="btn link">用于发送</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">服务停机公告</span><span class="cell-sub mono">平台 #1018</span></td>
+          <td class="t-content">因系统升级，服务将于<span class="vc">{1}<i>≤16</i></span>起暂停约<span class="vc">{2}<i>≤2</i></span>小时，给您带来不便敬请谅解。</td>
+          <td><span class="tag amb">待审核</span><span class="cell-sub">厂商审核中 · <span class="mono">#88255</span></span></td>
+          <td><span class="btn link">同步</span><span class="btn link danger">删除</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">新功能上线通知</span><span class="cell-sub mono">平台 #1021</span></td>
+          <td class="t-content">您关注的<span class="vc">{1}<i>≤12</i></span>已上线，登录即可体验。</td>
+          <td><span class="tag amb">待审核</span><span class="cell-sub">提交厂商中…</span></td>
+          <td><span class="btn link danger">删除</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">老用户回馈活动</span><span class="cell-sub mono">平台 #1009</span></td>
+          <td class="t-content">尊敬的用户，您已获得<span class="vc">{1}<i>≤5</i></span>元回馈金，点击链接领取。</td>
+          <td><span class="tag verm">已拒绝</span><span class="cell-sub verm">含未报备营销内容，请调整后重新提交</span></td>
+          <td><span class="btn link">编辑</span><span class="btn link danger">删除</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">临时通知草稿</span><span class="cell-sub mono">平台 #1005</span></td>
+          <td class="t-content">临时会议通知：<span class="vc">{1}<i>≤10</i></span>在<span class="vc">{2}<i>≤12</i></span>召开，请准时参加。</td>
+          <td><span class="tag gray">草稿</span><span class="cell-sub">未送审（历史数据）</span></td>
+          <td><span class="btn link">编辑</span><span class="btn link danger">删除</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 6 个模板</span>
+      <span class="mono" style="margin-left:auto">读：operator / approver / admin · 写：operator / admin</span>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：编辑抽屉（驳回后重新提交） ════════════════ -->
+<div class="stage-label">SCREEN B · 编辑抽屉（已拒绝 → 重新提交 · 实现为 el-drawer 560px）</div>
+<div class="variant-caption">
+  变量行随内容自动识别、保留已设长度；厂商格式实时预览；顶部 verm 条回显上次驳回原因。
+  新建态无驳回条、按钮文案为「提交厂商审核」，其余结构相同。
+</div>
+<div class="viewport"><div class="screen">
+  <div class="drawer-zone">
+
+    <div class="side-panel">
+      <h3>编辑器联动规则<small>校验与服务端一致，前端只做即时反馈</small></h3>
+      <table class="mini-tbl">
+        <tr><th>输入变化</th><th>界面联动</th></tr>
+        <tr><td>输入 / 删除内容中 {n}</td><td class="y">变量行自动增删，已设 max_len 按 pos 保留</td></tr>
+        <tr><td>出现 {} 等非 {n} 片段</td><td class="n">内容框下内联报错「仅允许 {1}..{n} 占位」</td></tr>
+        <tr><td>占位断档（有 {2} 无 {1}）</td><td class="n">内联报错「占位必须从 {1} 开始连续编号」</td></tr>
+        <tr><td>任一输入变化</td><td class="y">厂商格式预览实时重算 {s最大长度}</td></tr>
+        <tr><td>提交</td><td class="y">服务端唯一转换与 422 兜底（TEMPLATE_PARAM_MISMATCH）</td></tr>
+      </table>
+      <h3 style="margin-top:18px">按钮文案 × 入口</h3>
+      <table class="mini-tbl">
+        <tr><td>新建模板</td><td>「提交厂商审核」→ 创建即落 pending + Outbox 绑定意图</td></tr>
+        <tr><td>驳回 / 草稿编辑</td><td>「重新提交审核」→ 生成新厂商编号、清空驳回原因重新送审</td></tr>
+      </table>
+      <p class="hint">现网「从内容识别 / 添加变量」两按钮取消：识别逻辑改为随输入自动执行，变量行不允许手工增删，杜绝声明与内容漂移。</p>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="tt">重新提交模板</div>
+          <code>平台 #1009 · 重新提交将生成新的厂商编号</code>
+        </div>
+        <span style="color:var(--tx-3)">✕</span>
+      </div>
+
+      <div class="banner-verm">
+        上次厂商驳回：含未报备营销内容，请调整后重新提交。
+        <small>驳回原因来自厂商 checkRemark，服务端入库前已做手机号打码。</small>
+      </div>
+
+      <label class="form-fld"><span>模板名称</span>
+        <div class="f-input">老用户回馈活动</div>
+      </label>
+
+      <label class="form-fld"><span>平台格式内容<i>占位 {1}..{n} · 渲染后全长 ≤500 字</i></span>
+        <div class="f-textarea">
+          尊敬的用户，您已获得{1}元回馈金，请前往营业厅咨询办理。
+          <span class="count">21 / 500</span>
+        </div>
+      </label>
+
+      <div class="spec-card">
+        <div class="head"><b>变量声明</b><span>随内容自动识别 · 已设长度保留</span></div>
+        <div class="spec-row">
+          <code>{1}</code>
+          <span class="numbox">5<i>▲▼</i></span>
+          <span class="u">字</span>
+          <span class="note">渲染时参数超长即拒 · 范围 1–100</span>
+        </div>
+      </div>
+
+      <div class="content-block">
+        <span>厂商格式预览（提交时由服务端转换）</span>
+        <p class="mono">尊敬的用户，您已获得{s5}元回馈金，请前往营业厅咨询办理。</p>
+      </div>
+
+      <div class="drawer-foot">
+        <small>提交后进入厂商人工审核，期间不可编辑；审核结果由轮询同步，也可在列表手动同步。</small>
+        <div class="btns"><span class="btn">取消</span><span class="btn primary">重新提交审核</span></div>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：详情抽屉（审核轨迹 + 双格式对照） ════════════════ -->
+<div class="stage-label">SCREEN C · 详情抽屉（已拒绝 · 审核轨迹三段步骤条）</div>
+<div class="variant-caption">
+  轨迹三态由 <code>vendor_template_id</code> 与 <code>vendor_state</code> 前端推导，无新接口；平台 / 厂商双格式对照让「提交了什么」可见。
+</div>
+<div class="viewport"><div class="screen">
+  <div class="drawer-zone">
+
+    <div class="side-panel">
+      <h3>操作 × 状态矩阵<small>按钮显隐 = UX 提示，409 仍为服务端最终裁决</small></h3>
+      <table class="mini-tbl">
+        <tr><th>厂商状态</th><th>编辑</th><th>删除</th><th>同步</th><th>用于发送</th></tr>
+        <tr><td><span class="tag verdi">已通过</span></td><td class="n">—（不可变更）</td><td class="n">—</td><td class="n">—</td><td class="y">✓ 跳发送页预选</td></tr>
+        <tr><td><span class="tag amb">待审核 · 已绑定</span></td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td></tr>
+        <tr><td><span class="tag amb">待审核 · 提交中</span></td><td class="n">—</td><td class="y">✓</td><td class="n">—（无厂商编号）</td><td class="n">—</td></tr>
+        <tr><td><span class="tag verm">已拒绝</span></td><td class="y">✓ 重交</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+        <tr><td><span class="tag gray">草稿</span></td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+      </table>
+      <p class="hint">依据：update 仅 draft/rejected（409 STATE_CONFLICT）；delete 限 draft/pending/rejected 且未被 sms_batch 引用；sync 仅 pending 且返回 202 入队；「已通过」无任何写入口。草稿态当前仅库表默认值 / 历史数据存在，新建即送审（create 直落 pending）。</p>
+      <h3 style="margin-top:18px">轨迹推导规则</h3>
+      <table class="mini-tbl">
+        <tr><td>① 已提交送审</td><td class="y">创建 / 重交成功即达成</td></tr>
+        <tr><td>② 已绑定厂商编号</td><td class="y">vendor_template_id 非空</td></tr>
+        <tr><td>③ 审核结果</td><td class="y">approved=通过（verdi）/ rejected=拒绝（verm）/ 其余等待</td></tr>
+      </table>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="tt"><span class="tag verm" style="margin-right:8px">已拒绝</span>老用户回馈活动</div>
+          <code>平台 #1009 · 厂商 #88156 · 运营部</code>
+        </div>
+        <span style="color:var(--tx-3)">✕</span>
+      </div>
+
+      <div class="steps">
+        <div class="step done"><span class="dot"></span><span class="txt"><b>已提交送审</b><small>Outbox → realtime worker</small></span></div>
+        <span class="connector"></span>
+        <div class="step done"><span class="dot"></span><span class="txt"><b>已绑定厂商编号</b><small class="mono">#88156</small></span></div>
+        <span class="connector"></span>
+        <div class="step fail"><span class="dot"></span><span class="txt"><b>厂商审核：已拒绝</b><small>GetTemplateState 同步</small></span></div>
+      </div>
+
+      <div class="banner-verm">
+        厂商驳回原因：含未报备营销内容，请调整后重新提交。
+        <small>修改内容或变量后重新提交，将生成新的厂商编号并重新进入审核。</small>
+      </div>
+
+      <div class="content-block">
+        <span>平台格式内容</span>
+        <p>尊敬的用户，您已获得<span class="vc">{1}<i>≤5</i></span>元回馈金，点击链接领取。</p>
+        <small>变量 1 个 · 渲染时校验参数个数与长度</small>
+      </div>
+
+      <div class="content-block">
+        <span>厂商格式（提交时转换）</span>
+        <p class="mono">尊敬的用户，您已获得{s5}元回馈金，点击链接领取。</p>
+      </div>
+
+      <dl class="fact-grid">
+        <div><dt>平台编号</dt><dd class="mono">1009</dd></div>
+        <div><dt>厂商编号</dt><dd class="mono">88156</dd></div>
+        <div><dt>所属部门</dt><dd>运营部</dd></div>
+        <div><dt>变量声明</dt><dd class="mono">{1} ≤5 字</dd></div>
+      </dl>
+
+      <div class="d-actions">
+        <span class="btn primary">修改并重新提交</span>
+        <span class="btn link danger">删除模板</span>
+        <span class="why">已通过审核的模板不可变更；重新提交后旧厂商编号作废。</span>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：删除确认 + toast ════════════════ -->
+<div class="stage-label">SCREEN D · 删除确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认如实告知不可删除的边界与审计留痕；确认后行原位消失，不刷新整表。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast">模板已删除 · 本次操作已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">ASSETS / 内容治理</div>
+      <h1>模板管理</h1>
+    </div>
+    <span class="btn primary">新建模板</span>
+  </div>
+
+  <div class="result-panel dim">
+    <table>
+      <thead><tr>
+        <th style="width:220px">模板名称</th><th>内容</th><th style="width:170px">厂商状态</th><th style="width:130px">操作</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="t-name">新功能上线通知</span><span class="cell-sub mono">平台 #1021</span></td>
+          <td class="t-content">您关注的<span class="vc">{1}<i>≤12</i></span>已上线，登录即可体验。</td>
+          <td><span class="tag amb">待审核</span><span class="cell-sub">提交厂商中…</span></td>
+          <td><span class="btn link danger">删除</span></td>
+        </tr>
+        <tr>
+          <td><span class="t-name">老用户回馈活动</span><span class="cell-sub mono">平台 #1009</span></td>
+          <td class="t-content">尊敬的用户，您已获得<span class="vc">{1}<i>≤5</i></span>元回馈金，点击链接领取。</td>
+          <td><span class="tag verm">已拒绝</span><span class="cell-sub verm">含未报备营销内容，请调整后重新提交</span></td>
+          <td><span class="btn link">编辑</span><span class="btn link danger">删除</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal">
+    <h3>删除模板</h3>
+    <p>确认删除模板「<b>临时通知草稿</b>」？删除后不可恢复；已通过审核或已被批次引用的模板不可删除。</p>
+    <p class="audit-hint">删除行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">确认删除</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 E：空态（双变体） ════════════════ -->
+<div class="stage-label">SCREEN E · 空态（左：尚无模板 · 右：筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；筛选态引导重置，不展示插画。</div>
+<div class="viewport"><div class="screen">
+  <div class="empty-duo">
+    <div class="empty">
+      <div><b>当前没有模板</b>
+      <span>新建模板并提交厂商审核后，可在这里跟踪审核状态与厂商编号。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合筛选条件的模板</b>
+      <span>重置状态筛选或清空关键词后查看全部模板。</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表与详情字段全部来自 <code>GET /api/v1/web/templates</code> 现有响应（id / name / content / var_specs / dept / vendor_template_id / vendor_state / vendor_reject_reason）；接口无时间戳与创建人，界面一律不展示。<span class="need ok">现有</span></li>
+  <li>状态计数、关键词过滤、待审核双阶段、审核轨迹、厂商格式预览均为前端推导或确定性转换展示；<code>{n}→{s最大长度}</code> 唯一转换与校验实现仍在 <code>services/template.py</code>（规则 23），前端预览不另造转换逻辑、以同一函数语义为准。<span class="need calc">前端</span></li>
+  <li>「用于发送」为纯前端路由扩展：<code>/send?template_id=N</code>，SendView 挂载时读取并预选，不新增接口、不改契约；评审不过则整项砍掉。<span class="need ext">前端扩展</span></li>
+  <li>角色与数据边界不变：读 operator/approver/admin、写 operator/admin；非 admin 响应恒为本部门，故部门列仅 admin 渲染；写操作审计沿用 <code>template_create/update/delete/sync</code>，读取记 <code>template_content_read</code> 条数（规则 14/21）。<span class="need ok">现有</span></li>
+  <li>状态机不变：create/update 直落 pending 并入 Outbox 绑定意图（realtime worker 持凭据执行 BindTemplate）；delete 受「已通过 / 已被 sms_batch 引用」409 约束；sync 仅 pending 返回 202。草稿态仅库表默认 / 历史数据，界面保留展示不新增入口。<span class="need ok">现有</span></li>
+  <li>模板名称与内容属加密列（name_enc / content_enc），读取走既有受控解密与 <code>template_content_read</code> 审计；本页不涉及手机号，无掩码 / 解密边界问题（规则 2）。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>
