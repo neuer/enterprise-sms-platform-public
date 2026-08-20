@@ -266,6 +266,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/batch-density-prototype.html",
         "docs/previews/batch-redesign-prototype.html",
         "docs/previews/dashboard-redesign-prototype.html",
+        "docs/previews/filter-bar-single-row-prototype.html",
         "docs/previews/login-redesign-prototype.html",
         "docs/previews/login-redesign-shots.md",
         "docs/previews/login-redesign-shots/ad.png",

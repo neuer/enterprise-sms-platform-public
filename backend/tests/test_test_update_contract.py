@@ -764,6 +764,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/batch-density-prototype.html",
             "docs/previews/batch-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
+            "docs/previews/filter-bar-single-row-prototype.html",
             "docs/previews/login-redesign-prototype.html",
             "docs/previews/login-redesign-shots.md",
             "docs/previews/login-redesign-shots/ad.png",
@@ -982,6 +983,23 @@ def test_signs_preview_does_not_block_web_only_update() -> None:
             "frontend/src/styles/workspace.css",
             "frontend/src/views/SignView.vue",
             "frontend/tests/sign-view.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_filter_bar_preview_does_not_block_web_only_update() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/filter-bar-single-row-prototype.html",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/ApprovalView.vue",
+            "frontend/src/views/BatchView.vue",
+            "frontend/tests/approval-view.test.ts",
         ]
     )
 
