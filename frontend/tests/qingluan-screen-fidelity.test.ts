@@ -40,7 +40,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("<el-segmented")
     expect(view).not.toContain("退订语")
     expect(view).not.toContain("risk_first")
-    expect(workspace).toMatch(/\.compose\s*\{[^}]*height:\s*7px/s)
+    expect(workspace).toMatch(/\.compose\s*\{[^}]*height:\s*5px/s)
     expect(workspace).toMatch(/\.batch-facts\s*\{[^}]*grid-template-columns:\s*1fr 1fr/s)
   })
 
