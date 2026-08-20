@@ -3,9 +3,10 @@ import { resolve } from "node:path"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 const css = read("src/styles/workspace.css")
-const standardQueryViews = ["MessageView.vue", "ReplyView.vue"].map((name) =>
+const standardQueryViews = ["ReplyView.vue"].map((name) =>
   read(`src/views/${name}`),
 )
+const messageView = read("src/views/MessageView.vue")
 const auditView = read("src/views/AuditView.vue")
 const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
@@ -49,6 +50,19 @@ describe("全站筛选布局契约", () => {
     }
     expect(auditView).not.toMatch(/<el-form[^>]*\binline\b/)
     expect(userView).not.toMatch(/<el-form[^>]*\binline\b/)
+  })
+
+  it("号码搜索使用方案 A 单行检索条", () => {
+    expect(messageView).toContain("message-filter-bar")
+    expect(messageView).toContain("message-seg")
+    expect(messageView).toContain("message-badge")
+    expect(messageView).toContain("共 {{ total }} 条 · 每页 20")
+    expect(messageView).not.toContain("filter-grid")
+    expect(messageView).not.toContain("filter-toolbar")
+    expect(messageView).not.toContain("<el-segmented")
+    expect(messageView).not.toContain("view-switch")
+    expect(css).toMatch(/\.message-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.message-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("统计报表使用方案 A 单行工具条", () => {

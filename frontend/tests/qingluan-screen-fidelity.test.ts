@@ -91,6 +91,23 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.export-strip\s*\{\s*display:\s*flex;[\s\S]*?border-radius:\s*10px/)
   })
 
+  it("号码搜索使用单行检索条和常驻徽标条", () => {
+    const view = source("src/views/MessageView.vue")
+    const workspace = source("src/styles/workspace.css")
+    expect(view).toContain("message-filter-bar")
+    expect(view).toContain("message-badge")
+    expect(view).toContain("message-phone-decrypt")
+    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("↩ 用户回复")
+    expect(view).not.toContain("view-switch")
+    expect(view).not.toContain("<el-segmented")
+    expect(view).not.toContain("filter-grid")
+    expect(view).not.toContain("已入回复查询")
+    expect(view).not.toContain("在途")
+    expect(workspace).toMatch(/\.message-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.message-badge\s*\{[^}]*border-radius:\s*12px/s)
+  })
+
   it("应用与密钥使用三列卡片而非主表格", () => {
     const view = source("src/views/AppManagementView.vue")
     expect(view).toContain('class="app-card-grid"')
