@@ -3,10 +3,8 @@ import { resolve } from "node:path"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 const css = read("src/styles/workspace.css")
-const standardQueryViews = ["ReplyView.vue"].map((name) =>
-  read(`src/views/${name}`),
-)
 const messageView = read("src/views/MessageView.vue")
+const replyView = read("src/views/ReplyView.vue")
 const auditView = read("src/views/AuditView.vue")
 const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
@@ -37,11 +35,18 @@ describe("全站筛选布局契约", () => {
     )
   })
 
-  it("标准查询表单不再启用 Element Plus inline 布局", () => {
-    for (const source of standardQueryViews) {
-      expect(source).toContain("filter-grid")
-      expect(source).not.toMatch(/<el-form[^>]*\binline\b/)
-    }
+  it("上行回复使用方案 A 单行检索条", () => {
+    expect(replyView).toContain("reply-filter-bar")
+    expect(replyView).toContain("reply-seg")
+    expect(replyView).toContain("共 {{ total }} 条 · 每页 20")
+    expect(replyView).toContain("未匹配到平台批次")
+    expect(replyView).not.toContain("filter-grid")
+    expect(replyView).not.toContain("filter-toolbar")
+    expect(replyView).not.toContain("<el-segmented")
+    expect(replyView).not.toContain("↗")
+    expect(replyView).not.toContain("厂商未回传 customId")
+    expect(css).toMatch(/\.reply-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("管理筛选遵循同一表单语义", () => {

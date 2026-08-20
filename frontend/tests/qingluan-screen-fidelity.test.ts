@@ -108,6 +108,22 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.message-badge\s*\{[^}]*border-radius:\s*12px/s)
   })
 
+  it("上行回复使用单行检索条和密表格", () => {
+    const view = source("src/views/ReplyView.vue")
+    const workspace = source("src/styles/workspace.css")
+    expect(view).toContain("reply-filter-bar")
+    expect(view).toContain("reply-seg")
+    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("未匹配到平台批次")
+    expect(view).toContain("已加入退订黑名单 · 本次操作已记入审计")
+    expect(view).not.toContain("<el-segmented")
+    expect(view).not.toContain("filter-grid")
+    expect(view).not.toContain("↗")
+    expect(view).not.toContain("厂商未回传 customId")
+    expect(workspace).toMatch(/\.reply-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.reply-seg\s*\{[^}]*border-radius:\s*7px/s)
+  })
+
   it("应用与密钥使用三列卡片而非主表格", () => {
     const view = source("src/views/AppManagementView.vue")
     expect(view).toContain('class="app-card-grid"')
