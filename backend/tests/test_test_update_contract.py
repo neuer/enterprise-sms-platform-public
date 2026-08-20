@@ -782,6 +782,9 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
             "docs/previews/send-redesign-prototype.html",
+            "docs/previews/signs-redesign-prototype.html",
+            "docs/previews/signs-redesign-shots.md",
+            "docs/previews/signs-redesign-shots/full.png",
             "docs/previews/templates-redesign-prototype.html",
             "docs/previews/templates-redesign-shots.md",
             "docs/previews/templates-redesign-shots/full.png",
@@ -960,6 +963,25 @@ def test_templates_preview_does_not_block_web_only_update() -> None:
             "frontend/src/views/TemplateView.vue",
             "frontend/tests/send-view.test.ts",
             "frontend/tests/template-view.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_signs_preview_does_not_block_web_only_update() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/signs-redesign-prototype.html",
+            "docs/previews/signs-redesign-shots.md",
+            "docs/previews/signs-redesign-shots/full.png",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/SignView.vue",
+            "frontend/tests/sign-view.test.ts",
         ]
     )
 
