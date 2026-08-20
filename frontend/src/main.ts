@@ -8,6 +8,7 @@ import "element-plus/theme-chalk/el-alert.css"
 import "element-plus/theme-chalk/el-button.css"
 import "element-plus/theme-chalk/el-card.css"
 import "element-plus/theme-chalk/el-checkbox.css"
+import "element-plus/theme-chalk/el-config-provider.css"
 import "element-plus/theme-chalk/el-date-picker-panel.css"
 import "element-plus/theme-chalk/el-descriptions.css"
 import "element-plus/theme-chalk/el-dialog.css"
@@ -22,6 +23,7 @@ import "element-plus/theme-chalk/el-message.css"
 import "element-plus/theme-chalk/el-message-box.css"
 import "element-plus/theme-chalk/el-overlay.css"
 import "element-plus/theme-chalk/el-pagination.css"
+import "element-plus/theme-chalk/el-popover.css"
 import "element-plus/theme-chalk/el-popper.css"
 import "element-plus/theme-chalk/el-radio.css"
 import "element-plus/theme-chalk/el-scrollbar.css"
@@ -43,6 +45,7 @@ import {
   ElCard,
   ElCheckbox,
   ElCheckboxGroup,
+  ElConfigProvider,
   ElDatePicker,
   ElDescriptions,
   ElDescriptionsItem,
@@ -56,6 +59,7 @@ import {
   ElLoading,
   ElOption,
   ElPagination,
+  ElPopover,
   ElRadioButton,
   ElRadioGroup,
   ElSegmented,
@@ -84,10 +88,10 @@ installAuthGuard(router, pinia, sessionReady)
 
 const application = createApp(App).use(pinia).use(router)
 for (const plugin of [
-  ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker,
-  ElDescriptions, ElDescriptionsItem, ElDialog, ElDrawer, ElEmpty, ElForm,
-  ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination,
-  ElRadioButton, ElRadioGroup, ElSegmented, ElSelect, ElSkeleton, ElSwitch,
-  ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElUpload,
+  ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElConfigProvider,
+  ElDatePicker, ElDescriptions, ElDescriptionsItem, ElDialog, ElDrawer, ElEmpty,
+  ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination,
+  ElPopover, ElRadioButton, ElRadioGroup, ElSegmented, ElSelect, ElSkeleton,
+  ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElUpload,
 ]) application.use(plugin)
 application.mount("#app")
