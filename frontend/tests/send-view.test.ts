@@ -100,6 +100,58 @@ describe("人工发送工作台", () => {
     vi.unstubAllGlobals()
   })
 
+  it("模板管理跳转的 template_id query 预选已审核模板", async () => {
+    const templates = [
+      { id: 7, name: "登录验证码", content: "验证码{1}，{2}分钟内有效", var_specs: [{ pos: 1, max_len: 6 }, { pos: 2, max_len: 2 }], dept: "业务一部", vendor_template_id: "T7", vendor_state: "approved", vendor_reject_reason: null },
+      { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
+    ]
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
+    // VTU mocks 不写入 appContext.globalProperties，$router 必须以插件方式安装。
+    const routerMock = { currentRoute: { value: { query: { template_id: "7" } } }, push: vi.fn() }
+    const routerPlugin = {
+      install(app: { config: { globalProperties: Record<string, unknown> } }) {
+        app.config.globalProperties.$router = routerMock
+      },
+    }
+    const wrapper = mount(SendView, {
+      global: {
+        plugins: [ElementPlus, routerPlugin],
+      },
+    })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { form: { contentMode: string; templateId: string } }
+    expect(vm.form.contentMode).toBe("template")
+    expect(vm.form.templateId).toBe("7")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll("[data-testid='template-param']")).toHaveLength(2)
+    vi.unstubAllGlobals()
+  })
+
+  it("template_id query 指向未通过审核或不存在的模板时不预选", async () => {
+    const templates = [
+      { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
+    ]
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
+    const routerMock = { currentRoute: { value: { query: { template_id: "8" } } }, push: vi.fn() }
+    const routerPlugin = {
+      install(app: { config: { globalProperties: Record<string, unknown> } }) {
+        app.config.globalProperties.$router = routerMock
+      },
+    }
+    const wrapper = mount(SendView, {
+      global: {
+        plugins: [ElementPlus, routerPlugin],
+      },
+    })
+    await flushPromises()
+
+    const vm = wrapper.vm as unknown as { form: { contentMode: string; templateId: string } }
+    expect(vm.form.contentMode).toBe("content")
+    expect(vm.form.templateId).toBe("")
+    vi.unstubAllGlobals()
+  })
+
   it("剔除清单使用带 Bearer 的按钮下载而不是裸链接", async () => {
     sessionStorage.setItem("sms_token", "jwt")
     const imported = { import_id: "imp-1", valid: 1, invalid: 1, duplicate: 0, blacklisted: 0, invalid_download_url: "/api/v1/web/messages/import/imp-1/invalid-file", expires_at: "2026-07-13T08:00:00+08:00", status: "ready" as const, error: null }

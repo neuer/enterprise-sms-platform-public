@@ -433,6 +433,19 @@ function selectTemplate(value: string | number): void {
   templateParams.value = template?.var_specs.map(() => "") || []
 }
 
+/** 模板管理「用于发送」入口：/send?template_id=N 预选已审核模板；未通过审核或不存在则不预选。 */
+function applyTemplateQuery(): void {
+  const raw = router?.currentRoute?.value?.query?.template_id
+  const id = Array.isArray(raw) ? raw[0] : raw
+  if (!id) return
+  const template = templates.value.find(
+    (item) => String(item.id) === id && item.vendor_state === "approved",
+  )
+  if (!template) return
+  form.contentMode = "template"
+  selectTemplate(template.id)
+}
+
 async function downloadInvalidFile(): Promise<void> {
   if (!imported.value?.invalid_download_url) return
   try {
@@ -550,7 +563,7 @@ function resetForAnother(): void {
 }
 
 onMounted(() => {
-  void loadTemplates()
+  void loadTemplates().then(applyTemplateQuery)
   void loadSigns()
   void loadUiPolicy()
 })
