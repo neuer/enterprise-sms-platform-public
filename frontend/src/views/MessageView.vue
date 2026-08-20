@@ -42,6 +42,12 @@ const revealedPhone = ref("")
 const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
 const displayMask = computed(() => items.value[0]?.phone || searchedMask.value)
 
+/** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示（与上行回复同规则同文案）。 */
+const phoneError = computed<string | undefined>(() => {
+  const value = phone.value.trim()
+  return value === "" || /^1\d{10}$/.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
+})
+
 const categoryOptions = [
   { value: "verify", label: "验证码" },
   { value: "notice", label: "通知" },
@@ -174,17 +180,40 @@ async function run(): Promise<void> {
 }
 
 function search(): void {
-  if (!/^1\d{10}$/.test(phone.value)) {
-    errorMessage.value = "请输入 11 位手机号"
+  const value = phone.value.trim()
+  if (value === "") {
+    ElMessage.warning("请输入 11 位手机号")
+    return
+  }
+  if (phoneError.value) {
+    ElMessage.warning(phoneError.value)
     return
   }
   page.value = 1
   searched.value = true
-  searchedPhone.value = phone.value
-  searchedMask.value = maskFromInput(phone.value)
+  searchedPhone.value = value
+  searchedMask.value = maskFromInput(value)
   revealedPhone.value = ""
   decryptId.value = undefined
   void run()
+}
+
+/** 重置查询栏条件（手机号/时间范围/视图）并回到未查询态；本页手机号必填，重置不自动查询。 */
+function reset(): void {
+  phone.value = ""
+  range.value = null
+  mode.value = "list"
+  page.value = 1
+  searched.value = false
+  searchedPhone.value = ""
+  searchedMask.value = ""
+  revealedPhone.value = ""
+  decryptId.value = undefined
+  items.value = []
+  timeline.value = null
+  badge.value = null
+  total.value = 0
+  errorMessage.value = ""
 }
 
 function applyFilters(): void {
@@ -237,11 +266,13 @@ async function revealSearched(): Promise<void> {
       <el-input
         v-model="phone"
         class="message-filter-phone"
+        data-testid="message-filter-phone"
         placeholder="输入 11 位手机号"
         maxlength="11"
         inputmode="numeric"
         clearable
       />
+      <small v-if="phoneError" class="message-phone-error">{{ phoneError }}</small>
     </label>
     <label class="message-fld">
       <span>时间范围（可选）</span>
@@ -265,6 +296,7 @@ async function revealSearched(): Promise<void> {
     </div>
     <div class="message-filter-go">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
+      <el-button data-testid="message-reset" @click="reset">重置</el-button>
     </div>
     <p class="message-privacy">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。类别与状态筛选在列表视图结果区提供。</p>
   </form>

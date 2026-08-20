@@ -5169,7 +5169,7 @@ main {
 }
 
 .message-filter-dates {
-  --el-date-editor-datetimerange-width: 280px;
+  --el-date-editor-datetimerange-width: 244px;
 }
 
 .message-filter-dates.el-date-editor.el-input__wrapper {
@@ -5193,7 +5193,7 @@ main {
 .message-seg button {
   display: inline-flex;
   align-items: center;
-  padding: 0 15px;
+  padding: 0 12px;
   color: var(--tx-2);
   font: inherit;
   font-size: 11.5px;
@@ -5209,7 +5209,15 @@ main {
 }
 
 .message-filter-go {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   margin-left: auto;
+}
+
+.message-phone-error {
+  color: var(--verm);
+  font-size: 10.5px;
 }
 
 .message-privacy {
