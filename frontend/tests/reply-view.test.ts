@@ -35,6 +35,7 @@ describe("回复查询", () => {
 
   it("展示掩码回复并允许操作员确认后将回复号码加入退订黑名单", async () => {
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const toast = vi.spyOn(ElMessage, "success")
     const fetch = vi.fn()
       .mockResolvedValueOnce(response({ total: 1, items: [reply()] }))
       .mockResolvedValueOnce(response(undefined))
@@ -49,7 +50,9 @@ describe("回复查询", () => {
     })
     await flushPromises()
 
-    expect(wrapper.get("form.reply-filter").classes()).toContain("filter-grid")
+    expect(wrapper.get("form.reply-filter").classes()).toContain("reply-filter-bar")
+    expect(wrapper.get("form.reply-filter").classes()).not.toContain("filter-grid")
+    expect(wrapper.findComponent({ name: "ElSegmented" }).exists()).toBe(false)
     expect(wrapper.text()).toContain("上行回复")
     expect(wrapper.text()).toContain("138****8000")
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/replies")
@@ -67,6 +70,7 @@ describe("回复查询", () => {
     expect(confirm.mock.calls[0][0]).toContain("加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/replies/5/blacklist")
     expect(fetch.mock.calls[1][1].method).toBe("POST")
+    expect(toast).toHaveBeenCalledWith("已加入退订黑名单 · 本次操作已记入审计")
   })
 
   it("取消退订确认时不发起加黑请求", async () => {
@@ -219,22 +223,21 @@ describe("回复查询", () => {
     expect(seg.text()).toContain("待加黑退订")
     expect(seg.text()).toContain("已加黑")
 
-    const inputs = () => wrapper.findAll("[data-testid='reply-disposition-seg'] .el-segmented__item-input")
-    await inputs()[1].trigger("change")
+    await wrapper.get("[data-testid='reply-disposition-pending_optout']").trigger("click")
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
       page: 1,
       disposition: "pending_optout",
     })
 
-    await inputs()[2].trigger("change")
+    await wrapper.get("[data-testid='reply-disposition-blacklisted']").trigger("click")
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[2][1].body))).toEqual({
       page: 1,
       disposition: "blacklisted",
     })
 
-    await inputs()[0].trigger("change")
+    await wrapper.get("[data-testid='reply-disposition-all']").trigger("click")
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[3][1].body))).toEqual({ page: 1, disposition: "all" })
   })

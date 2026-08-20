@@ -5,8 +5,8 @@ import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
-import PhoneMask from "../components/PhoneMask.vue"
 import EmptyState from "../components/EmptyState.vue"
+import PhoneMask from "../components/PhoneMask.vue"
 import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
 import { useSessionStore } from "../stores/session"
 
@@ -54,7 +54,7 @@ const emptyState = computed(() =>
       }
     : {
         title: "尚未采集到上行回复",
-        description: "回复轮询每 5 分钟运行一次，也可按时间或手机号缩小查询范围。",
+        description: "厂商回复轮询约每 5 分钟运行一次；也可按时间或手机号缩小查询范围。",
       },
 )
 
@@ -116,6 +116,12 @@ function reset(): void {
   void load()
 }
 
+function setDisposition(next: ReplyDisposition): void {
+  if (next === disposition.value) return
+  disposition.value = next
+  search()
+}
+
 /** 跳转批次列表并直达该批次详情抽屉（批次页消费 batch_no 查询参数）。 */
 function openBatch(batchNo: string): void {
   void router?.push({ name: "batches", query: { batch_no: batchNo } })
@@ -134,7 +140,7 @@ async function optout(item: ReplyItem): Promise<void> {
   optingOutId.value = item.id
   try {
     await blacklistReply(item.id)
-    ElMessage.success("已加入退订黑名单")
+    ElMessage.success("已加入退订黑名单 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "退订加黑失败")
@@ -151,50 +157,60 @@ onMounted(load)
     <div>
       <p class="eyebrow">UPLINK / 用户回声</p>
       <h1>上行回复</h1>
-      <p>厂商回复先以完整密文归档，再按掩码号码进入查询与退订处置。</p>
+      <p>厂商回复先以完整密文归档，再按掩码号码进入查询与退订处置；轮询约每 5 分钟采集一次。</p>
     </div>
   </section>
 
-  <el-card shadow="never" class="reply-filter-card">
-    <el-form class="reply-filter filter-grid" label-position="top" @submit.prevent="search">
-      <el-form-item class="filter-span-3" label="手机号精确查询" :error="phoneError">
-        <el-input
-          v-model="phone"
-          data-testid="reply-filter-phone"
-          placeholder="输入 11 位手机号"
-          maxlength="11"
-          clearable
-          inputmode="numeric"
-        />
-      </el-form-item>
-      <el-form-item class="filter-span-4" label="回复时间">
-        <el-date-picker
-          v-model="range"
-          type="datetimerange"
-          popper-class="qingluan-date-popper"
-          start-placeholder="开始时间"
-          end-placeholder="结束时间"
-          range-separator="至"
-        />
-      </el-form-item>
-      <el-form-item class="filter-span-3" label="处置">
-        <el-segmented
-          v-model="disposition"
-          :options="dispositionOptions"
-          data-testid="reply-disposition-seg"
-          @change="search"
-        />
-      </el-form-item>
-      <el-form-item class="reply-filter-actions filter-actions filter-span-2">
-        <el-button data-testid="reply-search" type="primary" :loading="loading" native-type="submit">查询</el-button>
-        <el-button data-testid="reply-reset" @click="reset">重置</el-button>
-      </el-form-item>
-    </el-form>
-    <p class="reply-filter-note">手机号仅在本次请求内计算 HMAC 索引，不进入查询日志或持久层。</p>
-  </el-card>
+  <form class="reply-filter reply-filter-bar" @submit.prevent="search">
+    <label class="reply-fld">
+      <span>手机号精确查询</span>
+      <el-input
+        v-model="phone"
+        class="reply-filter-phone"
+        data-testid="reply-filter-phone"
+        placeholder="输入 11 位手机号"
+        maxlength="11"
+        clearable
+        inputmode="numeric"
+      />
+      <small v-if="phoneError" class="reply-phone-error">{{ phoneError }}</small>
+    </label>
+    <label class="reply-fld">
+      <span>回复时间（可选）</span>
+      <el-date-picker
+        v-model="range"
+        type="datetimerange"
+        format="YYYY-MM-DD HH:mm"
+        popper-class="qingluan-date-popper"
+        start-placeholder="开始时间"
+        end-placeholder="结束时间"
+        range-separator="至"
+        class="reply-filter-dates"
+      />
+    </label>
+    <div class="reply-fld">
+      <span>处置</span>
+      <div class="reply-seg" role="group" aria-label="处置" data-testid="reply-disposition-seg">
+        <button
+          v-for="option in dispositionOptions"
+          :key="option.value"
+          type="button"
+          :class="{ on: disposition === option.value }"
+          :data-testid="`reply-disposition-${option.value}`"
+          @click="setDisposition(option.value)"
+        >{{ option.label }}</button>
+      </div>
+    </div>
+    <div class="reply-filter-go">
+      <el-button data-testid="reply-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
+      <el-button data-testid="reply-reset" @click="reset">重置</el-button>
+    </div>
+    <p class="reply-privacy">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。本页无解密端点，号码恒以掩码展示。</p>
+  </form>
 
-  <el-card shadow="never" class="reply-table-card">
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+
+  <section class="reply-results">
     <el-table v-loading="loading" :data="items" row-key="id" class="reply-table">
       <el-table-column label="回复时间" width="178">
         <template #default="{ row }"><time class="mono-time">{{ formatTime(row.reply_time) }}</time></template>
@@ -213,7 +229,7 @@ onMounted(load)
             class="batch-code reply-batch-link"
             :title="`查看批次 ${row.batch_no}`"
             @click="openBatch(row.batch_no)"
-          >{{ row.batch_no }} ↗</button>
+          >{{ row.batch_no }}</button>
           <span v-else class="reply-unlinked-group">
             <el-tag type="warning" effect="plain">未关联</el-tag>
             <small class="reply-unlinked">未匹配到平台批次</small>
@@ -258,7 +274,7 @@ onMounted(load)
             class="batch-code reply-batch-link"
             :title="`查看批次 ${item.batch_no}`"
             @click="openBatch(item.batch_no)"
-          >{{ item.batch_no }} ↗</button>
+          >{{ item.batch_no }}</button>
           <span v-else class="reply-unlinked-group">
             <el-tag type="warning" effect="plain">未关联</el-tag>
             <small class="reply-unlinked">未匹配到平台批次</small>
@@ -278,7 +294,7 @@ onMounted(load)
     </div>
 
     <footer class="reply-pagination">
-      <span>共 {{ total }} 条记录 · 每页 20 条</span>
+      <span>共 {{ total }} 条 · 每页 20</span>
       <el-pagination
         v-model:current-page="page"
         :page-size="20"
@@ -287,5 +303,5 @@ onMounted(load)
         @current-change="load"
       />
     </footer>
-  </el-card>
+  </section>
 </template>
