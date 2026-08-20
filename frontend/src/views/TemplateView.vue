@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, getCurrentInstance, onMounted, reactive, ref, watch } from "vue"
+import { computed, getCurrentInstance, h, onMounted, reactive, ref, watch } from "vue"
 import type { Router } from "vue-router"
 
 import {
@@ -22,6 +22,7 @@ import { useSessionStore } from "../stores/session"
 const PLACEHOLDER_TOKEN = /\{[^{}]*\}/g
 const PLACEHOLDER_POSITION = /^\{([1-9]\d*)\}$/
 const DEFAULT_MAX_LEN = 10
+const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可编辑；审核结果由轮询同步，也可在列表手动同步。"
 
 interface ContentPart {
   text: string
@@ -115,8 +116,21 @@ function stateSub(item: SmsTemplate): StateSub {
     case "rejected":
       return { text: item.vendor_reject_reason || "厂商未附驳回原因", tone: "verm" }
     default:
-      return { text: "未送审" }
+      return { text: "未送审（历史数据）" }
   }
+}
+
+/** 详情抽屉标题副行：平台编号 / 已绑定厂商编号 / 部门，缺项省略。 */
+function detailHeadMeta(item: SmsTemplate): string {
+  const parts = [`平台 #${item.id}`]
+  if (item.vendor_template_id) parts.push(`厂商 #${item.vendor_template_id}`)
+  if (item.dept) parts.push(item.dept)
+  return parts.join(" · ")
+}
+
+/** 事实格变量声明：{n} ≤max_len 字，按 pos 顺序。 */
+function varSpecsLine(specs: { pos: number; max_len: number }[]): string {
+  return specs.map((spec) => `{${spec.pos}} ≤${spec.max_len} 字`).join(" · ")
 }
 
 /** 提取内容中的 {n} 占位位置；非法 {} 片段单独计数用于内联提示。 */
@@ -307,12 +321,19 @@ async function sync(item: SmsTemplate): Promise<void> {
 async function remove(item: SmsTemplate): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `确认删除模板「${item.name}」？删除后不可恢复；已通过审核或已被批次引用的模板不可删除。删除行为与操作人将写入审计日志。`,
+      h("div", { class: "template-delete-dialog" }, [
+        h(
+          "p",
+          `确认删除模板「${item.name}」？删除后不可恢复；已通过审核或已被批次引用的模板不可删除。`,
+        ),
+        h("p", { class: "template-delete-audit" }, "删除行为与操作人将写入审计日志。"),
+      ]),
       "删除模板",
       {
         type: "warning",
         confirmButtonText: "确认删除",
         cancelButtonText: "取消",
+        customClass: "template-delete-box",
       },
     )
     await deleteTemplate(item.id)
@@ -349,35 +370,38 @@ onMounted(load)
     <el-button v-if="canWrite" data-testid="new-template" type="primary" @click="resetEditor()">新建模板</el-button>
   </section>
 
-  <el-card shadow="never" class="template-card">
-    <div class="template-toolbar filter-toolbar">
-      <div class="template-filter-group">
-        <span class="template-filter-label">厂商状态</span>
-        <span class="template-state-seg" role="group" aria-label="厂商状态筛选">
-          <button
-            v-for="option in stateOptions"
-            :key="option.value"
-            type="button"
-            :class="{ on: stateFilter === option.value }"
-            :data-testid="`template-state-${option.value}`"
-            @click="stateFilter = option.value"
-          >
-            {{ option.label }} <i>{{ option.count }}</i>
-          </button>
-        </span>
-      </div>
-      <div class="template-filter-group template-keyword-group">
-        <span class="template-filter-label">关键词</span>
-        <el-input
-          v-model="keyword"
-          class="template-keyword"
-          data-testid="template-keyword"
-          placeholder="名称 / 内容"
-          clearable
-        />
+  <div class="template-filter-bar">
+    <div class="template-fld">
+      <span>厂商状态</span>
+      <div class="template-seg" role="group" aria-label="厂商状态筛选" data-testid="template-state-seg">
+        <button
+          v-for="option in stateOptions"
+          :key="option.value"
+          type="button"
+          :class="{ on: stateFilter === option.value }"
+          :data-testid="`template-state-${option.value}`"
+          @click="stateFilter = option.value"
+        >
+          {{ option.label }} <i>{{ option.count }}</i>
+        </button>
       </div>
     </div>
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+    <label class="template-fld">
+      <span>关键词</span>
+      <el-input
+        v-model="keyword"
+        class="template-keyword"
+        data-testid="template-keyword"
+        placeholder="名称 / 内容"
+        clearable
+      />
+    </label>
+    <span class="template-filter-note">接口全量返回 · 前端过滤</span>
+  </div>
+
+  <el-alert v-if="errorMessage" class="template-alert" :title="errorMessage" type="error" :closable="false" />
+
+  <section class="template-results">
     <el-table v-loading="loading" class="template-table" :data="filtered" row-key="id" @row-click="openDetail">
       <el-table-column label="模板名称" min-width="180">
         <template #default="{ row }">
@@ -435,7 +459,7 @@ onMounted(load)
         <header>
           <button
             :data-testid="`template-mobile-detail-${row.id}`"
-            class="table-row-detail"
+            class="table-row-detail template-name"
             type="button"
             :aria-label="`查看模板 ${row.name} 的详情`"
             @click="openDetail(row)"
@@ -467,15 +491,23 @@ onMounted(load)
       </article>
       <EmptyState v-if="!loading && !filtered.length" :title="emptyTitle" :description="emptyDescription" />
     </div>
-    <div class="template-foot">共 {{ filtered.length }} 个模板</div>
-  </el-card>
+    <footer class="template-foot">
+      <span>共 {{ filtered.length }} 个模板</span>
+      <span class="template-foot-role">读：operator / approver / admin · 写：operator / admin</span>
+    </footer>
+  </section>
 
-  <el-drawer v-model="detailOpen" title="模板详情" size="min(560px, 94vw)">
-    <template v-if="detail">
-      <div class="template-detail-title">
-        <StatusTag :status="detail.vendor_state" :label="stateLabel(detail.vendor_state)" />
-        <b>{{ detail.name }}</b>
+  <el-drawer v-model="detailOpen" class="template-drawer" size="min(560px, 94vw)">
+    <template #header>
+      <div v-if="detail" class="template-drawer-head">
+        <div class="template-drawer-title">
+          <StatusTag :status="detail.vendor_state" :label="stateLabel(detail.vendor_state)" />
+          <b>{{ detail.name }}</b>
+        </div>
+        <code>{{ detailHeadMeta(detail) }}</code>
       </div>
+    </template>
+    <template v-if="detail">
       <div class="template-trail" data-testid="template-trail">
         <template v-for="(step, index) in detailTrail" :key="index">
           <span v-if="index > 0" class="trail-connector"></span>
@@ -493,7 +525,7 @@ onMounted(load)
         :closable="false"
         class="template-reject-banner"
       />
-      <div class="content-proof">
+      <div class="template-content-block">
         <span>平台格式内容</span>
         <p class="template-inline-content">
           <template v-for="(part, index) in contentParts(detail.content, detail.var_specs)" :key="index">
@@ -507,22 +539,17 @@ onMounted(load)
         </p>
         <small class="template-proof-hint">变量 {{ detail.var_specs.length }} 个 · 渲染时校验参数个数与长度</small>
       </div>
-      <div class="content-proof">
+      <div class="template-content-block">
         <span>厂商格式（提交时转换）</span>
         <p class="template-vendor-preview">{{ vendorPreviewOf(detail.content, detail.var_specs) }}</p>
       </div>
-      <dl class="approval-detail-grid">
+      <dl class="template-fact-grid">
         <div><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div>
         <div><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_template_id || "—" }}</dd></div>
         <div><dt>所属部门</dt><dd :class="{ muted: !detail.dept }">{{ detail.dept || "—" }}</dd></div>
         <div>
           <dt>变量声明</dt>
-          <dd>
-            <span v-if="!detail.var_specs.length" class="muted">无变量</span>
-            <span v-for="spec in detail.var_specs" :key="spec.pos" class="var-chip">
-              {{ "{" + spec.pos + "}" }}<i>≤{{ spec.max_len }}</i>
-            </span>
-          </dd>
+          <dd class="mono-id">{{ detail.var_specs.length ? varSpecsLine(detail.var_specs) : "无变量" }}</dd>
         </div>
       </dl>
       <div v-if="canWrite" class="template-detail-actions">
@@ -535,11 +562,13 @@ onMounted(load)
     </template>
   </el-drawer>
 
-  <el-drawer
-    v-model="editorOpen"
-    :title="editingSource === null ? '新建模板' : '重新提交模板'"
-    size="min(560px, 94vw)"
-  >
+  <el-drawer v-model="editorOpen" class="template-drawer" size="min(560px, 94vw)">
+    <template #header>
+      <div class="template-drawer-head">
+        <div class="template-drawer-title">{{ editingSource === null ? "新建模板" : "重新提交模板" }}</div>
+        <code v-if="editingSource">平台 #{{ editingSource.id }} · 重新提交将生成新的厂商编号</code>
+      </div>
+    </template>
     <el-form label-position="top" class="template-form">
       <el-alert
         v-if="editingSource?.vendor_state === 'rejected' && editingSource.vendor_reject_reason"
@@ -550,7 +579,11 @@ onMounted(load)
         class="template-reject-banner"
       />
       <el-form-item label="模板名称"><el-input v-model="form.name" maxlength="64" /></el-form-item>
-      <el-form-item label="平台格式内容 · 渲染后全长 ≤500 字" :error="contentIssue || undefined">
+      <el-form-item class="template-content-item" :error="contentIssue || undefined">
+        <template #label>
+          平台格式内容
+          <i>占位 {1}..{n} · 渲染后全长 ≤500 字</i>
+        </template>
         <el-input
           v-model="form.content"
           type="textarea"
@@ -560,28 +593,27 @@ onMounted(load)
           placeholder="例如：尊敬的{1}，验证码{2}"
         />
       </el-form-item>
-      <div class="variable-head">
-        <b>变量声明</b>
-        <span class="variable-head-note">随内容自动识别 · 已设长度保留</span>
+      <div class="template-spec-card">
+        <div class="template-spec-head">
+          <b>变量声明</b>
+          <span>随内容自动识别 · 已设长度保留</span>
+        </div>
+        <div v-for="spec in form.var_specs" :key="spec.pos" class="variable-row">
+          <code>{{ "{" + spec.pos + "}" }}</code>
+          <el-input-number v-model="spec.max_len" :min="1" :max="100" />
+          <span>字</span>
+          <span class="variable-note">渲染时参数超长即拒 · 范围 1–100</span>
+        </div>
+        <p v-if="!form.var_specs.length" class="variable-empty">内容中还没有占位变量，输入 {1} 起连续编号。</p>
       </div>
-      <div v-for="spec in form.var_specs" :key="spec.pos" class="variable-row">
-        <code>{{ "{" + spec.pos + "}" }}</code>
-        <el-input-number v-model="spec.max_len" :min="1" :max="100" />
-        <span>字</span>
-        <span class="variable-note">渲染时参数超长即拒 · 范围 1–100</span>
-      </div>
-      <p v-if="!form.var_specs.length" class="variable-empty">内容中还没有占位变量，输入 {1} 起连续编号。</p>
-      <p class="form-hint">占位与变量必须从 1 连续一一对应；变量长度即厂商 {s长度} 上限。</p>
-      <div class="content-proof template-editor-preview">
+      <div class="template-content-block template-editor-preview">
         <span>厂商格式预览（提交时由服务端转换）</span>
         <p class="template-vendor-preview">{{ editorVendorPreview }}</p>
       </div>
     </el-form>
     <template #footer>
       <div class="template-editor-foot">
-        <small>{{ editingSource === null
-          ? "提交后进入厂商人工审核，期间不可编辑；审核结果由轮询同步，也可在列表手动同步。"
-          : "重新提交将生成新的厂商编号，并重新进入厂商人工审核。" }}</small>
+        <small>{{ EDITOR_FOOTNOTE }}</small>
         <div>
           <el-button @click="editorOpen = false">取消</el-button>
           <el-button data-testid="template-submit" type="primary" :loading="saving" @click="submit">{{ editingSource === null ? "提交厂商审核" : "重新提交审核" }}</el-button>

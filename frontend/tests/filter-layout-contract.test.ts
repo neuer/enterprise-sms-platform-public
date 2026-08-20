@@ -10,12 +10,13 @@ const userView = read("src/views/UserView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue"].map(
+const compactViews = ["CallbackView.vue", "OpsView.vue"].map(
   (name) => read(`src/views/${name}`),
 )
 const approvalView = read("src/views/ApprovalView.vue")
 const batchView = read("src/views/BatchView.vue")
 const signView = read("src/views/SignView.vue")
+const templateView = read("src/views/TemplateView.vue")
 
 describe("全站筛选布局契约", () => {
   it("使用共享十二列网格与语义跨度", () => {
@@ -123,6 +124,21 @@ describe("全站筛选布局契约", () => {
     expect(signView).not.toContain("<el-card")
     expect(css).toMatch(/\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
     expect(css).toMatch(/\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+  })
+
+  it("模板管理使用方案 A 单行胶囊工具条", () => {
+    expect(templateView).toContain("template-filter-bar")
+    expect(templateView).toContain("template-seg")
+    expect(templateView).toContain("接口全量返回 · 前端过滤")
+    expect(templateView).toContain("未送审（历史数据）")
+    expect(templateView).toContain("共 {{ filtered.length }} 个模板")
+    expect(templateView).toContain("读：operator / approver / admin · 写：operator / admin")
+    expect(templateView).not.toContain("filter-toolbar")
+    expect(templateView).not.toContain("filter-grid")
+    expect(templateView).not.toContain("<el-segmented")
+    expect(templateView).not.toContain("<el-card")
+    expect(css).toMatch(/\.template-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.template-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("治理录入表单使用统一操作区并在手机端提供满宽主按钮", () => {
