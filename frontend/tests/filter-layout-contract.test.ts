@@ -77,7 +77,7 @@ describe("全站筛选布局契约", () => {
     expect(batchView).toContain("共 {{ total }} 个批次 · 每页 20")
     expect(css).toMatch(/\.batch-filter-bar\s*\{[^}]*display:\s*flex/s)
     expect(css).toMatch(/\.batch-seg\s*\{[^}]*border-radius:\s*7px/s)
-    expect(css).toMatch(/\.compose\s*\{[^}]*height:\s*7px/s)
+    expect(css).toMatch(/\.compose\s*\{[^}]*height:\s*5px/s)
   })
 
   it("审批中心使用方案 A 单行胶囊筛选条", () => {
