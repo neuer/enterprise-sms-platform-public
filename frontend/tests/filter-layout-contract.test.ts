@@ -15,6 +15,7 @@ const compactViews = ["CallbackView.vue", "TemplateView.vue", "OpsView.vue"].map
 )
 const approvalView = read("src/views/ApprovalView.vue")
 const batchView = read("src/views/BatchView.vue")
+const signView = read("src/views/SignView.vue")
 
 describe("全站筛选布局契约", () => {
   it("使用共享十二列网格与语义跨度", () => {
@@ -107,6 +108,21 @@ describe("全站筛选布局契约", () => {
     expect(approvalView).not.toContain("<el-segmented")
     expect(css).toMatch(/\.approval-filter-bar\s*\{[^}]*display:\s*flex/s)
     expect(css).toMatch(/\.approval-seg\s*\{[^}]*border-radius:\s*7px/s)
+  })
+
+  it("签名管理使用方案 A 单行胶囊工具条", () => {
+    expect(signView).toContain("sign-filter-bar")
+    expect(signView).toContain("sign-seg")
+    expect(signView).toContain("接口全量返回 · 前端过滤")
+    expect(signView).toContain("共 {{ filtered.length }} 个签名")
+    expect(signView).toContain("读：operator / approver / admin · 写：admin")
+    expect(signView).toContain("不可变更")
+    expect(signView).not.toContain("filter-toolbar")
+    expect(signView).not.toContain("filter-grid")
+    expect(signView).not.toContain("<el-segmented")
+    expect(signView).not.toContain("<el-card")
+    expect(css).toMatch(/\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("治理录入表单使用统一操作区并在手机端提供满宽主按钮", () => {
