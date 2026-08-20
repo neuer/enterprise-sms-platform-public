@@ -3973,68 +3973,60 @@ main {
   margin-bottom: 18px;
 }
 
-.sign-card {
-  border-color: var(--line);
-  border-radius: 9px;
+.sign-heading p:not(.eyebrow) {
+  max-width: 620px;
 }
 
-.sign-card > .el-card__body {
-  padding: 0;
-}
-
-.sign-card .el-alert {
-  margin: 12px 16px 0;
-  width: auto;
-}
-
-.sign-card .el-table {
-  --el-table-header-bg-color: #f3f5f2;
-}
-
-.sign-toolbar {
+.sign-filter-bar {
   display: flex;
-  gap: 14px;
-  align-items: flex-end;
   flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
 }
 
-.sign-filter-group {
+.sign-fld {
   display: grid;
   gap: 5px;
 }
 
-.sign-filter-label {
+.sign-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
+  white-space: nowrap;
 }
 
 .sign-keyword {
   width: 220px;
 }
 
-.sign-state-seg {
+.sign-seg {
   display: flex;
   height: 34px;
   overflow: hidden;
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--hair);
   border-radius: 7px;
 }
 
-.sign-state-seg button {
+.sign-seg button {
   display: flex;
   gap: 6px;
   align-items: center;
   padding: 0 13px;
   color: var(--tx-2);
+  font: inherit;
   font-size: 11.5px;
+  font-weight: 400;
   background: var(--sink);
   border: 0;
   cursor: pointer;
 }
 
-.sign-state-seg button i {
+.sign-seg button i {
   color: var(--tx-3);
   font-family: var(--mono);
   font-size: 10px;
@@ -4042,21 +4034,42 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-.sign-state-seg button.on {
-  color: var(--tx-hi);
+.sign-seg button.on {
+  color: #eaf1ed;
   background: var(--verdi);
 }
 
-.sign-state-seg button.on i {
-  color: color-mix(in srgb, var(--tx-hi) 75%, transparent);
+.sign-seg button.on i {
+  color: rgba(234, 241, 237, 0.75);
 }
 
-.sign-card .el-table__row {
+.sign-filter-note {
+  margin-left: auto;
+  align-self: center;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.sign-alert {
+  margin-bottom: 14px;
+}
+
+.sign-results {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.sign-table .el-table__row {
   cursor: pointer;
 }
 
 .sign-name {
+  color: var(--tx-hi);
   font-weight: 600;
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 40%, transparent);
+  border-radius: 0;
 }
 
 .sign-foot {
@@ -4066,24 +4079,102 @@ main {
   padding: 10px 16px;
   color: var(--tx-3);
   font-size: 11px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--hair-2);
 }
 
-.sign-detail-title {
+.sign-foot-role {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.sign-drawer-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.sign-drawer-title {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--line);
+  color: var(--tx-hi);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.sign-drawer-head code {
+  display: block;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.sign-content-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 13px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.sign-content-block > span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.sign-content-block p {
+  margin: 0;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.sign-fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 16px 0 0;
+}
+
+.sign-fact-grid dt {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.sign-fact-grid dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.sign-name-item i {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.sign-delete-dialog p {
+  margin: 0;
+}
+
+.sign-delete-audit {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: 11px;
 }
 
 .sign-trail {
   display: flex;
   align-items: center;
-  margin-top: 14px;
   padding: 12px 14px;
   background: var(--sink);
-  border: 1px solid var(--line);
+  border: 1px solid var(--hair);
   border-radius: 10px;
 }
 
@@ -4092,9 +4183,9 @@ main {
 }
 
 .sign-preview-text {
+  color: var(--tx);
   font-family: var(--mono);
   font-size: 11.5px;
-  border-left-color: var(--tx-3) !important;
 }
 
 .sign-proof-hint {
@@ -4319,22 +4410,24 @@ main {
     border-top: 1px solid var(--line);
   }
 
-  .sign-toolbar {
-    display: grid;
-    gap: 10px;
-    align-items: stretch;
-    padding: 14px;
+  .sign-filter-bar {
+    align-items: flex-start;
   }
 
   .sign-keyword {
     width: 100%;
   }
 
-  .sign-state-seg {
+  .sign-filter-note {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .sign-seg {
     overflow-x: auto;
   }
 
-  .sign-state-seg button {
+  .sign-seg button {
     flex: 1;
     justify-content: center;
     padding: 0 8px;
@@ -6113,14 +6206,16 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .approval-heading .eyebrow,
 .batch-heading .eyebrow,
 .message-heading .eyebrow,
-.reply-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
+.reply-heading .eyebrow,
+.sign-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
 .send-heading p:not(.eyebrow),
 .dashboard-heading p:not(.eyebrow),
 .report-heading p:not(.eyebrow),
 .approval-heading p:not(.eyebrow),
 .batch-heading p:not(.eyebrow),
 .message-heading p:not(.eyebrow),
-.reply-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
+.reply-heading p:not(.eyebrow),
+.sign-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
 
 .el-card,
 .el-dialog,
@@ -6148,7 +6243,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .el-table td.el-table__cell { border-bottom-color: var(--hair-2); }
 
 /* 基础层按卡片定制的浅色表头变量特异性高于上面的 .el-table，需在深色层同特异性收编。 */
-.sign-card .el-table {
+.sign-table.el-table,
+.sign-table {
   --el-table-header-bg-color: var(--panel-2);
   --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
 }

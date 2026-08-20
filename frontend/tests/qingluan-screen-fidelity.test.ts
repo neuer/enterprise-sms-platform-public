@@ -124,6 +124,27 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.reply-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
+  it("签名管理使用单行胶囊工具条和密表格", () => {
+    const view = source("src/views/SignView.vue")
+    const workspace = source("src/styles/workspace.css")
+    expect(view).toContain("sign-filter-bar")
+    expect(view).toContain("sign-seg")
+    expect(view).toContain("接口全量返回 · 前端过滤")
+    expect(view).toContain("共 {{ filtered.length }} 个签名")
+    expect(view).toContain("读：operator / approver / admin · 写：admin")
+    expect(view).toContain("签名已删除 · 本次操作已记入审计")
+    expect(view).toContain("sign-content-block")
+    expect(view).toContain("sign-fact-grid")
+    expect(view).not.toContain("<el-segmented")
+    expect(view).not.toContain("filter-grid")
+    expect(view).not.toContain("filter-toolbar")
+    expect(view).not.toContain("<el-card")
+    expect(view).not.toContain("drawer-intro")
+    expect(workspace).toMatch(/\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
+  })
+
   it("应用与密钥使用三列卡片而非主表格", () => {
     const view = source("src/views/AppManagementView.vue")
     expect(view).toContain('class="app-card-grid"')

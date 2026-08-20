@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { computed, h, onMounted, ref } from "vue"
 
 import { listApps, type ManagedApp } from "../api/apps"
 import {
@@ -17,6 +17,8 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { useSessionStore } from "../stores/session"
+
+const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可修改或删除；审核结果由轮询同步，也可在列表手动同步。"
 
 interface StateSub {
   text: string
@@ -104,6 +106,13 @@ function stateSub(item: SmsSign): StateSub {
     case "rejected":
       return { text: item.vendor_reject_reason || "厂商未附驳回原因", tone: "verm" }
   }
+}
+
+/** 详情抽屉标题副行：平台编号 / 已绑定厂商编号，缺项省略。 */
+function detailHeadMeta(item: SmsSign): string {
+  const parts = [`平台 #${item.id}`]
+  if (item.vendor_sign_id) parts.push(`厂商 #${item.vendor_sign_id}`)
+  return parts.join(" · ")
 }
 
 const canSync = (item: SmsSign) =>
@@ -242,12 +251,19 @@ async function sync(item: SmsSign): Promise<void> {
 async function remove(item: SmsSign): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。删除行为与操作人将写入审计日志。`,
+      h("div", { class: "sign-delete-dialog" }, [
+        h(
+          "p",
+          `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
+        ),
+        h("p", { class: "sign-delete-audit" }, "删除行为与操作人将写入审计日志。"),
+      ]),
       "删除签名",
       {
         type: "warning",
         confirmButtonText: "确认删除",
         cancelButtonText: "取消",
+        customClass: "sign-delete-box",
       },
     )
     await deleteSign(item.id)
@@ -280,35 +296,38 @@ onMounted(load)
     <el-button v-if="canWrite" data-testid="new-sign" type="primary" @click="resetEditor()">申请签名</el-button>
   </section>
 
-  <el-card shadow="never" class="sign-card">
-    <div class="sign-toolbar filter-toolbar">
-      <div class="sign-filter-group">
-        <span class="sign-filter-label">厂商状态</span>
-        <span class="sign-state-seg" role="group" aria-label="厂商状态筛选">
-          <button
-            v-for="option in stateOptions"
-            :key="option.value"
-            type="button"
-            :class="{ on: stateFilter === option.value }"
-            :data-testid="`sign-state-${option.value}`"
-            @click="stateFilter = option.value"
-          >
-            {{ option.label }} <i>{{ option.count }}</i>
-          </button>
-        </span>
-      </div>
-      <div class="sign-filter-group sign-keyword-group">
-        <span class="sign-filter-label">关键词</span>
-        <el-input
-          v-model="keyword"
-          class="sign-keyword"
-          data-testid="sign-keyword"
-          placeholder="签名名称"
-          clearable
-        />
+  <div class="sign-filter-bar">
+    <div class="sign-fld">
+      <span>厂商状态</span>
+      <div class="sign-seg" role="group" aria-label="厂商状态筛选" data-testid="sign-state-seg">
+        <button
+          v-for="option in stateOptions"
+          :key="option.value"
+          type="button"
+          :class="{ on: stateFilter === option.value }"
+          :data-testid="`sign-state-${option.value}`"
+          @click="stateFilter = option.value"
+        >
+          {{ option.label }} <i>{{ option.count }}</i>
+        </button>
       </div>
     </div>
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+    <label class="sign-fld">
+      <span>关键词</span>
+      <el-input
+        v-model="keyword"
+        class="sign-keyword"
+        data-testid="sign-keyword"
+        placeholder="签名名称"
+        clearable
+      />
+    </label>
+    <span class="sign-filter-note">接口全量返回 · 前端过滤</span>
+  </div>
+
+  <el-alert v-if="errorMessage" class="sign-alert" :title="errorMessage" type="error" :closable="false" />
+
+  <section class="sign-results">
     <el-table v-loading="loading" class="sign-table" :data="filtered" row-key="id" @row-click="openDetail">
       <el-table-column label="规范签名" min-width="220">
         <template #default="{ row }">
@@ -368,15 +387,23 @@ onMounted(load)
       </article>
       <EmptyState v-if="!loading && !filtered.length" :title="emptyTitle" :description="emptyDescription" />
     </div>
-    <div class="sign-foot">共 {{ filtered.length }} 个签名</div>
-  </el-card>
+    <footer class="sign-foot">
+      <span>共 {{ filtered.length }} 个签名</span>
+      <span class="sign-foot-role">读：operator / approver / admin · 写：admin</span>
+    </footer>
+  </section>
 
-  <el-drawer v-model="detailOpen" title="签名详情" size="min(560px, 94vw)">
-    <template v-if="detail">
-      <div class="sign-detail-title">
-        <StatusTag :status="detail.vendor_state" :label="stateLabel(detail.vendor_state)" />
-        <b>【{{ detail.name }}】</b>
+  <el-drawer v-model="detailOpen" class="sign-drawer" size="min(560px, 94vw)">
+    <template #header>
+      <div v-if="detail" class="sign-drawer-head">
+        <div class="sign-drawer-title">
+          <StatusTag :status="detail.vendor_state" :label="stateLabel(detail.vendor_state)" />
+          <b>【{{ detail.name }}】</b>
+        </div>
+        <code>{{ detailHeadMeta(detail) }}</code>
       </div>
+    </template>
+    <template v-if="detail">
       <div class="sign-trail" data-testid="sign-trail">
         <template v-for="(step, index) in detailTrail" :key="index">
           <span v-if="index > 0" class="trail-connector"></span>
@@ -394,18 +421,18 @@ onMounted(load)
         :closable="false"
         class="sign-reject-banner"
       />
-      <div class="content-proof">
+      <div class="sign-content-block">
         <span>发送效果预览（签名自动拼接于内容最前）</span>
         <p class="sign-preview-text">【{{ detail.name }}】您的验证码为 123456，5 分钟内有效，请勿泄露。</p>
         <small class="sign-proof-hint">计费长度含签名：本签名 +{{ detail.name.length + 2 }} 字（含方括号）· 含签名与退订语 ≤70 字计 1 条，唯一实现 services/billing.py</small>
       </div>
-      <dl class="approval-detail-grid">
+      <dl class="sign-fact-grid">
         <div><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div>
         <div><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_sign_id || "—" }}</dd></div>
         <div><dt>规范签名</dt><dd>【{{ detail.name }}】</dd></div>
         <div><dt>计入计费长度</dt><dd class="mono-id">+{{ detail.name.length + 2 }} 字</dd></div>
       </dl>
-      <div v-if="isAdmin" class="content-proof" data-testid="sign-apps">
+      <div v-if="isAdmin" class="sign-content-block" data-testid="sign-apps">
         <span>默认签名引用（仅 admin 可见）</span>
         <div class="sign-apps">
           <span v-if="signAppsLoading" class="sign-apps-note">加载中…</span>
@@ -426,11 +453,13 @@ onMounted(load)
     </template>
   </el-drawer>
 
-  <el-drawer
-    v-model="editorOpen"
-    :title="editingSource === null ? '申请签名' : '重新提交签名'"
-    size="min(440px, 92vw)"
-  >
+  <el-drawer v-model="editorOpen" class="sign-drawer" size="min(440px, 92vw)">
+    <template #header>
+      <div class="sign-drawer-head">
+        <div class="sign-drawer-title">{{ editingSource === null ? "申请签名" : "重新提交签名" }}</div>
+        <code v-if="editingSource">平台 #{{ editingSource.id }} · 重新提交将生成新的厂商编号</code>
+      </div>
+    </template>
     <el-form label-position="top" class="sign-form">
       <el-alert
         v-if="editingSource?.vendor_state === 'rejected' && editingSource.vendor_reject_reason"
@@ -440,20 +469,21 @@ onMounted(load)
         :closable="false"
         class="sign-reject-banner"
       />
-      <p class="drawer-intro">
-        {{ editingSource === null ? "提交后进入厂商审核，审核期间不可修改或删除。" : `平台 #${editingSource.id} · 修改后将作为新签名重新提交厂商审核，并生成新的厂商编号。` }}
-      </p>
-      <el-form-item label="签名名称 · 1–20 字，不得包含方括号" :error="nameIssue || undefined">
+      <el-form-item class="sign-name-item" :error="nameIssue || undefined">
+        <template #label>
+          签名名称
+          <i>1–20 字 · 不得包含方括号</i>
+        </template>
         <el-input v-model="name" maxlength="20" data-testid="sign-name-input">
           <template #prepend>【</template>
           <template #append>】</template>
         </el-input>
       </el-form-item>
-      <div class="content-proof sign-editor-preview">
+      <div class="sign-content-block sign-editor-preview">
         <span>规范化预览（服务端 format_sign_name 唯一实现）</span>
         <template v-if="billingChars !== null">
-          <p class="sign-preview-text">平台保存：{{ bareName }}（裸名称，全局唯一）
-下发与计费：【{{ bareName }}】</p>
+          <p>平台保存：{{ bareName }} <small>（裸名称，全局唯一）</small></p>
+          <p class="sign-preview-text">下发与计费：【{{ bareName }}】</p>
           <small class="sign-proof-hint">计入每条计费长度 +{{ billingChars }} 字（含方括号）· 最终内容含签名与退订语 ≤70 字计 1 条</small>
         </template>
         <p v-else class="sign-preview-text">输入名称后实时预览规范化结果</p>
@@ -461,9 +491,7 @@ onMounted(load)
     </el-form>
     <template #footer>
       <div class="sign-editor-foot">
-        <small>{{ editingSource === null
-          ? "提交后进入厂商人工审核，期间不可修改或删除；审核结果由轮询同步，也可在列表手动同步。"
-          : "重新提交将生成新的厂商编号，并重新进入厂商人工审核。" }}</small>
+        <small>{{ EDITOR_FOOTNOTE }}</small>
         <div>
           <el-button @click="editorOpen = false">取消</el-button>
           <el-button data-testid="sign-submit" type="primary" :loading="saving" @click="submit">{{ editingSource === null ? "提交厂商审核" : "重新提交审核" }}</el-button>
