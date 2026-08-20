@@ -160,7 +160,13 @@ const currentFiltersKey = computed(() =>
 const filtersDirty = computed(
   () => appliedFiltersKey.value !== "" && currentFiltersKey.value !== appliedFiltersKey.value,
 )
-const moreActive = computed(() => isTest.value !== "" || appId.value.trim() !== "" || (isAdmin.value && dept.value.trim() !== ""))
+const moreActiveCount = computed(
+  () =>
+    (isTest.value !== "" ? 1 : 0)
+    + (appId.value.trim() !== "" ? 1 : 0)
+    + (isAdmin.value && dept.value.trim() !== "" ? 1 : 0),
+)
+const moreActive = computed(() => moreActiveCount.value > 0)
 
 let listToken = 0
 let detailToken = 0
@@ -376,7 +382,7 @@ watch(moreOpen, (open) => {
     <div class="batch-fld">
       <el-popover v-model:visible="moreOpen" placement="bottom-end" :width="320" trigger="click">
         <template #reference>
-          <button type="button" class="batch-more-trigger" :class="{ 'is-more-active': moreActive }" data-testid="batch-more-filters">更多筛选 ▾</button>
+          <button type="button" class="batch-more-trigger" :class="{ 'is-more-active': moreActive }" data-testid="batch-more-filters">更多筛选 ▾<b v-if="moreActiveCount" class="batch-more-count">{{ moreActiveCount }}</b></button>
         </template>
         <div class="batch-more">
           <label>测试发送</label>
@@ -400,7 +406,6 @@ watch(moreOpen, (open) => {
           </template>
         </div>
       </el-popover>
-      <small class="batch-more-hint">测试 / 应用 / 部门</small>
     </div>
     <div class="batch-filter-actions">
       <span v-if="filtersDirty" class="batch-dirty" data-testid="batch-filters-dirty">● 条件已变更</span>
@@ -428,27 +433,31 @@ watch(moreOpen, (open) => {
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
   <div class="batch-ledger">
     <el-table v-loading="loading" :data="items" row-key="batch_no" class="query-table">
-      <el-table-column label="批次 / 时间" min-width="200">
+      <el-table-column label="批次 / 时间" min-width="248">
         <template #default="{ row }">
           <code class="batch-code">{{ row.batch_no }}</code>
-          <small class="mono-time cell-sub">{{ formatTime(row.created_at) }}</small>
-          <div v-if="row.scheduled_at && row.status === 'scheduled' || row.is_test || row.resend_of" class="cell-flags">
+          <div v-if="row.scheduled_at && row.status === 'scheduled' || row.is_test || row.resend_of" class="cell-subline">
+            <small class="mono-time">{{ formatTime(row.created_at) }}</small>
             <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched">定时 {{ formatSchedule(row.scheduled_at) }}</span>
             <span v-if="row.is_test" class="cell-flag cell-flag--test">测试</span>
             <button v-if="row.resend_of" type="button" class="cell-flag cell-flag--resend" :title="`重发自 ${row.resend_of}`" @click="traceResendOf(row.resend_of)">重发自 {{ shortBatchNo(row.resend_of) }} ↗</button>
           </div>
+          <small v-else class="mono-time cell-subline">{{ formatTime(row.created_at) }}</small>
         </template>
       </el-table-column>
       <el-table-column label="类别 / 内容" min-width="240">
         <template #default="{ row }">
-          <CategoryTag :category="row.category" />
-          <p class="cell-content" :title="row.content">{{ row.content }}</p>
+          <div class="cell-catline">
+            <CategoryTag :category="row.category" />
+            <p class="cell-content" :title="row.content">{{ row.content }}</p>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column label="来源" min-width="130">
+      <el-table-column label="来源" min-width="150">
         <template #default="{ row }">
-          {{ channelLabel[row.channel] || row.channel }} · {{ row.app_name || row.creator || "—" }}
-          <small class="cell-sub">{{ row.dept }}</small>
+          <div class="cell-src" :title="`${channelLabel[row.channel] || row.channel} · ${row.app_name || row.creator || '—'} · ${row.dept}`">
+            {{ channelLabel[row.channel] || row.channel }} · {{ row.app_name || row.creator || "—" }}<span class="cell-src-dept"> · {{ row.dept }}</span>
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="结果构成（非成功率）" min-width="180">
@@ -500,14 +509,14 @@ watch(moreOpen, (open) => {
         <footer><time>{{ formatTime(item.created_at) }}</time><el-button link type="primary" @click="openBatch(item)">查看详情</el-button></footer>
       </article>
     </div>
-    <div class="compose-legend" aria-hidden="true">
-      <span><i class="compose-d"></i>送达</span>
-      <span><i class="compose-f"></i>失败</span>
-      <span><i class="compose-u"></i>待回执</span>
-      <span><i class="compose-p"></i>未提交</span>
-      <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
-    </div>
     <footer class="batch-pager">
+      <div class="compose-legend" aria-hidden="true">
+        <span><i class="compose-d"></i>送达</span>
+        <span><i class="compose-f"></i>失败</span>
+        <span><i class="compose-u"></i>待回执</span>
+        <span><i class="compose-p"></i>未提交</span>
+        <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
+      </div>
       <span>共 {{ total }} 个批次 · 每页 20</span>
       <el-pagination v-model:current-page="page" :page-size="20" :total="total" layout="prev, pager, next" @current-change="load" />
     </footer>

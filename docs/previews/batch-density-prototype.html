@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 批次列表密度优化原型 v2（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf; --violet:#9b7ed9;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1180px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1180px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.rh-badge{display:inline-block;margin-left:10px;font:10px/1.7 var(--mono);color:#71c4ad;border:1px solid rgba(47,161,132,.4);border-radius:5px;padding:0 8px;letter-spacing:0}
+
+/* ═══════════ 共享：页面画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.blv{background:var(--bg);padding:16px 22px 20px;display:grid;gap:10px;min-width:1260px}
+.blv-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.blv-head h1{font-family:var(--serif);font-size:19px;font-weight:600;color:var(--tx-hi)}
+.blv-head .sub{color:var(--tx-3);font-size:11px}
+.role-tag{display:inline-flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:4px 11px;background:var(--panel)}
+.role-tag i{width:6px;height:6px;border-radius:50%;background:var(--verdi-l)}
+.btn{padding:5px 15px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;white-space:nowrap}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+
+/* 筛选条：严格单行（≥1260px 内容宽），低频字段收进气泡 */
+.filter-bar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:var(--panel);border:1px solid var(--hair);border-radius:10px}
+.filter-bar .fld{display:flex;align-items:center;gap:7px}
+.filter-bar .fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--hair);border-radius:6px;overflow:hidden}
+.seg b{padding:3px 11px;font-size:11px;font-weight:400;color:var(--tx-2);background:var(--sink);white-space:nowrap}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search{padding:3px 10px;border:1px solid var(--hair);border-radius:6px;background:var(--sink);font-size:11.5px;color:var(--tx-3);width:140px}
+.dates{font:11px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:6px;background:var(--sink);padding:3px 10px;white-space:nowrap}
+.more-btn{padding:3px 10px;border:1px solid rgba(47,161,132,.55);border-radius:6px;background:var(--sink);font-size:11px;color:#71c4ad;white-space:nowrap}
+.more-btn i{font-style:normal;background:rgba(47,161,132,.2);border-radius:4px;padding:0 4px;margin-left:3px}
+.filter-bar .go{margin-left:auto;display:flex;align-items:center;gap:8px}
+.dirty-hint{font:10px var(--mono);color:var(--amber);white-space:nowrap}
+
+/* 状态分组 chips：压缩为一行 28px */
+.chips-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 2px}
+.chips-row .lbl{font-size:10.5px;color:var(--tx-3);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:5px;font:10.5px/1.6 var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:6px;padding:1px 9px;background:var(--sink);white-space:nowrap}
+.chip b{color:var(--tx);font-weight:600}
+.chip.on{border-color:rgba(47,161,132,.55);color:#71c4ad;background:rgba(14,122,99,.14)}
+.chip.on b{color:#71c4ad}
+.chip.hot{border-color:rgba(228,106,79,.55);color:#f0a08c}
+.chip.hot b{color:var(--verm)}
+.chips-row .meta{margin-left:auto;font:9.5px var(--mono);color:var(--tx-3)}
+
+/* 结果构成条 */
+.compose{display:flex;height:5px;border-radius:3px;overflow:hidden;gap:1px;background:var(--sink)}
+.compose i{display:block;height:100%}
+.compose .d{background:var(--verdi-l)} .compose .f{background:var(--verm)}
+.compose .u{background:var(--slate)} .compose .p{background:var(--tx-3)}
+
+/* 类别 / 状态标签 / 徽标 */
+.cat{font:9.5px/1.6 var(--mono);padding:0 6px;border-radius:4px;white-space:nowrap}
+.cat.verify{background:rgba(155,126,217,.15);color:#b7a1e8}
+.cat.notice{background:rgba(111,155,207,.15);color:#93b6e0}
+.cat.market{background:rgba(216,163,92,.15);color:var(--amber)}
+.stag{font:10px/1.7 var(--mono);padding:0 8px;border-radius:5px;white-space:nowrap}
+.stag.info{background:rgba(111,155,207,.14);color:#93b6e0}
+.stag.ok{background:rgba(47,161,132,.14);color:#71c4ad}
+.stag.warn{background:rgba(216,163,92,.14);color:var(--amber)}
+.stag.dark{background:rgba(228,106,79,.28);color:#f6b5a4;border:1px solid rgba(228,106,79,.4)}
+.stag.mute{background:var(--panel-2);color:var(--tx-3)}
+.flag{font:9px/1.6 var(--mono);padding:0 5px;border-radius:4px;border:1px solid var(--hair);color:var(--tx-3);white-space:nowrap}
+.flag.test{border-style:dashed;border-color:rgba(155,126,217,.5);color:#b7a1e8}
+.flag.sched{border-color:rgba(216,163,92,.4);color:var(--amber)}
+.flag.resend{color:var(--verdi-l)}
+
+/* ═══════════ 方案 A：紧凑双行表格 ═══════════ */
+.ledger{background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:2px 8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{font-size:10.5px;font-weight:400;color:var(--tx-3);text-align:left;padding:7px 10px;border-bottom:1px solid var(--hair);white-space:nowrap}
+.tbl td{padding:7px 10px;border-bottom:1px solid var(--hair-2);vertical-align:middle;color:var(--tx-2)}
+.tbl tr:last-child td{border-bottom:0}
+/* 批次/时间：批次号单行不换行，时间与徽标合并第二行 */
+.tbl .c-no{min-width:248px}
+.tbl .c-no code{font:11px var(--mono);color:var(--tx-hi);white-space:nowrap;letter-spacing:-.02em}
+.tbl .c-no .l2{display:flex;align-items:center;gap:5px;margin-top:2px}
+.tbl .c-no small{font:10px var(--mono);color:var(--tx-3)}
+/* 类别/内容：标签与内容同一行 */
+.tbl .c-content .l1{display:flex;align-items:center;gap:7px;min-width:0}
+.tbl .c-content p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--tx);font-size:11.5px;max-width:34ch}
+/* 来源：单行 */
+.tbl .c-src{white-space:nowrap;color:var(--tx);font-size:11.5px;max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.tbl .c-src em{font-style:normal;color:var(--tx-3);font-size:10.5px}
+/* 构成：数字行 + 5px 条 */
+.tbl .c-result{min-width:172px}
+.tbl .c-result .nums{display:flex;justify-content:space-between;gap:8px;font:10.5px var(--mono);color:var(--tx-3);margin-bottom:3px;white-space:nowrap}
+.tbl .c-result .nums b{color:var(--tx);font-weight:400}
+.tbl .c-result .nums .f-bad{color:#f0a08c}
+.tbl .c-status .sub{display:block;font-size:9.5px;color:var(--amber);margin-top:2px}
+.tbl .c-quota{font:11.5px var(--mono);color:var(--tx);text-align:right;white-space:nowrap}
+.tbl .c-op a{color:var(--verdi-l);font-size:11.5px;white-space:nowrap}
+.tbl tr.is-blocked td{background:linear-gradient(90deg,rgba(228,106,79,.05),transparent 40%)}
+/* 表尾：图例 · 计数 · 分页合并一行 */
+.ledger-foot{display:flex;align-items:center;gap:14px;padding:7px 4px 2px;border-top:1px solid var(--hair-2);margin-top:2px}
+.legend{display:flex;gap:10px;align-items:center;font-size:9.5px;color:var(--tx-3);white-space:nowrap}
+.legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:3px;vertical-align:-1px}
+.legend .d{background:var(--verdi-l)} .legend .f{background:var(--verm)}
+.legend .u{background:var(--slate)} .legend .p{background:var(--tx-3)}
+.ledger-foot .count{font:10px var(--mono);color:var(--tx-3);white-space:nowrap}
+.ledger-foot .pages{margin-left:auto;display:flex;gap:5px;align-items:center}
+.ledger-foot .pages b{min-width:22px;text-align:center;font:10.5px/1.8 var(--mono);border:1px solid var(--hair);border-radius:5px;color:var(--tx-2);background:var(--sink);padding:0 6px}
+.ledger-foot .pages b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 方案 B：单行扫表 ═══════════ */
+.dense .tbl th{padding:5px 10px}
+.dense .tbl td{padding:5px 10px;white-space:nowrap}
+.dense .tbl .l1{display:flex;align-items:center;gap:7px;min-width:0}
+.dense .c-no code{font:11px var(--mono);color:var(--tx-hi)}
+.dense .c-no .copy{color:var(--tx-3);font-size:10px;cursor:pointer}
+.dense .c-no small{font:10px var(--mono);color:var(--tx-3)}
+.dense .c-result .mini{display:flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-3)}
+.dense .c-result .mini b{color:var(--tx);font-weight:400}
+.dense .c-result .mini .compose{width:64px;flex:none}
+.dense .c-result .mini .f-bad{color:#f0a08c}
+
+/* ═══════════ 对比表 ═══════════ */
+.cmp-wrap{margin:14px 28px 40px;max-width:1180px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:22px 0 10px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{padding:8px 12px;border:1px solid var(--hair-2);text-align:left;vertical-align:top}
+.cmp th{background:var(--panel);color:var(--tx-hi);font-weight:600}
+.cmp td:first-child{font:10.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+.cmp td{color:var(--tx-2)}
+.cmp td b{color:var(--tx)}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 批次列表密度优化原型 v2</b>
+  <span>评审稿 · 所有数据均为虚构 mock · 纯静态，零外部依赖</span>
+  <em>2026-08-20</em>
+</div>
+
+<section class="notes">
+  <h2>现状诊断（依据 2026-08-19 截图与当前 BatchView 代码）</h2>
+  <ul>
+    <li><b>筛选区右上大面积空置</b>：截图版本把测试发送 / 应用 / 部门平铺成 4 行，查询按钮垂直居中悬浮在右侧，右上约四成面积为空白。当前代码已把低频字段折进「更多筛选」气泡，但 flex-wrap 折行 + 按钮 margin-left:auto 的组合在折行时仍会在行尾留白；气泡下方还有一行 hint 小字吃掉高度。</li>
+    <li><b>行高约 95px，首屏仅 5–6 行</b>：批次号 32 位在列宽不足时折成 2 行，再加时间与徽标共 3 行；类别、内容、来源、构成数字、构成条各占一行；单元格上下 padding 12px。20 条/页需滚动 3–4 屏。</li>
+    <li><b>信息层级未对齐扫读动线</b>：批次号（定位锚点）与创建时间分在两行且被折行打断；类别标签独占一行；来源的渠道 / 应用 / 部门分两行。</li>
+    <li><b>表尾图例与分页分两行</b>：构成图例一行、计数与分页又一行，再耗约 50px 垂直空间。</li>
+  </ul>
+</section>
+
+<section class="notes">
+  <h2>v2 改动清单（两个方案共用前四条）</h2>
+  <ul>
+    <li><b>筛选条严格单行</b>：批次号 / 类别 / 渠道 / 创建时间 + 更多筛选气泡 + 查询按钮，在 ≥1260px 内容宽内一行排下（当前内容区约 1300px）；去掉气泡下的 hint 小字，气泡激活时以角标计数提示。</li>
+    <li><b>行内层级重构</b>：批次号给足列宽强制单行（等宽 11px 微缩字距）；时间与测试 / 定时 / 重发徽标合并为同一辅行；类别标签与内容同一行；来源合并为单行「渠道 · 应用 · 部门」。</li>
+    <li><b>构成列压缩</b>：构成条 7px → 5px，数字行与条间距收紧；el-table 用 size="small" 并把单元格 padding 压到 7px。</li>
+    <li><b>表尾合并</b>：图例 + 计数 + 分页并为一行。</li>
+    <li><b>方案分歧点</b>：方案 A 保留「批次号完整 + 时间辅行」的双行结构（行高约 52px）；方案 B 压成单行扫表（行高约 36px），代价是批次号截断为 头8…尾4（点击复制全量）、时间精确到分。</li>
+  </ul>
+</section>
+
+<div class="stage-label">方案 A — 紧凑双行 · 推荐　FILTER-BAR → CHIPS → LEDGER<span class="rh-badge" data-rh="行高目标 ≈52px">行高目标 ≈52px</span></div>
+<div class="variant-caption">
+  批次号完整可见、时间精确到秒，徽标（测试 / 定时 / 重发溯源）保留在批次号下方辅行；其余单元格全部单行化。
+  较现状（≈95px/行）密度提升约 80%，900px 可视区可扫 12–13 行。
+</div>
+
+<div class="viewport">
+<div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+      <h1>批次列表</h1>
+      <p class="sub">按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+    </div>
+    <span class="role-tag"><i></i>当前口径 · 管理员</span>
+  </div>
+
+  <div class="filter-bar">
+    <div class="fld"><span>批次号</span><div class="search">模糊匹配批次号</div></div>
+    <div class="fld"><span>类别</span><div class="seg"><b class="on">全部</b><b>验证码</b><b>通知</b><b>营销</b></div></div>
+    <div class="fld"><span>渠道</span><div class="seg"><b class="on">全部</b><b>API</b><b>Web</b></div></div>
+    <div class="fld"><span>创建时间</span><div class="dates">2026-08-01 00:00 &nbsp;至&nbsp; 2026-08-19 23:59</div></div>
+    <div class="fld"><button class="more-btn">更多筛选 ▾<i>2</i></button></div>
+    <div class="go">
+      <span class="dirty-hint">● 条件已变更</span>
+      <button class="btn primary">查询</button>
+      <button class="btn">重置</button>
+    </div>
+  </div>
+
+  <div class="chips-row">
+    <span class="lbl">状态</span>
+    <span class="chip on">全部 <b>1,286</b></span>
+    <span class="chip">进行中 <b>3</b></span>
+    <span class="chip">待审批 <b>1</b></span>
+    <span class="chip">定时中 <b>2</b></span>
+    <span class="chip hot">余额阻断 <b>1</b></span>
+    <span class="chip">已完成 <b>1,276</b></span>
+    <span class="chip">其他终态 <b>3</b></span>
+    <span class="meta">进行中=queued+sending · 其他终态=cancelled+rejected+expired</span>
+  </div>
+
+  <div class="ledger">
+    <table class="tbl">
+      <thead>
+        <tr><th>批次 / 时间</th><th>类别 / 内容</th><th>来源</th><th>结果构成（非成功率）</th><th>状态</th><th style="text-align:right">计费条</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="c-no"><code>afa3b4c2b0e9476d8856551d90a4134d</code><div class="l2"><small>08-19 14:32:07</small><span class="flag test">测试</span></div></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】尊敬的王五您好，您的验证码是******，5分钟内有效，请勿泄露。</p></div></td>
+          <td class="c-src">Web · Testing <em>· IT</em></td>
+          <td class="c-result"><div class="nums"><span><b>1</b> / 1</span></div><div class="compose"><i class="d" style="width:100%"></i></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">1</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>1287118229874480b30ce80bc633f8ad</code><div class="l2"><small>08-19 14:10:11</small><span class="flag test">测试</span></div></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】尊敬的李四您好，您的验证码是******，请勿泄露给他人。</p></div></td>
+          <td class="c-src">API · Testing <em>· IT</em></td>
+          <td class="c-result"><div class="nums"><span><b>1</b> / 1</span></div><div class="compose"><i class="d" style="width:100%"></i></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">1</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>496b4f4094d1495e88d1ad77adc8d43a</code><div class="l2"><small>08-19 13:58:44</small></div></td>
+          <td class="c-content"><div class="l1"><span class="cat verify">验证码</span><p>【青鸾】您的验证码是******，5分钟内有效。工作人员不会索取验证码。</p></div></td>
+          <td class="c-src">API · 统一认证 <em>· 平台研发</em></td>
+          <td class="c-result"><div class="nums"><span><b>12,483</b> / 12,500</span><span class="f-bad">失败 17</span></div><div class="compose"><i class="d" style="width:99.86%"></i><i class="f" style="width:.14%"></i></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">12,483</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>77c0d2e91a4b4f3e9c5b28d60f11e902</code><div class="l2"><small>08-19 13:41:02</small></div></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】会员日全场满200减50，8月20—22日有效，回T退订</p></div></td>
+          <td class="c-src">API · 会员营销 <em>· 零售事业部</em></td>
+          <td class="c-result"><div class="nums"><span><b>45,230</b> / 88,000</span><span class="f-bad">失败 312</span></div><div class="compose"><i class="d" style="width:51.4%"></i><i class="f" style="width:.35%"></i><i class="u" style="width:30%"></i><i class="p" style="width:18.25%"></i></div></td>
+          <td class="c-status"><span class="stag info">发送中</span></td>
+          <td class="c-quota">88,000</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>0e9a5c37b2d84d01a6f34e897cc51b66</code><div class="l2"><small>08-19 11:26:19</small><span class="flag sched">定时 08-20 09:00</span></div></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】各部门请注意：8月20日 22:00—24:00 机房例行维护，期间服务可能短暂中断。</p></div></td>
+          <td class="c-src">Web · 行政通知 <em>· 综合管理部</em></td>
+          <td class="c-result"><div class="nums"><span><b>0</b> / 342</span><span>待进入流水线</span></div><div class="compose"><i class="p" style="width:100%"></i></div></td>
+          <td class="c-status"><span class="stag warn">定时中</span></td>
+          <td class="c-quota">342</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr class="is-blocked">
+          <td class="c-no"><code>b51d8a09f37e4c2d8e0a61c5d94f7308</code><div class="l2"><small>08-19 10:05:51</small></div></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】积分即将清零，8月底前兑换好礼，回T退订</p></div></td>
+          <td class="c-src">API · 会员营销 <em>· 零售事业部</em></td>
+          <td class="c-result"><div class="nums"><span><b>8,104</b> / 50,000</span><span class="f-bad">失败 96</span></div><div class="compose"><i class="d" style="width:16.2%"></i><i class="f" style="width:.2%"></i><i class="p" style="width:83.6%"></i></div></td>
+          <td class="c-status"><span class="stag dark">余额阻断</span></td>
+          <td class="c-quota">50,000</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>e3f7092c6b1a4e58a9d03c47f28b5d91</code><div class="l2"><small>08-19 09:47:33</small><span class="flag resend">重发自 49…8d3a ↗</span></div></td>
+          <td class="c-content"><div class="l1"><span class="cat verify">验证码</span><p>【青鸾】您的验证码是******，5分钟内有效。工作人员不会索取验证码。</p></div></td>
+          <td class="c-src">API · 统一认证 <em>· 平台研发</em></td>
+          <td class="c-result"><div class="nums"><span><b>17</b> / 17</span></div><div class="compose"><i class="d" style="width:100%"></i></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">17</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><code>5c82ae64d90b4f17b3e58a02c16d9f47</code><div class="l2"><small>08-19 09:12:08</small><span class="flag sched">定时 08-19 21:00</span></div></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】新客专享礼包已到账，登录 App 领取，回T退订</p></div></td>
+          <td class="c-src">Web · 增长运营 <em>· 市场部</em></td>
+          <td class="c-result"><div class="nums"><span><b>0</b> / 5,600</span><span>待进入流水线</span></div><div class="compose"><i class="p" style="width:100%"></i></div></td>
+          <td class="c-status"><span class="stag warn">定时中</span><span class="sub">窗外转定时</span></td>
+          <td class="c-quota">5,600</td>
+          <td class="c-op"><a>查看详情</a></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="ledger-foot">
+      <span class="legend"><span><i class="d"></i>送达</span><span><i class="f"></i>失败</span><span><i class="u"></i>待回执</span><span><i class="p"></i>未提交</span><span>构成非成功率</span></span>
+      <span class="count">共 1,286 个批次 · 每页 20</span>
+      <span class="pages"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>…</b><b>65</b><b>›</b></span>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="stage-label">方案 B — 单行扫表 · 极致密度<span class="rh-badge" data-rh="行高目标 ≈36px">行高目标 ≈36px</span></div>
+<div class="variant-caption">
+  所有单元格压成一行：批次号截断为「头8…尾4」（点击 ⧉ 复制全量，hover 显示完整值），时间精确到分，构成条缩为 64px 内嵌迷你条。
+  900px 可视区可扫约 18 行，接近一页看完。代价：批次号不再完整可视，长内容省略更早——适合运营日常扫表，不适合作为唯一形态。
+</div>
+
+<div class="viewport">
+<div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+      <h1>批次列表</h1>
+      <p class="sub">按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+    </div>
+    <span class="role-tag"><i></i>当前口径 · 管理员</span>
+  </div>
+
+  <div class="filter-bar">
+    <div class="fld"><span>批次号</span><div class="search">模糊匹配批次号</div></div>
+    <div class="fld"><span>类别</span><div class="seg"><b class="on">全部</b><b>验证码</b><b>通知</b><b>营销</b></div></div>
+    <div class="fld"><span>渠道</span><div class="seg"><b class="on">全部</b><b>API</b><b>Web</b></div></div>
+    <div class="fld"><span>创建时间</span><div class="dates">2026-08-01 00:00 &nbsp;至&nbsp; 2026-08-19 23:59</div></div>
+    <div class="fld"><button class="more-btn">更多筛选 ▾<i>2</i></button></div>
+    <div class="go">
+      <button class="btn primary">查询</button>
+      <button class="btn">重置</button>
+    </div>
+  </div>
+
+  <div class="chips-row">
+    <span class="lbl">状态</span>
+    <span class="chip on">全部 <b>1,286</b></span>
+    <span class="chip">进行中 <b>3</b></span>
+    <span class="chip">待审批 <b>1</b></span>
+    <span class="chip">定时中 <b>2</b></span>
+    <span class="chip hot">余额阻断 <b>1</b></span>
+    <span class="chip">已完成 <b>1,276</b></span>
+    <span class="chip">其他终态 <b>3</b></span>
+    <span class="meta">进行中=queued+sending · 其他终态=cancelled+rejected+expired</span>
+  </div>
+
+  <div class="ledger dense">
+    <table class="tbl">
+      <thead>
+        <tr><th>批次 / 时间</th><th>类别 / 内容</th><th>来源</th><th>结果构成（非成功率）</th><th>状态</th><th style="text-align:right">计费条</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="afa3b4c2b0e9476d8856551d90a4134d">afa3b4c2…a4134d</code><span class="copy">⧉</span><small>08-19 14:32</small><span class="flag test">测试</span></span></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】尊敬的王五您好，您的验证码是******，5分钟内有效…</p></div></td>
+          <td class="c-src">Web·Testing/IT</td>
+          <td class="c-result"><div class="mini"><b>1</b>/1 <span class="compose"><i class="d" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">1</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="1287118229874480b30ce80bc633f8ad">12871182…33f8ad</code><span class="copy">⧉</span><small>08-19 14:10</small><span class="flag test">测试</span></span></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】尊敬的李四您好，您的验证码是******，请勿泄露…</p></div></td>
+          <td class="c-src">API·Testing/IT</td>
+          <td class="c-result"><div class="mini"><b>1</b>/1 <span class="compose"><i class="d" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">1</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="496b4f4094d1495e88d1ad77adc8d43a">496b4f40…c8d43a</code><span class="copy">⧉</span><small>08-19 13:58</small></span></td>
+          <td class="c-content"><div class="l1"><span class="cat verify">验证码</span><p>【青鸾】您的验证码是******，5分钟内有效。工作人员不会…</p></div></td>
+          <td class="c-src">API·统一认证/平台研发</td>
+          <td class="c-result"><div class="mini"><b>12,483</b>/12,500 <span class="compose"><i class="d" style="width:99.8%"></i><i class="f" style="width:.2%"></i></span><span class="f-bad">失败17</span></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">12,483</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="77c0d2e91a4b4f3e9c5b28d60f11e902">77c0d2e9…11e902</code><span class="copy">⧉</span><small>08-19 13:41</small></span></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】会员日全场满200减50，8月20—22日有效，回T退订</p></div></td>
+          <td class="c-src">API·会员营销/零售事业部</td>
+          <td class="c-result"><div class="mini"><b>45,230</b>/88,000 <span class="compose"><i class="d" style="width:51.4%"></i><i class="f" style="width:.4%"></i><i class="u" style="width:30%"></i><i class="p" style="width:18.2%"></i></span><span class="f-bad">失败312</span></div></td>
+          <td class="c-status"><span class="stag info">发送中</span></td>
+          <td class="c-quota">88,000</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="0e9a5c37b2d84d01a6f34e897cc51b66">0e9a5c37…c51b66</code><span class="copy">⧉</span><small>08-19 11:26</small><span class="flag sched">定时 08-20 09:00</span></span></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】各部门请注意：8月20日 22:00—24:00 机房例行维…</p></div></td>
+          <td class="c-src">Web·行政通知/综合管理部</td>
+          <td class="c-result"><div class="mini"><b>0</b>/342 <span class="compose"><i class="p" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag warn">定时中</span></td>
+          <td class="c-quota">342</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr class="is-blocked">
+          <td class="c-no"><span class="l1"><code title="b51d8a09f37e4c2d8e0a61c5d94f7308">b51d8a09…4f7308</code><span class="copy">⧉</span><small>08-19 10:05</small></span></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】积分即将清零，8月底前兑换好礼，回T退订</p></div></td>
+          <td class="c-src">API·会员营销/零售事业部</td>
+          <td class="c-result"><div class="mini"><b>8,104</b>/50,000 <span class="compose"><i class="d" style="width:16.2%"></i><i class="f" style="width:.2%"></i><i class="p" style="width:83.6%"></i></span><span class="f-bad">失败96</span></div></td>
+          <td class="c-status"><span class="stag dark">余额阻断</span></td>
+          <td class="c-quota">50,000</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="e3f7092c6b1a4e58a9d03c47f28b5d91">e3f7092c…8b5d91</code><span class="copy">⧉</span><small>08-19 09:47</small><span class="flag resend">重发↗</span></span></td>
+          <td class="c-content"><div class="l1"><span class="cat verify">验证码</span><p>【青鸾】您的验证码是******，5分钟内有效。工作人员不会…</p></div></td>
+          <td class="c-src">API·统一认证/平台研发</td>
+          <td class="c-result"><div class="mini"><b>17</b>/17 <span class="compose"><i class="d" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">17</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="5c82ae64d90b4f17b3e58a02c16d9f47">5c82ae64…6d9f47</code><span class="copy">⧉</span><small>08-19 09:12</small><span class="flag sched">定时 08-19 21:00</span></span></td>
+          <td class="c-content"><div class="l1"><span class="cat market">营销</span><p>【青鸾】新客专享礼包已到账，登录 App 领取，回T退订</p></div></td>
+          <td class="c-src">Web·增长运营/市场部</td>
+          <td class="c-result"><div class="mini"><b>0</b>/5,600 <span class="compose"><i class="p" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag warn">定时中</span></td>
+          <td class="c-quota">5,600</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="9d14f08c3e5a4b62a7c81d35f60e2b74">9d14f08c…0e2b74</code><span class="copy">⧉</span><small>08-18 22:31</small></span></td>
+          <td class="c-content"><div class="l1"><span class="cat verify">验证码</span><p>【青鸾】您的验证码是******，5分钟内有效。工作人员不会…</p></div></td>
+          <td class="c-src">API·统一认证/平台研发</td>
+          <td class="c-result"><div class="mini"><b>3,204</b>/3,204 <span class="compose"><i class="d" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag ok">已完成</span></td>
+          <td class="c-quota">3,204</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+        <tr>
+          <td class="c-no"><span class="l1"><code title="2a67c1d85f904e3bb8d25c19a47e6f03">2a67c1d8…7e6f03</code><span class="copy">⧉</span><small>08-18 18:05</small></span></td>
+          <td class="c-content"><div class="l1"><span class="cat notice">通知</span><p>【青鸾】您尾号3521的账户于08-18 18:02完成一笔转账，详…</p></div></td>
+          <td class="c-src">Web·账务通知/财务部</td>
+          <td class="c-result"><div class="mini"><b>96</b>/96 <span class="compose"><i class="d" style="width:100%"></i></span></div></td>
+          <td class="c-status"><span class="stag mute">已取消</span></td>
+          <td class="c-quota">96</td>
+          <td class="c-op"><a>详情</a></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="ledger-foot">
+      <span class="legend"><span><i class="d"></i>送达</span><span><i class="f"></i>失败</span><span><i class="u"></i>待回执</span><span><i class="p"></i>未提交</span><span>构成非成功率</span></span>
+      <span class="count">共 1,286 个批次 · 每页 20</span>
+      <span class="pages"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>…</b><b>65</b><b>›</b></span>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="cmp-wrap">
+  <h2>方案对比</h2>
+  <table class="cmp">
+    <tr><th style="width:130px"></th><th>现状（截图）</th><th>方案 A · 紧凑双行（推荐）</th><th>方案 B · 单行扫表</th></tr>
+    <tr><td>行高</td><td>≈95px（批次号折行后更高）</td><td><b>≈52px</b>（badge 标注实测值）</td><td><b>≈36px</b>（badge 标注实测值）</td></tr>
+    <tr><td>900px 可视区行数</td><td>5–6 行</td><td>12–13 行</td><td>≈18 行</td></tr>
+    <tr><td>批次号</td><td>列宽不足时折成两行</td><td><b>完整单行</b>，可直接框选复制</td><td>截断头8…尾4，点击复制全量</td></tr>
+    <tr><td>时间精度</td><td>秒</td><td>秒</td><td>分</td></tr>
+    <tr><td>徽标（测试/定时/重发）</td><td>独立一行，抬高了整行</td><td>与时间合并为辅行</td><td>同行内联（重发徽标缩为「重发↗」）</td></tr>
+    <tr><td>风险</td><td>—</td><td>低：信息项与现状一一对应，仅重排</td><td>中：批次号截断依赖复制交互，需补「点击复制 + 复制成功反馈」</td></tr>
+  </table>
+
+  <h2>落地范围（供评审估算）</h2>
+  <table class="cmp">
+    <tr><th>改动点</th><th>位置</th><th>说明</th></tr>
+    <tr><td>筛选条单行化</td><td>BatchView.vue + workspace.css（.batch-filter-* 段）</td><td>去掉 .batch-more-hint；字段定宽；≥1260px 单行，窄屏维持现有折行回退；data-testid 全部保留，前端契约测试不受影响</td></tr>
+    <tr><td>行结构重排</td><td>BatchView.vue 表格列模板</td><td>el-table 加 size="small"；批次/时间列改两行结构；类别标签与内容并为一行；来源合并单行；单元格 padding 7px</td></tr>
+    <tr><td>构成列 / 表尾</td><td>workspace.css（.compose / .compose-legend / .batch-pager 段）</td><td>条高 5px；图例、计数、分页合并一行</td></tr>
+    <tr><td>不在本期</td><td>—</td><td>详情抽屉、移动端卡片列表（query-mobile-list）、列表 API 均不动；若选方案 B，再补批次号复制交互（navigator.clipboard + ElMessage 反馈）</td></tr>
+  </table>
+</div>
+
+<script>
+// 实测行高标注：让评审看到真实渲染高度而非口头目标
+document.querySelectorAll("[data-rh]").forEach(function (badge, i) {
+  var stage = badge.closest(".stage-label");
+  var vp = stage && stage.parentElement.querySelectorAll(".viewport")[i === 0 ? 0 : 1];
+  var tr = vp && vp.querySelector("tbody tr");
+  if (tr) badge.textContent = badge.dataset.rh + " · 本页实测 " + Math.round(tr.getBoundingClientRect().height) + "px";
+});
+</script>
+</body>
+</html>
