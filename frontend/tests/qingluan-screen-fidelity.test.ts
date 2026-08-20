@@ -145,6 +145,28 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
   })
 
+  it("模板管理使用单行胶囊工具条和密表格", () => {
+    const view = source("src/views/TemplateView.vue")
+    const workspace = source("src/styles/workspace.css")
+    expect(view).toContain("template-filter-bar")
+    expect(view).toContain("template-seg")
+    expect(view).toContain("接口全量返回 · 前端过滤")
+    expect(view).toContain("未送审（历史数据）")
+    expect(view).toContain("共 {{ filtered.length }} 个模板")
+    expect(view).toContain("读：operator / approver / admin · 写：operator / admin")
+    expect(view).toContain("模板已删除 · 本次操作已记入审计")
+    expect(view).toContain("template-content-block")
+    expect(view).toContain("template-fact-grid")
+    expect(view).not.toContain("<el-segmented")
+    expect(view).not.toContain("filter-grid")
+    expect(view).not.toContain("filter-toolbar")
+    expect(view).not.toContain("<el-card")
+    expect(view).not.toContain("占位与变量必须从 1")
+    expect(workspace).toMatch(/\.template-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.template-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.template-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
+  })
+
   it("应用与密钥使用三列卡片而非主表格", () => {
     const view = source("src/views/AppManagementView.vue")
     expect(view).toContain('class="app-card-grid"')

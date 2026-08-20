@@ -41,6 +41,19 @@ function mockList(payload: unknown) {
   )
 }
 
+/** ElMessageBox 确认框可传字符串或 VNode；测试只抽取可见文案。 */
+function vnodeText(value: unknown): string {
+  if (typeof value === "string") return value
+  if (value == null) return ""
+  if (typeof value === "object" && "children" in value) {
+    const children = (value as { children?: unknown }).children
+    if (typeof children === "string") return children
+    if (Array.isArray(children)) return children.map(vnodeText).join("")
+    return vnodeText(children)
+  }
+  return String(value)
+}
+
 /** VTU mocks 不写入 appContext.globalProperties，$router 必须以插件方式安装。 */
 function routerPlugin(router: unknown) {
   return {
@@ -57,7 +70,9 @@ describe("模板管理", () => {
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.get(".template-toolbar").classes()).toContain("filter-toolbar")
+    expect(wrapper.find(".template-filter-bar").exists()).toBe(true)
+    expect(wrapper.find(".filter-toolbar").exists()).toBe(false)
+    expect(wrapper.get(".template-filter-note").text()).toBe("接口全量返回 · 前端过滤")
     const chip = wrapper.get(".template-table .var-chip")
     expect(chip.text()).toBe("{1}≤6")
     expect(chip.attributes("title")).toContain("最大 6 字")
@@ -121,7 +136,7 @@ describe("模板管理", () => {
     const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    const toolbar = wrapper.get(".template-toolbar")
+    const toolbar = wrapper.get(".template-filter-bar")
     expect(toolbar.text()).toContain("草稿")
     expect(toolbar.text()).toContain("待审核")
     expect(wrapper.get("[data-testid='template-state-pending']").text()).toContain("1")
@@ -131,7 +146,9 @@ describe("模板管理", () => {
     await wrapper.get("[data-testid='template-state-draft']").trigger("click")
     await flushPromises()
     expect(wrapper.findAll(".template-table .el-table__row")).toHaveLength(1)
+    expect(wrapper.get(".template-table").text()).toContain("未送审（历史数据）")
     expect(wrapper.get(".template-foot").text()).toContain("共 1 个模板")
+    expect(wrapper.get(".template-foot-role").text()).toContain("读：operator / approver / admin")
     vi.unstubAllGlobals()
   })
 
@@ -241,6 +258,8 @@ describe("模板管理", () => {
     await flushPromises()
     expect(document.body.textContent).toContain("上次厂商驳回：含未报备营销内容")
     expect(document.body.textContent).toContain("重新提交审核")
+    expect(document.body.textContent).toContain("平台 #7 · 重新提交将生成新的厂商编号")
+    expect(document.body.textContent).toContain("提交后进入厂商人工审核，期间不可编辑")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
@@ -282,7 +301,7 @@ describe("模板管理", () => {
     await flushPromises()
 
     expect(ElMessageBox.confirm).toHaveBeenCalled()
-    const confirmMessage = vi.mocked(ElMessageBox.confirm).mock.calls[0][0] as string
+    const confirmMessage = vnodeText(vi.mocked(ElMessageBox.confirm).mock.calls[0][0])
     expect(confirmMessage).toContain("写入审计日志")
     expect(confirmMessage).toContain("已被批次引用的模板不可删除")
     expect(error).not.toHaveBeenCalled()

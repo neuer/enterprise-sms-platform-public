@@ -3454,9 +3454,12 @@ main {
 
 .template-name {
   overflow: hidden;
+  color: var(--tx-hi);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 40%, transparent);
+  border-radius: 0;
 }
 
 .approval-list-foot {
@@ -3658,65 +3661,60 @@ main {
   margin-bottom: 18px;
 }
 
-.template-card {
-  border-color: var(--line);
-  border-radius: 9px;
+.template-heading p:not(.eyebrow) {
+  max-width: 620px;
 }
 
-.template-card > .el-card__body {
-  padding: 0;
-}
-
-.template-toolbar {
+.template-filter-bar {
   display: flex;
-  gap: 14px;
-  align-items: flex-end;
   flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
 }
 
-.muted {
-  color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-}
-
-.template-filter-group {
+.template-fld {
   display: grid;
   gap: 5px;
 }
 
-.template-filter-label {
+.template-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
+  white-space: nowrap;
 }
 
 .template-keyword {
   width: 220px;
 }
 
-.template-state-seg {
+.template-seg {
   display: flex;
   height: 34px;
   overflow: hidden;
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--hair);
   border-radius: 7px;
 }
 
-.template-state-seg button {
+.template-seg button {
   display: flex;
   gap: 6px;
   align-items: center;
   padding: 0 13px;
   color: var(--tx-2);
+  font: inherit;
   font-size: 11.5px;
+  font-weight: 400;
   background: var(--sink);
   border: 0;
   cursor: pointer;
 }
 
-.template-state-seg button i {
+.template-seg button i {
   color: var(--tx-3);
   font-family: var(--mono);
   font-size: 10px;
@@ -3724,22 +3722,41 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-.template-state-seg button.on {
-  color: var(--tx-hi);
+.template-seg button.on {
+  color: #eaf1ed;
   background: var(--verdi);
 }
 
-.template-state-seg button.on i {
-  color: color-mix(in srgb, var(--tx-hi) 75%, transparent);
+.template-seg button.on i {
+  color: rgba(234, 241, 237, 0.75);
 }
 
-.template-card .el-alert {
-  margin: 12px 16px 0;
-  width: auto;
+.template-filter-note {
+  margin-left: auto;
+  align-self: center;
+  color: var(--tx-3);
+  font: 11px var(--mono);
 }
 
-.template-card .el-table__row {
+.template-alert {
+  margin-bottom: 14px;
+}
+
+.template-results {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.template-table .el-table__row {
   cursor: pointer;
+}
+
+.muted {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
 }
 
 .template-mobile-list {
@@ -3791,24 +3808,128 @@ main {
   padding: 10px 16px;
   color: var(--tx-3);
   font-size: 11px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--hair-2);
 }
 
-.template-detail-title {
+.template-foot-role {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.template-drawer-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.template-drawer-title {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--line);
+  color: var(--tx-hi);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.template-drawer-head code {
+  display: block;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.template-content-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 13px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.template-content-block > span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.template-content-block p {
+  margin: 0;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.template-fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 16px 0 0;
+}
+
+.template-fact-grid dt {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.template-fact-grid dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.template-spec-card {
+  display: grid;
+  gap: 9px;
+  margin-top: 4px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.template-spec-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.template-spec-head b {
+  color: var(--tx-hi);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.template-spec-head span {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.template-content-item i {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.template-delete-dialog p {
+  margin: 0;
+}
+
+.template-delete-audit {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: 11px;
 }
 
 .template-trail {
   display: flex;
   align-items: center;
-  margin-top: 14px;
   padding: 12px 14px;
   background: var(--sink);
-  border: 1px solid var(--line);
+  border: 1px solid var(--hair);
   border-radius: 10px;
 }
 
@@ -3879,9 +4000,9 @@ main {
 }
 
 .template-vendor-preview {
+  color: var(--tx);
   font-family: var(--mono);
   font-size: 11.5px;
-  border-left-color: var(--tx-3) !important;
 }
 
 .template-detail-actions {
@@ -3904,27 +4025,10 @@ main {
   padding-right: 4px;
 }
 
-.variable-head,
 .variable-row {
   display: flex;
   gap: 10px;
   align-items: center;
-}
-
-.variable-head {
-  justify-content: space-between;
-  margin: 8px 0;
-}
-
-.variable-head-note {
-  color: var(--tx-3);
-  font-size: 10px;
-}
-
-.variable-row {
-  padding: 8px 10px;
-  background: var(--surface-soft);
-  border-bottom: 1px solid var(--line);
 }
 
 .variable-row code {
@@ -3941,7 +4045,6 @@ main {
 
 .variable-empty {
   margin: 0;
-  padding: 8px 10px;
   color: var(--tx-3);
   font-size: 11px;
 }
@@ -5997,22 +6100,24 @@ main {
     white-space: normal;
   }
 
-  .template-toolbar {
-    display: grid;
-    gap: 10px;
-    align-items: stretch;
-    padding: 14px;
+  .template-filter-bar {
+    align-items: flex-start;
   }
 
   .template-keyword {
     width: 100%;
   }
 
-  .template-state-seg {
+  .template-filter-note {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .template-seg {
     overflow-x: auto;
   }
 
-  .template-state-seg button {
+  .template-seg button {
     flex: 1;
     justify-content: center;
     padding: 0 8px;
@@ -6207,7 +6312,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .batch-heading .eyebrow,
 .message-heading .eyebrow,
 .reply-heading .eyebrow,
-.sign-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
+.sign-heading .eyebrow,
+.template-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
 .send-heading p:not(.eyebrow),
 .dashboard-heading p:not(.eyebrow),
 .report-heading p:not(.eyebrow),
@@ -6215,7 +6321,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .batch-heading p:not(.eyebrow),
 .message-heading p:not(.eyebrow),
 .reply-heading p:not(.eyebrow),
-.sign-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
+.sign-heading p:not(.eyebrow),
+.template-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
 
 .el-card,
 .el-dialog,
@@ -6245,6 +6352,11 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 /* 基础层按卡片定制的浅色表头变量特异性高于上面的 .el-table，需在深色层同特异性收编。 */
 .sign-table.el-table,
 .sign-table {
+  --el-table-header-bg-color: var(--panel-2);
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+}
+.template-table.el-table,
+.template-table {
   --el-table-header-bg-color: var(--panel-2);
   --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
 }
