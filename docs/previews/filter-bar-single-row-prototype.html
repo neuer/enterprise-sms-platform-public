@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 查询栏单行化原型（批次列表 / 审批中心）评审稿</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.stage-label .rh-badge{display:inline-block;margin-left:10px;font:10px/1.7 var(--mono);color:#71c4ad;border:1px solid rgba(47,161,132,.4);border-radius:5px;padding:0 8px;letter-spacing:0}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1248px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1248px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.notes li code{font:10.5px var(--mono);color:#71c4ad}
+
+/* ═══════════ 页面画布：内容区按真机 ≈1200px ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.blv{background:var(--bg);padding:16px 24px 20px;display:grid;gap:10px;min-width:1248px}
+.blv-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.blv-head h1{font-family:var(--serif);font-size:19px;font-weight:600;color:var(--tx-hi)}
+.blv-head .sub{color:var(--tx-3);font-size:11px}
+.head-right{display:flex;align-items:center;gap:8px}
+.role-tag,.head-badge{display:inline-flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:4px 11px;background:var(--panel)}
+.role-tag i{width:6px;height:6px;border-radius:50%;background:var(--verdi-l)}
+.head-badge b{color:var(--tx);font-weight:600}
+.head-refresh{display:inline-flex;align-items:center;gap:6px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:4px 11px;background:var(--sink)}
+.head-refresh b{color:var(--verdi-l);font-weight:400}
+.head-refresh em{font-style:normal;color:var(--tx-3);font-size:9.5px}
+
+/* ═══════════ 控件 mock（模拟真实 px 尺寸） ═══════════ */
+.bar{display:flex;align-items:center;gap:12px;width:1200px;padding:8px 14px;background:var(--panel);border:1px solid var(--hair);border-radius:10px}
+.bar.approval{gap:14px;padding:9px 14px;border-radius:12px}
+.fld{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.inp,.sel,.pkr{display:inline-flex;align-items:center;border:1px solid var(--hair);border-radius:6px;background:var(--sink);font-size:11.5px;color:var(--tx-3);padding:3px 10px;white-space:nowrap}
+.pkr{font:11px var(--mono);color:var(--tx-2);gap:8px}
+.pkr i{font-style:normal;color:var(--tx-3)}
+.sel::after{content:"▾";margin-left:8px;color:var(--tx-3);font-size:9px}
+.seg{display:flex;border:1px solid var(--hair);border-radius:6px;overflow:hidden}
+.seg b{font-weight:400;color:var(--tx-2);background:var(--sink);white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.seg b u{text-decoration:none;font:9.5px/1.5 var(--mono);color:var(--tx-3);background:var(--panel-2);border-radius:4px;padding:0 5px}
+.seg b.on u{color:#eaf1ed;background:rgba(255,255,255,.12)}
+.seg b u.hot{color:#f0a08c;background:rgba(228,106,79,.25)}
+.btn{padding:4px 15px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;white-space:nowrap}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.icon{padding:4px 10px;font-family:var(--mono)}
+.go{margin-left:auto;display:flex;align-items:center;gap:8px}
+.more-btn{padding:3px 10px;border:1px solid var(--hair);border-radius:6px;background:var(--sink);font-size:11px;color:var(--tx);white-space:nowrap}
+.poll-hint{font:9.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+
+/* chips 行（批次列表） */
+.chips-row{display:flex;align-items:center;gap:6px;width:1200px;padding:0 2px}
+.chips-row .lbl{font-size:10.5px;color:var(--tx-3);margin-right:2px}
+.chip{display:inline-flex;align-items:center;gap:5px;font:10.5px/1.6 var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:6px;padding:1px 9px;background:var(--sink);white-space:nowrap}
+.chip b{color:var(--tx);font-weight:600}
+.chip.on{border-color:rgba(47,161,132,.55);color:#71c4ad;background:rgba(14,122,99,.14)}
+.chip.on b{color:#71c4ad}
+.chips-row .meta{font:9.5px var(--mono);color:var(--tx-3)}
+.chips-row .go{margin-left:auto}
+
+/* 表格上沿一截，提供上下文 */
+.tbl-head{display:flex;gap:10px;width:1200px;padding:7px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:10px 10px 0 0;font-size:10.5px;color:var(--tx-3)}
+.tbl-head span:nth-child(1){width:248px}.tbl-head span:nth-child(2){flex:1}.tbl-head span:nth-child(3){width:150px}
+.tbl-head span:nth-child(4){width:172px}.tbl-head span:nth-child(5){width:90px}.tbl-head span:nth-child(6){width:70px;text-align:right}
+
+/* 现状示意：折行 + 留白 */
+.now-bar{width:1200px;background:var(--panel);border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+.now-row{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px dashed var(--hair-2)}
+.now-row.r2{border-bottom:0}
+.now-gap{flex:1;min-height:26px;border-radius:6px;
+  background:repeating-linear-gradient(135deg,transparent 0 6px,rgba(228,106,79,.10) 6px 12px)}
+.now-note{font:10px var(--mono);color:#f0a08c;white-space:nowrap}
+
+/* 预算标尺：逐段标注 px，合计对 1200 */
+.budget{display:flex;align-items:stretch;gap:2px;width:1200px;margin-top:2px}
+.budget i{font:9px/2 var(--mono);font-style:normal;color:var(--tx-3);background:var(--panel-2);border-radius:3px;text-align:center;overflow:hidden;white-space:nowrap}
+.budget i.ok{color:#71c4ad;background:rgba(14,122,99,.16)}
+.budget i.over{color:#f0a08c;background:rgba(228,106,79,.14)}
+.px-note{font:10px var(--mono);color:var(--tx-3)}
+.px-note b{color:#71c4ad;font-weight:400}
+.px-note .bad{color:#f0a08c}
+
+/* 对比表 */
+.cmp-wrap{margin:14px 28px 40px;max-width:1248px}
+.cmp-wrap h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin:22px 0 10px}
+.cmp{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{padding:8px 12px;border:1px solid var(--hair-2);text-align:left;vertical-align:top}
+.cmp th{background:var(--panel);color:var(--tx-hi);font-weight:600}
+.cmp td:first-child{font:10.5px var(--mono);color:var(--tx-3);white-space:nowrap}
+.cmp td{color:var(--tx-2)}
+.cmp td b{color:var(--tx)}
+.cmp td code{font:10.5px var(--mono);color:#71c4ad}
+.rec{display:inline-block;font:9.5px/1.6 var(--mono);color:#71c4ad;border:1px solid rgba(47,161,132,.4);border-radius:4px;padding:0 6px;margin-left:6px}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 查询栏单行化原型（批次列表 / 审批中心）</b>
+  <span>评审稿 · 所有数据均为虚构 mock · 纯静态，零外部依赖</span>
+  <em>2026-08-20</em>
+</div>
+
+<section class="notes">
+  <h2>现状诊断（依据 2026-08-20 真机截图与当前代码实测）</h2>
+  <ul>
+    <li><b>内容区预算 ≈1200px</b>：真机截图 2928px@2x（视口 1464 CSS px）− 侧栏 ≈220px − 内容内边距 ≈48px。</li>
+    <li><b>批次列表筛选条需求 ≈1251px，超约 50px</b>：批次号 179 + 类别 236 + 渠道 177 + 创建时间 355 + 更多筛选 84 + 查询/重置 132 + 间隙 60 + 内边距 28。动作按钮落到第二行右侧，第二行左大半为空白，纵向多花 ≈40px。</li>
+    <li><b>审批中心筛选条需求 ≈1286px，超约 86px</b>：状态 384 + 类别 150 + 部门 182 + 申请人 194 + 排序 150 + 刷新/30s 124 + 间隙 70 + 内边距 32。「刷新 · 30s 自动」整组落第二行。</li>
+    <li><b>密度原型已预警</b>：<code>batch-density-prototype.html</code> 指出「flex-wrap 折行 + 按钮 margin-left:auto 的组合在折行时仍会在行尾留白」，popover 修复落地后该问题显性化。</li>
+  </ul>
+</section>
+
+<section class="notes">
+  <h2>两个方案共用的瘦身清单（分歧点只在动作按钮位置）</h2>
+  <ul>
+    <li><b>批次列表</b>：创建时间 300→244px（内部 10.5px 等宽、分隔符收紧，显示到分 <code>YYYY-MM-DD HH:mm</code>，值仍为完整 ISO）；批次号 140→124px 并允许收缩到 96px 兜底（<code>flex:0 1 124px</code>，先挤输入框再折行）；分段钮 padding 11→9px。</li>
+    <li><b>审批中心</b>：部门 150→128px、申请人 150→112px（登录名为短字符串）；状态下拉与排序 118→112px；状态分段钮 padding 13→10px；「30s 自动」降为 9.5px 角注；条内边距 16→14px、gap 14→12px。</li>
+    <li><b>移动端不变</b>：≤760px 媒体查询维持现有折行/纵向堆叠，本原型只改 ≥1200px 桌面段。</li>
+  </ul>
+</section>
+
+<div class="stage-label">现状 — 两行折行，动作落第二行，行尾大面积留白</div>
+<div class="variant-caption">与真机截图一致：筛选条总需求超过内容区 50–90px，flex-wrap 把动作组挤到第二行。</div>
+
+<div class="viewport"><div class="blv">
+  <div class="now-bar">
+    <div class="now-row">
+      <div class="fld"><span>批次号</span><div class="inp" style="width:140px">模糊匹配批次号</div></div>
+      <div class="fld"><span>类别</span><div class="seg"><b class="on" style="padding:3px 11px">全部</b><b style="padding:3px 11px">验证码</b><b style="padding:3px 11px">通知</b><b style="padding:3px 11px">营销</b></div></div>
+      <div class="fld"><span>渠道</span><div class="seg"><b class="on" style="padding:3px 11px">全部</b><b style="padding:3px 11px">API</b><b style="padding:3px 11px">Web</b></div></div>
+      <div class="fld"><span>创建时间</span><div class="pkr" style="width:300px"><i>◷</i>创建开始<span>至</span>创建结束</div></div>
+      <div class="more-btn">更多筛选 ▾</div>
+    </div>
+    <div class="now-row r2">
+      <div class="now-gap"></div>
+      <span class="now-note">← 第二行仅按钮，留白 ≈78%</span>
+      <div class="btn primary">查询</div><div class="btn">重置</div>
+    </div>
+  </div>
+  <div class="now-bar">
+    <div class="now-row">
+      <div class="fld"><span>状态</span><div class="seg"><b class="on" style="padding:4px 13px">待审批 <u>3</u></b><b style="padding:4px 13px">已通过 <u>12</u></b><b style="padding:4px 13px">已驳回 <u>2</u></b><b style="padding:4px 13px">已过期 <u>1</u></b></div></div>
+      <div class="fld"><span>类别</span><div class="sel" style="width:118px">全部类别</div></div>
+      <div class="fld"><span>部门</span><div class="inp" style="width:150px">模糊匹配部门</div></div>
+      <div class="fld"><span>申请人</span><div class="inp" style="width:150px">登录名</div></div>
+      <div class="fld"><span>排序</span><div class="sel" style="width:118px">临期优先</div></div>
+    </div>
+    <div class="now-row r2">
+      <div class="now-gap"></div>
+      <span class="now-note">← 刷新组落第二行，留白 ≈85%</span>
+      <div class="btn">刷新</div><span class="poll-hint">30s 自动</span>
+    </div>
+  </div>
+</div></div>
+
+<div class="stage-label">方案 A — 原位收紧 · 推荐<span class="rh-badge">批次 ≈1150px / 审批 ≈1173px，均 < 1200</span></div>
+<div class="variant-caption">
+  元素一个不动，只收窄控件与间隙：动作按钮留在筛选条内右端，交互零学习成本；批次号输入框可收缩兜底，窗口再窄时先挤输入框、仍不轻易折行。
+</div>
+
+<div class="viewport"><div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+      <h1>批次列表</h1>
+      <p class="sub">按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+    </div>
+    <span class="role-tag"><i></i>当前口径 · 管理员</span>
+  </div>
+  <div class="bar">
+    <div class="fld"><span>批次号</span><div class="inp" style="width:124px">模糊匹配批次号</div></div>
+    <div class="fld"><span>类别</span><div class="seg"><b class="on" style="padding:3px 9px">全部</b><b style="padding:3px 9px">验证码</b><b style="padding:3px 9px">通知</b><b style="padding:3px 9px">营销</b></div></div>
+    <div class="fld"><span>渠道</span><div class="seg"><b class="on" style="padding:3px 9px">全部</b><b style="padding:3px 9px">API</b><b style="padding:3px 9px">Web</b></div></div>
+    <div class="fld"><span>创建时间</span><div class="pkr" style="width:236px"><i>◷</i>创建开始<span>至</span>创建结束</div></div>
+    <div class="more-btn">更多筛选 ▾</div>
+    <div class="go"><div class="btn primary">查询</div><div class="btn">重置</div></div>
+  </div>
+  <div class="budget">
+    <i style="width:163px">批次号 163</i><i style="width:222px">类别 222</i><i style="width:163px">渠道 163</i><i style="width:291px">时间 291</i><i style="width:84px">更多 84</i><i style="width:132px">动作 132</i><i class="ok" style="flex:1">余 ≈45px ✓</i>
+  </div>
+  <div class="chips-row">
+    <span class="lbl">状态</span>
+    <span class="chip on">全部 <b>18</b></span><span class="chip">进行中 <b>2</b></span><span class="chip">待审批 <b>3</b></span><span class="chip">定时中 <b>1</b></span><span class="chip">余额阻断 <b>0</b></span><span class="chip">已完成 <b>10</b></span><span class="chip">其他终态 <b>2</b></span>
+    <span class="meta">分组 = 进行中(queued+sending) · 待审批 · 定时中 · 余额阻断 · 已完成 · 其他终态</span>
+  </div>
+  <div class="tbl-head"><span>批次 / 时间</span><span>类别 / 内容</span><span>来源</span><span>结果构成（非成功率）</span><span>状态</span><span>操作</span></div>
+</div></div>
+
+<div class="viewport"><div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">GOVERNANCE / 审批流转</p>
+      <h1>审批中心</h1>
+      <p class="sub">Web 发送达阈值进入审批；超时未决自动过期并释放配额。</p>
+    </div>
+    <div class="head-right">
+      <span class="head-badge"><b>3</b> 待审 · <b>1</b> 临期</span>
+      <span class="role-tag"><i></i>当前身份 · 管理员</span>
+    </div>
+  </div>
+  <div class="bar approval">
+    <div class="fld"><span>状态</span><div class="seg"><b class="on" style="padding:4px 10px">待审批 <u>3</u></b><b style="padding:4px 10px">已通过 <u>12</u></b><b style="padding:4px 10px">已驳回 <u>2</u></b><b style="padding:4px 10px">已过期 <u>1</u></b></div></div>
+    <div class="fld"><span>类别</span><div class="sel" style="width:118px">全部类别</div></div>
+    <div class="fld"><span>部门</span><div class="inp" style="width:128px">模糊匹配部门</div></div>
+    <div class="fld"><span>申请人</span><div class="inp" style="width:112px">登录名</div></div>
+    <div class="fld"><span>排序</span><div class="sel" style="width:118px">临期优先</div></div>
+    <div class="go"><div class="btn">刷新</div><span class="poll-hint">30s</span></div>
+  </div>
+  <div class="budget">
+    <i style="width:360px">状态 360</i><i style="width:150px">类别 150</i><i style="width:160px">部门 160</i><i style="width:156px">申请人 156</i><i style="width:150px">排序 150</i><i style="width:104px">刷新 104</i><i class="ok" style="flex:1">余 ≈22px ✓</i>
+  </div>
+  <div class="tbl-head"><span>批次 / 申请人</span><span>内容</span><span>规模</span><span>临期</span><span>状态</span><span>操作</span></div>
+</div></div>
+
+<div class="stage-label">方案 B — 动作出条：批次查询下移 chips 行 · 审批刷新上移页头<span class="rh-badge">筛选条纯字段，余量 ≈80–100px</span></div>
+<div class="variant-caption">
+  批次列表把「查询 / 重置」下移到状态 chips 行右端（长说明文字收成 ⓘ 悬浮提示）；审批中心把「刷新 · 30s 自动」上移页头徽标组——审批筛选 change 即查询、刷新属页级动作，语义更顺。代价：批次查询动线跨行，需用「条件已变更」角标牵引。
+</div>
+
+<div class="viewport"><div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">BATCH LEDGER / 发送账本</p>
+      <h1>批次列表</h1>
+      <p class="sub">按部门权限查看发送轨迹；号码在列表与详情中始终保持掩码。</p>
+    </div>
+    <span class="role-tag"><i></i>当前口径 · 管理员</span>
+  </div>
+  <div class="bar">
+    <div class="fld"><span>批次号</span><div class="inp" style="width:140px">模糊匹配批次号</div></div>
+    <div class="fld"><span>类别</span><div class="seg"><b class="on" style="padding:3px 10px">全部</b><b style="padding:3px 10px">验证码</b><b style="padding:3px 10px">通知</b><b style="padding:3px 10px">营销</b></div></div>
+    <div class="fld"><span>渠道</span><div class="seg"><b class="on" style="padding:3px 10px">全部</b><b style="padding:3px 10px">API</b><b style="padding:3px 10px">Web</b></div></div>
+    <div class="fld"><span>创建时间</span><div class="pkr" style="width:236px"><i>◷</i>创建开始<span>至</span>创建结束</div></div>
+    <div class="more-btn">更多筛选 ▾</div>
+  </div>
+  <div class="chips-row">
+    <span class="lbl">状态</span>
+    <span class="chip on">全部 <b>18</b></span><span class="chip">进行中 <b>2</b></span><span class="chip">待审批 <b>3</b></span><span class="chip">定时中 <b>1</b></span><span class="chip">余额阻断 <b>0</b></span><span class="chip">已完成 <b>10</b></span><span class="chip">其他终态 <b>2</b></span>
+    <span class="meta" title="分组 = 进行中(queued+sending) · 待审批 · 定时中 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)">口径 ⓘ</span>
+    <div class="go"><div class="btn primary">查询</div><div class="btn">重置</div></div>
+  </div>
+  <div class="tbl-head"><span>批次 / 时间</span><span>类别 / 内容</span><span>来源</span><span>结果构成（非成功率）</span><span>状态</span><span>操作</span></div>
+</div></div>
+
+<div class="viewport"><div class="blv">
+  <div class="blv-head">
+    <div>
+      <p class="eyebrow">GOVERNANCE / 审批流转</p>
+      <h1>审批中心</h1>
+      <p class="sub">Web 发送达阈值进入审批；超时未决自动过期并释放配额。</p>
+    </div>
+    <div class="head-right">
+      <span class="head-badge"><b>3</b> 待审 · <b>1</b> 临期</span>
+      <span class="head-refresh"><b>↻ 刷新</b><em>30s 自动</em></span>
+      <span class="role-tag"><i></i>当前身份 · 管理员</span>
+    </div>
+  </div>
+  <div class="bar approval">
+    <div class="fld"><span>状态</span><div class="seg"><b class="on" style="padding:4px 11px">待审批 <u>3</u></b><b style="padding:4px 11px">已通过 <u>12</u></b><b style="padding:4px 11px">已驳回 <u>2</u></b><b style="padding:4px 11px">已过期 <u>1</u></b></div></div>
+    <div class="fld"><span>类别</span><div class="sel" style="width:118px">全部类别</div></div>
+    <div class="fld"><span>部门</span><div class="inp" style="width:136px">模糊匹配部门</div></div>
+    <div class="fld"><span>申请人</span><div class="inp" style="width:120px">登录名</div></div>
+    <div class="fld"><span>排序</span><div class="sel" style="width:118px">临期优先</div></div>
+  </div>
+  <div class="tbl-head"><span>批次 / 申请人</span><span>内容</span><span>规模</span><span>临期</span><span>状态</span><span>操作</span></div>
+</div></div>
+
+<div class="cmp-wrap">
+  <h2>方案对比</h2>
+  <table class="cmp">
+    <tr><th style="width:130px"></th><th>方案 A · 原位收紧<span class="rec">推荐</span></th><th>方案 B · 动作出条</th></tr>
+    <tr>
+      <td>单行达成</td>
+      <td>批次 ≈1150px（余 ≈50）、审批 ≈1173px（余 ≈27），1200px 预算内均单行</td>
+      <td>批次 bar ≈1119px、审批 bar ≈1104px，余量更宽松（≈80–100px），更耐未来加字段</td>
+    </tr>
+    <tr>
+      <td>交互变化</td>
+      <td><b>零变化</b>：按钮位置、提交动线、刷新位置全部保持</td>
+      <td>批次查询/重置移到 chips 行，动线跨行（有「条件已变更」角标牵引）；审批刷新上移页头，与徽标同组</td>
+    </tr>
+    <tr>
+      <td>改动面</td>
+      <td>仅 <code>workspace.css</code> 宽度/内边距 + BatchView 批次号收缩；≈10 行</td>
+      <td>两页模板结构移动 + chips 行/页头样式 + 契约测试文本同步；≈40 行</td>
+    </tr>
+    <tr>
+      <td>风险</td>
+      <td>低：不动 DOM 结构，快照/契约测试基本不感知；审批页余量偏小（27px），状态计数为 3 位数时仍可能折行</td>
+      <td>中：chips 行承载按钮后变挤，「口径 ⓘ」弱化说明性；审批页头右侧元素增至 3 组</td>
+    </tr>
+    <tr>
+      <td>移动端 ≤760px</td>
+      <td colspan="2">两方案一致：维持现有媒体查询折行堆叠，不做改动</td>
+    </tr>
+  </table>
+
+  <h2>实现落点（评审通过后）</h2>
+  <table class="cmp">
+    <tr><th>文件</th><th>改动</th></tr>
+    <tr><td><code>frontend/src/styles/workspace.css</code></td><td><code>.batch-filter-search</code> 140→124 且 <code>flex:0 1 auto;min-width:96px</code>；<code>.batch-filter-dates</code> 300→244 且可收缩，内部等宽 10.5px、分隔符/图标收紧；<code>.batch-seg button</code> padding 11→9；<code>.approval-fld .el-input</code> 150→128、申请人 112；<code>.approval-pill-select</code> 118→112；<code>.approval-seg button</code> padding 13→10；条 gap 14→12、内边距 16→14；<code>.approval-poll-hint</code> 9.5px</td></tr>
+    <tr><td><code>frontend/src/views/BatchView.vue</code></td><td>日期选择器加 <code>format="YYYY-MM-DD HH:mm"</code>（显示到分，值为完整 ISO）；方案 B 才把 <code>.batch-filter-actions</code> 移入 chips 行并将长说明收为 title 提示</td></tr>
+    <tr><td><code>frontend/src/views/ApprovalView.vue</code></td><td>申请人输入加 <code>approval-q-input</code> 类拆分宽度；方案 B 才把 <code>.approval-filter-go</code> 移入页头 <code>.head-right</code></td></tr>
+    <tr><td><code>frontend/tests/filter-layout-contract.test.ts</code> 等</td><td>同步契约断言（单行 flex 不变；方案 B 需更新结构类断言），同一 commit 回填</td></tr>
+  </table>
+</div>
+
+</body>
+</html>

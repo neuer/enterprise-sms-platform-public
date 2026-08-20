@@ -377,7 +377,7 @@ watch(moreOpen, (open) => {
     </div>
     <div class="batch-fld">
       <span>创建时间</span>
-      <el-date-picker v-model="range" type="datetimerange" popper-class="qingluan-date-popper" start-placeholder="创建开始" end-placeholder="创建结束" range-separator="至" class="batch-filter-dates" />
+      <el-date-picker v-model="range" type="datetimerange" format="YYYY-MM-DD HH:mm" popper-class="qingluan-date-popper" start-placeholder="创建开始" end-placeholder="创建结束" range-separator="至" class="batch-filter-dates" />
     </div>
     <div class="batch-fld">
       <el-popover v-model:visible="moreOpen" placement="bottom-end" :width="320" trigger="click">

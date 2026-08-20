@@ -394,6 +394,7 @@ onBeforeUnmount(() => {
       <el-input
         id="approval-q"
         v-model="q"
+        class="approval-q-input"
         placeholder="登录名"
         clearable
         maxlength="32"

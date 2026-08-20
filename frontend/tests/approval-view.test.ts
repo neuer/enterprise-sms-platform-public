@@ -97,6 +97,10 @@ function listCalls(fetchMock: ReturnType<typeof stubApprovalsFetch>): string[] {
     .filter((url) => routeOf(url) === "list")
 }
 
+// 已挂载实例登记：afterEach 统一卸载，确保轮询/倒计时 interval 不泄漏到后续用例
+// （真实 30s 轮询若在全量慢跑时跨用例触发，会打到当前用例的全局 fetch stub 上）
+const mountedWrappers: Array<{ unmount(): void }> = []
+
 function mountApproverView() {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -109,10 +113,19 @@ function mountApproverView() {
     dept: "业务一部",
     role: "approver",
   })
-  return mount(ApprovalView, { global: { plugins: [pinia, ElementPlus] } })
+  const wrapper = mount(ApprovalView, { global: { plugins: [pinia, ElementPlus] } })
+  mountedWrappers.push(wrapper)
+  return wrapper
 }
 
 afterEach(() => {
+  for (const wrapper of mountedWrappers.splice(0)) {
+    try {
+      wrapper.unmount()
+    } catch {
+      // 用例内已自行卸载（如轮询用例）——重复卸载忽略
+    }
+  }
   vi.useRealTimers()
   vi.unstubAllGlobals()
   document.body.innerHTML = ""
