@@ -20,6 +20,7 @@ import {
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
 import { getReport, type ReportDimSummary } from "../api/reports"
+import { listSigns, type SmsSign } from "../api/signs"
 import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
@@ -68,6 +69,10 @@ const rotatingCallbackId = ref<number | null>(null)
 /** 今日用量联查结果（dim_value = app.id 字符串）；调用失败时置 unavailable，单元格显示「—」。 */
 const dailyUsage = ref<Map<string, ReportDimSummary>>(new Map())
 const usageUnavailable = ref(false)
+/** 已通过厂商审核的签名清单；加载失败不阻塞表单，下拉显示不可用并可重试。 */
+const approvedSigns = ref<SmsSign[]>([])
+const signsLoading = ref(false)
+const signsUnavailable = ref(false)
 
 const form = reactive({
   name: "", dept: "", allowed_categories: ["notice"] as AppCategory[], default_sign: "",
@@ -541,6 +546,28 @@ async function loadKeyGraceHours(): Promise<void> {
   }
 }
 
+async function loadApprovedSigns(): Promise<void> {
+  signsLoading.value = true
+  try {
+    const signs = await listSigns()
+    approvedSigns.value = signs.filter((item) => item.vendor_state === "approved")
+    signsUnavailable.value = false
+  } catch (error) {
+    approvedSigns.value = []
+    signsUnavailable.value = true
+    ElMessage.error(error instanceof Error ? error.message : "已通过签名清单加载失败")
+  } finally {
+    signsLoading.value = false
+  }
+}
+
+/** 当前默认签名不在已通过清单时补一个遗留项，避免下拉显示原始值或被静默清空。 */
+const legacySign = computed(() => {
+  const value = form.default_sign.trim()
+  if (!value) return null
+  return approvedSigns.value.some((item) => item.name === value) ? null : value
+})
+
 function openCreate(): void {
   editingId.value = null
   resetForm()
@@ -774,6 +801,7 @@ onMounted(() => {
   void load()
   void loadDailyUsage()
   void loadKeyGraceHours()
+  void loadApprovedSigns()
 })
 </script>
 
@@ -1024,7 +1052,7 @@ onMounted(() => {
         <h3>策略</h3>
         <dl class="apps-fact-grid">
           <div><dt>允许类别</dt><dd>{{ categoriesText(detail) }}</dd></div>
-          <div><dt>默认签名</dt><dd>{{ detail.default_sign || "未设置" }}</dd></div>
+          <div><dt>默认签名</dt><dd>{{ detail.default_sign ? `【${detail.default_sign}】` : "未设置" }}</dd></div>
           <div><dt>黑名单检查</dt><dd>{{ detail.blacklist_check ? "开启" : "关闭" }}</dd></div>
           <div>
             <dt>来源 IP 白名单</dt>
@@ -1071,8 +1099,31 @@ onMounted(() => {
           <small class="field-rule">至少一个；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED。</small>
         </el-form-item>
         <el-form-item label="默认签名">
-          <el-input v-model="form.default_sign" />
-          <small class="field-rule">请求未指定签名时使用；请求内显式签名优先。</small>
+          <el-select
+            v-model="form.default_sign"
+            data-testid="default-sign-select"
+            clearable
+            filterable
+            :loading="signsLoading"
+            :placeholder="approvedSigns.length ? '从已通过签名中选择' : '暂无已通过签名'"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="sign in approvedSigns"
+              :key="sign.id"
+              :value="sign.name"
+              :label="`【${sign.name}】`"
+            />
+            <el-option
+              v-if="legacySign"
+              :value="legacySign"
+              :label="`【${legacySign}】（未通过审核的遗留值）`"
+            />
+          </el-select>
+          <small class="field-rule">仅可选择签名管理中厂商状态为「已通过」的签名；请求未指定签名时使用，请求内显式签名优先。清空表示不设置。</small>
+          <small v-if="signsUnavailable" class="field-rule">
+            签名清单加载失败，<el-button link type="primary" data-testid="signs-retry" @click="loadApprovedSigns">重试</el-button>；保存前请确认可选范围。
+          </small>
         </el-form-item>
       </section>
 
