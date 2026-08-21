@@ -778,17 +778,17 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
-  it("黑名单只展示掩码并支持批量添加和删除", async () => {
+  it("黑名单只展示掩码，添加收进抽屉并支持批量添加和删除", async () => {
     const item = { phone_hmac: "a".repeat(64), phone_mask: "138****8000", source: "manual", remark: "投诉", created_at: null }
     const fetch = vi.fn()
       .mockResolvedValueOnce(response({ total: 1, items: [item] }))
-      .mockResolvedValueOnce(response({ added: 1, updated: 0, items: [item] }))
+      .mockResolvedValueOnce(response({ added: 2, updated: 0, items: [item] }))
       .mockResolvedValueOnce(response({ total: 1, items: [item] }))
       .mockResolvedValueOnce(response(undefined, 204))
       .mockResolvedValueOnce(response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = mount(BlacklistView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = mount(BlacklistView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.find(".blacklist-mobile-list").exists()).toBe(true)
@@ -797,18 +797,73 @@ describe("管理员治理页面", () => {
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.find(".phone-mask").exists()).toBe(true)
     expect(wrapper.text()).not.toContain("13800138000")
-    await wrapper.get("[data-testid='blacklist-phones']").setValue("13800138000\n13900139000")
-    await wrapper.get("[data-testid='blacklist-add']").trigger("click")
+
+    // 添加收进抽屉：页头主按钮唤起，textarea 实时预检
+    await wrapper.get("[data-testid='blacklist-add-open']").trigger("click")
+    await flushPromises()
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+    expect(textarea).toBeTruthy()
+    textarea.value = "13800138000\n13900139000"
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+    expect(document.body.textContent).toContain("有效 2")
+    ;(document.querySelector("[data-testid='blacklist-add']") as HTMLElement).click()
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
       phones: ["13800138000", "13900139000"], source: "manual", remark: null,
     })
+
     await wrapper.get("[data-testid='blacklist-delete-aaaaaaaa']").trigger("click")
     await flushPromises()
     expect(fetch.mock.calls[3][0]).toBe(`/api/v1/web/admin/blacklist/${"a".repeat(64)}`)
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it("黑名单添加抽屉实时预检：批内去重计数、格式错误行号并禁用提交", async () => {
+    const fetch = vi.fn(async () => response({ total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(BlacklistView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='blacklist-add-open']").trigger("click")
+    await flushPromises()
+    const submit = document.querySelector("[data-testid='blacklist-add']") as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+    textarea.value = "13800138000\n12345\n13800138000"
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+
+    expect(document.body.textContent).toContain("有效 1")
+    expect(document.body.textContent).toContain("批内去重 1")
+    expect(document.body.textContent).toContain("格式错误 1（第 2 行）")
+    expect(document.body.textContent).toContain("第 2 行格式错误，应为 11 位手机号")
+    expect(submit.disabled).toBe(true)
+    // 预检不触发任何写请求
+    expect(fetch).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("黑名单来源筛选点选即重查，重置恢复全部", async () => {
+    const fetch = vi.fn(async (_url: string) => response({ total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(BlacklistView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(String(fetch.mock.calls[0][0])).not.toContain("source=")
+
+    await wrapper.get("[data-testid='blacklist-source-reply_optout']").trigger("click")
+    await flushPromises()
+    expect(String(fetch.mock.calls[1][0])).toContain("source=reply_optout")
+
+    await wrapper.get("[data-testid='blacklist-reset']").trigger("click")
+    await flushPromises()
+    expect(String(fetch.mock.calls[2][0])).not.toContain("source=")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it("敏感词支持批量添加、删除并在本页切换 block/audit 策略", async () => {

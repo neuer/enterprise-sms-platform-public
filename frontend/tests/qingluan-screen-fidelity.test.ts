@@ -120,8 +120,8 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("filter-grid")
     expect(view).not.toContain("↗")
     expect(view).not.toContain("厂商未回传 customId")
-    expect(workspace).toMatch(/\.reply-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.reply-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.reply-seg,\s*\.blacklist-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("签名管理使用单行胶囊工具条和密表格", () => {
