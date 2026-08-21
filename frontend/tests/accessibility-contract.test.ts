@@ -71,7 +71,7 @@ describe("无障碍样式契约", () => {
     expect(css).toMatch(/\.el-button\.is-link\.el-button--primary[^}]*--el-button-text-color:\s*var\(--verdi-l\)/s)
     expect(css).toMatch(/\.el-tabs__item\.is-active[^}]*color:\s*var\(--verdi-l\)/s)
     expect(css).toMatch(/\.metric-card span,[\s\S]*?\.metric-card small[^}]*color:\s*var\(--tx-2\)/s)
-    expect(css).toMatch(/\.managed-app-card header small[^}]*color:\s*var\(--tx-2\)/s)
+    expect(css).toMatch(/\.apps-cell-sub[^}]*color:\s*var\(--tx-2\)/s)
     expect(css).toMatch(/\.empty-state p[^}]*color:\s*var\(--tx-2\)/s)
     for (const background of ["#101814", "#18231e", "#141d19"]) {
       expect(contrast("#2fa184", background)).toBeGreaterThanOrEqual(4.5)

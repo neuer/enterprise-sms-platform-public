@@ -30,10 +30,28 @@ const app = {
   callback_url: null,
   callback_report_enabled: false,
   status: 1,
+  api_key_prefix: "sk-7f3a9c2e",
+  old_key_prefix: null,
+  old_key_expires_at: null,
+  callback_secret_configured: true,
+  created_at: "2026-04-02T10:18:44+08:00",
+}
+
+/** 今日用量联查的空响应（stat_daily 无记录）。 */
+const EMPTY_USAGE = {
+  granularity: "day",
+  group_by: "app",
+  category: "all",
+  start: "2026-08-21",
+  end: "2026-08-21",
+  can_export_decrypted: false,
+  summary: { total: 0, total_segments: 0, delivered: 0, failed: 0, unknown: 0, success_rate: 0 },
+  dim_summary: [],
+  items: [],
 }
 
 describe("管理员治理页面", () => {
-  it("应用管理暴露 CRUD 与三种密钥生命周期操作", async () => {
+  it("应用管理以筛选条加账本表格呈现，密钥操作收进详情抽屉", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/rotate-key")) {
         return response({ api_key: "once-only-key", old_key_expires_at: "2026-07-13T08:00:00+08:00" })
@@ -41,6 +59,7 @@ describe("管理员治理页面", () => {
       if (url.endsWith("/admin/configs")) {
         return response([{ key: "key_grace_hours", value: "72" }])
       }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app])
     })
     vi.stubGlobal("fetch", fetch)
@@ -52,17 +71,23 @@ describe("管理员治理页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("app-iam")
-    expect(wrapper.find(".app-card-grid").exists()).toBe(true)
-    expect(wrapper.find(".managed-app-card").exists()).toBe(true)
-    expect(wrapper.find(".app-management-table").exists()).toBe(false)
-    expect(wrapper.find(".app-management-mobile-list").exists()).toBe(false)
-    expect(wrapper.text()).toContain("旧 Key 宽限期 72 小时")
-    expect(wrapper.text()).not.toContain("旧 Key 24h 并行有效")
+    expect(wrapper.find("[data-testid='app-table']").exists()).toBe(true)
+    expect(wrapper.find(".apps-filter-bar").exists()).toBe(true)
+    expect(wrapper.text()).toContain("接口全量返回 · 前端过滤")
+    expect(wrapper.find(".app-card-grid").exists()).toBe(false)
+    expect(wrapper.find(".managed-app-card").exists()).toBe(false)
+    expect(wrapper.text()).toContain("共 1 个应用 · 启用 1 · 停用 0")
+    expect(wrapper.text()).toContain("读写：admin · 今日消耗来自 stat_daily 联查")
     expect(wrapper.get("[data-testid='new-app']").text()).toContain("新建应用")
-    expect(wrapper.get("[data-testid='edit-app-1']").text()).toContain("编辑")
-    expect(wrapper.get("[data-testid='revoke-key-1']").text()).toContain("作废旧 Key")
+    // 行内只留「详情」，轮换/作废/停用全部收进详情抽屉
+    expect(wrapper.find("[data-testid='rotate-key-1']").exists()).toBe(false)
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("#1 · 平台技术部 · 创建于 2026-04-02 10:18:44")
+    expect(wrapper.get("[data-testid='edit-app-1']").text()).toContain("编辑配置")
+    expect(wrapper.get("[data-testid='demo-script-1']").text()).toContain("接入示例")
     expect(wrapper.get("[data-testid='rotate-callback-1']").text()).toContain("轮换回调密钥")
-    expect(wrapper.get("[data-testid='disable-app-1']").text()).toContain("停用")
+    expect(wrapper.get("[data-testid='disable-app-1']").text()).toContain("停用应用")
     await wrapper.get("[data-testid='rotate-key-1']").trigger("click")
     await flushPromises()
     expect(document.body.textContent).toContain("once-only-key")
@@ -80,6 +105,172 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
+  it("密钥列呈现前缀与三态标签，宽限入口仅旧 Key 存在时出现", async () => {
+    const graceApp = {
+      ...app,
+      id: 2,
+      name: "app-mall",
+      api_key_prefix: "sk-mall88ab",
+      old_key_prefix: "sk-old99cd",
+      old_key_expires_at: new Date(Date.now() + 41.2 * 3_600_000).toISOString(),
+      callback_url: "https://gw-mall.example.internal/sms/callback",
+      callback_report_enabled: true,
+    }
+    const disabledApp = {
+      ...app,
+      id: 3,
+      name: "app-legacy",
+      status: 0 as const,
+      api_key_prefix: "revoked0",
+    }
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/revoke-old-key") && init?.method === "POST") return response(undefined, 204)
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
+      return response([app, graceApp, disabledApp])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("sk-7f3a9c2e••••")
+    expect(wrapper.text()).toContain("单 Key 运行")
+    expect(wrapper.text()).toContain("sk-mall88ab••••")
+    expect(wrapper.text()).toContain("旧 Key 宽限 · 余 42h")
+    expect(wrapper.text()).toContain("已随停用吊销")
+    expect(wrapper.text()).not.toContain("revoked0••••")
+    expect(wrapper.text()).toContain("gw-mall.example.internal/sms/callback")
+    expect(wrapper.text()).toContain("明细回调 开启 · 密钥已配置")
+    expect(wrapper.text()).toContain("共 3 个应用 · 启用 2 · 停用 1")
+
+    // 无旧 Key 的应用不提供作废入口
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
+    expect(wrapper.find("[data-testid='revoke-old-key-1']").exists()).toBe(false)
+
+    // 宽限期中的应用提供作废入口，确认提示旧前缀与原到期时间
+    await wrapper.get("[data-testid='app-detail-2']").trigger("click")
+    await flushPromises()
+    await wrapper.get("[data-testid='revoke-old-key-2']").trigger("click")
+    await flushPromises()
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("sk-old99cd••••"),
+      "立即作废旧 Key？",
+      expect.objectContaining({ type: "warning", confirmButtonText: "确认作废" }),
+    )
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("到期，作废后立即失效"),
+      "立即作废旧 Key？",
+      expect.objectContaining({ type: "warning" }),
+    )
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/revoke-old-key"))).toHaveLength(1)
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("详情抽屉呈现运行概览、密钥回调与策略三段事实", async () => {
+    const usage = {
+      ...EMPTY_USAGE,
+      dim_summary: [
+        {
+          dim_value: "1",
+          dim_label: "app-iam",
+          total: 41203,
+          total_segments: 41203,
+          delivered: 40629,
+          failed: 574,
+          unknown: 0,
+          success_rate: 0.9861,
+        },
+      ],
+    }
+    const configured = {
+      ...app,
+      daily_quota: 50000,
+      blacklist_check: false,
+      freq_override: { verify_per_minute: 2, market_per_day: 1 },
+      callback_url: "https://callback.internal/sms",
+      callback_report_enabled: true,
+    }
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (String(url).includes("/reports/stats")) return response(usage)
+      return response([configured])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    // 列表今日消耗列：消耗 / 配额 + 进度条（82.4% > 80% 琥珀）
+    expect(wrapper.text()).toContain("41,203")
+    expect(wrapper.text()).toContain("/ 50,000")
+    const bar = wrapper.get(".apps-quota-bar i")
+    expect(bar.classes()).toContain("warn")
+
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("运行概览 · 今日")
+    expect(wrapper.text()).toContain("成功率 98.6%（delivered/(delivered+failed)）")
+    expect(wrapper.text()).toContain("每分钟限流")
+    expect(wrapper.text()).toContain("频控覆盖")
+    expect(wrapper.text()).toContain("验证码 2/分")
+    expect(wrapper.text()).toContain("营销 1/日")
+    expect(wrapper.text()).toContain("密钥与回调")
+    expect(wrapper.text()).toContain("https://callback.internal/sms")
+    expect(wrapper.text()).toContain("已配置")
+    expect(wrapper.text()).toContain("策略")
+    expect(wrapper.text()).toContain("默认签名")
+    expect(wrapper.text()).toContain("青鸾平台")
+    expect(wrapper.text()).toContain("黑名单检查")
+    expect(wrapper.text()).toContain("关闭")
+    expect(wrapper.text()).toContain("来源 IP 白名单")
+    expect(wrapper.text()).toContain("全网放行")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("今日用量联查失败时单元格显示占位符而不拖垮列表", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (String(url).includes("/reports/stats")) return response({ code: "INTERNAL_ERROR" }, 500)
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("app-iam")
+    expect(wrapper.text()).toContain("—")
+    expect(wrapper.find(".apps-quota-bar").exists()).toBe(false)
+
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("今日用量统计暂不可用")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("轮换 API Key 需二次确认并在请求中阻止重复提交", async () => {
     const otherApp = { ...app, id: 2, name: "app-oa" }
     let resolveRotation!: (value: ReturnType<typeof response>) => void
@@ -91,6 +282,7 @@ describe("管理员治理页面", () => {
       if (url.endsWith("/admin/configs")) {
         return response([{ key: "key_grace_hours", value: "72" }])
       }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app, otherApp])
     })
     vi.stubGlobal("fetch", fetch)
@@ -101,8 +293,9 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
 
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     const rotateButton = wrapper.get("[data-testid='rotate-key-1']")
-    const otherRotateButton = wrapper.get("[data-testid='rotate-key-2']")
     const callbackButton = wrapper.get("[data-testid='rotate-callback-1']")
     const newAppButton = wrapper.get("[data-testid='new-app']")
     await rotateButton.trigger("click")
@@ -117,12 +310,21 @@ describe("管理员治理页面", () => {
         cancelButtonText: "取消",
       }),
     )
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("72 小时宽限期"),
+      "确认轮换 API Key",
+      expect.objectContaining({ type: "warning" }),
+    )
     expect(rotateButton.attributes("disabled")).toBeDefined()
-    expect(otherRotateButton.attributes("disabled")).toBeDefined()
     expect(callbackButton.attributes("disabled")).toBeDefined()
     expect(newAppButton.attributes("disabled")).toBeDefined()
-    await otherRotateButton.trigger("click")
     await callbackButton.trigger("click")
+    // 轮换进行中新建应用与另一应用的轮换入口都被单飞守卫禁用
+    await wrapper.get("[data-testid='app-detail-2']").trigger("click")
+    await flushPromises()
+    const otherRotateButton = wrapper.get("[data-testid='rotate-key-2']")
+    expect(otherRotateButton.attributes("disabled")).toBeDefined()
+    await otherRotateButton.trigger("click")
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-key"))).toHaveLength(1)
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-callback-secret"))).toHaveLength(0)
 
@@ -136,13 +338,10 @@ describe("管理员治理页面", () => {
     expect(document.body.textContent).toContain("复制并安全保存")
     expect(document.body.textContent).toContain("旧 Key 宽限期至 2026-07-13 08:00:00")
     expect(otherRotateButton.attributes("disabled")).toBeDefined()
-    expect(callbackButton.attributes("disabled")).toBeDefined()
     expect(newAppButton.attributes("disabled")).toBeDefined()
     await wrapper.get("[data-testid='secret-close']").trigger("click")
     await flushPromises()
-    expect(rotateButton.attributes("disabled")).toBeUndefined()
-    expect(otherRotateButton.attributes("disabled")).toBeUndefined()
-    expect(callbackButton.attributes("disabled")).toBeUndefined()
+    expect(wrapper.get("[data-testid='rotate-key-2']").attributes("disabled")).toBeUndefined()
     expect(newAppButton.attributes("disabled")).toBeUndefined()
 
     wrapper.unmount()
@@ -155,6 +354,7 @@ describe("管理员治理页面", () => {
       if (url.endsWith("/admin/configs")) {
         return response([{ key: "key_grace_hours", value: "72" }])
       }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app])
     })
     vi.stubGlobal("fetch", fetch)
@@ -165,6 +365,8 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
 
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     await wrapper.get("[data-testid='rotate-key-1']").trigger("click")
     await flushPromises()
 
@@ -176,49 +378,12 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
-  it("卡片呈现黑名单、频控覆盖与回调投递策略摘要", async () => {
-    const configured = {
-      ...app,
-      daily_quota: 0,
-      blacklist_check: false,
-      freq_override: { verify_per_minute: 2, market_per_day: 1 },
-      callback_url: "https://callback.internal/sms",
-      callback_report_enabled: true,
-    }
-    const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("/admin/configs")) {
-        return response([{ key: "key_grace_hours", value: "72" }])
-      }
-      return response([configured])
-    })
-    vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(AppManagementView, {
-      global: { plugins: [createPinia(), ElementPlus] },
-    })
-    await flushPromises()
-
-    const card = wrapper.get(".managed-app-card")
-    expect(card.text()).toContain("不限量")
-    expect(card.text()).toContain("黑名单检查")
-    expect(card.text()).toContain("关闭")
-    expect(card.text()).toContain("频控覆盖")
-    expect(card.text()).toContain("验证码 2/分")
-    expect(card.text()).toContain("营销 1/日")
-    expect(card.text()).toContain("来源白名单")
-    expect(card.text()).toContain("不限")
-    expect(card.text()).toContain("https://callback.internal/sms")
-    expect(card.text()).toContain("消息级回调")
-    expect(card.text()).toContain("开启")
-
-    wrapper.unmount()
-    vi.unstubAllGlobals()
-  })
-
   it("取消回调密钥轮换确认不产生写请求", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/admin/configs")) {
         return response([{ key: "key_grace_hours", value: "72" }])
       }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app])
     })
     vi.stubGlobal("fetch", fetch)
@@ -229,6 +394,8 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
 
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
     await flushPromises()
 
@@ -253,6 +420,7 @@ describe("管理员治理页面", () => {
       if (url.endsWith("/rotate-callback-secret")) {
         return response({ callback_secret: "cb-secret-once" })
       }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app])
     })
     vi.stubGlobal("fetch", fetch)
@@ -266,6 +434,8 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
 
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
     await flushPromises()
     expect(document.body.textContent).toContain("cb-secret-once")
@@ -283,8 +453,16 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
-  it("停用应用在桌面端和移动端提供启用操作并可恢复为启用状态", async () => {
-    const disabledApp = { ...app, id: 2, name: "app-oa", status: 0 as const }
+  it("停用确认逐条列出后果，启用先取权威配置再仅改状态", async () => {
+    const disabledApp = {
+      ...app,
+      id: 2,
+      name: "app-oa",
+      status: 0 as const,
+      api_key_prefix: "revoked0",
+      old_key_prefix: null,
+      old_key_expires_at: null,
+    }
     let apps = [app, disabledApp]
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/admin/apps/2") && init?.method === "PUT") {
@@ -292,29 +470,55 @@ describe("管理员治理页面", () => {
         apps = [app, enabledApp]
         return response(enabledApp)
       }
+      if (url.endsWith("/admin/apps/2") && init?.method === "GET") return response(disabledApp)
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response(apps)
     })
     vi.stubGlobal("fetch", fetch)
-    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mount(AppManagementView, {
       attachTo: document.body,
       global: { plugins: [createPinia(), ElementPlus] },
     })
     await flushPromises()
 
+    // 停用确认逐条列出后果
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     expect(wrapper.find("[data-testid='enable-app-1']").exists()).toBe(false)
-    expect(wrapper.get("[data-testid='disable-app-1']").text()).toContain("停用")
-    expect(wrapper.get("[data-testid='enable-app-2']").text()).toContain("启用")
-    expect(wrapper.find("[data-testid='disable-app-2']").exists()).toBe(false)
+    await wrapper.get("[data-testid='disable-app-1']").trigger("click")
+    await flushPromises()
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "div" }),
+      "停用应用 app-iam？",
+      expect.objectContaining({ type: "warning", confirmButtonText: "确认停用" }),
+    )
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/admin/apps/1"))).toHaveLength(1)
 
+    // 停用应用的详情抽屉提供启用入口
+    await wrapper.get("[data-testid='app-detail-2']").trigger("click")
+    await flushPromises()
+    expect(wrapper.find("[data-testid='disable-app-2']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='enable-app-2']").text()).toContain("启用")
     await wrapper.get("[data-testid='enable-app-2']").trigger("click")
     await flushPromises()
 
-    const updateCall = fetch.mock.calls.find(
+    // 启用流程：先 GET 权威配置，再 PUT 仅改 status
+    const calls = fetch.mock.calls
+    const order = fetch.mock.invocationCallOrder
+    const getIndex = calls.findIndex(
+      ([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "GET",
+    )
+    const putIndex = calls.findIndex(
       ([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "PUT",
     )
-    expect(updateCall).toBeDefined()
-    expect(JSON.parse(String(updateCall?.[1]?.body))).toEqual({
+    expect(getIndex).toBeGreaterThanOrEqual(0)
+    expect(putIndex).toBeGreaterThanOrEqual(0)
+    expect(order[getIndex]).toBeLessThan(order[putIndex])
+    expect(JSON.parse(String(calls[putIndex]?.[1]?.body))).toEqual({
       dept: disabledApp.dept,
       allowed_categories: disabledApp.allowed_categories,
       default_sign: disabledApp.default_sign,
@@ -335,6 +539,30 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
+  it("新建抽屉按三段分组并对危险默认值就地警示", async () => {
+    const fetch = vi.fn().mockResolvedValue(response([app]))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    await wrapper.get("[data-testid='new-app']").trigger("click")
+    await flushPromises()
+
+    const drawer = wrapper.get(".apps-editor-drawer")
+    expect(drawer.text()).toContain("基本信息")
+    expect(drawer.text()).toContain("配额与策略")
+    expect(drawer.text()).toContain("安全与回调")
+    expect(drawer.text()).toContain("日配额为 0 表示不限量")
+    expect(drawer.text()).toContain("白名单为空表示全网放行")
+    expect(drawer.text()).toContain("保存即记审计（app_create）")
+    expect(drawer.get("[data-testid='save-app']").text()).toContain("创建应用")
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("频控覆盖只接受三个文档键和正整数", async () => {
     const fetch = vi.fn().mockResolvedValue(response([app]))
     vi.stubGlobal("fetch", fetch)
@@ -344,7 +572,9 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
     await wrapper.get("[data-testid='new-app']").trigger("click")
-    const textInputs = wrapper.findAll("input[type='text']")
+    await flushPromises()
+    const drawer = wrapper.get(".apps-editor-drawer")
+    const textInputs = drawer.findAll("input[type='text']")
     await textInputs[0].setValue("new-app")
     await textInputs[1].setValue("平台部")
 
@@ -387,7 +617,9 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
     await wrapper.get("[data-testid='new-app']").trigger("click")
-    const textInputs = wrapper.findAll("input[type='text']")
+    await flushPromises()
+    const drawer = wrapper.get(".apps-editor-drawer")
+    const textInputs = drawer.findAll("input[type='text']")
     await textInputs[0].setValue("new-app")
     await textInputs[1].setValue("平台部")
     await wrapper.get("[data-testid='allowed-ips-input']").setValue("203.0.113.7\n10.0.0.0/8 \n")
@@ -419,6 +651,7 @@ describe("管理员治理页面", () => {
     }
     const fetch = vi.fn(async (url: string) => {
       if (String(url).endsWith("/web/templates")) return response([approvedTemplate])
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
       return response([app])
     })
     vi.stubGlobal("fetch", fetch)
@@ -431,6 +664,8 @@ describe("管理员治理页面", () => {
     })
     await flushPromises()
 
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
     await wrapper.get("[data-testid='demo-script-1']").trigger("click")
     await flushPromises()
 
