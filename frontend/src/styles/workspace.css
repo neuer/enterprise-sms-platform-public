@@ -254,11 +254,15 @@ button:focus-visible {
   }
 }
 
-.reply-heading {
+.reply-heading,
+.blacklist-heading {
   align-items: end;
 }
 
-.reply-filter-bar {
+/* 黑名单检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/blacklist-fld/
+   blacklist-seg/blacklist-filter-go/blacklist-privacy 共用 reply-* 规则，按页复制即缺陷。 */
+.reply-filter-bar,
+.blacklist-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -270,12 +274,14 @@ button:focus-visible {
   border-radius: 12px;
 }
 
-.reply-fld {
+.reply-fld,
+.blacklist-fld {
   display: grid;
   gap: 5px;
 }
 
-.reply-fld > span {
+.reply-fld > span,
+.blacklist-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -304,7 +310,8 @@ button:focus-visible {
   font-size: 11px;
 }
 
-.reply-seg {
+.reply-seg,
+.blacklist-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -312,7 +319,8 @@ button:focus-visible {
   border-radius: 7px;
 }
 
-.reply-seg button {
+.reply-seg button,
+.blacklist-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -326,19 +334,22 @@ button:focus-visible {
   cursor: pointer;
 }
 
-.reply-seg button.on {
+.reply-seg button.on,
+.blacklist-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
 
-.reply-filter-go {
+.reply-filter-go,
+.blacklist-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
   margin-left: auto;
 }
 
-.reply-privacy {
+.reply-privacy,
+.blacklist-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -347,7 +358,8 @@ button:focus-visible {
   font-size: 10.5px;
 }
 
-.reply-privacy code {
+.reply-privacy code,
+.blacklist-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -357,7 +369,8 @@ button:focus-visible {
   font-size: 10.5px;
 }
 
-.reply-results {
+.reply-results,
+.blacklist-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -433,7 +446,8 @@ button:focus-visible {
   color: var(--tx-3);
 }
 
-.reply-pagination {
+.reply-pagination,
+.blacklist-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -456,16 +470,19 @@ button:focus-visible {
 }
 
 @media (max-width: 840px) {
-  .reply-heading {
+  .reply-heading,
+  .blacklist-heading {
     align-items: start;
   }
 
-  .reply-filter-bar {
+  .reply-filter-bar,
+  .blacklist-filter-bar {
     align-items: flex-start;
   }
 
   .reply-filter-phone,
-  .reply-filter-dates {
+  .reply-filter-dates,
+  .blacklist-keyword {
     width: 100%;
   }
 
@@ -473,19 +490,22 @@ button:focus-visible {
     --el-date-editor-datetimerange-width: 100%;
   }
 
-  .reply-filter-go {
+  .reply-filter-go,
+  .blacklist-filter-go {
     width: 100%;
     margin-left: 0;
   }
 
-  .reply-filter-go .el-button {
+  .reply-filter-go .el-button,
+  .blacklist-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
 }
 
 @media (max-width: 560px) {
-  .reply-pagination {
+  .reply-pagination,
+  .blacklist-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -3690,7 +3710,8 @@ main {
 }
 
 .template-keyword,
-.sign-keyword {
+.sign-keyword,
+.blacklist-keyword {
   width: 220px;
 }
 
@@ -4125,14 +4146,19 @@ main {
   font-size: 10.5px;
 }
 
-.sign-drawer-head {
+/* 黑名单抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/
+   blacklist-drawer-title/blacklist-delete-dialog/blacklist-delete-audit/
+   blacklist-form/blacklist-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
+.sign-drawer-head,
+.blacklist-drawer-head {
   display: grid;
   gap: 3px;
   min-width: 0;
   padding-right: 8px;
 }
 
-.sign-drawer-title {
+.sign-drawer-title,
+.blacklist-drawer-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -4141,7 +4167,8 @@ main {
   font-weight: 600;
 }
 
-.sign-drawer-head code {
+.sign-drawer-head code,
+.blacklist-drawer-head code {
   display: block;
   color: var(--tx-3);
   font: 11px var(--mono);
@@ -4194,11 +4221,13 @@ main {
   font-style: normal;
 }
 
-.sign-delete-dialog p {
+.sign-delete-dialog p,
+.blacklist-delete-dialog p {
   margin: 0;
 }
 
-.sign-delete-audit {
+.sign-delete-audit,
+.blacklist-delete-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -4270,7 +4299,8 @@ main {
   font-size: 10px;
 }
 
-.sign-form {
+.sign-form,
+.blacklist-form {
   padding-right: 4px;
 }
 
@@ -4278,14 +4308,16 @@ main {
   margin-top: 4px;
 }
 
-.sign-editor-foot {
+.sign-editor-foot,
+.blacklist-editor-foot {
   display: flex;
   gap: 12px;
   align-items: center;
   justify-content: space-between;
 }
 
-.sign-editor-foot small {
+.sign-editor-foot small,
+.blacklist-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
   font-size: 10px;
@@ -4295,18 +4327,6 @@ main {
   min-width: 0;
 }
 
-.blacklist-entry-footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
-  align-items: end;
-}
-
-.blacklist-entry-footer .el-form-item {
-  min-width: 0;
-  margin-bottom: 0;
-}
-
 .governance-entry-actions {
   display: flex;
   min-width: 0;
@@ -4314,12 +4334,10 @@ main {
   justify-content: flex-end;
 }
 
-.blacklist-filter .el-input,
 .sensitive-filter .el-input {
   flex: 0 1 220px;
 }
 
-.blacklist-pagination,
 .sensitive-pagination {
   display: flex;
   justify-content: space-between;
@@ -4328,6 +4346,60 @@ main {
   padding: 8px 16px;
   color: var(--tx-3);
   border-top: 1px solid var(--line);
+}
+
+/* 黑名单页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
+.blacklist-alert {
+  margin-bottom: 14px;
+}
+
+.blacklist-dash {
+  color: var(--tx-3);
+}
+
+.blacklist-field-hint {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.blacklist-phones .el-textarea__inner {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.blacklist-parse {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 14px;
+}
+
+.blacklist-chip {
+  padding: 2px 10px;
+  color: var(--tx-2);
+  font: 10.5px var(--mono);
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+}
+
+.blacklist-chip-ok {
+  color: #71c4ad;
+  border-color: rgba(47, 161, 132, 0.4);
+}
+
+.blacklist-chip-bad {
+  color: #ef9b89;
+  border-color: rgba(228, 106, 79, 0.45);
+}
+
+.blacklist-parse-error {
+  margin: -6px 0 12px;
+  color: var(--verm);
+  font-size: 11px;
 }
 
 .sensitive-entry-actions {
@@ -4348,11 +4420,6 @@ main {
 }
 
 @media (max-width: 760px) {
-  .blacklist-entry-footer {
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-
   .governance-entry-actions {
     width: 100%;
   }
@@ -6234,6 +6301,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .reply-heading .eyebrow,
 .sign-heading .eyebrow,
 .template-heading .eyebrow,
+.blacklist-heading .eyebrow,
 .apps-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
 .send-heading p:not(.eyebrow),
 .dashboard-heading p:not(.eyebrow),
@@ -6244,6 +6312,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .reply-heading p:not(.eyebrow),
 .sign-heading p:not(.eyebrow),
 .template-heading p:not(.eyebrow),
+.blacklist-heading p:not(.eyebrow),
 .apps-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
 
 .el-card,
