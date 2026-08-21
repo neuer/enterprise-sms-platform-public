@@ -17,7 +17,8 @@ export interface SensitiveWordFilters {
 }
 
 export const listSensitiveWords = (filters: SensitiveWordFilters) => {
-  const query = new URLSearchParams({ page: String(filters.page), size: "20" })
+  // 词条墙密度高，每页 60（服务端 size 上限 100 内）。
+  const query = new URLSearchParams({ page: String(filters.page), size: "60" })
   if (filters.keyword) query.set("keyword", filters.keyword)
   return apiRequest<SensitiveWordPage>(`/admin/sensitive-words?${query}`, { method: "GET" })
 }

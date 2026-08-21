@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 敏感词重设计原型 v2（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:560px}
+.head-ops{display:flex;align-items:center;gap:12px;flex:none}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 检索条（单卡片单行） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search-bar .go{height:34px;display:inline-flex;align-items:center;gap:10px;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 结果面板：词条墙（短词密排，替代整行表格） ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:14px 16px}
+.tile{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:7px 8px 7px 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12.5px;color:var(--tx)}
+.tile>span{overflow-wrap:anywhere;line-height:1.45}
+.tile .x{flex:none;color:var(--tx-3);font:11px/1 var(--mono);padding:3px 5px;border-radius:4px;background:none;border:0;cursor:pointer}
+.tile:hover{border-color:rgba(228,106,79,.35)}
+.tile:hover .x,.tile.demo-hover .x{color:#ef9b89}
+.tile.demo-hover{border-color:rgba(228,106,79,.35)}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{margin-left:auto;display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 添加抽屉（实现为 el-drawer 440px） ═══════════ */
+.drawer-zone{display:grid;grid-template-columns:5fr 7fr;gap:14px;align-items:start}
+.drawer{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:18px 20px;display:grid;gap:13px;max-width:520px;justify-self:end;width:100%}
+.drawer-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--hair-2);padding-bottom:11px}
+.drawer-head .tt{font-size:13.5px;color:var(--tx-hi);font-weight:600}
+.drawer-head code{font:11px var(--mono);color:var(--tx-3);display:block;margin-top:3px}
+.drawer-head .x{color:var(--tx-3);font-size:14px}
+.ta{width:100%;min-height:150px;background:var(--sink);border:1px solid var(--hair);border-radius:8px;padding:10px 12px;font:12px/1.9 var(--mono);color:var(--tx)}
+.ta .bad-line{color:#ef9b89;border-bottom:1px dashed rgba(228,106,79,.5)}
+.parse{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px;border:1px solid var(--hair);color:var(--tx-2);background:var(--sink)}
+.chip.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.chip.bad{color:#ef9b89;border-color:rgba(228,106,79,.45)}
+.err{font-size:11px;color:#ef9b89}
+.drawer-foot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--hair-2);padding-top:12px;gap:12px}
+.drawer-foot small{font-size:10px;color:var(--tx-3);max-width:280px}
+.drawer-foot .btns{display:flex;gap:10px}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.empty-duo .empty{display:grid;align-content:center}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-duo{grid-template-columns:1fr} .drawer-zone{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 敏感词重设计原型</b>
+  <span>v2 评审稿 · 拟新增 docs/ui-design.md §7-8a · 路由 /sensitive-words（admin 专属）</span>
+  <em>2026-08-21 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>结果区改词条墙</b>：敏感词是短词，整行表格浪费横向空间；改为 <code>auto-fill</code> 卡片流密排（词面 + 删除 ×），添加时间收进悬停 tooltip（实现用 el-tooltip），每页 60（接口 size 上限 100 内取值）。移动端同一 DOM 自适应换行，不再维护表格 / 卡片双份渲染。<span class="need calc">前端</span></li>
+  <li><b>删除 × 常驻弱化、悬停朱红</b>：每词一个 ×（朱红hover），点击仍走二次确认；词面只做展示与删除，不做行点击抽屉（词条无更多事实可展开）。<span class="need calc">前端</span></li>
+  <li><b>添加收进 440 抽屉</b>：撤下现网顶部常驻的大输入卡，页头右侧「添加敏感词」主按钮唤起抽屉；textarea 前端实时预检（有效 / 批内去重 / 超长行号），与服务端同规则（trim、批内去重、单词 ≤64 字）；400 报错只带行号、不带词面内容，内联展示。<span class="need calc">前端</span></li>
+  <li><b>命中策略改两态 seg</b>：现网页头 el-select 改为「命中阻断 / 仅审计」seg，与全站胶囊语言一致；切换即写 <code>sensitive_hit_action</code> 配置，失败回退原值并提示。<span class="need ok">现有</span></li>
+  <li><b>筛选收进单行检索条</b>：关键词 220px + 查询 / 重置，与黑名单、上行回复同一语言；说明沉条底，独立筛选卡片取消。词库可能达数万条，保持服务端分页与过滤，不走「接口全量返回 · 前端过滤」。<span class="need ok">现有</span></li>
+  <li><b>总数沉入底栏</b>：页头不再放计数；底栏「共 N 条 · 每页 60」与分页器同行。<span class="need calc">前端</span></li>
+  <li><b>删除确认如实告知后果与留痕</b>：删除后该词不再参与命中判定（按当前策略阻断或仅审计，验证码 / 通知 / 营销全类别一致生效）；删除行为与操作人写入审计日志；toast「已删除敏感词 · 本次操作已记入审计」，成功后重查列表。<span class="need ok">现有</span></li>
+  <li><b>添加结果如实分账</b>：toast「新增 N 个 · 已存在跳过 M 个 · 本次操作已记入审计」，对应响应 added / skipped（词库已存在的词跳过不重复入库）。<span class="need ok">现有</span></li>
+  <li><b>页头副文写明命中机制事实</b>：命中按当前策略阻断（422 SENSITIVE_WORD）或仅审计，全类别一致执行；变更写库即重建 Aho-Corasick 快照，其余进程按修订号自动加载——管理员改词前即可预判生效面。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认列表（admin 视角 · 全量要素） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认列表（admin 视角 · 词条墙全量要素）</div>
+<div class="variant-caption">短词密排成墙：删除 × 常驻弱化、悬停朱红（第 2 枚为悬停态演示）；添加时间在悬停 tooltip；末枚演示接近 64 字上限的长词在格内折行。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">CONTENT POLICY / 内容策略</div>
+      <h1>敏感词</h1>
+      <div class="sub">命中按当前策略阻断（422 SENSITIVE_WORD）或仅审计，验证码 / 通知 / 营销全类别一致执行；变更写库即重建 Aho-Corasick 快照，其余进程按修订号自动加载。</div>
+    </div>
+    <div class="head-ops">
+      <label class="fld"><span>命中策略</span>
+        <div class="seg"><b class="on">命中阻断</b><b>仅审计</b></div>
+      </label>
+      <span class="btn primary" style="align-self:flex-end">＋ 添加敏感词</span>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>关键词</span>
+      <div class="kw-input">搜索敏感词</div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span><span class="btn">重置</span></span>
+    <p class="privacy-note">关键词服务端 ILIKE 仅匹配词面（通配符已转义）；词库服务端分页过滤。词库变更经 <code>sensitive_word_revision</code> 修订号广播，各进程下次匹配前自动重建快照。</p>
+  </div>
+
+  <div class="result-panel">
+    <div class="wall">
+      <span class="tile" title="添加于 2026-08-19 14:23:02"><span>赌博网站</span><button class="x" aria-label="删除 赌博网站">✕</button></span>
+      <span class="tile demo-hover" title="添加于 2026-08-18 09:12:44"><span>中奖诈骗</span><button class="x" aria-label="删除 中奖诈骗">✕</button></span>
+      <span class="tile" title="添加于 2026-08-15 16:40:11"><span>代办发票</span><button class="x" aria-label="删除 代办发票">✕</button></span>
+      <span class="tile" title="添加于 2026-08-12 10:05:37"><span>刷单兼职</span><button class="x" aria-label="删除 刷单兼职">✕</button></span>
+      <span class="tile" title="添加于 2026-08-10 21:48:19"><span>违禁药品</span><button class="x" aria-label="删除 违禁药品">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>洗钱通道</span><button class="x" aria-label="删除 洗钱通道">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>网络赌博</span><button class="x" aria-label="删除 网络赌博">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>兼职刷单</span><button class="x" aria-label="删除 兼职刷单">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>虚假中奖</span><button class="x" aria-label="删除 虚假中奖">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>开发票</span><button class="x" aria-label="删除 开发票">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>走私</span><button class="x" aria-label="删除 走私">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>地下钱庄</span><button class="x" aria-label="删除 地下钱庄">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>博彩</span><button class="x" aria-label="删除 博彩">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>套现</span><button class="x" aria-label="删除 套现">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>高仿</span><button class="x" aria-label="删除 高仿">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>代开发票</span><button class="x" aria-label="删除 代开发票">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>赌场</span><button class="x" aria-label="删除 赌场">✕</button></span>
+      <span class="tile" title="添加于 2026-08-08 11:30:00"><span>这是一段接近六十四字上限的超长敏感词示例用来演示格内折行不会撑破卡片网格布局</span><button class="x" aria-label="删除">✕</button></span>
+    </div>
+    <div class="result-foot">
+      <span>共 342 条 · 每页 60</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>…</b><b>6</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：添加抽屉（实时预检 · 含超长内联态） ════════════════ -->
+<div class="stage-label">SCREEN B · 添加敏感词抽屉（实现为 el-drawer 440px · 实时预检与超长内联态）</div>
+<div class="variant-caption">输入即解析：有效 / 批内去重 / 超长三类计数；存在超长词时提交按钮禁用并内联给出行号（与服务端 400 口径一致，行号之外不带词面内容）。</div>
+<div class="viewport"><div class="screen">
+  <div class="drawer-zone">
+    <div class="result-panel dim" style="position:relative">
+      <div class="wall">
+        <span class="tile"><span>赌博网站</span><button class="x">✕</button></span>
+        <span class="tile"><span>中奖诈骗</span><button class="x">✕</button></span>
+        <span class="tile"><span>代办发票</span><button class="x">✕</button></span>
+        <span class="tile"><span>刷单兼职</span><button class="x">✕</button></span>
+        <span class="tile"><span>违禁药品</span><button class="x">✕</button></span>
+        <span class="tile"><span>洗钱通道</span><button class="x">✕</button></span>
+      </div>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="tt">添加敏感词到词库</div>
+          <code>POST /api/v1/web/admin/sensitive-words · 跳过已存在</code>
+        </div>
+        <span class="x">✕</span>
+      </div>
+
+      <label class="fld"><span>敏感词（每行一个，最多 10,000 个，单词不超过 64 字）</span>
+        <div class="ta">网络赌博<br>兼职刷单<br><span class="bad-line">这是一段明显超过六十四字限制的超长敏感词示例文本用来演示前端预检如何内联标注行号并禁用提交按钮的边界情况</span><br>虚假中奖<br>网络赌博</div>
+      </label>
+      <div class="parse">
+        <span class="chip ok">有效 3</span>
+        <span class="chip">批内去重 1</span>
+        <span class="chip bad">超长 1（第 3 行）</span>
+      </div>
+      <p class="err">第 3 行敏感词超过 64 字；修正后才可提交。服务端报错同样只带行号。</p>
+
+      <div class="drawer-foot">
+        <small>写库成功即重建全量快照，其余进程按修订号自动加载；已存在词跳过；添加行为与数量写入审计日志。</small>
+        <div class="btns"><span class="btn">取消</span><span class="btn primary" disabled>加入词库</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：删除确认 + 成功 toast ════════════════ -->
+<div class="stage-label">SCREEN C · 删除确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认如实告知删除后果（按当前策略不再参与命中判定）与审计留痕；确认后重查列表，toast 与添加结果分账口径一致。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">已删除敏感词 · 本次操作已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">CONTENT POLICY / 内容策略</div>
+      <h1>敏感词</h1>
+    </div>
+    <div class="head-ops">
+      <label class="fld"><span>命中策略</span>
+        <div class="seg"><b class="on">命中阻断</b><b>仅审计</b></div>
+      </label>
+      <span class="btn primary" style="align-self:flex-end">＋ 添加敏感词</span>
+    </div>
+  </div>
+
+  <div class="result-panel dim">
+    <div class="wall">
+      <span class="tile"><span>赌博网站</span><button class="x">✕</button></span>
+      <span class="tile"><span>中奖诈骗</span><button class="x">✕</button></span>
+      <span class="tile"><span>代办发票</span><button class="x">✕</button></span>
+      <span class="tile"><span>刷单兼职</span><button class="x">✕</button></span>
+      <span class="tile"><span>违禁药品</span><button class="x">✕</button></span>
+      <span class="tile"><span>洗钱通道</span><button class="x">✕</button></span>
+      <span class="tile"><span>网络赌博</span><button class="x">✕</button></span>
+      <span class="tile"><span>兼职刷单</span><button class="x">✕</button></span>
+    </div>
+  </div>
+
+  <div class="modal">
+    <h3>删除敏感词确认</h3>
+    <p>删除「<b>赌博网站</b>」？删除后该词不再参与命中判定（当前策略为命中阻断，验证码 / 通知 / 营销全类别一致生效）。</p>
+    <p class="audit-hint">删除行为与操作人将写入审计日志；审计只记数量，不记词面。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">删除敏感词</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：空态（双变体） ════════════════ -->
+<div class="stage-label">SCREEN D · 空态（左：词库为空 · 右：筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；空库引导添加，筛选态引导重置。</div>
+<div class="viewport"><div class="screen">
+  <div class="empty-duo">
+    <div class="empty">
+      <div><b>敏感词库为空</b>
+      <span>点击右上「添加敏感词」批量录入后，命中词将按当前策略阻断或仅审计。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合筛选条件的记录</b>
+      <span>调整关键词后重新查询，也可重置筛选查看全部词条。</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>全部数据来自现有 <code>GET/POST/DELETE /api/v1/web/admin/sensitive-words</code>（admin Bearer），字段 <code>id / word / created_at</code>；策略读写走现有 <code>GET/PUT /admin/configs</code>（<code>sensitive_hit_action</code>）；不新增端点、不新增字段、不加导出。<span class="need ok">现有</span></li>
+  <li>每页 60 仅为前端 <code>size</code> 参数取值（服务端上限 100），无契约变更。<span class="need ok">现有</span></li>
+  <li>keyword 服务端 ILIKE 仅作用 <code>word</code> 且转义通配符。<span class="need ok">现有</span></li>
+  <li>添加 trim + 批内去重 + 单词 ≤64 字；已存在词 <code>ON CONFLICT DO NOTHING</code> 跳过计入 <code>skipped</code>；超长 400 INVALID_PARAM 只带行号。<span class="need ok">现有</span></li>
+  <li>审计 <code>sensitive_word_add</code> / <code>sensitive_word_delete</code> 记 <code>{count}</code>，不含词面列表；确认与 toast 文案如实告知。<span class="need ok">现有</span></li>
+  <li>写库同事务推进 <code>sys_config</code> 修订号，管理端即时重建快照，其余进程下次匹配前按修订号自动重载——界面无额外表达，提交失败时展示结构化错误。<span class="need ok">现有</span></li>
+  <li>页面 admin 专属（PRD 附录 A #12），viewer / operator / approver 无入口；路由守卫与导航维持现状。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>
