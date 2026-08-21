@@ -3898,7 +3898,7 @@ components:
 
     App:
       type: object
-      required: [id, name, dept, allowed_categories, daily_quota, rate_limit_per_min, blacklist_check, status]
+      required: [id, name, dept, allowed_categories, daily_quota, rate_limit_per_min, blacklist_check, status, api_key_prefix, callback_secret_configured, created_at]
       properties:
         id: { type: integer }
         name: { type: string }
@@ -3917,6 +3917,11 @@ components:
         callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: production 仅允许 HTTPS }
         callback_report_enabled: { type: boolean, default: false }
         status: { type: integer, enum: [0, 1] }
+        api_key_prefix: { type: string, description: 当前 API Key 的 8 位前缀（非密元数据，仅用于界面辨识）；停用后为 revoked0 }
+        old_key_prefix: { anyOf: [{ type: string }, { type: 'null' }], description: 宽限期旧 Key 前缀；null 表示无宽限期旧 Key }
+        old_key_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 宽限期旧 Key 到期时间；null 表示无宽限期旧 Key }
+        callback_secret_configured: { type: boolean, description: 回调签名密钥是否已配置（不回传任何密文） }
+        created_at: { type: string, format: date-time }
 
     ExportTask:
       type: object
