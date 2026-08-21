@@ -292,14 +292,31 @@ def get_resend_service() -> ResendService:
     )
 
 
-async def get_scheduling_service() -> SchedulingService:
-    settings = get_settings()
-    policy = await SqlRuntimePolicyLoader(settings).load()
+def _scheduling_service(
+    settings: Any,
+    *,
+    approval_expire_hours: int = 24,
+) -> SchedulingService:
     redis: Any = redis_client(settings.redis_control_url)
     return SchedulingService(
         SqlSchedulingRepository(settings, pooled=True),
         QuotaService(redis),
         CeleryQueuePublisher(),
+        approval_expire_hours=approval_expire_hours,
+    )
+
+
+async def get_scheduling_cancel_service() -> SchedulingService:
+    """取消不依赖可变审批策略，避免为每次取消额外占用数据库连接。"""
+
+    return _scheduling_service(get_settings())
+
+
+async def get_scheduling_service() -> SchedulingService:
+    settings = get_settings()
+    policy = await SqlRuntimePolicyLoader(settings).load()
+    return _scheduling_service(
+        settings,
         approval_expire_hours=policy.approval_expire_hours,
     )
 
@@ -630,7 +647,7 @@ async def list_batch_details(
 @audited("batch_cancel")
 async def cancel_batch(
     batch_no: str,
-    service: Annotated[SchedulingService, Depends(get_scheduling_service)],
+    service: Annotated[SchedulingService, Depends(get_scheduling_cancel_service)],
     app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
 ) -> Response:

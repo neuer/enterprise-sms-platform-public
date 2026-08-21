@@ -122,8 +122,8 @@ describe("全站筛选布局契约", () => {
     expect(signView).not.toContain("filter-grid")
     expect(signView).not.toContain("<el-segmented")
     expect(signView).not.toContain("<el-card")
-    expect(css).toMatch(/\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("模板管理使用方案 A 单行胶囊工具条", () => {
@@ -137,8 +137,9 @@ describe("全站筛选布局契约", () => {
     expect(templateView).not.toContain("filter-grid")
     expect(templateView).not.toContain("<el-segmented")
     expect(templateView).not.toContain("<el-card")
-    expect(css).toMatch(/\.template-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.template-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{\s*align-items:\s*flex-start/s)
   })
 
   it("治理录入表单使用统一操作区并在手机端提供满宽主按钮", () => {

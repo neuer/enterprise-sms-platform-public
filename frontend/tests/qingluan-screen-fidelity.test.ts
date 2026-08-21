@@ -140,8 +140,8 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("filter-toolbar")
     expect(view).not.toContain("<el-card")
     expect(view).not.toContain("drawer-intro")
-    expect(workspace).toMatch(/\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
   })
 
@@ -162,8 +162,8 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("filter-toolbar")
     expect(view).not.toContain("<el-card")
     expect(view).not.toContain("占位与变量必须从 1")
-    expect(workspace).toMatch(/\.template-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.template-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.template-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
   })
 
