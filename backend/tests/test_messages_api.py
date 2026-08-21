@@ -56,7 +56,7 @@ class RoleFacade:
 
 
 @pytest.mark.asyncio
-async def test_scheduling_dependency_reuses_api_database_and_redis_pools(
+async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = type(
@@ -69,13 +69,16 @@ async def test_scheduling_dependency_reuses_api_database_and_redis_pools(
     )()
     redis = object()
     repositories: list[object] = []
+    policy_loads = 0
 
     class FakePolicyLoader:
         def __init__(self, selected_settings: object) -> None:
             assert selected_settings is settings
 
         async def load(self) -> object:
-            return type("PolicyStub", (), {"approval_expire_hours": 24})()
+            nonlocal policy_loads
+            policy_loads += 1
+            return type("PolicyStub", (), {"approval_expire_hours": 7})()
 
     class FakeRepository:
         def __init__(self, selected_settings: object, *, pooled: bool) -> None:
@@ -92,10 +95,18 @@ async def test_scheduling_dependency_reuses_api_database_and_redis_pools(
         lambda redis_url: redis if redis_url == "redis://test" else None,
     )
 
-    service = await messages_module.get_scheduling_service()
+    cancel_service = await messages_module.get_scheduling_cancel_service()
 
-    assert service.repository is repositories[0]
-    assert service.quota.redis is redis
+    assert policy_loads == 0
+    assert cancel_service.repository is repositories[0]
+    assert cancel_service.quota.redis is redis
+
+    reschedule_service = await messages_module.get_scheduling_service()
+
+    assert policy_loads == 1
+    assert reschedule_service.repository is repositories[1]
+    assert reschedule_service.quota.redis is redis
+    assert reschedule_service.approval_expire_hours == 7
 
 
 class FakePipeline:
@@ -979,6 +990,9 @@ def test_scheduled_batch_cancel_and_reschedule_endpoints() -> None:
 
     service = FakeScheduling()
     app = make_app()
+    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = (
+        lambda: service
+    )
     app.dependency_overrides[messages_module.get_scheduling_service] = lambda: service
     client = TestClient(app)
     headers = {"X-Api-Key": "valid"}
@@ -1027,7 +1041,9 @@ def test_bearer_batch_writes_enforce_role_matrix(
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.dependency_overrides[get_api_key_authenticator] = FakeKeyAuth
     app.include_router(messages_module.router)
-    app.dependency_overrides[messages_module.get_scheduling_service] = lambda: service
+    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = (
+        lambda: service
+    )
 
     response = TestClient(app).post(
         "/api/v1/messages/batches/batch-1/cancel",
