@@ -563,6 +563,84 @@ describe("管理员治理页面", () => {
     vi.unstubAllGlobals()
   })
 
+  it("默认签名仅从已通过签名中选择，遗留值与清单失败均有明确呈现", async () => {
+    const signs = [
+      { id: 1, name: "青鸾平台", vendor_sign_id: "sgn-1", vendor_state: "approved", vendor_reject_reason: null },
+      { id: 2, name: "青鸾商城", vendor_sign_id: null, vendor_state: "pending", vendor_reject_reason: null },
+    ]
+    const legacyApp = { ...app, id: 2, name: "app-legacy", default_sign: "旧签名" }
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/signs")) return response(signs)
+      return response([app, legacyApp])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    // 编辑 default_sign 为已通过签名的应用：选项只含已通过，pending 不出现
+    await wrapper.get("[data-testid='app-detail-1']").trigger("click")
+    await flushPromises()
+    await wrapper.get("[data-testid='edit-app-1']").trigger("click")
+    await flushPromises()
+    const select = wrapper.get("[data-testid='default-sign-select']")
+    expect(select.attributes("placeholder")).toBeUndefined()
+    await select.trigger("click")
+    await flushPromises()
+    const optionTexts = Array.from(document.body.querySelectorAll(".el-select-dropdown__item"))
+      .map((el) => el.textContent ?? "")
+    expect(optionTexts.some((text) => text.includes("【青鸾平台】"))).toBe(true)
+    expect(optionTexts.some((text) => text.includes("青鸾商城"))).toBe(false)
+    // 当前值已通过 → 不出现遗留标注
+    expect(optionTexts.some((text) => text.includes("遗留值"))).toBe(false)
+    // 关闭下拉与编辑抽屉
+    await select.trigger("click")
+    await flushPromises()
+    await wrapper.find(".apps-editor-drawer .el-drawer__close-btn").trigger("click")
+    await flushPromises()
+
+    // 编辑遗留值应用：下拉中遗留项被单独标注
+    await wrapper.get("[data-testid='app-detail-2']").trigger("click")
+    await flushPromises()
+    await wrapper.get("[data-testid='edit-app-2']").trigger("click")
+    await flushPromises()
+    await wrapper.get("[data-testid='default-sign-select']").trigger("click")
+    await flushPromises()
+    const legacyOptions = Array.from(document.body.querySelectorAll(".el-select-dropdown__item"))
+      .map((el) => el.textContent ?? "")
+    expect(legacyOptions.some((text) => text.includes("【旧签名】（未通过审核的遗留值）"))).toBe(true)
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("签名清单加载失败时表单不阻塞并就地提供重试", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/signs")) return response({ code: "INTERNAL_ERROR" }, 500)
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain("app-iam")
+
+    await wrapper.get("[data-testid='new-app']").trigger("click")
+    await flushPromises()
+    const drawer = wrapper.get(".apps-editor-drawer")
+    expect(drawer.text()).toContain("签名清单加载失败")
+    await drawer.get("[data-testid='signs-retry']").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/signs")).length).toBeGreaterThanOrEqual(2)
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("频控覆盖只接受三个文档键和正整数", async () => {
     const fetch = vi.fn().mockResolvedValue(response([app]))
     vi.stubGlobal("fetch", fetch)
