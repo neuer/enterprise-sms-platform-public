@@ -365,7 +365,7 @@ onMounted(load)
     <div>
       <p class="eyebrow">ASSETS / 内容治理</p>
       <h1>模板管理</h1>
-      <p>平台使用 {1}..{n} 占位并为每个变量登记最大长度；提交后由服务端统一转换为厂商 {s长度} 格式送审，仅厂商审核通过的模板可在发送中使用。</p>
+      <p>以 {1}..{n} 占位并登记变量最大长度，提交后统一转厂商 {s长度} 格式送审；仅审核通过可用于发送。</p>
     </div>
     <el-button v-if="canWrite" data-testid="new-template" type="primary" @click="resetEditor()">新建模板</el-button>
   </section>
