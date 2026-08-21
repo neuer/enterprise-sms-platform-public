@@ -47,8 +47,8 @@ describe("全站筛选布局契约", () => {
     expect(replyView).not.toContain("<el-segmented")
     expect(replyView).not.toContain("↗")
     expect(replyView).not.toContain("厂商未回传 customId")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("管理筛选遵循同一表单语义", () => {
@@ -142,13 +142,23 @@ describe("全站筛选布局契约", () => {
     expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{\s*align-items:\s*flex-start/s)
   })
 
-  it("敏感词录入表单使用统一操作区并在手机端提供满宽主按钮", () => {
-    expect(sensitiveWordView).toContain("governance-entry-form")
-    expect(sensitiveWordView).toContain("governance-entry-actions")
-    expect(css).toMatch(/\.governance-entry-actions\s*\{[^}]*justify-content:\s*flex-end/s)
-    expect(css).toMatch(
-      /@media \(max-width: 760px\)[\s\S]*\.governance-entry-actions \.el-button[^}]*width:\s*100%/s,
-    )
+  it("敏感词使用方案 A 单行检索条、词条墙与抽屉录入", () => {
+    expect(sensitiveWordView).toContain("sensitive-filter-bar")
+    expect(sensitiveWordView).toContain("sensitive-add-open")
+    expect(sensitiveWordView).toContain("sensitive-drawer")
+    expect(sensitiveWordView).toContain("sensitive-wall")
+    expect(sensitiveWordView).toContain("sensitive-policy-seg")
+    expect(sensitiveWordView).toContain("共 {{ total }} 条 · 每页 60")
+    expect(sensitiveWordView).not.toContain("filter-toolbar")
+    expect(sensitiveWordView).not.toContain("filter-grid")
+    expect(sensitiveWordView).not.toContain("<el-segmented")
+    expect(sensitiveWordView).not.toContain("<el-card")
+    expect(sensitiveWordView).not.toContain("<el-table")
+    expect(sensitiveWordView).not.toContain("governance-entry")
+    expect(sensitiveWordView).not.toContain("sensitive-mobile-list")
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.sensitive-wall\s*\{[^}]*display:\s*grid[^}]*auto-fill/s)
   })
 
   it("黑名单使用方案 A 单行检索条与抽屉录入", () => {
@@ -162,8 +172,8 @@ describe("全站筛选布局契约", () => {
     expect(blacklistView).not.toContain("<el-segmented")
     expect(blacklistView).not.toContain("<el-card")
     expect(blacklistView).not.toContain("governance-entry")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("不再保留会覆盖共享栅格的旧筛选补丁", () => {

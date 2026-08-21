@@ -786,6 +786,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/security-daily-report-sample.html",
             "docs/previews/security-daily-report-sample.txt",
             "docs/previews/send-redesign-prototype.html",
+            "docs/previews/sensitive-redesign-prototype.html",
             "docs/previews/signs-redesign-prototype.html",
             "docs/previews/signs-redesign-shots.md",
             "docs/previews/signs-redesign-shots/full.png",

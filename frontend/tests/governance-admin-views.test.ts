@@ -866,36 +866,113 @@ describe("管理员治理页面", () => {
     vi.unstubAllGlobals()
   })
 
-  it("敏感词支持批量添加、删除并在本页切换 block/audit 策略", async () => {
+  it("敏感词以词条墙呈现，添加收进抽屉并支持批量添加和删除", async () => {
     const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    const word = { id: 1, word: "测试敏感词", created_at: null }
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith("/admin/configs") && init?.method === "PUT") return response([config])
       if (url.endsWith("/admin/configs")) return response([config])
-      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST") return response({ added: 1, skipped: 0, items: [{ id: 2, word: "诈骗", created_at: null }] })
+      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST") return response({ added: 2, skipped: 1, items: [] })
       if (url.includes("/admin/sensitive-words/")) return response(undefined, 204)
-      return response({ total: 1, items: [{ id: 1, word: "测试敏感词", created_at: null }] })
+      return response({ total: 1, items: [word] })
     })
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(SensitiveWordView, { global: { plugins: [createPinia(), ElementPlus] } })
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.get("[data-testid='sensitive-policy']").classes()).toContain("sensitive-policy")
-    expect(wrapper.text()).toContain("测试敏感词")
-    await wrapper.get("[data-testid='sensitive-words-input']").setValue("诈骗\n赌博")
-    await wrapper.get("[data-testid='sensitive-words-add']").trigger("click")
+    // 词条墙单一 DOM：无 el-table、无移动端卡片列表
+    expect(wrapper.get("[data-testid='sensitive-wall']").text()).toContain("测试敏感词")
+    expect(wrapper.findComponent({ name: "ElTable" }).exists()).toBe(false)
+    expect(wrapper.find(".sensitive-mobile-list").exists()).toBe(false)
+    expect(String(fetch.mock.calls[0][0])).toContain("/api/v1/web/admin/sensitive-words?page=1&size=60")
+    expect(wrapper.text()).toContain("共 1 条 · 每页 60")
+
+    // 添加收进抽屉：页头主按钮唤起，textarea 实时预检
+    await wrapper.get("[data-testid='sensitive-add-open']").trigger("click")
     await flushPromises()
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/v1/web/admin/sensitive-words",
-      expect.objectContaining({ body: JSON.stringify({ words: ["诈骗", "赌博"] }) }),
-    )
-    const policy = wrapper.findComponent({ name: "ElSelect" })
-    policy.vm.$emit("update:modelValue", "audit")
-    policy.vm.$emit("change", "audit")
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+    expect(textarea).toBeTruthy()
+    textarea.value = "诈骗\n赌博\n诈骗"
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+    expect(document.body.textContent).toContain("有效 2")
+    expect(document.body.textContent).toContain("批内去重 1")
+    ;(document.querySelector("[data-testid='sensitive-add']") as HTMLElement).click()
+    await flushPromises()
+    const postCall = fetch.mock.calls.find(([, init]) => init?.method === "POST")
+    expect(postCall?.[0]).toBe("/api/v1/web/admin/sensitive-words")
+    expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({ words: ["诈骗", "赌博"] })
+
+    // 词条 × 删除
+    await wrapper.get("[data-testid='sensitive-delete-1']").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/admin/sensitive-words/1") && init?.method === "DELETE")).toBe(true)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("敏感词添加抽屉实时预检：批内去重计数、超长线号并禁用提交", async () => {
+    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("/admin/configs")) return response([config])
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='sensitive-add-open']").trigger("click")
+    await flushPromises()
+    const submit = document.querySelector("[data-testid='sensitive-add']") as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+    textarea.value = `诈骗\n${"超".repeat(65)}\n诈骗`
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+
+    expect(document.body.textContent).toContain("有效 1")
+    expect(document.body.textContent).toContain("批内去重 1")
+    expect(document.body.textContent).toContain("超长 1（第 2 行）")
+    expect(document.body.textContent).toContain("第 2 行敏感词超过 64 字")
+    expect(submit.disabled).toBe(true)
+    // 预检不触发任何写请求
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("敏感词命中策略 seg 切换写入配置，失败回退原值", async () => {
+    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    let failPut = false
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/admin/configs") && init?.method === "PUT") {
+        if (failPut) return response({ code: "INTERNAL_ERROR" }, 500)
+        return response([{ ...config, value: "audit" }])
+      }
+      if (url.endsWith("/admin/configs")) return response([config])
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).toContain("on")
+    await wrapper.get("[data-testid='sensitive-policy-audit']").trigger("click")
     await flushPromises()
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/admin/configs",
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ items: [{ key: "sensitive_hit_action", value: "audit" }] }) }),
     )
+    expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
+
+    // 写入失败回退原值
+    failPut = true
+    await wrapper.get("[data-testid='sensitive-policy-block']").trigger("click")
+    await flushPromises()
+    expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
+    expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).not.toContain("on")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })

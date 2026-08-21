@@ -71,6 +71,7 @@ import {
   ElTableColumn,
   ElTabs,
   ElTag,
+  ElTooltip,
   ElUpload,
 } from "element-plus"
 import { createPinia } from "pinia"
@@ -92,6 +93,6 @@ for (const plugin of [
   ElDatePicker, ElDescriptions, ElDescriptionsItem, ElDialog, ElDrawer, ElEmpty,
   ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination,
   ElPopover, ElRadioButton, ElRadioGroup, ElSegmented, ElSelect, ElSkeleton,
-  ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElUpload,
+  ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElTooltip, ElUpload,
 ]) application.use(plugin)
 application.mount("#app")

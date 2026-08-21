@@ -259,10 +259,12 @@ button:focus-visible {
   align-items: end;
 }
 
-/* 黑名单检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/blacklist-fld/
-   blacklist-seg/blacklist-filter-go/blacklist-privacy 共用 reply-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/sensitive-filter-bar/
+   blacklist-fld/sensitive-fld/blacklist-seg/sensitive-policy-seg/blacklist-filter-go/
+   sensitive-filter-go/blacklist-privacy/sensitive-filter-note 共用 reply-* 规则，按页复制即缺陷。 */
 .reply-filter-bar,
-.blacklist-filter-bar {
+.blacklist-filter-bar,
+.sensitive-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -275,13 +277,15 @@ button:focus-visible {
 }
 
 .reply-fld,
-.blacklist-fld {
+.blacklist-fld,
+.sensitive-fld {
   display: grid;
   gap: 5px;
 }
 
 .reply-fld > span,
-.blacklist-fld > span {
+.blacklist-fld > span,
+.sensitive-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -311,7 +315,8 @@ button:focus-visible {
 }
 
 .reply-seg,
-.blacklist-seg {
+.blacklist-seg,
+.sensitive-policy-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -320,7 +325,8 @@ button:focus-visible {
 }
 
 .reply-seg button,
-.blacklist-seg button {
+.blacklist-seg button,
+.sensitive-policy-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -335,13 +341,15 @@ button:focus-visible {
 }
 
 .reply-seg button.on,
-.blacklist-seg button.on {
+.blacklist-seg button.on,
+.sensitive-policy-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
 
 .reply-filter-go,
-.blacklist-filter-go {
+.blacklist-filter-go,
+.sensitive-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -349,7 +357,8 @@ button:focus-visible {
 }
 
 .reply-privacy,
-.blacklist-privacy {
+.blacklist-privacy,
+.sensitive-filter-note {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -359,7 +368,8 @@ button:focus-visible {
 }
 
 .reply-privacy code,
-.blacklist-privacy code {
+.blacklist-privacy code,
+.sensitive-filter-note code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -370,7 +380,8 @@ button:focus-visible {
 }
 
 .reply-results,
-.blacklist-results {
+.blacklist-results,
+.sensitive-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -447,7 +458,8 @@ button:focus-visible {
 }
 
 .reply-pagination,
-.blacklist-pagination {
+.blacklist-pagination,
+.sensitive-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -471,18 +483,21 @@ button:focus-visible {
 
 @media (max-width: 840px) {
   .reply-heading,
-  .blacklist-heading {
+  .blacklist-heading,
+  .sensitive-heading {
     align-items: start;
   }
 
   .reply-filter-bar,
-  .blacklist-filter-bar {
+  .blacklist-filter-bar,
+  .sensitive-filter-bar {
     align-items: flex-start;
   }
 
   .reply-filter-phone,
   .reply-filter-dates,
-  .blacklist-keyword {
+  .blacklist-keyword,
+  .sensitive-keyword {
     width: 100%;
   }
 
@@ -491,13 +506,15 @@ button:focus-visible {
   }
 
   .reply-filter-go,
-  .blacklist-filter-go {
+  .blacklist-filter-go,
+  .sensitive-filter-go {
     width: 100%;
     margin-left: 0;
   }
 
   .reply-filter-go .el-button,
-  .blacklist-filter-go .el-button {
+  .blacklist-filter-go .el-button,
+  .sensitive-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -505,7 +522,8 @@ button:focus-visible {
 
 @media (max-width: 560px) {
   .reply-pagination,
-  .blacklist-pagination {
+  .blacklist-pagination,
+  .sensitive-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -4146,11 +4164,13 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/
-   blacklist-drawer-title/blacklist-delete-dialog/blacklist-delete-audit/
-   blacklist-form/blacklist-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
+   blacklist-drawer-title/sensitive-drawer-title/blacklist-delete-dialog/sensitive-delete-dialog/
+   blacklist-delete-audit/sensitive-delete-audit/blacklist-form/blacklist-editor-foot/
+   sensitive-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
 .sign-drawer-head,
-.blacklist-drawer-head {
+.blacklist-drawer-head,
+.sensitive-drawer-head {
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -4158,7 +4178,8 @@ main {
 }
 
 .sign-drawer-title,
-.blacklist-drawer-title {
+.blacklist-drawer-title,
+.sensitive-drawer-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -4168,7 +4189,8 @@ main {
 }
 
 .sign-drawer-head code,
-.blacklist-drawer-head code {
+.blacklist-drawer-head code,
+.sensitive-drawer-head code {
   display: block;
   color: var(--tx-3);
   font: 11px var(--mono);
@@ -4222,12 +4244,14 @@ main {
 }
 
 .sign-delete-dialog p,
-.blacklist-delete-dialog p {
+.blacklist-delete-dialog p,
+.sensitive-delete-dialog p {
   margin: 0;
 }
 
 .sign-delete-audit,
-.blacklist-delete-audit {
+.blacklist-delete-audit,
+.sensitive-delete-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -4309,7 +4333,8 @@ main {
 }
 
 .sign-editor-foot,
-.blacklist-editor-foot {
+.blacklist-editor-foot,
+.sensitive-editor-foot {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -4317,39 +4342,82 @@ main {
 }
 
 .sign-editor-foot small,
-.blacklist-editor-foot small {
+.blacklist-editor-foot small,
+.sensitive-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
   font-size: 10px;
 }
 
-.governance-entry-form {
-  min-width: 0;
-}
-
-.governance-entry-actions {
+/* 敏感词页面专属：短词密排词条墙（替代整行表格），删除 × 常驻弱化、悬停朱红。 */
+.sensitive-head-ops {
   display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
+  align-items: flex-end;
+  gap: 12px;
+  flex: none;
 }
 
-.sensitive-filter .el-input {
-  flex: 0 1 220px;
+.sensitive-policy {
+  display: grid;
+  gap: 5px;
 }
 
-.sensitive-pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 58px;
-  padding: 8px 16px;
+.sensitive-policy > span {
   color: var(--tx-3);
-  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 
-/* 黑名单页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
-.blacklist-alert {
+.sensitive-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px 8px 8px;
+}
+
+.sensitive-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px 7px 12px;
+  color: var(--tx);
+  font-size: 12.5px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.sensitive-tile > span {
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sensitive-tile-del {
+  flex: none;
+  padding: 3px 5px;
+  color: var(--tx-3);
+  font: 11px/1 var(--mono);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.sensitive-tile:hover {
+  border-color: rgba(228, 106, 79, 0.35);
+}
+
+.sensitive-tile:hover .sensitive-tile-del,
+.sensitive-tile-del:focus-visible {
+  color: #ef9b89;
+}
+
+/* 黑名单/敏感词页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
+.blacklist-alert,
+.sensitive-alert {
   margin-bottom: 14px;
 }
 
@@ -4357,27 +4425,31 @@ main {
   color: var(--tx-3);
 }
 
-.blacklist-field-hint {
+.blacklist-field-hint,
+.sensitive-field-hint {
   margin-left: 6px;
   color: var(--tx-3);
   font-size: 10px;
   font-style: normal;
 }
 
-.blacklist-phones .el-textarea__inner {
+.blacklist-phones .el-textarea__inner,
+.sensitive-words .el-textarea__inner {
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.9;
 }
 
-.blacklist-parse {
+.blacklist-parse,
+.sensitive-parse {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin: -8px 0 14px;
 }
 
-.blacklist-chip {
+.blacklist-chip,
+.sensitive-chip {
   padding: 2px 10px;
   color: var(--tx-2);
   font: 10.5px var(--mono);
@@ -4386,79 +4458,51 @@ main {
   border-radius: 5px;
 }
 
-.blacklist-chip-ok {
+.blacklist-chip-ok,
+.sensitive-chip-ok {
   color: #71c4ad;
   border-color: rgba(47, 161, 132, 0.4);
 }
 
-.blacklist-chip-bad {
+.blacklist-chip-bad,
+.sensitive-chip-bad {
   color: #ef9b89;
   border-color: rgba(228, 106, 79, 0.45);
 }
 
-.blacklist-parse-error {
+.blacklist-parse-error,
+.sensitive-parse-error {
   margin: -6px 0 12px;
   color: var(--verm);
   font-size: 11px;
 }
 
-.sensitive-entry-actions {
-  margin-top: 4px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-}
-
 .sign-mobile-list,
-.blacklist-mobile-list,
-.sensitive-mobile-list {
+.blacklist-mobile-list {
   display: none;
 }
 
-.sensitive-policy {
-  width: min(240px, 100%);
-  flex: 0 0 240px;
-}
-
 @media (max-width: 760px) {
-  .governance-entry-actions {
-    width: 100%;
-  }
-
-  .governance-entry-actions .el-button {
-    width: 100%;
-    min-height: 44px;
-    margin-left: 0;
-  }
-
-  .sensitive-entry-actions {
-    margin-top: 0;
-    padding-top: 14px;
-  }
-
   .approval-rows,
   .sign-mobile-list,
-  .sensitive-mobile-list,
   .blacklist-mobile-list {
     min-height: 120px;
   }
 
   .sign-table,
-  .blacklist-table,
-  .sensitive-table {
+  .blacklist-table {
     display: none;
   }
 
   .sign-mobile-list,
-  .blacklist-mobile-list,
-  .sensitive-mobile-list {
+  .blacklist-mobile-list {
     display: grid;
     gap: 10px;
     padding: 12px;
   }
 
   .sign-mobile-list article,
-  .blacklist-mobile-list article,
-  .sensitive-mobile-list article {
+  .blacklist-mobile-list article {
     min-width: 0;
     padding: 14px;
     background: var(--surface-soft);
@@ -4469,9 +4513,7 @@ main {
   .sign-mobile-list header,
   .sign-mobile-list footer,
   .blacklist-mobile-list header,
-  .blacklist-mobile-list footer,
-  .sensitive-mobile-list header,
-  .sensitive-mobile-list footer {
+  .blacklist-mobile-list footer {
     display: flex;
     flex-wrap: wrap;
     gap: 8px 10px;
@@ -4495,8 +4537,7 @@ main {
 
   .sign-mobile-list dt,
   .blacklist-mobile-list header span,
-  .blacklist-mobile-list footer time,
-  .sensitive-mobile-list header time {
+  .blacklist-mobile-list footer time {
     color: var(--muted);
     font-size: 10px;
   }
@@ -4507,8 +4548,7 @@ main {
   }
 
   .sign-mobile-list footer,
-  .blacklist-mobile-list footer,
-  .sensitive-mobile-list footer {
+  .blacklist-mobile-list footer {
     justify-content: flex-end;
     padding-top: 8px;
     border-top: 1px solid var(--line);
@@ -4560,7 +4600,7 @@ main {
     gap: 8px 0;
   }
 
-  /* 模板页与签名/黑名单/敏感词同一断点（760px）切换卡片列表；原 640px 规则并入此块。 */
+  /* 模板页与签名/黑名单同一断点（760px）切换卡片列表；原 640px 规则并入此块。 */
   .template-table {
     display: none;
   }
@@ -4640,14 +4680,12 @@ main {
     color: var(--ink-soft);
   }
 
-  .sensitive-heading {
-    align-items: stretch;
+  .sensitive-head-ops {
+    flex-wrap: wrap;
   }
 
-  .sensitive-policy {
-    width: 100%;
-    margin-top: 12px;
-    flex-basis: auto;
+  .sensitive-wall {
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
   }
 }
 
