@@ -44,6 +44,14 @@ export interface ManagedApp {
   callback_url: string | null
   callback_report_enabled: boolean
   status: 0 | 1
+  /** 当前 API Key 的 8 位前缀（非密元数据；已停用应用为字面量 revoked0） */
+  api_key_prefix: string
+  /** 宽限期旧 Key 前缀；null 表示无旧 Key */
+  old_key_prefix: string | null
+  /** 宽限期旧 Key 到期时间（ISO）；null 表示无旧 Key */
+  old_key_expires_at: string | null
+  callback_secret_configured: boolean
+  created_at: string
 }
 
 export interface AppPayload {
@@ -62,6 +70,9 @@ export interface AppPayload {
 }
 
 export const listApps = () => apiRequest<ManagedApp[]>("/admin/apps", { method: "GET" })
+
+export const getApp = (id: number) =>
+  apiRequest<ManagedApp>(`/admin/apps/${id}`, { method: "GET" })
 
 export const createApp = (payload: AppPayload & { name: string }) =>
   apiRequest<{ id: number; api_key: string; callback_secret: string | null }>("/admin/apps", {

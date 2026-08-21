@@ -2,11 +2,12 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, onMounted, reactive, ref } from "vue"
+import { computed, h, onMounted, reactive, ref } from "vue"
 
 import {
   createApp,
   disableApp,
+  getApp,
   listApps,
   parseFrequencyOverride,
   revokeOldAppKey,
@@ -18,6 +19,7 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
+import { getReport, type ReportDimSummary } from "../api/reports"
 import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
@@ -25,10 +27,34 @@ import { copyText } from "../lib/clipboard"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
+const CATEGORY_FILTERS: { label: string; value: AppCategory | "all" }[] = [
+  { label: "全部", value: "all" },
+  { label: "验证码", value: "verify" },
+  { label: "通知", value: "notice" },
+  { label: "营销", value: "market" },
+]
+
+const STATUS_FILTERS: { label: string; value: "all" | "1" | "0" }[] = [
+  { label: "全部", value: "all" },
+  { label: "启用", value: "1" },
+  { label: "停用", value: "0" },
+]
+
+const CATEGORY_LABELS: Record<AppCategory, string> = {
+  verify: "验证码",
+  notice: "通知",
+  market: "营销",
+}
+
 const items = ref<ManagedApp[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref("")
+const keyword = ref("")
+const categoryFilter = ref<AppCategory | "all">("all")
+const statusFilter = ref<"all" | "1" | "0">("all")
+const detailId = ref<number | null>(null)
+const detailOpen = ref(false)
 const drawerOpen = ref(false)
 const editingId = ref<number | null>(null)
 const secretOpen = ref(false)
@@ -39,6 +65,9 @@ const keyGraceHours = ref<number | null>(null)
 const secretOperation = ref<SecretOperation | null>(null)
 const rotatingKeyId = ref<number | null>(null)
 const rotatingCallbackId = ref<number | null>(null)
+/** 今日用量联查结果（dim_value = app.id 字符串）；调用失败时置 unavailable，单元格显示「—」。 */
+const dailyUsage = ref<Map<string, ReportDimSummary>>(new Map())
+const usageUnavailable = ref(false)
 
 const form = reactive({
   name: "", dept: "", allowed_categories: ["notice"] as AppCategory[], default_sign: "",
@@ -65,6 +94,36 @@ function resetForm(): void {
   })
 }
 
+/** 接口全量返回，关键词（名称/部门）、类别与状态过滤均为前端推导，不新增查询参数。 */
+const filtered = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return items.value.filter((item) => {
+    if (categoryFilter.value !== "all" && !item.allowed_categories.includes(categoryFilter.value)) {
+      return false
+    }
+    if (statusFilter.value !== "all" && String(item.status) !== statusFilter.value) return false
+    if (kw && !item.name.toLowerCase().includes(kw) && !item.dept.toLowerCase().includes(kw)) {
+      return false
+    }
+    return true
+  })
+})
+
+const enabledCount = computed(() => filtered.value.filter((item) => item.status === 1).length)
+const disabledCount = computed(() => filtered.value.length - enabledCount.value)
+
+const emptyTitle = computed(() =>
+  items.value.length === 0 ? "当前没有接入应用" : "没有符合筛选条件的应用",
+)
+const emptyDescription = computed(() =>
+  items.value.length === 0
+    ? "创建应用后会得到一对 API Key / 回调密钥（仅展示一次）；类别、配额、限流与回调均可在详情中随时调整。"
+    : "重置类别或状态筛选、清空关键词后查看全部应用。",
+)
+
+/** 详情抽屉数据源跟随列表引用，写操作重查列表后自动刷新。 */
+const detail = computed(() => items.value.find((item) => item.id === detailId.value) ?? null)
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
@@ -80,6 +139,61 @@ function formatTime(value: string): string {
     .replaceAll("/", "-")
 }
 
+/** 停用应用整行降透明度，与密钥列「已随停用吊销」呼应。 */
+function rowClassName({ row }: { row: ManagedApp }): string {
+  return row.status ? "" : "apps-row-disabled"
+}
+
+/** 今日消耗（计费条）：联查成功但无记录为 0；联查失败返回 null，由界面显示「—」。 */
+function consumedOf(app: ManagedApp): number | null {
+  if (usageUnavailable.value) return null
+  return dailyUsage.value.get(String(app.id))?.total_segments ?? 0
+}
+
+/** 成功率直接取服务端口径（services/stats.py），前端不自行计算。 */
+function rateOf(app: ManagedApp): number | null {
+  if (usageUnavailable.value) return null
+  return dailyUsage.value.get(String(app.id))?.success_rate ?? null
+}
+
+/** 配额占用百分比；配额 0（不限量）或用量不可用时不渲染进度条。 */
+function quotaPercent(app: ManagedApp): number | null {
+  const consumed = consumedOf(app)
+  if (consumed === null || app.daily_quota <= 0) return null
+  return Math.min(100, (consumed / app.daily_quota) * 100)
+}
+
+/** 进度条色阶：>80% 琥珀、≥100% 朱红，其余 verdi。 */
+function quotaTone(app: ManagedApp): "" | "warn" | "over" {
+  const percent = quotaPercent(app)
+  if (percent === null) return ""
+  if (percent >= 100) return "over"
+  if (percent > 80) return "warn"
+  return ""
+}
+
+/** 旧 Key 宽限剩余小时（向上取整，下限 0）；无宽限期旧 Key 返回 null。 */
+function graceHoursLeft(app: ManagedApp): number | null {
+  if (!app.old_key_expires_at) return null
+  const ms = Date.parse(app.old_key_expires_at) - Date.now()
+  // 静态检查禁词 Math.ceil（防计费公式重实现误判）；floor((ms+3599999)/1h) 等价向上取整
+  return Math.max(0, Math.floor((ms + 3_599_999) / 3_600_000))
+}
+
+/** 回调列只展示 host+path，完整 URL 收进 title。 */
+function callbackDisplay(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`
+  } catch {
+    return url
+  }
+}
+
+function categoriesText(app: ManagedApp): string {
+  return app.allowed_categories.map((category) => CATEGORY_LABELS[category]).join(" · ")
+}
+
 function freqOverrideText(item: ManagedApp): string {
   const override = item.freq_override
   if (!override) return "未覆盖"
@@ -90,10 +204,12 @@ function freqOverrideText(item: ManagedApp): string {
   return parts.join(" · ") || "未覆盖"
 }
 
-function messageCallbackText(item: ManagedApp): string {
-  if (!item.callback_url) return "—"
-  return item.callback_report_enabled ? "开启" : "关闭"
-}
+const detailRateText = computed(() => {
+  const current = detail.value
+  if (!current) return "—"
+  const rate = rateOf(current)
+  return rate === null ? "—" : `${(rate * 100).toFixed(1)}%（delivered/(delivered+failed)）`
+})
 
 const DEMO_LANGUAGES = ["curl", "python", "node", "java", "go", "php"] as const
 type DemoLanguage = (typeof DEMO_LANGUAGES)[number]
@@ -394,6 +510,26 @@ async function load(): Promise<void> {
   finally { loading.value = false }
 }
 
+/** 今日用量一次联查（stat_daily 按应用维度），失败只影响用量单元格，不拖垮列表。 */
+async function loadDailyUsage(): Promise<void> {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date())
+  try {
+    const result = await getReport({
+      granularity: "day",
+      groupBy: "app",
+      category: "all",
+      start: today,
+      end: today,
+    })
+    if (!result || !Array.isArray(result.dim_summary)) throw new Error("用量统计响应无效")
+    dailyUsage.value = new Map(result.dim_summary.map((row) => [row.dim_value, row]))
+    usageUnavailable.value = false
+  } catch {
+    dailyUsage.value = new Map()
+    usageUnavailable.value = true
+  }
+}
+
 async function loadKeyGraceHours(): Promise<void> {
   try {
     const configs = await listConfigs()
@@ -421,6 +557,19 @@ function openEdit(item: ManagedApp): void {
     freq_override: item.freq_override ? JSON.stringify(item.freq_override) : "",
   })
   drawerOpen.value = true
+}
+
+function openDetail(item: ManagedApp): void {
+  detailId.value = item.id
+  detailOpen.value = true
+}
+
+/** 详情抽屉「编辑配置」：沿用分组表单编辑，关闭详情避免双层抽屉叠放。 */
+function editFromDetail(): void {
+  const current = detail.value
+  if (!current) return
+  openEdit(current)
+  detailOpen.value = false
 }
 
 function parseAllowedIps(input: string): string[] {
@@ -533,6 +682,7 @@ async function rotateKey(item: ManagedApp): Promise<void> {
       result.api_key,
       `请立即复制并安全保存，确认保存后再关闭。旧 Key 宽限期至 ${formatTime(result.old_key_expires_at)}`,
     )
+    await load()
   } catch (error) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(error instanceof Error ? error.message : "Key 轮换失败")
@@ -541,10 +691,16 @@ async function rotateKey(item: ManagedApp): Promise<void> {
 }
 
 async function revokeKey(item: ManagedApp): Promise<void> {
+  if (!item.old_key_prefix || !item.old_key_expires_at) return
   try {
-    await ElMessageBox.confirm(`立即作废 ${item.name} 的旧 Key？`, "确认作废", { type: "warning" })
+    await ElMessageBox.confirm(
+      `旧 Key ${item.old_key_prefix}•••• 原定 ${formatTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
+      "立即作废旧 Key？",
+      { type: "warning", confirmButtonText: "确认作废", cancelButtonText: "取消" },
+    )
     await revokeOldAppKey(item.id)
     ElMessage.success("旧 Key 已作废")
+    await load()
   } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "作废失败") }
 }
 
@@ -562,6 +718,7 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
     const result = await rotateCallbackSecret(item.id)
     secretRevealed = true
     reveal("新回调密钥（仅展示一次）", result.callback_secret)
+    await load()
   } catch (error) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(error instanceof Error ? error.message : "回调密钥轮换失败")
@@ -571,27 +728,41 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
 
 async function disable(item: ManagedApp): Promise<void> {
   try {
-    await ElMessageBox.confirm(`停用应用 ${item.name}？`, "确认停用", { type: "warning" })
+    await ElMessageBox.confirm(
+      h("div", { class: "apps-danger-dialog" }, [
+        h("ul", { class: "apps-conseq" }, [
+          h("li", "当前与宽限期旧 API Key 立即吊销，发送/查询返回 401"),
+          h("li", "在途批次继续到终态，历史数据保留可查"),
+          h("li", "未终结的旧回调在同一事务隔离为不可重试"),
+          h("li", "恢复需管理员在详情抽屉重新启用"),
+        ]),
+        h("p", { class: "apps-audit-note" }, "操作记审计（app_disable）· 操作人写入审计主体"),
+      ]),
+      `停用应用 ${item.name}？`,
+      { type: "warning", confirmButtonText: "确认停用", cancelButtonText: "取消" },
+    )
     await disableApp(item.id)
     ElMessage.success(`应用 ${item.name} 已停用`)
     await load()
   } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "停用失败") }
 }
 
+/** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
   try {
     await ElMessageBox.confirm(`启用应用 ${item.name}？`, "确认启用", { type: "warning" })
+    const current = await getApp(item.id)
     await updateApp(item.id, {
-      dept: item.dept,
-      allowed_categories: item.allowed_categories,
-      default_sign: item.default_sign,
-      daily_quota: item.daily_quota,
-      rate_limit_per_min: item.rate_limit_per_min,
-      blacklist_check: item.blacklist_check,
-      freq_override: item.freq_override,
-      allowed_ips: item.allowed_ips,
-      callback_url: item.callback_url,
-      callback_report_enabled: item.callback_report_enabled,
+      dept: current.dept,
+      allowed_categories: current.allowed_categories,
+      default_sign: current.default_sign,
+      daily_quota: current.daily_quota,
+      rate_limit_per_min: current.rate_limit_per_min,
+      blacklist_check: current.blacklist_check,
+      freq_override: current.freq_override,
+      allowed_ips: current.allowed_ips,
+      callback_url: current.callback_url,
+      callback_report_enabled: current.callback_report_enabled,
       status: 1,
     })
     ElMessage.success(`应用 ${item.name} 已启用`)
@@ -601,129 +772,361 @@ async function enable(item: ManagedApp): Promise<void> {
 
 onMounted(() => {
   void load()
+  void loadDailyUsage()
   void loadKeyGraceHours()
 })
 </script>
 
 <template>
-  <section class="page-heading">
+  <section class="page-heading apps-heading">
     <div>
       <p class="eyebrow">APPLICATION CONTROL / 应用控制</p>
       <h1>应用管理</h1>
-      <p>管理调用方、配额、频控与密钥生命周期。</p>
+      <p>接入方、配额、频控与密钥生命周期。全部写操作记审计；密钥明文仅创建/轮换当次展示。</p>
     </div>
     <el-button data-testid="new-app" type="primary" :disabled="secretOperation !== null" @click="openCreate">新建应用</el-button>
   </section>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="apps-error">
+  <div class="apps-filter-bar">
+    <label class="apps-fld">
+      <span>关键词</span>
+      <el-input
+        v-model="keyword"
+        class="apps-keyword"
+        data-testid="apps-keyword"
+        placeholder="名称 / 部门"
+        clearable
+      />
+    </label>
+    <div class="apps-fld">
+      <span>类别</span>
+      <div class="apps-seg" role="group" aria-label="类别筛选" data-testid="apps-category-seg">
+        <button
+          v-for="option in CATEGORY_FILTERS"
+          :key="option.value"
+          type="button"
+          :class="{ on: categoryFilter === option.value }"
+          :data-testid="`apps-category-${option.value}`"
+          @click="categoryFilter = option.value"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+    </div>
+    <div class="apps-fld">
+      <span>状态</span>
+      <div class="apps-seg" role="group" aria-label="状态筛选" data-testid="apps-status-seg">
+        <button
+          v-for="option in STATUS_FILTERS"
+          :key="option.value"
+          type="button"
+          :class="{ on: statusFilter === option.value }"
+          :data-testid="`apps-status-${option.value}`"
+          @click="statusFilter = option.value"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+    </div>
+    <span class="apps-filter-note">接口全量返回 · 前端过滤</span>
+  </div>
+
+  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="apps-alert">
     <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
   </el-alert>
 
-  <section v-loading="loading" class="app-card-grid" aria-label="应用与密钥">
-    <article v-for="row in items" :key="row.id" :class="['managed-app-card', { disabled: !row.status }]">
-      <header>
-        <div>
-          <strong>{{ row.name }}</strong>
-          <small>#{{ row.id }} · {{ row.dept }}</small>
+  <section class="apps-results">
+    <el-table
+      v-loading="loading"
+      class="apps-table"
+      data-testid="app-table"
+      :data="filtered"
+      row-key="id"
+      :row-class-name="rowClassName"
+    >
+      <el-table-column label="应用" min-width="200">
+        <template #default="{ row }">
+          <span class="apps-name">{{ row.name }}<span class="apps-name-id">#{{ row.id }}</span></span>
+          <span class="apps-cell-sub">{{ row.dept }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="允许类别" min-width="150">
+        <template #default="{ row }">
+          <div class="apps-categories">
+            <CategoryTag v-for="category in row.allowed_categories" :key="category" :category="category" />
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="今日消耗（计费条）" min-width="170">
+        <template #default="{ row }">
+          <div v-if="consumedOf(row) !== null" class="apps-quota-cell">
+            <span class="apps-quota-num">
+              {{ (consumedOf(row) ?? 0).toLocaleString() }}
+              <small>/ {{ row.daily_quota === 0 ? "不限量" : row.daily_quota.toLocaleString() }}</small>
+            </span>
+            <span v-if="quotaPercent(row) !== null" class="apps-quota-bar">
+              <i :class="quotaTone(row)" :style="{ width: `${quotaPercent(row)}%` }"></i>
+            </span>
+          </div>
+          <span v-else class="apps-cell-none">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="限流/分" width="90">
+        <template #default="{ row }">
+          <span class="apps-mono">{{ row.rate_limit_per_min.toLocaleString() }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="密钥" min-width="200">
+        <template #default="{ row }">
+          <div class="apps-key-cell">
+            <template v-if="row.status === 1">
+              <span class="apps-key-prefix">{{ row.api_key_prefix }}••••</span>
+              <span v-if="graceHoursLeft(row) !== null" class="apps-key-tag apps-key-tag--grace">
+                旧 Key 宽限 · 余 {{ graceHoursLeft(row) }}h
+              </span>
+              <span v-else class="apps-key-tag">单 Key 运行</span>
+            </template>
+            <span v-else class="apps-key-tag apps-key-tag--revoked">已随停用吊销</span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="回调" min-width="170">
+        <template #default="{ row }">
+          <template v-if="row.callback_url">
+            <span class="apps-callback-url" :title="row.callback_url">{{ callbackDisplay(row.callback_url) }}</span>
+            <span class="apps-cell-sub">
+              明细回调 {{ row.callback_report_enabled ? "开启" : "关闭" }} · 密钥{{ row.callback_secret_configured ? "已配置" : "未配置" }}
+            </span>
+          </template>
+          <span v-else class="apps-cell-none">未配置</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="80">
+        <template #default="{ row }">
+          <el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? "启用" : "停用" }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="80" fixed="right">
+        <template #default="{ row }">
+          <el-button :data-testid="`app-detail-${row.id}`" link type="primary" @click="openDetail(row)">详情</el-button>
+        </template>
+      </el-table-column>
+      <template #empty>
+        <div class="apps-empty">
+          <EmptyState :title="emptyTitle" :description="emptyDescription" />
+          <el-button
+            v-if="!items.length"
+            class="apps-empty-action"
+            type="primary"
+            :disabled="secretOperation !== null"
+            @click="openCreate"
+          >新建应用</el-button>
         </div>
-        <el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? '启用' : '停用' }}</el-tag>
-      </header>
-      <div class="app-management-categories">
-        <CategoryTag v-for="category in row.allowed_categories" :key="category" :category="category" />
-      </div>
-      <dl>
-        <div><dt>日配额</dt><dd>{{ row.daily_quota === 0 ? '不限量' : row.daily_quota.toLocaleString() }}</dd></div>
-        <div><dt>每分钟限流</dt><dd>{{ row.rate_limit_per_min.toLocaleString() }}</dd></div>
-        <div><dt>默认签名</dt><dd>{{ row.default_sign || '未设置' }}</dd></div>
-      </dl>
-      <dl class="managed-app-policy">
-        <div><dt>黑名单检查</dt><dd>{{ row.blacklist_check ? '开启' : '关闭' }}</dd></div>
-        <div><dt>频控覆盖</dt><dd :title="row.freq_override ? freqOverrideText(row) : undefined">{{ freqOverrideText(row) }}</dd></div>
-        <div><dt>来源白名单</dt><dd>{{ row.allowed_ips.length ? `${row.allowed_ips.length} 条` : '不限' }}</dd></div>
-        <div><dt>回调地址</dt><dd :title="row.callback_url || undefined">{{ row.callback_url || '未配置' }}</dd></div>
-        <div><dt>消息级回调</dt><dd>{{ messageCallbackText(row) }}</dd></div>
-      </dl>
-      <div class="managed-key">
-        <span>API KEY</span>
-        <code>sk-••••••••••</code>
-        <small>{{ keyGraceHours === null ? '旧 Key 宽限期暂不可用' : `旧 Key 宽限期 ${keyGraceHours} 小时` }}</small>
-      </div>
-      <footer>
-        <el-button :data-testid="`demo-script-${row.id}`" link @click="openDemo(row)">接入示例</el-button>
-        <el-button :data-testid="`edit-app-${row.id}`" link type="primary" @click="openEdit(row)">编辑</el-button>
-        <el-button :data-testid="`rotate-key-${row.id}`" link type="primary" :loading="rotatingKeyId === row.id" :disabled="secretOperation !== null" @click="rotateKey(row)">轮换 Key</el-button>
-        <el-button :data-testid="`revoke-key-${row.id}`" link @click="revokeKey(row)">作废旧 Key</el-button>
-        <el-button :data-testid="`rotate-callback-${row.id}`" link :loading="rotatingCallbackId === row.id" :disabled="secretOperation !== null" @click="rotateCallback(row)">轮换回调密钥</el-button>
-        <el-button v-if="row.status" :data-testid="`disable-app-${row.id}`" link type="danger" @click="disable(row)">停用</el-button>
-        <el-button v-else :data-testid="`enable-app-${row.id}`" link type="success" @click="enable(row)">启用</el-button>
-      </footer>
-    </article>
-    <EmptyState v-if="!loading && !items.length" title="当前没有接入应用" description="创建应用后可配置类别、配额、限流和回调。" />
+      </template>
+    </el-table>
+    <footer class="apps-foot">
+      <span>共 {{ filtered.length }} 个应用 · 启用 {{ enabledCount }} · 停用 {{ disabledCount }}</span>
+      <span class="apps-foot-role">读写：admin · 今日消耗来自 stat_daily 联查</span>
+    </footer>
   </section>
 
-  <el-drawer v-model="drawerOpen" :title="editingId === null ? '新建应用' : '编辑应用'" size="min(560px, 100vw)" :teleported="false" class="apps-drawer">
-    <p class="drawer-intro">{{ editingId === null ? '创建成功后 API Key 与回调密钥仅展示一次，请立即保存。' : `正在编辑应用「${form.name}」，应用名创建后不可修改。` }}</p>
+  <el-drawer v-model="detailOpen" class="apps-drawer apps-detail-drawer" size="min(560px, 94vw)" :teleported="false">
+    <template #header>
+      <div v-if="detail" class="apps-drawer-head">
+        <div class="apps-drawer-title">
+          <el-tag :type="detail.status ? 'success' : 'info'">{{ detail.status ? "启用" : "停用" }}</el-tag>
+          <b>{{ detail.name }}</b>
+        </div>
+        <code>#{{ detail.id }} · {{ detail.dept }} · 创建于 {{ formatTime(detail.created_at) }}</code>
+      </div>
+    </template>
+    <template v-if="detail">
+      <section class="app-sec">
+        <h3>运行概览 · 今日<small>统计口径 services/stats.py</small></h3>
+        <div class="apps-hero">
+          <div class="apps-hero-nums">
+            <template v-if="!usageUnavailable">
+              <b>{{ (consumedOf(detail) ?? 0).toLocaleString() }}</b>
+              <span>/ {{ detail.daily_quota === 0 ? "不限量" : detail.daily_quota.toLocaleString() }} 计费条 · 成功率 {{ detailRateText }}</span>
+            </template>
+            <template v-else>
+              <b>—</b>
+              <span>今日用量统计暂不可用</span>
+            </template>
+          </div>
+          <span v-if="quotaPercent(detail) !== null" class="apps-quota-bar">
+            <i :class="quotaTone(detail)" :style="{ width: `${quotaPercent(detail)}%` }"></i>
+          </span>
+        </div>
+        <dl class="apps-fact-grid">
+          <div><dt>每分钟限流</dt><dd class="apps-mono">{{ detail.rate_limit_per_min.toLocaleString() }} 次</dd></div>
+          <div><dt>频控覆盖</dt><dd>{{ freqOverrideText(detail) }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="app-sec">
+        <h3>密钥与回调<small>明文仅创建/轮换当次展示</small></h3>
+        <div class="apps-key-line">
+          <code v-if="detail.status === 1">{{ detail.api_key_prefix }}••••</code>
+          <code v-else>已随停用吊销</code>
+          <small>当前 API Key</small>
+          <span class="apps-key-act">
+            <el-button
+              v-if="detail.status === 1"
+              :data-testid="`rotate-key-${detail.id}`"
+              link
+              type="primary"
+              :loading="rotatingKeyId === detail.id"
+              :disabled="secretOperation !== null"
+              @click="rotateKey(detail)"
+            >轮换 Key</el-button>
+          </span>
+        </div>
+        <div v-if="detail.old_key_prefix && detail.old_key_expires_at" class="apps-key-grace">
+          <code>{{ detail.old_key_prefix }}••••</code>
+          <small>旧 Key 宽限期至 {{ formatTime(detail.old_key_expires_at) }}（余 {{ graceHoursLeft(detail) }}h），到期自动失效</small>
+          <span class="apps-key-act">
+            <el-button
+              :data-testid="`revoke-old-key-${detail.id}`"
+              link
+              type="danger"
+              @click="revokeKey(detail)"
+            >立即作废</el-button>
+          </span>
+        </div>
+        <dl class="apps-fact-grid">
+          <div class="full">
+            <dt>回调 URL（内网白名单校验 · 生产仅 HTTPS）</dt>
+            <dd class="apps-mono">{{ detail.callback_url || "未配置" }}</dd>
+          </div>
+          <div>
+            <dt>明细级回调</dt>
+            <dd>{{ detail.callback_url ? (detail.callback_report_enabled ? "开启" : "关闭") : "—" }}</dd>
+          </div>
+          <div>
+            <dt>回调密钥</dt>
+            <dd>
+              {{ detail.callback_secret_configured ? "已配置" : "未配置" }}
+              <el-button
+                :data-testid="`rotate-callback-${detail.id}`"
+                link
+                type="primary"
+                :loading="rotatingCallbackId === detail.id"
+                :disabled="secretOperation !== null"
+                @click="rotateCallback(detail)"
+              >轮换回调密钥</el-button>
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="app-sec">
+        <h3>策略</h3>
+        <dl class="apps-fact-grid">
+          <div><dt>允许类别</dt><dd>{{ categoriesText(detail) }}</dd></div>
+          <div><dt>默认签名</dt><dd>{{ detail.default_sign || "未设置" }}</dd></div>
+          <div><dt>黑名单检查</dt><dd>{{ detail.blacklist_check ? "开启" : "关闭" }}</dd></div>
+          <div>
+            <dt>来源 IP 白名单</dt>
+            <dd class="apps-mono">{{ detail.allowed_ips.length ? `${detail.allowed_ips.length} 条 CIDR` : "全网放行" }}</dd>
+          </div>
+        </dl>
+      </section>
+    </template>
+    <template #footer>
+      <div v-if="detail" class="apps-drawer-foot">
+        <el-button :data-testid="`edit-app-${detail.id}`" @click="editFromDetail">编辑配置</el-button>
+        <el-button :data-testid="`demo-script-${detail.id}`" @click="openDemo(detail)">接入示例</el-button>
+        <span class="apps-foot-sp"></span>
+        <el-button v-if="detail.status" :data-testid="`disable-app-${detail.id}`" type="danger" @click="disable(detail)">停用应用</el-button>
+        <el-button v-else :data-testid="`enable-app-${detail.id}`" type="success" @click="enable(detail)">启用应用</el-button>
+      </div>
+    </template>
+  </el-drawer>
+
+  <el-drawer v-model="drawerOpen" class="apps-drawer apps-editor-drawer" size="min(560px, 100vw)" :teleported="false">
+    <template #header>
+      <div class="apps-drawer-head">
+        <div class="apps-drawer-title">{{ editingId === null ? "新建应用" : "编辑应用" }}</div>
+        <code>{{ editingId === null ? "创建成功后 API Key 与回调密钥仅展示一次，请立即保存" : `正在编辑「${form.name}」· 应用名创建后不可修改` }}</code>
+      </div>
+    </template>
     <el-form label-position="top" @submit.prevent="save">
-      <el-form-item label="应用名" required>
-        <el-input v-model="form.name" :disabled="editingId !== null" maxlength="64" autocomplete="off" />
-        <small class="field-rule">1–64 字符，创建后不可修改。</small>
-      </el-form-item>
-      <el-form-item label="部门" required>
-        <el-input v-model="form.dept" maxlength="128" />
-        <small class="field-rule">1–128 字符，用于部门级日配额归集。</small>
-      </el-form-item>
-      <el-form-item label="允许类别" required>
-        <el-checkbox-group v-model="form.allowed_categories">
-          <el-checkbox value="verify">验证码</el-checkbox>
-          <el-checkbox value="notice">通知</el-checkbox>
-          <el-checkbox value="market">营销</el-checkbox>
-        </el-checkbox-group>
-        <small class="field-rule">至少选择一个类别；未授权类别的发送请求会被拒绝。</small>
-      </el-form-item>
-      <el-form-item label="默认签名">
-        <el-input v-model="form.default_sign" />
-        <small class="field-rule">发送请求未指定签名时使用；请求内显式签名优先。</small>
-      </el-form-item>
-      <el-form-item label="日配额">
-        <el-input-number v-model="form.daily_quota" :min="0" :max="100000000" />
-        <small class="field-rule">每日计费条上限，0 表示不限量，最大 100,000,000。</small>
-      </el-form-item>
-      <el-form-item label="每分钟限流">
-        <el-input-number v-model="form.rate_limit_per_min" :min="1" :max="60000" />
-        <small class="field-rule">1–60,000 条/分钟。</small>
-      </el-form-item>
-      <el-form-item label="黑名单检查">
-        <el-switch v-model="form.blacklist_check" />
-        <small class="field-rule">关闭后该应用的号码不再执行黑名单剔除。</small>
-      </el-form-item>
-      <el-form-item label="频控覆盖 JSON" :error="freqOverrideError || undefined">
-        <el-input v-model="form.freq_override" data-testid="freq-override" type="textarea" placeholder='例如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":1}' />
-        <small class="field-rule">留空使用系统默认频控；仅支持 verify_per_minute（1–100）、verify_per_day（1–10,000）、market_per_day（1–1,000），值为正整数。</small>
-      </el-form-item>
-      <el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，空=不限）">
-        <el-alert
-          v-if="!form.allowed_ips.trim()"
-          type="warning"
-          :closable="false"
-          show-icon
-          title="白名单为空表示全网放行。Key 泄露后将失去第二道防线，生产环境请填写 CIDR。"
-          style="margin-bottom: 8px"
-        />
-        <el-input v-model="form.allowed_ips" data-testid="allowed-ips-input" type="textarea" placeholder="203.0.113.0/24" />
-        <small class="field-rule">仅作用于 X-Api-Key 路径；留空表示不限制来源（产品默认，见 PRD），保存时校验格式。</small>
-      </el-form-item>
-      <el-form-item label="回调 URL">
-        <el-input v-model="form.callback_url" placeholder="https://" />
-        <small class="field-rule">必须落在系统允许的内网 CIDR 白名单内，保存时校验；留空表示不推送回调。</small>
-      </el-form-item>
-      <el-form-item label="消息级回调">
-        <el-switch v-model="form.callback_report_enabled" />
-        <small class="field-rule">按消息粒度推送回执，需先配置回调 URL。</small>
-      </el-form-item>
+      <section class="apps-form-sec">
+        <h3>基本信息</h3>
+        <el-form-item label="应用名" required>
+          <el-input v-model="form.name" :disabled="editingId !== null" maxlength="64" autocomplete="off" />
+          <small class="field-rule">1–64 字符，全局唯一，创建后不可修改。</small>
+        </el-form-item>
+        <el-form-item label="部门" required>
+          <el-input v-model="form.dept" maxlength="128" />
+          <small class="field-rule">1–128 字符，用于部门级日配额归集。</small>
+        </el-form-item>
+        <el-form-item label="允许类别" required>
+          <el-checkbox-group v-model="form.allowed_categories">
+            <el-checkbox value="verify">验证码</el-checkbox>
+            <el-checkbox value="notice">通知</el-checkbox>
+            <el-checkbox value="market">营销</el-checkbox>
+          </el-checkbox-group>
+          <small class="field-rule">至少一个；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED。</small>
+        </el-form-item>
+        <el-form-item label="默认签名">
+          <el-input v-model="form.default_sign" />
+          <small class="field-rule">请求未指定签名时使用；请求内显式签名优先。</small>
+        </el-form-item>
+      </section>
+
+      <section class="apps-form-sec">
+        <h3>配额与策略</h3>
+        <div class="apps-form-2col">
+          <el-form-item label="日配额（计费条）">
+            <el-input-number v-model="form.daily_quota" :min="0" :max="100000000" />
+            <small class="field-rule">0 = 不限量，最大 100,000,000。</small>
+          </el-form-item>
+          <el-form-item label="每分钟限流">
+            <el-input-number v-model="form.rate_limit_per_min" :min="1" :max="60000" />
+            <small class="field-rule">1–60,000 次/分钟。</small>
+          </el-form-item>
+        </div>
+        <div v-if="form.daily_quota === 0" class="apps-form-alert">
+          日配额为 0 表示不限量：该应用当日发送不受平台配额约束，请确认接入方可信。
+        </div>
+        <el-form-item label="黑名单检查">
+          <el-switch v-model="form.blacklist_check" />
+          <small class="field-rule">关闭后该应用号码不执行黑名单剔除。</small>
+        </el-form-item>
+        <el-form-item label="频控覆盖 JSON" :error="freqOverrideError || undefined">
+          <el-input v-model="form.freq_override" data-testid="freq-override" type="textarea" placeholder='例如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":1}' />
+          <small class="field-rule">留空用系统默认；仅 verify_per_minute（1–100）/ verify_per_day（1–10,000）/ market_per_day（1–1,000），值为正整数。</small>
+        </el-form-item>
+      </section>
+
+      <section class="apps-form-sec">
+        <h3>安全与回调</h3>
+        <el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，最多 50 条）">
+          <div v-if="!form.allowed_ips.trim()" class="apps-form-alert apps-form-alert--verm">
+            白名单为空表示全网放行。Key 泄露后将失去第二道防线，生产环境请填写 CIDR。
+          </div>
+          <el-input v-model="form.allowed_ips" data-testid="allowed-ips-input" type="textarea" placeholder="203.0.113.0/24" />
+          <small class="field-rule">单 IP 自动归一化为 /32；留空表示不限制来源（产品默认，见 PRD），保存时校验格式。</small>
+        </el-form-item>
+        <el-form-item label="回调 URL">
+          <el-input v-model="form.callback_url" placeholder="https://" />
+          <small class="field-rule">须落在内网 CIDR 白名单，生产仅 HTTPS；留空表示不推送回调。</small>
+        </el-form-item>
+        <el-form-item label="明细级回调">
+          <el-switch v-model="form.callback_report_enabled" />
+          <small class="field-rule">按消息粒度推送回执，开启前需先配置回调 URL。</small>
+        </el-form-item>
+      </section>
     </el-form>
     <template #footer>
-      <el-button @click="drawerOpen=false">取消</el-button>
-      <el-button data-testid="save-app" type="primary" :loading="saving" @click="save">保存</el-button>
+      <div class="apps-drawer-foot">
+        <small class="apps-form-audit">保存即记审计（{{ editingId === null ? "app_create" : "app_update" }}）</small>
+        <span class="apps-foot-sp"></span>
+        <el-button @click="drawerOpen = false">取消</el-button>
+        <el-button data-testid="save-app" type="primary" :loading="saving" @click="save">{{ editingId === null ? "创建应用" : "保存" }}</el-button>
+      </div>
     </template>
   </el-drawer>
 

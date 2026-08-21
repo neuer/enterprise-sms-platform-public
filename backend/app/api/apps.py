@@ -116,6 +116,16 @@ class AppResponse(BaseModel):
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: Literal[0, 1]
+    # 以下为非密只读投影：8 位 Key 前缀与密钥生命周期元数据，不含任何哈希/密文材料
+    api_key_prefix: str = Field(description="当前 API Key 的 8 位前缀，仅用于界面辨识")
+    old_key_prefix: str | None = Field(
+        default=None, description="宽限期旧 Key 前缀；null 表示无宽限期旧 Key"
+    )
+    old_key_expires_at: datetime | None = Field(
+        default=None, description="宽限期旧 Key 到期时间；null 表示无宽限期旧 Key"
+    )
+    callback_secret_configured: bool = Field(description="回调签名密钥是否已配置")
+    created_at: datetime
 
 
 class CreateAppResponse(BaseModel):

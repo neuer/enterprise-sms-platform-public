@@ -19,6 +19,9 @@ APP_COLUMNS = """
 id, name, dept, allowed_categories, default_sign, daily_quota,
 rate_limit_per_min, blacklist_check, freq_override, callback_url,
 allowed_ips, callback_report_enabled, status, created_at, updated_at,
+api_key_prefix,
+api_key_prev_prefix AS old_key_prefix,
+api_key_prev_expires AS old_key_expires_at,
 (callback_secret_enc IS NOT NULL) AS callback_secret_configured
 """
 

@@ -25,6 +25,10 @@ APP = {
     "callback_url": None,
     "callback_report_enabled": False,
     "status": 1,
+    "api_key_prefix": "sk-oa001",
+    "old_key_prefix": None,
+    "old_key_expires_at": None,
+    "callback_secret_configured": False,
     "created_at": datetime(2026, 7, 11, tzinfo=UTC),
     "updated_at": datetime(2026, 7, 11, tzinfo=UTC),
 }
@@ -71,7 +75,7 @@ def client(role: str = "admin") -> TestClient:
     return TestClient(app)
 
 
-def test_app_responses_filter_all_key_material_and_create_returns_once() -> None:
+def test_app_responses_filter_key_material_but_expose_safe_key_metadata() -> None:
     browser = client()
     headers = {"Authorization": "Bearer admin.jwt"}
 
@@ -79,10 +83,18 @@ def test_app_responses_filter_all_key_material_and_create_returns_once() -> None
     assert listed.status_code == 200
     assert "api_key_hash" not in listed.text
     assert "callback_secret_enc" not in listed.text
+    assert "must-not-leak" not in listed.text
+    row = listed.json()[0]
+    assert row["api_key_prefix"] == "sk-oa001"
+    assert row["old_key_prefix"] is None
+    assert row["old_key_expires_at"] is None
+    assert row["callback_secret_configured"] is False
+    assert row["created_at"].startswith("2026-07-11")
 
     detail = browser.get("/api/v1/web/admin/apps/1", headers=headers)
     assert detail.status_code == 200
-    assert "api_key_prefix" not in detail.text
+    assert detail.json()["api_key_prefix"] == "prefixxx"
+    assert "api_key_hash" not in detail.text
 
     created = browser.post(
         "/api/v1/web/admin/apps",
