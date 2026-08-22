@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.services.crypto import EncryptionContext
+from app.services.raw_capture_legacy import replay_forbidden_message
 from app.vendor.zhihui import RawPulledPayload, VendorError, decode_pulled_payload
 
 # 自动重放认领次数上限；达到后仅保留 ops 人工重放入口（规则 5 的可重放
@@ -106,15 +107,14 @@ class RawReplayService:
         claim = await self.repository.claim_raw_for_replay(raw_id)
         if claim is None:
             raise RawReplayNotFound(raw_id)
+        forbidden = replay_forbidden_message(claim.record.capture_state)
+        if forbidden is not None:
+            raise RawReplayConflict(forbidden)
         if not claim.claimed:
-            if claim.record.capture_state == "truncated":
-                raise RawReplayConflict("截断 raw 不得当作正常可重放")
             if claim.record.processed:
                 raise RawReplayConflict("仅未处理 raw 可重放")
             raise RawReplayConflict("raw 正在处理中，请稍后重试")
         record = claim.record
-        if record.capture_state == "truncated":
-            raise RawReplayConflict("截断 raw 不得当作正常可重放")
         if record.processed:
             raise RawReplayConflict("仅未处理 raw 可重放")
         raw = self.crypto.decrypt_bound_bytes(
