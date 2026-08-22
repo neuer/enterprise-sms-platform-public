@@ -12,6 +12,7 @@ from typing import Any
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
     CAPTURE_COMPLETE_TOO_LARGE,
+    CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
 )
@@ -49,6 +50,7 @@ VALID_LEGACY_CAPTURE_STATES = frozenset(
         CAPTURE_COMPLETE,
         CAPTURE_COMPLETE_TOO_LARGE,
         CAPTURE_TRUNCATED,
+        CAPTURE_PROTOCOL_INVALID,
         CAPTURE_UNKNOWN_LEGACY,
     }
 )
@@ -155,6 +157,8 @@ def replay_forbidden_message(capture_state: str) -> str | None:
 
     if capture_state == CAPTURE_TRUNCATED:
         return "截断 raw 不得当作正常可重放"
+    if capture_state == CAPTURE_PROTOCOL_INVALID:
+        return "截断或协议异常 raw 不得当作正常可重放"
     if capture_state == CAPTURE_UNKNOWN_LEGACY:
         return "未分类历史 raw 不得当作正常可重放，需人工盘点后再提升"
     if capture_state not in OPS_REPLAY_STATES:
@@ -331,6 +335,7 @@ def build_inventory(rows: Sequence[RawInventoryInput]) -> dict[str, Any]:
             "complete": "auto_replay_if_unprocessed",
             "complete_too_large": "ops_replay_only",
             "truncated": "no_normal_auto_or_ops_replay",
+            "protocol_invalid": "no_normal_auto_or_ops_replay",
             "unknown_legacy": "human_review_then_promote",
         },
     }

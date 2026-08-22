@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0073_raw_legacy_capture"
-down_revision = "0072_raw_capture_state"
+revision = "0074_raw_legacy_capture"
+down_revision = "0073_raw_protocol_invalid"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # 旧 0072 的 CHECK 只有三态；已升级库必须先放宽再按证据重分类。
-    # 只改仍为 complete 且带超限/截断/不可判定证据的行，普通完整行保持 complete。
+    # 0073 的 CHECK 含 protocol_invalid，不含 unknown_legacy。已升级库必须先放宽
+    # 再按证据重分类。只改仍为 complete 且带超限/截断/不可判定证据的行；
+    # protocol_invalid 与已是 truncated/complete_too_large 的行保持不动。
     op.execute(
         "ALTER TABLE raw_vendor_log DROP CONSTRAINT IF EXISTS ck_raw_vendor_capture_state"
     )
@@ -21,7 +22,7 @@ def upgrade() -> None:
         ALTER TABLE raw_vendor_log
           ADD CONSTRAINT ck_raw_vendor_capture_state
           CHECK (capture_state IN (
-            'complete','complete_too_large','truncated','unknown_legacy'
+            'complete','complete_too_large','truncated','protocol_invalid','unknown_legacy'
           ))
         """
     )
@@ -136,7 +137,7 @@ def downgrade() -> None:
         ALTER TABLE raw_vendor_log
           ADD CONSTRAINT ck_raw_vendor_capture_state
           CHECK (capture_state IN (
-            'complete','complete_too_large','truncated'
+            'complete','complete_too_large','truncated','protocol_invalid'
           ))
         """
     )

@@ -1,8 +1,12 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.62  2026-08-22
+-- v1.6.62：pre-0072 存量 raw 按密文长度与错误类型分类；无法证明完整的
+--          历史行记 unknown_legacy，禁止普通自动/人工重放直至人工提升。
+--          不改写 protocol_invalid
 -- v1.6.61  2026-08-22
--- v1.6.61：pre-0072 存量 raw 按密文长度与错误类型分类；无法证明完整的
---          历史行记 unknown_legacy，禁止普通自动/人工重放直至人工提升
+-- v1.6.61：raw_vendor_log.capture_state 增加 protocol_invalid；畸形
+--          consume-on-read 头仍须保全正文，且不得进入普通自动重放
 -- v1.6.60  2026-08-22
 -- v1.6.60：raw_vendor_log 增加 capture_state，区分完整、完整但超自动解析上限
 --          与截断捕获；截断 raw 不得进入自动重放
@@ -701,15 +705,16 @@ CREATE TABLE raw_vendor_log (
     -- 自动重放消耗的认领次数；达到上限即退出自动重放，仅保留人工入口
     replay_attempts INTEGER    NOT NULL DEFAULT 0 CHECK (replay_attempts>=0),
     -- complete=完整可自动解析；complete_too_large=完整但超自动解析上限，仅人工；
-    -- truncated=超过恢复上限的截断捕获，不得当作正常可重放 raw；
-    -- unknown_legacy=升级前无法证明完整性的历史行，仅人工盘点后提升
+    -- truncated=超过恢复上限的截断捕获；protocol_invalid=畸形 consume-on-read
+    -- 头仍保全正文；unknown_legacy=升级前无法证明完整性的历史行，仅人工盘点后提升；
+    -- 后三者不得当作正常可重放 raw
     capture_state  VARCHAR(24) NOT NULL DEFAULT 'complete',
     fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_raw_vendor_http_status CHECK (http_status BETWEEN 100 AND 599),
     CONSTRAINT ck_raw_vendor_content_encoding
       CHECK (content_encoding IN ('identity','unsupported')),
     CONSTRAINT ck_raw_vendor_capture_state
-      CHECK (capture_state IN ('complete','complete_too_large','truncated','unknown_legacy'))
+      CHECK (capture_state IN ('complete','complete_too_large','truncated','protocol_invalid','unknown_legacy'))
 );
 CREATE INDEX idx_raw_unprocessed ON raw_vendor_log(processed, fetched_at)
     WHERE processed = FALSE;

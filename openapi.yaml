@@ -3260,7 +3260,7 @@ components:
         processed: { type: boolean }
         error: { anyOf: [{ type: string }, { type: 'null' }] }
         fetched_at: { type: string, format: date-time }
-        capture_state: { type: string, enum: [complete, complete_too_large, truncated, unknown_legacy] }
+        capture_state: { type: string, enum: [complete, complete_too_large, truncated, protocol_invalid, unknown_legacy] }
 
     RawLogPageModel:
       type: object

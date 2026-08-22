@@ -1,4 +1,4 @@
-"""0072/0073 历史 raw 分类、重放资格与只读盘点。"""
+"""0074 历史 raw 分类、重放资格与只读盘点。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from app.services.raw_capture_legacy import (
     BOUND_ENVELOPE_OVERHEAD_BYTES,
     CAPTURE_COMPLETE,
     CAPTURE_COMPLETE_TOO_LARGE,
+    CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
     FORBIDDEN_INVENTORY_KEYS,
@@ -28,7 +29,11 @@ from app.services.raw_capture_legacy import (
     replay_forbidden_message,
 )
 from app.services.raw_replay import RawReplayConflict, RawReplayRecord, RawReplayService
-from app.services.raw_spill import VALID_CAPTURE_STATES, normalize_capture_state
+from app.services.raw_spill import (
+    VALID_CAPTURE_STATES,
+    is_non_replayable_capture,
+    normalize_capture_state,
+)
 from scripts_support.inventory_raw_capture_legacy import render_inventory
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -227,25 +232,32 @@ def test_empty_schema_default_remains_complete_for_new_rows() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     assert "capture_state  VARCHAR(24) NOT NULL DEFAULT 'complete'" in schema
     assert "'unknown_legacy'" in schema
+    assert "'protocol_invalid'" in schema
     source = (MIGRATIONS / "0072_raw_capture_state.py").read_text(encoding="utf-8")
-    assert "SET DEFAULT 'complete'" in source
-    assert "DEFAULT 'unknown_legacy'" in source
-    assert "历史行都是完整落库路径" not in source
+    assert "DEFAULT 'complete'" in source
+    assert "DEFAULT 'unknown_legacy'" not in source
+    assert "历史行都是完整落库路径" in source
 
 
 def test_migrations_keep_classification_constants_and_repair_old_0072() -> None:
-    first = (MIGRATIONS / "0072_raw_capture_state.py").read_text(encoding="utf-8")
-    repair = (MIGRATIONS / "0073_raw_legacy_capture.py").read_text(encoding="utf-8")
-    for source in (first, repair):
-        assert str(AUTO_PARSE_LIMIT_BYTES) in source
-        assert str(RECOVERY_CAPTURE_LIMIT_BYTES) in source
-        assert "unknown_legacy" in source
-        assert "decrypt" not in source.casefold()
-        assert "payload_enc" in source
-        assert "phone" not in source.casefold()
-    assert "WHERE capture_state='unknown_legacy'" in first
+    shipped = (MIGRATIONS / "0072_raw_capture_state.py").read_text(encoding="utf-8")
+    protocol = (MIGRATIONS / "0073_raw_protocol_invalid.py").read_text(encoding="utf-8")
+    repair = (MIGRATIONS / "0074_raw_legacy_capture.py").read_text(encoding="utf-8")
+    assert "unknown_legacy" not in shipped
+    assert "protocol_invalid" in protocol
+    assert "unknown_legacy" not in protocol
+    assert 'down_revision = "0072_raw_capture_state"' in protocol
+    assert str(AUTO_PARSE_LIMIT_BYTES) in repair
+    assert str(RECOVERY_CAPTURE_LIMIT_BYTES) in repair
+    assert "unknown_legacy" in repair
+    assert "protocol_invalid" in repair
+    assert "decrypt" not in repair.casefold()
+    assert "payload_enc" in repair
+    assert "phone" not in repair.casefold()
     assert "WHERE capture_state='complete'" in repair
-    assert "down_revision = \"0072_raw_capture_state\"" in repair
+    assert "WHERE capture_state='protocol_invalid'" not in repair
+    assert 'down_revision = "0073_raw_protocol_invalid"' in repair
+    assert 'revision = "0074_raw_legacy_capture"' in repair
 
 
 def test_inventory_is_aggregate_only_and_rejects_poisoned_fields() -> None:
@@ -341,6 +353,7 @@ class _ForbiddenReplayRepository:
     ("state", "message"),
     [
         (CAPTURE_TRUNCATED, "截断"),
+        (CAPTURE_PROTOCOL_INVALID, "协议异常"),
         (CAPTURE_UNKNOWN_LEGACY, "未分类历史"),
     ],
 )
@@ -360,4 +373,7 @@ async def test_forbidden_capture_states_cannot_replay(
 
 def test_unknown_legacy_is_a_valid_persisted_capture_state() -> None:
     assert CAPTURE_UNKNOWN_LEGACY in VALID_CAPTURE_STATES
+    assert CAPTURE_PROTOCOL_INVALID in VALID_CAPTURE_STATES
     assert normalize_capture_state(CAPTURE_UNKNOWN_LEGACY) == CAPTURE_UNKNOWN_LEGACY
+    assert is_non_replayable_capture(CAPTURE_UNKNOWN_LEGACY)
+    assert is_non_replayable_capture(CAPTURE_PROTOCOL_INVALID)

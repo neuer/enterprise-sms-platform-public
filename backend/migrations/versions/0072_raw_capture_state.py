@@ -1,4 +1,4 @@
-"""raw_vendor_log.capture_state：完整 / 超限完整 / 截断 / 未分类历史。"""
+"""raw_vendor_log.capture_state：完整 / 超限完整 / 截断捕获。"""
 
 from __future__ import annotations
 
@@ -11,86 +11,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # schema.sql 基线建库已含该列且新行 DEFAULT complete；存量升级先用
-    # unknown_legacy 占位以暂停自动重放，再按密文长度与错误类型分类。
-    # 不得把无法证明完整性的历史行默认写成 complete。
+    # schema.sql 基线建库已含该列；存量升级在此补齐，两条路径幂等收敛。
+    # 历史行都是完整落库路径，统一保持 complete。
     op.execute(
         """
         ALTER TABLE raw_vendor_log
-          ADD COLUMN IF NOT EXISTS capture_state VARCHAR(24) NOT NULL DEFAULT 'unknown_legacy'
-        """
-    )
-    op.execute(
-        """
-        UPDATE raw_vendor_log SET capture_state=CASE
-          WHEN error ILIKE '%truncated vendor response%'
-            OR error ILIKE '%beyond recovery limit%'
-            OR error ILIKE '%exceeds recovery capture limit%'
-            OR error ILIKE '%exceeded raw spill quota%'
-            OR error ILIKE '%exceeds hard limit%'
-            OR error ILIKE '%body exceeds hard limit%'
-            THEN 'truncated'
-          WHEN (
-              error ILIKE '%oversized payload persisted%'
-              OR error ILIKE '%exceeds automatic processing limit%'
-              OR error ILIKE '%too large to parse%'
-            ) AND octet_length(payload_enc) >= CASE
-              WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-              ELSE 28
-            END AND (
-              octet_length(payload_enc) - CASE
-                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-                ELSE 28
-              END
-            ) > 67108864
-            THEN 'unknown_legacy'
-          WHEN error ILIKE '%oversized payload persisted%'
-            OR error ILIKE '%exceeds automatic processing limit%'
-            OR error ILIKE '%too large to parse%'
-            THEN 'complete_too_large'
-          WHEN octet_length(payload_enc) < CASE
-              WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-              ELSE 28
-            END
-            THEN 'unknown_legacy'
-          WHEN (
-              octet_length(payload_enc) - CASE
-                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-                ELSE 28
-              END
-            ) > 67108864
-            THEN 'truncated'
-          WHEN (
-              octet_length(payload_enc) - CASE
-                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-                ELSE 28
-              END
-            ) = 67108864
-            THEN 'unknown_legacy'
-          WHEN (
-              octet_length(payload_enc) - CASE
-                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-                ELSE 28
-              END
-            ) > 4194304
-            THEN 'complete_too_large'
-          WHEN (
-              octet_length(payload_enc) - CASE
-                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
-                ELSE 28
-              END
-            ) = 4194304
-            AND processed=false
-            THEN 'unknown_legacy'
-          ELSE 'complete'
-        END
-        WHERE capture_state='unknown_legacy'
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE raw_vendor_log
-          ALTER COLUMN capture_state SET DEFAULT 'complete'
+          ADD COLUMN IF NOT EXISTS capture_state VARCHAR(24) NOT NULL DEFAULT 'complete'
         """
     )
     op.execute(
@@ -104,9 +30,7 @@ def upgrade() -> None:
           ) THEN
             ALTER TABLE raw_vendor_log
               ADD CONSTRAINT ck_raw_vendor_capture_state
-              CHECK (capture_state IN (
-                'complete','complete_too_large','truncated','unknown_legacy'
-              ));
+              CHECK (capture_state IN ('complete','complete_too_large','truncated'));
           END IF;
         END $$
         """
