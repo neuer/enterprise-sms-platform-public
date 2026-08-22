@@ -237,6 +237,7 @@ _BACKEND_CRITICAL_PROTECTED_EXACT = frozenset(
         "backend/app/services/pipeline_repository.py",
         "backend/app/services/quota.py",
         "backend/app/services/raw_replay.py",
+        "backend/app/services/raw_spill.py",
         "backend/app/services/reply_ingest.py",
         "backend/app/services/report_ingest.py",
         "backend/app/services/resend.py",
@@ -244,9 +245,15 @@ _BACKEND_CRITICAL_PROTECTED_EXACT = frozenset(
         "backend/app/services/sensitive_repository.py",
         "backend/app/services/uncertain.py",
         "backend/app/services/uncertain_repository.py",
+        "backend/app/services/usage_ledger.py",
         "backend/app/services/user_management.py",
         "backend/app/services/user_repository.py",
         "backend/app/services/vendor_test_security_audit.py",
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/refreshLock.ts",
+        "frontend/src/api/sessionTokens.ts",
+        "frontend/src/api/webMessages.ts",
+        "frontend/src/stores/session.ts",
     }
 )
 _BACKEND_CRITICAL_PROTECTED_PREFIXES = (
