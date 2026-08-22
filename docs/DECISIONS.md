@@ -852,6 +852,16 @@
   同轮隔离即可切断饥饿，同时保持既有租约、幂等和单一 job 名字。
 - 影响：`tasks/reconcile.py` 与 reconcile 任务测试。独立域 backlog/RTO 仪表盘留后续。
 
+## D077 注销必须先销毁内存凭据且隔离 Storage 失败
+
+- 决策：`session.clear()` / `clearAllTabs()` / `logout()` 先 `resetIdentity()` 与
+  `clearAccessSession()`，再清理历史 Storage。每个 Storage getter/`getItem`/`setItem`/
+  `removeItem` 独立隔离；任一失败不得跳过内存 Bearer 销毁，也不得阻止
+  `sms:session-clearing` 本页事件。跨标签页仍只用无凭据信号，不传递 access/refresh。
+- 原因：受限存储、sandbox 或 SecurityError 会让 Storage 清理先于内存清理抛错，本页
+  继续带着旧 Access Token 发请求。
+- 影响：`session.ts`、`sessionTokens.ts`、会话 Vitest 与 TEST-MANUAL SMK-05。
+
 ## D072 号码精确查询改为 POST 请求体
 
 - 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、

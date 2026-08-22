@@ -50,12 +50,40 @@ export function clearRefreshTabBinding(): void {
   }
 }
 
+function readSessionStorage(): Storage | null {
+  try {
+    return window.sessionStorage
+  } catch {
+    return null
+  }
+}
+
+function storageGet(key: string): string | null {
+  const storage = readSessionStorage()
+  if (!storage) return null
+  try {
+    return storage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function storageRemove(key: string): void {
+  const storage = readSessionStorage()
+  if (!storage) return
+  try {
+    storage.removeItem(key)
+  } catch {
+    // 内存会话才是当前权威；Storage 失败不得阻断销毁。
+  }
+}
+
 function migrateLegacyStorage(): void {
-  const legacyToken = sessionStorage.getItem(TOKEN_KEY)
-  const rawUser = sessionStorage.getItem(USER_KEY)
+  const legacyToken = storageGet(TOKEN_KEY)
+  const rawUser = storageGet(USER_KEY)
   // 先销毁持久化凭据，再解析；任何异常都不能延长 Bearer 暴露窗口。
-  sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(USER_KEY)
+  storageRemove(TOKEN_KEY)
+  storageRemove(USER_KEY)
   if (!accessToken && legacyToken) accessToken = legacyToken
   if (!sessionUser && rawUser) {
     try {
@@ -85,6 +113,6 @@ export function setAccessSession(token: string, user: PlatformUser): void {
 export function clearAccessSession(): void {
   accessToken = null
   sessionUser = null
-  sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(USER_KEY)
+  storageRemove(TOKEN_KEY)
+  storageRemove(USER_KEY)
 }

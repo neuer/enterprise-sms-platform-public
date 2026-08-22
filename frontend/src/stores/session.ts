@@ -24,26 +24,56 @@ const CHANGE_TOKEN_KEY = "sms_change_token"
 const CHANGE_TOKEN_EXPIRES_AT_KEY = "sms_change_token_expires_at"
 export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
 
+function readStorage(name: "localStorage" | "sessionStorage"): Storage | null {
+  try {
+    return window[name]
+  } catch {
+    return null
+  }
+}
+
+function storageGet(name: "localStorage" | "sessionStorage", key: string): string | null {
+  const storage = readStorage(name)
+  if (!storage) return null
+  try {
+    return storage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function storageRemove(name: "localStorage" | "sessionStorage", key: string): void {
+  const storage = readStorage(name)
+  if (!storage) return
+  try {
+    storage.removeItem(key)
+  } catch {
+    // 单个 Storage 失败不得跳过其余清理或内存凭据销毁。
+  }
+}
+
 function broadcastSessionClear(): void {
   try {
-    localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
-    localStorage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
+    const storage = readStorage("localStorage")
+    if (!storage) return
+    storage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
+    storage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
   } catch {
     // 当前标签页仍由服务端权威会话保护；受限存储环境无法通知兄弟标签页。
   }
 }
 
 function clearLegacyPersistence(): void {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem("sms_refresh_token")
-  localStorage.removeItem(USER_KEY)
-  localStorage.removeItem(CHANGE_TOKEN_KEY)
-  localStorage.removeItem(CHANGE_TOKEN_EXPIRES_AT_KEY)
-  sessionStorage.removeItem(CHANGE_TOKEN_KEY)
-  sessionStorage.removeItem(CHANGE_TOKEN_EXPIRES_AT_KEY)
-  sessionStorage.removeItem("sms_refresh_token")
-  sessionStorage.removeItem(TOKEN_KEY)
-  sessionStorage.removeItem(USER_KEY)
+  for (const key of [
+    TOKEN_KEY,
+    "sms_refresh_token",
+    USER_KEY,
+    CHANGE_TOKEN_KEY,
+    CHANGE_TOKEN_EXPIRES_AT_KEY,
+  ]) {
+    storageRemove("localStorage", key)
+    storageRemove("sessionStorage", key)
+  }
 }
 
 const roleLabels: Record<UserRole, string> = {
@@ -111,24 +141,26 @@ export const useSessionStore = defineStore("session", {
       setAccessSession(token, user)
     },
     clear() {
-      clearLegacyPersistence()
       this.resetIdentity()
       clearRefreshTabBinding()
+      clearLegacyPersistence()
     },
     clearAllTabs() {
-      this.clear()
+      this.resetIdentity()
+      clearRefreshTabBinding()
       try {
         window.dispatchEvent(new Event("sms:session-clearing"))
       } finally {
+        clearLegacyPersistence()
         broadcastSessionClear()
       }
     },
     restore() {
-      const token = sessionStorage.getItem(TOKEN_KEY)
-      const rawUser = sessionStorage.getItem(USER_KEY)
+      const token = storageGet("sessionStorage", TOKEN_KEY)
+      const rawUser = storageGet("sessionStorage", USER_KEY)
       // 历史版本凭据只允许同步读取一次；解析或任何异步操作前立即销毁。
-      sessionStorage.removeItem(TOKEN_KEY)
-      sessionStorage.removeItem(USER_KEY)
+      storageRemove("sessionStorage", TOKEN_KEY)
+      storageRemove("sessionStorage", USER_KEY)
       clearLegacyPersistence()
       const memoryToken = getAccessToken()
       const memoryUser = getSessionUser()

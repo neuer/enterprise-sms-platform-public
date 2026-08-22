@@ -251,7 +251,7 @@ Web 地址：${TEST_BASE_URL}
 | SMK-02 | API 存活与就绪 | 依次打开 `/livez`、`/readyz` | 均为 HTTP 200，响应不含 secret、DSN、组件名、堆栈或手机号 |
 | SMK-03 | 未登录保护 | 直接打开 `/dashboard` | 跳转 `/login` |
 | SMK-04 | 正常登录 | `viewer01` 正确登录 | 进入仪表盘，顶栏显示用户和角色 |
-| SMK-05 | 退出 | 点击右上角“退出” | 回到登录页，刷新后不能恢复旧会话 |
+| SMK-05 | 退出 | 点击右上角“退出” | 回到登录页，刷新后不能恢复旧会话；即使浏览器拦截 Storage，本页也不再附带旧 Bearer |
 | SMK-06 | 错误登录 | 使用错误密码 1 次 | 统一中文错误，不暴露账号是否存在或后端堆栈 |
 | SMK-07 | 静态资源 | 打开开发者工具 Network | JS/CSS/字体均来自当前站点，无运行时外部 CDN |
 | SMK-08 | 安全头 | 检查主页面响应 | 存在 CSP、Permissions-Policy、X-Content-Type-Options、X-Frame-Options、Referrer-Policy |

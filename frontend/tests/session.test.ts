@@ -4,6 +4,7 @@ import { beforeEach, vi } from "vitest"
 import {
   clearAccessSession,
   clearRefreshTabBinding,
+  getAccessToken,
   REFRESH_TAB_ID_KEY,
 } from "../src/api/sessionTokens"
 import { useSessionStore } from "../src/stores/session"
@@ -163,6 +164,67 @@ describe("Provider 与 JWT 会话", () => {
     session.restore()
 
     expect(sessionStorage.getItem("sms_change_token")).toBeNull()
+  })
+
+  it.each([
+    ["localStorage", "getItem"],
+    ["localStorage", "setItem"],
+    ["localStorage", "removeItem"],
+    ["sessionStorage", "getItem"],
+    ["sessionStorage", "setItem"],
+    ["sessionStorage", "removeItem"],
+  ] as const)("window.%s.%s 抛错时本页 Access Token 仍立即清空", (storageName, method) => {
+    const session = useSessionStore()
+    session.apply("jwt-token", admin)
+    const storage = window[storageName]
+    const spy = vi.spyOn(storage, method).mockImplementation(() => {
+      throw new DOMException("restricted", "SecurityError")
+    })
+    try {
+      expect(() => session.clearAllTabs()).not.toThrow()
+      expect(session.isAuthenticated).toBe(false)
+      expect(getAccessToken()).toBeNull()
+      expect(session.accountId).toBe(0)
+      expect(session.identityId).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it.each(["localStorage", "sessionStorage"] as const)(
+    "window.%s getter 抛错时本页 Access Token 仍立即清空",
+    (storageName) => {
+      const session = useSessionStore()
+      session.apply("jwt-token", admin)
+      const spy = vi.spyOn(window, storageName, "get").mockImplementation(() => {
+        throw new DOMException("restricted", "SecurityError")
+      })
+      try {
+        expect(() => session.clearAllTabs()).not.toThrow()
+        expect(session.isAuthenticated).toBe(false)
+        expect(getAccessToken()).toBeNull()
+        expect(session.accountId).toBe(0)
+        expect(session.identityId).toBe(0)
+      } finally {
+        spy.mockRestore()
+      }
+    },
+  )
+
+  it("clear 与 logout 连续执行多次不因 Storage 清理抛错", async () => {
+    const session = useSessionStore()
+    session.apply("jwt-token", admin)
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")))
+    expect(() => {
+      session.clear()
+      session.clear()
+      session.clearAllTabs()
+    }).not.toThrow()
+    session.apply("jwt-token", admin)
+    await expect(session.logout()).rejects.toThrow("offline")
+    await expect(session.logout()).resolves.toBeUndefined()
+    expect(session.isAuthenticated).toBe(false)
+    expect(getAccessToken()).toBeNull()
   })
 
   it("登出接口失败也清除访问与改密会话", async () => {
