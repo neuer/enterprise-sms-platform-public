@@ -847,9 +847,12 @@
 - 决策：本期不拆五个独立 beat 任务。`tracked_job("reconcile")` 仍是唯一对账心跳；
   一轮内逐域捕获异常、写 `reconcile_domain_failed` 告警（只含 domain 与 error_type），
   然后继续后续域。全部域跑完后若有失败，抛出 `ReconcilePartialFailure`，cause 指向
-  第一个失败。不得静默吞错，告警与聚合异常不得回传异常原文。
+  第一个失败。不得静默吞错，告警与聚合异常不得回传异常原文。Policy 加载、仓储/
+  密钥/客户端初始化、域配置解析等只服务单个域的前置必须放在对应 `_run_domain()`
+  闭包内；只有所有域都不可缺少的全局前置（如 `get_settings()`）可以留在循环外。
 - 原因：拆任务会改 beat 调度表与心跳巡检面；当前缺陷是前置域 fail-fast 饿死后置自愈。
-  同轮隔离即可切断饥饿，同时保持既有租约、幂等和单一 job 名字。
+  同轮隔离即可切断饥饿，同时保持既有租约、幂等和单一 job 名字。#421 只隔离了
+  `run_once()`，Policy 预加载仍在循环外，损坏 `sys_config` 会再次饿死全部自愈。
 - 影响：`tasks/reconcile.py` 与 reconcile 任务测试。独立域 backlog/RTO 仪表盘留后续。
 
 ## D077 注销必须先销毁内存凭据且隔离 Storage 失败
