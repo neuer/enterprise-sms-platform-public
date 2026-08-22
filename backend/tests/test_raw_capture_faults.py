@@ -11,6 +11,7 @@ from app.services.crypto import CryptoService
 from app.services.raw_replay import RawReplayConflict, RawReplayRecord, RawReplayService
 from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
+    CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     RawSpillStore,
     SpillQuotaExceeded,
@@ -82,16 +83,39 @@ class RecordingGateway:
         self.calls += 1
         if isinstance(self.result, VendorResponseTooLarge):
             if body_sink is not None and self.result.raw_body:
+                announce = getattr(body_sink, "announce", None)
+                if callable(announce):
+                    announce(
+                        http_status=self.result.status_code or 200,
+                        content_encoding="identity",
+                    )
                 body_sink.feed(self.result.raw_body)
                 finish = getattr(body_sink, "finish", None)
                 if callable(finish):
-                    finish(complete=self.result.complete, too_large=self.result.complete)
+                    finish(
+                        complete=self.result.complete,
+                        too_large=self.result.complete,
+                        http_status=self.result.status_code or 200,
+                    )
             raise self.result
         if body_sink is not None:
-            body_sink.feed(self.result.raw_payload)
+            announce = getattr(body_sink, "announce", None)
+            if callable(announce):
+                announce(
+                    http_status=self.result.status_code,
+                    content_encoding=self.result.content_encoding,
+                    protocol_invalid=self.result.protocol_invalid,
+                )
+            if self.result.raw_payload:
+                body_sink.feed(self.result.raw_payload)
             finish = getattr(body_sink, "finish", None)
             if callable(finish):
-                finish(complete=True)
+                finish(
+                    complete=True,
+                    http_status=self.result.status_code,
+                    content_encoding=self.result.content_encoding,
+                    protocol_invalid=self.result.protocol_invalid,
+                )
         return self.result
 
 
@@ -263,6 +287,7 @@ async def test_successful_persist_cleans_spill_and_stream(tmp_path: Path) -> Non
     assert leftover_names(tmp_path, ".spill") == []
     assert leftover_names(tmp_path, ".stream") == []
     assert leftover_names(tmp_path, ".tmp") == []
+    assert leftover_names(tmp_path, ".quarantine") == []
 
 
 @pytest.mark.asyncio
@@ -289,3 +314,35 @@ async def test_truncated_raw_replay_is_rejected() -> None:
     )
     with pytest.raises(RawReplayConflict, match="截断"):
         await service.replay(9, actor="admin01", ip="10.0.0.8")
+
+
+@pytest.mark.asyncio
+async def test_protocol_invalid_raw_replay_is_rejected() -> None:
+    class ProtocolInvalidRepository(TruncatedReplayRepository):
+        async def claim_raw_for_replay(self, raw_id: int) -> object:
+            self.claim_calls.append(raw_id)
+            return type(
+                "Claim",
+                (),
+                {
+                    "claimed": True,
+                    "record": RawReplayRecord(
+                        raw_id,
+                        "report",
+                        b"ciphertext",
+                        "a" * 64,
+                        1,
+                        False,
+                        capture_state=CAPTURE_PROTOCOL_INVALID,
+                    ),
+                },
+            )()
+
+    service = RawReplayService(
+        ProtocolInvalidRepository(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(RawReplayConflict, match="协议异常"):
+        await service.replay(11, actor="admin01", ip="10.0.0.8")
