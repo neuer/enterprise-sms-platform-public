@@ -11,7 +11,9 @@ from app.services.usage_ledger import (
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
+    _canonical_frequency_projection_key,
     _frequency_projection_keys,
+    _latest_projection_rows,
     _safe_event_id,
     _safe_request_key,
     frequency_windows,
@@ -76,8 +78,8 @@ class ProjectionRedis:
 def test_shanghai_boundaries_are_explicit_and_timezone_aware() -> None:
     before_midnight = datetime(2026, 7, 26, 15, 59, 59, tzinfo=UTC)
     date_key, usage_date, next_day = shanghai_day(before_midnight)
-    minute, minute_end, frequency_day, frequency_date, frequency_end = (
-        frequency_windows(before_midnight)
+    minute, minute_end, frequency_day, frequency_date, frequency_end = frequency_windows(
+        before_midnight
     )
 
     assert date_key == "20260726"
@@ -96,12 +98,8 @@ def test_shanghai_boundaries_are_explicit_and_timezone_aware() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "acceptance:3:"
-        "6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628"
-        ":20260726",
-        "acceptance:v2:"
-        "6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628"
-        ":20260811",
+        "acceptance:3:6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628:20260726",
+        "acceptance:v2:6f9fe86ee23dc0f44215fb19874716980fd98bf965a81ab1028ecae8d04d3628:20260811",
         "acceptance:123e4567-e89b-42d3-a456-426614174000",
         "legacy:batch:cbfc7a12676741399d36bf52390f0fb1",
     ],
@@ -202,3 +200,34 @@ def test_frequency_projection_keys_are_deterministic() -> None:
         f"freq:v:{digest}:d",
     )
     assert _frequency_projection_keys("market", 9, digest) == (f"freq:m:9:{digest}:d",)
+
+
+def test_canonical_frequency_projection_key_remaps_verify_and_market() -> None:
+    source = "a" * 64
+    canonical = "b" * 64
+    assert (
+        _canonical_frequency_projection_key(f"freq:v:{source}:m", canonical)
+        == f"freq:v:{canonical}:m"
+    )
+    assert (
+        _canonical_frequency_projection_key(f"freq:v:{source}:d", canonical)
+        == f"freq:v:{canonical}:d"
+    )
+    assert (
+        _canonical_frequency_projection_key(f"freq:m:12:{source}:d", canonical)
+        == f"freq:m:12:{canonical}:d"
+    )
+    assert (
+        _canonical_frequency_projection_key(f"freq:v:{canonical}:m", canonical)
+        == f"freq:v:{canonical}:m"
+    )
+    assert _canonical_frequency_projection_key("quota:app:1:20260822", canonical) is None
+
+
+def test_latest_projection_rows_keep_higher_version_per_key() -> None:
+    expires = datetime(2026, 8, 23, tzinfo=UTC)
+    key = "freq:v:" + "a" * 64
+    older = ProjectionRow(f"{key}:m", "frequency", date(2026, 8, 22), 1, 3, expires)
+    newer = ProjectionRow(f"{key}:m", "frequency", date(2026, 8, 22), 2, 9, expires)
+    other = ProjectionRow(f"{key}:d", "frequency", date(2026, 8, 22), 4, 4, expires)
+    assert _latest_projection_rows((older, other, newer)) == (other, newer)

@@ -2,6 +2,11 @@
 
 PostgreSQL 的 `usage_reservation`、配额明细、频控主体/alias/明细和 `usage_projection` 是唯一事实；Redis 只保存带版本的绝对值投影。发送入口遇到 Redis 不可确认、ready marker 缺失且正在重建时返回 HTTP 503 `USAGE_PROJECTION_UNAVAILABLE`。不得临时关闭此失败关闭边界，也不得手工把 Redis 计数设为零。
 
+HMAC 轮换或并发若使同一号码出现多个 `usage_frequency_subject`，主体归并必须同时把
+verify/market 窗口的 `usage_projection` 绝对值写入 canonical 键。只改 alias/entry 会留下
+孤立投影并低估后续频控。生产轮换前确认该归并已上线，并盘点是否仍有一个号码对应多个
+未过期频控主体。
+
 ## 状态与自动恢复
 
 - `reserved`：已建立受理事实，尚未与批次同事务提交。
