@@ -9,8 +9,14 @@ from typing import Any, cast
 from redis.asyncio import Redis
 from sqlalchemy import text
 
+from app.core.audit import AuditEvent, insert_audit
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    bind_connection_audit_subject,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.ops import (
     AlertLevel,
     AlertQuery,
@@ -122,22 +128,39 @@ class SqlOpsRepository:
         *,
         actor: str,
         ip: str,
+        principal: SecurityPrincipal,
     ) -> None:
+        """手动触发审计必须用接口已验证的人类主体显式绑定后再落库。
+
+        独立 `engine.begin()` 不能只靠 begin 事件里的 ContextVar 签名：
+        事务 XID 或主体上下文一旦没带进 INSERT，`enforce_live_audit_principal`
+        会以 check violation 拒绝 `legacy_unknown` 行，接口就变成 500。
+        这里按其它写路径显式 bind + insert_audit；主体来自 JWT，不回读 ContextVar。
+        """
+
+        if principal.actor_name != actor:
+            raise RuntimeError("job trigger audit principal unavailable")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO audit_log(
-                          actor,role,ip,action,object_type,object_id,after_val
-                        ) VALUES(
-                          :actor,'admin',CAST(:ip AS inet),'job_trigger','job',:job_name,
-                          jsonb_build_object('status','requested')
-                        )
-                        """
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="job_trigger",
+                        object_type="job",
+                        object_id=job_name,
+                        after={"status": "requested"},
                     ),
-                    {"actor": actor, "ip": ip, "job_name": job_name},
                 )
         finally:
             await engine.dispose()

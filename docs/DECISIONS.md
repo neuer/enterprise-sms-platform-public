@@ -830,6 +830,21 @@
 - 原因：内部系统接入依赖空白名单；改为强制 CIDR 会破坏既有应用。第二道防线通过可见性补齐。
 - 影响：应用管理页、`core/apikey.py`、`app_management.py`。
 
+## D080 Raw Spill 认证 terminal 与提交前持久交接
+
+- 决策：stream terminal 改为长度化 AES-GCM 控制帧，AAD 绑定
+  `source/stream_id/seq/kind/http_status/content_encoding/capture_state`。
+  不完整或认证失败的 terminal 必须恢复全部连续已认证 data chunk，强制
+  `truncated`/`protocol_invalid`，写 quarantine 并发不可静默跳过的 crit 告警，
+  不得返回 `None`。secondary spill 写盘必须回报成败；仅 fsync 成功或
+  PostgreSQL commit 成功后才删除 stream。`finish()`/`announce()` 必须持久化
+  真实 HTTP 状态与 Content-Encoding。畸形 consume-on-read `Content-Length`
+  仍有界读取正文，落 `protocol_invalid`，不进入普通自动重放。
+- 原因：#415 之后仍存在部分 footer 使已认证 chunk 被跳过、spill 失败后仍
+  删除 stream、崩溃恢复改写 HTTP 元数据、畸形头在读正文前中止四条窗口。
+- 影响：`raw_spill`/`zhihui`/`report_ingest`/`reply_ingest`、schema v1.6.61、
+  0073、OpenAPI `capture_state`、自动重放过滤。
+
 ## D079 HMAC 频控主体归并必须同时合并 usage_projection
 
 - 决策：`_ensure_frequency_subject()` 在改绑 alias/entry、删除 source subject 之前，
