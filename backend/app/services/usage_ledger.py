@@ -248,6 +248,10 @@ async def _lock_projection_keys(
     )
 
 
+_FREQ_VERIFY_KEY = re.compile(r"^freq:v:([0-9a-f]{64}):([md])$")
+_FREQ_MARKET_KEY = re.compile(r"^freq:m:(\d+):([0-9a-f]{64}):d$")
+
+
 def _frequency_projection_keys(
     category: str,
     app_id: int,
@@ -258,13 +262,36 @@ def _frequency_projection_keys(
     return (f"freq:m:{app_id}:{projection_hmac}:d",)
 
 
-async def _ensure_frequency_subject(
-    connection: AsyncConnection,
-    item: FrequencyDecisionItem,
-) -> tuple[UUID, str]:
-    """定位或创建频控主体，返回 (subject_id, projection_hmac)。"""
+def _canonical_frequency_projection_key(
+    dimension_key: str,
+    canonical_hmac: str,
+) -> str | None:
+    """把 source 主体的频控投影键改写到 canonical HMAC；无法识别则返回 None。"""
 
-    hmac_aliases = dict(item.hmac_aliases)
+    if HMAC_PATTERN.fullmatch(canonical_hmac) is None:
+        raise ValueError("invalid frequency projection hmac")
+    verify = _FREQ_VERIFY_KEY.fullmatch(dimension_key)
+    if verify is not None:
+        return f"freq:v:{canonical_hmac}:{verify.group(2)}"
+    market = _FREQ_MARKET_KEY.fullmatch(dimension_key)
+    if market is not None:
+        return f"freq:m:{market.group(1)}:{canonical_hmac}:d"
+    return None
+
+
+def _latest_projection_rows(rows: Sequence[ProjectionRow]) -> tuple[ProjectionRow, ...]:
+    latest: dict[str, ProjectionRow] = {}
+    for row in rows:
+        current = latest.get(row.dimension_key)
+        if current is None or row.version >= current.version:
+            latest[row.dimension_key] = row
+    return tuple(sorted(latest.values(), key=lambda item: item.dimension_key))
+
+
+async def _list_frequency_subjects(
+    connection: AsyncConnection,
+    digests: Sequence[str],
+) -> tuple[set[UUID], list[Any]]:
     alias_result = await connection.execute(
         text(
             """
@@ -272,79 +299,263 @@ async def _ensure_frequency_subject(
             WHERE phone_hmac=ANY(CAST(:digests AS char(64)[]))
             """
         ),
-        {"digests": list(hmac_aliases.values())},
+        {"digests": list(digests)},
     )
     subject_ids = {UUID(str(value)) for value in alias_result.scalars()}
+    if not subject_ids:
+        return set(), []
+    subject_result = await connection.execute(
+        text(
+            """
+            SELECT id,projection_hmac FROM usage_frequency_subject
+            WHERE id=ANY(CAST(:subject_ids AS uuid[]))
+            ORDER BY projection_hmac,id
+            """
+        ),
+        {"subject_ids": list(subject_ids)},
+    )
+    return subject_ids, list(subject_result.mappings())
+
+
+async def _list_frequency_projection_rows(
+    connection: AsyncConnection,
+    hmacs: Sequence[str],
+) -> list[Any]:
+    unique = [digest for digest in dict.fromkeys(hmacs) if HMAC_PATTERN.fullmatch(digest)]
+    if not unique:
+        return []
+    verify_keys = [key for digest in unique for key in (f"freq:v:{digest}:m", f"freq:v:{digest}:d")]
+    result = await connection.execute(
+        text(
+            """
+            SELECT dimension_key,kind,usage_date,window_key,value,version,expires_at
+            FROM usage_projection
+            WHERE kind='frequency'
+              AND (
+                dimension_key=ANY(CAST(:verify_keys AS text[]))
+                OR dimension_key LIKE ANY(CAST(:market_patterns AS text[]))
+              )
+            ORDER BY dimension_key
+            """
+        ),
+        {
+            "verify_keys": verify_keys,
+            "market_patterns": [f"freq:m:%:{digest}:d" for digest in unique],
+        },
+    )
+    return list(result.mappings())
+
+
+async def _lock_frequency_merge_keys(
+    connection: AsyncConnection,
+    hmacs: Sequence[str],
+    subject_ids: Sequence[UUID],
+) -> None:
+    unique = [digest for digest in dict.fromkeys(hmacs) if HMAC_PATTERN.fullmatch(digest)]
+    lock_keys = {key for digest in unique for key in (f"freq:v:{digest}:m", f"freq:v:{digest}:d")}
+    for row in await _list_frequency_projection_rows(connection, unique):
+        source_key = str(row["dimension_key"])
+        lock_keys.add(source_key)
+        for digest in unique:
+            remapped = _canonical_frequency_projection_key(source_key, digest)
+            if remapped is not None:
+                lock_keys.add(remapped)
     if subject_ids:
-        preferred_subject = await connection.scalar(
+        entry_result = await connection.execute(
             text(
                 """
-                SELECT subject_id FROM usage_frequency_alias
-                WHERE phone_hmac=:preferred_digest
-                """
-            ),
-            {"preferred_digest": hmac_aliases[min(hmac_aliases)]},
-        )
-        subject_result = await connection.execute(
-            text(
-                """
-                SELECT id,projection_hmac FROM usage_frequency_subject
-                WHERE id=ANY(CAST(:subject_ids AS uuid[]))
-                ORDER BY projection_hmac,id
+                SELECT DISTINCT projection_key FROM usage_frequency_entry
+                WHERE subject_id=ANY(CAST(:subject_ids AS uuid[]))
                 """
             ),
             {"subject_ids": list(subject_ids)},
         )
-        subject_rows = list(subject_result.mappings())
-        if len(subject_rows) != len(subject_ids):
-            raise UsageReservationConflict("frequency subject unavailable")
-        preferred_subject_id = (
-            UUID(str(preferred_subject)) if preferred_subject is not None else None
+        for key in entry_result.scalars():
+            source_key = str(key)
+            lock_keys.add(source_key)
+            for digest in unique:
+                remapped = _canonical_frequency_projection_key(source_key, digest)
+                if remapped is not None:
+                    lock_keys.add(remapped)
+    await _lock_projection_keys(connection, sorted(lock_keys), namespace=43)
+
+
+async def _write_absolute_frequency_projection(
+    connection: AsyncConnection,
+    *,
+    dimension_key: str,
+    kind: str,
+    usage_date: date,
+    window_key: str,
+    value: int,
+    expires_at: datetime,
+) -> ProjectionRow:
+    result = await connection.execute(
+        text(
+            """
+            INSERT INTO usage_projection(
+              dimension_key,kind,usage_date,window_key,value,version,expires_at
+            ) VALUES(
+              :dimension_key,:kind,:usage_date,:window_key,:value,
+              nextval('usage_projection_version_seq'),:expires_at
+            )
+            ON CONFLICT (dimension_key) DO UPDATE SET
+              kind=EXCLUDED.kind,
+              usage_date=EXCLUDED.usage_date,
+              window_key=EXCLUDED.window_key,
+              value=EXCLUDED.value,
+              version=nextval('usage_projection_version_seq'),
+              expires_at=EXCLUDED.expires_at,
+              updated_at=now()
+            RETURNING dimension_key,kind,usage_date,value,version,expires_at
+            """
+        ),
+        {
+            "dimension_key": dimension_key,
+            "kind": kind,
+            "usage_date": usage_date,
+            "window_key": window_key,
+            "value": value,
+            "expires_at": expires_at,
+        },
+    )
+    row = result.mappings().one()
+    return ProjectionRow(
+        str(row["dimension_key"]),
+        str(row["kind"]),
+        row["usage_date"],
+        int(row["value"]),
+        int(row["version"]),
+        row["expires_at"],
+    )
+
+
+async def _merge_frequency_projections(
+    connection: AsyncConnection,
+    *,
+    canonical_hmac: str,
+    subject_rows: Sequence[Any],
+) -> tuple[ProjectionRow, ...]:
+    """在已持有投影键锁后，把 source 主体窗口计数并入 canonical 键。"""
+
+    hmacs = [str(row["projection_hmac"]) for row in subject_rows]
+    subject_ids = [UUID(str(row["id"])) for row in subject_rows]
+    observed = await _database_now(connection)
+    groups: dict[str, list[Any]] = {}
+    remaps: dict[str, str] = {}
+    for row in await _list_frequency_projection_rows(connection, hmacs):
+        source_key = str(row["dimension_key"])
+        target_key = _canonical_frequency_projection_key(source_key, canonical_hmac)
+        if target_key is None:
+            continue
+        remaps[source_key] = target_key
+        groups.setdefault(target_key, []).append(row)
+    entry_result = await connection.execute(
+        text(
+            """
+            SELECT DISTINCT projection_key FROM usage_frequency_entry
+            WHERE subject_id=ANY(CAST(:subject_ids AS uuid[]))
+            """
+        ),
+        {"subject_ids": subject_ids},
+    )
+    for key in entry_result.scalars():
+        source_key = str(key)
+        target_key = _canonical_frequency_projection_key(source_key, canonical_hmac)
+        if target_key is None or source_key == target_key:
+            continue
+        remaps.setdefault(source_key, target_key)
+
+    written: list[ProjectionRow] = []
+    stale_keys: list[str] = []
+    for target_key, group in groups.items():
+        source_keys = [
+            str(row["dimension_key"]) for row in group if str(row["dimension_key"]) != target_key
+        ]
+        stale_keys.extend(source_keys)
+        live = [
+            row for row in group if row["expires_at"] is not None and row["expires_at"] > observed
+        ]
+        if not live:
+            continue
+        canonical_live = [row for row in live if str(row["dimension_key"]) == target_key]
+        if canonical_live:
+            kind = str(canonical_live[0]["kind"])
+            usage_date = canonical_live[0]["usage_date"]
+            window_key = str(canonical_live[0]["window_key"])
+        else:
+            chosen = max(
+                live,
+                key=lambda row: (row["usage_date"], str(row["window_key"])),
+            )
+            kind = str(chosen["kind"])
+            usage_date = chosen["usage_date"]
+            window_key = str(chosen["window_key"])
+        matching = [
+            row
+            for row in live
+            if str(row["kind"]) == kind
+            and row["usage_date"] == usage_date
+            and str(row["window_key"]) == window_key
+        ]
+        if not matching:
+            continue
+        if not source_keys and len(matching) == 1:
+            continue
+        written.append(
+            await _write_absolute_frequency_projection(
+                connection,
+                dimension_key=target_key,
+                kind=kind,
+                usage_date=usage_date,
+                window_key=window_key,
+                value=sum(int(row["value"]) for row in matching),
+                expires_at=max(row["expires_at"] for row in matching),
+            )
         )
-        canonical = next(
-            (row for row in subject_rows if UUID(str(row["id"])) == preferred_subject_id),
-            subject_rows[0],
-        )
-        subject_id = UUID(str(canonical["id"]))
-        projection_hmac = str(canonical["projection_hmac"])
-        for source in subject_rows:
-            source_id = UUID(str(source["id"]))
-            if source_id == subject_id:
-                continue
-            await connection.execute(
-                text(
-                    """
-                    UPDATE usage_frequency_alias SET subject_id=:target_id
-                    WHERE subject_id=:source_id
-                    """
-                ),
-                {"target_id": subject_id, "source_id": source_id},
-            )
-            await connection.execute(
-                text(
-                    """
-                    UPDATE usage_frequency_entry SET subject_id=:target_id
-                    WHERE subject_id=:source_id
-                    """
-                ),
-                {"target_id": subject_id, "source_id": source_id},
-            )
-            await connection.execute(
-                text("DELETE FROM usage_frequency_subject WHERE id=:source_id"),
-                {"source_id": source_id},
-            )
-    else:
-        subject_id = uuid4()
-        projection_hmac = hmac_aliases[min(hmac_aliases)]
+    stale_keys.extend(
+        source_key for source_key, target_key in remaps.items() if source_key != target_key
+    )
+    unique_stale = sorted(set(stale_keys))
+    if unique_stale:
         await connection.execute(
             text(
                 """
-                INSERT INTO usage_frequency_subject(id,projection_hmac)
-                VALUES(:id,:projection_hmac)
+                DELETE FROM usage_projection
+                WHERE dimension_key=ANY(CAST(:keys AS text[]))
                 """
             ),
-            {"id": subject_id, "projection_hmac": projection_hmac},
+            {"keys": unique_stale},
         )
+    for source_key, target_key in sorted(remaps.items()):
+        if source_key == target_key:
+            continue
+        await connection.execute(
+            text(
+                """
+                UPDATE usage_frequency_entry
+                SET projection_key=:target_key
+                WHERE projection_key=:source_key
+                """
+            ),
+            {"source_key": source_key, "target_key": target_key},
+        )
+    return tuple(written)
+
+
+async def _database_now(connection: AsyncConnection) -> datetime:
+    value = await connection.scalar(text("SELECT now()"))
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise UsageReservationConflict("database clock unavailable")
+    return value
+
+
+async def _bind_frequency_aliases(
+    connection: AsyncConnection,
+    *,
+    subject_id: UUID,
+    hmac_aliases: Mapping[int, str],
+) -> None:
     alias_payload = json.dumps(
         [
             {"key_version": version, "phone_hmac": digest}
@@ -379,7 +590,107 @@ async def _ensure_frequency_subject(
     )
     if int(alias_check.scalar_one()) != 1:
         raise UsageReservationConflict("frequency alias write conflict")
-    return subject_id, projection_hmac
+
+
+async def _ensure_frequency_subject(
+    connection: AsyncConnection,
+    item: FrequencyDecisionItem,
+) -> tuple[UUID, str, tuple[ProjectionRow, ...]]:
+    """定位或创建频控主体，必要时原子归并投影，返回 (subject, hmac, 变更投影)。"""
+
+    hmac_aliases = dict(item.hmac_aliases)
+    digests = list(hmac_aliases.values())
+    subject_ids, subject_rows = await _list_frequency_subjects(connection, digests)
+    merged: tuple[ProjectionRow, ...] = ()
+    if subject_ids:
+        if len(subject_rows) != len(subject_ids):
+            raise UsageReservationConflict("frequency subject unavailable")
+        preferred_subject = await connection.scalar(
+            text(
+                """
+                SELECT subject_id FROM usage_frequency_alias
+                WHERE phone_hmac=:preferred_digest
+                """
+            ),
+            {"preferred_digest": hmac_aliases[min(hmac_aliases)]},
+        )
+        if len(subject_rows) > 1:
+            await _lock_frequency_merge_keys(
+                connection,
+                [str(row["projection_hmac"]) for row in subject_rows],
+                [UUID(str(row["id"])) for row in subject_rows],
+            )
+            subject_ids, subject_rows = await _list_frequency_subjects(connection, digests)
+            if len(subject_rows) != len(subject_ids):
+                raise UsageReservationConflict("frequency subject unavailable")
+            preferred_subject = await connection.scalar(
+                text(
+                    """
+                    SELECT subject_id FROM usage_frequency_alias
+                    WHERE phone_hmac=:preferred_digest
+                    """
+                ),
+                {"preferred_digest": hmac_aliases[min(hmac_aliases)]},
+            )
+        preferred_subject_id = (
+            UUID(str(preferred_subject)) if preferred_subject is not None else None
+        )
+        canonical = next(
+            (row for row in subject_rows if UUID(str(row["id"])) == preferred_subject_id),
+            subject_rows[0],
+        )
+        subject_id = UUID(str(canonical["id"]))
+        projection_hmac = str(canonical["projection_hmac"])
+        if len(subject_rows) > 1:
+            merged = await _merge_frequency_projections(
+                connection,
+                canonical_hmac=projection_hmac,
+                subject_rows=subject_rows,
+            )
+            for source in subject_rows:
+                source_id = UUID(str(source["id"]))
+                if source_id == subject_id:
+                    continue
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE usage_frequency_alias SET subject_id=:target_id
+                        WHERE subject_id=:source_id
+                        """
+                    ),
+                    {"target_id": subject_id, "source_id": source_id},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE usage_frequency_entry SET subject_id=:target_id
+                        WHERE subject_id=:source_id
+                        """
+                    ),
+                    {"target_id": subject_id, "source_id": source_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM usage_frequency_subject WHERE id=:source_id"),
+                    {"source_id": source_id},
+                )
+    else:
+        subject_id = uuid4()
+        projection_hmac = hmac_aliases[min(hmac_aliases)]
+        await connection.execute(
+            text(
+                """
+                INSERT INTO usage_frequency_subject(id,projection_hmac)
+                VALUES(:id,:projection_hmac)
+                """
+            ),
+            {"id": subject_id, "projection_hmac": projection_hmac},
+        )
+    await _bind_frequency_aliases(
+        connection,
+        subject_id=subject_id,
+        hmac_aliases=hmac_aliases,
+    )
+    return subject_id, projection_hmac, merged
 
 
 async def _change_projections(
@@ -1008,11 +1319,11 @@ class UsageLedgerService:
             )
             # 先解析全部主体再一次性按序加锁，与释放侧同序，避免跨号码死锁（#351）。
             freq_keys: list[str] = []
+            merged_rows: list[ProjectionRow] = []
             for item in items:
-                _, projection_hmac = await _ensure_frequency_subject(connection, item)
-                freq_keys.extend(
-                    _frequency_projection_keys(category, app_id, projection_hmac)
-                )
+                _, projection_hmac, merged = await _ensure_frequency_subject(connection, item)
+                merged_rows.extend(merged)
+                freq_keys.extend(_frequency_projection_keys(category, app_id, projection_hmac))
             await _lock_projection_keys(
                 connection,
                 freq_keys,
@@ -1037,7 +1348,7 @@ class UsageLedgerService:
                 )
                 allowed.append(decision)
                 rows.extend(changed)
-            return allowed, tuple(rows)
+            return allowed, _latest_projection_rows((*merged_rows, *rows))
 
     async def _decide_frequency_on_connection(
         self,
@@ -1055,7 +1366,7 @@ class UsageLedgerService:
         day_expires: datetime,
         lock_keys: bool = True,
     ) -> tuple[bool, tuple[ProjectionRow, ...]]:
-        subject_id, projection_hmac = await _ensure_frequency_subject(connection, item)
+        subject_id, projection_hmac, _merged = await _ensure_frequency_subject(connection, item)
 
         expected_windows = ("minute", "day") if category == "verify" else ("day",)
         existing = await connection.execute(
@@ -1167,8 +1478,7 @@ class UsageLedgerService:
             },
         )
         counts = {
-            str(item["projection_key"]): int(item["value"])
-            for item in count_result.mappings()
+            str(item["projection_key"]): int(item["value"]) for item in count_result.mappings()
         }
         allowed = all(counts[key] + 1 <= limit for _, _, key, limit, _ in specs)
         await connection.execute(

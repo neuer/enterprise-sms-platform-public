@@ -830,6 +830,18 @@
 - 原因：内部系统接入依赖空白名单；改为强制 CIDR 会破坏既有应用。第二道防线通过可见性补齐。
 - 影响：应用管理页、`core/apikey.py`、`app_management.py`。
 
+## D079 HMAC 频控主体归并必须同时合并 usage_projection
+
+- 决策：`_ensure_frequency_subject()` 在改绑 alias/entry、删除 source subject 之前，
+  按固定顺序锁 canonical 与 source 的频控投影键，把相同 `kind`+`usage_date`+`window_key`
+  的绝对值写入单一 canonical `usage_projection`，并删除 source 行。过期或不同窗口
+  不得相加。归并产生的新版本随后续 `_apply_rows` 发布；Redis 失败时 PostgreSQL 仍是
+  可重建事实。
+- 原因：投影键含各主体 `projection_hmac`。只归并身份会留下孤立计数，后续只读
+  canonical 键会低估频控。
+- 影响：`usage_ledger.py`、账本单测/PostgreSQL 回归、usage-ledger 恢复手册。
+  未上线本修复前，不建议做会产生不重叠 HMAC Keyring 的生产轮换。
+
 ## D072 号码精确查询改为 POST 请求体
 
 - 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、
