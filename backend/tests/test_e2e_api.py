@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,7 @@ from e2e_api import (  # noqa: E402
     UatSuite,
     load_keys,
     verify_callback_signature,
+    wait_for_freq_minute_slack,
     wait_until,
 )
 
@@ -112,6 +113,33 @@ def test_wait_until_is_bounded_and_never_leaks_predicate_values() -> None:
             sleeper=lambda _seconds: None,
         )
     assert "must-not-leak" not in str(captured.value)
+
+
+def test_wait_for_freq_minute_slack_only_sleeps_near_rollover() -> None:
+    slept: list[float] = []
+    wait_for_freq_minute_slack(
+        min_remaining_s=8,
+        clock=lambda: datetime(2026, 8, 22, 10, 0, 55, tzinfo=UTC),
+        sleeper=slept.append,
+    )
+    assert slept == [pytest.approx(5.05)]
+
+    slept.clear()
+    wait_for_freq_minute_slack(
+        min_remaining_s=8,
+        clock=lambda: datetime(2026, 8, 22, 10, 0, 10, tzinfo=UTC),
+        sleeper=slept.append,
+    )
+    assert slept == []
+
+
+def test_uat_07_and_17_cover_scheduled_ci_races() -> None:
+    case_07 = inspect.getsource(UatSuite.case_07)
+    case_17 = inspect.getsource(UatSuite.case_17)
+    assert "wait_for_freq_minute_slack()" in case_07
+    assert 'wait_until("17/uncertain"' in case_17
+    assert "timeout_s=35" in case_17
+    assert 'wait_send("17/send-call"' in case_17
 
 
 def test_key_file_requires_fixed_apps_without_echoing_values(tmp_path: Path) -> None:

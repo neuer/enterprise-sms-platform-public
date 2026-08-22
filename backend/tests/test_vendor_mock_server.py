@@ -55,6 +55,39 @@ def test_send_generates_reports_after_two_seconds_and_pull_consumes(
         assert post(client, "/Sms/Api/GetReport")["data"] == []
 
 
+@pytest.mark.asyncio
+async def test_send_finishes_after_client_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    original_sleep = mock_module.asyncio.sleep
+
+    async def marked_sleep(seconds: float) -> None:
+        started.set()
+        await original_sleep(seconds)
+
+    monkeypatch.setattr(mock_module.asyncio, "sleep", marked_sleep)
+    mock_module.STATE.reset()
+    mock_module.STATE.latency_ms = 40
+    payload = {
+        "mobile": "13800138000",
+        "content": "超时验收",
+        "customId": "timeout-1",
+    }
+
+    async def cancelled_client() -> None:
+        await mock_module.send(payload)
+
+    task = asyncio.create_task(cancelled_client())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.08)
+    assert [item["customId"] for item in mock_module.STATE.send_calls] == ["timeout-1"]
+    assert [item["customId"] for item in mock_module.STATE.pending_reports] == ["timeout-1"]
+
+
 def test_error_balance_and_latency_are_deterministically_injected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

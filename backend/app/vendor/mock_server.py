@@ -100,9 +100,8 @@ def _validate_phone_record(record: dict[str, Any], kind: str) -> dict[str, Any]:
     return dict(record)
 
 
-@app.post("/Sms/Api/Send")
-async def send(payload: dict[str, Any]) -> dict[str, Any]:
-    """记录下发并为非永不报告号码创建延迟 2 秒的报告。"""
+async def _complete_send(payload: dict[str, Any]) -> dict[str, Any]:
+    """完成一次 Send：延迟后记账。客户端超时不得取消厂商侧受理。"""
 
     await _apply_latency()
     with STATE.lock:
@@ -149,6 +148,13 @@ async def send(payload: dict[str, Any]) -> dict[str, Any]:
                 }
             )
         return _envelope(task_id)
+
+
+@app.post("/Sms/Api/Send")
+async def send(payload: dict[str, Any]) -> dict[str, Any]:
+    """记录下发并为非永不报告号码创建延迟 2 秒的报告。"""
+
+    return await asyncio.shield(_complete_send(payload))
 
 
 @app.post("/Sms/Api/GetReport")

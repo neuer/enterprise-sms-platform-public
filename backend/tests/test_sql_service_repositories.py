@@ -15,6 +15,7 @@ import app.services.reconcile_repository as reconcile_repository_module
 import app.services.report_repository as report_repository_module
 import app.services.uncertain_repository as uncertain_repository_module
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.correlation import correlation_scope
 from app.services.approval_repository import SqlApprovalRepository, record_pending_approval_alert
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.blacklist import BlacklistEntry, BlacklistUpsertResult
@@ -645,13 +646,17 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
         ]
     )
     bind_engine(monkeypatch, repository, connection)
-    outcome = await repository.upsert_many(
-        [entry], principal=OPERATOR, ip="10.0.0.8", source="import"
-    )
+    with correlation_scope(UUID("d8c138c4-5b7e-4b06-afa9-30bde2e6b7f0")):
+        outcome = await repository.upsert_many(
+            [entry], principal=OPERATOR, ip="10.0.0.8", source="import"
+        )
     assert (outcome.added, outcome.updated) == (1, 0)
     audit_params = connection.calls[-1][1]
-    assert "138" not in str(audit_params)
-    assert '"count": 1' in audit_params["after"]  # type: ignore[index]
+    # 审计只允许数量/来源；禁止用短号段做子串检查，UUID/txid 可巧合含 "138"
+    assert audit_params["after"] == '{"count": 1, "source": "import"}'
+    assert audit_params["before"] is None
+    for token in ("138****8000", "a" * 64, "cipher"):
+        assert token not in str(audit_params)
 
     connection = FakeConnection(
         [
