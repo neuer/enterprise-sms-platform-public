@@ -844,21 +844,42 @@ class SqlChunkStore:
                 category = result.scalar_one_or_none()
                 if category is not None:
                     await settle_live_test_attempt(connection, chunk_id, "released")
-                elif await connection.scalar(
-                    text(
-                        "SELECT 1 FROM sms_chunk WHERE id=:id AND status='submitting'"
-                    ),
-                    {"id": chunk_id},
-                ):
-                    await connection.execute(
+                else:
+                    candidate = await connection.execute(
                         text(
-                            "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
-                            "vendor_msg='delayed retry exhausted',submitting_since=NULL "
+                            "SELECT batch_id FROM sms_chunk "
                             "WHERE id=:id AND status='submitting'"
                         ),
-                        {"id": chunk_id, "code": code},
+                        {"id": chunk_id},
                     )
-                    await settle_live_test_attempt(connection, chunk_id, "released")
+                    batch_id = candidate.scalar_one_or_none()
+                    if batch_id is not None:
+                        await connection.execute(
+                            text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                            {"id": int(batch_id)},
+                        )
+                        failed = await connection.execute(
+                            text(
+                                "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
+                                "vendor_msg='delayed retry exhausted',"
+                                "submitting_since=NULL,retry_not_before=NULL "
+                                "WHERE id=:id AND status='submitting' "
+                                "RETURNING batch_id"
+                            ),
+                            {"id": chunk_id, "code": code},
+                        )
+                        transitioned_batch_id = failed.scalar_one_or_none()
+                        if transitioned_batch_id is not None:
+                            await settle_live_test_attempt(
+                                connection,
+                                chunk_id,
+                                "released",
+                            )
+                            await self._finalize_failed_messages(
+                                connection,
+                                chunk_id,
+                                int(transitioned_batch_id),
+                            )
         finally:
             await engine.dispose()
         if category is not None:
