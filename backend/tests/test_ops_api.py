@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.api.ops as ops_api
@@ -12,11 +13,14 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
+from app.core.jobtrack import JobSpec
 from app.main import create_app
 from app.services.export import ExportTaskInfo
 from app.services.ops import (
     AlertRecord,
+    JobOpsService,
     JobRecord,
+    JobRoute,
     OpsPage,
     QueueResumeResult,
     QueueSnapshot,
@@ -24,6 +28,7 @@ from app.services.ops import (
     UncertainRecord,
     UnmatchedRecord,
 )
+from app.services.ops_repository import SqlOpsRepository
 from app.services.outbox import OutboxEventPage, OutboxEventRecord, OutboxStats
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
@@ -109,8 +114,15 @@ class FakeJobs:
     async def list(self) -> tuple[JobRecord, ...]:
         return (JobRecord("poll_report", NOW, "success", 120, 1, 1.0, False),)
 
-    async def trigger(self, job_name: str, *, actor: str, ip: str) -> None:
-        self.triggered.append((job_name, actor, ip))
+    async def trigger(
+        self,
+        job_name: str,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> None:
+        self.triggered.append((job_name, actor, ip, principal.account_id))
 
 
 class FakeQueue:
@@ -269,7 +281,11 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     replay = browser.post("/api/v1/web/admin/raw-logs/2/replay", headers=headers)
     assert replay.status_code == 200 and replay.json() == {"processed_items": 3}
     trigger = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
+    repeated = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
     assert trigger.status_code == 202
+    assert repeated.status_code == 202
+    assert [item[0] for item in values["jobs"].triggered] == ["poll_report", "poll_report"]
+    assert all(item[3] == 1 for item in values["jobs"].triggered)
     resume = browser.post("/api/v1/web/admin/queue/resume?force=true", headers=headers)
     assert resume.json() == {"resumed_batches": 2, "paused_codes": ["999"]}
     exported = browser.post(
@@ -286,6 +302,82 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     assert vars(ops_api.resume_queue)["__audited_action__"] == "queue_resume"
     assert vars(ops_api.create_unmatched_export)["__audited_action__"] == "export_create"
     assert values["queue"].calls[0][0] is True
+
+
+def test_repeated_poll_report_trigger_binds_live_principal_and_returns_202(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UAT-20 在同一进程再次 trigger poll_report 时，必须 202 而不是审计 check 500。"""
+
+    bound: list[dict[str, object]] = []
+    events: list[Any] = []
+    sent: list[tuple[str, str]] = []
+
+    class RecordingSender:
+        async def send(self, task_name: str, queue: str) -> None:
+            sent.append((task_name, queue))
+
+    class StubEngine:
+        def begin(self) -> Any:
+            return _Begin()
+
+        async def dispose(self) -> None:
+            return None
+
+    class _Begin:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    async def fake_bind(_connection: object, **kwargs: object) -> None:
+        bound.append(dict(kwargs))
+
+    async def fake_insert(_connection: object, event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_audit_subject",
+        fake_bind,
+    )
+    monkeypatch.setattr("app.services.ops_repository.insert_audit", fake_insert)
+
+    repository = SqlOpsRepository()
+    repository._engine = lambda: StubEngine()  # type: ignore[method-assign]
+    service = JobOpsService(
+        repository,
+        RecordingSender(),
+        {"poll_report": JobSpec("poll_report", 60)},
+        {"poll_report": JobRoute("app.tasks.poll_report", "realtime")},
+        clock=lambda: NOW,
+    )
+    app = create_app()
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[ops_api.get_job_ops_service] = lambda: service
+    browser = TestClient(app)
+    headers = {"Authorization": "Bearer admin.jwt"}
+
+    first = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
+    second = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.headers.get("content-type") is None or first.text == ""
+    assert bound == [
+        {
+            "subject_kind": "human",
+            "actor_name": "admin01",
+            "account_id": 1,
+            "identity_id": 101,
+        }
+    ] * 2
+    assert [event.action for event in events] == ["job_trigger", "job_trigger"]
+    assert [event.object_id for event in events] == ["poll_report", "poll_report"]
+    assert sent == [
+        ("app.tasks.poll_report", "realtime"),
+        ("app.tasks.poll_report", "realtime"),
+    ]
 
 
 def test_outbox_status_and_admin_retry_use_stable_principal() -> None:
