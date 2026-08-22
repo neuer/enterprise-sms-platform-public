@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generic, Literal, Protocol, TypeVar
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.services.category import queue_for_category
 from app.services.outbox import MANUAL_JOB_TASK_NAMES
@@ -143,6 +144,7 @@ class JobOpsRepository(Protocol):
         *,
         actor: str,
         ip: str,
+        principal: SecurityPrincipal,
     ) -> None: ...
 
 
@@ -172,7 +174,14 @@ class JobOpsService:
         selected = tuple(self.specs[name] for name in sorted(self.specs))
         return await self.repository.list_jobs(selected, now=self.clock())
 
-    async def trigger(self, job_name: str, *, actor: str, ip: str) -> None:
+    async def trigger(
+        self,
+        job_name: str,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> None:
         route = self.routes.get(job_name)
         if (
             job_name not in self.specs
@@ -182,7 +191,12 @@ class JobOpsService:
             # 允许清单校验先于审计：不可触发的任务 404，且不留下
             # 一条从未发生的触发审计。
             raise JobNotFound(job_name)
-        await self.repository.audit_job_trigger(job_name, actor=actor, ip=ip)
+        await self.repository.audit_job_trigger(
+            job_name,
+            actor=actor,
+            ip=ip,
+            principal=principal,
+        )
         await self.sender.send(route.task_name, route.queue)
 
 

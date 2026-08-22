@@ -15,9 +15,11 @@ from app.services.masking import mask_phone_text
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
     CAPTURE_COMPLETE_TOO_LARGE,
+    CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     RawSpillStore,
     SpillQuotaExceeded,
+    is_non_replayable_capture,
 )
 from app.vendor.identifiers import (
     degrade_vendor_identifier,
@@ -32,9 +34,7 @@ from app.vendor.zhihui import (
 )
 
 LOGGER = logging.getLogger(__name__)
-VENDOR_LOCAL_TIME = re.compile(
-    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?"
-)
+VENDOR_LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -223,6 +223,7 @@ class ReportIngestService:
         *,
         status_code: int,
         complete: bool,
+        stream: Any | None = None,
     ) -> None:
         # raw_vendor_log.http_status 约束为 100..599；异常路径缺失或越界时
         # 记 200（响应体已被读到才可能超限），否则兜底落库必然违约失败。
@@ -239,7 +240,7 @@ class ReportIngestService:
                 object_id=f"{source}:{payload_sha256}",
             ),
         )
-        await self._spill_write(
+        raw_id = await self._commit_raw(
             source=source,
             payload_sha256=payload_sha256,
             key_version=encrypted.key_version,
@@ -247,18 +248,8 @@ class ReportIngestService:
             content_encoding="identity",
             payload_enc=encrypted.payload,
             capture_state=capture_state,
+            stream=stream,
         )
-        raw_id = await self.repository.persist_raw(
-            payload_enc=encrypted.payload,
-            payload_sha256=payload_sha256,
-            key_version=encrypted.key_version,
-            http_status=status_code,
-            content_encoding="identity",
-            custom_ids=[],
-            item_count=0,
-            capture_state=capture_state,
-        )
-        self._spill_remove(source, payload_sha256)
         if complete:
             await self.repository.mark_error(
                 raw_id, f"{source} oversized payload persisted after consume gap"
@@ -293,6 +284,36 @@ class ReportIngestService:
             alert_type="vendor_raw_truncated",
             title="厂商拉走即消费响应被截断，不得当作正常可重放 raw",
         )
+
+    async def _alert_protocol_invalid(self, source: str) -> None:
+        await self._emit_capture_alert(
+            source,
+            alert_type="vendor_raw_protocol_invalid",
+            title="厂商拉走即消费响应协议异常，不得当作正常可重放 raw",
+        )
+
+    async def _alert_quarantine(self, source: str, stream_id: str) -> None:
+        """terminal 失败的 quarantine 告警不可被恢复路径静默吞掉。"""
+
+        if self.alerts is None:
+            LOGGER.error(
+                "vendor raw stream quarantined without alert sink",
+                extra={"source": source},
+            )
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_stream_quarantined",
+                level="crit",
+                title="raw spill terminal 不完整，已认证 chunk 已隔离为截断事实",
+                detail={"source": source, "stream_id": stream_id},
+                dedup_key=f"vendor_raw_stream_quarantined:{source}:{stream_id}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw quarantine alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
 
     async def _alert_oversized_complete(self, source: str) -> None:
         await self._emit_capture_alert(
@@ -339,11 +360,11 @@ class ReportIngestService:
         content_encoding: str,
         payload_enc: bytes,
         capture_state: str = CAPTURE_COMPLETE,
-    ) -> None:
-        """spill 是崩溃兜底而非硬依赖：写盘失败告警后继续 DB 落库。"""
+    ) -> bool:
+        """secondary spill 必须回报成败；失败只告警，不得当作已形成持久副本。"""
 
         if self.spill is None:
-            return
+            return False
         try:
             self.spill.write(
                 source=source,
@@ -354,28 +375,74 @@ class ReportIngestService:
                 payload_enc=payload_enc,
                 capture_state=capture_state,
             )
+            return True
         except SpillQuotaExceeded:
             await self._alert_spill_quota(source)
+            return False
         except Exception as exc:
             LOGGER.error(
                 "raw spill write failed",
                 extra={"source": source, "error_type": type(exc).__name__},
             )
-            if self.alerts is None:
-                return
-            try:
-                await self.alerts.emit(
-                    alert_type="vendor_raw_spill_failed",
-                    level="crit",
-                    title="raw spill 写盘失败，崩溃兜底暂不可用",
-                    detail={"source": source, "error_type": type(exc).__name__},
-                    dedup_key=f"vendor_raw_spill_failed:{source}",
-                )
-            except Exception as alert_exc:
-                LOGGER.error(
-                    "raw spill alert unavailable",
-                    extra={"source": source, "error_type": type(alert_exc).__name__},
-                )
+            if self.alerts is not None:
+                try:
+                    await self.alerts.emit(
+                        alert_type="vendor_raw_spill_failed",
+                        level="crit",
+                        title="raw spill 写盘失败，崩溃兜底暂不可用",
+                        detail={"source": source, "error_type": type(exc).__name__},
+                        dedup_key=f"vendor_raw_spill_failed:{source}",
+                    )
+                except Exception as alert_exc:
+                    LOGGER.error(
+                        "raw spill alert unavailable",
+                        extra={"source": source, "error_type": type(alert_exc).__name__},
+                    )
+            return False
+
+    async def _commit_raw(
+        self,
+        *,
+        source: str,
+        payload_sha256: str,
+        key_version: int,
+        http_status: int,
+        content_encoding: str,
+        payload_enc: bytes,
+        capture_state: str,
+        stream: Any | None,
+    ) -> int:
+        """PostgreSQL 提交成功前不得删除 stream，除非 secondary spill 已 fsync。"""
+
+        spill_ok = await self._spill_write(
+            source=source,
+            payload_sha256=payload_sha256,
+            key_version=key_version,
+            http_status=http_status,
+            content_encoding=content_encoding,
+            payload_enc=payload_enc,
+            capture_state=capture_state,
+        )
+        if spill_ok and stream is not None:
+            stream.discard()
+        try:
+            raw_id = await self.repository.persist_raw(
+                payload_enc=payload_enc,
+                payload_sha256=payload_sha256,
+                key_version=key_version,
+                http_status=http_status,
+                content_encoding=content_encoding,
+                custom_ids=[],
+                item_count=0,
+                capture_state=capture_state,
+            )
+        except Exception as error:
+            await self._alert_consume_gap(source, type(error).__name__)
+            raise
+        if stream is not None:
+            stream.discard()
+        self._spill_remove(source, payload_sha256)
+        return raw_id
 
     def _spill_remove(self, source: str, payload_sha256: str) -> None:
         """DB 已落库后清理 spill；清理失败无害，只记日志。"""
@@ -535,13 +602,20 @@ class ReportIngestService:
                     raw_id, "report truncated vendor response beyond recovery limit"
                 )
                 await self._alert_truncated("report")
+            elif record.capture_state == CAPTURE_PROTOCOL_INVALID:
+                await self.repository.mark_error(raw_id, "report protocol-invalid vendor response")
+                await self._alert_protocol_invalid("report")
             elif record.capture_state == CAPTURE_COMPLETE_TOO_LARGE:
                 await self.repository.mark_error(
                     raw_id, "report oversized payload persisted after consume gap"
                 )
                 await self._alert_oversized_complete("report")
+            if record.quarantined:
+                await self._alert_quarantine("report", record.stream_id)
             record.path.unlink(missing_ok=True)
             self._spill_remove(record.source, record.payload_sha256)
+            if record.stream_id:
+                self.spill.remove_stream(record.source, record.stream_id)
             recovered += 1
         return recovered
 
@@ -568,9 +642,8 @@ class ReportIngestService:
                     error.raw_body,
                     status_code=error.status_code if error.status_code is not None else 0,
                     complete=error.complete,
+                    stream=stream,
                 )
-                if stream is not None:
-                    stream.discard()
             else:
                 await self._alert_consume_gap("report", type(error).__name__)
             raise
@@ -587,30 +660,21 @@ class ReportIngestService:
                 object_id=f"report:{payload_sha256}",
             ),
         )
-        await self._spill_write(
+        capture_state = CAPTURE_PROTOCOL_INVALID if pulled.protocol_invalid else CAPTURE_COMPLETE
+        raw_id = await self._commit_raw(
             source="report",
             payload_sha256=payload_sha256,
             key_version=encrypted.key_version,
             http_status=pulled.status_code,
             content_encoding=pulled.content_encoding,
             payload_enc=encrypted.payload,
+            capture_state=capture_state,
+            stream=stream,
         )
-        if stream is not None:
-            stream.discard()
-        try:
-            raw_id = await self.repository.persist_raw(
-                payload_enc=encrypted.payload,
-                payload_sha256=payload_sha256,
-                key_version=encrypted.key_version,
-                http_status=pulled.status_code,
-                content_encoding=pulled.content_encoding,
-                custom_ids=[],
-                item_count=0,
-            )
-        except Exception as error:
-            await self._alert_consume_gap("report", type(error).__name__)
-            raise
-        self._spill_remove("report", payload_sha256)
+        if is_non_replayable_capture(capture_state):
+            await self.repository.mark_error(raw_id, "report protocol-invalid vendor response")
+            await self._alert_protocol_invalid("report")
+            return 0
         try:
             data = decode_pulled_payload(pulled, "GetReport")
         except Exception as error:

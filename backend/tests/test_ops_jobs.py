@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.services import ops_dispatch as ops_dispatch_module
 from app.services.ops import JobNotFound, JobOpsService, JobRecord, JobRoute
@@ -13,6 +14,7 @@ from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender, Templa
 from app.services.ops_repository import SqlOpsRepository
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 
 class FakeResult:
@@ -110,8 +112,15 @@ class FakeJobRepository:
     ) -> tuple[JobRecord, ...]:
         return ()
 
-    async def audit_job_trigger(self, job_name: str, *, actor: str, ip: str) -> None:
-        self.events.append(f"audit:{job_name}:{actor}:{ip}")
+    async def audit_job_trigger(
+        self,
+        job_name: str,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> None:
+        self.events.append(f"audit:{job_name}:{actor}:{ip}:{principal.account_id}")
 
 
 class FakeSender:
@@ -123,7 +132,8 @@ class FakeSender:
 
 
 @pytest.mark.asyncio
-async def test_job_trigger_is_allowlisted_audited_then_sent_to_fixed_queue() -> None:
+async def test_job_trigger_is_allowlisted_and_repeated_trigger_is_dispatched_again() -> None:
+    """UAT-20 会在 17/18 之后再次触发同一任务；每次都必须受理而不是 500。"""
     events: list[str] = []
     service = JobOpsService(
         FakeJobRepository(events),
@@ -133,10 +143,13 @@ async def test_job_trigger_is_allowlisted_audited_then_sent_to_fixed_queue() -> 
         clock=lambda: NOW,
     )
 
-    await service.trigger("poll_report", actor="admin01", ip="10.0.0.8")
+    await service.trigger("poll_report", actor="admin01", ip="10.0.0.8", principal=ADMIN)
+    await service.trigger("poll_report", actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert events == [
-        "audit:poll_report:admin01:10.0.0.8",
+        "audit:poll_report:admin01:10.0.0.8:1",
+        "send:app.tasks.poll_report:realtime",
+        "audit:poll_report:admin01:10.0.0.8:1",
         "send:app.tasks.poll_report:realtime",
     ]
 
@@ -153,7 +166,12 @@ async def test_unknown_or_untracked_job_is_never_dispatched() -> None:
     )
 
     with pytest.raises(JobNotFound):
-        await service.trigger("app.tasks.send.process_chunk", actor="admin01", ip="10.0.0.8")
+        await service.trigger(
+            "app.tasks.send.process_chunk",
+            actor="admin01",
+            ip="10.0.0.8",
+            principal=ADMIN,
+        )
 
     assert events == []
 
@@ -170,7 +188,7 @@ async def test_tracked_but_not_allowlisted_job_is_404_without_audit() -> None:
     )
 
     with pytest.raises(JobNotFound):
-        await service.trigger("process_chunk", actor="admin01", ip="10.0.0.8")
+        await service.trigger("process_chunk", actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert events == []
 
@@ -190,10 +208,15 @@ async def test_security_daily_generate_manual_trigger_is_allowlisted() -> None:
         clock=lambda: NOW,
     )
 
-    await service.trigger("security_daily_generate", actor="admin01", ip="10.0.0.8")
+    await service.trigger(
+        "security_daily_generate",
+        actor="admin01",
+        ip="10.0.0.8",
+        principal=ADMIN,
+    )
 
     assert events == [
-        "audit:security_daily_generate:admin01:10.0.0.8",
+        "audit:security_daily_generate:admin01:10.0.0.8:1",
         "send:app.tasks.security_daily_generate:bulk",
     ]
 
@@ -234,12 +257,19 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     monkeypatch.setattr(ops_dispatch_module, "enqueue_outbox", enqueue)
     settings = type("SettingsStub", (), {"database_url": "postgresql://test"})()
 
+    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
+    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
     await OutboxJobSender(settings).send("app.tasks.expire_approvals", "realtime")
     await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
     await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
     await OutboxBatchSender(settings).send_batch("a" * 32, "realtime")
 
-    job, template_sync, repeated_template_sync, batch = specs
+    first_poll, second_poll, job, template_sync, repeated_template_sync, batch = specs
+    assert first_poll.task_name == "app.tasks.outbox.trigger_job"
+    assert first_poll.args == ("app.tasks.poll_report",)
+    assert first_poll.dedup_key.startswith("job.trigger:poll_report:")
+    assert second_poll.dedup_key.startswith("job.trigger:poll_report:")
+    assert first_poll.dedup_key != second_poll.dedup_key
     assert job.task_name == "app.tasks.outbox.trigger_job"
     assert job.args == ("app.tasks.expire_approvals",)
     assert job.dedup_key.startswith("job.trigger:expire_approvals:")
