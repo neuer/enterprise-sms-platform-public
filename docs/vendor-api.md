@@ -51,6 +51,8 @@ code=0 成功；非 0 见第 4 节错误码。msg 可能为 null/""/"string"。
 `POST /Sms/Api/GetReport`　仅传 secretName/secretKey。
 **语义：拉走即消费**——每次返回自上次拉取以来的报告，取走后厂商侧不再重复给。实现必须先把完整原始响应字节 AES-GCM 加密落 `raw_vendor_log.payload_enc`，同时提取不含手机号的 `custom_ids` 元数据，提交后再受控解密解析；禁止把原始 JSON 明文写入 JSONB。
 
+官方合同未提供分页、游标或单次最大条数。平台因此施加有界恢复合同：自动解析上限 4 MiB；4–64 MiB 的完整响应保全为 `complete_too_large` 仅供人工恢复；超过 64 MiB 或 spill 配额时完整性终止，截断密文标记 `truncated`，不得当作正常可重放 raw。Mock 与定向测试不得连接真实厂商。
+
 `data` = Array：
 
 | 字段 | 类型 | 说明 |
@@ -71,7 +73,7 @@ code=0 成功；非 0 见第 4 节错误码。msg 可能为 null/""/"string"。
 ⚠ 官方回复示例中出现过 `"customId "`（键名带尾随空格）的笔误，解析时对键做 `strip()` 容错。
 
 ### 1.3 GetReply — 获取上行回复
-`POST /Sms/Api/GetReply`　仅密钥。同样**拉走即消费**。
+`POST /Sms/Api/GetReply`　仅密钥。同样**拉走即消费**，并适用与 GetReport 相同的 4 MiB / 64 MiB 完整性合同。大响应中的退订回复只有在完整捕获后才能自动处理；截断捕获不得进入自动重放。
 `data` = Array：taskId, customId, phone, extCode, contents（回复内容）, replyTime。键名 strip 容错同上。
 
 ### 1.4 GetBalance — 查询余额

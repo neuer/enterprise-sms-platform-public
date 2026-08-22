@@ -159,6 +159,37 @@ async def test_normal_pull_contract_is_unchanged() -> None:
     assert stream.closed is True
 
 
+class RecordingSink:
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+        self.finished: tuple[bool, bool] | None = None
+
+    def feed(self, chunk: bytes) -> bool:
+        self.chunks.append(chunk)
+        return True
+
+    def finish(self, *, complete: bool, too_large: bool = False) -> None:
+        self.finished = (complete, too_large)
+
+
+@pytest.mark.asyncio
+async def test_consume_path_feeds_encrypted_ready_sink() -> None:
+    raw = b'{"code":0,"data":[]}'
+    stream = RecordingStream([raw])
+    sink = RecordingSink()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, request=request)
+
+    client = make_client(httpx.MockTransport(handler), process_limit=64, capture_limit=128)
+    pulled = await client.get_report_raw(body_sink=sink)
+    await client.aclose()
+
+    assert pulled.raw_payload == raw
+    assert sink.chunks == [raw]
+    assert sink.finished == (True, False)
+
+
 def test_capture_limit_must_cover_processing_limit() -> None:
     with pytest.raises(ValueError, match="capture must cover body limit"):
         make_client(

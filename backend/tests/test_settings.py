@@ -780,3 +780,25 @@ def test_production_rejects_legacy_jwt_and_wildcard_trusted_hosts(tmp_path: Path
             ldap_ca_certs_file=ca_file,
             vendor_base_url="https://vendor.example.test",
         )
+
+
+def test_raw_spill_quotas_have_upper_and_lower_bounds() -> None:
+    module = load_settings_module()
+    with pytest.raises(ValueError, match="RAW_SPILL_MAX_TOTAL_BYTES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_max_total_bytes=1024,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_MAX_PENDING_FILES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_max_pending_files=0,
+        )

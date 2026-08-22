@@ -105,8 +105,10 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
     assert "processing_started_at" in sql
     assert "http_status" in sql
     assert "content_encoding" in sql
+    assert "capture_state" in sql
     assert "now()" in sql
     assert params["custom_ids"] == ["custom-1"]
+    assert params["capture_state"] == "complete"
     assert engine.disposed
 
 

@@ -842,6 +842,14 @@ Web 地址：${TEST_BASE_URL}
 
 额外检查：access JWT 只走 `Authorization: Bearer` 请求头；refresh JWT 走受限路径 HttpOnly Cookie，refresh/logout 须同源校验；新增/变更字段必须与 OpenAPI 一致；幂等命中为 200 而非错误。
 
+#### 8.1.1 双标签页 Refresh 与 BFCache
+
+使用两个同源标签页登录同一账号后执行：
+
+1. 同时触发两个需要登录的列表刷新，使两边几乎同时收到 access 401。浏览器应通过 Web Locks 串行 `POST /api/v1/web/auth/refresh`；两个标签页都必须继续停留在已登录壳，不得互相踢下线。因 access 只存在于当前标签页 sessionStorage，第二个标签页在锁释放后仍可各自 refresh 领取本页 access，这不是 family 吊销。
+2. 在标签页 A 发起 refresh 的同时，标签页 B 立即注销。两边最终都必须回到登录页，且不得再用旧 refresh Cookie 恢复会话。
+3. 在已登录页使用浏览器后退进入 BFCache 后，再前进恢复。若该会话已在其他标签页注销，恢复后必须回到登录页，不得显示已登录壳。
+
 ### 8.2 厂商 Mock 故障矩阵
 
 仅授权运维通过服务器回环地址执行。每次先 GET 保存安全基线，POST 注入，完成后清除并再次 GET 确认。不得把返回中的测试手机号或实际内容贴入证据。

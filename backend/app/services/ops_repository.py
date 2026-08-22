@@ -233,6 +233,7 @@ class SqlOpsRepository:
                         """
                         SELECT id FROM raw_vendor_log
                         WHERE processed=false
+                          AND capture_state='complete'
                           AND replay_attempts<:max_attempts
                           AND (
                             processing_started_at IS NULL
@@ -260,19 +261,21 @@ class SqlOpsRepository:
                           SET processing_started_at=now(),error=NULL,
                             replay_attempts=replay_attempts+1
                           WHERE id=:raw_id AND processed=false
+                            AND capture_state IN ('complete','complete_too_large')
                             AND (
                               processing_started_at IS NULL
                               OR processing_started_at<=now()-interval '15 minutes'
                             )
                           RETURNING id,source,payload_enc,payload_sha256,
-                            key_version,processed,http_status,content_encoding
+                            key_version,processed,http_status,content_encoding,
+                            capture_state
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,http_status,content_encoding,true claimed
+                          processed,http_status,content_encoding,capture_state,true claimed
                         FROM claimed
                         UNION ALL
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,http_status,content_encoding,false claimed
+                          processed,http_status,content_encoding,capture_state,false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
                           AND NOT EXISTS (SELECT 1 FROM claimed)
@@ -294,6 +297,7 @@ class SqlOpsRepository:
                         bool(row["processed"]),
                         int(row["http_status"]),
                         str(row["content_encoding"]),
+                        str(row.get("capture_state") or "complete"),
                     ),
                     claimed=bool(row["claimed"]),
                 )
@@ -475,7 +479,7 @@ class SqlOpsRepository:
                 result = await connection.execute(
                     text(
                         "SELECT id,source,item_count,cardinality(custom_ids) custom_id_count,"
-                        "processed,error,fetched_at FROM raw_vendor_log WHERE "
+                        "processed,error,fetched_at,capture_state FROM raw_vendor_log WHERE "
                         + where
                         + " ORDER BY fetched_at DESC,id DESC LIMIT :limit OFFSET :offset"
                     ),
@@ -490,6 +494,7 @@ class SqlOpsRepository:
                         bool(row["processed"]),
                         str(row["error"]) if row["error"] is not None else None,
                         row["fetched_at"],
+                        str(row.get("capture_state") or "complete"),
                     )
                     for row in result.mappings()
                 )

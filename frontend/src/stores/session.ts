@@ -195,6 +195,16 @@ export const useSessionStore = defineStore("session", {
         return false
       }
     },
+    async revalidateOnResume(): Promise<boolean> {
+      try {
+        const result = await refreshRequest()
+        this.apply(result.token, result.user)
+        return true
+      } catch {
+        this.clearAllTabs()
+        return false
+      }
+    },
     async loadProviders() {
       this.providers = await providerRequest()
     },

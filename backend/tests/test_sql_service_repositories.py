@@ -792,6 +792,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     raw_insert_sql = connection.calls[0][0]
     assert "raw_vendor_log" in raw_insert_sql
     assert "processing_started_at" in raw_insert_sql
+    assert "capture_state" in raw_insert_sql
     assert "now()" in raw_insert_sql
 
     report = protected_report()

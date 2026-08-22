@@ -84,6 +84,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0069_raw_replay_attempts",
         "0070_stat_dirty_date",
         "0071_reply_event_is_optout",
+        "0072_raw_capture_state",
     ]
 
 

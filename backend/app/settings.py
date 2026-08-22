@@ -118,6 +118,8 @@ class Settings(BaseSettings):
     import_storage_dir: Path = Path("/var/lib/sms/imports")
     export_storage_dir: Path = Path("/var/lib/sms/exports")
     raw_spill_dir: Path = Path("/var/lib/sms/raw-spill")
+    raw_spill_max_total_bytes: int = 512 * 1024 * 1024
+    raw_spill_max_pending_files: int = 32
     security_daily_control_dir: Path = Path("/run/security-report")
     security_daily_config_dir: Path = Path("/run/security-report-config")
 
@@ -358,6 +360,12 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.metrics_snapshot_ttl_seconds <= 60:
             raise ValueError("METRICS_SNAPSHOT_TTL_SECONDS must be between 1 and 60")
+        if not 16 * 1024 * 1024 <= self.raw_spill_max_total_bytes <= 8 * 1024 * 1024 * 1024:
+            raise ValueError(
+                "RAW_SPILL_MAX_TOTAL_BYTES must be between 16MiB and 8GiB"
+            )
+        if not 1 <= self.raw_spill_max_pending_files <= 256:
+            raise ValueError("RAW_SPILL_MAX_PENDING_FILES must be between 1 and 256")
         return self
 
     @property

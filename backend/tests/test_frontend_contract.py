@@ -83,6 +83,16 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     session_tokens = read("frontend/src/api/sessionTokens.ts")
     assert "setAccessSession" in session_tokens
     assert "clearAccessSession" in session_tokens
+    assert "revalidateOnResume" in session
+
+    web_messages = read("frontend/src/api/webMessages.ts")
+    assert "withRefreshLock" in web_messages
+    assert "sessionEpoch" in web_messages
+    assert "BroadcastChannel" not in web_messages
+
+    shell = read("frontend/src/App.vue")
+    assert "pageshow" in shell
+    assert "revalidateOnResume" in shell
 
 
 def test_authenticated_shell_has_no_frontend_version_switch() -> None:

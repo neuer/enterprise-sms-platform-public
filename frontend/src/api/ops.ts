@@ -3,7 +3,17 @@ import { apiRequest } from "./webMessages"
 
 export interface OpsPage<T> { items: T[]; total: number; page: number; page_size: number }
 export interface AlertItem { id: number; alert_type: string; level: "info" | "warn" | "crit"; title: string; detail: Record<string, unknown> | null; channels: string; created_at: string }
-export interface RawLogItem { id: number; source: "report" | "reply"; item_count: number; custom_id_count: number; processed: boolean; error: string | null; fetched_at: string }
+export type RawCaptureState = "complete" | "complete_too_large" | "truncated"
+export interface RawLogItem {
+  id: number
+  source: "report" | "reply"
+  item_count: number
+  custom_id_count: number
+  processed: boolean
+  error: string | null
+  fetched_at: string
+  capture_state: RawCaptureState
+}
 export interface UncertainItem { chunk_id: number; batch_no: string; custom_id: string; phone_count: number; vendor_code: number | null; uncertain_since: string; age_seconds: number }
 export interface UnmatchedItem { id: number; vendor_task_id: string | null; custom_id: string | null; phone_mask: string; report_status: number | null; report_desc: string | null; report_time: string | null; created_at: string }
 export interface JobItem { job_name: string; last_run_at: string | null; last_status: "running" | "success" | "failed" | null; last_duration_ms: number | null; last_items: number; success_rate_24h: number; stalled: boolean }
