@@ -862,6 +862,36 @@
   继续带着旧 Access Token 发请求。
 - 影响：`session.ts`、`sessionTokens.ts`、会话 Vitest 与 TEST-MANUAL SMK-05。
 
+## D075 拉走即消费响应的完整性状态与有界加密 Spill
+
+- 决策：GetReport/GetReply 仍按厂商现有合同一次拉走即消费，官方报文未提供分页或游标。
+  平台将单次自动解析上限固定为 4 MiB，恢复捕获上限固定为 64 MiB。完整但超过自动解析
+  上限的响应记 `capture_state=complete_too_large`，仅允许人工重放；超过恢复上限或 spill
+  配额导致的截断记 `truncated`，不得进入自动重放，也不得从运维入口当作正常 raw 重放。
+  接收过程通过认证加密流式 spill 落盘，目录有总字节和文件数上限；配额耗尽时 fail
+  closed 停止继续拉取，避免在无法保全事实时继续消费上游。`persist-failed` 不建库行，
+  只保留加密 spill 与 `vendor_raw_persist_failed` 告警，重启后恢复。
+- 原因：厂商未给出单次最大条数或分页合同，4 MiB 硬拒会丢失已消费事实；但不区分完整
+  超限与截断，会把不可解析的半截密文送进自动重放毒丸循环。
+- 影响：schema v1.6.60、0072、`raw_spill`/`zhihui`/`report_ingest`/`reply_ingest`/
+  自动重放过滤、运维 raw 列表、`vendor-api.md` 与 OpenAPI。
+
+## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
+
+- 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
+  写入不可延长的 5 秒 grace，状态为 `grace\\n{previous_binding}\\n{replacement_binding}`。
+  同一旧 binding 在窗口内重试返回同一 replacement，不吊销 family；窗口外或跨代 replay
+  仍 fail closed。replacement token 由前序 token 确定性重建，Redis 不存 token 明文。
+  浏览器以 Web Locks `sms-refresh-rotation` 做跨标签页单飞，本标签页仍用模块级
+  `refreshInFlight`；锁不可用时退回单标签页单飞。跨标签页不得通过 `BroadcastChannel`
+  或 storage 传递 access/refresh。因此第二个标签页在锁释放后仍需各自 refresh 领取本页
+  access，这不是 family 吊销。BFCache `pageshow` 必须向服务端重新 refresh，失败则清除
+  全部标签页。
+- 原因：多标签页并发 401 与丢响应重试属于合法竞态，直接吊销会把正常用户打成强制下线；
+  长期允许多个有效 refresh 则会破坏单次轮换。服务端 grace 是正确性权威，Web Lock 只降
+  低重复轮换；access 只存在于当前标签页 sessionStorage，不能也不应跨页传递凭据。
+- 影响：`jwt.py`、前端 `refreshLock`/`webMessages`/`App.vue`、SECURITY.md、PRD 与会话测试。
+
 ## D072 号码精确查询改为 POST 请求体
 
 - 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、

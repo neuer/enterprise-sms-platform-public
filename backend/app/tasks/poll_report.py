@@ -56,7 +56,7 @@ async def _poll() -> int:
             repository,
             CryptoService.from_settings(settings),
             alerts=alerts,
-            spill=RawSpillStore(settings.raw_spill_dir),
+            spill=RawSpillStore.from_settings(settings),
         ).poll_once()
         await repository.expire_unknown(await repository.report_timeout_hours())
         return count

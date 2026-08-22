@@ -100,6 +100,13 @@ function handleSessionRefreshed(): void {
   session.restore()
 }
 
+function handlePageShow(event: PageTransitionEvent): void {
+  if (!event.persisted) return
+  void session.revalidateOnResume().then((ok) => {
+    if (!ok && route.path !== "/login") void router.replace("/login")
+  })
+}
+
 function closeNavigation(): void {
   navigationOpen.value = false
 }
@@ -166,12 +173,14 @@ onMounted(() => {
   window.addEventListener("sms:unauthorized", handleUnauthorized)
   window.addEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.addEventListener("storage", handleSessionStorageSignal)
+  window.addEventListener("pageshow", handlePageShow)
   window.addEventListener("keydown", handleKeydown)
 })
 onBeforeUnmount(() => {
   window.removeEventListener("sms:unauthorized", handleUnauthorized)
   window.removeEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.removeEventListener("storage", handleSessionStorageSignal)
+  window.removeEventListener("pageshow", handlePageShow)
   window.removeEventListener("keydown", handleKeydown)
   window.removeEventListener("sms:dashboard-balance", handleDashboardBalance)
   stopBalancePolling()

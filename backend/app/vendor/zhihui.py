@@ -165,6 +165,12 @@ def _decode_vendor_envelope(
     return envelope["data"]
 
 
+def _finish_body_sink(body_sink: Any, *, complete: bool, too_large: bool = False) -> None:
+    finish = getattr(body_sink, "finish", None)
+    if callable(finish):
+        finish(complete=complete, too_large=too_large)
+
+
 def decode_pulled_payload(pulled: RawPulledPayload, operation: str) -> Any:
     """在 raw 已持久化后解释 GetReport/GetReply 的不可信响应。"""
 
@@ -245,6 +251,8 @@ class ZhihuiClient:
         self,
         path: str,
         payload: Mapping[str, Any] | None = None,
+        *,
+        body_sink: Any | None = None,
     ) -> _RawHttpResponse:
         body = {
             "secretName": self._secret_name,
@@ -270,35 +278,49 @@ class ZhihuiClient:
                     )
                     if preserve_consumed_response:
                         # 拉走即消费接口必须先保全 wire bytes，再拒绝自动解析。
-                        # 捕获仅存在于有界内存；不得把手机号等原始响应写入明文临时文件。
+                        # 明文只存在于有界内存；同步写入的 spill 只能是认证加密流。
                         # 独立恢复上限阻止异常上游无限耗尽 worker 内存。
                         with BytesIO() as capture:
                             total = 0
                             async for chunk in response.aiter_raw():
                                 remaining = self.max_response_capture_bytes - total
+                                accepted = chunk if len(chunk) <= remaining else chunk[:remaining]
+                                if accepted:
+                                    capture.write(accepted)
+                                    if body_sink is not None and body_sink.feed(accepted) is False:
+                                        capture.seek(0)
+                                        _finish_body_sink(body_sink, complete=False)
+                                        raise VendorResponseTooLarge(
+                                            "vendor response exceeded raw spill quota",
+                                            raw_body=capture.read(),
+                                            status_code=response.status_code,
+                                            complete=False,
+                                        )
                                 if len(chunk) > remaining:
-                                    if remaining > 0:
-                                        capture.write(chunk[:remaining])
                                     capture.seek(0)
+                                    _finish_body_sink(body_sink, complete=False)
                                     raise VendorResponseTooLarge(
                                         "vendor response exceeds recovery capture limit",
                                         raw_body=capture.read(),
                                         status_code=response.status_code,
                                         complete=False,
                                     )
-                                capture.write(chunk)
-                                total += len(chunk)
+                                total += len(accepted)
                                 if total > self.max_response_body_bytes:
                                     response_too_large = True
                             capture.seek(0)
                             content = capture.read()
                         if response_too_large:
+                            _finish_body_sink(
+                                body_sink, complete=True, too_large=True
+                            )
                             raise VendorResponseTooLarge(
                                 "vendor response exceeds automatic processing limit",
                                 raw_body=content,
                                 status_code=response.status_code,
                                 complete=True,
                             )
+                        _finish_body_sink(body_sink, complete=True)
                     else:
                         chunks: list[bytes] = []
                         total = 0
@@ -447,10 +469,10 @@ class ZhihuiClient:
             response.raw_payload,
         )
 
-    async def get_report_raw(self) -> RawPulledPayload:
+    async def get_report_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
         """返回完整原始字节，业务结构校验必须在持久化之后进行。"""
 
-        response = await self._request_raw("/Sms/Api/GetReport")
+        response = await self._request_raw("/Sms/Api/GetReport", body_sink=body_sink)
         return RawPulledPayload(
             response.raw_body,
             response.status_code,
@@ -466,10 +488,10 @@ class ZhihuiClient:
             response.raw_payload,
         )
 
-    async def get_reply_raw(self) -> RawPulledPayload:
+    async def get_reply_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
         """返回未校验的回复原始响应，支持同样的 raw-first 协议。"""
 
-        response = await self._request_raw("/Sms/Api/GetReply")
+        response = await self._request_raw("/Sms/Api/GetReply", body_sink=body_sink)
         return RawPulledPayload(
             response.raw_body,
             response.status_code,

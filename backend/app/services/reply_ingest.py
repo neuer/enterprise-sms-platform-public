@@ -12,7 +12,13 @@ from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
-from app.services.raw_spill import RawSpillStore
+from app.services.raw_spill import (
+    CAPTURE_COMPLETE,
+    CAPTURE_COMPLETE_TOO_LARGE,
+    CAPTURE_TRUNCATED,
+    RawSpillStore,
+    SpillQuotaExceeded,
+)
 from app.vendor.identifiers import (
     degrade_vendor_identifier,
     protect_vendor_custom_id,
@@ -55,7 +61,7 @@ class ProtectedReply:
 
 
 class ReplyGateway(Protocol):
-    async def get_reply_raw(self) -> RawPulledPayload: ...
+    async def get_reply_raw(self, body_sink: Any | None = None) -> RawPulledPayload: ...
 
 
 class ReplyRepository(Protocol):
@@ -233,6 +239,45 @@ class ReplyIngestService:
                 extra={"source": "reply", "error_type": type(exc).__name__},
             )
 
+    async def _alert_truncated(self) -> None:
+        await self._emit_capture_alert(
+            alert_type="vendor_raw_truncated",
+            title="厂商拉走即消费响应被截断，不得当作正常可重放 raw",
+        )
+
+    async def _alert_oversized_complete(self) -> None:
+        await self._emit_capture_alert(
+            alert_type="vendor_raw_oversized_complete",
+            title="厂商拉走即消费响应完整但超过自动解析上限",
+        )
+
+    async def _alert_spill_quota(self) -> None:
+        await self._emit_capture_alert(
+            alert_type="vendor_raw_spill_quota_exceeded",
+            title="raw spill 配额已满，已停止继续拉取以防消费缺口",
+        )
+
+    async def _emit_capture_alert(self, *, alert_type: str, title: str) -> None:
+        if self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type=alert_type,
+                level="crit",
+                title=title,
+                detail={"source": "reply"},
+                dedup_key=f"{alert_type}:reply",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw capture alert unavailable",
+                extra={
+                    "source": "reply",
+                    "alert_type": alert_type,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
     async def _spill_write(
         self,
         *,
@@ -241,6 +286,7 @@ class ReplyIngestService:
         http_status: int,
         content_encoding: str,
         payload_enc: bytes,
+        capture_state: str = CAPTURE_COMPLETE,
     ) -> None:
         """spill 是崩溃兜底而非硬依赖：写盘失败告警后继续 DB 落库。"""
 
@@ -254,7 +300,10 @@ class ReplyIngestService:
                 http_status=http_status,
                 content_encoding=content_encoding,
                 payload_enc=payload_enc,
+                capture_state=capture_state,
             )
+        except SpillQuotaExceeded:
+            await self._alert_spill_quota()
         except Exception as exc:
             LOGGER.error(
                 "raw spill write failed",
@@ -294,13 +343,15 @@ class ReplyIngestService:
         raw_payload: bytes,
         *,
         status_code: int,
+        complete: bool,
     ) -> None:
-        """超限响应的已读部分仍按拉走即消费落密文，保持可人工重放。"""
+        """超限响应的已读部分仍按拉走即消费落密文；截断不得当作正常可重放。"""
 
         # raw_vendor_log.http_status 约束为 100..599；异常路径缺失或越界时
         # 记 200（响应体已被读到才可能超限）。
         if not 100 <= status_code <= 599:
             status_code = 200
+        capture_state = CAPTURE_COMPLETE_TOO_LARGE if complete else CAPTURE_TRUNCATED
         payload_sha256 = hashlib.sha256(raw_payload).hexdigest()
         encrypted = self.crypto.encrypt_bound_bytes(
             raw_payload,
@@ -317,6 +368,7 @@ class ReplyIngestService:
             http_status=status_code,
             content_encoding="identity",
             payload_enc=encrypted.payload,
+            capture_state=capture_state,
         )
         raw_id = await self.repository.persist_raw(
             payload_enc=encrypted.payload,
@@ -326,9 +378,19 @@ class ReplyIngestService:
             content_encoding="identity",
             custom_ids=[],
             item_count=0,
+            capture_state=capture_state,
         )
         self._spill_remove("reply", payload_sha256)
-        await self.repository.mark_error(raw_id, "reply payload persisted after consume gap")
+        if complete:
+            await self.repository.mark_error(
+                raw_id, "reply oversized payload persisted after consume gap"
+            )
+            await self._alert_oversized_complete()
+        else:
+            await self.repository.mark_error(
+                raw_id, "reply truncated vendor response beyond recovery limit"
+            )
+            await self._alert_truncated()
 
     async def recover_spills(self) -> int:
         """把落库前崩溃留下的加密 spill 恢复进 raw_vendor_log。"""
@@ -336,11 +398,15 @@ class ReplyIngestService:
         if self.spill is None:
             return 0
         recovered = 0
-        for record in self.spill.list_pending():
+        pending = [
+            *self.spill.list_pending(),
+            *self.spill.list_pending_streams(self.crypto),
+        ]
+        for record in pending:
             if record.source != "reply":
                 continue
             try:
-                await self.repository.persist_raw(
+                raw_id = await self.repository.persist_raw(
                     payload_enc=record.payload_enc,
                     payload_sha256=record.payload_sha256,
                     key_version=record.key_version,
@@ -348,10 +414,22 @@ class ReplyIngestService:
                     content_encoding=record.content_encoding,
                     custom_ids=[],
                     item_count=0,
+                    capture_state=record.capture_state,
                 )
             except Exception as error:
                 await self._alert_consume_gap(type(error).__name__)
                 continue
+            if record.capture_state == CAPTURE_TRUNCATED:
+                await self.repository.mark_error(
+                    raw_id, "reply truncated vendor response beyond recovery limit"
+                )
+                await self._alert_truncated()
+            elif record.capture_state == CAPTURE_COMPLETE_TOO_LARGE:
+                await self.repository.mark_error(
+                    raw_id, "reply oversized payload persisted after consume gap"
+                )
+                await self._alert_oversized_complete()
+            record.path.unlink(missing_ok=True)
             self._spill_remove(record.source, record.payload_sha256)
             recovered += 1
         return recovered
@@ -360,15 +438,29 @@ class ReplyIngestService:
         if self.gateway is None:
             raise RuntimeError("reply gateway is not configured")
         await self.recover_spills()
+        if self.spill is not None and not self.spill.can_accept():
+            await self._alert_spill_quota()
+            return 0
+        stream = None
+        if self.spill is not None:
+            try:
+                stream = self.spill.open_stream("reply", self.crypto)
+            except SpillQuotaExceeded:
+                await self._alert_spill_quota()
+                return 0
         try:
-            pulled = await self.gateway.get_reply_raw()
+            pulled = await self.gateway.get_reply_raw(body_sink=stream)
         except VendorResponseTooLarge as error:
-            await self._alert_consume_gap(type(error).__name__)
             if error.raw_body:
                 await self._persist_lost_payload(
                     error.raw_body,
                     status_code=error.status_code if error.status_code is not None else 0,
+                    complete=error.complete,
                 )
+                if stream is not None:
+                    stream.discard()
+            else:
+                await self._alert_consume_gap(type(error).__name__)
             raise
         except Exception as error:
             await self._alert_consume_gap(type(error).__name__)
@@ -390,6 +482,8 @@ class ReplyIngestService:
             content_encoding=pulled.content_encoding,
             payload_enc=encrypted.payload,
         )
+        if stream is not None:
+            stream.discard()
         try:
             raw_id = await self.repository.persist_raw(
                 payload_enc=encrypted.payload,

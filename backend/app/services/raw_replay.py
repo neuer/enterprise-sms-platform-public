@@ -36,6 +36,7 @@ class RawReplayRecord:
     processed: bool
     http_status: int = 200
     content_encoding: str = "identity"
+    capture_state: str = "complete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,10 +107,14 @@ class RawReplayService:
         if claim is None:
             raise RawReplayNotFound(raw_id)
         if not claim.claimed:
+            if claim.record.capture_state == "truncated":
+                raise RawReplayConflict("截断 raw 不得当作正常可重放")
             if claim.record.processed:
                 raise RawReplayConflict("仅未处理 raw 可重放")
             raise RawReplayConflict("raw 正在处理中，请稍后重试")
         record = claim.record
+        if record.capture_state == "truncated":
+            raise RawReplayConflict("截断 raw 不得当作正常可重放")
         if record.processed:
             raise RawReplayConflict("仅未处理 raw 可重放")
         raw = self.crypto.decrypt_bound_bytes(

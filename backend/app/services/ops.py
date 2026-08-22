@@ -44,6 +44,7 @@ class RawLogRecord:
     processed: bool
     error: str | None
     fetched_at: datetime
+    capture_state: str = "complete"
 
 
 @dataclass(frozen=True, slots=True)

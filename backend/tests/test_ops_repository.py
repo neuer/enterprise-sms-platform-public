@@ -36,6 +36,9 @@ class FakeResult:
         assert len(self.rows) <= 1
         return self.rows[0] if self.rows else None
 
+    def scalars(self) -> list[object]:
+        return [row["id"] for row in self.rows]
+
 
 class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
@@ -111,6 +114,7 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "UPDATE raw_vendor_log" in normalized_sql
     assert "processing_started_at=now()" in normalized_sql
     assert "processed=false" in normalized_sql
+    assert "capture_state IN ('complete','complete_too_large')" in normalized_sql
     assert "processing_started_at IS NULL" in normalized_sql
     assert "interval '15 minutes'" in normalized_sql
     assert "RETURNING" in normalized_sql
@@ -233,6 +237,15 @@ async def test_alert_list_is_filtered_and_paginated_with_safe_detail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_raw_ids_only_include_complete_captures() -> None:
+    repo, connection = repository([FakeResult(rows=[{"id": 4}])])
+    assert await repo.list_stale_unprocessed_raw_ids() == [4]
+    sql = " ".join(connection.calls[0][0].split())
+    assert "capture_state='complete'" in sql
+    assert "processed=false" in sql
+
+
+@pytest.mark.asyncio
 async def test_raw_list_never_selects_ciphertext_or_payload_hash() -> None:
     repo, connection = repository(
         [
@@ -258,6 +271,7 @@ async def test_raw_list_never_selects_ciphertext_or_payload_hash() -> None:
     sql = connection.calls[1][0]
     assert "payload_enc" not in sql and "payload_sha256" not in sql
     assert "cardinality(custom_ids) custom_id_count" in sql
+    assert "capture_state" in sql
 
 
 @pytest.mark.asyncio

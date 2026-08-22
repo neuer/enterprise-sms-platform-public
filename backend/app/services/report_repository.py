@@ -45,6 +45,8 @@ class SqlReportRepository:
     async def persist_raw(self, **values: Any) -> int:
         """独立事务提交完整 raw 密文，返回后业务解析才可开始。"""
 
+        payload = dict(values)
+        payload["capture_state"] = payload.get("capture_state") or "complete"
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -53,15 +55,17 @@ class SqlReportRepository:
                         """
                         INSERT INTO raw_vendor_log (
                           source,payload_enc,payload_sha256,key_version,http_status,
-                          content_encoding,custom_ids,item_count,processing_started_at
+                          content_encoding,custom_ids,item_count,processing_started_at,
+                          capture_state
                         ) VALUES (
                           'report',:payload_enc,:payload_sha256,:key_version,:http_status,
                           :content_encoding,
-                          CAST(:custom_ids AS text[]),:item_count,now()
+                          CAST(:custom_ids AS text[]),:item_count,now(),
+                          COALESCE(:capture_state,'complete')
                         ) RETURNING id
                         """
                     ),
-                    values,
+                    payload,
                 )
                 return int(result.scalar_one())
         finally:

@@ -1,4 +1,5 @@
 import { AuthApiError, refreshRequest } from "./auth"
+import { withRefreshLock } from "./refreshLock"
 import {
   clearAccessSession,
   clearRefreshTabBinding,
@@ -100,8 +101,12 @@ const REFRESH_TIMEOUT_MS = 10_000
 const DOWNLOAD_TIMEOUT_MS = 120_000
 type RefreshResult = "refreshed" | "unauthorized" | "unavailable"
 let refreshInFlight: Promise<RefreshResult> | null = null
+let sessionEpoch = 0
 const sessionControllers = new Set<AbortController>()
-window.addEventListener("sms:session-clearing", cancelSessionRequests)
+window.addEventListener("sms:session-clearing", () => {
+  sessionEpoch += 1
+  cancelSessionRequests()
+})
 
 export function authorization(): Record<string, string> {
   const token = getAccessToken()
@@ -184,7 +189,12 @@ function clearSession(): void {
 
 async function refreshSession(): Promise<RefreshResult> {
   if (refreshInFlight) return refreshInFlight
-  refreshInFlight = (async () => {
+  const epochAtRequest = sessionEpoch
+  refreshInFlight = withRefreshLock(async () => {
+    if (sessionEpoch !== epochAtRequest) {
+      return "unauthorized"
+    }
+    const epoch = sessionEpoch
     try {
       const currentUser = getSessionUser()
       const controller = new AbortController()
@@ -197,6 +207,10 @@ async function refreshSession(): Promise<RefreshResult> {
         result = await refreshRequest(controller.signal)
       } finally {
         window.clearTimeout(timer)
+      }
+      if (sessionEpoch !== epoch) {
+        clearAccessSession()
+        return "unauthorized"
       }
       if (
         currentUser &&
@@ -214,13 +228,17 @@ async function refreshSession(): Promise<RefreshResult> {
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"
     } catch (error) {
+      if (sessionEpoch !== epoch) {
+        clearAccessSession()
+        return "unauthorized"
+      }
       if (error instanceof AuthApiError && error.status === 401) {
         clearSession()
         return "unauthorized"
       }
       return "unavailable"
     }
-  })()
+  })
   try {
     return await refreshInFlight
   } finally {

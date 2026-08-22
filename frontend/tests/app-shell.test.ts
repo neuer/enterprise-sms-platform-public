@@ -365,6 +365,41 @@ describe("应用骨架", () => {
     wrapper.unmount()
   })
 
+  it("BFCache 恢复且服务端会话已注销时回到登录页", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/dashboard", component: { template: "<div />" } },
+        { path: "/login", component: { template: "<div>登录</div>" }, meta: { public: true } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    const session = useSessionStore(pinia)
+    session.apply("jwt", {
+      account_id: 2,
+      identity_id: 12,
+      provider_code: "local",
+      username: "viewer01",
+      display_name: "开发查看员",
+      dept: "业务一部",
+      role: "viewer",
+    })
+    vi.spyOn(session, "revalidateOnResume").mockResolvedValue(false)
+    await router.push("/dashboard")
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+
+    const persisted = new Event("pageshow")
+    Object.defineProperty(persisted, "persisted", { value: true })
+    window.dispatchEvent(persisted)
+    await flushPromises()
+
+    expect(session.revalidateOnResume).toHaveBeenCalledOnce()
+    expect(router.currentRoute.value.path).toBe("/login")
+    wrapper.unmount()
+  })
+
   it("本地账号可在顶栏日常改密且成功后强制重新登录", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

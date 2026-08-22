@@ -35,7 +35,7 @@ async def _poll() -> int:
                 SqlReplyRepository(settings),
                 CryptoService.from_settings(settings),
                 alerts=alerts,
-                spill=RawSpillStore(settings.raw_spill_dir),
+                spill=RawSpillStore.from_settings(settings),
             ).poll_once()
     finally:
         if not await lock.release():

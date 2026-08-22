@@ -36,7 +36,12 @@ class FakeGateway:
         raw = json.dumps({"code": 0, "msg": None, "data": records}).encode()
         self.result = RawPulledPayload(raw, 200)
 
-    async def get_report_raw(self) -> RawPulledPayload:
+    async def get_report_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
+        if body_sink is not None:
+            body_sink.feed(self.result.raw_payload)
+            finish = getattr(body_sink, "finish", None)
+            if callable(finish):
+                finish(complete=True)
         return self.result
 
 
@@ -194,7 +199,12 @@ class OversizedGateway:
     def __init__(self, error: VendorResponseTooLarge) -> None:
         self.error = error
 
-    async def get_report_raw(self) -> RawPulledPayload:
+    async def get_report_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
+        if body_sink is not None and self.error.raw_body:
+            body_sink.feed(self.error.raw_body)
+            finish = getattr(body_sink, "finish", None)
+            if callable(finish):
+                finish(complete=self.error.complete, too_large=self.error.complete)
         raise self.error
 
 
@@ -582,6 +592,17 @@ async def test_spill_survives_persist_gap_and_can_be_recovered(tmp_path: Any) ->
     assert repository.events[0][0] == "persist_raw"
 
 
+class _BrokenStream:
+    def feed(self, chunk: bytes) -> bool:
+        return True
+
+    def finish(self, **_: Any) -> None:
+        return None
+
+    def discard(self) -> None:
+        return None
+
+
 class BrokenSpill:
     """磁盘满/权限错等 spill 故障；不得反向阻断 DB 落库。"""
 
@@ -593,6 +614,15 @@ class BrokenSpill:
 
     def list_pending(self) -> list[Any]:
         return []
+
+    def list_pending_streams(self, crypto: Any) -> list[Any]:
+        return []
+
+    def can_accept(self, additional_bytes: int = 0) -> bool:
+        return True
+
+    def open_stream(self, source: str, crypto: Any) -> _BrokenStream:
+        return _BrokenStream()
 
 
 @pytest.mark.asyncio

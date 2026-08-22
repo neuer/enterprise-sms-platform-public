@@ -227,6 +227,19 @@ describe("Provider 与 JWT 会话", () => {
     expect(getAccessToken()).toBeNull()
   })
 
+  it("BFCache 恢复时必须向服务端重新验证，失败则清除全部标签页", async () => {
+    const storageSignal = vi.spyOn(Storage.prototype, "setItem")
+    sessionStorage.setItem(REFRESH_TAB_ID_KEY, "a".repeat(32))
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "UNAUTHORIZED" }, 401)))
+    const session = useSessionStore()
+    session.apply("jwt-token", admin)
+
+    await expect(session.revalidateOnResume()).resolves.toBe(false)
+
+    expect(session.isAuthenticated).toBe(false)
+    expect(storageSignal).toHaveBeenCalledWith("sms_session_clear", expect.any(String))
+  })
+
   it("登出接口失败也清除访问与改密会话", async () => {
     sessionStorage.setItem("sms_token", "jwt-token")
     sessionStorage.setItem("sms_refresh_token", "refresh-token")

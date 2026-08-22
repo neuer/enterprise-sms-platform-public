@@ -414,6 +414,68 @@ describe("统一 API 请求", () => {
     await assertion
   })
 
+  it("注销开始后丢弃仍在飞行的 refresh 结果", async () => {
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_user", JSON.stringify({
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "admin",
+      display_name: "管理员",
+      dept: "平台部",
+      role: "admin",
+    }))
+    setAccessSession("expired", {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "admin",
+      display_name: "管理员",
+      dept: "平台部",
+      role: "admin",
+    })
+    let releaseRefresh!: (value: Response) => void
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/web/auth/refresh") {
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = resolve
+          init?.signal?.addEventListener("abort", () =>
+            resolve(response({ code: "UNAUTHORIZED" }, 401)),
+          )
+        })
+      }
+      return Promise.resolve(response({ code: "UNAUTHORIZED" }, 401))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const pending = apiRequest("/reports/dashboard", { method: "GET" })
+    await vi.waitFor(() => {
+      expect(typeof releaseRefresh).toBe("function")
+    })
+    window.dispatchEvent(new Event("sms:session-clearing"))
+    releaseRefresh(
+      response(
+        {
+          token: "access-should-discard",
+          expires_in: 900,
+          refresh_expires_in: 604800,
+          user: {
+            account_id: 8,
+            identity_id: 18,
+            provider_code: "local",
+            username: "admin",
+            display_name: "管理员",
+            dept: "平台部",
+            role: "admin",
+          },
+        },
+        200,
+      ),
+    )
+    await expect(pending).rejects.toThrow()
+    expect(getAccessToken()).toBeNull()
+  })
+
   it("刷新超时后释放 single-flight 并可再次发起", async () => {
     vi.useFakeTimers()
     sessionStorage.setItem("sms_token", "expired")
