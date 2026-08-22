@@ -8,6 +8,7 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from io import BytesIO
 from time import perf_counter
 from typing import Any, cast
 
@@ -23,6 +24,8 @@ CUSTOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{0,36}$")
 VENDOR_TIMEOUT_S = 10.0
 VENDOR_MAX_RESPONSE_HEADER_BYTES = 64 * 1024
 VENDOR_MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024
+VENDOR_MAX_RESPONSE_CAPTURE_BYTES = 64 * 1024 * 1024
+CONSUME_ON_READ_PATHS = frozenset({"/Sms/Api/GetReport", "/Sms/Api/GetReply"})
 
 
 class VendorError(RuntimeError):
@@ -43,10 +46,13 @@ class VendorResponseTooLarge(VendorTransportError):
         message: str,
         raw_body: bytes = b"",
         status_code: int | None = None,
+        *,
+        complete: bool = False,
     ) -> None:
         super().__init__(message)
         self.raw_body = raw_body
         self.status_code = status_code
+        self.complete = complete
 
 
 class VendorTotalTimeout(VendorTransportError):
@@ -100,12 +106,23 @@ class _RawHttpResponse:
     content_encoding: str
 
 
-def _strip_keys(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key).strip(): _strip_keys(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_strip_keys(item) for item in value]
-    return value
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """拒绝原始重复键及 strip 后冲突键，同时兼容单独的尾随空格笔误。"""
+
+    result: dict[str, Any] = {}
+    raw_keys: set[str] = set()
+    normalized_keys: set[str] = set()
+    for raw_key, item in pairs:
+        normalized = raw_key.strip()
+        if not normalized or raw_key in raw_keys or normalized in normalized_keys:
+            # 不把不可信键名写入异常，避免厂商输入进入日志或错误边界。
+            raise VendorProtocolError(
+                "vendor response contains duplicate or ambiguous JSON keys"
+            )
+        raw_keys.add(raw_key)
+        normalized_keys.add(normalized)
+        result[normalized] = item
+    return result
 
 
 def _decode_vendor_envelope(
@@ -123,7 +140,10 @@ def _decode_vendor_envelope(
     if not 200 <= status_code < 300:
         raise VendorProtocolError(f"vendor HTTP status {status_code}")
     try:
-        envelope = json.loads(raw_body)
+        envelope = json.loads(
+            raw_body,
+            object_pairs_hook=_strict_json_object,
+        )
     except (ValueError, UnicodeError):
         raise VendorProtocolError("vendor response is not JSON") from None
     if not isinstance(envelope, dict):
@@ -142,7 +162,7 @@ def _decode_vendor_envelope(
             policy_for(code).description,
         )
         raise VendorApiError(code)
-    return _strip_keys(envelope["data"])
+    return envelope["data"]
 
 
 def decode_pulled_payload(pulled: RawPulledPayload, operation: str) -> Any:
@@ -170,6 +190,7 @@ class ZhihuiClient:
         http_client: httpx.AsyncClient | None = None,
         max_response_header_bytes: int = VENDOR_MAX_RESPONSE_HEADER_BYTES,
         max_response_body_bytes: int = VENDOR_MAX_RESPONSE_BODY_BYTES,
+        max_response_capture_bytes: int = VENDOR_MAX_RESPONSE_CAPTURE_BYTES,
         total_timeout_s: float = VENDOR_TIMEOUT_S,
     ) -> None:
         if not secret_name or not secret_key:
@@ -177,14 +198,18 @@ class ZhihuiClient:
         if (
             max_response_header_bytes < 1
             or max_response_body_bytes < 1
+            or max_response_capture_bytes < max_response_body_bytes
             or total_timeout_s <= 0
         ):
-            raise ValueError("vendor response limits and timeout must be positive")
+            raise ValueError(
+                "vendor response limits must be positive and capture must cover body limit"
+            )
         self._secret_name = secret_name
         self._secret_key = secret_key
         self._base_url = base_url.rstrip("/")
         self.max_response_header_bytes = max_response_header_bytes
         self.max_response_body_bytes = max_response_body_bytes
+        self.max_response_capture_bytes = max_response_capture_bytes
         self.total_timeout_s = total_timeout_s
         self._client = http_client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -238,19 +263,55 @@ class ZhihuiClient:
                 )
                 response = await self._client.send(request, stream=True)
                 try:
-                    self._check_response_header_limits(response)
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.aiter_raw():
-                        total += len(chunk)
-                        if total > self.max_response_body_bytes:
+                    preserve_consumed_response = path in CONSUME_ON_READ_PATHS
+                    response_too_large = self._check_response_header_limits(
+                        response,
+                        preserve_consumed_response=preserve_consumed_response,
+                    )
+                    if preserve_consumed_response:
+                        # 拉走即消费接口必须先保全 wire bytes，再拒绝自动解析。
+                        # 捕获仅存在于有界内存；不得把手机号等原始响应写入明文临时文件。
+                        # 独立恢复上限阻止异常上游无限耗尽 worker 内存。
+                        with BytesIO() as capture:
+                            total = 0
+                            async for chunk in response.aiter_raw():
+                                remaining = self.max_response_capture_bytes - total
+                                if len(chunk) > remaining:
+                                    if remaining > 0:
+                                        capture.write(chunk[:remaining])
+                                    capture.seek(0)
+                                    raise VendorResponseTooLarge(
+                                        "vendor response exceeds recovery capture limit",
+                                        raw_body=capture.read(),
+                                        status_code=response.status_code,
+                                        complete=False,
+                                    )
+                                capture.write(chunk)
+                                total += len(chunk)
+                                if total > self.max_response_body_bytes:
+                                    response_too_large = True
+                            capture.seek(0)
+                            content = capture.read()
+                        if response_too_large:
                             raise VendorResponseTooLarge(
-                                "vendor response body exceeds hard limit",
-                                raw_body=b"".join(chunks),
+                                "vendor response exceeds automatic processing limit",
+                                raw_body=content,
                                 status_code=response.status_code,
+                                complete=True,
                             )
-                        chunks.append(chunk)
-                    content = b"".join(chunks)
+                    else:
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_raw():
+                            total += len(chunk)
+                            if total > self.max_response_body_bytes:
+                                raise VendorResponseTooLarge(
+                                    "vendor response body exceeds hard limit",
+                                    raw_body=b"".join(chunks),
+                                    status_code=response.status_code,
+                                )
+                            chunks.append(chunk)
+                        content = b"".join(chunks)
                 finally:
                     await response.aclose()
         except TimeoutError:
@@ -299,8 +360,13 @@ class ZhihuiClient:
         )
         return _VendorPayload(data, response.raw_body)
 
-    def _check_response_header_limits(self, response: httpx.Response) -> None:
-        """在读取响应体前校验响应头和声明长度。"""
+    def _check_response_header_limits(
+        self,
+        response: httpx.Response,
+        *,
+        preserve_consumed_response: bool = False,
+    ) -> bool:
+        """返回是否超自动处理上限；拉走即消费接口仍须读取完整正文。"""
 
         header_bytes = sum(
             len(name.encode("ascii", "ignore"))
@@ -308,7 +374,8 @@ class ZhihuiClient:
             + 4
             for name, value in response.headers.multi_items()
         )
-        if header_bytes > self.max_response_header_bytes:
+        exceeded = header_bytes > self.max_response_header_bytes
+        if exceeded and not preserve_consumed_response:
             raise VendorResponseTooLarge(
                 "vendor response headers exceed hard limit",
                 status_code=response.status_code,
@@ -319,11 +386,16 @@ class ZhihuiClient:
                 declared_length = int(declared)
             except ValueError:
                 raise VendorProtocolError("vendor content-length is invalid") from None
-            if declared_length < 0 or declared_length > self.max_response_body_bytes:
-                raise VendorResponseTooLarge(
-                    "vendor response body exceeds hard limit",
-                    status_code=response.status_code,
-                )
+            if declared_length < 0:
+                raise VendorProtocolError("vendor content-length is invalid")
+            if declared_length > self.max_response_body_bytes:
+                exceeded = True
+                if not preserve_consumed_response:
+                    raise VendorResponseTooLarge(
+                        "vendor response body exceeds hard limit",
+                        status_code=response.status_code,
+                    )
+        return exceeded
 
     async def send(
         self,

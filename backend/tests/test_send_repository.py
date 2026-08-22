@@ -1255,7 +1255,15 @@ async def test_delay_exhaustion_fails_submitting_chunk(
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(), FakeResult(scalar=1), FakeResult(), FakeResult(rowcount=1)]
+        [
+            FakeResult(),
+            FakeResult(scalar=11),
+            FakeResult(),
+            FakeResult(scalar=11),
+            FakeResult(rowcount=1),
+            FakeResult(),
+            FakeResult({"id": 11, "status": "sending"}),
+        ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
 
@@ -1264,9 +1272,17 @@ async def test_delay_exhaustion_fails_submitting_chunk(
     delay_sql, delay_params = connection.calls[0]
     assert "retry_count<8" in delay_sql
     assert delay_params == {"id": 7, "code": 1011, "delay_s": 1800}
+    assert "SELECT batch_id FROM sms_chunk" in connection.calls[1][0]
     assert "status='submitting'" in connection.calls[1][0]
-    fail_sql, fail_params = connection.calls[2]
+    assert "FOR UPDATE" in connection.calls[2][0]
+    assert "sms_batch" in connection.calls[2][0]
+    fail_sql, fail_params = connection.calls[3]
     assert "status='failed'" in fail_sql
     assert "delayed retry exhausted" in fail_sql
+    assert "retry_not_before=NULL" in fail_sql
     assert fail_params == {"id": 7, "code": 1011}
-    assert connection.calls[3][1] == {"chunk_id": 7, "status": "released"}
+    assert connection.calls[4][1] == {"chunk_id": 7, "status": "released"}
+    assert connection.calls[5][1] == {"id": 7}
+    aggregate_sql = connection.calls[6][0]
+    assert "count(*) FILTER (WHERE status='failed')" in aggregate_sql
+    assert "s.active=0" in aggregate_sql

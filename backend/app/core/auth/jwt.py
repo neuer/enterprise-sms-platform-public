@@ -28,6 +28,7 @@ PASSWORD_CHANGE_TOKEN_TYPE = "password_change"
 ACCESS_TOKEN_TTL = timedelta(minutes=15)
 REFRESH_TOKEN_TTL = timedelta(days=7)
 PASSWORD_CHANGE_TTL = timedelta(minutes=10)
+REFRESH_GRACE_SECONDS = 5
 JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
@@ -35,21 +36,39 @@ REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 LOGGER = logging.getLogger(__name__)
 
-_ROTATE_REFRESH_LUA = """
+_ROTATE_REFRESH_LUA = r"""
 local current = redis.call('GET', KEYS[1])
 if not current then
   redis.call('SET', KEYS[2], '1', 'EX', ARGV[4])
   redis.call('DEL', KEYS[1])
-  return 0
+  return {0, ''}
 end
-if current ~= ARGV[1] then
-  redis.call('SET', KEYS[2], '1', 'EX', ARGV[4])
-  redis.call('DEL', KEYS[1])
-  return -1
+
+if current == ARGV[1] then
+  local grace = 'grace\n' .. ARGV[1] .. '\n' .. ARGV[2]
+  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  redis.call('SET', KEYS[2], grace, 'EX', __REFRESH_GRACE_SECONDS__)
+  return {1, ARGV[2]}
 end
-redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
-return 1
-"""
+
+local state = redis.call('GET', KEYS[2])
+if state then
+  local first = string.find(state, '\n', 1, true)
+  local second = first and string.find(state, '\n', first + 1, true) or nil
+  if first and second and string.sub(state, 1, first - 1) == 'grace' then
+    local previous_binding = string.sub(state, first + 1, second - 1)
+    local replacement_binding = string.sub(state, second + 1)
+    if current == replacement_binding and ARGV[1] == previous_binding
+        and replacement_binding ~= '' then
+      return {2, replacement_binding}
+    end
+  end
+end
+
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[4])
+redis.call('DEL', KEYS[1])
+return {-1, ''}
+""".replace("__REFRESH_GRACE_SECONDS__", str(REFRESH_GRACE_SECONDS))
 
 _REVOKE_SESSION_LUA = """
 redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
@@ -309,6 +328,52 @@ class JwtService:
             payload,
         )
 
+    def _encode_refresh_replacement(
+        self,
+        claims: JwtClaims,
+        session_id: str,
+        family_expires_at: int,
+        tab_id: str,
+        *,
+        predecessor_token: str,
+        predecessor_payload: dict[str, Any],
+        key_version: int,
+    ) -> tuple[str, dict[str, Any]]:
+        """按前序 token 确定性生成下一代 refresh，便于 grace 安全重建。"""
+
+        try:
+            issued_at = float(predecessor_payload["iat"])
+            key = self._keyring.keys[key_version]
+        except (KeyError, TypeError, ValueError):
+            raise InvalidCredentials("无效或已使用的刷新令牌") from None
+        payload = self._common_payload(
+            claims,
+            token_type=REFRESH_TOKEN_TYPE,
+            session_id=session_id,
+            ttl=self.refresh_ttl,
+        )
+        # display_name 不参与权威匹配，可能在不递增 security_version 时变化；
+        # 轮换结果必须仅由前序 token 决定，保证响应丢失重试可重建同一 token。
+        payload["display_name"] = str(predecessor_payload["display_name"])
+        payload["iat"] = issued_at
+        payload["jti"] = hmac.new(
+            key,
+            b"refresh-rotation\x00" + predecessor_token.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:32]
+        payload["family_exp"] = family_expires_at
+        payload["exp"] = family_expires_at
+        payload["tab_id"] = tab_id
+        return (
+            jwt.encode(
+                payload,
+                key,
+                algorithm="HS256",
+                headers={"kid": str(key_version)},
+            ),
+            payload,
+        )
+
     def _signing_key(self) -> bytes:
         """当前活动签名 key；旧版本仅保留在验证 keyring 中。"""
 
@@ -550,15 +615,34 @@ class JwtService:
         if revoked_at is not None and issued_at <= revoked_at:
             raise InvalidCredentials("无效或已吊销的令牌")
 
+    @staticmethod
+    def _refresh_grace_bindings(state: object) -> tuple[str, str] | None:
+        if isinstance(state, bytes):
+            try:
+                state = state.decode("utf-8")
+            except UnicodeError:
+                return None
+        if not isinstance(state, str):
+            return None
+        parts = state.split("\n", 2)
+        if len(parts) != 3 or parts[0] != "grace" or not parts[1] or not parts[2]:
+            return None
+        return parts[1], parts[2]
+
     async def _ensure_session_not_revoked(self, claims: JwtClaims) -> None:
         try:
-            revoked = await self.store.get(
+            state = await self.store.get(
                 f"auth:jwt:session-revoked:{claims.session_id}"
             )
         except Exception:
             raise SessionStateUnavailable("JWT revocation state unavailable") from None
-        if revoked is not None:
+        if state is None:
+            return
+        if self._refresh_grace_bindings(state) is not None:
+            return
+        if state in {"1", b"1"}:
             raise InvalidCredentials("无效或已吊销的令牌")
+        raise SessionStateUnavailable("JWT revocation state unavailable")
 
     async def verify(self, token: str) -> JwtClaims:
         payload = self._decode(token)
@@ -575,6 +659,47 @@ class JwtService:
         await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
         return await self._authoritative(claims)
+
+    @staticmethod
+    def _redis_text(value: object) -> str:
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8")
+            except UnicodeError:
+                raise SessionStateUnavailable(
+                    "refresh token state unavailable"
+                ) from None
+        if isinstance(value, str):
+            return value
+        raise SessionStateUnavailable("refresh token state unavailable")
+
+    def _refresh_for_binding(
+        self,
+        binding: str,
+        *,
+        claims: JwtClaims,
+        session_id: str,
+        family_expires_at: int,
+        tab_id: str,
+        predecessor_token: str,
+        predecessor_payload: dict[str, Any],
+    ) -> str:
+        """从受限 keyring 重建 Lua 已确认的 replacement，不在 Redis 保存 token。"""
+
+        for key_version in sorted(self._keyring.keys):
+            candidate, candidate_payload = self._encode_refresh_replacement(
+                claims,
+                session_id,
+                family_expires_at,
+                tab_id,
+                predecessor_token=predecessor_token,
+                predecessor_payload=predecessor_payload,
+                key_version=key_version,
+            )
+            candidate_binding = self._refresh_binding(candidate_payload)
+            if hmac.compare_digest(candidate_binding, binding):
+                return candidate
+        raise SessionStateUnavailable("refresh token state unavailable")
 
     async def rotate_refresh(self, token: str, tab_id: str) -> IssuedTokenPair:
         payload = self._decode(token)
@@ -600,30 +725,75 @@ class JwtService:
         claims = await self._authoritative(claims)
         session_id = claims.session_id
         new_access = self._encode_access(claims, session_id)
-        new_refresh, new_payload = self._encode_refresh(
+        new_refresh, new_payload = self._encode_refresh_replacement(
             claims,
             session_id,
             family_expires_at,
             tab_id,
+            predecessor_token=token,
+            predecessor_payload=payload,
+            key_version=self._keyring.active_version,
         )
+        expected_binding = self._refresh_binding(payload)
+        replacement_binding = self._refresh_binding(new_payload)
         try:
             result = await self.store.eval(
                 _ROTATE_REFRESH_LUA,
                 2,
                 self._refresh_key(session_id),
                 f"auth:jwt:session-revoked:{session_id}",
-                self._refresh_binding(payload),
-                self._refresh_binding(new_payload),
+                expected_binding,
+                replacement_binding,
                 str(remaining),
                 str(max(1, int(self.ttl.total_seconds()))),
             )
         except Exception:
             raise SessionStateUnavailable("refresh token state unavailable") from None
-        if int(result) != 1:
+        returned_binding = ""
+        if isinstance(result, (list, tuple)):
+            try:
+                status = int(result[0])
+                returned_binding = self._redis_text(result[1])
+            except (IndexError, TypeError, ValueError):
+                raise SessionStateUnavailable(
+                    "refresh token state unavailable"
+                ) from None
+        else:
+            # 兼容历史测试/窄实现的整数 Lua 返回；真实 Redis 返回二元数组。
+            try:
+                status = int(result)
+            except (TypeError, ValueError):
+                raise SessionStateUnavailable(
+                    "refresh token state unavailable"
+                ) from None
+            if status == 1:
+                returned_binding = replacement_binding
+        if status == 1:
+            if returned_binding and not hmac.compare_digest(
+                returned_binding,
+                replacement_binding,
+            ):
+                raise SessionStateUnavailable("refresh token state unavailable")
+            selected_refresh = new_refresh
+        elif status == 2:
+            if not returned_binding:
+                raise SessionStateUnavailable("refresh token state unavailable")
+            selected_refresh = self._refresh_for_binding(
+                returned_binding,
+                claims=claims,
+                session_id=session_id,
+                family_expires_at=family_expires_at,
+                tab_id=tab_id,
+                predecessor_token=token,
+                predecessor_payload=payload,
+            )
+        elif status in {-1, 0}:
             raise InvalidCredentials("无效或已使用的刷新令牌")
+        else:
+            raise SessionStateUnavailable("refresh token state unavailable")
         return IssuedTokenPair(
             new_access,
-            new_refresh,
+            selected_refresh,
             refresh_expires_in=remaining,
         )
 
