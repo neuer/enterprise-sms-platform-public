@@ -475,6 +475,24 @@ async def _lock_frequency_merge_keys(
     hmacs: Sequence[str],
     subject_ids: Sequence[UUID],
 ) -> None:
+    if subject_ids:
+        # 先按 id 锁仍引用这些主体的预留，再锁投影键。释放路径是预留后投影，
+        # 顺序一致才能避免 UPDATE entry 的外键 KEY SHARE 与 FOR UPDATE 死锁。
+        await connection.execute(
+            text(
+                """
+                SELECT r.id FROM usage_reservation r
+                WHERE EXISTS (
+                  SELECT 1 FROM usage_frequency_entry e
+                  WHERE e.reservation_id=r.id
+                    AND e.subject_id=ANY(CAST(:subject_ids AS uuid[]))
+                )
+                ORDER BY r.id
+                FOR UPDATE OF r
+                """
+            ),
+            {"subject_ids": list(subject_ids)},
+        )
     unique = [digest for digest in dict.fromkeys(hmacs) if HMAC_PATTERN.fullmatch(digest)]
     lock_keys = {key for digest in unique for key in (f"freq:v:{digest}:m", f"freq:v:{digest}:d")}
     for row in await _list_frequency_projection_rows(connection, unique):
@@ -1051,37 +1069,25 @@ async def _apply_release_projection_changes(
     connection: AsyncConnection,
     reservation_id: UUID,
 ) -> tuple[ProjectionRow, ...]:
-    """持锁后重读明细再扣减；过期且缺失的频控键跳过，避免归并竞态打空。"""
+    """按首次读到的键排序加锁后重读明细再扣减。
+
+    不得在已持有 source 锁后再锁 canonical，否则会与归并的按序锁形成死锁。
+    重读后若键已被改写：目标存在则直接扣减，过期且缺失则跳过。
+    """
 
     observed = await _database_now(connection)
-    locked_freq: set[str] = set()
-    locked_quota: set[str] = set()
+    initial = await _collect_release_projection_changes(connection, reservation_id)
+    await _lock_projection_keys(
+        connection,
+        [change.dimension_key for change in initial if change.kind == "frequency"],
+        namespace=43,
+    )
+    await _lock_projection_keys(
+        connection,
+        [change.dimension_key for change in initial if change.kind == "quota"],
+        namespace=47,
+    )
     changes = await _collect_release_projection_changes(connection, reservation_id)
-    for _ in range(2):
-        freq_keys = [change.dimension_key for change in changes if change.kind == "frequency"]
-        quota_keys = [change.dimension_key for change in changes if change.kind == "quota"]
-        extra_freq = [key for key in freq_keys if key not in locked_freq]
-        extra_quota = [key for key in quota_keys if key not in locked_quota]
-        await _lock_projection_keys(connection, extra_freq, namespace=43)
-        locked_freq.update(extra_freq)
-        await _lock_projection_keys(connection, extra_quota, namespace=47)
-        locked_quota.update(extra_quota)
-        refreshed = await _collect_release_projection_changes(connection, reservation_id)
-        changes = refreshed
-        if {change.dimension_key for change in refreshed} <= locked_freq | locked_quota:
-            break
-    extra_freq = [
-        change.dimension_key
-        for change in changes
-        if change.kind == "frequency" and change.dimension_key not in locked_freq
-    ]
-    extra_quota = [
-        change.dimension_key
-        for change in changes
-        if change.kind == "quota" and change.dimension_key not in locked_quota
-    ]
-    await _lock_projection_keys(connection, extra_freq, namespace=43)
-    await _lock_projection_keys(connection, extra_quota, namespace=47)
     existing = {
         row.dimension_key
         for row in await _projection_rows(

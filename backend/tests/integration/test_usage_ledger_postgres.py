@@ -2109,7 +2109,8 @@ async def test_expired_source_merge_and_release_are_safe_under_concurrency() -> 
             ),
             timeout=15,
         )
-        assert not any(isinstance(result, BaseException) for result in results)
+        errors = [result for result in results if isinstance(result, BaseException)]
+        assert not errors, errors
         merges = [result for result in results if isinstance(result, tuple)]
         releases = [result for result in results if isinstance(result, bool)]
         assert {result[0] for result in merges} == {subject_a}
