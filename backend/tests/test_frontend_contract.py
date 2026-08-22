@@ -75,7 +75,10 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     assert "localStorage.setItem(TOKEN_KEY" not in session
     assert "localStorage.setItem(REFRESH_TOKEN_KEY" not in session
     assert "localStorage.setItem(USER_KEY" not in session
-    assert "localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY" in session
+    assert "localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY" not in session
+    assert "function readStorage(" in session
+    assert "storage.setItem(SESSION_CLEAR_SIGNAL_KEY" in session
+    assert "this.resetIdentity()" in session
 
     session_tokens = read("frontend/src/api/sessionTokens.ts")
     assert "setAccessSession" in session_tokens
