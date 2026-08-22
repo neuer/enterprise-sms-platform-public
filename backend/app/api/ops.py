@@ -456,9 +456,14 @@ async def trigger_job(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    actor = await _admin(facade, credentials)
+    claims = await _admin_claims(facade, credentials)
     try:
-        await service.trigger(job_name, actor=actor, ip=_ip(request))
+        await service.trigger(
+            job_name,
+            actor=claims.login_name,
+            ip=_ip(request),
+            principal=claims.principal,
+        )
     except JobNotFound:
         raise ApiError(404, "NOT_FOUND", "任务不存在或不可手动触发", None) from None
     return Response(status_code=202)
