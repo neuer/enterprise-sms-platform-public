@@ -96,6 +96,7 @@ class RawPulledPayload:
     raw_payload: bytes
     status_code: int
     content_encoding: str = "identity"
+    protocol_invalid: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,13 @@ class _RawHttpResponse:
     status_code: int
     duration_ms: int
     content_encoding: str
+    protocol_invalid: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _HeaderLimitResult:
+    exceeded: bool
+    protocol_invalid: bool = False
 
 
 def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -116,9 +124,7 @@ def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         normalized = raw_key.strip()
         if not normalized or raw_key in raw_keys or normalized in normalized_keys:
             # 不把不可信键名写入异常，避免厂商输入进入日志或错误边界。
-            raise VendorProtocolError(
-                "vendor response contains duplicate or ambiguous JSON keys"
-            )
+            raise VendorProtocolError("vendor response contains duplicate or ambiguous JSON keys")
         raw_keys.add(raw_key)
         normalized_keys.add(normalized)
         result[normalized] = item
@@ -165,10 +171,45 @@ def _decode_vendor_envelope(
     return envelope["data"]
 
 
-def _finish_body_sink(body_sink: Any, *, complete: bool, too_large: bool = False) -> None:
+def _wire_content_encoding(response: httpx.Response) -> str:
+    raw = response.headers.get("content-encoding", "").strip().casefold()
+    return "identity" if raw in {"", "identity"} else "unsupported"
+
+
+def _announce_body_sink(
+    body_sink: Any,
+    *,
+    http_status: int,
+    content_encoding: str,
+    protocol_invalid: bool = False,
+) -> None:
+    announce = getattr(body_sink, "announce", None)
+    if callable(announce):
+        announce(
+            http_status=http_status,
+            content_encoding=content_encoding,
+            protocol_invalid=protocol_invalid,
+        )
+
+
+def _finish_body_sink(
+    body_sink: Any,
+    *,
+    complete: bool,
+    too_large: bool = False,
+    http_status: int = 200,
+    content_encoding: str = "identity",
+    protocol_invalid: bool = False,
+) -> None:
     finish = getattr(body_sink, "finish", None)
     if callable(finish):
-        finish(complete=complete, too_large=too_large)
+        finish(
+            complete=complete,
+            too_large=too_large,
+            http_status=http_status,
+            content_encoding=content_encoding,
+            protocol_invalid=protocol_invalid,
+        )
 
 
 def decode_pulled_payload(pulled: RawPulledPayload, operation: str) -> Any:
@@ -260,6 +301,9 @@ class ZhihuiClient:
             **(payload or {}),
         }
         started = perf_counter()
+        content = b""
+        content_encoding = "identity"
+        protocol_invalid = False
         try:
             async with asyncio.timeout(self.total_timeout_s):
                 url = httpx.URL(self._base_url).join(path)
@@ -272,14 +316,26 @@ class ZhihuiClient:
                 response = await self._client.send(request, stream=True)
                 try:
                     preserve_consumed_response = path in CONSUME_ON_READ_PATHS
-                    response_too_large = self._check_response_header_limits(
+                    header_limits = self._check_response_header_limits(
                         response,
                         preserve_consumed_response=preserve_consumed_response,
                     )
+                    response_too_large = header_limits.exceeded
+                    protocol_invalid = header_limits.protocol_invalid
+                    content_encoding = _wire_content_encoding(response)
                     if preserve_consumed_response:
                         # 拉走即消费接口必须先保全 wire bytes，再拒绝自动解析。
                         # 明文只存在于有界内存；同步写入的 spill 只能是认证加密流。
                         # 独立恢复上限阻止异常上游无限耗尽 worker 内存。
+                        # 畸形 Content-Length 也必须先有界读取正文，再以
+                        # protocol-invalid 落事实，不得在 aiter_raw 前中止。
+                        if body_sink is not None:
+                            _announce_body_sink(
+                                body_sink,
+                                http_status=response.status_code,
+                                content_encoding=content_encoding,
+                                protocol_invalid=protocol_invalid,
+                            )
                         with BytesIO() as capture:
                             total = 0
                             async for chunk in response.aiter_raw():
@@ -289,7 +345,13 @@ class ZhihuiClient:
                                     capture.write(accepted)
                                     if body_sink is not None and body_sink.feed(accepted) is False:
                                         capture.seek(0)
-                                        _finish_body_sink(body_sink, complete=False)
+                                        _finish_body_sink(
+                                            body_sink,
+                                            complete=False,
+                                            http_status=response.status_code,
+                                            content_encoding=content_encoding,
+                                            protocol_invalid=protocol_invalid,
+                                        )
                                         raise VendorResponseTooLarge(
                                             "vendor response exceeded raw spill quota",
                                             raw_body=capture.read(),
@@ -298,7 +360,13 @@ class ZhihuiClient:
                                         )
                                 if len(chunk) > remaining:
                                     capture.seek(0)
-                                    _finish_body_sink(body_sink, complete=False)
+                                    _finish_body_sink(
+                                        body_sink,
+                                        complete=False,
+                                        http_status=response.status_code,
+                                        content_encoding=content_encoding,
+                                        protocol_invalid=protocol_invalid,
+                                    )
                                     raise VendorResponseTooLarge(
                                         "vendor response exceeds recovery capture limit",
                                         raw_body=capture.read(),
@@ -310,9 +378,22 @@ class ZhihuiClient:
                                     response_too_large = True
                             capture.seek(0)
                             content = capture.read()
-                        if response_too_large:
+                        if protocol_invalid:
                             _finish_body_sink(
-                                body_sink, complete=True, too_large=True
+                                body_sink,
+                                complete=True,
+                                too_large=response_too_large,
+                                http_status=response.status_code,
+                                content_encoding=content_encoding,
+                                protocol_invalid=True,
+                            )
+                        elif response_too_large:
+                            _finish_body_sink(
+                                body_sink,
+                                complete=True,
+                                too_large=True,
+                                http_status=response.status_code,
+                                content_encoding=content_encoding,
                             )
                             raise VendorResponseTooLarge(
                                 "vendor response exceeds automatic processing limit",
@@ -320,7 +401,13 @@ class ZhihuiClient:
                                 status_code=response.status_code,
                                 complete=True,
                             )
-                        _finish_body_sink(body_sink, complete=True)
+                        else:
+                            _finish_body_sink(
+                                body_sink,
+                                complete=True,
+                                http_status=response.status_code,
+                                content_encoding=content_encoding,
+                            )
                     else:
                         chunks: list[bytes] = []
                         total = 0
@@ -348,12 +435,8 @@ class ZhihuiClient:
             raw_body=content,
             status_code=response.status_code,
             duration_ms=round((perf_counter() - started) * 1000),
-            content_encoding=(
-                "identity"
-                if response.headers.get("content-encoding", "").strip().casefold()
-                in {"", "identity"}
-                else "unsupported"
-            ),
+            content_encoding=content_encoding,
+            protocol_invalid=protocol_invalid,
         )
 
     async def _post(
@@ -387,13 +470,11 @@ class ZhihuiClient:
         response: httpx.Response,
         *,
         preserve_consumed_response: bool = False,
-    ) -> bool:
+    ) -> _HeaderLimitResult:
         """返回是否超自动处理上限；拉走即消费接口仍须读取完整正文。"""
 
         header_bytes = sum(
-            len(name.encode("ascii", "ignore"))
-            + len(value.encode("latin-1", "ignore"))
-            + 4
+            len(name.encode("ascii", "ignore")) + len(value.encode("latin-1", "ignore")) + 4
             for name, value in response.headers.multi_items()
         )
         exceeded = header_bytes > self.max_response_header_bytes
@@ -402,22 +483,30 @@ class ZhihuiClient:
                 "vendor response headers exceed hard limit",
                 status_code=response.status_code,
             )
+        protocol_invalid = False
         declared = response.headers.get("content-length")
         if declared is not None:
             try:
                 declared_length = int(declared)
             except ValueError:
-                raise VendorProtocolError("vendor content-length is invalid") from None
-            if declared_length < 0:
-                raise VendorProtocolError("vendor content-length is invalid")
-            if declared_length > self.max_response_body_bytes:
+                if preserve_consumed_response:
+                    protocol_invalid = True
+                else:
+                    raise VendorProtocolError("vendor content-length is invalid") from None
+                declared_length = None
+            if declared_length is not None and declared_length < 0:
+                if preserve_consumed_response:
+                    protocol_invalid = True
+                else:
+                    raise VendorProtocolError("vendor content-length is invalid")
+            elif declared_length is not None and declared_length > self.max_response_body_bytes:
                 exceeded = True
                 if not preserve_consumed_response:
                     raise VendorResponseTooLarge(
                         "vendor response body exceeds hard limit",
                         status_code=response.status_code,
                     )
-        return exceeded
+        return _HeaderLimitResult(exceeded, protocol_invalid)
 
     async def send(
         self,
@@ -477,6 +566,7 @@ class ZhihuiClient:
             response.raw_body,
             response.status_code,
             response.content_encoding,
+            protocol_invalid=response.protocol_invalid,
         )
 
     async def get_reply(self) -> PulledRecords:
@@ -496,6 +586,7 @@ class ZhihuiClient:
             response.raw_body,
             response.status_code,
             response.content_encoding,
+            protocol_invalid=response.protocol_invalid,
         )
 
     async def get_balance(self) -> int:
