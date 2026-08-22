@@ -842,6 +842,16 @@
 - 影响：`usage_ledger.py`、账本单测/PostgreSQL 回归、usage-ledger 恢复手册。
   未上线本修复前，不建议做会产生不重叠 HMAC Keyring 的生产轮换。
 
+## D078 单一 reconcile 任务按恢复域隔离故障
+
+- 决策：本期不拆五个独立 beat 任务。`tracked_job("reconcile")` 仍是唯一对账心跳；
+  一轮内逐域捕获异常、写 `reconcile_domain_failed` 告警（只含 domain 与 error_type），
+  然后继续后续域。全部域跑完后若有失败，抛出 `ReconcilePartialFailure`，cause 指向
+  第一个失败。不得静默吞错，告警与聚合异常不得回传异常原文。
+- 原因：拆任务会改 beat 调度表与心跳巡检面；当前缺陷是前置域 fail-fast 饿死后置自愈。
+  同轮隔离即可切断饥饿，同时保持既有租约、幂等和单一 job 名字。
+- 影响：`tasks/reconcile.py` 与 reconcile 任务测试。独立域 backlog/RTO 仪表盘留后续。
+
 ## D072 号码精确查询改为 POST 请求体
 
 - 决策：本决策取代 D010 中“保留 GET `?phone=`”的接口契约。`POST /api/v1/web/messages`、
