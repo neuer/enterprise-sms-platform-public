@@ -31,10 +31,23 @@ class FakeGateway:
 
     async def get_reply_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
         if body_sink is not None:
-            body_sink.feed(self.result.raw_payload)
+            announce = getattr(body_sink, "announce", None)
+            if callable(announce):
+                announce(
+                    http_status=self.result.status_code,
+                    content_encoding=self.result.content_encoding,
+                    protocol_invalid=self.result.protocol_invalid,
+                )
+            if self.result.raw_payload:
+                body_sink.feed(self.result.raw_payload)
             finish = getattr(body_sink, "finish", None)
             if callable(finish):
-                finish(complete=True)
+                finish(
+                    complete=True,
+                    http_status=self.result.status_code,
+                    content_encoding=self.result.content_encoding,
+                    protocol_invalid=self.result.protocol_invalid,
+                )
         return self.result
 
 
