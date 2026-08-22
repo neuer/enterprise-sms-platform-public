@@ -8,12 +8,17 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import URL, text
-from sqlalchemy.ext.asyncio import create_async_engine
+BACKEND = Path(__file__).resolve().parents[1]
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
-from app.services.raw_capture_legacy import (
+from sqlalchemy import URL, text  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
+
+from app.services.raw_capture_legacy import (  # noqa: E402
     RawInventoryInput,
     build_inventory,
     inventory_leak_reasons,
