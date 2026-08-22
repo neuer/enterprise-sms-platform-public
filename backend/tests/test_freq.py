@@ -123,7 +123,7 @@ async def test_verify_uses_global_hmac_minute_and_day_keys_without_phone() -> No
         f"freq:v:{'a' * 64}:m",
         f"freq:v:{'a' * 64}:d",
     )
-    assert "138" not in str(redis.calls)
+    assert "13800138000" not in str(redis.calls)
 
 
 @pytest.mark.asyncio

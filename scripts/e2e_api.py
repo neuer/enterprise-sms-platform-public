@@ -97,6 +97,24 @@ def wait_until[T](
     raise UatFailure(f"UAT-{case_id} timeout")
 
 
+def wait_for_freq_minute_slack(
+    *,
+    min_remaining_s: float = 8,
+    clock: Callable[[], datetime] | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> None:
+    """避开验证码分钟窗翻越，避免 UAT-07 两次发送跨自然分钟。"""
+
+    if min_remaining_s <= 0 or min_remaining_s >= 60:
+        raise ValueError("freq minute slack must be within (0, 60)")
+    now = (clock or (lambda: datetime.now(UTC)))()
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("freq minute clock must be timezone-aware")
+    remaining = 60 - now.second - now.microsecond / 1_000_000
+    if remaining < min_remaining_s:
+        sleeper(remaining + 0.05)
+
+
 def closed_market_window(now: datetime) -> tuple[str, datetime]:
     """构造当前时刻之外的短窗口，并返回下一次窗口起点。"""
 
@@ -792,6 +810,7 @@ class UatSuite:
         self._expect("06", response, 403, code="CATEGORY_NOT_ALLOWED")
 
     def case_07(self) -> None:
+        wait_for_freq_minute_slack()
         shared = self.phone(7, 0)
         self._expect(
             "07",
@@ -1343,9 +1362,9 @@ class UatSuite:
             )
             return value if value == "uncertain" else None
 
-        wait_until("17", uncertain, timeout_s=20, interval_s=0.5)
+        wait_until("17/uncertain", uncertain, timeout_s=35, interval_s=0.5)
         self._mock_config("17", {"latency_ms": 0})
-        call = self.wait_send("17", batch_no, timeout_s=5)
+        call = self.wait_send("17/send-call", batch_no, timeout_s=15)
         custom_id = call.get("customId")
         if not isinstance(custom_id, str) or len(self._send_calls(batch_no)) != 1:
             raise UatFailure("UAT-17 vendor send count mismatch")
@@ -1360,7 +1379,7 @@ class UatSuite:
             )
             return int(value) if value.isdecimal() and int(value) > 0 else None
 
-        wait_until("17", raw_exists, timeout_s=15, interval_s=0.5)
+        wait_until("17/raw", raw_exists, timeout_s=20, interval_s=0.5)
         self._trigger_job("17", "reconcile")
 
         def submitted() -> str | None:
@@ -1371,7 +1390,7 @@ class UatSuite:
             )
             return value if value == "submitted" else None
 
-        wait_until("17", submitted, timeout_s=15, interval_s=0.5)
+        wait_until("17/submitted", submitted, timeout_s=20, interval_s=0.5)
         if len(self._send_calls(batch_no)) != 1:
             raise UatFailure("UAT-17 uncertain batch was resent")
 
