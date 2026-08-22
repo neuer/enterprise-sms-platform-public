@@ -88,7 +88,7 @@ class RawLogModel(BaseModel):
     processed: bool
     error: str | None
     fetched_at: datetime
-    capture_state: Literal["complete", "complete_too_large", "truncated"]
+    capture_state: Literal["complete", "complete_too_large", "truncated", "unknown_legacy"]
 
 
 class RawLogPageModel(PageModel):

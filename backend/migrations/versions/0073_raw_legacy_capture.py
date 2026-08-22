@@ -1,23 +1,28 @@
-"""raw_vendor_log.capture_state：完整 / 超限完整 / 截断 / 未分类历史。"""
+"""修复已执行旧 0072 时被默认写成 complete 的历史 raw。"""
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0072_raw_capture_state"
-down_revision = "0071_reply_event_is_optout"
+revision = "0073_raw_legacy_capture"
+down_revision = "0072_raw_capture_state"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    # schema.sql 基线建库已含该列且新行 DEFAULT complete；存量升级先用
-    # unknown_legacy 占位以暂停自动重放，再按密文长度与错误类型分类。
-    # 不得把无法证明完整性的历史行默认写成 complete。
+    # 旧 0072 的 CHECK 只有三态；已升级库必须先放宽再按证据重分类。
+    # 只改仍为 complete 且带超限/截断/不可判定证据的行，普通完整行保持 complete。
+    op.execute(
+        "ALTER TABLE raw_vendor_log DROP CONSTRAINT IF EXISTS ck_raw_vendor_capture_state"
+    )
     op.execute(
         """
         ALTER TABLE raw_vendor_log
-          ADD COLUMN IF NOT EXISTS capture_state VARCHAR(24) NOT NULL DEFAULT 'unknown_legacy'
+          ADD CONSTRAINT ck_raw_vendor_capture_state
+          CHECK (capture_state IN (
+            'complete','complete_too_large','truncated','unknown_legacy'
+          ))
         """
     )
     op.execute(
@@ -84,7 +89,28 @@ def upgrade() -> None:
             THEN 'unknown_legacy'
           ELSE 'complete'
         END
-        WHERE capture_state='unknown_legacy'
+        WHERE capture_state='complete'
+          AND (
+            error ILIKE '%truncated vendor response%'
+            OR error ILIKE '%beyond recovery limit%'
+            OR error ILIKE '%exceeds recovery capture limit%'
+            OR error ILIKE '%exceeded raw spill quota%'
+            OR error ILIKE '%exceeds hard limit%'
+            OR error ILIKE '%body exceeds hard limit%'
+            OR error ILIKE '%oversized payload persisted%'
+            OR error ILIKE '%exceeds automatic processing limit%'
+            OR error ILIKE '%too large to parse%'
+            OR octet_length(payload_enc) < CASE
+              WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
+              ELSE 28
+            END
+            OR (
+              octet_length(payload_enc) - CASE
+                WHEN substring(payload_enc from 1 for 4)=convert_to('SME2','UTF8') THEN 32
+                ELSE 28
+              END
+            ) >= 4194304
+          )
         """
     )
     op.execute(
@@ -93,28 +119,24 @@ def upgrade() -> None:
           ALTER COLUMN capture_state SET DEFAULT 'complete'
         """
     )
-    op.execute(
-        """
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname='ck_raw_vendor_capture_state'
-              AND conrelid='raw_vendor_log'::regclass
-          ) THEN
-            ALTER TABLE raw_vendor_log
-              ADD CONSTRAINT ck_raw_vendor_capture_state
-              CHECK (capture_state IN (
-                'complete','complete_too_large','truncated','unknown_legacy'
-              ));
-          END IF;
-        END $$
-        """
-    )
 
 
 def downgrade() -> None:
     op.execute(
+        """
+        UPDATE raw_vendor_log SET capture_state='truncated'
+        WHERE capture_state='unknown_legacy'
+        """
+    )
+    op.execute(
         "ALTER TABLE raw_vendor_log DROP CONSTRAINT IF EXISTS ck_raw_vendor_capture_state"
     )
-    op.execute("ALTER TABLE raw_vendor_log DROP COLUMN IF EXISTS capture_state")
+    op.execute(
+        """
+        ALTER TABLE raw_vendor_log
+          ADD CONSTRAINT ck_raw_vendor_capture_state
+          CHECK (capture_state IN (
+            'complete','complete_too_large','truncated'
+          ))
+        """
+    )
