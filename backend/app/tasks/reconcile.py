@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
+
 from app.core.jobtrack import tracked_job
 from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
@@ -32,34 +35,90 @@ from app.services.vendor_test_uat import VendorTestUatReconciler
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
 
+LOGGER = logging.getLogger(__name__)
+
+
+class ReconcilePartialFailure(RuntimeError):
+    """一轮对账中至少一个恢复域失败；其余域已经继续执行。"""
+
+
+async def _run_domain(
+    name: str,
+    operation: Callable[[], Awaitable[int]],
+    settings: Settings,
+    failures: list[BaseException],
+) -> int:
+    """单个恢复域失败时告警并继续，不得静默吞错。"""
+
+    try:
+        return await operation()
+    except Exception as error:
+        LOGGER.error(
+            "reconcile domain failed",
+            extra={"domain": name, "error_type": type(error).__name__},
+        )
+        try:
+            await SqlAlertService(settings).emit(
+                alert_type="reconcile_domain_failed",
+                level="crit",
+                title=f"恢复域 {name} 失败，本轮其余域已继续",
+                detail={"domain": name, "error_type": type(error).__name__},
+                dedup_key=f"reconcile_domain_failed:{name}",
+            )
+        except Exception as alert_error:
+            LOGGER.error(
+                "reconcile domain alert unavailable",
+                extra={"domain": name, "error_type": type(alert_error).__name__},
+            )
+        failures.append(error)
+        return 0
+
 
 async def _reconcile() -> int:
     settings = get_settings()
     policy = await SqlRuntimePolicyLoader(settings).load()
-    uncertain = await UncertainReconciler.from_policy(
-        SqlUncertainRepository(settings),
-        CryptoService.from_settings(settings),
-        policy,
-    ).run_once()
-    recovered = await RecoveryReconciler(
-        SqlRecoveryRepository(settings),
-        CeleryQueuePublisher(),
-    ).run_once()
     operation_repository = SqlVendorTestOperationRepository(settings)
-    control_operations = await VendorTestOperationService(
-        operation_repository,
-        VendorControlClient(),
-        finalizers={
-            "reset_configuration": VendorTestResetFinalizer(
-                SqlVendorTestRecipientRepository(settings)
-            ),
-        },
-    ).reconcile_once()
-    uat_operations = await VendorTestUatReconciler(
-        operation_repository,
-    ).reconcile_once()
-    replayed = await _replay_stale_raw(settings)
-    return uncertain + recovered + control_operations + uat_operations + replayed
+    failures: list[BaseException] = []
+
+    async def uncertain() -> int:
+        return await UncertainReconciler.from_policy(
+            SqlUncertainRepository(settings),
+            CryptoService.from_settings(settings),
+            policy,
+        ).run_once()
+
+    async def recovery() -> int:
+        return await RecoveryReconciler(
+            SqlRecoveryRepository(settings),
+            CeleryQueuePublisher(),
+        ).run_once()
+
+    async def vendor_control() -> int:
+        return await VendorTestOperationService(
+            operation_repository,
+            VendorControlClient(),
+            finalizers={
+                "reset_configuration": VendorTestResetFinalizer(
+                    SqlVendorTestRecipientRepository(settings)
+                ),
+            },
+        ).reconcile_once()
+
+    async def vendor_uat() -> int:
+        return await VendorTestUatReconciler(operation_repository).reconcile_once()
+
+    total = 0
+    for name, operation in (
+        ("uncertain", uncertain),
+        ("delivery-recovery", recovery),
+        ("vendor-control", vendor_control),
+        ("vendor-uat", vendor_uat),
+        ("raw-replay", lambda: _replay_stale_raw(settings)),
+    ):
+        total += await _run_domain(name, operation, settings, failures)
+    if failures:
+        raise ReconcilePartialFailure(f"reconcile domains failed: {len(failures)}") from failures[0]
+    return total
 
 
 async def _replay_stale_raw(settings: Settings) -> int:

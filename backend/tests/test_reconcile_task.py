@@ -140,12 +140,155 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
         async def reconcile_once(self) -> int:
             raise RuntimeError("private-finalizer-detail")
 
+    uat_ran = {"value": False}
+
+    class ContinuingUatRecovery:
+        def __init__(self, repository: object) -> None:
+            pass
+
+        async def reconcile_once(self) -> int:
+            uat_ran["value"] = True
+            return 4
+
+    monkeypatch.setattr(task_module, "get_settings", lambda: "settings")
+    monkeypatch.setattr(
+        task_module.CryptoService,
+        "from_settings",
+        lambda settings: "crypto",
+    )
+    monkeypatch.setattr(task_module, "SqlRuntimePolicyLoader", PolicyLoader)
+    monkeypatch.setattr(task_module, "UncertainReconciler", Uncertain)
+    monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
+    monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
+    monkeypatch.setattr(
+        task_module, "VendorTestUatReconciler", ContinuingUatRecovery, raising=False
+    )
+
+    alerts: list[dict[str, object]] = []
+
+    class Alerts:
+        def __init__(self, settings: object) -> None:
+            assert settings == "settings"
+
+        async def emit(self, **kwargs: object) -> None:
+            alerts.append(kwargs)
+
+    monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
+
+    async def replay_none(_settings: object) -> int:
+        return 0
+
+    monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
+
+    with pytest.raises(
+        task_module.ReconcilePartialFailure,
+        match="reconcile domains failed: 1",
+    ) as captured:
+        await task_module._reconcile()
+
+    assert uat_ran["value"] is True
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert "private-finalizer-detail" in str(captured.value.__cause__)
+    assert "private-finalizer-detail" not in str(captured.value)
+    assert alerts[0]["alert_type"] == "reconcile_domain_failed"
+    assert alerts[0]["detail"] == {
+        "domain": "vendor-control",
+        "error_type": "RuntimeError",
+    }
+    assert alerts[0]["dedup_key"] == "reconcile_domain_failed:vendor-control"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_domain",
+    (
+        "uncertain",
+        "delivery-recovery",
+        "vendor-control",
+        "vendor-uat",
+        "raw-replay",
+    ),
+)
+async def test_reconcile_task_isolates_each_domain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failed_domain: str,
+) -> None:
+    from app.tasks import reconcile as task_module
+
+    ran: list[str] = []
+    alerts: list[dict[str, object]] = []
+
+    class PolicyLoader:
+        def __init__(self, settings: object) -> None:
+            pass
+
+        async def load(self) -> object:
+            return object()
+
+    class Uncertain:
+        @classmethod
+        def from_policy(
+            cls,
+            repository: object,
+            crypto: object,
+            policy: object,
+        ) -> Uncertain:
+            return cls()
+
+        async def run_once(self) -> int:
+            ran.append("uncertain")
+            if failed_domain == "uncertain":
+                raise RuntimeError("uncertain-domain-fault")
+            return 1
+
+    class Recovery:
+        def __init__(self, repository: object, publisher: object) -> None:
+            pass
+
+        async def run_once(self) -> int:
+            ran.append("delivery-recovery")
+            if failed_domain == "delivery-recovery":
+                raise RuntimeError("recovery-domain-fault")
+            return 2
+
+    class Operations:
+        def __init__(
+            self,
+            repository: object,
+            client: object,
+            *,
+            finalizers: dict[str, object],
+        ) -> None:
+            pass
+
+        async def reconcile_once(self) -> int:
+            ran.append("vendor-control")
+            if failed_domain == "vendor-control":
+                raise RuntimeError("control-domain-fault")
+            return 3
+
     class UatRecovery:
         def __init__(self, repository: object) -> None:
             pass
 
         async def reconcile_once(self) -> int:
-            raise AssertionError("control failure must stop before UAT recovery")
+            ran.append("vendor-uat")
+            if failed_domain == "vendor-uat":
+                raise RuntimeError("uat-domain-fault")
+            return 4
+
+    class Alerts:
+        def __init__(self, settings: object) -> None:
+            pass
+
+        async def emit(self, **kwargs: object) -> None:
+            alerts.append(kwargs)
+
+    async def replay(_settings: object) -> int:
+        ran.append("raw-replay")
+        if failed_domain == "raw-replay":
+            raise RuntimeError("raw-replay-domain-fault")
+        return 5
 
     monkeypatch.setattr(task_module, "get_settings", lambda: "settings")
     monkeypatch.setattr(
@@ -158,9 +301,23 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
     monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
     monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
     monkeypatch.setattr(task_module, "VendorTestUatReconciler", UatRecovery, raising=False)
+    monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
+    monkeypatch.setattr(task_module, "_replay_stale_raw", replay)
 
-    with pytest.raises(RuntimeError, match="private-finalizer-detail"):
+    with pytest.raises(task_module.ReconcilePartialFailure, match="reconcile domains failed: 1"):
         await task_module._reconcile()
+
+    assert ran == [
+        "uncertain",
+        "delivery-recovery",
+        "vendor-control",
+        "vendor-uat",
+        "raw-replay",
+    ]
+    assert [alert["detail"] for alert in alerts] == [
+        {"domain": failed_domain, "error_type": "RuntimeError"}
+    ]
+    assert "fault" not in str(alerts)
 
 
 @pytest.mark.asyncio
