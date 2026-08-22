@@ -21,7 +21,7 @@ class FakeResult:
     def scalar_one_or_none(self) -> object:
         return self.scalar
 
-    def mappings(self) -> "FakeResult":
+    def mappings(self) -> FakeResult:
         return self
 
     def one(self) -> dict[str, object]:

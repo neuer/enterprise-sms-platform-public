@@ -9,8 +9,8 @@ import pytest
 
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
 from app.core.auth.jwt import (
-    REFRESH_GRACE_SECONDS,
     _ROTATE_REFRESH_LUA,
+    REFRESH_GRACE_SECONDS,
     JwtClaims,
     JwtService,
 )

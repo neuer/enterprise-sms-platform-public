@@ -44,7 +44,7 @@ def test_duplicate_or_normalized_collision_is_rejected(payload: bytes) -> None:
 def test_exception_does_not_echo_untrusted_key() -> None:
     key = "secretName=do-not-log"
     payload = (
-        '{"code":0,"msg":null,"data":[{"%s":1," %s ":2}]}' % (key, key)
+        f'{{"code":0,"msg":null,"data":[{{"{key}":1," {key} ":2}}]}}'
     ).encode()
     with pytest.raises(VendorProtocolError) as captured:
         decode(payload)
