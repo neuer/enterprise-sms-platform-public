@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import inspect
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
+from app.core.correlation import correlation_scope
 from app.core.jobtrack import JobSpec
 from app.services.ops import (
     AlertQuery,
@@ -119,6 +123,79 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "interval '15 minutes'" in normalized_sql
     assert "RETURNING" in normalized_sql
     assert params == {"raw_id": 9}
+
+
+@pytest.mark.asyncio
+async def test_job_trigger_audit_binds_live_principal_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手动触发必须显式绑定人类主体；禁止再写会触发 500 的 legacy INSERT。"""
+
+    bound: list[dict[str, object]] = []
+
+    async def fake_bind(connection: object, **kwargs: object) -> None:
+        bound.append({"connection": connection, **kwargs})
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_audit_subject",
+        fake_bind,
+    )
+    repo, connection = repository([FakeResult()])
+    principal = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with correlation_scope():
+        await repo.audit_job_trigger(
+            "poll_report",
+            actor="admin01",
+            ip="10.0.0.8",
+            principal=principal,
+        )
+
+    assert bound == [
+        {
+            "connection": connection,
+            "subject_kind": "human",
+            "actor_name": "admin01",
+            "account_id": 1,
+            "identity_id": 10,
+        }
+    ]
+    sql, params = connection.calls[0]
+    assert "INSERT INTO audit_log" in sql
+    assert "actor_subject_kind" in sql
+    assert "actor_account_id" in sql
+    assert "jsonb_build_object" not in sql
+    assert params["action"] == "job_trigger"
+    assert params["object_type"] == "job"
+    assert params["object_id"] == "poll_report"
+    assert params["account_id"] == 1
+    assert params["identity_id"] == 10
+    assert params["actor"] == "admin01"
+    assert params["role"] == "admin"
+    assert json.loads(str(params["after"])) == {"status": "requested"}
+
+
+@pytest.mark.asyncio
+async def test_job_trigger_audit_fails_closed_when_actor_does_not_match_principal() -> None:
+    repo, connection = repository([])
+    human = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with correlation_scope(), pytest.raises(RuntimeError, match="audit principal"):
+        await repo.audit_job_trigger(
+            "poll_report",
+            actor="other-admin",
+            ip="10.0.0.8",
+            principal=human,
+        )
+
+    assert connection.calls == []
+
+
+def test_job_trigger_audit_source_does_not_use_legacy_unattributed_insert() -> None:
+    source = inspect.getsource(SqlOpsRepository.audit_job_trigger)
+    assert "bind_connection_audit_subject" in source
+    assert "insert_audit" in source
+    assert "jsonb_build_object('status','requested')" not in source
 
 
 @pytest.mark.asyncio
