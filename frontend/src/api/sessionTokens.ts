@@ -10,6 +10,8 @@ const REFRESH_TAB_ID_PATTERN = /^[0-9a-f]{32}$/
 let accessToken: string | null = null
 let sessionUser: PlatformUser | null = null
 let refreshTabId: string | null = null
+let legacyMigrationAttempted = false
+let legacyMigrationClosed = false
 
 function newRefreshTabId(): string {
   const bytes = new Uint8Array(16)
@@ -78,12 +80,20 @@ function storageRemove(key: string): void {
   }
 }
 
-function migrateLegacyStorage(): void {
+function closeLegacyAccessMigration(): void {
+  legacyMigrationClosed = true
+  legacyMigrationAttempted = true
+}
+
+function migrateLegacyStorageOnce(): void {
+  if (legacyMigrationClosed || legacyMigrationAttempted) return
+  // 先关闭本 Document 扫描闸门，再碰 Storage，避免删除失败后被再次导入。
+  legacyMigrationAttempted = true
   const legacyToken = storageGet(TOKEN_KEY)
   const rawUser = storageGet(USER_KEY)
-  // 先销毁持久化凭据，再解析；任何异常都不能延长 Bearer 暴露窗口。
   storageRemove(TOKEN_KEY)
   storageRemove(USER_KEY)
+  if (legacyMigrationClosed) return
   if (!accessToken && legacyToken) accessToken = legacyToken
   if (!sessionUser && rawUser) {
     try {
@@ -94,18 +104,25 @@ function migrateLegacyStorage(): void {
   }
 }
 
+/** 当前 Document 只扫描一次历史 sms_token/sms_user；clear/logout 后永久关闭。 */
+export function bootstrapLegacyAccessSession(): void {
+  migrateLegacyStorageOnce()
+}
 
 export function getAccessToken(): string | null {
-  migrateLegacyStorage()
+  // 至多一次 Document 级迁移；之后只读模块内存，clear 后不得再导入残留 Bearer。
+  bootstrapLegacyAccessSession()
   return accessToken
 }
 
 export function getSessionUser(): PlatformUser | null {
-  migrateLegacyStorage()
+  bootstrapLegacyAccessSession()
   return sessionUser
 }
 
 export function setAccessSession(token: string, user: PlatformUser): void {
+  // 新主体只写入模块内存；剩余 Storage 不得再覆盖当前会话。
+  legacyMigrationAttempted = true
   accessToken = token
   sessionUser = user
 }
@@ -113,6 +130,16 @@ export function setAccessSession(token: string, user: PlatformUser): void {
 export function clearAccessSession(): void {
   accessToken = null
   sessionUser = null
+  closeLegacyAccessMigration()
   storageRemove(TOKEN_KEY)
   storageRemove(USER_KEY)
+}
+
+/** 测试隔离：模拟新 Document，允许再次一次性迁移。生产路径不得调用。 */
+export function resetAccessSessionModule(): void {
+  accessToken = null
+  sessionUser = null
+  refreshTabId = null
+  legacyMigrationAttempted = false
+  legacyMigrationClosed = false
 }
