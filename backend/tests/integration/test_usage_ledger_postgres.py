@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.services.freq import FrequencyLimits
 from app.services.quota import QuotaExceeded
 from app.services.usage_ledger import (
+    _ACTIVE_RESERVATION_STATES,
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
     FrequencyDecisionItem,
@@ -1385,6 +1386,760 @@ async def test_frequency_subject_merge_combines_live_same_window_projections() -
             )
         assert int(final_subjects or 0) == 1
         assert int(final_minute or 0) == 3
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+async def _insert_reserved_usage(
+    connection: Any,
+    *,
+    reservation_id: UUID,
+    app_id: int,
+    category: str,
+    usage_date: date,
+) -> None:
+    await connection.execute(
+        text(
+            """
+            INSERT INTO usage_reservation(
+              id,request_key,app_id,dept,category,usage_date,state
+            ) VALUES(
+              :id,:request_key,:app_id,'账本测试部',:category,:usage_date,'reserved'
+            )
+            """
+        ),
+        {
+            "id": reservation_id,
+            "request_key": f"acceptance:{reservation_id}",
+            "app_id": app_id,
+            "category": category,
+            "usage_date": usage_date,
+        },
+    )
+
+
+async def _insert_counted_frequency_entry(
+    connection: Any,
+    *,
+    reservation_id: UUID,
+    subject_id: UUID,
+    app_id: int | None,
+    category: str,
+    window_kind: str,
+    window_key: str,
+    usage_date: date,
+    projection_key: str,
+    expires_at: datetime,
+) -> None:
+    await connection.execute(
+        text(
+            """
+            INSERT INTO usage_frequency_entry(
+              reservation_id,subject_id,app_id,category,
+              window_kind,window_key,usage_date,projection_key,
+              counted,expires_at
+            ) VALUES(
+              :reservation_id,:subject_id,:app_id,:category,
+              :window_kind,:window_key,:usage_date,:projection_key,
+              TRUE,:expires_at
+            )
+            """
+        ),
+        {
+            "reservation_id": reservation_id,
+            "subject_id": subject_id,
+            "app_id": app_id,
+            "category": category,
+            "window_kind": window_kind,
+            "window_key": window_key,
+            "usage_date": usage_date,
+            "projection_key": projection_key,
+            "expires_at": expires_at,
+        },
+    )
+
+
+async def _assert_active_entries_have_projections(
+    connection: Any,
+    reservation_ids: Sequence[UUID],
+) -> None:
+    missing = await connection.scalar(
+        text(
+            """
+            SELECT count(*) FROM usage_frequency_entry e
+            JOIN usage_reservation r ON r.id=e.reservation_id
+            WHERE e.reservation_id=ANY(CAST(:ids AS uuid[]))
+              AND e.counted
+              AND r.state=ANY(CAST(:states AS text[]))
+              AND NOT EXISTS (
+                SELECT 1 FROM usage_projection p
+                WHERE p.dimension_key=e.projection_key
+              )
+            """
+        ),
+        {
+            "ids": list(reservation_ids),
+            "states": list(_ACTIVE_RESERVATION_STATES),
+        },
+    )
+    assert int(missing or 0) == 0
+
+
+async def _assert_source_deletion_follows_entry_refs(
+    connection: Any,
+    *,
+    source_keys: Sequence[str],
+    reservation_ids: Sequence[UUID],
+) -> None:
+    for source_key in source_keys:
+        exists = bool(
+            await connection.scalar(
+                text("SELECT EXISTS(SELECT 1 FROM usage_projection WHERE dimension_key=:key)"),
+                {"key": source_key},
+            )
+        )
+        referenced = bool(
+            await connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS(
+                      SELECT 1 FROM usage_frequency_entry e
+                      JOIN usage_reservation r ON r.id=e.reservation_id
+                      WHERE e.projection_key=:key
+                        AND e.counted
+                        AND e.reservation_id=ANY(CAST(:ids AS uuid[]))
+                        AND r.state=ANY(CAST(:states AS text[]))
+                    )
+                    """
+                ),
+                {
+                    "key": source_key,
+                    "ids": list(reservation_ids),
+                    "states": list(_ACTIVE_RESERVATION_STATES),
+                },
+            )
+        )
+        assert referenced is False
+        assert exists is False
+
+
+@pytest.mark.asyncio
+async def test_expired_source_projection_merge_completes_terminal_release() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    _date_key, usage_date, _next_day = shanghai_day(now)
+    previous_date = usage_date - timedelta(days=1)
+    previous_date_key = previous_date.strftime("%Y%m%d")
+    expired_minute = str(int((now - timedelta(minutes=2)).timestamp() // 60))
+    expired_at = now - timedelta(minutes=1)
+    digest_a = _unique_digest("ea")
+    digest_b = _unique_digest("eb")
+    subject_a = uuid4()
+    subject_b = uuid4()
+    verify_minute_id = uuid4()
+    verify_day_id = uuid4()
+    market_id = uuid4()
+    live_id = uuid4()
+    reservation_ids = [verify_minute_id, verify_day_id, market_id, live_id]
+    batch_ids: list[int] = []
+    app_id: int | None = None
+    item = FrequencyDecisionItem(
+        phone_hmac=digest_b,
+        hmac_aliases={1: digest_a, 2: digest_b},
+    )
+    source_keys: list[str] = []
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM outbox_event
+                    WHERE aggregate_id=ANY(CAST(:ids AS text[]))
+                    """
+                ),
+                {"ids": [str(value) for value in reservation_ids]},
+            )
+            if batch_ids:
+                await connection.execute(
+                    text("DELETE FROM sms_batch WHERE id=ANY(CAST(:ids AS bigint[]))"),
+                    {"ids": batch_ids},
+                )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_reservation
+                    WHERE id=ANY(CAST(:ids AS uuid[]))
+                    """
+                ),
+                {"ids": reservation_ids},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_frequency_subject
+                    WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_projection
+                    WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                    """
+                ),
+                {
+                    "patterns": [
+                        f"freq:v:{digest_a}:%",
+                        f"freq:v:{digest_b}:%",
+                        f"freq:m:%:{digest_a}:d",
+                        f"freq:m:%:{digest_b}:d",
+                    ]
+                },
+            )
+            if app_id is not None:
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+
+    try:
+        async with engine.begin() as connection:
+            app_id = await _create_test_app(connection, f"freq-exp-{uuid4().hex[:8]}")
+            source_keys.extend(
+                (
+                    f"freq:v:{digest_b}:m",
+                    f"freq:v:{digest_b}:d",
+                    f"freq:m:{app_id}:{digest_b}:d",
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_subject(id,projection_hmac)
+                    VALUES(:id_a,:hmac_a),(:id_b,:hmac_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "hmac_a": digest_a,
+                    "id_b": subject_b,
+                    "hmac_b": digest_b,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_alias(
+                      subject_id,key_version,phone_hmac
+                    ) VALUES
+                      (:id_a,1,:digest_a),
+                      (:id_b,2,:digest_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "id_b": subject_b,
+                    "digest_a": digest_a,
+                    "digest_b": digest_b,
+                },
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:m",
+                usage_date=previous_date,
+                window_key=expired_minute,
+                value=1,
+                expires_at=expired_at,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:d",
+                usage_date=previous_date,
+                window_key=previous_date_key,
+                value=1,
+                expires_at=expired_at,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{app_id}:{digest_b}:d",
+                usage_date=previous_date,
+                window_key=previous_date_key,
+                value=1,
+                expires_at=expired_at,
+            )
+            for reservation_id, category in (
+                (verify_minute_id, "verify"),
+                (verify_day_id, "verify"),
+                (market_id, "market"),
+            ):
+                await _insert_reserved_usage(
+                    connection,
+                    reservation_id=reservation_id,
+                    app_id=app_id,
+                    category=category,
+                    usage_date=usage_date,
+                )
+            await _insert_counted_frequency_entry(
+                connection,
+                reservation_id=verify_minute_id,
+                subject_id=subject_b,
+                app_id=None,
+                category="verify",
+                window_kind="minute",
+                window_key=expired_minute,
+                usage_date=previous_date,
+                projection_key=f"freq:v:{digest_b}:m",
+                expires_at=expired_at,
+            )
+            await _insert_counted_frequency_entry(
+                connection,
+                reservation_id=verify_day_id,
+                subject_id=subject_b,
+                app_id=None,
+                category="verify",
+                window_kind="day",
+                window_key=previous_date_key,
+                usage_date=previous_date,
+                projection_key=f"freq:v:{digest_b}:d",
+                expires_at=expired_at,
+            )
+            await _insert_counted_frequency_entry(
+                connection,
+                reservation_id=market_id,
+                subject_id=subject_b,
+                app_id=app_id,
+                category="market",
+                window_kind="day",
+                window_key=previous_date_key,
+                usage_date=previous_date,
+                projection_key=f"freq:m:{app_id}:{digest_b}:d",
+                expires_at=expired_at,
+            )
+
+        async with engine.begin() as connection:
+            subject_id, hmac, _rows = await _ensure_frequency_subject(connection, item)
+            assert subject_id == subject_a
+            assert hmac == digest_a
+            await _assert_active_entries_have_projections(
+                connection,
+                [verify_minute_id, verify_day_id, market_id],
+            )
+            await _assert_source_deletion_follows_entry_refs(
+                connection,
+                source_keys=source_keys,
+                reservation_ids=[verify_minute_id, verify_day_id, market_id],
+            )
+            projections = {
+                str(row["dimension_key"]): (
+                    int(row["value"]),
+                    str(row["window_key"]),
+                    row["expires_at"] <= now,
+                )
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT dimension_key,value,window_key,expires_at
+                            FROM usage_projection
+                            WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                            """
+                        ),
+                        {
+                            "patterns": [
+                                f"freq:v:{digest_a}:%",
+                                f"freq:v:{digest_b}:%",
+                                f"freq:m:%:{digest_a}:d",
+                                f"freq:m:%:{digest_b}:d",
+                            ]
+                        },
+                    )
+                ).mappings()
+            }
+            entry_keys = {
+                str(row["reservation_id"]): str(row["projection_key"])
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT reservation_id,projection_key
+                            FROM usage_frequency_entry
+                            WHERE reservation_id=ANY(CAST(:ids AS uuid[]))
+                            """
+                        ),
+                        {"ids": [verify_minute_id, verify_day_id, market_id]},
+                    )
+                ).mappings()
+            }
+        assert projections[f"freq:v:{digest_a}:m"] == (1, expired_minute, True)
+        assert projections[f"freq:v:{digest_a}:d"] == (1, previous_date_key, True)
+        assert projections[f"freq:m:{app_id}:{digest_a}:d"] == (1, previous_date_key, True)
+        assert f"freq:v:{digest_b}:m" not in projections
+        assert f"freq:v:{digest_b}:d" not in projections
+        assert f"freq:m:{app_id}:{digest_b}:d" not in projections
+        assert entry_keys[str(verify_minute_id)] == f"freq:v:{digest_a}:m"
+        assert entry_keys[str(verify_day_id)] == f"freq:v:{digest_a}:d"
+        assert entry_keys[str(market_id)] == f"freq:m:{app_id}:{digest_a}:d"
+
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        redis.fail = True
+        with pytest.raises(UsageProjectionUnavailable):
+            await service.rebuild()
+        async with engine.connect() as connection:
+            tombstone = await connection.scalar(
+                text("SELECT value FROM usage_projection WHERE dimension_key=:key"),
+                {"key": f"freq:v:{digest_a}:m"},
+            )
+        assert int(tombstone or 0) == 1
+        redis.fail = False
+        await service.rebuild()
+        assert f"freq:v:{digest_a}:m" not in redis.values
+        assert f"freq:v:{digest_b}:m" not in redis.values
+
+        live_reservation = await service.start_reservation(
+            request_key=f"acceptance:{live_id}",
+            app_id=app_id,
+            dept="账本测试部",
+            category="verify",
+            now=now,
+        )
+        assert live_reservation.reservation_id != live_id
+        reservation_ids.append(live_reservation.reservation_id)
+        assert await service.allow_frequency(
+            live_reservation.reservation_id,
+            "verify",
+            app_id=app_id,
+            phone_hmac=digest_b,
+            hmac_aliases={1: digest_a, 2: digest_b},
+            limits=FrequencyLimits(2, 10, 1),
+            now=now,
+        )
+        current_minute = str(int(now.timestamp() // 60))
+        async with engine.connect() as connection:
+            live_minute = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT value,window_key FROM usage_projection
+                            WHERE dimension_key=:key
+                            """
+                        ),
+                        {"key": f"freq:v:{digest_a}:m"},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert int(live_minute["value"]) == 1
+        assert str(live_minute["window_key"]) == current_minute
+
+        reject_id = int(uuid4().int % 1_000_000_000) + 1
+        expire_id = reject_id + 1
+        day_batch_id, _day_batch_no = await _create_batch(
+            engine,
+            app_id=app_id,
+            reservation_id=verify_day_id,
+            category="verify",
+            quota_cost=0,
+        )
+        batch_ids.append(day_batch_id)
+        market_batch_id, market_batch_no = await _create_batch(
+            engine,
+            app_id=app_id,
+            reservation_id=market_id,
+            category="market",
+            quota_cost=0,
+        )
+        batch_ids.append(market_batch_id)
+
+        assert await service.request_release(
+            verify_minute_id,
+            event_id=f"approval:{reject_id}:rejected",
+        )
+        async with engine.begin() as connection:
+            assert await request_usage_release_for_batch(
+                connection,
+                batch_id=day_batch_id,
+                event_id=f"approval:{expire_id}:expired",
+            )
+            assert await request_usage_release_for_batch(
+                connection,
+                batch_id=market_batch_id,
+                event_id=f"batch:{market_batch_no}:cancelled",
+            )
+        assert not await service.request_release(
+            verify_minute_id,
+            event_id=f"approval:{reject_id}:rejected",
+        )
+        async with engine.begin() as connection:
+            assert await request_usage_release_for_batch(
+                connection,
+                batch_id=day_batch_id,
+                event_id=f"approval:{expire_id}:expired",
+            )
+            assert await request_usage_release_for_batch(
+                connection,
+                batch_id=market_batch_id,
+                event_id=f"batch:{market_batch_no}:cancelled",
+            )
+
+        async with engine.connect() as connection:
+            states = {
+                str(row["id"]): str(row["state"])
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT id,state FROM usage_reservation
+                            WHERE id=ANY(CAST(:ids AS uuid[]))
+                            """
+                        ),
+                        {"ids": [verify_minute_id, verify_day_id, market_id]},
+                    )
+                ).mappings()
+            }
+            live_after_release = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT value,window_key FROM usage_projection
+                            WHERE dimension_key=:key
+                            """
+                        ),
+                        {"key": f"freq:v:{digest_a}:m"},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            market_after_release = await connection.scalar(
+                text("SELECT value FROM usage_projection WHERE dimension_key=:key"),
+                {"key": f"freq:m:{app_id}:{digest_a}:d"},
+            )
+        assert set(states.values()) == {"release_requested"}
+        assert int(live_after_release["value"]) == 1
+        assert str(live_after_release["window_key"]) == current_minute
+        assert int(market_after_release or 0) == 0
+
+        redis.fail = True
+        with pytest.raises(UsageProjectionUnavailable):
+            await service.apply_release(verify_minute_id)
+        async with engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT state FROM usage_reservation WHERE id=:id"),
+                    {"id": verify_minute_id},
+                )
+                == "release_requested"
+            )
+            assert int(
+                await connection.scalar(
+                    text("SELECT value FROM usage_projection WHERE dimension_key=:key"),
+                    {"key": f"freq:v:{digest_a}:m"},
+                )
+                or 0
+            ) == 1
+        redis.fail = False
+        assert await service.apply_release(verify_minute_id) == 1
+        assert await service.apply_release(verify_day_id) == 1
+        assert await service.apply_release(market_id) == 1
+        assert await service.apply_release(verify_minute_id) == 0
+        assert redis.values[f"freq:v:{digest_a}:m"] == "1"
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_source_merge_and_release_are_safe_under_concurrency() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    _date_key, usage_date, _next_day = shanghai_day(now)
+    expired_minute = str(int((now - timedelta(minutes=2)).timestamp() // 60))
+    expired_at = now - timedelta(minutes=1)
+    digest_a = _unique_digest("ca")
+    digest_b = _unique_digest("cb")
+    subject_a = uuid4()
+    subject_b = uuid4()
+    reservation_id = uuid4()
+    reservation_ids = [reservation_id]
+    app_id: int | None = None
+    item = FrequencyDecisionItem(
+        phone_hmac=digest_b,
+        hmac_aliases={1: digest_a, 2: digest_b},
+    )
+    event_id = f"usage:{reservation_id}:orphan-recovery"
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM outbox_event
+                    WHERE aggregate_id=ANY(CAST(:ids AS text[]))
+                    """
+                ),
+                {"ids": [str(value) for value in reservation_ids]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_reservation
+                    WHERE id=ANY(CAST(:ids AS uuid[]))
+                    """
+                ),
+                {"ids": reservation_ids},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_frequency_subject
+                    WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_projection
+                    WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                    """
+                ),
+                {
+                    "patterns": [
+                        f"freq:v:{digest_a}:%",
+                        f"freq:v:{digest_b}:%",
+                    ]
+                },
+            )
+            if app_id is not None:
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+
+    try:
+        async with engine.begin() as connection:
+            app_id = await _create_test_app(connection, f"freq-con-{uuid4().hex[:8]}")
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_subject(id,projection_hmac)
+                    VALUES(:id_a,:hmac_a),(:id_b,:hmac_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "hmac_a": digest_a,
+                    "id_b": subject_b,
+                    "hmac_b": digest_b,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_alias(
+                      subject_id,key_version,phone_hmac
+                    ) VALUES
+                      (:id_a,1,:digest_a),
+                      (:id_b,2,:digest_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "id_b": subject_b,
+                    "digest_a": digest_a,
+                    "digest_b": digest_b,
+                },
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:m",
+                usage_date=usage_date,
+                window_key=expired_minute,
+                value=1,
+                expires_at=expired_at,
+            )
+            await _insert_reserved_usage(
+                connection,
+                reservation_id=reservation_id,
+                app_id=app_id,
+                category="verify",
+                usage_date=usage_date,
+            )
+            await _insert_counted_frequency_entry(
+                connection,
+                reservation_id=reservation_id,
+                subject_id=subject_b,
+                app_id=None,
+                category="verify",
+                window_kind="minute",
+                window_key=expired_minute,
+                usage_date=usage_date,
+                projection_key=f"freq:v:{digest_b}:m",
+                expires_at=expired_at,
+            )
+
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+
+        async def merge_once() -> tuple[UUID, str]:
+            async with engine.begin() as connection:
+                subject_id, hmac, _rows = await _ensure_frequency_subject(connection, item)
+                return subject_id, hmac
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                merge_once(),
+                service.request_release(reservation_id, event_id=event_id),
+                merge_once(),
+                service.request_release(reservation_id, event_id=event_id),
+                return_exceptions=True,
+            ),
+            timeout=15,
+        )
+        assert not any(isinstance(result, BaseException) for result in results)
+        merges = [result for result in results if isinstance(result, tuple)]
+        releases = [result for result in results if isinstance(result, bool)]
+        assert {result[0] for result in merges} == {subject_a}
+        assert releases.count(True) == 1
+        assert releases.count(False) == 1
+
+        async with engine.connect() as connection:
+            state = await connection.scalar(
+                text("SELECT state FROM usage_reservation WHERE id=:id"),
+                {"id": reservation_id},
+            )
+            await _assert_active_entries_have_projections(connection, [reservation_id])
+            await _assert_source_deletion_follows_entry_refs(
+                connection,
+                source_keys=[f"freq:v:{digest_b}:m"],
+                reservation_ids=[reservation_id],
+            )
+            source_exists = await connection.scalar(
+                text("SELECT EXISTS(SELECT 1 FROM usage_projection WHERE dimension_key=:key)"),
+                {"key": f"freq:v:{digest_b}:m"},
+            )
+            canonical_value = await connection.scalar(
+                text("SELECT value FROM usage_projection WHERE dimension_key=:key"),
+                {"key": f"freq:v:{digest_a}:m"},
+            )
+        assert state == "release_requested"
+        assert not bool(source_exists)
+        assert int(canonical_value or 0) == 0
+        assert await service.apply_release(reservation_id) == 1
+        assert await service.apply_release(reservation_id) == 0
     finally:
         await cleanup()
         await engine.dispose()

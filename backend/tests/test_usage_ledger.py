@@ -11,9 +11,13 @@ from app.services.usage_ledger import (
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
+    UsageReservationConflict,
     _canonical_frequency_projection_key,
+    _choose_frequency_merge_window,
     _frequency_projection_keys,
     _latest_projection_rows,
+    _ProjectionChange,
+    _release_change_should_apply,
     _safe_event_id,
     _safe_request_key,
     frequency_windows,
@@ -222,6 +226,81 @@ def test_canonical_frequency_projection_key_remaps_verify_and_market() -> None:
         == f"freq:v:{canonical}:m"
     )
     assert _canonical_frequency_projection_key("quota:app:1:20260822", canonical) is None
+
+
+def test_choose_frequency_merge_window_prefers_canonical_row() -> None:
+    target = "freq:v:" + "b" * 64 + ":m"
+    source = {
+        "dimension_key": "freq:v:" + "a" * 64 + ":m",
+        "kind": "frequency",
+        "usage_date": date(2026, 8, 21),
+        "window_key": "111",
+        "expires_at": datetime(2026, 8, 21, 16, tzinfo=UTC),
+        "value": 3,
+    }
+    canonical = {
+        "dimension_key": target,
+        "kind": "frequency",
+        "usage_date": date(2026, 8, 22),
+        "window_key": "222",
+        "expires_at": datetime(2026, 8, 22, 1, tzinfo=UTC),
+        "value": 1,
+    }
+    chosen = _choose_frequency_merge_window((source, canonical), target_key=target)
+    assert chosen is not None
+    kind, usage_date, window_key, expires_at, matching = chosen
+    assert (kind, usage_date, window_key) == ("frequency", date(2026, 8, 22), "222")
+    assert expires_at == canonical["expires_at"]
+    assert matching == (canonical,)
+    assert _choose_frequency_merge_window((), target_key=target) is None
+
+
+def test_release_change_skips_only_expired_missing_frequency() -> None:
+    observed = datetime(2026, 8, 22, 12, tzinfo=UTC)
+    expired = datetime(2026, 8, 22, 11, tzinfo=UTC)
+    live = datetime(2026, 8, 22, 13, tzinfo=UTC)
+    freq_key = "freq:v:" + "a" * 64 + ":m"
+    expired_freq = _ProjectionChange(
+        dimension_key=freq_key,
+        kind="frequency",
+        usage_date=date(2026, 8, 22),
+        window_key="123",
+        delta=-1,
+        expires_at=expired,
+        reset_on_window_change=False,
+    )
+    live_freq = _ProjectionChange(
+        dimension_key=freq_key,
+        kind="frequency",
+        usage_date=date(2026, 8, 22),
+        window_key="124",
+        delta=-1,
+        expires_at=live,
+        reset_on_window_change=False,
+    )
+    expired_quota = _ProjectionChange(
+        dimension_key="quota:app:1:20260822",
+        kind="quota",
+        usage_date=date(2026, 8, 22),
+        window_key="20260822",
+        delta=-1,
+        expires_at=expired,
+        reset_on_window_change=False,
+    )
+    assert _release_change_should_apply(
+        expired_freq,
+        existing_keys={freq_key},
+        observed=observed,
+    )
+    assert not _release_change_should_apply(
+        expired_freq,
+        existing_keys=set(),
+        observed=observed,
+    )
+    with pytest.raises(UsageReservationConflict, match="projection batch update conflict"):
+        _release_change_should_apply(live_freq, existing_keys=set(), observed=observed)
+    with pytest.raises(UsageReservationConflict, match="projection batch update conflict"):
+        _release_change_should_apply(expired_quota, existing_keys=set(), observed=observed)
 
 
 def test_latest_projection_rows_keep_higher_version_per_key() -> None:

@@ -792,6 +792,9 @@ def check_usage_ledger_invariants() -> None:
         "usage_frequency_alias",
         "'usage_projection_rebuild'",
         '"subject_id": str(row["subject_id"])',
+        "_list_active_frequency_entry_refs",
+        "_write_expired_canonical_tombstone",
+        "_apply_release_projection_changes",
     )
     require_fragments(
         APP / "services/pipeline.py",
