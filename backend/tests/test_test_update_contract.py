@@ -18,6 +18,7 @@ from test_update_contract import (  # noqa: E402
     classify_public_cutover_paths,
     classify_rebaseline_paths,
     parse_test_update_request,
+    protected_change_category,
     validate_verified_status,
 )
 from test_update_contract import (  # noqa: E402
@@ -543,11 +544,6 @@ def test_classifies_vendor_live_control_changes_as_high_risk(path: str) -> None:
         ("backend/app/services/raw_capture_legacy.py", frozenset({"api"})),
         ("backend/app/services/ops_repository.py", frozenset({"api"})),
         ("backend/app/tasks/poll_report.py", frozenset({"api"})),
-        ("frontend/src/api/auth.ts", frozenset({"web"})),
-        ("frontend/src/api/refreshLock.ts", frozenset({"web"})),
-        ("frontend/src/api/sessionTokens.ts", frozenset({"web"})),
-        ("frontend/src/api/webMessages.ts", frozenset({"web"})),
-        ("frontend/src/stores/session.ts", frozenset({"web"})),
     ],
 )
 def test_ci_and_test_update_share_backend_critical_paths(
@@ -556,8 +552,29 @@ def test_ci_and_test_update_share_backend_critical_paths(
 ) -> None:
     change = classify_changed_paths([path])
 
+    assert protected_change_category(path) == "backend-critical"
     assert change.risk == "high-risk"
     assert change.components == components
+    assert change.high_risk_paths == (path,)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/refreshLock.ts",
+        "frontend/src/api/webMessages.ts",
+        "frontend/src/stores/session.ts",
+        "frontend/src/api/sessionTokens.ts",
+        "frontend/src/api/sessionGeneration.ts",
+    ],
+)
+def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> None:
+    change = classify_changed_paths([path])
+
+    assert protected_change_category(path) == "frontend-security"
+    assert change.risk == "high-risk"
+    assert change.components == frozenset({"web"})
     assert change.high_risk_paths == (path,)
 
 
