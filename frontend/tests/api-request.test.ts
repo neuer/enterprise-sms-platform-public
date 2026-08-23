@@ -2,11 +2,11 @@ import { afterEach, beforeEach, vi } from "vitest"
 
 import { apiRequest, authorizedFetch } from "../src/api/webMessages"
 import {
-  clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
   getSessionUser,
   REFRESH_TAB_ID_KEY,
+  resetAccessSessionModule,
   setAccessSession,
 } from "../src/api/sessionTokens"
 import {
@@ -46,7 +46,7 @@ describe("统一 API 请求", () => {
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
-    clearAccessSession()
+    resetAccessSessionModule()
     clearRefreshTabBinding()
     sessionStorage.setItem(REFRESH_TAB_ID_KEY, tabId)
     vi.unstubAllGlobals()
@@ -59,6 +59,39 @@ describe("统一 API 请求", () => {
       window.removeEventListener("sms:unauthorized", listener)
     }
     unauthorizedListeners.length = 0
+  })
+
+  it("Storage 删除失败且 401 清理后不得再附带旧 Authorization", async () => {
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_user", JSON.stringify({
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "admin",
+      display_name: "管理员",
+      dept: "平台部",
+      role: "admin",
+    }))
+    const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("restricted", "SecurityError")
+    })
+    const unauthorized = watchUnauthorized()
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(response({ ok: true }, 200))
+    vi.stubGlobal("fetch", fetch)
+    try {
+      await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
+      expect(unauthorized).toHaveBeenCalledOnce()
+      expect(getAccessToken()).toBeNull()
+      await authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
+      const replayHeaders = fetch.mock.calls.at(-1)?.[1] as RequestInit
+      expect((replayHeaders.headers as Record<string, string>).Authorization).toBeUndefined()
+    } finally {
+      remove.mockRestore()
+    }
   })
 
   it("401 时清除持久会话并广播未授权事件", async () => {
