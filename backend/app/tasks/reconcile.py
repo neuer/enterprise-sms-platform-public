@@ -75,12 +75,13 @@ async def _run_domain(
 
 
 async def _reconcile() -> int:
+    """按恢复域隔离自愈；仅全局前置（settings）留在循环外。"""
+
     settings = get_settings()
-    policy = await SqlRuntimePolicyLoader(settings).load()
-    operation_repository = SqlVendorTestOperationRepository(settings)
     failures: list[BaseException] = []
 
     async def uncertain() -> int:
+        policy = await SqlRuntimePolicyLoader(settings).load()
         return await UncertainReconciler.from_policy(
             SqlUncertainRepository(settings),
             CryptoService.from_settings(settings),
@@ -95,7 +96,7 @@ async def _reconcile() -> int:
 
     async def vendor_control() -> int:
         return await VendorTestOperationService(
-            operation_repository,
+            SqlVendorTestOperationRepository(settings),
             VendorControlClient(),
             finalizers={
                 "reset_configuration": VendorTestResetFinalizer(
@@ -105,7 +106,12 @@ async def _reconcile() -> int:
         ).reconcile_once()
 
     async def vendor_uat() -> int:
-        return await VendorTestUatReconciler(operation_repository).reconcile_once()
+        return await VendorTestUatReconciler(
+            SqlVendorTestOperationRepository(settings)
+        ).reconcile_once()
+
+    async def raw_replay() -> int:
+        return await _replay_stale_raw(settings)
 
     total = 0
     for name, operation in (
@@ -113,7 +119,7 @@ async def _reconcile() -> int:
         ("delivery-recovery", recovery),
         ("vendor-control", vendor_control),
         ("vendor-uat", vendor_uat),
-        ("raw-replay", lambda: _replay_stale_raw(settings)),
+        ("raw-replay", raw_replay),
     ):
         total += await _run_domain(name, operation, settings, failures)
     if failures:
