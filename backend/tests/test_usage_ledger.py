@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -8,6 +8,8 @@ import pytest
 from app.services.usage_ledger import (
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
+    FREQUENCY_MERGE_FUTURE_DAY_SKEW,
+    FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
@@ -15,6 +17,8 @@ from app.services.usage_ledger import (
     _canonical_frequency_projection_key,
     _choose_frequency_merge_window,
     _frequency_projection_keys,
+    _frequency_window_is_future_skewed,
+    _frequency_window_sort_key,
     _latest_projection_rows,
     _ProjectionChange,
     _release_change_should_apply,
@@ -228,24 +232,40 @@ def test_canonical_frequency_projection_key_remaps_verify_and_market() -> None:
     assert _canonical_frequency_projection_key("quota:app:1:20260822", canonical) is None
 
 
+def _frequency_row(
+    dimension_key: str,
+    *,
+    usage_date: date,
+    window_key: str,
+    value: int,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "dimension_key": dimension_key,
+        "kind": "frequency",
+        "usage_date": usage_date,
+        "window_key": window_key,
+        "expires_at": expires_at,
+        "value": value,
+    }
+
+
 def test_choose_frequency_merge_window_prefers_canonical_row() -> None:
     target = "freq:v:" + "b" * 64 + ":m"
-    source = {
-        "dimension_key": "freq:v:" + "a" * 64 + ":m",
-        "kind": "frequency",
-        "usage_date": date(2026, 8, 21),
-        "window_key": "111",
-        "expires_at": datetime(2026, 8, 21, 16, tzinfo=UTC),
-        "value": 3,
-    }
-    canonical = {
-        "dimension_key": target,
-        "kind": "frequency",
-        "usage_date": date(2026, 8, 22),
-        "window_key": "222",
-        "expires_at": datetime(2026, 8, 22, 1, tzinfo=UTC),
-        "value": 1,
-    }
+    source = _frequency_row(
+        "freq:v:" + "a" * 64 + ":m",
+        usage_date=date(2026, 8, 21),
+        window_key="111",
+        value=3,
+        expires_at=datetime(2026, 8, 21, 16, tzinfo=UTC),
+    )
+    canonical = _frequency_row(
+        target,
+        usage_date=date(2026, 8, 22),
+        window_key="222",
+        value=1,
+        expires_at=datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
     chosen = _choose_frequency_merge_window((source, canonical), target_key=target)
     assert chosen is not None
     kind, usage_date, window_key, expires_at, matching = chosen
@@ -253,6 +273,133 @@ def test_choose_frequency_merge_window_prefers_canonical_row() -> None:
     assert expires_at == canonical["expires_at"]
     assert matching == (canonical,)
     assert _choose_frequency_merge_window((), target_key=target) is None
+
+
+@pytest.mark.parametrize(
+    ("target", "source_key"),
+    [
+        ("freq:v:" + "b" * 64 + ":m", "freq:v:" + "a" * 64 + ":m"),
+        ("freq:v:" + "b" * 64 + ":d", "freq:v:" + "a" * 64 + ":d"),
+        ("freq:m:9:" + "b" * 64 + ":d", "freq:m:9:" + "a" * 64 + ":d"),
+    ],
+)
+def test_choose_frequency_merge_window_keeps_newest_over_old_canonical(
+    target: str,
+    source_key: str,
+) -> None:
+    source = _frequency_row(
+        source_key,
+        usage_date=date(2026, 8, 22),
+        window_key="222",
+        value=5,
+        expires_at=datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+    canonical = _frequency_row(
+        target,
+        usage_date=date(2026, 8, 21),
+        window_key="111",
+        value=3,
+        expires_at=datetime(2026, 8, 22, 2, tzinfo=UTC),
+    )
+    chosen = _choose_frequency_merge_window((canonical, source), target_key=target)
+    assert chosen is not None
+    kind, usage_date, window_key, expires_at, matching = chosen
+    assert (kind, usage_date, window_key) == ("frequency", date(2026, 8, 22), "222")
+    assert expires_at == source["expires_at"]
+    assert matching == (source,)
+
+
+def test_choose_frequency_merge_window_same_newest_window_prefers_canonical() -> None:
+    target = "freq:v:" + "b" * 64 + ":m"
+    source = _frequency_row(
+        "freq:v:" + "a" * 64 + ":m",
+        usage_date=date(2026, 8, 22),
+        window_key="222",
+        value=4,
+        expires_at=datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+    canonical = _frequency_row(
+        target,
+        usage_date=date(2026, 8, 22),
+        window_key="222",
+        value=2,
+        expires_at=datetime(2026, 8, 22, 0, 30, tzinfo=UTC),
+    )
+    chosen = _choose_frequency_merge_window((source, canonical), target_key=target)
+    assert chosen is not None
+    kind, usage_date, window_key, expires_at, matching = chosen
+    assert (kind, usage_date, window_key) == ("frequency", date(2026, 8, 22), "222")
+    assert expires_at == source["expires_at"]
+    assert matching == (source, canonical)
+    assert sum(int(row["value"]) for row in matching) == 6
+
+
+def test_choose_frequency_merge_window_orders_numeric_minute_keys() -> None:
+    target = "freq:v:" + "b" * 64 + ":m"
+    source = _frequency_row(
+        "freq:v:" + "a" * 64 + ":m",
+        usage_date=date(2026, 8, 22),
+        window_key="10",
+        value=1,
+        expires_at=datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+    canonical = _frequency_row(
+        target,
+        usage_date=date(2026, 8, 22),
+        window_key="9",
+        value=7,
+        expires_at=datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+    assert _frequency_window_sort_key(source) > _frequency_window_sort_key(canonical)
+    chosen = _choose_frequency_merge_window((canonical, source), target_key=target)
+    assert chosen is not None
+    assert chosen[2] == "10"
+    assert chosen[4] == (source,)
+
+
+def test_frequency_window_future_skew_allows_boundary_but_rejects_far_future() -> None:
+    observed = datetime(2026, 8, 22, 4, 10, tzinfo=UTC)
+    minute, _, date_key, usage_date, _ = frequency_windows(observed)
+    minute_key = "freq:v:" + "b" * 64 + ":m"
+    day_key = "freq:v:" + "b" * 64 + ":d"
+    market_key = "freq:m:3:" + "b" * 64 + ":d"
+
+    assert not _frequency_window_is_future_skewed(
+        dimension_key=minute_key,
+        usage_date=usage_date,
+        window_key=minute,
+        observed=observed,
+    )
+    assert not _frequency_window_is_future_skewed(
+        dimension_key=minute_key,
+        usage_date=usage_date,
+        window_key=str(int(minute) + FREQUENCY_MERGE_FUTURE_MINUTE_SKEW),
+        observed=observed,
+    )
+    assert _frequency_window_is_future_skewed(
+        dimension_key=minute_key,
+        usage_date=usage_date,
+        window_key=str(int(minute) + FREQUENCY_MERGE_FUTURE_MINUTE_SKEW + 1),
+        observed=observed,
+    )
+    assert _frequency_window_is_future_skewed(
+        dimension_key=minute_key,
+        usage_date=usage_date,
+        window_key="not-a-minute",
+        observed=observed,
+    )
+    assert not _frequency_window_is_future_skewed(
+        dimension_key=day_key,
+        usage_date=usage_date + timedelta(days=FREQUENCY_MERGE_FUTURE_DAY_SKEW),
+        window_key=date_key,
+        observed=observed,
+    )
+    assert _frequency_window_is_future_skewed(
+        dimension_key=market_key,
+        usage_date=usage_date + timedelta(days=FREQUENCY_MERGE_FUTURE_DAY_SKEW + 1),
+        window_key=date_key,
+        observed=observed,
+    )
 
 
 def test_release_change_skips_only_expired_missing_frequency() -> None:
