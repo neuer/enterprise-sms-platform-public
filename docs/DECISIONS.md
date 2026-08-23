@@ -892,7 +892,27 @@
 - 原因：厂商未给出单次最大条数或分页合同，4 MiB 硬拒会丢失已消费事实；但不区分完整
   超限与截断，会把不可解析的半截密文送进自动重放毒丸循环。
 - 影响：schema v1.6.60、0072、`raw_spill`/`zhihui`/`report_ingest`/`reply_ingest`/
-  自动重放过滤、运维 raw 列表、`vendor-api.md` 与 OpenAPI。
+  自动重放过滤、运维 raw 列表、`vendor-api.md` 与 OpenAPI。历史存量分类见 D081。
+
+## D081 pre-0072 存量 raw 不得默认回填为 complete
+
+- 决策：`capture_state` 新行仍 DEFAULT `complete`，与 schema.sql 一致。已合并的
+  `0072_raw_capture_state` 保持 complete 默认与三态 CHECK，不在 0072 内重分类。
+  `0073_raw_protocol_invalid` 只增加 `protocol_invalid`，不改写存量 complete。
+  已执行旧 0072（全部 complete）的库由 `0074_raw_legacy_capture` 按密文长度
+  （SME2/legacy 信封开销）和历史 error 类型重分类：普通完整保持 `complete`；
+  4–64 MiB 且无截断证据 → `complete_too_large`；截断证据或超过 64 MiB →
+  `truncated`；信封无效、恰好卡在 4 MiB/64 MiB 上限、或错误类型与长度冲突 →
+  `unknown_legacy`。只 UPDATE `capture_state='complete'` 的行，不改写
+  `protocol_invalid`。不解密正文。`unknown_legacy` 与 `truncated` /
+  `protocol_invalid` 一样不得进入普通自动/运维重放，须人工盘点后再提升。
+  `scripts_support/inventory_raw_capture_legacy.py` 只输出数量、大小桶、状态和
+  窗口，不得输出解密正文、手机号或密钥材料。#413→#415 部署窗口只作盘点维度。
+- 原因：#413 到 #415 之间旧 schema 已可能落下超限完整或截断 raw。把它们默认写成
+  `complete` 会让 stale raw 自动重放任务误选。
+- 影响：schema v1.6.62、0074、`raw_capture_legacy`、自动/运维重放资格、
+  OpenAPI `unknown_legacy`。未改 Vue；运维列表对未知状态仍走现有截断展示回退，
+  服务端拒绝重放。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
