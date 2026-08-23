@@ -1530,7 +1530,7 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
         if "merge-base" in argv:
             return base
         if "diff" in argv:
-            return "frontend/src/App.vue\0"
+            return "frontend/src/views/DashboardView.vue\0"
         raise AssertionError(argv)
 
     operations._command = command  # type: ignore[method-assign]
@@ -1590,7 +1590,7 @@ def test_host_source_scope_retries_only_the_fixed_fetch_command(
         if "merge-base" in argv:
             return base
         if "diff" in argv:
-            return "frontend/src/App.vue\0"
+            return "frontend/src/views/DashboardView.vue\0"
         raise AssertionError(argv)
 
     operations._command = command  # type: ignore[method-assign]
