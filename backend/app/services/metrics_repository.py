@@ -170,6 +170,21 @@ class SqlMetricsRepository:
                 )
                 drift_rows = list(drift_result.mappings())
 
+                eligibility_result = await connection.execute(
+                    text(
+                        """
+                        SELECT replay_eligibility,count(replay_eligibility) count
+                        FROM raw_vendor_log
+                        GROUP BY replay_eligibility
+                        ORDER BY replay_eligibility
+                        """
+                    )
+                )
+                raw_replay_eligibility = tuple(
+                    (str(row["replay_eligibility"]), max(0, int(row["count"])))
+                    for row in eligibility_result.mappings()
+                )
+
                 return MetricsFacts(
                     send_rates=send_rates,
                     vendor_errors=vendor_errors,
@@ -200,4 +215,5 @@ class SqlMetricsRepository:
                     ),
                     worker_lease_events=lease_events,
                     queue_depths=queue_depths,
+                    raw_replay_eligibility=raw_replay_eligibility,
                 )

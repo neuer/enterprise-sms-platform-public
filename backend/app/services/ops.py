@@ -46,6 +46,8 @@ class RawLogRecord:
     error: str | None
     fetched_at: datetime
     capture_state: str = "complete"
+    parse_state: str = "unattempted"
+    replay_eligibility: str = "manual"
 
 
 @dataclass(frozen=True, slots=True)

@@ -109,6 +109,8 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
     assert "now()" in sql
     assert params["custom_ids"] == ["custom-1"]
     assert params["capture_state"] == "complete"
+    assert params["parse_state"] == "unattempted"
+    assert params["replay_eligibility"] == "automatic"
     assert engine.disposed
 
 
@@ -159,9 +161,17 @@ async def test_raw_processed_and_error_flags_are_explicit() -> None:
 
     assert "processing_started_at=NULL" in connection.calls[0][0]
     assert "processing_started_at=NULL" in connection.calls[1][0]
-    assert connection.calls[0][1] == {"id": 19, "processed": True, "error": None}
+    assert connection.calls[0][1] == {
+        "id": 19,
+        "processed": True,
+        "error": None,
+        "parse_state": "processed",
+        "replay_eligibility": "never",
+    }
     assert connection.calls[1][1] == {
         "id": 20,
         "processed": False,
         "error": "ValueError: reply parsing failed",
+        "parse_state": "protocol_invalid",
+        "replay_eligibility": "manual",
     }

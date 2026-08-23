@@ -32,6 +32,10 @@ from app.services.ops import (
     UnmatchedQuery,
     UnmatchedRecord,
 )
+from app.services.raw_parse import (
+    claim_eligibilities,
+    mark_error_column_values,
+)
 from app.services.raw_replay import (
     MAX_RAW_REPLAY_ATTEMPTS,
     RawReplayClaim,
@@ -272,6 +276,7 @@ class SqlOpsRepository:
                         SELECT id FROM raw_vendor_log
                         WHERE processed=false
                           AND capture_state='complete'
+                          AND replay_eligibility='automatic'
                           AND replay_attempts<:max_attempts
                           AND (
                             processing_started_at IS NULL
@@ -287,35 +292,46 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
-    async def claim_raw_for_replay(self, raw_id: int) -> RawReplayClaim | None:
+    async def claim_raw_for_replay(
+        self, raw_id: int, *, allow_manual: bool = True
+    ) -> RawReplayClaim | None:
+        allowed = claim_eligibilities(allow_manual=allow_manual)
+        eligibility_sql = ", ".join(f"'{item}'" for item in allowed)
+        capture_sql = (
+            "'complete','complete_too_large'" if allow_manual else "'complete'"
+        )
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(
                     text(
-                        """
+                        f"""
                         WITH claimed AS (
                           UPDATE raw_vendor_log
                           SET processing_started_at=now(),error=NULL,
                             replay_attempts=replay_attempts+1
                           WHERE id=:raw_id AND processed=false
-                            AND capture_state IN ('complete','complete_too_large')
+                            AND capture_state IN ({capture_sql})
+                            AND replay_eligibility IN ({eligibility_sql})
                             AND (
                               processing_started_at IS NULL
                               OR processing_started_at<=now()-interval '15 minutes'
                             )
                           RETURNING id,source,payload_enc,payload_sha256,
                             key_version,processed,item_count,http_status,
-                            content_encoding,capture_state
+                            content_encoding,capture_state,parse_state,
+                            replay_eligibility,error
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
-                          capture_state,true claimed
+                          capture_state,parse_state,replay_eligibility,error,
+                          true claimed
                         FROM claimed
                         UNION ALL
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
-                          capture_state,false claimed
+                          capture_state,parse_state,replay_eligibility,error,
+                          false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
                           AND NOT EXISTS (SELECT 1 FROM claimed)
@@ -328,22 +344,28 @@ class SqlOpsRepository:
                 if row is None:
                     return None
                 return RawReplayClaim(
-                    record=RawReplayRecord(
-                        int(row["id"]),
-                        str(row["source"]),
-                        bytes(row["payload_enc"]),
-                        str(row["payload_sha256"]),
-                        int(row["key_version"]),
-                        bool(row["processed"]),
-                        int(row["http_status"]),
-                        str(row["content_encoding"]),
-                        str(row.get("capture_state") or "complete"),
-                        int(row["item_count"]) if row.get("item_count") is not None else 0,
-                    ),
+                    record=self._raw_replay_record(row),
                     claimed=bool(row["claimed"]),
                 )
         finally:
             await engine.dispose()
+
+    def _raw_replay_record(self, row: Any) -> RawReplayRecord:
+        return RawReplayRecord(
+            int(row["id"]),
+            str(row["source"]),
+            bytes(row["payload_enc"]),
+            str(row["payload_sha256"]),
+            int(row["key_version"]),
+            bool(row["processed"]),
+            int(row["http_status"]),
+            str(row["content_encoding"]),
+            str(row.get("capture_state") or "complete"),
+            int(row["item_count"]) if row.get("item_count") is not None else 0,
+            str(row.get("parse_state") or "unattempted"),
+            str(row.get("replay_eligibility") or "manual"),
+            str(row["error"]) if row.get("error") is not None else None,
+        )
 
     async def raw_replay_exhausted(
         self,
@@ -370,16 +392,129 @@ class SqlOpsRepository:
             await engine.dispose()
 
     async def mark_replay_error(self, raw_id: int, error: str) -> None:
+        message = error[:256]
+        columns = mark_error_column_values(message)
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 await connection.execute(
                     text(
-                        "UPDATE raw_vendor_log SET processed=false,error=:error,"
-                        "processing_started_at=NULL "
-                        "WHERE id=:raw_id AND processed=false"
+                        """
+                        UPDATE raw_vendor_log
+                        SET processed=false,error=:error,processing_started_at=NULL,
+                          parse_state=CASE
+                            WHEN parse_state='processed' THEN 'processed'
+                            ELSE :parse_state
+                          END,
+                          replay_eligibility=CASE
+                            WHEN replay_eligibility='never' THEN 'never'
+                            ELSE :replay_eligibility
+                          END
+                        WHERE id=:raw_id AND processed=false
+                        """
                     ),
-                    {"raw_id": raw_id, "error": error[:256]},
+                    {
+                        "raw_id": raw_id,
+                        "error": message,
+                        "parse_state": columns["parse_state"],
+                        "replay_eligibility": columns["replay_eligibility"],
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None:
+        """读取 raw 供 parser 升级重评估：不占租约，不增加 replay_attempts。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT id,source,payload_enc,payload_sha256,key_version,
+                          processed,item_count,http_status,content_encoding,
+                          capture_state,parse_state,replay_eligibility,error
+                        FROM raw_vendor_log
+                        WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return None
+                return self._raw_replay_record(row)
+        finally:
+            await engine.dispose()
+
+    async def update_parse_disposition(
+        self,
+        raw_id: int,
+        *,
+        parse_state: str,
+        replay_eligibility: str,
+        error: str | None,
+    ) -> None:
+        """绝对写入解析面资格；人工重评估可改写 never。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE raw_vendor_log
+                        SET parse_state=:parse_state,
+                            replay_eligibility=:replay_eligibility,
+                            error=:error
+                        WHERE id=:raw_id
+                        """
+                    ),
+                    {
+                        "raw_id": raw_id,
+                        "parse_state": parse_state,
+                        "replay_eligibility": replay_eligibility,
+                        "error": error,
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    async def audit_raw_reevaluate(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+        after: dict[str, Any],
+    ) -> None:
+        """parser 升级重评估只允许已验证人类主体。"""
+
+        if principal.actor_name != actor:
+            raise RuntimeError("raw reevaluate audit principal unavailable")
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="raw_reevaluate",
+                        object_type="raw_vendor_log",
+                        object_id=str(raw_id),
+                        after=after,
+                    ),
                 )
         finally:
             await engine.dispose()
@@ -550,7 +685,8 @@ class SqlOpsRepository:
                 result = await connection.execute(
                     text(
                         "SELECT id,source,item_count,cardinality(custom_ids) custom_id_count,"
-                        "processed,error,fetched_at,capture_state FROM raw_vendor_log WHERE "
+                        "processed,error,fetched_at,capture_state,parse_state,"
+                        "replay_eligibility FROM raw_vendor_log WHERE "
                         + where
                         + " ORDER BY fetched_at DESC,id DESC LIMIT :limit OFFSET :offset"
                     ),
@@ -566,6 +702,8 @@ class SqlOpsRepository:
                         str(row["error"]) if row["error"] is not None else None,
                         row["fetched_at"],
                         str(row.get("capture_state") or "complete"),
+                        str(row.get("parse_state") or "unattempted"),
+                        str(row.get("replay_eligibility") or "manual"),
                     )
                     for row in result.mappings()
                 )

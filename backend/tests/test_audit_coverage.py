@@ -130,6 +130,7 @@ def test_required_writes_declare_stable_audit_actions() -> None:
         (callbacks.retry_callback, "callback_retry"),
         (replies.blacklist_reply, "reply_optout"),
         (ops.replay_raw, "raw_replay"),
+        (ops.reevaluate_raw, "raw_reevaluate"),
         (ops.trigger_job, "job_trigger"),
         (ops.resume_queue, "queue_resume"),
         (ops.create_unmatched_export, "export_create"),
