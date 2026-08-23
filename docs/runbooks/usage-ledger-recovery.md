@@ -4,8 +4,9 @@ PostgreSQL 的 `usage_reservation`、配额明细、频控主体/alias/明细和
 
 HMAC 轮换或并发若使同一号码出现多个 `usage_frequency_subject`，主体归并必须同时把
 verify/market 窗口的 `usage_projection` 绝对值写入 canonical 键。只改 alias/entry 会留下
-孤立投影并低估后续频控。生产轮换前确认该归并已上线，并盘点是否仍有一个号码对应多个
-未过期频控主体。
+孤立投影并低估后续频控。过期 source 投影只有在仍被未终态 counted 明细引用时，才写成
+expires_at 已过期的 canonical 墓碑供后续驳回/过期/取消释放命中；无引用则删除且不得
+重建过期限流。生产轮换前确认该归并已上线，并盘点是否仍有一个号码对应多个未过期频控主体。
 
 ## 状态与自动恢复
 
