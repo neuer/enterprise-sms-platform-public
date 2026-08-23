@@ -20,9 +20,12 @@ from app.services.usage_ledger import (
     _ACTIVE_RESERVATION_STATES,
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
+    FREQUENCY_MERGE_FUTURE_DAY_SKEW,
+    FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
     FrequencyDecisionItem,
     UsageLedgerService,
     UsageProjectionUnavailable,
+    UsageReservationConflict,
     _ensure_frequency_subject,
     commit_usage_reservation,
     request_usage_release_for_batch,
@@ -1386,6 +1389,467 @@ async def test_frequency_subject_merge_combines_live_same_window_projections() -
             )
         assert int(final_subjects or 0) == 1
         assert int(final_minute or 0) == 3
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_frequency_subject_merge_keeps_newest_live_window() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    date_key, usage_date, next_day = shanghai_day(now)
+    previous_date = usage_date - timedelta(days=1)
+    previous_date_key = previous_date.strftime("%Y%m%d")
+    current_minute = str(int(now.timestamp() // 60))
+    previous_minute = str(int(now.timestamp() // 60) - 1)
+    digest_a = _unique_digest("na")
+    digest_b = _unique_digest("nb")
+    subject_a = uuid4()
+    subject_b = uuid4()
+    app_ids: list[int] = []
+    item = FrequencyDecisionItem(
+        phone_hmac=digest_b,
+        hmac_aliases={1: digest_a, 2: digest_b},
+    )
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_frequency_entry
+                    WHERE subject_id IN (
+                      SELECT id FROM usage_frequency_subject
+                      WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    )
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_frequency_subject
+                    WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_projection
+                    WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                    """
+                ),
+                {
+                    "patterns": [
+                        f"freq:v:{digest_a}:%",
+                        f"freq:v:{digest_b}:%",
+                        f"freq:m:%:{digest_a}:d",
+                        f"freq:m:%:{digest_b}:d",
+                    ]
+                },
+            )
+            if app_ids:
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=ANY(CAST(:ids AS bigint[]))"),
+                    {"ids": app_ids},
+                )
+
+    try:
+        async with engine.begin() as connection:
+            same_app = await _create_test_app(connection, f"freq-new-s-{uuid4().hex[:8]}")
+            reverse_app = await _create_test_app(connection, f"freq-new-r-{uuid4().hex[:8]}")
+            app_ids.extend((same_app, reverse_app))
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_subject(id,projection_hmac)
+                    VALUES(:id_a,:hmac_a),(:id_b,:hmac_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "hmac_a": digest_a,
+                    "id_b": subject_b,
+                    "hmac_b": digest_b,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_alias(
+                      subject_id,key_version,phone_hmac
+                    ) VALUES
+                      (:id_a,1,:digest_a),
+                      (:id_b,2,:digest_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "id_b": subject_b,
+                    "digest_a": digest_a,
+                    "digest_b": digest_b,
+                },
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_a}:m",
+                usage_date=usage_date,
+                window_key=previous_minute,
+                value=3,
+                expires_at=now + timedelta(minutes=1),
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:m",
+                usage_date=usage_date,
+                window_key=current_minute,
+                value=5,
+                expires_at=now + timedelta(minutes=2),
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_a}:d",
+                usage_date=previous_date,
+                window_key=previous_date_key,
+                value=2,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=4,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{same_app}:{digest_a}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=1,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{same_app}:{digest_b}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=6,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{reverse_app}:{digest_a}:d",
+                usage_date=previous_date,
+                window_key=previous_date_key,
+                value=8,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{reverse_app}:{digest_b}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=7,
+                expires_at=next_day,
+            )
+
+        async def merge_once() -> tuple[UUID, str, int]:
+            async with engine.begin() as connection:
+                subject_id, hmac, rows = await _ensure_frequency_subject(connection, item)
+                return subject_id, hmac, len(rows)
+
+        first = await merge_once()
+        second = await merge_once()
+        assert first[0] == second[0] == subject_a
+        assert first[1] == second[1] == digest_a
+        assert second[2] == 0
+
+        async with engine.connect() as connection:
+            values = {
+                str(row["dimension_key"]): (
+                    int(row["value"]),
+                    str(row["window_key"]),
+                    row["usage_date"],
+                )
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT dimension_key,value,window_key,usage_date
+                            FROM usage_projection
+                            WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                            ORDER BY dimension_key
+                            """
+                        ),
+                        {
+                            "patterns": [
+                                f"freq:v:{digest_a}:%",
+                                f"freq:v:{digest_b}:%",
+                                f"freq:m:%:{digest_a}:d",
+                                f"freq:m:%:{digest_b}:d",
+                            ]
+                        },
+                    )
+                ).mappings()
+            }
+        assert values[f"freq:v:{digest_a}:m"] == (5, current_minute, usage_date)
+        assert values[f"freq:v:{digest_a}:d"] == (4, date_key, usage_date)
+        assert values[f"freq:m:{same_app}:{digest_a}:d"] == (7, date_key, usage_date)
+        assert values[f"freq:m:{reverse_app}:{digest_a}:d"] == (7, date_key, usage_date)
+        assert f"freq:v:{digest_b}:m" not in values
+        assert f"freq:v:{digest_b}:d" not in values
+        assert f"freq:m:{same_app}:{digest_b}:d" not in values
+        assert f"freq:m:{reverse_app}:{digest_b}:d" not in values
+
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        await service.rebuild()
+        assert redis.values[f"freq:v:{digest_a}:m"] == "5"
+        assert redis.values[f"freq:v:{digest_a}:d"] == "4"
+        assert redis.values[f"freq:m:{same_app}:{digest_a}:d"] == "7"
+        assert redis.values[f"freq:m:{reverse_app}:{digest_a}:d"] == "7"
+        assert f"freq:v:{digest_b}:m" not in redis.values
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_subject(id,projection_hmac)
+                    VALUES(:id,:hmac)
+                    """
+                ),
+                {"id": subject_b, "hmac": digest_b},
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE usage_frequency_alias
+                    SET subject_id=:source_id
+                    WHERE phone_hmac=:digest
+                    """
+                ),
+                {"source_id": subject_b, "digest": digest_b},
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:m",
+                usage_date=usage_date,
+                window_key=current_minute,
+                value=2,
+                expires_at=now + timedelta(minutes=2),
+            )
+
+        concurrent = await asyncio.gather(merge_once(), merge_once())
+        assert {result[0] for result in concurrent} == {subject_a}
+        async with engine.connect() as connection:
+            final_minute = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT value,window_key FROM usage_projection
+                            WHERE dimension_key=:key
+                            """
+                        ),
+                        {"key": f"freq:v:{digest_a}:m"},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            source_exists = await connection.scalar(
+                text("SELECT EXISTS(SELECT 1 FROM usage_projection WHERE dimension_key=:key)"),
+                {"key": f"freq:v:{digest_b}:m"},
+            )
+        assert int(final_minute["value"]) == 7
+        assert str(final_minute["window_key"]) == current_minute
+        assert not bool(source_exists)
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_frequency_subject_merge_rejects_future_window_clock_skew() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    date_key, usage_date, next_day = shanghai_day(now)
+    current_minute = str(int(now.timestamp() // 60))
+    future_minute = str(int(now.timestamp() // 60) + FREQUENCY_MERGE_FUTURE_MINUTE_SKEW + 3)
+    future_date = usage_date + timedelta(days=FREQUENCY_MERGE_FUTURE_DAY_SKEW + 2)
+    future_date_key = future_date.strftime("%Y%m%d")
+    digest_a = _unique_digest("sk")
+    digest_b = _unique_digest("sl")
+    subject_a = uuid4()
+    subject_b = uuid4()
+    app_id: int | None = None
+    item = FrequencyDecisionItem(
+        phone_hmac=digest_b,
+        hmac_aliases={1: digest_a, 2: digest_b},
+    )
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_frequency_subject
+                    WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM usage_projection
+                    WHERE dimension_key LIKE ANY(CAST(:patterns AS text[]))
+                    """
+                ),
+                {
+                    "patterns": [
+                        f"freq:v:{digest_a}:%",
+                        f"freq:v:{digest_b}:%",
+                        f"freq:m:%:{digest_a}:d",
+                        f"freq:m:%:{digest_b}:d",
+                    ]
+                },
+            )
+            if app_id is not None:
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+
+    try:
+        async with engine.begin() as connection:
+            app_id = await _create_test_app(connection, f"freq-skew-{uuid4().hex[:8]}")
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_subject(id,projection_hmac)
+                    VALUES(:id_a,:hmac_a),(:id_b,:hmac_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "hmac_a": digest_a,
+                    "id_b": subject_b,
+                    "hmac_b": digest_b,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO usage_frequency_alias(
+                      subject_id,key_version,phone_hmac
+                    ) VALUES
+                      (:id_a,1,:digest_a),
+                      (:id_b,2,:digest_b)
+                    """
+                ),
+                {
+                    "id_a": subject_a,
+                    "id_b": subject_b,
+                    "digest_a": digest_a,
+                    "digest_b": digest_b,
+                },
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_a}:m",
+                usage_date=usage_date,
+                window_key=current_minute,
+                value=1,
+                expires_at=now + timedelta(minutes=1),
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:m",
+                usage_date=usage_date,
+                window_key=future_minute,
+                value=9,
+                expires_at=now + timedelta(hours=1),
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_a}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=1,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:v:{digest_b}:d",
+                usage_date=future_date,
+                window_key=future_date_key,
+                value=9,
+                expires_at=now + timedelta(days=3),
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{app_id}:{digest_a}:d",
+                usage_date=usage_date,
+                window_key=date_key,
+                value=1,
+                expires_at=next_day,
+            )
+            await _insert_frequency_projection(
+                connection,
+                dimension_key=f"freq:m:{app_id}:{digest_b}:d",
+                usage_date=future_date,
+                window_key=future_date_key,
+                value=9,
+                expires_at=now + timedelta(days=3),
+            )
+
+        with pytest.raises(UsageReservationConflict, match="frequency merge window clock skew"):
+            async with engine.begin() as connection:
+                await _ensure_frequency_subject(connection, item)
+
+        async with engine.connect() as connection:
+            subjects = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*) FROM usage_frequency_subject
+                    WHERE projection_hmac=ANY(CAST(:digests AS char(64)[]))
+                    """
+                ),
+                {"digests": [digest_a, digest_b]},
+            )
+            source_minute = await connection.scalar(
+                text("SELECT value FROM usage_projection WHERE dimension_key=:key"),
+                {"key": f"freq:v:{digest_b}:m"},
+            )
+            canonical_minute = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT value,window_key FROM usage_projection
+                            WHERE dimension_key=:key
+                            """
+                        ),
+                        {"key": f"freq:v:{digest_a}:m"},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert int(subjects or 0) == 2
+        assert int(source_minute or 0) == 9
+        assert int(canonical_minute["value"]) == 1
+        assert str(canonical_minute["window_key"]) == current_minute
     finally:
         await cleanup()
         await engine.dispose()
