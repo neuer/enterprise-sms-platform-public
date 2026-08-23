@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import secrets
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from app.services.crypto import EncryptedValue, EncryptionContext
 
@@ -47,11 +53,37 @@ NON_REPLAYABLE_CAPTURE_STATES = frozenset(
 DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_PENDING_FILES = 32
 SYNC_EVERY_BYTES = 1024 * 1024
-QUOTA_RESERVATION_BYTES = 65_536
+RECOVERY_CAPTURE_BYTES = 64 * 1024 * 1024
+# 文件头、announce/terminal 控制帧、GCM 信封、目录项与隔离标记的文档化上限。
+# 按 httpx aiter_raw 典型 ≥16KiB 分片估算；1MiB 覆盖 64MiB 捕获的最坏分片开销。
+CAPTURE_FRAME_OVERHEAD_BYTES = 1024 * 1024
+CHUNK_WRITE_OVERHEAD_BYTES = STREAM_RECORD_HEADER.size + 48
+QUOTA_LOCK_NAME = ".quota.lock"
+RESERVE_SUFFIX = ".reserve"
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+RESERVATION_KEYS = frozenset({"created_at", "lease_id", "reserved_bytes", "source"})
+
+
+def capture_reservation_bytes(capture_bytes: int) -> int:
+    """一次请求生命周期必须预留的字节：捕获上限 + 文档化帧/元数据开销。"""
+
+    if capture_bytes < 1:
+        raise ValueError("capture reservation must be positive")
+    return capture_bytes + CAPTURE_FRAME_OVERHEAD_BYTES
 
 
 class SpillQuotaExceeded(RuntimeError):
     """spill 目录已达文件数或总字节上限，必须停止继续拉取。"""
+
+
+@dataclass(frozen=True, slots=True)
+class SpillReservation:
+    """容量账本条目；只含来源、租约与字节，不得写入手机号、正文或密钥。"""
+
+    source: str
+    lease_id: str
+    reserved_bytes: int
+    path: Path
 
 
 class StreamChunkCrypto(Protocol):
@@ -212,9 +244,21 @@ class RawSpillStore:
         return self.directory / f"{source}-{stream_id}.quarantine"
 
     def usage_bytes(self) -> int:
+        """目录实际文件字节；配额判断必须走 accounted_usage。"""
+
         if not self.directory.exists():
             return 0
-        return sum(path.stat().st_size for path in self.directory.iterdir() if path.is_file())
+        return sum(
+            path.stat().st_size
+            for path in self.directory.iterdir()
+            if path.is_file() and path.name != QUOTA_LOCK_NAME
+        )
+
+    def accounted_usage(self) -> int:
+        """未覆盖文件字节 + 各租约 reserved_bytes；禁止把缺失预留当零。"""
+
+        with self._quota_lock():
+            return self._accounted_usage_locked()
 
     def pending_count(self) -> int:
         if not self.directory.exists():
@@ -237,10 +281,14 @@ class RawSpillStore:
             raise ValueError("additional_bytes must not be negative")
         if additional_files < 0:
             raise ValueError("additional_files must not be negative")
-        return (
-            self.pending_count() + additional_files <= self.max_pending_files
-            and self.usage_bytes() + additional_bytes <= self.max_total_bytes
-        )
+        with self._quota_lock():
+            return self._can_accept_locked(additional_bytes, additional_files=additional_files)
+
+    def list_reservations(self) -> list[SpillReservation]:
+        """测试与巡检用；账本不含 PII。"""
+
+        with self._quota_lock():
+            return list(self._iter_reservations_locked())
 
     def write(
         self,
@@ -258,12 +306,16 @@ class RawSpillStore:
         if not payload_enc:
             raise ValueError("raw spill payload is empty")
         capture_state = normalize_capture_state(capture_state)
-        # 在途 .stream 与即将落盘的 .spill 是同一捕获的两份密文，不得互相占满文件配额。
-        if (
-            self.pending_spill_count() >= self.max_pending_files
-            or self.usage_bytes() + len(payload_enc) + 256 > self.max_total_bytes
-        ):
-            raise SpillQuotaExceeded("raw spill quota exceeded")
+        extra = len(payload_enc) + 256
+        with self._quota_lock():
+            self._reclaim_orphans_locked(source)
+            # 在途 .stream 与即将落盘的 .spill 是同一捕获的两份密文，不得互相占满文件配额。
+            same_capture = self._reservation_for_source_locked(source) is not None
+            if self.pending_spill_count() >= self.max_pending_files or (
+                not same_capture
+                and self._accounted_usage_locked() + extra > self.max_total_bytes
+            ):
+                raise SpillQuotaExceeded("raw spill quota exceeded")
         self.directory.mkdir(parents=True, exist_ok=True)
         target = self._path(source, payload_sha256)
         header = json.dumps(
@@ -318,14 +370,236 @@ class RawSpillStore:
         path.unlink(missing_ok=True)
 
     def remove_stream(self, source: str, stream_id: str) -> None:
-        self._stream_tmp(source, stream_id).unlink(missing_ok=True)
-        self._stream_path(source, stream_id).unlink(missing_ok=True)
-        self._quarantine_path(source, stream_id).unlink(missing_ok=True)
+        with self._quota_lock():
+            self._remove_stream_locked(source, stream_id)
 
-    def open_stream(self, source: str, crypto: StreamChunkCrypto) -> RawSpillStream:
-        if not self.can_accept(QUOTA_RESERVATION_BYTES):
-            raise SpillQuotaExceeded("raw spill quota exceeded")
-        return RawSpillStream(self, source, crypto)
+    def open_stream(
+        self,
+        source: str,
+        crypto: StreamChunkCrypto,
+        *,
+        capture_bytes: int = RECOVERY_CAPTURE_BYTES,
+    ) -> RawSpillStream:
+        """原子预留一次恢复捕获容量后再建 stream；失败不得留下租约或调用厂商。"""
+
+        reserved_bytes = capture_reservation_bytes(capture_bytes)
+        with self._quota_lock():
+            self._reclaim_orphans_locked(source)
+            if not self._can_accept_locked(reserved_bytes, additional_files=1):
+                raise SpillQuotaExceeded("raw spill quota exceeded")
+            lease_id = secrets.token_hex(16)
+            try:
+                reservation = self._write_reservation_locked(source, lease_id, reserved_bytes)
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise SpillQuotaExceeded("raw spill disk full") from exc
+                raise
+            try:
+                stream = RawSpillStream(self, source, crypto, reservation)
+            except OSError as exc:
+                self._remove_stream_locked(source, lease_id)
+                if exc.errno == errno.ENOSPC:
+                    raise SpillQuotaExceeded("raw spill disk full") from exc
+                raise
+            except Exception:
+                self._remove_stream_locked(source, lease_id)
+                raise
+            return stream
+
+    def reclaim_idle(self, source: str, crypto: StreamChunkCrypto) -> int:
+        """回收无正文的空 stream 与无对应文件的孤儿预留。"""
+
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            raise ValueError("invalid raw spill source")
+        reclaimed = 0
+        with self._quota_lock():
+            if not self.directory.exists():
+                return 0
+            for path in (
+                *sorted(self.directory.glob(f"{source}-*.stream")),
+                *sorted(self.directory.glob(f"{source}-*.stream.tmp")),
+            ):
+                header = self._parse_stream_file_header(path)
+                if header is None or header.source != source:
+                    continue
+                assembled = self._assemble_stream_records(header, crypto)
+                if assembled.empty:
+                    self._remove_stream_locked(header.source, header.stream_id)
+                    reclaimed += 1
+            reclaimed += self._reclaim_orphans_locked(source)
+        return reclaimed
+
+    @contextmanager
+    def _quota_lock(self) -> Iterator[None]:
+        """Report/Reply 共用目录锁，禁止并发超卖。"""
+
+        self.directory.mkdir(parents=True, exist_ok=True)
+        handle = (self.directory / QUOTA_LOCK_NAME).open("a+b")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+    def _reservation_path(self, source: str, lease_id: str) -> Path:
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            raise ValueError("invalid raw spill source")
+        if STREAM_ID_PATTERN.fullmatch(lease_id) is None:
+            raise ValueError("invalid raw spill stream id")
+        return self.directory / f"{source}-{lease_id}{RESERVE_SUFFIX}"
+
+    def _write_reservation_locked(
+        self,
+        source: str,
+        lease_id: str,
+        reserved_bytes: int,
+    ) -> SpillReservation:
+        path = self._reservation_path(source, lease_id)
+        payload = json.dumps(
+            {
+                "created_at": datetime.now(SHANGHAI_TIMEZONE).isoformat(),
+                "lease_id": lease_id,
+                "reserved_bytes": reserved_bytes,
+                "source": source,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        with tmp.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        self._fsync_directory()
+        return SpillReservation(
+            source=source,
+            lease_id=lease_id,
+            reserved_bytes=reserved_bytes,
+            path=path,
+        )
+
+    def _parse_reservation(self, path: Path) -> SpillReservation | None:
+        try:
+            raw = json.loads(path.read_bytes().decode("utf-8"))
+            if not isinstance(raw, dict) or set(raw) != RESERVATION_KEYS:
+                return None
+            source = str(raw["source"])
+            lease_id = str(raw["lease_id"])
+            reserved_bytes = int(raw["reserved_bytes"])
+            created_at = str(raw["created_at"])
+            if reserved_bytes < 1:
+                return None
+            if SOURCE_PATTERN.fullmatch(source) is None:
+                return None
+            if STREAM_ID_PATTERN.fullmatch(lease_id) is None:
+                return None
+            if "+" not in created_at and not created_at.endswith("Z"):
+                return None
+            if self._reservation_path(source, lease_id) != path:
+                return None
+            return SpillReservation(
+                source=source,
+                lease_id=lease_id,
+                reserved_bytes=reserved_bytes,
+                path=path,
+            )
+        except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            return None
+
+    def _iter_reservations_locked(self) -> list[SpillReservation]:
+        if not self.directory.exists():
+            return []
+        records: list[SpillReservation] = []
+        for path in sorted(self.directory.glob(f"*{RESERVE_SUFFIX}")):
+            if path.name.endswith(".reserve.tmp"):
+                continue
+            record = self._parse_reservation(path)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def _reservation_for_source_locked(self, source: str) -> SpillReservation | None:
+        for record in self._iter_reservations_locked():
+            if record.source == source:
+                return record
+        return None
+
+    def _covered_names_locked(self, reservations: list[SpillReservation]) -> set[str]:
+        names: set[str] = set()
+        for record in reservations:
+            names.update(
+                {
+                    record.path.name,
+                    f"{record.source}-{record.lease_id}.stream",
+                    f"{record.source}-{record.lease_id}.stream.tmp",
+                    f"{record.source}-{record.lease_id}.stream.tmp.hdr",
+                    f"{record.source}-{record.lease_id}.stream.hdr",
+                    f"{record.source}-{record.lease_id}.quarantine",
+                }
+            )
+        return names
+
+    def _accounted_usage_locked(self) -> int:
+        if not self.directory.exists():
+            return 0
+        reservations = self._iter_reservations_locked()
+        covered = self._covered_names_locked(reservations)
+        uncovered = 0
+        for path in self.directory.iterdir():
+            if not path.is_file() or path.name == QUOTA_LOCK_NAME:
+                continue
+            if path.name in covered or path.name.endswith(RESERVE_SUFFIX):
+                continue
+            uncovered += path.stat().st_size
+        return uncovered + sum(record.reserved_bytes for record in reservations)
+
+    def _can_accept_locked(
+        self,
+        additional_bytes: int = 0,
+        *,
+        additional_files: int = 1,
+    ) -> bool:
+        return (
+            self.pending_count() + additional_files <= self.max_pending_files
+            and self._accounted_usage_locked() + additional_bytes <= self.max_total_bytes
+        )
+
+    def _remove_stream_locked(self, source: str, stream_id: str) -> None:
+        tmp = self._stream_tmp(source, stream_id)
+        tmp.unlink(missing_ok=True)
+        tmp.with_name(tmp.name + ".hdr").unlink(missing_ok=True)
+        final = self._stream_path(source, stream_id)
+        final.unlink(missing_ok=True)
+        final.with_name(final.name + ".hdr").unlink(missing_ok=True)
+        self._quarantine_path(source, stream_id).unlink(missing_ok=True)
+        reserve = self._reservation_path(source, stream_id)
+        reserve.unlink(missing_ok=True)
+        reserve.with_name(reserve.name + ".tmp").unlink(missing_ok=True)
+
+    def _reclaim_orphans_locked(self, source: str | None = None) -> int:
+        if not self.directory.exists():
+            return 0
+        reclaimed = 0
+        for path in list(self.directory.glob(f"*{RESERVE_SUFFIX}.tmp")):
+            path.unlink(missing_ok=True)
+            reclaimed += 1
+        for path in list(self.directory.glob(f"*{RESERVE_SUFFIX}")):
+            record = self._parse_reservation(path)
+            if record is None:
+                path.unlink(missing_ok=True)
+                reclaimed += 1
+                continue
+            if source is not None and record.source != source:
+                continue
+            if self._stream_tmp(record.source, record.lease_id).exists():
+                continue
+            if self._stream_path(record.source, record.lease_id).exists():
+                continue
+            path.unlink(missing_ok=True)
+            reclaimed += 1
+        return reclaimed
 
     def _read(self, path: Path) -> RawSpillRecord | None:
         try:
@@ -612,14 +886,17 @@ class RawSpillStream:
         store: RawSpillStore,
         source: str,
         crypto: StreamChunkCrypto,
+        reservation: SpillReservation,
     ) -> None:
         self.store = store
         self.source = source
         self.crypto = crypto
-        self.stream_id = secrets.token_hex(16)
+        self.reservation = reservation
+        self.stream_id = reservation.lease_id
         self._seq = 0
         self._unsynced = 0
         self._finished = False
+        self._announced = False
         self._key_version: int | None = None
         self._http_status = 200
         self._content_encoding = "identity"
@@ -639,13 +916,29 @@ class RawSpillStream:
             os.fsync(handle.fileno())
         store._fsync_directory()
 
+    @property
+    def has_announced(self) -> bool:
+        """announce 控制帧是否已持久化；此后不得当 unused header-only 丢弃。"""
+
+        return self._announced
+
+    @property
+    def has_captured_bytes(self) -> bool:
+        """是否已写入认证正文 chunk。announce 前的空租约才可立即释放。"""
+
+        return self._seq > 0
+
     def feed(self, chunk: bytes) -> bool:
-        """追加一个认证加密 chunk。配额不足时返回 False，由调用方完整性终止。"""
+        """追加一个认证加密 chunk。超出本请求预留或磁盘满时返回 False。"""
 
         if self._finished or not chunk:
             return not self._finished
-        overhead = STREAM_RECORD_HEADER.size + 48
-        if not self.store.can_accept(len(chunk) + overhead, additional_files=0):
+        framed = len(chunk) + CHUNK_WRITE_OVERHEAD_BYTES
+        try:
+            current = self.path.stat().st_size
+        except OSError:
+            return False
+        if current + framed > self.reservation.reserved_bytes:
             return False
         encrypted = self.crypto.encrypt_bound_bytes(
             chunk,
@@ -657,14 +950,19 @@ class RawSpillStream:
             ),
         )
         self._bind_key_version(encrypted.key_version)
-        with self.path.open("ab") as handle:
-            handle.write(STREAM_RECORD_HEADER.pack(len(encrypted.payload)))
-            handle.write(encrypted.payload)
-            handle.flush()
-            self._unsynced += STREAM_RECORD_HEADER.size + len(encrypted.payload)
-            if self._unsynced >= SYNC_EVERY_BYTES:
-                os.fsync(handle.fileno())
-                self._unsynced = 0
+        try:
+            with self.path.open("ab") as handle:
+                handle.write(STREAM_RECORD_HEADER.pack(len(encrypted.payload)))
+                handle.write(encrypted.payload)
+                handle.flush()
+                self._unsynced += STREAM_RECORD_HEADER.size + len(encrypted.payload)
+                if self._unsynced >= SYNC_EVERY_BYTES:
+                    os.fsync(handle.fileno())
+                    self._unsynced = 0
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                return False
+            raise
         self._seq += 1
         return True
 
@@ -691,6 +989,7 @@ class RawSpillStream:
             content_encoding=self._content_encoding,
             capture_state=capture_state,
         )
+        self._announced = True
 
     def finish(
         self,

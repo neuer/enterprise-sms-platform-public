@@ -16,6 +16,14 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
+# 与 raw_spill.capture_reservation_bytes 对齐：一次 64MiB 恢复捕获 + 文档化帧开销。
+# 不得 import raw_spill（raw_spill → crypto → settings 会成环）。
+RAW_SPILL_RECOVERY_CAPTURE_BYTES = 64 * 1024 * 1024
+RAW_SPILL_CAPTURE_OVERHEAD_BYTES = 1024 * 1024
+RAW_SPILL_MIN_TOTAL_BYTES = (
+    RAW_SPILL_RECOVERY_CAPTURE_BYTES + RAW_SPILL_CAPTURE_OVERHEAD_BYTES
+)
+
 DatabaseRole = Literal[
     "auth",
     "accept",
@@ -360,9 +368,11 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.metrics_snapshot_ttl_seconds <= 60:
             raise ValueError("METRICS_SNAPSHOT_TTL_SECONDS must be between 1 and 60")
-        if not 16 * 1024 * 1024 <= self.raw_spill_max_total_bytes <= 8 * 1024 * 1024 * 1024:
+        max_spill_bytes = 8 * 1024 * 1024 * 1024
+        if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_total_bytes <= max_spill_bytes:
             raise ValueError(
-                "RAW_SPILL_MAX_TOTAL_BYTES must be between 16MiB and 8GiB"
+                "RAW_SPILL_MAX_TOTAL_BYTES must be at least one 64MiB recovery "
+                "capture plus documented framing overhead, and at most 8GiB"
             )
         if not 1 <= self.raw_spill_max_pending_files <= 256:
             raise ValueError("RAW_SPILL_MAX_PENDING_FILES must be between 1 and 256")
