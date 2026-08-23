@@ -161,6 +161,7 @@ SQL
       tests/integration/test_async_import_postgres.py \
       tests/integration/test_usage_ledger_postgres.py \
       tests/integration/test_raw_capture_legacy_postgres.py \
+      tests/integration/test_raw_replay_eligibility_postgres.py \
       tests/integration/test_ops_audit_postgres.py
 )
 

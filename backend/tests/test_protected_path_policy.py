@@ -90,6 +90,7 @@ def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
     )
     assert "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh" in ci_yml
     assert "test_raw_capture_legacy_postgres.py" in postgres_gate
+    assert "test_raw_replay_eligibility_postgres.py" in postgres_gate
     assert "SECURITY_SESSION_POSTGRES_DSN" in postgres_gate
 
 
