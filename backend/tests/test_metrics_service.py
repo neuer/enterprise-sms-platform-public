@@ -46,6 +46,7 @@ def sample_facts() -> MetricsFacts:
             ("unexpected-kind", "free-form-event", 5),
         ),
         queue_depths=(("realtime", 3), ("bulk", 9)),
+        raw_replay_eligibility=(("automatic", 2), ("manual", 3), ("never", 5)),
     )
 
 
@@ -154,6 +155,9 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
         in body
     )
     assert 'sms_worker_lease_events{event="other",task_kind="other"} 5.0' in body
+    assert 'sms_raw_replay_eligibility{eligibility="automatic"} 2.0' in body
+    assert 'sms_raw_replay_eligibility{eligibility="manual"} 3.0' in body
+    assert 'sms_raw_replay_eligibility{eligibility="never"} 5.0' in body
     assert "sms_runtime_process_resident_memory_bytes 123456.0" in body
     assert "sms_runtime_event_loop_delay_seconds 0.025" in body
     assert 'sms_runtime_database_connections{state="open"} 8.0' in body

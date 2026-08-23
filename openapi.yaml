@@ -2364,6 +2364,22 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /api/v1/web/admin/raw-logs/{id}/reevaluate:
+    post:
+      tags: [admin]
+      summary: parser 升级后重评估指定 raw 的解析面与重放资格（不投影业务）
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 已重评估
+          content: { application/json: { schema: { $ref: '#/components/schemas/ReevaluateResultModel' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /api/v1/web/admin/security-daily/overview:
     get:
       tags: [security-daily]
@@ -3255,7 +3271,7 @@ components:
 
     RawLogModel:
       type: object
-      required: [id, source, item_count, custom_id_count, processed, error, fetched_at, capture_state]
+      required: [id, source, item_count, custom_id_count, processed, error, fetched_at, capture_state, parse_state, replay_eligibility]
       properties:
         id: { type: integer }
         source: { type: string, enum: [report, reply] }
@@ -3265,6 +3281,8 @@ components:
         error: { anyOf: [{ type: string }, { type: 'null' }] }
         fetched_at: { type: string, format: date-time }
         capture_state: { type: string, enum: [complete, complete_too_large, truncated, protocol_invalid, unknown_legacy] }
+        parse_state: { type: string, enum: [unattempted, transient_failure, protocol_invalid, processed] }
+        replay_eligibility: { type: string, enum: [automatic, manual, never] }
 
     RawLogPageModel:
       type: object
@@ -3398,6 +3416,15 @@ components:
       required: [processed_items]
       properties:
         processed_items: { type: integer }
+
+    ReevaluateResultModel:
+      type: object
+      required: [parse_state, replay_eligibility, reason, parser_version]
+      properties:
+        parse_state: { type: string, enum: [unattempted, transient_failure, protocol_invalid, processed] }
+        replay_eligibility: { type: string, enum: [automatic, manual, never] }
+        reason: { type: string }
+        parser_version: { type: integer }
 
     User:
       type: object

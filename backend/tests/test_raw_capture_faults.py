@@ -127,7 +127,7 @@ class TruncatedReplayRepository:
     def __init__(self) -> None:
         self.claim_calls: list[int] = []
 
-    async def claim_raw_for_replay(self, raw_id: int) -> object:
+    async def claim_raw_for_replay(self, raw_id: int, **_: object) -> object:
         self.claim_calls.append(raw_id)
         return type(
             "Claim",
@@ -328,7 +328,7 @@ async def test_truncated_raw_replay_is_rejected() -> None:
 @pytest.mark.asyncio
 async def test_protocol_invalid_raw_replay_is_rejected() -> None:
     class ProtocolInvalidRepository(TruncatedReplayRepository):
-        async def claim_raw_for_replay(self, raw_id: int) -> object:
+        async def claim_raw_for_replay(self, raw_id: int, **_: object) -> object:
             self.claim_calls.append(raw_id)
             return type(
                 "Claim",

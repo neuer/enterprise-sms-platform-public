@@ -18,6 +18,7 @@ from app.vendor.codes import ERROR_POLICIES
 
 CATEGORIES = ("verify", "notice", "market")
 QUEUES = ("realtime", "bulk")
+RAW_REPLAY_ELIGIBILITIES = ("automatic", "manual", "never")
 VENDOR_ERROR_LABELS = frozenset(str(code) for code in ERROR_POLICIES)
 LEASE_EVENT_LABELS = frozenset(
     {
@@ -46,6 +47,7 @@ class MetricsFacts:
     worker_stalled_leases: tuple[tuple[str, int], ...] = ()
     worker_lease_events: tuple[tuple[str, str, int], ...] = ()
     queue_depths: tuple[tuple[str, int], ...] = ()
+    raw_replay_eligibility: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +249,16 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         normalized_lease_events[key] = normalized_lease_events.get(key, 0) + count
     for (task_kind, event), count in sorted(normalized_lease_events.items()):
         lease_events.labels(task_kind=task_kind, event=event).set(count)
+
+    eligibility = Gauge(
+        "sms_raw_replay_eligibility",
+        "raw_vendor_log rows grouped by persisted replay eligibility.",
+        ("eligibility",),
+        registry=registry,
+    )
+    eligibility_values = _values(snapshot.facts.raw_replay_eligibility)
+    for label in RAW_REPLAY_ELIGIBILITIES:
+        eligibility.labels(eligibility=label).set(eligibility_values.get(label, 0.0))
 
     if snapshot.runtime is not None:
         loop_delay = Gauge(
