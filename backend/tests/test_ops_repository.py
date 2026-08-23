@@ -53,6 +53,10 @@ class FakeConnection:
         self.calls.append((str(statement), params))
         return self.results.pop(0)
 
+    async def scalar(self, statement: object, params: Any = None) -> object:
+        result = await self.execute(statement, params)
+        return result.scalar
+
 
 class FakeContext:
     def __init__(self, connection: FakeConnection) -> None:
@@ -122,6 +126,7 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "processing_started_at IS NULL" in normalized_sql
     assert "interval '15 minutes'" in normalized_sql
     assert "RETURNING" in normalized_sql
+    assert "item_count" in normalized_sql
     assert params == {"raw_id": 9}
 
 
@@ -227,21 +232,97 @@ async def test_job_list_casts_datetime_parameters_for_postgres_interval_math() -
 
 
 @pytest.mark.asyncio
-async def test_raw_replay_audit_binds_numeric_id_without_asyncpg_text_coercion() -> None:
-    repo, connection = repository([FakeResult()])
+async def test_human_raw_replay_audit_binds_live_principal_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bound: list[dict[str, object]] = []
 
-    await repo.audit_raw_replay(
-        9,
-        source="report",
-        items=1,
-        actor="admin01",
-        ip="10.0.0.8",
+    async def fake_bind(connection: object, **kwargs: object) -> None:
+        bound.append({"connection": connection, **kwargs})
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_audit_subject",
+        fake_bind,
     )
+    repo, connection = repository([FakeResult()])
+    principal = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
+    with correlation_scope():
+        await repo.audit_raw_replay(
+            9,
+            source="report",
+            items=1,
+            actor="admin01",
+            ip="10.0.0.8",
+            principal=principal,
+        )
+
+    assert bound == [
+        {
+            "connection": connection,
+            "subject_kind": "human",
+            "actor_name": "admin01",
+            "account_id": 1,
+            "identity_id": 10,
+        }
+    ]
     sql, params = connection.calls[0]
-    assert "CAST(CAST(:raw_id AS bigint) AS text)" in sql
-    assert params["raw_id"] == 9
-    assert "actor_subject_kind" not in sql
+    assert "INSERT INTO audit_log" in sql
+    assert "actor_subject_kind" in sql
+    assert "actor_account_id" in sql
+    assert "CAST(CAST(:object_id AS bigint) AS text)" in sql
+    assert "jsonb_build_object" not in sql
+    assert params["action"] == "raw_replay"
+    assert params["object_type"] == "raw_vendor_log"
+    assert params["object_id"] == 9
+    assert params["account_id"] == 1
+    assert params["identity_id"] == 10
+    assert params["actor"] == "admin01"
+    assert json.loads(str(params["after"])) == {"source": "report", "items": 1}
+
+
+@pytest.mark.asyncio
+async def test_human_raw_replay_audit_fails_closed_when_actor_does_not_match_principal() -> None:
+    repo, connection = repository([])
+    human = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with correlation_scope(), pytest.raises(RuntimeError, match="audit principal"):
+        await repo.audit_raw_replay(
+            9,
+            source="report",
+            items=1,
+            actor="other-admin",
+            ip="10.0.0.8",
+            principal=human,
+        )
+
+    assert connection.calls == []
+
+
+@pytest.mark.asyncio
+async def test_system_raw_replay_audit_rejects_human_principal() -> None:
+    repo, connection = repository([])
+    human = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with correlation_scope(), pytest.raises(RuntimeError, match="cannot bind a human"):
+        await repo.audit_raw_replay(
+            9,
+            source="reply",
+            items=2,
+            actor="system-reconcile",
+            ip="127.0.0.1",
+            system_producer=True,
+            principal=human,
+        )
+
+    assert connection.calls == []
+
+
+def test_human_raw_replay_audit_source_does_not_use_legacy_unattributed_insert() -> None:
+    source = inspect.getsource(SqlOpsRepository.audit_raw_replay)
+    assert "bind_connection_audit_subject" in source
+    assert "insert_audit" in source
+    assert ":actor,'admin',CAST(:ip AS inet),'raw_replay'" not in source
 
 
 @pytest.mark.asyncio
@@ -283,6 +364,18 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
     assert params["actor"] == "system-reconcile"
     assert params["raw_id"] == 9
     assert "ip" not in params
+
+
+@pytest.mark.asyncio
+async def test_has_human_raw_replay_audit_queries_human_subject_only() -> None:
+    repo, connection = repository([FakeResult(scalar=1)])
+
+    assert await repo.has_human_raw_replay_audit(9) is True
+    sql, params = connection.calls[0]
+    assert "action='raw_replay'" in sql
+    assert "object_type='raw_vendor_log'" in sql
+    assert "CAST(CAST(:raw_id AS bigint) AS text)" in sql
+    assert params == {"raw_id": 9}
 
 
 @pytest.mark.asyncio

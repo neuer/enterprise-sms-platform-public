@@ -8,7 +8,10 @@ from typing import Any
 import pytest
 
 from app.services.crypto import CryptoService
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.raw_replay import RawReplayConflict, RawReplayRecord, RawReplayService
+
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_PROTOCOL_INVALID,
@@ -144,6 +147,9 @@ class TruncatedReplayRepository:
 
     async def mark_replay_error(self, raw_id: int, error: str) -> None:
         return None
+
+    async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
+        return True
 
     async def audit_raw_replay(self, raw_id: int, **_: Any) -> None:
         return None
@@ -313,7 +319,7 @@ async def test_truncated_raw_replay_is_rejected() -> None:
         object(),  # type: ignore[arg-type]
     )
     with pytest.raises(RawReplayConflict, match="截断"):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
 
 @pytest.mark.asyncio
@@ -345,4 +351,4 @@ async def test_protocol_invalid_raw_replay_is_rejected() -> None:
         object(),  # type: ignore[arg-type]
     )
     with pytest.raises(RawReplayConflict, match="协议异常"):
-        await service.replay(11, actor="admin01", ip="10.0.0.8")
+        await service.replay(11, actor="admin01", ip="10.0.0.8", principal=ADMIN)

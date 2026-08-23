@@ -232,6 +232,7 @@ class QueueRecoveryRepository(Protocol):
         *,
         actor: str,
         ip: str,
+        principal: SecurityPrincipal,
     ) -> tuple[PausedBatch, ...]: ...
 
     async def clear_queue_pauses(self) -> None: ...
@@ -261,6 +262,7 @@ class QueueRecoveryService:
         force: bool,
         actor: str,
         ip: str,
+        principal: SecurityPrincipal,
     ) -> QueueResumeResult:
         snapshot = await self.repository.queue_snapshot()
         codes = tuple(
@@ -273,7 +275,11 @@ class QueueRecoveryService:
                 raise QueueResumeConflict("厂商余额尚未达到恢复阈值")
             if any(code != "999" for code in codes):
                 raise QueueResumeConflict("非余额熔断必须显式设置 force=true")
-        batches = await self.repository.resume_batches(actor=actor, ip=ip)
+        batches = await self.repository.resume_batches(
+            actor=actor,
+            ip=ip,
+            principal=principal,
+        )
         await self.repository.clear_queue_pauses()
         for batch in batches:
             lane = queue_for_category(batch.category)

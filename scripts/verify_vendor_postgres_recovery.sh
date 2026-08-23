@@ -160,7 +160,8 @@ SQL
       tests/integration/test_import_reservation_postgres.py \
       tests/integration/test_async_import_postgres.py \
       tests/integration/test_usage_ledger_postgres.py \
-      tests/integration/test_raw_capture_legacy_postgres.py
+      tests/integration/test_raw_capture_legacy_postgres.py \
+      tests/integration/test_ops_audit_postgres.py
 )
 
 printf '%s\n' "真实 PostgreSQL 恢复、稳定主体授权与安全会话合同通过：一次性数据库，仅合成数据"
