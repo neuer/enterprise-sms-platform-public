@@ -190,6 +190,7 @@ class AuthFacade:
         password: str,
         ip: str,
         tab_id: str,
+        prior_refresh_token: str | None = None,
     ) -> LoginSuccess | PasswordChangeRequired:
         try:
             identity = await self.auth.authenticate(
@@ -254,6 +255,7 @@ class AuthFacade:
                 expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
             )
             return PasswordChangeRequired(change_token)
+        await self._revoke_presented_refresh_family(prior_refresh_token)
         try:
             pair = await self.tokens.issue_pair(self._claims(user), tab_id)
         except SessionStateUnavailable:
@@ -264,6 +266,26 @@ class AuthFacade:
                 None,
             ) from None
         return self._login_success(pair, user)
+
+    async def _revoke_presented_refresh_family(
+        self,
+        refresh_token: str | None,
+    ) -> None:
+        """吊销请求带来的旧 Cookie family；无效令牌忽略，存储故障失败关闭。"""
+
+        if not refresh_token:
+            return
+        try:
+            await self.tokens.revoke_refresh_token(refresh_token)
+        except InvalidCredentials:
+            return
+        except SessionStateUnavailable:
+            raise ApiError(
+                503,
+                "AUTH_SESSION_UNAVAILABLE",
+                "会话权威状态暂不可用，请稍后重试",
+                None,
+            ) from None
 
     async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
         """轮换后持久审计；审计失败时吊销刚签发的整个会话。"""

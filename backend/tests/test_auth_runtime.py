@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -335,6 +336,212 @@ async def test_normal_login_issues_account_based_access_token() -> None:
     assert refreshed.refresh_token != result.refresh_token
     assert (await tokens.verify(refreshed.token)).account_id == 8
     assert users.refresh_audits == [(users.value, IP)]
+
+
+def _viewer_claims() -> JwtClaims:
+    return JwtClaims(
+        account_id=9,
+        identity_id=19,
+        provider_code="local",
+        login_name="viewer01",
+        display_name="查看员",
+        dept="平台部",
+        role="viewer",
+        security_version=3,
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_revokes_prior_cookie_family_before_issuing_new_one() -> None:
+    service, users, tokens, _ = facade(must_change_password=False)
+    prior = await tokens.issue_pair(_viewer_claims(), TAB_ID)
+    prior_session_id = str(tokens._decode(prior.token)["sid"])
+
+    with audit_principal_scope():
+        result = await service.login(
+            "local",
+            "admin",
+            "Valid@Password123",
+            IP,
+            TAB_ID,
+            prior.refresh_token,
+        )
+        assert current_audit_principal() is None
+
+    assert isinstance(result, LoginSuccess)
+    new_claims = await tokens.verify(result.token)
+    assert new_claims.account_id == 8
+    assert new_claims.session_id != prior_session_id
+    assert users.logout_audits == []
+    with pytest.raises(ApiError) as late:
+        await service.refresh(prior.refresh_token, IP, TAB_ID)
+    assert late.value.status_code == 401
+    assert late.value.code == "UNAUTHORIZED"
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(prior.refresh_token, TAB_ID)
+    refreshed = await service.refresh(result.refresh_token, IP, TAB_ID)
+    assert refreshed.refresh_token != result.refresh_token
+    assert (await tokens.verify(refreshed.token)).account_id == 8
+
+
+@pytest.mark.asyncio
+async def test_relogin_revokes_same_account_prior_family() -> None:
+    service, users, tokens, _ = facade(must_change_password=False)
+    first = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+    assert isinstance(first, LoginSuccess)
+    first_session_id = (await tokens.verify(first.token)).session_id
+
+    second = await service.login(
+        "local",
+        "admin",
+        "Valid@Password123",
+        IP,
+        TAB_ID,
+        first.refresh_token,
+    )
+    assert isinstance(second, LoginSuccess)
+    assert second.refresh_token != first.refresh_token
+    assert (await tokens.verify(second.token)).session_id != first_session_id
+    with pytest.raises(ApiError) as late:
+        await service.refresh(first.refresh_token, IP, TAB_ID)
+    assert late.value.code == "UNAUTHORIZED"
+    third = await service.refresh(second.refresh_token, IP, TAB_ID)
+    assert third.refresh_token != second.refresh_token
+    assert users.logout_audits == []
+
+
+@pytest.mark.asyncio
+async def test_failed_login_does_not_revoke_presented_cookie_family() -> None:
+    service, _, tokens, _ = facade(must_change_password=False)
+    first = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+    assert isinstance(first, LoginSuccess)
+    service.auth.identity = InvalidCredentials("bad")
+
+    with pytest.raises(ApiError) as failed:
+        await service.login(
+            "local",
+            "admin",
+            "Wrong@Password123",
+            IP,
+            TAB_ID,
+            first.refresh_token,
+        )
+    assert failed.value.code == "UNAUTHORIZED"
+    reused = await service.refresh(first.refresh_token, IP, TAB_ID)
+    assert (await tokens.verify(reused.token)).account_id == 8
+
+
+@pytest.mark.asyncio
+async def test_password_change_required_does_not_revoke_prior_family() -> None:
+    service, _, tokens, _ = facade(must_change_password=True)
+    prior = await tokens.issue_pair(
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3),
+        TAB_ID,
+    )
+
+    result = await service.login(
+        "local",
+        "admin",
+        "Temporary@123",
+        IP,
+        TAB_ID,
+        prior.refresh_token,
+    )
+
+    assert isinstance(result, PasswordChangeRequired)
+    rotated = await tokens.rotate_refresh(prior.refresh_token, TAB_ID)
+    assert (await tokens.verify(rotated.token)).account_id == 8
+
+
+@pytest.mark.asyncio
+async def test_login_ignores_invalid_prior_cookie_and_still_issues_family() -> None:
+    service, _, tokens, _ = facade(must_change_password=False)
+
+    result = await service.login(
+        "local",
+        "admin",
+        "Valid@Password123",
+        IP,
+        TAB_ID,
+        "not-a-refresh-token",
+    )
+
+    assert isinstance(result, LoginSuccess)
+    refreshed = await service.refresh(result.refresh_token, IP, TAB_ID)
+    assert (await tokens.verify(refreshed.token)).account_id == 8
+
+
+@pytest.mark.asyncio
+async def test_prior_family_revoke_unavailability_fail_closes_without_new_pair() -> None:
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="admin",
+        external_subject="local:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    users = FakeUserRepository(value)
+
+    class RevokeUnavailable(FakeKeyValue):
+        async def eval(self, script: str, numkeys: int, *args: object) -> int:
+            if numkeys == 3:
+                raise RuntimeError("redis unavailable")
+            return await super().eval(script, numkeys, *args)
+
+    tokens = JwtService(
+        SECRET,
+        RevokeUnavailable(),
+        clock=lambda: datetime(2026, 7, 16, 8, tzinfo=UTC),
+        security_session_loader=users.load_security_session,
+    )
+    service = AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
+    prior = await tokens.issue_pair(
+        JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3),
+        TAB_ID,
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await service.login(
+            "local",
+            "admin",
+            "Valid@Password123",
+            IP,
+            TAB_ID,
+            prior.refresh_token,
+        )
+    assert raised.value.status_code == 503
+    assert raised.value.code == "AUTH_SESSION_UNAVAILABLE"
+    reused = await tokens.rotate_refresh(prior.refresh_token, TAB_ID)
+    assert (await tokens.verify(reused.token)).account_id == 8
+
+
+@pytest.mark.asyncio
+async def test_login_prior_family_revoke_does_not_log_tokens_or_pii(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _, tokens, _ = facade(must_change_password=False)
+    prior = await tokens.issue_pair(_viewer_claims(), TAB_ID)
+
+    with caplog.at_level(logging.DEBUG):
+        result = await service.login(
+            "local",
+            "admin",
+            "Valid@Password123",
+            IP,
+            TAB_ID,
+            prior.refresh_token,
+        )
+
+    assert isinstance(result, LoginSuccess)
+    leaked = caplog.text
+    assert prior.refresh_token not in leaked
+    assert result.refresh_token not in leaked
+    assert result.token not in leaked
+    assert "Valid@Password123" not in leaked
+    assert "13800138000" not in leaked
 
 
 @pytest.mark.asyncio

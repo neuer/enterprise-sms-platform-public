@@ -274,6 +274,7 @@ async def login(
         payload.password,
         _client_ip(request),
         payload.tab_id,
+        request.cookies.get(REFRESH_COOKIE_NAME),
     )
     response.headers["Cache-Control"] = "no-store"
     if isinstance(result, PasswordChangeRequired):

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import app.api.auth as auth_api
 from app.core.auth.accounts import PlatformAccount
+from app.core.auth.backends import AuthenticatedIdentity
+from app.core.auth.jwt import JwtService
 from app.core.auth.runtime import (
+    AuthFacade,
     LoginSuccess,
     PasswordChangeRequired,
     get_auth_facade,
@@ -16,6 +20,8 @@ from app.core.errors import ApiError
 from app.main import create_app
 from app.services.auth_provider import ProviderSummary
 from app.settings import Settings
+from tests.test_auth import FakeKeyValue
+from tests.test_auth_runtime import FakeAuthService, FakeHasher, FakeUserRepository
 
 TAB_ID = "c" * 32
 
@@ -38,7 +44,7 @@ def user() -> PlatformAccount:
 
 class FakeAuthFacade:
     def __init__(self) -> None:
-        self.login_calls: list[tuple[str, str, str, str, str]] = []
+        self.login_calls: list[tuple[str, str, str, str, str, str | None]] = []
         self.initial_changes: list[tuple[str, str, str]] = []
         self.daily_changes: list[tuple[str, str, str, str]] = []
         self.logout_tokens: list[str] = []
@@ -68,8 +74,11 @@ class FakeAuthFacade:
         password: str,
         ip: str,
         tab_id: str,
+        prior_refresh_token: str | None = None,
     ) -> LoginSuccess | PasswordChangeRequired:
-        self.login_calls.append((provider_code, username, password, ip, tab_id))
+        self.login_calls.append(
+            (provider_code, username, password, ip, tab_id, prior_refresh_token)
+        )
         if provider_code == "disabled":
             raise ApiError(403, "AUTH_PROVIDER_DISABLED", "所选认证源未启用", None)
         if password == "temporary":
@@ -186,6 +195,7 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     assert "Path=/api/v1/web/auth" in login_cookie
     assert "SameSite=lax" in login_cookie
     assert facade.login_calls[0][:3] == ("local", "operator01", "correct")
+    assert facade.login_calls[0][5] is None
 
     refreshed = response_client.post(
         "/api/v1/web/auth/refresh",
@@ -437,3 +447,98 @@ def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
     assert "Secure" in login.headers.get("set-cookie", "")
     assert "HttpOnly" in login.headers.get("set-cookie", "")
     assert "SameSite=lax" in login.headers.get("set-cookie", "")
+
+
+def _refresh_cookie(response: Any) -> str:
+    header = response.headers.get("set-cookie", "")
+    for part in header.split(";"):
+        item = part.strip()
+        if item.startswith("sms_refresh_token="):
+            return item.split("=", 1)[1]
+    raise AssertionError("missing sms_refresh_token Set-Cookie")
+
+
+def _login_payload(password: str = "correct") -> dict[str, str]:
+    return {
+        "provider_code": "local",
+        "username": "operator01",
+        "password": password,
+        "tab_id": TAB_ID,
+    }
+
+
+def test_login_forwards_existing_refresh_cookie_to_facade() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+    response_client.cookies.set("sms_refresh_token", "old-family.jwt")
+
+    success = response_client.post("/api/v1/web/auth/login", json=_login_payload())
+
+    assert success.status_code == 200
+    assert facade.login_calls[0][5] == "old-family.jwt"
+    assert "sms_refresh_token=refresh.jwt" in success.headers.get("set-cookie", "")
+
+    late = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={"tab_id": TAB_ID, "refresh_token": "old-family.jwt"},
+    )
+    assert late.status_code == 401
+    assert late.json()["code"] == "UNAUTHORIZED"
+    assert "sms_refresh_token=" not in late.headers.get("set-cookie", "")
+
+
+def _real_login_facade() -> AuthFacade:
+    value = user()
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="operator01",
+        external_subject="local:operator01",
+        display_name="测试用户",
+        dept="研发部",
+        groups=(),
+        account=value,
+    )
+    users = FakeUserRepository(value)
+    tokens = JwtService(
+        "a-jwt-secret-that-is-long-enough-for-hs256-tests",
+        FakeKeyValue(),
+        security_session_loader=users.load_security_session,
+    )
+    return AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
+
+
+def test_relogin_revokes_prior_cookie_family_and_late_refresh_has_no_set_cookie() -> None:
+    facade = _real_login_facade()
+    response_client = client(facade)
+
+    first = response_client.post("/api/v1/web/auth/login", json=_login_payload())
+    assert first.status_code == 200
+    old_refresh = _refresh_cookie(first)
+    assert old_refresh
+    assert "refresh_token" not in first.json()
+
+    second = response_client.post("/api/v1/web/auth/login", json=_login_payload())
+    assert second.status_code == 200
+    new_refresh = _refresh_cookie(second)
+    assert new_refresh
+    assert new_refresh != old_refresh
+    assert "refresh_token" not in second.json()
+
+    late = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={"tab_id": TAB_ID, "refresh_token": old_refresh},
+    )
+    assert late.status_code == 401
+    assert late.json()["code"] == "UNAUTHORIZED"
+    assert "sms_refresh_token=" not in late.headers.get("set-cookie", "")
+
+    rotated = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={"tab_id": TAB_ID},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["user"]["account_id"] == 8
+    assert _refresh_cookie(rotated) != new_refresh
