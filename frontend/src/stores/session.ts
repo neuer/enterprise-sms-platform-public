@@ -11,6 +11,7 @@ import {
   type UserRole,
 } from "../api/auth"
 import {
+  bootstrapLegacyAccessSession,
   clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
@@ -27,16 +28,6 @@ export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
 function readStorage(name: "localStorage" | "sessionStorage"): Storage | null {
   try {
     return window[name]
-  } catch {
-    return null
-  }
-}
-
-function storageGet(name: "localStorage" | "sessionStorage", key: string): string | null {
-  const storage = readStorage(name)
-  if (!storage) return null
-  try {
-    return storage.getItem(key)
   } catch {
     return null
   }
@@ -156,33 +147,16 @@ export const useSessionStore = defineStore("session", {
       }
     },
     restore() {
-      const token = storageGet("sessionStorage", TOKEN_KEY)
-      const rawUser = storageGet("sessionStorage", USER_KEY)
-      // 历史版本凭据只允许同步读取一次；解析或任何异步操作前立即销毁。
-      storageRemove("sessionStorage", TOKEN_KEY)
-      storageRemove("sessionStorage", USER_KEY)
+      // 历史凭据只允许当前 Document 扫描一次；clear/logout 后不得再从 Storage 导入。
+      bootstrapLegacyAccessSession()
       clearLegacyPersistence()
       const memoryToken = getAccessToken()
       const memoryUser = getSessionUser()
-      if (!memoryToken && (!token || !rawUser)) {
-        clearLegacyPersistence()
-        this.resetIdentity()
-        return
-      }
       if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
         this.apply(memoryToken, memoryUser)
         return
       }
-      try {
-        const user: unknown = rawUser ? JSON.parse(rawUser) : null
-        if (!token || !isPlatformUser(user)) {
-          this.clear()
-          return
-        }
-        this.apply(token, user as PlatformUser)
-      } catch {
-        this.clear()
-      }
+      this.resetIdentity()
     },
     async restoreFromCookie(): Promise<boolean> {
       if (this.token) return true
