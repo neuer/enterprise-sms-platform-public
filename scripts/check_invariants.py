@@ -874,6 +874,25 @@ def check_worker_fencing_invariants() -> None:
         APP / "services/export_file.py",
         'f"export-{task_id}-{token}.part"',
         'f"export-{task_id}-{token}.smsx"',
+        "fsync_directory",
+        "verify_ready",
+    )
+    require_fragments(
+        APP / "services/file_durability.py",
+        "def fsync_directory",
+        "os.fsync",
+        "os.replace",
+        "mark_done",
+    )
+    require_fragments(
+        APP / "services/import_file.py",
+        "fsync_directory",
+    )
+    require_fragments(
+        APP / "services/export_reconcile.py",
+        "mark_unreadable",
+        "list_root_artifacts",
+        "clear_file",
     )
     require_fragments(
         ROOT / "backend/migrations/versions/0029_worker_fencing_leases.py",

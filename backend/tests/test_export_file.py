@@ -176,3 +176,79 @@ async def test_export_detects_reordered_deleted_and_cross_file_frames(tmp_path: 
     )
     with pytest.raises((InvalidTag, ValueError)):
         b"".join(codec.iter_decrypted(first))
+
+
+@pytest.mark.asyncio
+async def test_export_manifest_binds_task_lease_and_ciphertext_digest(
+    tmp_path: Path,
+) -> None:
+    codec = ExportFileCodec(crypto(), tmp_path, frame_size=32)
+    path = await codec.write_csv(9, LEASE_ID, ("phone", "content", "status"), rows())
+    proof = codec.verify_ready(path, expected_task_id=9, expected_lease_id=LEASE_ID)
+    assert proof.task_id == 9
+    assert proof.lease_id == LEASE_ID
+    assert proof.format_version == 2
+    assert proof.state == "complete"
+    assert proof.row_count == 2
+    assert proof.ciphertext_sha256 is not None and len(proof.ciphertext_sha256) == 64
+    assert proof.ciphertext_size is not None and proof.ciphertext_size > 0
+    raw = path.read_bytes()
+    assert b"13800138000" not in raw
+    assert "系统通知".encode() not in raw
+    os.chmod(path, 0o644)
+    with pytest.raises(ValueError, match="permissions"):
+        codec.verify_ready(path, expected_task_id=9, expected_lease_id=LEASE_ID)
+    os.chmod(path, 0o600)
+    with pytest.raises(ValueError, match="authorized export task"):
+        codec.verify_ready(path, expected_task_id=8, expected_lease_id=LEASE_ID)
+    other = UUID("30000000-0000-4000-8000-000000000009")
+    with pytest.raises(ValueError, match="current export lease"):
+        codec.verify_ready(path, expected_task_id=9, expected_lease_id=other)
+
+
+@pytest.mark.asyncio
+async def test_legacy_empty_terminal_still_decrypts_but_is_not_reusable(
+    tmp_path: Path,
+) -> None:
+    codec = ExportFileCodec(crypto(), tmp_path)
+    path = tmp_path / f"export-9-{LEASE_ID}.smsx"
+    version = codec.crypto.active_version
+    with path.open("xb") as output:
+        os.chmod(path, 0o600)
+        output.write(b"SMSX2" + version.to_bytes(2, "big"))
+        codec._write_frame(
+            output,
+            b"phone\r\n13800138000\r\n",
+            version,
+            task_id=9,
+            lease_id=LEASE_ID,
+            frame_index=0,
+            kind="data",
+        )
+        codec._write_frame(
+            output,
+            b"",
+            version,
+            task_id=9,
+            lease_id=LEASE_ID,
+            frame_index=1,
+            kind="terminal",
+        )
+    plaintext = b"".join(codec.iter_decrypted(path))
+    assert b"13800138000" in plaintext
+    legacy = codec.inspect_final(path, expected_task_id=9, require_manifest=False)
+    assert legacy.state == "legacy" and legacy.row_count is None
+    with pytest.raises(ValueError, match="manifest is missing"):
+        codec.verify_ready(path, expected_task_id=9, require_manifest=True)
+    assert codec.find_reusable_final(9) is None
+
+
+@pytest.mark.asyncio
+async def test_manifest_digest_mismatch_is_rejected(tmp_path: Path) -> None:
+    codec = ExportFileCodec(crypto(), tmp_path, frame_size=32)
+    path = await codec.write_csv(9, LEASE_ID, ("phone", "content", "status"), rows())
+    tampered = bytearray(path.read_bytes())
+    tampered[-2] ^= 0x01
+    path.write_bytes(tampered)
+    with pytest.raises((InvalidTag, ValueError)):
+        codec.verify_ready(path, expected_task_id=9, expected_lease_id=LEASE_ID)

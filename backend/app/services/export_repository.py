@@ -40,6 +40,12 @@ class ExpiredExport:
     file_path: str
 
 
+@dataclass(frozen=True, slots=True)
+class ExportLeaseRef:
+    id: int
+    lease_id: UUID
+
+
 def _message_where() -> str:
     return """
       (CAST(:scope_dept AS varchar(128)) IS NULL OR b.dept=:scope_dept)
@@ -611,6 +617,59 @@ class SqlExportRepository:
     async def clear_file(self, task_id: int, file_path: str) -> None:
         await self._update(
             "UPDATE export_task SET file_path=NULL WHERE id=:task_id AND file_path=:file_path",
+            {"task_id": task_id, "file_path": file_path},
+        )
+
+    async def ready_files(self, retention_days: int) -> list[ExpiredExport]:
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT id,file_path FROM export_task
+                        WHERE status='done' AND file_path IS NOT NULL
+                          AND finished_at IS NOT NULL
+                          AND finished_at+make_interval(days=>:days)>now()
+                        """
+                    ),
+                    {"days": retention_days},
+                )
+                return [
+                    ExpiredExport(int(row["id"]), str(row["file_path"]))
+                    for row in result.mappings()
+                ]
+        finally:
+            await engine.dispose()
+
+    async def active_leases(self) -> list[ExportLeaseRef]:
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT id,lease_id FROM export_task
+                        WHERE status='running' AND lease_id IS NOT NULL
+                          AND lease_expires_at>now()
+                        """
+                    )
+                )
+                return [
+                    ExportLeaseRef(int(row["id"]), UUID(str(row["lease_id"])))
+                    for row in result.mappings()
+                ]
+        finally:
+            await engine.dispose()
+
+    async def mark_unreadable(self, task_id: int, file_path: str) -> None:
+        """ready 任务引用缺失或不可认证文件时转入明确 failed，禁止继续伪装可下载。"""
+
+        await self._update(
+            """
+            UPDATE export_task SET status='failed',file_path=NULL
+            WHERE id=:task_id AND status='done' AND file_path=:file_path
+            """,
             {"task_id": task_id, "file_path": file_path},
         )
 

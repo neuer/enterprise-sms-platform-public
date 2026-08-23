@@ -10,6 +10,7 @@ import pytest
 from cryptography.exceptions import InvalidTag
 
 from app.services.crypto import CryptoService
+from app.services.file_durability import fsync_directory
 from app.services.import_file import (
     IMPORT_ID_SIZE,
     LENGTH_SIZE,
@@ -216,6 +217,30 @@ def test_smsi2_rejects_cross_import_file_replacement(tmp_path: Path) -> None:
             expected_size=len(plaintext),
             max_bytes=len(plaintext),
         )
+
+
+def test_import_stage_fsyncs_directory_after_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[Path] = []
+    real = fsync_directory
+
+    def tracking(path: Path) -> None:
+        called.append(path.resolve())
+        real(path)
+
+    monkeypatch.setattr("app.services.import_file.fsync_directory", tracking)
+    codec = ImportFileCodec(crypto(), tmp_path)
+    import_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+    relative = codec.stage(
+        import_id,
+        BytesIO(b"13800138000\n"),
+        size=12,
+        max_bytes=12,
+    )
+    assert called == [tmp_path.resolve()]
+    assert (tmp_path / relative).is_file()
 
 
 def test_smsi2_rejects_filename_identity_mismatch(tmp_path: Path) -> None:
