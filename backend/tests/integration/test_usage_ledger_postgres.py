@@ -1406,8 +1406,8 @@ async def test_frequency_subject_merge_keeps_newest_live_window() -> None:
     previous_date_key = previous_date.strftime("%Y%m%d")
     current_minute = str(int(now.timestamp() // 60))
     previous_minute = str(int(now.timestamp() // 60) - 1)
-    digest_a = _unique_digest("na")
-    digest_b = _unique_digest("nb")
+    digest_a = _unique_digest("ad")
+    digest_b = _unique_digest("ae")
     subject_a = uuid4()
     subject_b = uuid4()
     app_ids: list[int] = []
@@ -1687,8 +1687,8 @@ async def test_frequency_subject_merge_rejects_future_window_clock_skew() -> Non
     future_minute = str(int(now.timestamp() // 60) + FREQUENCY_MERGE_FUTURE_MINUTE_SKEW + 3)
     future_date = usage_date + timedelta(days=FREQUENCY_MERGE_FUTURE_DAY_SKEW + 2)
     future_date_key = future_date.strftime("%Y%m%d")
-    digest_a = _unique_digest("sk")
-    digest_b = _unique_digest("sl")
+    digest_a = _unique_digest("af")
+    digest_b = _unique_digest("b0")
     subject_a = uuid4()
     subject_b = uuid4()
     app_id: int | None = None
