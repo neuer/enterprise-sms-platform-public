@@ -11,6 +11,11 @@ import {
   type UserRole,
 } from "../api/auth"
 import {
+  invalidateSessionGeneration,
+  SessionGenerationStaleError,
+  withSessionGeneration,
+} from "../api/sessionGeneration"
+import {
   bootstrapLegacyAccessSession,
   clearAccessSession,
   clearRefreshTabBinding,
@@ -132,19 +137,22 @@ export const useSessionStore = defineStore("session", {
       setAccessSession(token, user)
     },
     clear() {
-      this.resetIdentity()
-      clearRefreshTabBinding()
-      clearLegacyPersistence()
+      try {
+        // 先推进本页代际并取消在途 Refresh，避免旧响应在清状态后写回。
+        invalidateSessionGeneration()
+      } finally {
+        this.resetIdentity()
+        clearRefreshTabBinding()
+        try {
+          window.dispatchEvent(new Event("sms:session-clearing"))
+        } finally {
+          clearLegacyPersistence()
+        }
+      }
     },
     clearAllTabs() {
-      this.resetIdentity()
-      clearRefreshTabBinding()
-      try {
-        window.dispatchEvent(new Event("sms:session-clearing"))
-      } finally {
-        clearLegacyPersistence()
-        broadcastSessionClear()
-      }
+      this.clear()
+      broadcastSessionClear()
     },
     restore() {
       // 历史凭据只允许当前 Document 扫描一次；clear/logout 后不得再从 Storage 导入。
@@ -161,9 +169,13 @@ export const useSessionStore = defineStore("session", {
     async restoreFromCookie(): Promise<boolean> {
       if (this.token) return true
       try {
-        const result = await refreshRequest()
-        this.apply(result.token, result.user)
-        return true
+        return await withSessionGeneration({}, async ({ isLive, signal }) => {
+          if (this.token) return true
+          const result = await refreshRequest(signal)
+          if (!isLive()) return false
+          this.apply(result.token, result.user)
+          return true
+        })
       } catch {
         this.clear()
         return false
@@ -171,9 +183,12 @@ export const useSessionStore = defineStore("session", {
     },
     async revalidateOnResume(): Promise<boolean> {
       try {
-        const result = await refreshRequest()
-        this.apply(result.token, result.user)
-        return true
+        return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
+          const result = await refreshRequest(signal)
+          if (!isLive()) return false
+          this.apply(result.token, result.user)
+          return true
+        })
       } catch {
         this.clearAllTabs()
         return false
@@ -190,19 +205,29 @@ export const useSessionStore = defineStore("session", {
       | { nextAction: "authenticated" }
       | { nextAction: "change_password"; changeToken: string; expiresAt: number }
     > {
-      const response = await loginRequest(providerCode, username, password)
-      if ("next_action" in response) {
-        this.clear()
-        return {
-          nextAction: "change_password",
-          changeToken: response.change_token,
-          expiresAt: Date.now() + response.expires_in * 1000,
+      try {
+        return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
+          const response = await loginRequest(providerCode, username, password, signal)
+          if (!isLive()) throw new SessionGenerationStaleError()
+          if ("next_action" in response) {
+            this.clear()
+            return {
+              nextAction: "change_password",
+              changeToken: response.change_token,
+              expiresAt: Date.now() + response.expires_in * 1000,
+            }
+          }
+          this.apply(response.token, response.user)
+          // 登录会覆盖浏览器级 Refresh Cookie；兄弟标签页必须销毁旧主体。
+          broadcastSessionClear()
+          return { nextAction: "authenticated" }
+        })
+      } catch (error) {
+        if (error instanceof SessionGenerationStaleError) {
+          this.clear()
         }
+        throw error
       }
-      this.apply(response.token, response.user)
-      // 登录会覆盖浏览器级 Refresh Cookie；兄弟标签页必须销毁旧主体。
-      broadcastSessionClear()
-      return { nextAction: "authenticated" }
     },
     async changePassword(currentPassword: string, newPassword: string) {
       if (!this.token || this.providerCode !== "local") {
@@ -214,7 +239,11 @@ export const useSessionStore = defineStore("session", {
     async logout() {
       const token = this.token
       try {
-        if (token) await logoutRequest(token)
+        if (token) {
+          await withSessionGeneration({ invalidateFirst: true }, async ({ signal }) => {
+            await logoutRequest(token, signal)
+          })
+        }
       } finally {
         // 无论服务端是否确认撤销，本地凭据都必须先销毁。
         this.clearAllTabs()

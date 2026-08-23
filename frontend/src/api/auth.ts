@@ -90,6 +90,7 @@ export async function loginRequest(
   providerCode: string,
   username: string,
   password: string,
+  signal?: AbortSignal,
 ): Promise<LoginResponse> {
   const tabId = beginRefreshTabBinding()
   try {
@@ -97,6 +98,7 @@ export async function loginRequest(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider_code: providerCode, username, password, tab_id: tabId }),
+      signal,
     })
     if (!response.ok) throw await apiError(response)
     return (await response.json()) as LoginResponse
@@ -152,10 +154,11 @@ export async function passwordChangeRequest(
   if (!response.ok) throw await apiError(response)
 }
 
-export async function logoutRequest(token: string): Promise<void> {
+export async function logoutRequest(token: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch("/api/v1/web/auth/logout", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
+    signal,
   })
   if (!response.ok) throw await apiError(response)
 }
