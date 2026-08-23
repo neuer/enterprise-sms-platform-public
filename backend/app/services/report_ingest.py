@@ -340,6 +340,60 @@ class ReportIngestService:
             title="raw spill 配额已满，已停止继续拉取以防消费缺口",
         )
 
+    async def _alert_artifact_quarantine(self, source: str, result: Any) -> None:
+        """不可认证/损坏/孤儿对象离开活动配额必须可观测；载荷不含 PII 或路径。"""
+
+        isolated = int(getattr(result, "isolated", 0) or 0)
+        temps = int(getattr(result, "temps_reclaimed", 0) or 0)
+        expired = int(getattr(result, "quarantine_expired", 0) or 0)
+        dropped = int(getattr(result, "quarantine_capacity_dropped", 0) or 0)
+        if isolated < 1 and temps < 1 and expired < 1 and dropped < 1:
+            return
+        if self.alerts is None:
+            LOGGER.error(
+                "vendor raw nonactive quarantine without alert sink",
+                extra={"source": source},
+            )
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_nonactive_quarantine",
+                level="crit",
+                title="raw spill 不可恢复对象已隔离到非活动配额，活动拉取容量已释放",
+                detail={
+                    "source": source,
+                    "isolated": isolated,
+                    "temps_reclaimed": temps,
+                    "unauthenticated_partial": int(
+                        getattr(result, "unauthenticated_partial", 0) or 0
+                    ),
+                    "orphans": int(getattr(result, "orphans", 0) or 0),
+                    "quarantine_expired": expired,
+                    "quarantine_capacity_dropped": dropped,
+                },
+                dedup_key=f"vendor_raw_nonactive_quarantine:{source}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw nonactive quarantine alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+        if dropped < 1:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_quarantine_capacity",
+                level="crit",
+                title="raw spill 非活动隔离已达容量，已丢弃最旧无 PII 证据",
+                detail={"source": source, "dropped": dropped},
+                dedup_key=f"vendor_raw_quarantine_capacity:{source}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw quarantine capacity alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+
     async def _alert_header_only(self, source: str, result: Any) -> None:
         """超龄 header-only 回收必须可观测，避免配额耗尽后静默停轮询。"""
 
@@ -618,6 +672,7 @@ class ReportIngestService:
             result = reclaim("report", self.crypto)
             if result:
                 await self._alert_header_only("report", result)
+            await self._alert_artifact_quarantine("report", result)
         recovered = 0
         attempted = 0
         used_bytes = 0

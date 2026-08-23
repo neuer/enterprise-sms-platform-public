@@ -13,6 +13,7 @@ import pytest
 
 from app.services.crypto import CryptoService
 from app.services.raw_spill import (
+    HEADER_QUARANTINE_SUFFIX,
     RawSpillStore,
     RecoverMemoryProbe,
     RecoverRoundBudget,
@@ -184,7 +185,11 @@ async def test_corrupt_file_does_not_block_remaining_recover(tmp_path: Path) -> 
     assert recovered == 2
     assert {item["payload_sha256"] for item in repository.events} == {good_a, "2" * 64}
     leftovers = leftover_names(tmp_path, ".spill")
-    assert leftovers == [f"report-{'e' * 64}.spill"]
+    assert leftovers == []
+    isolated = leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert isolated
+    assert store.pending_count() == 0
+    assert store.can_accept() is True
 
 
 @pytest.mark.asyncio

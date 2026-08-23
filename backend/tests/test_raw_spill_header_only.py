@@ -19,13 +19,12 @@ from app.services.raw_spill import (
     STREAM_MAGIC,
     RawSpillStore,
     discard_header_only_stream,
+    is_activity_filename,
     manage_raw_spill_stream,
 )
 from app.services.reply_ingest import ReplyIngestService
 from app.services.report_ingest import ReportIngestService
 from app.vendor.zhihui import RawPulledPayload, VendorTransportError, ZhihuiClient
-
-COUNTED_SUFFIXES = {".spill", ".stream", ".tmp", ".quarantine"}
 
 
 def leftover_names(directory: Path, *suffixes: str) -> list[str]:
@@ -40,7 +39,7 @@ def counted_names(directory: Path) -> list[str]:
     return sorted(
         path.name
         for path in directory.iterdir()
-        if path.is_file() and path.suffix in COUNTED_SUFFIXES
+        if path.is_file() and is_activity_filename(path.name)
     )
 
 
@@ -310,7 +309,7 @@ def test_partial_corrupt_and_legal_header_have_distinct_handling(tmp_path: Path)
 
 
 def test_incomplete_frames_are_not_deleted_as_header_only(tmp_path: Path) -> None:
-    store = RawSpillStore(tmp_path)
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
     stream = store.open_stream("reply", crypto(), capture_bytes=4096)
     with stream.path.open("ab") as handle:
         handle.write(b"\x00\x00\x00\x08partial")
@@ -319,9 +318,12 @@ def test_incomplete_frames_are_not_deleted_as_header_only(tmp_path: Path) -> Non
     age_path(stream.path)
     result = store.reclaim_idle("reply", crypto())
     assert result.header_only == 0
-    assert result.incomplete_frames == 0
-    assert stream.path.exists()
+    assert result.unauthenticated_partial >= 1
+    assert result.isolated >= 1
+    assert not stream.path.exists()
     assert store.list_pending_streams(crypto()) == []
+    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert_quota(store, 0)
 
 
 def test_process_exit_between_open_stream_and_send_reclaims_quota(

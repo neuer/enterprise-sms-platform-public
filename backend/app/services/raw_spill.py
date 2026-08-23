@@ -77,21 +77,69 @@ CONTROL_FRAME_BUDGET_BYTES = 256
 DIRECTORY_METADATA_BYTES = 768
 # 3× 厂商绝对超时，避免回收仍在 DNS/connect/TLS 中的在途 header-only。
 HEADER_ONLY_RECLAIM_AFTER_S = 30.0
+# 非活动隔离与活动拉取配额分离：只保存无 PII 证据，不占 32 文件/64MiB 活动容量。
+DEFAULT_MAX_QUARANTINE_FILES = 64
+DEFAULT_MAX_QUARANTINE_BYTES = 256 * 1024
+DEFAULT_QUARANTINE_RETENTION_S = 86400.0
+MAX_CLASSIFY_DATA_CIPHER_BYTES = INTERNAL_FRAME_SIZE + DATA_FRAME_OVERHEAD_BYTES + 64
+MAX_CLASSIFY_CONTROL_BYTES = CONTROL_FRAME_BUDGET_BYTES * 4
 QUOTA_LOCK_NAME = ".quota.lock"
 RESERVE_SUFFIX = ".reserve"
 HEADER_QUARANTINE_SUFFIX = ".headerq"
+HANDOFF_QUARANTINE_SUFFIX = ".quarantine"
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 RESERVATION_KEYS = frozenset({"created_at", "lease_id", "reserved_bytes", "source"})
 STREAM_FILE_NAME = re.compile(
     r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\.stream(?:\.tmp)?$"
 )
+ACTIVITY_FILE_NAME = re.compile(
+    r"^(?:report|reply)-[0-9a-f]{32}\.stream(?:\.tmp)?$"
+    r"|^(?:report|reply)-[0-9a-f]{64}\.spill(?:\.tmp)?$"
+)
+STREAM_UNIT_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\."
+    r"(?:stream(?:\.tmp)?(?:\.hdr)?|reserve|quarantine|headerq)(?:\.tmp)?$"
+)
+SPILL_FILE_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<digest>[0-9a-f]{64})\.spill(?:\.tmp)?$"
+)
+REWRITE_HDR_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\.stream(?:\.tmp)?\.hdr$"
+)
+MARKER_TMP_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32,64})\."
+    r"(?:headerq|quarantine|reserve)\.tmp$"
+)
 STREAM_LIFE_LEGAL_HEADER_ONLY = "legal_header_only"
 STREAM_LIFE_PARTIAL_HEADER = "partial_header"
 STREAM_LIFE_CORRUPT_HEADER = "corrupt_header"
 STREAM_LIFE_INCOMPLETE_FRAMES = "incomplete_frames"
+STREAM_LIFE_UNAUTHENTICATED_PARTIAL = "unauthenticated_partial"
 STREAM_LIFE_HAS_CONTROL = "has_control"
 STREAM_LIFE_HAS_AUTHENTICATED_DATA = "has_authenticated_data"
+SPILL_LIFE_VALID = "valid_spill"
+SPILL_LIFE_INCOMPLETE = "incomplete_spill"
+SPILL_LIFE_CORRUPT = "corrupt_spill"
 LOGGER = logging.getLogger(__name__)
+
+
+def is_activity_filename(name: str) -> bool:
+    """只有仍可能完成或恢复为库事实的对象占用活动文件配额。"""
+
+    return ACTIVITY_FILE_NAME.fullmatch(name) is not None
+
+
+def is_nonactive_quota_filename(name: str) -> bool:
+    """非活动隔离/交接标记不占活动字节配额。"""
+
+    return name.endswith(
+        (
+            HEADER_QUARANTINE_SUFFIX,
+            HEADER_QUARANTINE_SUFFIX + ".tmp",
+            HANDOFF_QUARANTINE_SUFFIX,
+            HANDOFF_QUARANTINE_SUFFIX + ".tmp",
+        )
+    )
 
 
 def max_internal_frames(capture_bytes: int) -> int:
@@ -131,13 +179,18 @@ class SpillQuotaExceeded(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SpillReclaimResult:
-    """一次 header-only/孤儿回收的分类计数；不含路径或密文。"""
+    """一次 header-only/孤儿/非活动隔离的分类计数；不含路径或密文。"""
 
     header_only: int = 0
     partial_header: int = 0
     corrupt_header: int = 0
     incomplete_frames: int = 0
+    unauthenticated_partial: int = 0
     orphans: int = 0
+    isolated: int = 0
+    temps_reclaimed: int = 0
+    quarantine_expired: int = 0
+    quarantine_capacity_dropped: int = 0
 
     @property
     def header_cleaned(self) -> int:
@@ -145,7 +198,7 @@ class SpillReclaimResult:
 
     @property
     def total(self) -> int:
-        return self.header_cleaned + self.orphans
+        return self.header_cleaned + self.orphans + self.isolated + self.temps_reclaimed
 
     def __bool__(self) -> bool:
         return self.header_cleaned > 0
@@ -165,6 +218,20 @@ class HeaderOnlyStats:
     cleaned_total: int
     partial_header_count: int = 0
     corrupt_header_count: int = 0
+    unauthenticated_partial_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactStats:
+    """活动对象与非活动隔离的目录观察值；不含路径、密文或 PII。"""
+
+    active_count: int
+    quarantine_count: int
+    quarantine_bytes: int
+    oldest_quarantine_age_seconds: float | None
+    isolated_total: int
+    expired_total: int
+    capacity_dropped_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,18 +510,31 @@ class RawSpillStore:
         header_only_min_age_s: float = HEADER_ONLY_RECLAIM_AFTER_S,
         recover_budget: RecoverRoundBudget | None = None,
         memory_probe: RecoverMemoryProbe | None = None,
+        max_quarantine_files: int = DEFAULT_MAX_QUARANTINE_FILES,
+        max_quarantine_bytes: int = DEFAULT_MAX_QUARANTINE_BYTES,
+        quarantine_retention_s: float = DEFAULT_QUARANTINE_RETENTION_S,
     ) -> None:
         if max_total_bytes < 1 or max_pending_files < 1:
             raise ValueError("raw spill quotas must be positive")
         if header_only_min_age_s < 0:
             raise ValueError("header_only_min_age_s must not be negative")
+        if max_quarantine_files < 1 or max_quarantine_bytes < 1:
+            raise ValueError("raw spill quarantine quotas must be positive")
+        if quarantine_retention_s < 0:
+            raise ValueError("quarantine_retention_s must not be negative")
         self.directory = directory
         self.max_total_bytes = max_total_bytes
         self.max_pending_files = max_pending_files
         self.header_only_min_age_s = header_only_min_age_s
+        self.max_quarantine_files = max_quarantine_files
+        self.max_quarantine_bytes = max_quarantine_bytes
+        self.quarantine_retention_s = quarantine_retention_s
         self.recover_budget = recover_budget or RecoverRoundBudget()
         self._probe = memory_probe
         self._header_only_cleaned = 0
+        self._isolated_total = 0
+        self._quarantine_expired = 0
+        self._quarantine_capacity_dropped = 0
         self.last_reclaim = SpillReclaimResult()
 
     @classmethod
@@ -481,6 +561,19 @@ class RawSpillStore:
                         DEFAULT_RECOVER_MAX_SECONDS,
                     )
                 ),
+            ),
+            max_quarantine_files=int(
+                getattr(settings, "raw_spill_max_quarantine_files", DEFAULT_MAX_QUARANTINE_FILES)
+            ),
+            max_quarantine_bytes=int(
+                getattr(settings, "raw_spill_max_quarantine_bytes", DEFAULT_MAX_QUARANTINE_BYTES)
+            ),
+            quarantine_retention_s=float(
+                getattr(
+                    settings,
+                    "raw_spill_quarantine_retention_s",
+                    DEFAULT_QUARANTINE_RETENTION_S,
+                )
             ),
         )
 
@@ -525,12 +618,14 @@ class RawSpillStore:
             return self._accounted_usage_locked()
 
     def pending_count(self) -> int:
+        """活动文件数：可完成或可恢复为库事实的对象，不含非活动隔离。"""
+
         if not self.directory.exists():
             return 0
         return sum(
             1
             for path in self.directory.iterdir()
-            if path.is_file() and path.suffix in {".spill", ".stream", ".tmp", ".quarantine"}
+            if path.is_file() and is_activity_filename(path.name)
         )
 
     def pending_spill_count(self) -> int:
@@ -572,7 +667,7 @@ class RawSpillStore:
         capture_state = normalize_capture_state(capture_state)
         extra = len(payload_enc) + 256
         with self._quota_lock():
-            self._reclaim_orphans_locked(source)
+            self._reclaim_nonstream_locked(time.time())
             # 在途 .stream 与即将落盘的 .spill 是同一捕获的两份密文，不得互相占满文件配额。
             same_capture = self._reservation_for_source_locked(source) is not None
             if self.pending_spill_count() >= self.max_pending_files or (
@@ -713,7 +808,7 @@ class RawSpillStore:
 
         reserved_bytes = capture_reservation_bytes(capture_bytes)
         with self._quota_lock():
-            self._reclaim_orphans_locked(source)
+            self._reclaim_idle_locked(source, crypto, time.time())
             if not self._can_accept_locked(reserved_bytes, additional_files=1):
                 raise SpillQuotaExceeded("raw spill quota exceeded")
             lease_id = secrets.token_hex(16)
@@ -747,6 +842,7 @@ class RawSpillStore:
         header_only = 0
         partial_header = 0
         corrupt_header = 0
+        unauthenticated = 0
         oldest: float | None = None
         now_ts = time.time()
         if self.directory.exists():
@@ -765,69 +861,57 @@ class RawSpillStore:
                     partial_header += 1
                 elif inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
                     corrupt_header += 1
+                elif inspection.kind in {
+                    STREAM_LIFE_UNAUTHENTICATED_PARTIAL,
+                    STREAM_LIFE_INCOMPLETE_FRAMES,
+                }:
+                    unauthenticated += 1
         return HeaderOnlyStats(
             header_only_count=header_only,
             oldest_age_seconds=oldest,
             cleaned_total=self._header_only_cleaned,
             partial_header_count=partial_header,
             corrupt_header_count=corrupt_header,
+            unauthenticated_partial_count=unauthenticated,
+        )
+
+    def artifact_stats(self) -> ArtifactStats:
+        """活动配额与非活动隔离容量；供测试与巡检，不进 Prometheus 事实表。"""
+
+        quarantine_count = 0
+        quarantine_bytes = 0
+        oldest: float | None = None
+        now_ts = time.time()
+        if self.directory.exists():
+            for path in self._iter_evidence_paths():
+                quarantine_count += 1
+                try:
+                    quarantine_bytes += path.stat().st_size
+                    age = self._file_age_seconds(path, now_ts)
+                except OSError:
+                    continue
+                oldest = age if oldest is None else max(oldest, age)
+        return ArtifactStats(
+            active_count=self.pending_count(),
+            quarantine_count=quarantine_count,
+            quarantine_bytes=quarantine_bytes,
+            oldest_quarantine_age_seconds=oldest,
+            isolated_total=self._isolated_total,
+            expired_total=self._quarantine_expired,
+            capacity_dropped_total=self._quarantine_capacity_dropped,
         )
 
     def reclaim_idle(self, source: str, crypto: StreamChunkCrypto) -> SpillReclaimResult:
-        """回收超龄 header-only/残缺头/损坏头，以及无对应文件的孤儿预留。
+        """统一分类并回收：超龄空流、不可认证帧、损坏 spill、临时文件与孤儿标记。
 
-        header-only 清理覆盖共享目录全部来源，避免 Report 残留永久阻断 Reply。
-        已认证 data、已 announce/terminal，或 header 后已有未完成帧的文件不得删除。
+        已连续认证的 data 不得当空文件删除；不可读对象进入非活动隔离，不占活动配额。
+        清理覆盖共享目录全部来源，避免 Report 残留永久阻断 Reply。
         """
 
         if SOURCE_PATTERN.fullmatch(source) is None:
             raise ValueError("invalid raw spill source")
-        header_only = 0
-        partial_header = 0
-        corrupt_header = 0
         with self._quota_lock():
-            now_ts = time.time()
-            for path in self._iter_stream_paths():
-                inspection = self._inspect_stream_path(path, crypto=crypto, now_ts=now_ts)
-                if inspection is None:
-                    continue
-                if inspection.age_seconds < self.header_only_min_age_s:
-                    continue
-                if inspection.kind in {
-                    STREAM_LIFE_HAS_AUTHENTICATED_DATA,
-                    STREAM_LIFE_HAS_CONTROL,
-                    STREAM_LIFE_INCOMPLETE_FRAMES,
-                }:
-                    continue
-                quarantine = inspection.kind == STREAM_LIFE_CORRUPT_HEADER
-                self._reclaim_classified_locked(inspection, quarantine=quarantine)
-                if inspection.kind == STREAM_LIFE_LEGAL_HEADER_ONLY:
-                    header_only += 1
-                elif inspection.kind == STREAM_LIFE_PARTIAL_HEADER:
-                    partial_header += 1
-                elif inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
-                    corrupt_header += 1
-            orphans = self._reclaim_orphans_locked(None)
-        cleaned = header_only + partial_header + corrupt_header
-        self._header_only_cleaned += cleaned
-        result = SpillReclaimResult(
-            header_only=header_only,
-            partial_header=partial_header,
-            corrupt_header=corrupt_header,
-            orphans=orphans,
-        )
-        self.last_reclaim = result
-        if cleaned:
-            LOGGER.warning(
-                "raw spill header-only leftovers reclaimed",
-                extra={
-                    "header_only": header_only,
-                    "partial_header": partial_header,
-                    "corrupt_header": corrupt_header,
-                    "orphans": orphans,
-                },
-            )
-        return result
+            return self._reclaim_idle_locked(source, crypto, time.time())
 
     @contextmanager
     def _quota_lock(self) -> Iterator[None]:
@@ -953,6 +1037,8 @@ class RawSpillStore:
                 continue
             if path.name in covered or path.name.endswith(RESERVE_SUFFIX):
                 continue
+            if is_nonactive_quota_filename(path.name):
+                continue
             uncovered += path.stat().st_size
         return uncovered + sum(record.reserved_bytes for record in reservations)
 
@@ -974,8 +1060,12 @@ class RawSpillStore:
         final = self._stream_path(source, stream_id)
         final.unlink(missing_ok=True)
         final.with_name(final.name + ".hdr").unlink(missing_ok=True)
-        self._quarantine_path(source, stream_id).unlink(missing_ok=True)
-        self._header_quarantine_path(source, stream_id).unlink(missing_ok=True)
+        quarantine = self._quarantine_path(source, stream_id)
+        quarantine.unlink(missing_ok=True)
+        quarantine.with_name(quarantine.name + ".tmp").unlink(missing_ok=True)
+        headerq = self._header_quarantine_path(source, stream_id)
+        headerq.unlink(missing_ok=True)
+        headerq.with_name(headerq.name + ".tmp").unlink(missing_ok=True)
         reserve = self._reservation_path(source, stream_id)
         reserve.unlink(missing_ok=True)
         reserve.with_name(reserve.name + ".tmp").unlink(missing_ok=True)
@@ -1068,7 +1158,7 @@ class RawSpillStore:
             parsed = json.loads(header_bytes.decode("utf-8"))
             source = str(parsed["source"])
             stream_id = str(parsed["stream_id"])
-            int(parsed["key_version"])
+            key_version = int(parsed["key_version"])
             if (
                 self._stream_tmp(source, stream_id) != path
                 and self._stream_path(source, stream_id) != path
@@ -1087,21 +1177,466 @@ class RawSpillStore:
             return None
         if len(first) < STREAM_RECORD_HEADER.size:
             return _StreamInspection(
-                STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
         (length,) = STREAM_RECORD_HEADER.unpack(first)
         if length in {STREAM_CONTROL_SENTINEL, 0}:
+            return self._classify_first_control(
+                handle,
+                source=source,
+                stream_id=stream_id,
+                key_version=key_version,
+                age=age,
+                path=path,
+                crypto=crypto,
+            )
+        return self._classify_first_data(
+            handle,
+            source=source,
+            stream_id=stream_id,
+            key_version=key_version,
+            age=age,
+            path=path,
+            crypto=crypto,
+            length=length,
+        )
+
+    def _classify_first_control(
+        self,
+        handle: BinaryIO,
+        *,
+        source: str,
+        stream_id: str,
+        key_version: int,
+        age: float,
+        path: Path,
+        crypto: StreamChunkCrypto,
+    ) -> _StreamInspection:
+        """首个 announce/terminal 控制帧：未读完或认证失败都不是真实控制事实。"""
+
+        raw_len = handle.read(STREAM_RECORD_HEADER.size)
+        if len(raw_len) < STREAM_RECORD_HEADER.size:
+            return _StreamInspection(
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
+            )
+        (frame_len,) = STREAM_RECORD_HEADER.unpack(raw_len)
+        if frame_len < STREAM_META_HEADER.size or frame_len > MAX_CLASSIFY_CONTROL_BYTES:
+            return _StreamInspection(
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
+            )
+        frame = handle.read(frame_len)
+        if len(frame) != frame_len:
+            return _StreamInspection(
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
+            )
+        try:
+            _fields, _offset, ok = self._read_control_frame(
+                STREAM_RECORD_HEADER.pack(frame_len) + frame,
+                0,
+                crypto,
+                source=source,
+                stream_id=stream_id,
+                key_version=key_version,
+                seq=0,
+            )
+        except Exception:
+            ok = False
+        if ok:
             return _StreamInspection(STREAM_LIFE_HAS_CONTROL, source, stream_id, age, path)
-        rest = handle.read(min(length, 1))
-        if length > 0 and len(rest) == 0:
+        return _StreamInspection(
+            STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
+        )
+
+    def _classify_first_data(
+        self,
+        handle: BinaryIO,
+        *,
+        source: str,
+        stream_id: str,
+        key_version: int,
+        age: float,
+        path: Path,
+        crypto: StreamChunkCrypto,
+        length: int,
+    ) -> _StreamInspection:
+        """首个 data frame：只有整帧 AES-GCM 认证成功才算已认证 data。"""
+
+        if length < 1 or length > MAX_CLASSIFY_DATA_CIPHER_BYTES:
             return _StreamInspection(
-                STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
-        if length > 0:
+        ciphertext = handle.read(length)
+        if len(ciphertext) != length:
             return _StreamInspection(
-                STREAM_LIFE_HAS_AUTHENTICATED_DATA, source, stream_id, age, path
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
-        return _StreamInspection(STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path)
+        try:
+            crypto.decrypt_bound_bytes(
+                ciphertext,
+                key_version,
+                EncryptionContext(
+                    domain="vendor-raw",
+                    table="raw_spill",
+                    column="chunk",
+                    object_id=f"{source}:{stream_id}:{0:08d}",
+                ),
+            )
+        except Exception:
+            return _StreamInspection(
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
+            )
+        return _StreamInspection(
+            STREAM_LIFE_HAS_AUTHENTICATED_DATA, source, stream_id, age, path
+        )
+
+    def _reclaim_idle_locked(
+        self,
+        source: str,
+        crypto: StreamChunkCrypto,
+        now_ts: float,
+    ) -> SpillReclaimResult:
+        header_only = 0
+        partial_header = 0
+        corrupt_header = 0
+        unauthenticated_partial = 0
+        isolated = 0
+        temps = self._reclaim_rewrite_tmps_locked(now_ts)
+        temps += self._reclaim_marker_tmps_locked()
+        isolated += self._reclaim_spills_locked(now_ts)
+        for path in self._iter_stream_paths():
+            inspection = self._inspect_stream_path(path, crypto=crypto, now_ts=now_ts)
+            if inspection is None:
+                continue
+            if inspection.kind in {
+                STREAM_LIFE_HAS_AUTHENTICATED_DATA,
+                STREAM_LIFE_HAS_CONTROL,
+            }:
+                continue
+            if inspection.age_seconds < self.header_only_min_age_s:
+                continue
+            if inspection.kind in {
+                STREAM_LIFE_UNAUTHENTICATED_PARTIAL,
+                STREAM_LIFE_INCOMPLETE_FRAMES,
+                STREAM_LIFE_CORRUPT_HEADER,
+            }:
+                self._reclaim_classified_locked(inspection, quarantine=True)
+                isolated += 1
+                if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
+                    corrupt_header += 1
+                else:
+                    unauthenticated_partial += 1
+                continue
+            if inspection.kind in {
+                STREAM_LIFE_LEGAL_HEADER_ONLY,
+                STREAM_LIFE_PARTIAL_HEADER,
+            }:
+                self._reclaim_classified_locked(
+                    inspection, quarantine=inspection.kind == STREAM_LIFE_CORRUPT_HEADER
+                )
+                if inspection.kind == STREAM_LIFE_LEGAL_HEADER_ONLY:
+                    header_only += 1
+                else:
+                    partial_header += 1
+        orphans = self._reclaim_orphans_locked(None)
+        orphans += self._reclaim_orphan_handoff_locked()
+        expired = self._expire_quarantine_locked(now_ts)
+        dropped = self._enforce_quarantine_quota_locked()
+        cleaned = header_only + partial_header + corrupt_header
+        self._header_only_cleaned += cleaned
+        self._isolated_total += isolated
+        self._quarantine_expired += expired
+        self._quarantine_capacity_dropped += dropped
+        result = SpillReclaimResult(
+            header_only=header_only,
+            partial_header=partial_header,
+            corrupt_header=corrupt_header,
+            unauthenticated_partial=unauthenticated_partial,
+            incomplete_frames=unauthenticated_partial,
+            orphans=orphans,
+            isolated=isolated,
+            temps_reclaimed=temps,
+            quarantine_expired=expired,
+            quarantine_capacity_dropped=dropped,
+        )
+        self.last_reclaim = result
+        if cleaned or isolated or temps or orphans:
+            LOGGER.warning(
+                "raw spill artifacts reclaimed",
+                extra={
+                    "source": source,
+                    "header_only": header_only,
+                    "partial_header": partial_header,
+                    "corrupt_header": corrupt_header,
+                    "unauthenticated_partial": unauthenticated_partial,
+                    "isolated": isolated,
+                    "temps_reclaimed": temps,
+                    "orphans": orphans,
+                    "quarantine_expired": expired,
+                    "quarantine_capacity_dropped": dropped,
+                },
+            )
+        return result
+
+    def _reclaim_nonstream_locked(self, now_ts: float) -> None:
+        """不依赖 crypto 的 spill/tmp/孤儿分类；write() 开门前必须调用。"""
+
+        self._reclaim_marker_tmps_locked()
+        self._reclaim_spills_locked(now_ts)
+        self._reclaim_orphans_locked(None)
+        self._reclaim_orphan_handoff_locked()
+        self._expire_quarantine_locked(now_ts)
+        self._enforce_quarantine_quota_locked()
+
+    def _iter_evidence_paths(self) -> list[Path]:
+        if not self.directory.exists():
+            return []
+        return [
+            path
+            for path in sorted(self.directory.glob(f"*{HEADER_QUARANTINE_SUFFIX}"))
+            if path.is_file() and not path.name.endswith(".tmp")
+        ]
+
+    def _reclaim_rewrite_tmps_locked(self, now_ts: float) -> int:
+        """完成或隔离 key_version 重写留下的 *.hdr。"""
+
+        if not self.directory.exists():
+            return 0
+        reclaimed = 0
+        for path in list(self.directory.iterdir()):
+            match = REWRITE_HDR_NAME.fullmatch(path.name)
+            if match is None or not path.is_file():
+                continue
+            target = path.with_name(path.name[: -len(".hdr")])
+            if self._hdr_is_promotable(path, target):
+                os.replace(path, target)
+                self._fsync_directory()
+                reclaimed += 1
+                continue
+            if self._file_age_seconds(path, now_ts) < self.header_only_min_age_s:
+                continue
+            self._isolate_named_file_locked(
+                path,
+                source=match.group("source"),
+                token=match.group("stream_id"),
+                state="corrupt_tmp",
+                kind="hdr",
+            )
+            reclaimed += 1
+        return reclaimed
+
+    def _hdr_is_promotable(self, hdr: Path, target: Path) -> bool:
+        try:
+            with hdr.open("rb") as handle:
+                parsed = self._parse_stream_header_handle(handle, target)
+            return parsed is not None
+        except OSError:
+            return False
+
+    def _reclaim_marker_tmps_locked(self) -> int:
+        """分类 *.reserve.tmp / *.quarantine.tmp / *.headerq.tmp。"""
+
+        if not self.directory.exists():
+            return 0
+        reclaimed = 0
+        for path in list(self.directory.iterdir()):
+            if not path.is_file() or MARKER_TMP_NAME.fullmatch(path.name) is None:
+                continue
+            if self._promote_marker_tmp(path):
+                reclaimed += 1
+                continue
+            path.unlink(missing_ok=True)
+            reclaimed += 1
+        return reclaimed
+
+    def _promote_marker_tmp(self, tmp: Path) -> bool:
+        if not tmp.name.endswith(".tmp"):
+            return False
+        try:
+            raw = json.loads(tmp.read_bytes().decode("utf-8"))
+            if not isinstance(raw, dict):
+                return False
+            forbidden = {"phone", "payload", "ciphertext", "secret", "key", "body"}
+            if forbidden.intersection(raw):
+                return False
+            if "source" not in raw:
+                return False
+            target = tmp.with_name(tmp.name[: -len(".tmp")])
+            os.replace(tmp, target)
+            self._fsync_directory()
+            return True
+        except (OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            return False
+
+    def _reclaim_spills_locked(self, now_ts: float) -> int:
+        """损坏/不完整 .spill 与 .spill.tmp 立即或超龄后离开活动配额。"""
+
+        if not self.directory.exists():
+            return 0
+        isolated = 0
+        for path in [
+            *sorted(self.directory.glob("*.spill")),
+            *sorted(self.directory.glob("*.spill.tmp")),
+        ]:
+            if not path.is_file():
+                continue
+            kind, source, token = self._classify_spill_path(path)
+            if kind == SPILL_LIFE_VALID and path.name.endswith(".spill.tmp"):
+                target = self._path(source, token)
+                os.replace(path, target)
+                self._fsync_directory()
+                continue
+            if kind == SPILL_LIFE_VALID:
+                continue
+            aged = self._file_age_seconds(path, now_ts) >= self.header_only_min_age_s
+            if kind == SPILL_LIFE_INCOMPLETE and path.name.endswith(".spill.tmp") and not aged:
+                continue
+            self._isolate_named_file_locked(
+                path,
+                source=source or "report",
+                token=token,
+                state=SPILL_LIFE_CORRUPT if kind == SPILL_LIFE_CORRUPT else SPILL_LIFE_INCOMPLETE,
+                kind="spill",
+            )
+            isolated += 1
+        return isolated
+
+    def _classify_spill_path(self, path: Path) -> tuple[str, str, str]:
+        match = SPILL_FILE_NAME.fullmatch(path.name)
+        named_source = match.group("source") if match else ""
+        named_digest = match.group("digest") if match else ""
+        try:
+            with path.open("rb") as handle:
+                header_bytes = handle.readline()
+                if not header_bytes.endswith(b"\n"):
+                    return SPILL_LIFE_INCOMPLETE, named_source, named_digest
+                header = json.loads(header_bytes.decode("utf-8"))
+                source = str(header["source"])
+                digest = str(header["payload_sha256"])
+                expected = self._path(source, digest)
+                if path not in {expected, expected.with_suffix(".spill.tmp")}:
+                    return SPILL_LIFE_CORRUPT, named_source or source, named_digest or digest
+                if not handle.read(1):
+                    return SPILL_LIFE_INCOMPLETE, source, digest
+                return SPILL_LIFE_VALID, source, digest
+        except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            token = named_digest or hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
+            source = named_source or "report"
+            return SPILL_LIFE_CORRUPT, source, token
+
+    def _reclaim_orphan_handoff_locked(self) -> int:
+        """stream 删除后遗留的 .quarantine / 无主 .reserve 已在 orphans；这里只清交接标记。"""
+
+        if not self.directory.exists():
+            return 0
+        reclaimed = 0
+        seen: set[tuple[str, str]] = set()
+        for path in list(self.directory.iterdir()):
+            match = STREAM_UNIT_NAME.fullmatch(path.name)
+            if match is None or not path.is_file():
+                continue
+            key = (match.group("source"), match.group("stream_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            source, stream_id = key
+            stream_exists = self._stream_tmp(source, stream_id).exists() or self._stream_path(
+                source, stream_id
+            ).exists()
+            if stream_exists:
+                continue
+            quarantine = self._quarantine_path(source, stream_id)
+            if quarantine.exists():
+                quarantine.unlink(missing_ok=True)
+                quarantine.with_name(quarantine.name + ".tmp").unlink(missing_ok=True)
+                reclaimed += 1
+        return reclaimed
+
+    def _expire_quarantine_locked(self, now_ts: float) -> int:
+        expired = 0
+        for path in self._iter_evidence_paths():
+            if self._file_age_seconds(path, now_ts) < self.quarantine_retention_s:
+                continue
+            path.unlink(missing_ok=True)
+            expired += 1
+        return expired
+
+    def _enforce_quarantine_quota_locked(self) -> int:
+        paths = self._iter_evidence_paths()
+        sizes: list[tuple[float, int, Path]] = []
+        total = 0
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            sizes.append((stat.st_mtime, stat.st_size, path))
+            total += stat.st_size
+        dropped = 0
+        sizes.sort()
+        while sizes and (
+            len(sizes) > self.max_quarantine_files or total > self.max_quarantine_bytes
+        ):
+            _mtime, size, path = sizes.pop(0)
+            path.unlink(missing_ok=True)
+            total -= size
+            dropped += 1
+        return dropped
+
+    def _isolate_named_file_locked(
+        self,
+        path: Path,
+        *,
+        source: str,
+        token: str,
+        state: str,
+        kind: str,
+    ) -> None:
+        size = 0
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        path.unlink(missing_ok=True)
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            source = "report"
+        if not token:
+            token = hashlib.sha256(kind.encode("utf-8")).hexdigest()[:32]
+        self._write_nonactive_evidence(source, token, state, kind=kind, size_bytes=size)
+
+    def _write_nonactive_evidence(
+        self,
+        source: str,
+        token: str,
+        state: str,
+        *,
+        kind: str,
+        size_bytes: int,
+    ) -> Path:
+        """非活动隔离证据：无手机号、正文、密文、Key 或完整路径。"""
+
+        self._enforce_quarantine_quota_locked()
+        self.directory.mkdir(parents=True, exist_ok=True)
+        target = self.directory / f"{source}-{token}{HEADER_QUARANTINE_SUFFIX}"
+        payload = json.dumps(
+            {
+                "isolated_at": datetime.now(SHANGHAI_TIMEZONE).isoformat(),
+                "kind": kind,
+                "size_bytes": int(size_bytes),
+                "source": source,
+                "state": state,
+                "stream_id": token,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        tmp = target.with_name(target.name + ".tmp")
+        with tmp.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+        self._fsync_directory()
+        return target
 
     def _write_header_quarantine(self, source: str, stream_id: str, kind: str) -> Path:
         """损坏 header 的无 PII 隔离标记；不计入 pending_count 文件配额。"""
@@ -1128,11 +1663,25 @@ class RawSpillStore:
         if SOURCE_PATTERN.fullmatch(inspection.source) and STREAM_ID_PATTERN.fullmatch(
             inspection.stream_id
         ):
+            size = 0
+            try:
+                size = inspection.path.stat().st_size
+            except OSError:
+                size = 0
             self._remove_stream_locked(inspection.source, inspection.stream_id)
             if quarantine:
-                self._write_header_quarantine(
-                    inspection.source, inspection.stream_id, inspection.kind
-                )
+                if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
+                    self._write_header_quarantine(
+                        inspection.source, inspection.stream_id, inspection.kind
+                    )
+                else:
+                    self._write_nonactive_evidence(
+                        inspection.source,
+                        inspection.stream_id,
+                        inspection.kind,
+                        kind="stream",
+                        size_bytes=size,
+                    )
             return
         inspection.path.unlink(missing_ok=True)
 

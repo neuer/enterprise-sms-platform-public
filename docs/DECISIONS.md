@@ -988,6 +988,28 @@
   Alembic、D082 账本字段、D083 header-only 回收语义。不扩大
   `RAW_SPILL_MAX_TOTAL_BYTES` 默认值。
 
+## D086 Raw Artifact 统一状态机与非活动隔离配额
+
+- 决策：在 D083 header-only 与 D082/D085 预留合同之上，给 spill 目录对象补齐
+  有界终态。活动对象只包括仍可能完成或恢复为 `raw_vendor_log` 事实的
+  `.stream` / `.stream.tmp` / `.spill` / `.spill.tmp`。分类器必须认证首个
+  announce/control/data 整帧；长度头后的部分字节或认证失败不得当作已认证
+  data，也不得静默删除。超龄后写入无 PII 的 `.headerq` 证据并释放活动配额。
+  损坏 final `.spill`、原子写临时文件（`*.spill.tmp` / `*.quarantine.tmp` /
+  `*.headerq.tmp` / `*.hdr`）与 stream 删除后的孤儿 reservation/handoff
+  marker 在启动和每轮 `reclaim_idle` 统一分类：完整 tmp 晋升，不可读对象
+  隔离，孤儿交接标记删除。非活动隔离使用独立文件数/字节配额与保留期，
+  不计入 `pending_count()` / `accounted_usage()`，不得扩大活动磁盘配额或
+  缩小 64MiB 恢复上限。回收以 `source/stream_id/lease_id` 为单位且可重入。
+  告警 `vendor_raw_nonactive_quarantine` / `vendor_raw_quarantine_capacity`；
+  `artifact_stats()` 提供数量、字节、年龄与累计隔离。日志与告警不得包含
+  手机号、短信正文、密文、Key 或不受控完整路径。无数据库迁移。
+- 原因：#449 只闭环真正 header-only。部分首帧、损坏 spill、原子写临时文件
+  和中途清理崩溃留下的孤儿仍永久占用 32 文件活动配额，在厂商恢复后继续
+  停止 Report/Reply，并因共享 Volume 互相阻断。
+- 影响：`raw_spill`/`report_ingest`/`reply_ingest`、vendor-api 恢复句。
+  未改 Vue、OpenAPI、Alembic、D082 预留字节、D085 内部帧合同。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
