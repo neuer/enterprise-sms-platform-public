@@ -44,6 +44,13 @@ from classify_ci_changes import (  # noqa: E402
         ("backend/app/services/dashboard.py", (True, False, False)),
         ("backend/app/core/auth/jwt.py", (True, False, True)),
         ("backend/app/services/crypto.py", (True, False, True)),
+        ("backend/app/services/usage_ledger.py", (True, False, True)),
+        ("backend/app/services/raw_spill.py", (True, False, True)),
+        ("frontend/src/api/sessionTokens.ts", (True, False, True)),
+        ("frontend/src/api/auth.ts", (True, False, True)),
+        ("frontend/src/api/webMessages.ts", (True, False, True)),
+        ("frontend/src/api/refreshLock.ts", (True, False, True)),
+        ("frontend/src/stores/session.ts", (True, False, True)),
         ("backend/app/main.py", (True, True, True)),
         ("backend/migrations/versions/0013_example.py", (True, False, True)),
         ("backend/uv.lock", (True, False, True)),
@@ -168,8 +175,15 @@ def test_vendor_live_high_risk_paths_always_select_full_ci_and_g2(path: str) -> 
         "backend/app/services/masking.py",
         "backend/app/services/pipeline_repository.py",
         "backend/app/services/raw_replay.py",
+        "backend/app/services/raw_spill.py",
+        "backend/app/services/usage_ledger.py",
         "backend/app/tasks/poll_report.py",
         "backend/app/vendor/mock_server.py",
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/refreshLock.ts",
+        "frontend/src/api/sessionTokens.ts",
+        "frontend/src/api/webMessages.ts",
+        "frontend/src/stores/session.ts",
     ],
 )
 def test_backend_security_and_pii_paths_select_backend_and_g2(path: str) -> None:
@@ -456,6 +470,59 @@ def test_ordinary_backend_pull_request_uses_fast_backend_only(tmp_path: Path) ->
         frozenset({"backend-check"}),
         False,
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backend/app/services/usage_ledger.py",
+        "backend/app/services/raw_spill.py",
+        "frontend/src/api/sessionTokens.ts",
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/webMessages.ts",
+        "frontend/src/api/refreshLock.ts",
+        "frontend/src/stores/session.ts",
+    ],
+)
+def test_usage_ledger_raw_spill_and_session_paths_select_backend_critical(
+    path: str,
+) -> None:
+    result = classify_paths([path])
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        True,
+        False,
+        True,
+        True,
+    )
+    assert result.categories == frozenset({"backend-critical"})
+    assert result.full_fallback is False
+
+
+def test_renaming_protected_lifeline_keeps_g2_without_forcing_full(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "backend/app/services/usage_ledger.py", "old")
+    git(
+        repo,
+        "mv",
+        "backend/app/services/usage_ledger.py",
+        "backend/app/services/usage_ledger_renamed.py",
+    )
+    git(repo, "commit", "-m", "rename")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        True,
+        False,
+        True,
+        True,
+    )
+    assert result.full_fallback is False
+    assert result.categories == frozenset({"backend-critical", "backend-check"})
 
 
 def test_rename_is_classified_as_delete_plus_add(tmp_path: Path) -> None:

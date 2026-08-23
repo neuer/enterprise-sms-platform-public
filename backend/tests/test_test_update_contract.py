@@ -531,20 +531,30 @@ def test_classifies_vendor_live_control_changes_as_high_risk(path: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "path",
+    ("path", "components"),
     [
-        "backend/app/api/auth.py",
-        "backend/app/core/auth/jwt.py",
-        "backend/app/services/crypto.py",
-        "backend/app/services/masking.py",
-        "backend/app/tasks/poll_report.py",
+        ("backend/app/api/auth.py", frozenset({"api"})),
+        ("backend/app/core/auth/jwt.py", frozenset({"api"})),
+        ("backend/app/services/crypto.py", frozenset({"api"})),
+        ("backend/app/services/masking.py", frozenset({"api"})),
+        ("backend/app/services/raw_spill.py", frozenset({"api"})),
+        ("backend/app/services/usage_ledger.py", frozenset({"api"})),
+        ("backend/app/tasks/poll_report.py", frozenset({"api"})),
+        ("frontend/src/api/auth.ts", frozenset({"web"})),
+        ("frontend/src/api/refreshLock.ts", frozenset({"web"})),
+        ("frontend/src/api/sessionTokens.ts", frozenset({"web"})),
+        ("frontend/src/api/webMessages.ts", frozenset({"web"})),
+        ("frontend/src/stores/session.ts", frozenset({"web"})),
     ],
 )
-def test_ci_and_test_update_share_backend_critical_paths(path: str) -> None:
+def test_ci_and_test_update_share_backend_critical_paths(
+    path: str,
+    components: frozenset[str],
+) -> None:
     change = classify_changed_paths([path])
 
     assert change.risk == "high-risk"
-    assert change.components == frozenset({"api"})
+    assert change.components == components
     assert change.high_risk_paths == (path,)
 
 
@@ -1370,6 +1380,7 @@ def test_public_cutover_classifies_only_verified_transition_exceptions() -> None
     assert change.components == frozenset({"api", "web"})
     assert change.risk == "high-risk"
     assert change.high_risk_paths == (
+        "backend/app/services/usage_ledger.py",
         "deploy/initdb/01-create-app-role.sh",
         "deploy/lifecycle.server.example.json",
         "deploy/postgres.Dockerfile",
