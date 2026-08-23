@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.raw_capture_legacy import (
     AUTO_PARSE_LIMIT_BYTES,
     BOUND_ENVELOPE_MAGIC,
@@ -35,6 +36,8 @@ from app.services.raw_spill import (
     normalize_capture_state,
 )
 from scripts_support.inventory_raw_capture_legacy import render_inventory
+
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -344,6 +347,9 @@ class _ForbiddenReplayRepository:
     async def mark_replay_error(self, raw_id: int, error: str) -> None:
         return None
 
+    async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
+        return True
+
     async def audit_raw_replay(self, raw_id: int, **_: object) -> None:
         return None
 
@@ -367,7 +373,7 @@ async def test_forbidden_capture_states_cannot_replay(
         object(),  # type: ignore[arg-type]
     )
     with pytest.raises(RawReplayConflict, match=message):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
     assert replay_forbidden_message(state)
 
 

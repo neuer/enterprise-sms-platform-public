@@ -132,8 +132,15 @@ class FakeQueue:
     async def status(self) -> QueueSnapshot:
         return QueueSnapshot("999", "999", 20000, 10000)
 
-    async def resume(self, *, force: bool, actor: str, ip: str) -> QueueResumeResult:
-        self.calls.append((force, actor, ip))
+    async def resume(
+        self,
+        *,
+        force: bool,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> QueueResumeResult:
+        self.calls.append((force, actor, ip, principal.account_id, principal.identity_id))
         return QueueResumeResult(2, ("999",))
 
 
@@ -141,8 +148,15 @@ class FakeReplay:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str, str]] = []
 
-    async def replay(self, raw_id: int, *, actor: str, ip: str) -> int:
-        self.calls.append((raw_id, actor, ip))
+    async def replay(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> int:
+        self.calls.append((raw_id, actor, ip, principal.account_id, principal.identity_id))
         return 3
 
 
@@ -302,6 +316,11 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     assert vars(ops_api.resume_queue)["__audited_action__"] == "queue_resume"
     assert vars(ops_api.create_unmatched_export)["__audited_action__"] == "export_create"
     assert values["queue"].calls[0][0] is True
+    assert values["queue"].calls[0][1] == "admin01"
+    assert values["queue"].calls[0][3:] == (1, 101)
+    assert values["replay"].calls[0][0] == 2
+    assert values["replay"].calls[0][1] == "admin01"
+    assert values["replay"].calls[0][3:] == (1, 101)
 
 
 def test_repeated_poll_report_trigger_binds_live_principal_and_returns_202(
