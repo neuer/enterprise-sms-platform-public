@@ -988,6 +988,27 @@
   Alembic、D082 账本字段、D083 header-only 回收语义。不扩大
   `RAW_SPILL_MAX_TOTAL_BYTES` 默认值。
 
+## D086 Import/Export 共用目录持久化合同与导出孤儿对账
+
+- 决策：Import 与 Export 的受控密文根目录遵循同一提交顺序，实现集中在
+  `services/file_durability.py`：`.part` 文件 `fsync` → `os.replace` → `chmod 0600`
+  → 根目录 `fsync` → 才允许把最终路径写入 PostgreSQL。Export 终止帧写入无 PII
+  staging manifest（task_id、lease_id、format_version、密文 digest/size、
+  state/created_at、row_count）；不含手机号、短信正文、Token 或 Key。
+  `mark_done()` 前必须再次校验文件名中的 task/lease、权限、终止帧、摘要。
+  已形成但尚未 done 的最终文件可被后续租约复用；`cleanup_exports` 做目录 ↔
+  数据库双向对账：活动租约文件保留，未过期 `done` 引用必须存在且通过终止认证，
+  否则转入既有 `failed`（明确不可下载，用户重新创建），超龄未引用
+  `.part/.smsx` 删除，身份/认证失败的密文进入非活动 `quarantine/`。
+  清理必须先删文件再 `clear_file()`，任一边界中断后下一轮可重入收敛。
+  不新增 status/event_type，不改 schema。
+- 原因：#459 确认 Export 在 rename 后未 fsync 目录，且清理只跟随
+  `export_task.file_path`，断电可形成 `done` 但最终文件消失，崩溃可留下永久
+  孤儿密文。Import 已有目录 fsync，必须收束为同一合同。
+- 影响：`export_file`/`export_worker`/`export_reconcile`/`export_repository`/
+  `import_file`、导出清理任务与 fencing 手册。未改 Vue、OpenAPI、Alembic、
+  `raw_spill.py`。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后

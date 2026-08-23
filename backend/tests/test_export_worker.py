@@ -235,7 +235,7 @@ async def test_fencing_miss_removes_only_old_worker_file(tmp_path: Path) -> None
     codec = ExportFileCodec(crypto(), tmp_path)
     newer = UUID("30000000-0000-4000-8000-000000000009")
     newer_path = await codec.write_csv(
-        9,
+        8,
         newer,
         ("phone",),
         _single_row(("139****9000",)),
@@ -246,6 +246,73 @@ async def test_fencing_miss_removes_only_old_worker_file(tmp_path: Path) -> None
 
     assert newer_path.exists()
     assert os.listdir(tmp_path) == [newer_path.name]
+
+
+@pytest.mark.asyncio
+async def test_worker_reuses_authenticated_final_instead_of_leaving_orphan(
+    tmp_path: Path,
+) -> None:
+    current = claim(decrypted=False)
+    previous = UUID("30000000-0000-4000-8000-000000000009")
+    codec = ExportFileCodec(crypto(), tmp_path)
+    existing = await codec.write_csv(
+        9,
+        previous,
+        (
+            "created_at",
+            "batch_no",
+            "category",
+            "phone",
+            "status",
+            "report_desc",
+            "report_time",
+            "content",
+        ),
+        _single_row(("t", "B", "notice", "138****8000", "delivered", "D", "t2", "c")),
+    )
+    repository = FakeRepository(current, [])
+    stages: list[str] = []
+
+    assert await ExportWorker(
+        repository,
+        codec,
+        crypto(),
+        on_complete_stage=stages.append,
+    ).process(9) == 1
+
+    assert repository.done == (9, current.lease_id, str(existing), 1)
+    assert stages == ["before_mark_done"]
+    assert existing.exists()
+    assert os.listdir(tmp_path) == [existing.name]
+
+
+@pytest.mark.asyncio
+async def test_worker_interrupt_before_mark_done_keeps_final_for_reuse(
+    tmp_path: Path,
+) -> None:
+    from app.services.export_file import ExportWriteInterrupted
+
+    current = claim(decrypted=False)
+    repository = FakeRepository(current, [row(decrypted=False)])
+    codec = ExportFileCodec(crypto(), tmp_path)
+
+    def crash(stage: str) -> None:
+        raise ExportWriteInterrupted(stage)
+
+    with pytest.raises(ExportWriteInterrupted, match="before_mark_done"):
+        await ExportWorker(
+            repository,
+            codec,
+            crypto(),
+            on_complete_stage=crash,
+        ).process(9)
+
+    assert repository.done is None
+    assert repository.failed is None
+    names = [name for name in os.listdir(tmp_path) if name.endswith(".smsx")]
+    assert len(names) == 1
+    proof = codec.verify_ready(tmp_path / names[0], expected_task_id=9, require_manifest=True)
+    assert proof.row_count == 1
 
 
 async def _single_row(value: tuple[object, ...]) -> AsyncIterator[tuple[object, ...]]:

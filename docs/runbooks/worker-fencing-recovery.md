@@ -11,8 +11,10 @@
 1. 先确认数据库和对应 Celery 队列健康；不要直接更新 `lease_id`、`lease_expires_at` 或文件路径。
 2. 已过期 callback/export 会由固定 due dispatcher 自动重新投递；新 worker 领取时生成新 UUID，旧 worker 随后的状态写入会被 CAS 拒绝。
 3. callback 达到 `dead` 后，只能由管理员使用现有“手动重推”入口；该操作清空旧租约、写审计和 `manual_retry` 租约事件。
-4. export 失败后由用户重新创建导出。只有 `export_task.file_path` 指向的 `.smsx` 是已发布产物；文件名中的 UUID 必须与产生该完成 CAS 的租约一致。
+4. export 失败后由用户重新创建导出。只有 `export_task.file_path` 指向的 `.smsx` 是已发布产物；文件名中的 UUID 必须与产生该完成 CAS 的租约一致。目录 `fsync` 完成前不得 `mark_done`；最终文件已形成但数据库尚未 done 时，重启后复用或由新租约重写，不得永久孤立。
 5. 不得通过延长旧租约、复用 lease UUID、改写 finished 状态或手工把 `.part` 重命名为 `.smsx` 绕过恢复状态机。
+6. `cleanup_exports` 对账目录与数据库：活动租约文件保留；未过期 `done` 引用缺失或不能通过终止认证时把任务标为 `failed`（不是可下载 ready）；超龄未引用 `.part/.smsx` 删除。文件删除与 `clear_file()` 任一中断后必须能重入收敛。
+7. 日志只记录 `action` 与 `task_id`，不记录手机号、短信正文、Token、Key 或解密内容。
 
 ## 验证
 

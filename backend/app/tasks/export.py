@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import datetime
 from typing import Protocol
 
 from app.core.bounded_executor import run_bounded
@@ -10,7 +10,11 @@ from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.crypto import CryptoService
 from app.services.export_file import ExportFileCodec
-from app.services.export_repository import ExpiredExport, SqlExportRepository
+from app.services.export_reconcile import (
+    ExportReconcileRepository,
+    reconcile_export_storage,
+)
+from app.services.export_repository import SqlExportRepository
 from app.settings import get_settings
 from app.tasks import background_task_options, celery_app
 from app.tasks.export_worker import build_export
@@ -22,18 +26,6 @@ class DispatchRepository(Protocol):
 
 class ExportSender(Protocol):
     async def send(self, task_id: int) -> None: ...
-
-
-class CleanupRepository(Protocol):
-    async def retention_days(self) -> int: ...
-
-    async def expired(self, retention_days: int) -> list[ExpiredExport]: ...
-
-    async def clear_file(self, task_id: int, file_path: str) -> None: ...
-
-
-class FileRemover(Protocol):
-    def remove(self, raw_path: str | Path) -> None: ...
 
 
 class CeleryExportSender:
@@ -59,14 +51,13 @@ async def dispatch_exports_once(
 
 
 async def cleanup_exports_once(
-    repository: CleanupRepository,
-    codec: FileRemover,
+    repository: ExportReconcileRepository,
+    codec: ExportFileCodec,
+    *,
+    now: datetime | None = None,
 ) -> int:
-    expired = await repository.expired(await repository.retention_days())
-    for item in expired:
-        await run_bounded(codec.remove, item.file_path, timeout_s=5)
-        await repository.clear_file(item.id, item.file_path)
-    return len(expired)
+    stats = await reconcile_export_storage(repository, codec, now=now)
+    return stats.total
 
 
 async def _dispatch() -> int:
