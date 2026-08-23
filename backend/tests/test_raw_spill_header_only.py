@@ -266,6 +266,7 @@ def test_authenticated_data_is_never_deleted_as_header_only(tmp_path: Path) -> N
     stream = store.open_stream("report", crypto(), capture_bytes=4096)
     stream.announce(http_status=200, content_encoding="identity")
     assert stream.feed(b'{"code":0,"data":[{"ok":true}]}') is True
+    assert stream.flush() is True
     age_path(stream.path)
     result = store.reclaim_idle("report", crypto())
     assert result.header_only == 0

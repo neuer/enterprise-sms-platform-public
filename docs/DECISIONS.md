@@ -970,6 +970,24 @@
 - 影响：`raw_spill`/`report_ingest`/`reply_ingest`/`settings`、vendor-api 恢复句。
   未改队列名、Compose 服务名或 CI 门禁。
 
+## D085 Raw Spill 固定内部帧合同与预留公式
+
+- 决策：修订 D082 中「1MiB 帧开销按 httpx.aiter_raw 典型 ≥16KiB 分片估算」。
+  网络 chunk 没有最小尺寸，不得映射为持久化 AES-GCM 帧。`RawSpillStream.feed()`
+  先在有界内存合并为平台固定 `INTERNAL_FRAME_SIZE=64KiB` 内部帧，最后一帧允许
+  不足 64KiB，并在 `finish()` 与已 announce 的异常边界 `flush()`。明文计数与
+  加密落盘计数分离，各自硬上限；内部帧数硬上限为
+  `ceil(capture_bytes / 64KiB)`（64MiB 为 1024 帧）。
+  `capture_reservation_bytes()` 只由该帧合同证明：
+  `max_frames × (64KiB + 每帧 SME2 信封) + 文件头预算 + 2 × 控制帧预算 + 目录元数据`。
+  不得扩大磁盘配额、缩小 64MiB 恢复上限或放松加密认证。容量无法证明时仍只在
+  `open_stream()` 失败，不得已经开始消费后再因帧开销截断。
+- 原因：#444 已解决 64MiB 原子预留与 Report/Reply 超卖；1 字节级分片仍会把
+  每个 chunk 写成独立帧，固定 1MiB 开销不够，合法 <4MiB 响应会被截断。
+- 影响：`raw_spill`/`zhihui`/`settings`、vendor-api 预留句。未改 Vue、OpenAPI、
+  Alembic、D082 账本字段、D083 header-only 回收语义。不扩大
+  `RAW_SPILL_MAX_TOTAL_BYTES` 默认值。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
