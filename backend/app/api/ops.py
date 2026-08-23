@@ -43,6 +43,7 @@ from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender
 from app.services.ops_repository import SqlOpsRepository
 from app.services.outbox import OutboxEventPage
 from app.services.outbox_repository import SqlOutboxRepository
+from app.services.raw_parse import RAW_PARSER_VERSION
 from app.services.raw_replay import (
     RawIntegrityConflict,
     RawReplayConflict,
@@ -95,6 +96,13 @@ class RawLogModel(BaseModel):
         "protocol_invalid",
         "unknown_legacy",
     ]
+    parse_state: Literal[
+        "unattempted",
+        "transient_failure",
+        "protocol_invalid",
+        "processed",
+    ]
+    replay_eligibility: Literal["automatic", "manual", "never"]
 
 
 class RawLogPageModel(PageModel):
@@ -154,6 +162,18 @@ class QueueResumeModel(BaseModel):
 
 class ReplayResultModel(BaseModel):
     processed_items: int
+
+
+class ReevaluateResultModel(BaseModel):
+    parse_state: Literal[
+        "unattempted",
+        "transient_failure",
+        "protocol_invalid",
+        "processed",
+    ]
+    replay_eligibility: Literal["automatic", "manual", "never"]
+    reason: str
+    parser_version: int
 
 
 class OutboxStatsModel(BaseModel):
@@ -540,6 +560,39 @@ async def replay_raw(
     except (RawReplayConflict, RawIntegrityConflict) as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     return ReplayResultModel(processed_items=count)
+
+
+@router.post(
+    "/raw-logs/{id}/reevaluate",
+    response_model=ReevaluateResultModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+)
+@audited("raw_reevaluate")
+async def reevaluate_raw(
+    id: int,
+    request: Request,
+    service: Annotated[RawReplayService, Depends(get_raw_replay_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> ReevaluateResultModel:
+    claims = await _admin_claims(facade, credentials)
+    try:
+        disposition = await service.reevaluate(
+            id,
+            actor=claims.login_name,
+            ip=_ip(request),
+            principal=claims.principal,
+        )
+    except RawReplayNotFound:
+        raise ApiError(404, "NOT_FOUND", "原始报文不存在", None) from None
+    except (RawReplayConflict, RawIntegrityConflict) as error:
+        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    return ReevaluateResultModel(
+        parse_state=disposition.parse_state,
+        replay_eligibility=disposition.replay_eligibility,
+        reason=disposition.reason,
+        parser_version=RAW_PARSER_VERSION,
+    )
 
 
 @router.post(

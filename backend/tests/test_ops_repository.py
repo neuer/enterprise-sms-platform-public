@@ -123,11 +123,41 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "processing_started_at=now()" in normalized_sql
     assert "processed=false" in normalized_sql
     assert "capture_state IN ('complete','complete_too_large')" in normalized_sql
+    assert "replay_eligibility IN ('automatic', 'manual')" in normalized_sql
     assert "processing_started_at IS NULL" in normalized_sql
     assert "interval '15 minutes'" in normalized_sql
     assert "RETURNING" in normalized_sql
     assert "item_count" in normalized_sql
     assert params == {"raw_id": 9}
+
+
+@pytest.mark.asyncio
+async def test_system_raw_replay_claim_only_allows_automatic_complete() -> None:
+    repo, connection = repository(
+        [
+            FakeResult(
+                [
+                    {
+                        "id": 9,
+                        "source": "report",
+                        "payload_enc": b"ciphertext",
+                        "payload_sha256": "a" * 64,
+                        "key_version": 2,
+                        "processed": False,
+                        "http_status": 200,
+                        "content_encoding": "identity",
+                        "claimed": True,
+                    }
+                ]
+            )
+        ]
+    )
+    claim = await repo.claim_raw_for_replay(9, allow_manual=False)
+    assert claim is not None and claim.claimed is True
+    sql = " ".join(connection.calls[0][0].split())
+    assert "capture_state IN ('complete')" in sql
+    assert "replay_eligibility IN ('automatic')" in sql
+    assert "complete_too_large" not in sql
 
 
 @pytest.mark.asyncio
@@ -412,6 +442,7 @@ async def test_stale_raw_ids_only_include_complete_captures() -> None:
     assert await repo.list_stale_unprocessed_raw_ids() == [4]
     sql = " ".join(connection.calls[0][0].split())
     assert "capture_state='complete'" in sql
+    assert "replay_eligibility='automatic'" in sql
     assert "processed=false" in sql
 
 
@@ -442,6 +473,8 @@ async def test_raw_list_never_selects_ciphertext_or_payload_hash() -> None:
     assert "payload_enc" not in sql and "payload_sha256" not in sql
     assert "cardinality(custom_ids) custom_id_count" in sql
     assert "capture_state" in sql
+    assert "parse_state" in sql
+    assert "replay_eligibility" in sql
 
 
 @pytest.mark.asyncio

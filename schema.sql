@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.63  2026-08-23
+-- v1.6.63：raw_vendor_log 增加 parse_state 与 replay_eligibility，
+--          自动重放只认 automatic；确定性 HTTP/编码/JSON/包络进入
+--          manual/never；无法判定的历史行保守回填，不得默认 automatic
 -- v1.6.62  2026-08-22
 -- v1.6.62：pre-0072 存量 raw 按密文长度与错误类型分类；无法证明完整的
 --          历史行记 unknown_legacy，禁止普通自动/人工重放直至人工提升。
@@ -709,17 +713,29 @@ CREATE TABLE raw_vendor_log (
     -- 头仍保全正文；unknown_legacy=升级前无法证明完整性的历史行，仅人工盘点后提升；
     -- 后三者不得当作正常可重放 raw
     capture_state  VARCHAR(24) NOT NULL DEFAULT 'complete',
+    -- unattempted=尚未判定解析；transient_failure=依赖暂态；
+    -- protocol_invalid=确定性 HTTP/编码/JSON/包络；processed=业务投影已固化
+    parse_state    VARCHAR(24) NOT NULL DEFAULT 'unattempted',
+    -- automatic=自动重放可认领；manual=仅人工；never=禁止普通重放。
+    -- 默认 manual：无法判定的历史行不得默认进入 automatic
+    replay_eligibility VARCHAR(16) NOT NULL DEFAULT 'manual',
     fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_raw_vendor_http_status CHECK (http_status BETWEEN 100 AND 599),
     CONSTRAINT ck_raw_vendor_content_encoding
       CHECK (content_encoding IN ('identity','unsupported')),
     CONSTRAINT ck_raw_vendor_capture_state
-      CHECK (capture_state IN ('complete','complete_too_large','truncated','protocol_invalid','unknown_legacy'))
+      CHECK (capture_state IN ('complete','complete_too_large','truncated','protocol_invalid','unknown_legacy')),
+    CONSTRAINT ck_raw_vendor_parse_state
+      CHECK (parse_state IN ('unattempted','transient_failure','protocol_invalid','processed')),
+    CONSTRAINT ck_raw_vendor_replay_eligibility
+      CHECK (replay_eligibility IN ('automatic','manual','never'))
 );
 CREATE INDEX idx_raw_unprocessed ON raw_vendor_log(processed, fetched_at)
     WHERE processed = FALSE;
 CREATE INDEX idx_raw_processing_lease ON raw_vendor_log(processing_started_at, id)
     WHERE processed = FALSE;
+CREATE INDEX idx_raw_auto_replay ON raw_vendor_log(replay_attempts, id)
+    WHERE processed = FALSE AND replay_eligibility = 'automatic';
 CREATE INDEX idx_raw_fetched ON raw_vendor_log(fetched_at);
 -- GIN 索引支持 uncertain 分片按无PII customId 元数据比对
 CREATE INDEX idx_raw_custom_ids ON raw_vendor_log USING GIN (custom_ids);
@@ -2362,6 +2378,7 @@ GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
 GRANT SELECT (queue, state)
     ON outbox_event TO sms_metrics;
+GRANT SELECT (replay_eligibility) ON raw_vendor_log TO sms_metrics;
 
 -- 新表/序列默认不向任何运行身份授权；迁移必须显式更新本矩阵。
 ALTER DEFAULT PRIVILEGES FOR ROLE sms_owner IN SCHEMA public

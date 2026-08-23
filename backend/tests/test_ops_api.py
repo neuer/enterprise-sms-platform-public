@@ -147,6 +147,7 @@ class FakeQueue:
 class FakeReplay:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str, str]] = []
+        self.reevaluations: list[tuple[int, str, str]] = []
 
     async def replay(
         self,
@@ -158,6 +159,27 @@ class FakeReplay:
     ) -> int:
         self.calls.append((raw_id, actor, ip, principal.account_id, principal.identity_id))
         return 3
+
+    async def reevaluate(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> object:
+        self.reevaluations.append(
+            (raw_id, actor, ip, principal.account_id, principal.identity_id)
+        )
+        return type(
+            "Disposition",
+            (),
+            {
+                "parse_state": "unattempted",
+                "replay_eligibility": "automatic",
+                "reason": "unattempted",
+            },
+        )()
 
 
 class FakeExport:
@@ -311,7 +333,16 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     assert exported.json()["id"] == str(PUBLIC_ID)
     assert values["export"].calls[0][2].account_id == 1
 
+    reevaluate = browser.post("/api/v1/web/admin/raw-logs/2/reevaluate", headers=headers)
+    assert reevaluate.status_code == 200
+    assert reevaluate.json() == {
+        "parse_state": "unattempted",
+        "replay_eligibility": "automatic",
+        "reason": "unattempted",
+        "parser_version": 1,
+    }
     assert vars(ops_api.replay_raw)["__audited_action__"] == "raw_replay"
+    assert vars(ops_api.reevaluate_raw)["__audited_action__"] == "raw_reevaluate"
     assert vars(ops_api.trigger_job)["__audited_action__"] == "job_trigger"
     assert vars(ops_api.resume_queue)["__audited_action__"] == "queue_resume"
     assert vars(ops_api.create_unmatched_export)["__audited_action__"] == "export_create"

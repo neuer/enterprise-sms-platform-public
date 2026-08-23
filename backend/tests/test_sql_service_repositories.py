@@ -906,11 +906,21 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     await repository.mark_error(5, "bad payload")
     assert "processing_started_at=NULL" in connection.calls[0][0]
     assert "processing_started_at=NULL" in connection.calls[1][0]
-    assert connection.calls[0][1] == {"id": 4, "processed": True, "error": None}
+    assert "parse_state" in connection.calls[0][0]
+    assert "replay_eligibility" in connection.calls[0][0]
+    assert connection.calls[0][1] == {
+        "id": 4,
+        "processed": True,
+        "error": None,
+        "parse_state": "processed",
+        "replay_eligibility": "never",
+    }
     assert connection.calls[1][1] == {
         "id": 5,
         "processed": False,
         "error": "bad payload",
+        "parse_state": "unattempted",
+        "replay_eligibility": "manual",
     }
 
     connection = FakeConnection(

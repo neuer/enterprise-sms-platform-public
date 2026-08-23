@@ -9,6 +9,14 @@ from typing import Protocol
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.crypto import EncryptionContext
 from app.services.raw_capture_legacy import replay_forbidden_message
+from app.services.raw_parse import (
+    RawParseDisposition,
+    disposition_payload,
+    eligibility_conflict_message,
+    persist_disposition,
+    reevaluate_disposition,
+    reevaluate_forbidden_message,
+)
 from app.services.raw_spill import is_non_replayable_capture
 from app.vendor.zhihui import RawPulledPayload, VendorError, decode_pulled_payload
 
@@ -41,6 +49,9 @@ class RawReplayRecord:
     content_encoding: str = "identity"
     capture_state: str = "complete"
     item_count: int = 0
+    parse_state: str = "unattempted"
+    replay_eligibility: str = "automatic"
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +61,32 @@ class RawReplayClaim:
 
 
 class RawReplayRepository(Protocol):
-    async def claim_raw_for_replay(self, raw_id: int) -> RawReplayClaim | None: ...
+    async def claim_raw_for_replay(
+        self, raw_id: int, *, allow_manual: bool = True
+    ) -> RawReplayClaim | None: ...
 
     async def mark_replay_error(self, raw_id: int, error: str) -> None: ...
+
+    async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None: ...
+
+    async def update_parse_disposition(
+        self,
+        raw_id: int,
+        *,
+        parse_state: str,
+        replay_eligibility: str,
+        error: str | None,
+    ) -> None: ...
+
+    async def audit_raw_reevaluate(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+        after: dict[str, object],
+    ) -> None: ...
 
     async def has_human_raw_replay_audit(self, raw_id: int) -> bool: ...
 
@@ -138,7 +172,9 @@ class RawReplayService:
             system_producer=system_producer,
             principal=principal,
         )
-        claim = await self.repository.claim_raw_for_replay(raw_id)
+        claim = await self.repository.claim_raw_for_replay(
+            raw_id, allow_manual=not system_producer
+        )
         if claim is None:
             raise RawReplayNotFound(raw_id)
         forbidden = replay_forbidden_message(claim.record.capture_state)
@@ -161,12 +197,22 @@ class RawReplayService:
                     principal=principal,
                 )
                 return claim.record.item_count
+            refused = eligibility_conflict_message(
+                claim.record.replay_eligibility, system_producer=system_producer
+            )
+            if refused is not None:
+                raise RawReplayConflict(refused)
             raise RawReplayConflict("raw 正在处理中，请稍后重试")
         record = claim.record
         if is_non_replayable_capture(record.capture_state):
             raise RawReplayConflict("截断或协议异常 raw 不得当作正常可重放")
         if record.processed:
             raise RawReplayConflict("仅未处理 raw 可重放")
+        refused = eligibility_conflict_message(
+            record.replay_eligibility, system_producer=system_producer
+        )
+        if refused is not None:
+            raise RawReplayConflict(refused)
         raw = self.crypto.decrypt_bound_bytes(
             record.payload_enc,
             record.key_version,
@@ -206,3 +252,84 @@ class RawReplayService:
             principal=principal,
         )
         return count
+
+    async def reevaluate(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> RawParseDisposition:
+        """parser 升级后重评估指定 raw：只改解析面资格，不投影业务、不加 attempts。"""
+
+        if principal.actor_name != actor:
+            raise RuntimeError("raw reevaluate audit principal unavailable")
+        record = await self.repository.load_raw_for_reevaluate(raw_id)
+        if record is None:
+            raise RawReplayNotFound(raw_id)
+        forbidden = reevaluate_forbidden_message(record.capture_state)
+        if forbidden is not None:
+            raise RawReplayConflict(forbidden)
+        decode_error: BaseException | None = None
+        decoded_ok = False
+        error_text: str | None = None
+        wire = persist_disposition(
+            capture_state=record.capture_state,
+            http_status=record.http_status,
+            content_encoding=record.content_encoding,
+            processed=record.processed,
+        )
+        if not record.processed and not wire.never:
+            raw = self.crypto.decrypt_bound_bytes(
+                record.payload_enc,
+                record.key_version,
+                EncryptionContext(
+                    domain="vendor-raw",
+                    table="raw_vendor_log",
+                    column="payload_enc",
+                    object_id=f"{record.source}:{record.payload_sha256}",
+                ),
+            )
+            if hashlib.sha256(raw).hexdigest() != record.payload_sha256:
+                decode_error = RawIntegrityConflict("raw payload integrity mismatch")
+                error_text = "raw payload integrity mismatch"
+            else:
+                operation = "GetReport" if record.source == "report" else "GetReply"
+                try:
+                    decode_pulled_payload(
+                        RawPulledPayload(raw, record.http_status, record.content_encoding),
+                        operation,
+                    )
+                    decoded_ok = True
+                except VendorError as error:
+                    decode_error = error
+                    error_text = f"{type(error).__name__}: vendor response parsing failed"
+        disposition = reevaluate_disposition(
+            capture_state=record.capture_state,
+            http_status=record.http_status,
+            content_encoding=record.content_encoding,
+            processed=record.processed,
+            decode_error=decode_error,
+            decoded_ok=decoded_ok,
+        )
+        await self.repository.update_parse_disposition(
+            raw_id,
+            parse_state=disposition.parse_state,
+            replay_eligibility=disposition.replay_eligibility,
+            error=(
+                None
+                if decoded_ok or record.processed
+                else error_text if error_text is not None else record.error
+            ),
+        )
+        after = disposition_payload(disposition)
+        after["source"] = record.source
+        await self.repository.audit_raw_reevaluate(
+            raw_id,
+            actor=actor,
+            ip=ip,
+            principal=principal,
+            after=after,
+        )
+        return disposition

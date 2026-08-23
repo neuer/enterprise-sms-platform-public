@@ -1031,6 +1031,29 @@
   `import_file`、导出清理任务与 fencing 手册。未改 Vue、OpenAPI、Alembic、
   `raw_spill.py`。
 
+## D088 raw 解析面与自动重放资格分离
+
+- 决策：`raw_vendor_log` 在 `capture_state` 之外增加 `parse_state`
+  （unattempted / transient_failure / protocol_invalid / processed）和
+  `replay_eligibility`（automatic / manual / never）。自动扫描只认
+  `replay_eligibility='automatic'` 且 `capture_state='complete'`。
+  落库当时即可判定的非 2xx HTTP、非 identity Content-Encoding、以及
+  truncated / protocol_invalid / unknown_legacy 捕获写入 never。
+  JSON / 业务包络等确定性解析错误写入 manual；PostgreSQL、锁、租约过期、
+  进程终止等依赖暂态写入 automatic。`never` 对自动 mark_error 粘滞，防止
+  后续暂态分类上调资格。无法可靠判定的历史行回填 manual/never，不得默认
+  automatic。parser 版本升级后的重评估只允许
+  `POST /api/v1/web/admin/raw-logs/{id}/reevaluate`，审计动作
+  `raw_reevaluate`，不投影业务、不增加 `replay_attempts`。指标
+  `sms_raw_replay_eligibility{eligibility=...}` 只读
+  `replay_eligibility` 列。未改 Vue，未改 raw_spill 帧合同。
+  D087 已由 Import/Export 目录持久化合同占用，本项使用 D088。
+- 原因：#331 重开后自动重放仍只看 complete + attempts，会对确定性协议错误
+  重复解密解析至上限，同时挤占真正的暂态恢复。
+- 影响：schema v1.6.63、0075、`raw_parse`、ingest persist/mark、ops 扫描与
+  认领、raw 重放、OpenAPI、metrics。不削弱 uncertain 禁重发、PII 加密、
+  审计主体和截断/protocol_invalid 重放禁令。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后

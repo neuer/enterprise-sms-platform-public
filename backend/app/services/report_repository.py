@@ -14,6 +14,12 @@ from app.services.callback_repository import (
     enqueue_batch_finished,
     enqueue_message_report,
 )
+from app.services.raw_parse import (
+    ELIGIBILITY_NEVER,
+    PARSE_PROCESSED,
+    mark_error_column_values,
+    persist_column_values,
+)
 from app.services.report_ingest import (
     FailureRateAlert,
     ProtectedReport,
@@ -47,6 +53,13 @@ class SqlReportRepository:
 
         payload = dict(values)
         payload["capture_state"] = payload.get("capture_state") or "complete"
+        payload.update(
+            persist_column_values(
+                capture_state=str(payload["capture_state"]),
+                http_status=payload.get("http_status"),
+                content_encoding=str(payload.get("content_encoding") or "identity"),
+            )
+        )
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -56,12 +69,14 @@ class SqlReportRepository:
                         INSERT INTO raw_vendor_log (
                           source,payload_enc,payload_sha256,key_version,http_status,
                           content_encoding,custom_ids,item_count,processing_started_at,
-                          capture_state
+                          capture_state,parse_state,replay_eligibility
                         ) VALUES (
                           'report',:payload_enc,:payload_sha256,:key_version,:http_status,
                           :content_encoding,
                           CAST(:custom_ids AS text[]),:item_count,now(),
-                          COALESCE(:capture_state,'complete')
+                          COALESCE(:capture_state,'complete'),
+                          COALESCE(:parse_state,'unattempted'),
+                          COALESCE(:replay_eligibility,'manual')
                         ) RETURNING id
                         """
                     ),
@@ -490,21 +505,59 @@ class SqlReportRepository:
             await engine.dispose()
 
     async def mark_processed(self, raw_id: int) -> None:
-        await self._mark_raw(raw_id, processed=True, error=None)
+        await self._mark_raw(
+            raw_id,
+            processed=True,
+            error=None,
+            parse_state=PARSE_PROCESSED,
+            replay_eligibility=ELIGIBILITY_NEVER,
+        )
 
     async def mark_error(self, raw_id: int, error: str) -> None:
-        await self._mark_raw(raw_id, processed=False, error=error)
+        columns = mark_error_column_values(error)
+        await self._mark_raw(
+            raw_id,
+            processed=False,
+            error=error,
+            parse_state=columns["parse_state"],
+            replay_eligibility=columns["replay_eligibility"],
+        )
 
-    async def _mark_raw(self, raw_id: int, *, processed: bool, error: str | None) -> None:
+    async def _mark_raw(
+        self,
+        raw_id: int,
+        *,
+        processed: bool,
+        error: str | None,
+        parse_state: str,
+        replay_eligibility: str,
+    ) -> None:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 await connection.execute(
                     text(
-                        "UPDATE raw_vendor_log SET processed=:processed,error=:error,"
-                        "processing_started_at=NULL WHERE id=:id"
+                        """
+                        UPDATE raw_vendor_log
+                        SET processed=:processed,error=:error,processing_started_at=NULL,
+                          parse_state=CASE
+                            WHEN parse_state='processed' THEN 'processed'
+                            ELSE :parse_state
+                          END,
+                          replay_eligibility=CASE
+                            WHEN replay_eligibility='never' THEN 'never'
+                            ELSE :replay_eligibility
+                          END
+                        WHERE id=:id
+                        """
                     ),
-                    {"id": raw_id, "processed": processed, "error": error},
+                    {
+                        "id": raw_id,
+                        "processed": processed,
+                        "error": error,
+                        "parse_state": parse_state,
+                        "replay_eligibility": replay_eligibility,
+                    },
                 )
         finally:
             await engine.dispose()
