@@ -15,6 +15,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.core.audit import insert_audit as real_insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.core.runtime_resources import close_runtime_resources
@@ -35,24 +36,39 @@ async def accept_runtime(
     owner_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     password = uuid4().hex
     owner = create_async_engine(owner_url)
+    database = owner_url.database
     async with owner.begin() as connection:
         await connection.execute(
             text(f"ALTER ROLE sms_accept WITH LOGIN PASSWORD '{password}'")
         )
-        await connection.execute(
+        if database:
+            await connection.execute(
+                text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_accept')
+            )
+        existing = await connection.scalar(
             text(
                 """
-                INSERT INTO audit_context_signing_key(key_kind,key_material,updated_at)
-                VALUES ('principal',:key,now())
-                ON CONFLICT (key_kind) DO UPDATE
-                SET key_material=EXCLUDED.key_material,updated_at=now()
+                SELECT key_material FROM audit_context_signing_key
+                WHERE key_kind='principal'
                 """
-            ),
-            {"key": PRINCIPAL_KEY},
+            )
         )
+        if existing is None:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO audit_context_signing_key(key_kind,key_material,updated_at)
+                    VALUES ('principal',:key,now())
+                    """
+                ),
+                {"key": PRINCIPAL_KEY},
+            )
+            principal_key = PRINCIPAL_KEY
+        else:
+            principal_key = bytes(existing)
     monkeypatch.setattr(
         "app.core.runtime_resources._audit_context_key",
-        lambda name: PRINCIPAL_KEY if name == "audit_context_key" else None,
+        lambda name: principal_key if name == "audit_context_key" else None,
     )
     accept_url = owner_url.set(username="sms_accept", password=password)
     try:
@@ -248,10 +264,15 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
     principal = await _create_admin(owner, login=login)
     repository = _repository(accept_url)
 
-    async def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("synthetic audit failure")
+    attempts = {"n": 0}
 
-    monkeypatch.setattr("app.services.ops_repository.insert_audit", boom)
+    async def flaky(connection: object, event: object) -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("synthetic audit failure")
+        await real_insert_audit(connection, event)
+
+    monkeypatch.setattr("app.services.ops_repository.insert_audit", flaky)
     try:
         await _insert_blocked_batch(owner, batch_no)
         with correlation_scope(), pytest.raises(RuntimeError, match="synthetic"):
@@ -262,7 +283,7 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
             )
         assert await _batch_status(owner, batch_no) == "balance_blocked"
         async with owner.connect() as connection:
-            count = (
+            failed_count = (
                 await connection.execute(
                     text(
                         """
@@ -273,7 +294,35 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
                     {"account_id": principal.account_id},
                 )
             ).scalar_one()
-        assert int(count) == 0
+        assert int(failed_count) == 0
+
+        with correlation_scope():
+            resumed = await repository.resume_batches(
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+            )
+        assert [item.batch_no for item in resumed] == [batch_no]
+        assert await _batch_status(owner, batch_no) == "queued"
+        async with owner.connect() as connection:
+            retry_row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT actor,actor_subject_kind,actor_account_id,
+                          actor_identity_id,after_val
+                        FROM audit_log
+                        WHERE action='queue_resume' AND actor_account_id=:account_id
+                        """
+                    ),
+                    {"account_id": principal.account_id},
+                )
+            ).mappings().one()
+        assert str(retry_row["actor"]) == login
+        assert str(retry_row["actor_subject_kind"]) == "human"
+        assert int(retry_row["actor_account_id"]) == principal.account_id
+        assert int(retry_row["actor_identity_id"]) == principal.identity_id
+        assert int(retry_row["after_val"]["resumed_batches"]) == 1
     finally:
         await _cleanup(owner, batch_no=batch_no, principal=principal)
 

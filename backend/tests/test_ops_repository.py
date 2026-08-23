@@ -367,7 +367,7 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
 
 
 @pytest.mark.asyncio
-async def test_has_human_raw_replay_audit_queries_human_subject_only() -> None:
+async def test_has_human_raw_replay_audit_queries_any_raw_replay_audit() -> None:
     repo, connection = repository([FakeResult(scalar=1)])
 
     assert await repo.has_human_raw_replay_audit(9) is True
