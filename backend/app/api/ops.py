@@ -89,7 +89,11 @@ class RawLogModel(BaseModel):
     error: str | None
     fetched_at: datetime
     capture_state: Literal[
-        "complete", "complete_too_large", "truncated", "protocol_invalid"
+        "complete",
+        "complete_too_large",
+        "truncated",
+        "protocol_invalid",
+        "unknown_legacy",
     ]
 
 

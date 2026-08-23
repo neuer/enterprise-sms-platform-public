@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.services.crypto import EncryptionContext
+from app.services.raw_capture_legacy import replay_forbidden_message
 from app.services.raw_spill import is_non_replayable_capture
 from app.vendor.zhihui import RawPulledPayload, VendorError, decode_pulled_payload
 
@@ -107,6 +108,9 @@ class RawReplayService:
         claim = await self.repository.claim_raw_for_replay(raw_id)
         if claim is None:
             raise RawReplayNotFound(raw_id)
+        forbidden = replay_forbidden_message(claim.record.capture_state)
+        if forbidden is not None:
+            raise RawReplayConflict(forbidden)
         if not claim.claimed:
             if is_non_replayable_capture(claim.record.capture_state):
                 raise RawReplayConflict("截断或协议异常 raw 不得当作正常可重放")
