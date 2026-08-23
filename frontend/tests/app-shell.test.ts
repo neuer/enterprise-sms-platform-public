@@ -365,6 +365,53 @@ describe("应用骨架", () => {
     wrapper.unmount()
   })
 
+  it("跨标签页 Storage 信号会取消本页在途会话请求", async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/dashboard", component: { template: "<div />" } },
+        { path: "/login", component: { template: "<div>登录</div>" }, meta: { public: true } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    const session = useSessionStore(pinia)
+    session.apply("jwt", {
+      account_id: 2,
+      identity_id: 12,
+      provider_code: "local",
+      username: "viewer01",
+      display_name: "开发查看员",
+      dept: "业务一部",
+      role: "viewer",
+    })
+    let aborted = false
+    const fetch = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            aborted = true
+            reject(new DOMException("会话已切换", "AbortError"))
+          })
+        }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    await router.push("/dashboard")
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    const { authorizedFetch } = await import("../src/api/webMessages")
+    const pending = authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
+    const assertion = expect(pending).rejects.toThrow("会话已切换")
+
+    window.dispatchEvent(new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY }))
+    await flushPromises()
+    await assertion
+    expect(aborted).toBe(true)
+    expect(session.isAuthenticated).toBe(false)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("BFCache 恢复且服务端会话已注销时回到登录页", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

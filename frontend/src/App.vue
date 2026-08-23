@@ -7,6 +7,7 @@ import type { UserRole } from "./api/auth"
 import { getDashboard } from "./api/dashboard"
 import DailyPasswordChangeDialog from "./components/DailyPasswordChangeDialog.vue"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
+import { invalidateSessionGeneration } from "./api/sessionGeneration"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
 
 const route = useRoute()
@@ -92,6 +93,8 @@ function handleUnauthorized(): void {
 
 function handleSessionStorageSignal(event: StorageEvent): void {
   if (event.key !== SESSION_CLEAR_SIGNAL_KEY) return
+  // 信号只含无凭据时间戳。先推进本页代际并取消在途 Refresh，再清状态。
+  invalidateSessionGeneration()
   session.clear()
   if (route.path !== "/login") void router.replace("/login")
 }

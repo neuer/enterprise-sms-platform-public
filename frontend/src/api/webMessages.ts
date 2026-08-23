@@ -1,6 +1,12 @@
 import { AuthApiError, refreshRequest } from "./auth"
 import { withRefreshLock } from "./refreshLock"
 import {
+  getSessionGeneration,
+  invalidateSessionGeneration,
+  isCurrentSessionGeneration,
+  trackSessionController,
+} from "./sessionGeneration"
+import {
   clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
@@ -101,10 +107,9 @@ const REFRESH_TIMEOUT_MS = 10_000
 const DOWNLOAD_TIMEOUT_MS = 120_000
 type RefreshResult = "refreshed" | "unauthorized" | "unavailable"
 let refreshInFlight: Promise<RefreshResult> | null = null
-let sessionEpoch = 0
 const sessionControllers = new Set<AbortController>()
 window.addEventListener("sms:session-clearing", () => {
-  sessionEpoch += 1
+  invalidateSessionGeneration()
   cancelSessionRequests()
 })
 
@@ -174,13 +179,16 @@ function requestWithCurrentAuthorization(
     else externalSignal.addEventListener("abort", abortFromExternal, { once: true })
   }
   sessionControllers.add(controller)
+  const releaseTrack = trackSessionController(controller)
   return fetchWithTimeout(url, { ...init, headers }, controller, timeoutMs).finally(() => {
     sessionControllers.delete(controller)
+    releaseTrack()
     if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternal)
   })
 }
 
 function clearSession(): void {
+  invalidateSessionGeneration()
   cancelSessionRequests()
   clearAccessSession()
   clearRefreshTabBinding()
@@ -189,15 +197,16 @@ function clearSession(): void {
 
 async function refreshSession(): Promise<RefreshResult> {
   if (refreshInFlight) return refreshInFlight
-  const epochAtRequest = sessionEpoch
+  const epochAtRequest = getSessionGeneration()
   refreshInFlight = withRefreshLock(async () => {
-    if (sessionEpoch !== epochAtRequest) {
+    if (!isCurrentSessionGeneration(epochAtRequest)) {
       return "unauthorized"
     }
-    const epoch = sessionEpoch
+    const epoch = getSessionGeneration()
     try {
       const currentUser = getSessionUser()
       const controller = new AbortController()
+      const releaseTrack = trackSessionController(controller)
       const timer = window.setTimeout(
         () => controller.abort(new DOMException("刷新超时", "TimeoutError")),
         REFRESH_TIMEOUT_MS,
@@ -207,8 +216,9 @@ async function refreshSession(): Promise<RefreshResult> {
         result = await refreshRequest(controller.signal)
       } finally {
         window.clearTimeout(timer)
+        releaseTrack()
       }
-      if (sessionEpoch !== epoch) {
+      if (!isCurrentSessionGeneration(epoch)) {
         clearAccessSession()
         return "unauthorized"
       }
@@ -228,7 +238,7 @@ async function refreshSession(): Promise<RefreshResult> {
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"
     } catch (error) {
-      if (sessionEpoch !== epoch) {
+      if (!isCurrentSessionGeneration(epoch)) {
         clearAccessSession()
         return "unauthorized"
       }
