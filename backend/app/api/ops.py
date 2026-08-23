@@ -588,8 +588,8 @@ async def reevaluate_raw(
     except (RawReplayConflict, RawIntegrityConflict) as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     return ReevaluateResultModel(
-        parse_state=disposition.parse_state,  # type: ignore[arg-type]
-        replay_eligibility=disposition.replay_eligibility,  # type: ignore[arg-type]
+        parse_state=disposition.parse_state,
+        replay_eligibility=disposition.replay_eligibility,
         reason=disposition.reason,
         parser_version=RAW_PARSER_VERSION,
     )
