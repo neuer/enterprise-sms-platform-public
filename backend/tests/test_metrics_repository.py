@@ -110,6 +110,13 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
                     },
                 ]
             ),
+            FakeResult(
+                [
+                    {"replay_eligibility": "automatic", "count": 4},
+                    {"replay_eligibility": "manual", "count": 2},
+                    {"replay_eligibility": "never", "count": 7},
+                ]
+            ),
         ]
     )
     engine = FakeEngine(connection)
@@ -133,6 +140,11 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
             ("export", "takeover", 2),
         ),
         queue_depths=(("bulk", 9), ("realtime", 3)),
+        raw_replay_eligibility=(
+            ("automatic", 4),
+            ("manual", 2),
+            ("never", 7),
+        ),
     )
     assert not engine.disposed
     sql = "\n".join(call[0] for call in connection.calls).casefold()
@@ -144,6 +156,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
     assert "state in ('pending','leased','published','processing')" in sql
     assert "asia/shanghai" in sql and "removed_freq" in sql
     assert "poll_report" in sql and "poll_reply" in sql and "status='success'" in sql
+    assert "replay_eligibility" in sql and "count(replay_eligibility)" in sql
     for forbidden in ("phone_enc", "phone_hmac", "phone_mask", "vendor_msg", "content"):
         assert forbidden not in sql
 
@@ -174,6 +187,7 @@ async def test_repository_clamps_clock_skew_and_orders_labels() -> None:
                     {"source": "report", "lag_seconds": 4},
                 ]
             ),
+            FakeResult([]),
             FakeResult([]),
         ]
     )

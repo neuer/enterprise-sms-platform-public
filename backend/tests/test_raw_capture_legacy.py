@@ -326,7 +326,7 @@ class _ForbiddenReplayRepository:
     def __init__(self, capture_state: str) -> None:
         self.capture_state = capture_state
 
-    async def claim_raw_for_replay(self, raw_id: int) -> object:
+    async def claim_raw_for_replay(self, raw_id: int, **_: object) -> object:
         return type(
             "Claim",
             (),
