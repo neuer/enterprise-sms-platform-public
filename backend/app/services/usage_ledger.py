@@ -279,6 +279,130 @@ def _canonical_frequency_projection_key(
     return None
 
 
+_ACTIVE_RESERVATION_STATES = (
+    "reserved",
+    "committed",
+    "uncertain",
+    "release_requested",
+)
+
+
+def _choose_frequency_merge_window(
+    rows: Sequence[Any],
+    *,
+    target_key: str,
+) -> tuple[str, date, str, datetime, tuple[Any, ...]] | None:
+    """从一组频控投影中选出 canonical 窗口；无行则返回 None。"""
+
+    if not rows:
+        return None
+    target_rows = [row for row in rows if str(row["dimension_key"]) == target_key]
+    chosen = (
+        target_rows[0]
+        if target_rows
+        else max(rows, key=lambda row: (row["usage_date"], str(row["window_key"])))
+    )
+    kind = str(chosen["kind"])
+    usage_date = chosen["usage_date"]
+    window_key = str(chosen["window_key"])
+    matching = tuple(
+        row
+        for row in rows
+        if str(row["kind"]) == kind
+        and row["usage_date"] == usage_date
+        and str(row["window_key"]) == window_key
+    )
+    if not matching:
+        return None
+    return kind, usage_date, window_key, max(row["expires_at"] for row in matching), matching
+
+
+def _release_change_should_apply(
+    change: _ProjectionChange,
+    *,
+    existing_keys: set[str],
+    observed: datetime,
+) -> bool:
+    """投影存在则扣减；过期频控且目标缺失则跳过，避免归并后打空。"""
+
+    if change.dimension_key in existing_keys:
+        return True
+    if change.kind == "frequency" and change.expires_at <= observed:
+        return False
+    raise UsageReservationConflict("projection batch update conflict")
+
+
+async def _list_active_frequency_entry_refs(
+    connection: AsyncConnection,
+    subject_ids: Sequence[UUID],
+) -> list[Any]:
+    """未终态 counted 频控明细；删除 source 投影前必须仍有可命中的 projection_key。"""
+
+    if not subject_ids:
+        return []
+    result = await connection.execute(
+        text(
+            """
+            SELECT e.projection_key,e.window_key,e.usage_date,e.expires_at
+            FROM usage_frequency_entry e
+            JOIN usage_reservation r ON r.id=e.reservation_id
+            WHERE e.subject_id=ANY(CAST(:subject_ids AS uuid[]))
+              AND e.counted
+              AND r.state=ANY(CAST(:states AS text[]))
+            """
+        ),
+        {
+            "subject_ids": list(subject_ids),
+            "states": list(_ACTIVE_RESERVATION_STATES),
+        },
+    )
+    return list(result.mappings())
+
+
+async def _write_expired_canonical_tombstone(
+    connection: AsyncConnection,
+    *,
+    target_key: str,
+    source_rows: Sequence[Any],
+    entry_refs: Sequence[Any],
+) -> ProjectionRow | None:
+    """为仍被引用的过期 source 写 canonical 墓碑，供负向释放 UPDATE 命中。
+
+    墓碑 expires_at 保持在过去，rebuild 不会把它投影回 Redis，因此不恢复过期限流。
+    """
+
+    chosen = _choose_frequency_merge_window(source_rows, target_key=target_key)
+    if chosen is not None:
+        kind, usage_date, window_key, expires_at, matching = chosen
+        value = sum(int(row["value"]) for row in matching)
+    else:
+        if not entry_refs:
+            return None
+        picked = max(
+            entry_refs,
+            key=lambda row: (row["usage_date"], str(row["window_key"])),
+        )
+        kind = "frequency"
+        usage_date = picked["usage_date"]
+        window_key = str(picked["window_key"])
+        matching_refs = [
+            row
+            for row in entry_refs
+            if row["usage_date"] == usage_date and str(row["window_key"]) == window_key
+        ]
+        expires_at = max(row["expires_at"] for row in matching_refs)
+        value = len(matching_refs)
+    return await _write_absolute_frequency_projection(
+        connection,
+        dimension_key=target_key,
+        kind=kind,
+        usage_date=usage_date,
+        window_key=window_key,
+        value=value,
+        expires_at=expires_at,
+    )
+
+
 def _latest_projection_rows(rows: Sequence[ProjectionRow]) -> tuple[ProjectionRow, ...]:
     latest: dict[str, ProjectionRow] = {}
     for row in rows:
@@ -351,6 +475,24 @@ async def _lock_frequency_merge_keys(
     hmacs: Sequence[str],
     subject_ids: Sequence[UUID],
 ) -> None:
+    if subject_ids:
+        # 先按 id 锁仍引用这些主体的预留，再锁投影键。释放路径是预留后投影，
+        # 顺序一致才能避免 UPDATE entry 的外键 KEY SHARE 与 FOR UPDATE 死锁。
+        await connection.execute(
+            text(
+                """
+                SELECT r.id FROM usage_reservation r
+                WHERE EXISTS (
+                  SELECT 1 FROM usage_frequency_entry e
+                  WHERE e.reservation_id=r.id
+                    AND e.subject_id=ANY(CAST(:subject_ids AS uuid[]))
+                )
+                ORDER BY r.id
+                FOR UPDATE OF r
+                """
+            ),
+            {"subject_ids": list(subject_ids)},
+        )
     unique = [digest for digest in dict.fromkeys(hmacs) if HMAC_PATTERN.fullmatch(digest)]
     lock_keys = {key for digest in unique for key in (f"freq:v:{digest}:m", f"freq:v:{digest}:d")}
     for row in await _list_frequency_projection_rows(connection, unique):
@@ -465,9 +607,17 @@ async def _merge_frequency_projections(
         if target_key is None or source_key == target_key:
             continue
         remaps.setdefault(source_key, target_key)
+    entry_refs = await _list_active_frequency_entry_refs(connection, subject_ids)
+    referenced_keys = {str(row["projection_key"]) for row in entry_refs}
+    needed_targets = {
+        remaps[source_key]
+        for source_key in referenced_keys
+        if source_key in remaps
+    } | {key for key in referenced_keys if key not in remaps}
 
     written: list[ProjectionRow] = []
     stale_keys: list[str] = []
+    ensured_targets: set[str] = set()
     for target_key, group in groups.items():
         source_keys = [
             str(row["dimension_key"]) for row in group if str(row["dimension_key"]) != target_key
@@ -476,59 +626,72 @@ async def _merge_frequency_projections(
         live = [
             row for row in group if row["expires_at"] is not None and row["expires_at"] > observed
         ]
-        if not live:
-            continue
-        canonical_live = [row for row in live if str(row["dimension_key"]) == target_key]
-        if canonical_live:
-            kind = str(canonical_live[0]["kind"])
-            usage_date = canonical_live[0]["usage_date"]
-            window_key = str(canonical_live[0]["window_key"])
-        else:
-            chosen = max(
-                live,
-                key=lambda row: (row["usage_date"], str(row["window_key"])),
+        if live:
+            chosen = _choose_frequency_merge_window(live, target_key=target_key)
+            if chosen is None:
+                continue
+            kind, usage_date, window_key, expires_at, matching = chosen
+            ensured_targets.add(target_key)
+            if not source_keys and len(matching) == 1:
+                continue
+            written.append(
+                await _write_absolute_frequency_projection(
+                    connection,
+                    dimension_key=target_key,
+                    kind=kind,
+                    usage_date=usage_date,
+                    window_key=window_key,
+                    value=sum(int(row["value"]) for row in matching),
+                    expires_at=expires_at,
+                )
             )
-            kind = str(chosen["kind"])
-            usage_date = chosen["usage_date"]
-            window_key = str(chosen["window_key"])
-        matching = [
+            continue
+        if target_key not in needed_targets:
+            continue
+        related_refs = [
             row
-            for row in live
-            if str(row["kind"]) == kind
-            and row["usage_date"] == usage_date
-            and str(row["window_key"]) == window_key
+            for row in entry_refs
+            if str(row["projection_key"]) in {*source_keys, target_key}
+            or remaps.get(str(row["projection_key"])) == target_key
         ]
-        if not matching:
-            continue
-        if not source_keys and len(matching) == 1:
-            continue
-        written.append(
-            await _write_absolute_frequency_projection(
-                connection,
-                dimension_key=target_key,
-                kind=kind,
-                usage_date=usage_date,
-                window_key=window_key,
-                value=sum(int(row["value"]) for row in matching),
-                expires_at=max(row["expires_at"] for row in matching),
-            )
+        tombstone = await _write_expired_canonical_tombstone(
+            connection,
+            target_key=target_key,
+            source_rows=group,
+            entry_refs=related_refs,
         )
+        if tombstone is not None:
+            written.append(tombstone)
+            ensured_targets.add(target_key)
+    for source_key, target_key in remaps.items():
+        if source_key == target_key or target_key in ensured_targets:
+            continue
+        if target_key not in needed_targets:
+            continue
+        related_refs = [
+            row
+            for row in entry_refs
+            if str(row["projection_key"]) in {source_key, target_key}
+        ]
+        tombstone = await _write_expired_canonical_tombstone(
+            connection,
+            target_key=target_key,
+            source_rows=(),
+            entry_refs=related_refs,
+        )
+        if tombstone is not None:
+            written.append(tombstone)
+            ensured_targets.add(target_key)
     stale_keys.extend(
         source_key for source_key, target_key in remaps.items() if source_key != target_key
     )
-    unique_stale = sorted(set(stale_keys))
-    if unique_stale:
-        await connection.execute(
-            text(
-                """
-                DELETE FROM usage_projection
-                WHERE dimension_key=ANY(CAST(:keys AS text[]))
-                """
-            ),
-            {"keys": unique_stale},
-        )
+    protected_sources = {
+        source_key
+        for source_key, target_key in remaps.items()
+        if source_key in referenced_keys and target_key not in ensured_targets
+    }
     for source_key, target_key in sorted(remaps.items()):
-        if source_key == target_key:
+        if source_key == target_key or source_key in protected_sources:
             continue
         await connection.execute(
             text(
@@ -539,6 +702,17 @@ async def _merge_frequency_projections(
                 """
             ),
             {"source_key": source_key, "target_key": target_key},
+        )
+    unique_stale = sorted({key for key in stale_keys if key not in protected_sources})
+    if unique_stale:
+        await connection.execute(
+            text(
+                """
+                DELETE FROM usage_projection
+                WHERE dimension_key=ANY(CAST(:keys AS text[]))
+                """
+            ),
+            {"keys": unique_stale},
         )
     return tuple(written)
 
@@ -844,6 +1018,95 @@ async def commit_usage_reservation(
             raise UsageReservationConflict("usage reservation commit conflict")
 
 
+async def _collect_release_projection_changes(
+    connection: AsyncConnection,
+    reservation_id: UUID,
+) -> list[_ProjectionChange]:
+    """按当前明细汇总负向投影变更；调用方必须已持有预留行锁。"""
+
+    entries = await connection.execute(
+        text(
+            """
+            SELECT projection_key,kind,usage_date,window_key,
+                   sum(amount)::bigint amount,
+                   max(expires_at) expires_at
+            FROM (
+              SELECT projection_key,'quota'::text kind,usage_date,
+                     to_char(usage_date,'YYYYMMDD') window_key,
+                     amount,expires_at
+              FROM usage_quota_entry WHERE reservation_id=:reservation_id
+              UNION ALL
+              SELECT projection_key,'frequency'::text kind,usage_date,
+                     window_key,
+                     CASE WHEN counted THEN 1 ELSE 0 END amount,expires_at
+              FROM usage_frequency_entry WHERE reservation_id=:reservation_id
+            ) facts
+            GROUP BY projection_key,kind,usage_date,window_key
+            """
+        ),
+        {"reservation_id": reservation_id},
+    )
+    changes: list[_ProjectionChange] = []
+    for entry in entries.mappings():
+        amount = int(entry["amount"])
+        if amount <= 0:
+            continue
+        changes.append(
+            _ProjectionChange(
+                dimension_key=str(entry["projection_key"]),
+                kind=str(entry["kind"]),
+                usage_date=entry["usage_date"],
+                window_key=str(entry["window_key"]),
+                delta=-amount,
+                expires_at=entry["expires_at"],
+                reset_on_window_change=False,
+            )
+        )
+    return changes
+
+
+async def _apply_release_projection_changes(
+    connection: AsyncConnection,
+    reservation_id: UUID,
+) -> tuple[ProjectionRow, ...]:
+    """按首次读到的键排序加锁后重读明细再扣减。
+
+    不得在已持有 source 锁后再锁 canonical，否则会与归并的按序锁形成死锁。
+    重读后若键已被改写：目标存在则直接扣减，过期且缺失则跳过。
+    """
+
+    observed = await _database_now(connection)
+    initial = await _collect_release_projection_changes(connection, reservation_id)
+    await _lock_projection_keys(
+        connection,
+        [change.dimension_key for change in initial if change.kind == "frequency"],
+        namespace=43,
+    )
+    await _lock_projection_keys(
+        connection,
+        [change.dimension_key for change in initial if change.kind == "quota"],
+        namespace=47,
+    )
+    changes = await _collect_release_projection_changes(connection, reservation_id)
+    existing = {
+        row.dimension_key
+        for row in await _projection_rows(
+            connection,
+            [change.dimension_key for change in changes],
+        )
+    }
+    applicable = [
+        change
+        for change in changes
+        if _release_change_should_apply(
+            change,
+            existing_keys=existing,
+            observed=observed,
+        )
+    ]
+    return await _change_projections(connection, applicable)
+
+
 async def _request_release(
     connection: AsyncConnection,
     *,
@@ -883,55 +1146,7 @@ async def _request_release(
             ),
             {"reservation_id": reservation_id, "event_id": event_id},
         )
-        entries = await connection.execute(
-            text(
-                """
-                SELECT projection_key,kind,usage_date,window_key,
-                       sum(amount)::bigint amount,
-                       max(expires_at) expires_at
-                FROM (
-                  SELECT projection_key,'quota'::text kind,usage_date,
-                         to_char(usage_date,'YYYYMMDD') window_key,
-                         amount,expires_at
-                  FROM usage_quota_entry WHERE reservation_id=:reservation_id
-                  UNION ALL
-                  SELECT projection_key,'frequency'::text kind,usage_date,
-                         window_key,
-                         CASE WHEN counted THEN 1 ELSE 0 END amount,expires_at
-                  FROM usage_frequency_entry WHERE reservation_id=:reservation_id
-                ) facts
-                GROUP BY projection_key,kind,usage_date,window_key
-                """
-            ),
-            {"reservation_id": reservation_id},
-        )
-        changes: list[_ProjectionChange] = []
-        for entry in entries.mappings():
-            amount = int(entry["amount"])
-            if amount <= 0:
-                continue
-            changes.append(
-                _ProjectionChange(
-                    dimension_key=str(entry["projection_key"]),
-                    kind=str(entry["kind"]),
-                    usage_date=entry["usage_date"],
-                    window_key=str(entry["window_key"]),
-                    delta=-amount,
-                    expires_at=entry["expires_at"],
-                    reset_on_window_change=False,
-                )
-            )
-        await _lock_projection_keys(
-            connection,
-            [change.dimension_key for change in changes if change.kind == "frequency"],
-            namespace=43,
-        )
-        await _lock_projection_keys(
-            connection,
-            [change.dimension_key for change in changes if change.kind == "quota"],
-            namespace=47,
-        )
-        rows = await _change_projections(connection, changes)
+        rows = await _apply_release_projection_changes(connection, reservation_id)
         changed = True
     elif state == "release_requested":
         if persisted_event != event_id:
