@@ -51,7 +51,7 @@ code=0 成功；非 0 见第 4 节错误码。msg 可能为 null/""/"string"。
 `POST /Sms/Api/GetReport`　仅传 secretName/secretKey。
 **语义：拉走即消费**——每次返回自上次拉取以来的报告，取走后厂商侧不再重复给。实现必须先把完整原始响应字节 AES-GCM 加密落 `raw_vendor_log.payload_enc`，同时提取不含手机号的 `custom_ids` 元数据，提交后再受控解密解析；禁止把原始 JSON 明文写入 JSONB。
 
-官方合同未提供分页、游标或单次最大条数。平台因此施加有界恢复合同：自动解析上限 4 MiB；4–64 MiB 的完整响应保全为 `complete_too_large` 仅供人工恢复；超过 64 MiB 或 spill 配额时完整性终止，截断密文标记 `truncated`。GetReport/GetReply 在发起 HTTP 之前必须先在共享 rawspill 目录原子预留 `64MiB + 文档化帧开销`；预留失败则不得创建 stream、不得调用厂商，只告警等待空间恢复。畸形 consume-on-read `Content-Length` 仍须有界保全正文并标记 `protocol_invalid`。截断与协议异常 raw 不得当作正常可重放。升级前无法证明完整性的存量 raw 记 `unknown_legacy`，同样不得进入普通自动/运维重放。Mock 与定向测试不得连接真实厂商。
+官方合同未提供分页、游标或单次最大条数。平台因此施加有界恢复合同：自动解析上限 4 MiB；4–64 MiB 的完整响应保全为 `complete_too_large` 仅供人工恢复；超过 64 MiB 或 spill 配额时完整性终止，截断密文标记 `truncated`。GetReport/GetReply 在发起 HTTP 之前必须先在共享 rawspill 目录原子预留 `64MiB + 文档化帧开销`；预留失败则不得创建 stream、不得调用厂商，只告警等待空间恢复。`announce()` 前的 DNS/连接/TLS/超时失败必须删除纯 header-only stream 并释放该预留；启动恢复区分合法 header-only、部分 header 与损坏 header，超龄后删除或写入无 PII 的 `.headerq` 隔离标记并告警，不得删除已有认证 data frame 的 stream。畸形 consume-on-read `Content-Length` 仍须有界保全正文并标记 `protocol_invalid`。截断与协议异常 raw 不得当作正常可重放。升级前无法证明完整性的存量 raw 记 `unknown_legacy`，同样不得进入普通自动/运维重放。Mock 与定向测试不得连接真实厂商。
 
 `data` = Array：
 
