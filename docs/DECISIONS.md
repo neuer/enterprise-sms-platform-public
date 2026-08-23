@@ -850,8 +850,11 @@
 - 决策：`_ensure_frequency_subject()` 在改绑 alias/entry、删除 source subject 之前，
   按固定顺序锁 canonical 与 source 的频控投影键，把相同 `kind`+`usage_date`+`window_key`
   的绝对值写入单一 canonical `usage_projection`，并删除 source 行。过期或不同窗口
-  不得相加。归并产生的新版本随后续 `_apply_rows` 发布；Redis 失败时 PostgreSQL 仍是
-  可重建事实。
+  不得相加。若过期 source 仍被未终态 counted `usage_frequency_entry` 引用，即使窗口
+  已过期也必须先写入 `expires_at` 仍在过去的 canonical 墓碑，再改写 `projection_key`
+  并删除 source；无未终态引用时不得为过期窗口建墓碑，以免恢复过期限流。释放在持锁后
+  重读明细；过期且投影缺失的负向频控变更跳过扣减，预留仍可幂等进入 `released`。
+  归并产生的新版本随后续 `_apply_rows` 发布；Redis 失败时 PostgreSQL 仍是可重建事实。
 - 原因：投影键含各主体 `projection_hmac`。只归并身份会留下孤立计数，后续只读
   canonical 键会低估频控。
 - 影响：`usage_ledger.py`、账本单测/PostgreSQL 回归、usage-ledger 恢复手册。
