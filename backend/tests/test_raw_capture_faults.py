@@ -156,8 +156,8 @@ class TruncatedReplayRepository:
 
 
 def test_stream_survives_mid_receive_crash_as_truncated(tmp_path: Path) -> None:
-    store = RawSpillStore(tmp_path, max_total_bytes=1024 * 1024, max_pending_files=8)
-    stream = store.open_stream("report", crypto())
+    store = RawSpillStore(tmp_path, max_total_bytes=2 * 1024 * 1024, max_pending_files=8)
+    stream = store.open_stream("report", crypto(), capture_bytes=64 * 1024)
     assert stream.feed(b'{"code":0,"data":[') is True
     recovered = store.list_pending_streams(crypto())
     assert len(recovered) == 1
@@ -198,8 +198,8 @@ def test_spill_quota_rejects_additional_write(tmp_path: Path) -> None:
 
 
 def test_in_flight_stream_does_not_block_same_capture_spill(tmp_path: Path) -> None:
-    store = RawSpillStore(tmp_path, max_total_bytes=1024 * 1024, max_pending_files=1)
-    stream = store.open_stream("report", crypto())
+    store = RawSpillStore(tmp_path, max_total_bytes=2 * 1024 * 1024, max_pending_files=1)
+    stream = store.open_stream("report", crypto(), capture_bytes=64 * 1024)
     assert stream.feed(b'{"code":0,"data":[]}') is True
     path = store.write(
         source="report",
