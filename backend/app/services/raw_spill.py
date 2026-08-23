@@ -27,15 +27,23 @@ CAPTURE_COMPLETE = "complete"
 CAPTURE_COMPLETE_TOO_LARGE = "complete_too_large"
 CAPTURE_TRUNCATED = "truncated"
 CAPTURE_PROTOCOL_INVALID = "protocol_invalid"
+CAPTURE_UNKNOWN_LEGACY = "unknown_legacy"
 VALID_CAPTURE_STATES = frozenset(
     {
         CAPTURE_COMPLETE,
         CAPTURE_COMPLETE_TOO_LARGE,
         CAPTURE_TRUNCATED,
         CAPTURE_PROTOCOL_INVALID,
+        CAPTURE_UNKNOWN_LEGACY,
     }
 )
-NON_REPLAYABLE_CAPTURE_STATES = frozenset({CAPTURE_TRUNCATED, CAPTURE_PROTOCOL_INVALID})
+NON_REPLAYABLE_CAPTURE_STATES = frozenset(
+    {
+        CAPTURE_TRUNCATED,
+        CAPTURE_PROTOCOL_INVALID,
+        CAPTURE_UNKNOWN_LEGACY,
+    }
+)
 DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_PENDING_FILES = 32
 SYNC_EVERY_BYTES = 1024 * 1024
@@ -75,7 +83,7 @@ def normalize_capture_state(value: str | None) -> str:
 
 
 def is_non_replayable_capture(state: str | None) -> bool:
-    """截断或协议异常 raw 不得进入普通自动/人工重放。"""
+    """截断、协议异常或未分类历史 raw 不得进入普通自动/人工重放。"""
 
     return normalize_capture_state(state) in NON_REPLAYABLE_CAPTURE_STATES
 
