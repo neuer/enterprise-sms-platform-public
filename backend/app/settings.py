@@ -23,6 +23,13 @@ RAW_SPILL_CAPTURE_OVERHEAD_BYTES = 1024 * 1024
 RAW_SPILL_MIN_TOTAL_BYTES = (
     RAW_SPILL_RECOVERY_CAPTURE_BYTES + RAW_SPILL_CAPTURE_OVERHEAD_BYTES
 )
+# 与 deploy/docker-compose.yml worker-realtime mem_limit: 768m、-c 2 对齐。
+# 恢复峰值按「并发恢复数 × 2 × 64MiB」（明文 + 再加密）核算，不得大于该预算。
+WORKER_RSS_LIMIT_BYTES_DEFAULT = 768 * 1024 * 1024
+RAW_SPILL_RECOVER_CONCURRENCY_DEFAULT = 2
+RAW_SPILL_RECOVER_FILE_RSS_BYTES = 2 * RAW_SPILL_RECOVERY_CAPTURE_BYTES
+RAW_SPILL_RECOVER_MAX_FILES_DEFAULT = 8
+RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT = 8.0
 
 DatabaseRole = Literal[
     "auth",
@@ -128,6 +135,11 @@ class Settings(BaseSettings):
     raw_spill_dir: Path = Path("/var/lib/sms/raw-spill")
     raw_spill_max_total_bytes: int = 512 * 1024 * 1024
     raw_spill_max_pending_files: int = 32
+    worker_rss_limit_bytes: int = WORKER_RSS_LIMIT_BYTES_DEFAULT
+    raw_spill_recover_concurrency: int = RAW_SPILL_RECOVER_CONCURRENCY_DEFAULT
+    raw_spill_recover_max_files: int = RAW_SPILL_RECOVER_MAX_FILES_DEFAULT
+    raw_spill_recover_max_plaintext_bytes: int = RAW_SPILL_RECOVERY_CAPTURE_BYTES
+    raw_spill_recover_max_seconds: float = RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT
     security_daily_control_dir: Path = Path("/run/security-report")
     security_daily_config_dir: Path = Path("/run/security-report-config")
 
@@ -376,6 +388,39 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.raw_spill_max_pending_files <= 256:
             raise ValueError("RAW_SPILL_MAX_PENDING_FILES must be between 1 and 256")
+        if not RAW_SPILL_MIN_TOTAL_BYTES <= self.worker_rss_limit_bytes <= 64 * 1024 * 1024 * 1024:
+            raise ValueError(
+                "WORKER_RSS_LIMIT_BYTES must be at least one 64MiB recovery "
+                "capture plus framing overhead, and at most 64GiB"
+            )
+        if not 1 <= self.raw_spill_recover_concurrency <= 8:
+            raise ValueError("RAW_SPILL_RECOVER_CONCURRENCY must be between 1 and 8")
+        recover_peak = self.raw_spill_recover_concurrency * RAW_SPILL_RECOVER_FILE_RSS_BYTES
+        if recover_peak > self.worker_rss_limit_bytes:
+            raise ValueError(
+                "RAW_SPILL_RECOVER_CONCURRENCY times 2×64MiB recover peak "
+                "exceeds WORKER_RSS_LIMIT_BYTES"
+            )
+        if self.raw_spill_max_total_bytes > self.worker_rss_limit_bytes:
+            raise ValueError(
+                "RAW_SPILL_MAX_TOTAL_BYTES exceeds WORKER_RSS_LIMIT_BYTES; "
+                "raise the documented worker memory budget before enlarging the disk backlog"
+            )
+        if not 1 <= self.raw_spill_recover_max_files <= self.raw_spill_max_pending_files:
+            raise ValueError(
+                "RAW_SPILL_RECOVER_MAX_FILES must be between 1 and RAW_SPILL_MAX_PENDING_FILES"
+            )
+        if not (
+            1024
+            <= self.raw_spill_recover_max_plaintext_bytes
+            <= self.raw_spill_max_total_bytes
+        ):
+            raise ValueError(
+                "RAW_SPILL_RECOVER_MAX_PLAINTEXT_BYTES must be between 1KiB "
+                "and RAW_SPILL_MAX_TOTAL_BYTES"
+            )
+        if not 0.1 <= self.raw_spill_recover_max_seconds <= 60:
+            raise ValueError("RAW_SPILL_RECOVER_MAX_SECONDS must be between 0.1 and 60")
         return self
 
     @property
