@@ -1031,6 +1031,28 @@
   `import_file`、导出清理任务与 fencing 手册。未改 Vue、OpenAPI、Alembic、
   `raw_spill.py`。
 
+## D089 Secondary .spill 元数据必须与正文同等认证
+
+- 决策：在 D080 stream terminal 与 D086 非活动隔离之上，secondary `.spill`
+  改为 `SMSXSP2` 长度化 AES-GCM header 帧。规范化 JSON 绑定
+  `source/payload_sha256/payload_enc_sha256/http_status/content_encoding/capture_state/key_version`，
+  AAD 使用同一组字段；明文必须与可见 header 逐字相同。恢复先验证 header，
+  再核对文件名 `source-digest.spill`、正文 SHA-256 与将写入
+  `raw_vendor_log` 的 `source:payload_sha256` 身份。keyring 全版本都可尝试
+  解密 header，不得只信未认证 header 里的 `key_version`。未认证旧格式
+  （明文 JSON header + newline + payload_enc）强制 `unknown_legacy`，
+  不得默认 `complete` 或进入自动重放。认证失败立即写入无 PII 的 `.headerq`
+  并离开活动配额，不消耗 live pull 名额。不扩大活动磁盘配额、不缩小 64MiB
+  恢复上限、不放松 payload AES-GCM，不改 payload AAD，无数据库迁移。
+  `.stream` terminal、`.spill` header 与库行 `capture_state` 使用同一套
+  replay 资格事实。
+- 原因：#429 只认证了 stream announce/terminal。具备 Raw Volume 写权限的主体
+  只需改明文 spill header，即可把 truncated/protocol_invalid 提升为
+  complete，或改写 HTTP/编码，而不破坏正文密文。
+- 影响：`raw_spill`/`report_ingest`/`reply_ingest`、vendor-api 恢复句。
+  未改 Vue、OpenAPI、Alembic、D082/D085 预留与内部帧、D086 隔离配额、D087
+  Import/Export 持久化合同。D088 留给 #331 / #468。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后

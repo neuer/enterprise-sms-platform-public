@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 from zoneinfo import ZoneInfo
 
+from cryptography.exceptions import InvalidTag
+
 from app.services.crypto import (
     BOUND_ENVELOPE_MAGIC,
     NONCE_SIZE,
@@ -33,11 +35,13 @@ SOURCE_PATTERN = re.compile(r"^(report|reply)$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 STREAM_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 STREAM_MAGIC = b"SMSXRS1\n"
+SPILL_MAGIC = b"SMSXSP2\n"
 STREAM_RECORD_HEADER = struct.Struct(">I")
 STREAM_META_HEADER = struct.Struct(">H")
 STREAM_CONTROL_SENTINEL = 0xFFFFFFFF
 STREAM_KIND_ANNOUNCE = "announce"
 STREAM_KIND_TERMINAL = "terminal"
+STREAM_KIND_SPILL = "spill"
 CAPTURE_COMPLETE = "complete"
 CAPTURE_COMPLETE_TOO_LARGE = "complete_too_large"
 CAPTURE_TRUNCATED = "truncated"
@@ -75,6 +79,8 @@ STREAM_HEADER_BUDGET_BYTES = 256
 CONTROL_FRAME_COUNT = 2
 CONTROL_FRAME_BUDGET_BYTES = 256
 DIRECTORY_METADATA_BYTES = 768
+# secondary spill 认证 header 开销；计入单文件 extra，不得扩大目录配额或缩小 64MiB。
+SPILL_HEADER_BUDGET_BYTES = 768
 # 3× 厂商绝对超时，避免回收仍在 DNS/connect/TLS 中的在途 header-only。
 HEADER_ONLY_RECLAIM_AFTER_S = 30.0
 # 非活动隔离与活动拉取配额分离：只保存无 PII 证据，不占 32 文件/64MiB 活动容量。
@@ -175,6 +181,10 @@ CAPTURE_FRAME_OVERHEAD_BYTES = (
 
 class SpillQuotaExceeded(RuntimeError):
     """spill 目录已达文件数或总字节上限，必须停止继续拉取。"""
+
+
+class SpillMetadataAuthError(RuntimeError):
+    """secondary spill 元数据认证失败；禁止写入 raw_vendor_log。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +443,117 @@ def _control_context(
     )
 
 
+def _require_http_status(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("invalid http_status")
+    status = int(value)
+    if not 100 <= status <= 599:
+        raise ValueError("invalid http_status")
+    return status
+
+
+def _require_key_version(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("invalid key_version")
+    version = int(value)
+    if not 1 <= version <= 32767:
+        raise ValueError("invalid key_version")
+    return version
+
+
+def _require_content_encoding(value: object) -> str:
+    encoding = str(value or "")
+    if not encoding or len(encoding) > 64 or "/" in encoding or "\\" in encoding:
+        raise ValueError("invalid content_encoding")
+    return encoding
+
+
+def canonical_spill_header(
+    *,
+    source: str,
+    payload_sha256: str,
+    payload_enc_sha256: str,
+    key_version: int,
+    http_status: int,
+    content_encoding: str,
+    capture_state: str,
+) -> bytes:
+    """规范化 secondary spill 认证 header；任一字段变化都会改变正文 AAD。"""
+
+    if SOURCE_PATTERN.fullmatch(source) is None:
+        raise ValueError("invalid raw spill source")
+    if SHA256_PATTERN.fullmatch(payload_sha256) is None:
+        raise ValueError("invalid raw spill digest")
+    if SHA256_PATTERN.fullmatch(payload_enc_sha256) is None:
+        raise ValueError("invalid raw spill ciphertext digest")
+    document = {
+        "capture_state": normalize_capture_state(capture_state),
+        "content_encoding": _require_content_encoding(content_encoding),
+        "http_status": _require_http_status(http_status),
+        "key_version": _require_key_version(key_version),
+        "kind": STREAM_KIND_SPILL,
+        "payload_enc_sha256": payload_enc_sha256,
+        "payload_sha256": payload_sha256,
+        "source": source,
+    }
+    return json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _spill_header_context(meta: dict[str, object]) -> EncryptionContext:
+    source = str(meta["source"])
+    payload_sha256 = str(meta["payload_sha256"])
+    payload_enc_sha256 = str(meta["payload_enc_sha256"])
+    http_status = _require_http_status(meta["http_status"])
+    content_encoding = _require_content_encoding(meta["content_encoding"])
+    capture_state = normalize_capture_state(str(meta["capture_state"]))
+    key_version = _require_key_version(meta["key_version"])
+    object_id = (
+        f"{source}:{payload_sha256}:{payload_enc_sha256}:"
+        f"{http_status}:{content_encoding}:{capture_state}:{key_version}"
+    )
+    return EncryptionContext(
+        domain="vendor-raw",
+        table="raw_spill",
+        column=STREAM_KIND_SPILL,
+        object_id=object_id,
+    )
+
+
+def candidate_key_versions(crypto: StreamChunkCrypto, hint: int | None = None) -> tuple[int, ...]:
+    """认证尝试顺序：提示版本与 active 优先，但必须覆盖整个 keyring。"""
+
+    ordered: list[int] = []
+    for value in (hint, getattr(crypto, "active_version", None)):
+        if isinstance(value, int) and not isinstance(value, bool) and value not in ordered:
+            ordered.append(value)
+    raw_versions = getattr(crypto, "key_versions", None)
+    if raw_versions:
+        for value in raw_versions:
+            version = int(value)
+            if version not in ordered:
+                ordered.append(version)
+    if not ordered:
+        ordered = [1]
+    return tuple(ordered)
+
+
+def durable_persist_capture_state(record: RawSpillRecord) -> str:
+    """只有认证过的 capture_state 可以进入库；未认证格式一律 unknown_legacy。"""
+
+    if record.format_legacy or not record.metadata_authenticated:
+        return CAPTURE_UNKNOWN_LEGACY
+    return normalize_capture_state(record.capture_state)
+
+
+def spill_file_identity_matches(record: RawSpillRecord) -> bool:
+    """文件名、header source/digest 与库行身份必须是同一对 source+digest。"""
+
+    if record.stream_id:
+        return True
+    expected = f"{record.source}-{record.payload_sha256}.spill"
+    return record.path.name in {expected, f"{expected}.tmp"}
+
+
 @dataclass(frozen=True, slots=True)
 class RawSpillRecord:
     source: str
@@ -446,6 +567,8 @@ class RawSpillRecord:
     quarantined: bool = False
     stream_id: str = ""
     plaintext_bytes: int = 0
+    metadata_authenticated: bool = True
+    format_legacy: bool = False
 
     @property
     def recover_weight_bytes(self) -> int:
@@ -492,6 +615,7 @@ class _AssembledStream:
     announce: dict[str, object] | None
     terminal: dict[str, object] | None
     incomplete: bool
+    legacy_terminal: bool = False
 
     @property
     def empty(self) -> bool:
@@ -658,16 +782,37 @@ class RawSpillStore:
         http_status: int,
         content_encoding: str,
         payload_enc: bytes,
+        crypto: StreamChunkCrypto,
         capture_state: str = CAPTURE_COMPLETE,
     ) -> Path:
-        """先写临时文件并 fsync，再原子改名，保证 kill -9 后仍可恢复完整密文。"""
+        """先写认证 header 与密文并 fsync，再原子改名，保证 kill -9 后仍可恢复。"""
 
         if not payload_enc:
             raise ValueError("raw spill payload is empty")
         capture_state = normalize_capture_state(capture_state)
-        extra = len(payload_enc) + 256
+        payload_enc_sha256 = hashlib.sha256(payload_enc).hexdigest()
+        meta = canonical_spill_header(
+            source=source,
+            payload_sha256=payload_sha256,
+            payload_enc_sha256=payload_enc_sha256,
+            key_version=key_version,
+            http_status=http_status,
+            content_encoding=content_encoding,
+            capture_state=capture_state,
+        )
+        parsed = json.loads(meta.decode("utf-8"))
+        encrypted = crypto.encrypt_bound_bytes(meta, _spill_header_context(parsed))
+        frame = STREAM_META_HEADER.pack(len(meta)) + meta + encrypted.payload
+        extra = (
+            len(SPILL_MAGIC)
+            + STREAM_RECORD_HEADER.size
+            + len(frame)
+            + len(payload_enc)
+        )
+        if extra > len(payload_enc) + SPILL_HEADER_BUDGET_BYTES:
+            raise ValueError("authenticated spill header exceeds budget")
         with self._quota_lock():
-            self._reclaim_nonstream_locked(time.time())
+            self._reclaim_nonstream_locked(time.time(), crypto)
             # 在途 .stream 与即将落盘的 .spill 是同一捕获的两份密文，不得互相占满文件配额。
             same_capture = self._reservation_for_source_locked(source) is not None
             if self.pending_spill_count() >= self.max_pending_files or (
@@ -676,22 +821,11 @@ class RawSpillStore:
                 raise SpillQuotaExceeded("raw spill quota exceeded")
         self.directory.mkdir(parents=True, exist_ok=True)
         target = self._path(source, payload_sha256)
-        header = json.dumps(
-            {
-                "capture_state": capture_state,
-                "content_encoding": content_encoding,
-                "http_status": http_status,
-                "key_version": key_version,
-                "payload_sha256": payload_sha256,
-                "source": source,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
         tmp = target.with_suffix(".spill.tmp")
         with tmp.open("wb") as handle:
-            handle.write(header)
-            handle.write(b"\n")
+            handle.write(SPILL_MAGIC)
+            handle.write(STREAM_RECORD_HEADER.pack(len(frame)))
+            handle.write(frame)
             handle.write(payload_enc)
             handle.flush()
             os.fsync(handle.fileno())
@@ -699,8 +833,10 @@ class RawSpillStore:
         self._fsync_directory()
         return target
 
-    def list_pending(self, source: str | None = None) -> list[RawSpillRecord]:
-        return list(self.iter_pending(source))
+    def list_pending(
+        self, source: str | None = None, crypto: StreamChunkCrypto | None = None
+    ) -> list[RawSpillRecord]:
+        return list(self.iter_pending(source, crypto))
 
     def list_pending_streams(
         self, crypto: StreamChunkCrypto, source: str | None = None
@@ -709,27 +845,29 @@ class RawSpillStore:
 
         return list(self.iter_pending_streams(crypto, source))
 
-    def iter_pending(self, source: str | None = None) -> Iterator[RawSpillRecord]:
+    def iter_pending(
+        self, source: str | None = None, crypto: StreamChunkCrypto | None = None
+    ) -> Iterator[RawSpillRecord]:
         """按文件惰性产出 .spill；可先按文件名 source 过滤，不读其它来源 payload。"""
 
-        yield from self._iter_records(source, streams=False, crypto=None)
+        yield from self._iter_records(source, streams=False, crypto=crypto, isolate=False)
 
     def iter_pending_streams(
         self, crypto: StreamChunkCrypto, source: str | None = None
     ) -> Iterator[RawSpillRecord]:
         """按文件惰性装配 .stream；可先按文件名 source 过滤。"""
 
-        yield from self._iter_records(source, streams=True, crypto=crypto)
+        yield from self._iter_records(source, streams=True, crypto=crypto, isolate=False)
 
     def iter_recoverable(
         self, crypto: StreamChunkCrypto, source: str
     ) -> Iterator[RawSpillRecord]:
-        """恢复入口：只产出指定 source，一次一条，损坏文件跳过。"""
+        """恢复入口：只产出指定 source，一次一条；认证失败隔离，不写库。"""
 
         if SOURCE_PATTERN.fullmatch(source) is None:
             raise ValueError("invalid raw spill source")
-        yield from self.iter_pending(source)
-        yield from self.iter_pending_streams(crypto, source)
+        yield from self._iter_records(source, streams=False, crypto=crypto, isolate=True)
+        yield from self._iter_records(source, streams=True, crypto=crypto, isolate=False)
 
     def _iter_records(
         self,
@@ -737,6 +875,7 @@ class RawSpillStore:
         *,
         streams: bool,
         crypto: StreamChunkCrypto | None,
+        isolate: bool,
     ) -> Iterator[RawSpillRecord]:
         if source is not None and SOURCE_PATTERN.fullmatch(source) is None:
             raise ValueError("invalid raw spill source")
@@ -749,7 +888,15 @@ class RawSpillStore:
                         continue
                     record = self._read_stream(path, crypto, expected_source=source)
                 else:
-                    record = self._read(path, expected_source=source)
+                    record = self._read(path, expected_source=source, crypto=crypto)
+            except SpillMetadataAuthError:
+                LOGGER.warning(
+                    "raw spill metadata authentication failed",
+                    extra={"kind": "spill", "state": "auth_failed"},
+                )
+                if isolate and not streams:
+                    self._isolate_spill_auth_failure(path, locked=False)
+                continue
             except Exception as exc:
                 LOGGER.warning(
                     "raw spill recover skipped unreadable file",
@@ -1302,7 +1449,7 @@ class RawSpillStore:
         isolated = 0
         temps = self._reclaim_rewrite_tmps_locked(now_ts)
         temps += self._reclaim_marker_tmps_locked()
-        isolated += self._reclaim_spills_locked(now_ts)
+        isolated += self._reclaim_spills_locked(now_ts, crypto)
         for path in self._iter_stream_paths():
             inspection = self._inspect_stream_path(path, crypto=crypto, now_ts=now_ts)
             if inspection is None:
@@ -1377,11 +1524,13 @@ class RawSpillStore:
             )
         return result
 
-    def _reclaim_nonstream_locked(self, now_ts: float) -> None:
-        """不依赖 crypto 的 spill/tmp/孤儿分类；write() 开门前必须调用。"""
+    def _reclaim_nonstream_locked(
+        self, now_ts: float, crypto: StreamChunkCrypto | None = None
+    ) -> None:
+        """spill/tmp/孤儿分类；有 crypto 时认证失败的 .spill 立即离开活动配额。"""
 
         self._reclaim_marker_tmps_locked()
-        self._reclaim_spills_locked(now_ts)
+        self._reclaim_spills_locked(now_ts, crypto)
         self._reclaim_orphans_locked(None)
         self._reclaim_orphan_handoff_locked()
         self._expire_quarantine_locked(now_ts)
@@ -1467,8 +1616,10 @@ class RawSpillStore:
         except (OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return False
 
-    def _reclaim_spills_locked(self, now_ts: float) -> int:
-        """损坏/不完整 .spill 与 .spill.tmp 立即或超龄后离开活动配额。"""
+    def _reclaim_spills_locked(
+        self, now_ts: float, crypto: StreamChunkCrypto | None = None
+    ) -> int:
+        """损坏/不完整/认证失败的 .spill 与 .spill.tmp 离开活动配额。"""
 
         if not self.directory.exists():
             return 0
@@ -1484,8 +1635,17 @@ class RawSpillStore:
                 target = self._path(source, token)
                 os.replace(path, target)
                 self._fsync_directory()
-                continue
+                path = target
             if kind == SPILL_LIFE_VALID:
+                if crypto is not None and not self._authenticated_spill_header_ok(path, crypto):
+                    self._isolate_named_file_locked(
+                        path,
+                        source=source or "report",
+                        token=token,
+                        state="auth_failed",
+                        kind="spill",
+                    )
+                    isolated += 1
                 continue
             aged = self._file_age_seconds(path, now_ts) >= self.header_only_min_age_s
             if kind == SPILL_LIFE_INCOMPLETE and path.name.endswith(".spill.tmp") and not aged:
@@ -1506,6 +1666,26 @@ class RawSpillStore:
         named_digest = match.group("digest") if match else ""
         try:
             with path.open("rb") as handle:
+                magic = handle.read(len(SPILL_MAGIC))
+                if magic == SPILL_MAGIC:
+                    raw_len = handle.read(STREAM_RECORD_HEADER.size)
+                    if len(raw_len) < STREAM_RECORD_HEADER.size:
+                        return SPILL_LIFE_INCOMPLETE, named_source, named_digest
+                    (frame_len,) = STREAM_RECORD_HEADER.unpack(raw_len)
+                    if (
+                        frame_len < STREAM_META_HEADER.size
+                        or frame_len > MAX_CLASSIFY_CONTROL_BYTES
+                    ):
+                        return SPILL_LIFE_CORRUPT, named_source, named_digest
+                    frame = handle.read(frame_len)
+                    if len(frame) != frame_len:
+                        return SPILL_LIFE_INCOMPLETE, named_source, named_digest
+                    if match is None:
+                        return SPILL_LIFE_CORRUPT, named_source or "report", named_digest
+                    if not handle.read(1):
+                        return SPILL_LIFE_INCOMPLETE, named_source, named_digest
+                    return SPILL_LIFE_VALID, named_source, named_digest
+                handle.seek(0)
                 header_bytes = handle.readline()
                 if not header_bytes.endswith(b"\n"):
                     return SPILL_LIFE_INCOMPLETE, named_source, named_digest
@@ -1685,34 +1865,242 @@ class RawSpillStore:
             return
         inspection.path.unlink(missing_ok=True)
 
-    def _read(self, path: Path, *, expected_source: str | None = None) -> RawSpillRecord | None:
+    def _isolate_spill_auth_failure(self, path: Path, *, locked: bool) -> None:
+        match = SPILL_FILE_NAME.fullmatch(path.name)
+        source = match.group("source") if match else "report"
+        token = (
+            match.group("digest")
+            if match
+            else hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
+        )
+        if locked:
+            self._isolate_named_file_locked(
+                path, source=source, token=token, state="auth_failed", kind="spill"
+            )
+        else:
+            with self._quota_lock():
+                self._isolate_named_file_locked(
+                    path, source=source, token=token, state="auth_failed", kind="spill"
+                )
+        self._isolated_total += 1
+        previous = self.last_reclaim
+        self.last_reclaim = SpillReclaimResult(
+            header_only=previous.header_only,
+            partial_header=previous.partial_header,
+            corrupt_header=previous.corrupt_header,
+            incomplete_frames=previous.incomplete_frames,
+            unauthenticated_partial=previous.unauthenticated_partial,
+            orphans=previous.orphans,
+            isolated=previous.isolated + 1,
+            temps_reclaimed=previous.temps_reclaimed,
+            quarantine_expired=previous.quarantine_expired,
+            quarantine_capacity_dropped=previous.quarantine_capacity_dropped,
+        )
+
+    def _parse_spill_header_frame(
+        self, handle: BinaryIO
+    ) -> tuple[bytes, bytes] | None:
+        raw_len = handle.read(STREAM_RECORD_HEADER.size)
+        if len(raw_len) < STREAM_RECORD_HEADER.size:
+            return None
+        (frame_len,) = STREAM_RECORD_HEADER.unpack(raw_len)
+        if frame_len < STREAM_META_HEADER.size or frame_len > MAX_CLASSIFY_CONTROL_BYTES:
+            return None
+        frame = handle.read(frame_len)
+        if len(frame) != frame_len:
+            return None
+        (meta_len,) = STREAM_META_HEADER.unpack_from(frame)
+        if STREAM_META_HEADER.size + meta_len > len(frame):
+            return None
+        meta = frame[STREAM_META_HEADER.size : STREAM_META_HEADER.size + meta_len]
+        ciphertext = frame[STREAM_META_HEADER.size + meta_len :]
+        return meta, ciphertext
+
+    def _decrypt_spill_header(
+        self, meta: bytes, ciphertext: bytes, crypto: StreamChunkCrypto
+    ) -> dict[str, object]:
+        try:
+            parsed = json.loads(meta.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise SpillMetadataAuthError("spill header is not an object")
+            canonical = canonical_spill_header(
+                source=str(parsed["source"]),
+                payload_sha256=str(parsed["payload_sha256"]),
+                payload_enc_sha256=str(parsed["payload_enc_sha256"]),
+                key_version=_require_key_version(parsed["key_version"]),
+                http_status=_require_http_status(parsed["http_status"]),
+                content_encoding=_require_content_encoding(parsed["content_encoding"]),
+                capture_state=str(parsed["capture_state"]),
+            )
+        except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SpillMetadataAuthError("spill header is not canonical") from exc
+        if canonical != meta:
+            raise SpillMetadataAuthError("spill header is not canonical")
+        context = _spill_header_context(parsed)
+        hint = _require_key_version(parsed["key_version"])
+        last_error: Exception | None = None
+        for version in candidate_key_versions(crypto, hint):
+            try:
+                plaintext = crypto.decrypt_bound_bytes(ciphertext, version, context)
+            except (ValueError, TypeError, InvalidTag) as exc:
+                last_error = exc
+                continue
+            if plaintext != meta:
+                raise SpillMetadataAuthError("spill header plaintext mismatch")
+            authenticated = json.loads(plaintext.decode("utf-8"))
+            if not isinstance(authenticated, dict):
+                raise SpillMetadataAuthError("spill header is not an object")
+            if _require_key_version(authenticated["key_version"]) != hint:
+                raise SpillMetadataAuthError("spill header key_version mismatch")
+            return authenticated
+        raise SpillMetadataAuthError("spill header authentication failed") from last_error
+
+    def _authenticated_spill_header_ok(
+        self, path: Path, crypto: StreamChunkCrypto
+    ) -> bool:
+        """回收路径只认证 header 帧，不把 payload 读进 RSS。"""
+
         try:
             with path.open("rb") as handle:
-                header_bytes = handle.readline()
-                header = json.loads(header_bytes.decode("utf-8"))
-                source = str(header["source"])
-                if expected_source is not None and source != expected_source:
-                    return None
-                payload_sha256 = str(header["payload_sha256"])
-                if self._path(source, payload_sha256) != path:
-                    return None
-                self._probe_payload_read(path.name)
-                payload_enc = handle.read()
-                if not payload_enc:
-                    return None
-                return RawSpillRecord(
-                    source=source,
-                    payload_sha256=payload_sha256,
-                    key_version=int(header["key_version"]),
-                    http_status=int(header["http_status"]),
-                    content_encoding=str(header["content_encoding"]),
-                    payload_enc=payload_enc,
-                    path=path,
-                    capture_state=normalize_capture_state(header.get("capture_state")),
-                    plaintext_bytes=len(payload_enc),
-                )
+                magic = handle.read(len(SPILL_MAGIC))
+                if magic != SPILL_MAGIC:
+                    return True
+                parsed = self._parse_spill_header_frame(handle)
+                if parsed is None:
+                    return False
+                meta, ciphertext = parsed
+                self._decrypt_spill_header(meta, ciphertext, crypto)
+                return True
+        except SpillMetadataAuthError:
+            return False
+        except (OSError, TypeError, ValueError, UnicodeError):
+            return False
+
+    def _read(
+        self,
+        path: Path,
+        *,
+        expected_source: str | None = None,
+        crypto: StreamChunkCrypto | None = None,
+    ) -> RawSpillRecord | None:
+        try:
+            with path.open("rb") as handle:
+                magic = handle.read(len(SPILL_MAGIC))
+                if magic == SPILL_MAGIC:
+                    return self._read_authenticated_spill(
+                        handle, path, expected_source=expected_source, crypto=crypto
+                    )
+                handle.seek(0)
+                return self._read_legacy_spill(handle, path, expected_source=expected_source)
+        except SpillMetadataAuthError:
+            raise
         except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
+
+    def _read_authenticated_spill(
+        self,
+        handle: BinaryIO,
+        path: Path,
+        *,
+        expected_source: str | None,
+        crypto: StreamChunkCrypto | None,
+    ) -> RawSpillRecord | None:
+        parsed_frame = self._parse_spill_header_frame(handle)
+        if parsed_frame is None:
+            return None
+        meta, ciphertext = parsed_frame
+        try:
+            visible = json.loads(meta.decode("utf-8"))
+            source = str(visible["source"])
+            payload_sha256 = str(visible["payload_sha256"])
+            payload_enc_sha256 = str(visible["payload_enc_sha256"])
+        except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            if crypto is not None:
+                raise SpillMetadataAuthError("spill header is unreadable") from exc
+            return None
+        if expected_source is not None and source != expected_source:
+            return None
+        if self._path(source, payload_sha256) != path:
+            if crypto is not None:
+                raise SpillMetadataAuthError("spill filename identity mismatch")
+            return None
+        authenticated: dict[str, object] | None = None
+        if crypto is not None:
+            authenticated = self._decrypt_spill_header(meta, ciphertext, crypto)
+            source = str(authenticated["source"])
+            payload_sha256 = str(authenticated["payload_sha256"])
+            payload_enc_sha256 = str(authenticated["payload_enc_sha256"])
+            if self._path(source, payload_sha256) != path:
+                raise SpillMetadataAuthError("spill filename identity mismatch")
+            if expected_source is not None and source != expected_source:
+                return None
+        self._probe_payload_read(path.name)
+        payload_enc = handle.read()
+        if not payload_enc:
+            return None
+        if hashlib.sha256(payload_enc).hexdigest() != payload_enc_sha256:
+            if crypto is not None:
+                raise SpillMetadataAuthError("spill payload digest mismatch")
+            return None
+        fields = authenticated or visible
+        return RawSpillRecord(
+            source=source,
+            payload_sha256=payload_sha256,
+            key_version=_require_key_version(fields["key_version"]),
+            http_status=_require_http_status(fields["http_status"]),
+            content_encoding=_require_content_encoding(fields["content_encoding"]),
+            payload_enc=payload_enc,
+            path=path,
+            capture_state=normalize_capture_state(str(fields["capture_state"])),
+            plaintext_bytes=len(payload_enc),
+            metadata_authenticated=authenticated is not None,
+            format_legacy=False,
+        )
+
+    def _read_legacy_spill(
+        self,
+        handle: BinaryIO,
+        path: Path,
+        *,
+        expected_source: str | None,
+    ) -> RawSpillRecord | None:
+        header_bytes = handle.readline()
+        header = json.loads(header_bytes.decode("utf-8"))
+        source = str(header["source"])
+        if expected_source is not None and source != expected_source:
+            return None
+        payload_sha256 = str(header["payload_sha256"])
+        if self._path(source, payload_sha256) != path:
+            return None
+        self._probe_payload_read(path.name)
+        payload_enc = handle.read()
+        if not payload_enc:
+            return None
+        try:
+            key_version = _require_key_version(header.get("key_version", 1))
+        except ValueError:
+            key_version = 1
+        try:
+            http_status = _require_http_status(header.get("http_status", 200))
+        except ValueError:
+            http_status = 200
+        try:
+            content_encoding = _require_content_encoding(header.get("content_encoding", "identity"))
+        except ValueError:
+            content_encoding = "identity"
+        return RawSpillRecord(
+            source=source,
+            payload_sha256=payload_sha256,
+            key_version=key_version,
+            http_status=http_status,
+            content_encoding=content_encoding,
+            payload_enc=payload_enc,
+            path=path,
+            capture_state=CAPTURE_UNKNOWN_LEGACY,
+            plaintext_bytes=len(payload_enc),
+            metadata_authenticated=False,
+            format_legacy=True,
+        )
 
     def _parse_stream_header_handle(
         self, handle: BinaryIO, path: Path
@@ -1854,6 +2242,7 @@ class RawSpillStore:
         announce: dict[str, object] | None = None
         terminal: dict[str, object] | None = None
         incomplete = False
+        legacy_terminal = False
         seq = 0
         while True:
             raw_len = handle.read(STREAM_RECORD_HEADER.size)
@@ -1886,6 +2275,7 @@ class RawSpillStore:
                         incomplete = True
                     else:
                         terminal = legacy
+                        legacy_terminal = True
                 break
             ciphertext = handle.read(length)
             if len(ciphertext) != length:
@@ -1910,7 +2300,9 @@ class RawSpillStore:
             seq += 1
         assembled = bytes(plaintext)
         plaintext.clear()
-        return _AssembledStream(assembled, hasher.hexdigest(), announce, terminal, incomplete)
+        return _AssembledStream(
+            assembled, hasher.hexdigest(), announce, terminal, incomplete, legacy_terminal
+        )
 
     def _write_quarantine(self, source: str, stream_id: str) -> Path:
         """为不完整 terminal 写下无 PII 的 quarantine 标记，便于巡检与配额记账。"""
@@ -1974,10 +2366,14 @@ class RawSpillStore:
         except (ValueError, TypeError):
             return None
         quarantined = False
+        metadata_authenticated = True
         if assembled.terminal is not None and not assembled.incomplete:
             capture_state = normalize_capture_state(str(assembled.terminal["capture_state"]))
             http_status = _normalize_http_status(assembled.terminal["http_status"])
             content_encoding = str(assembled.terminal["content_encoding"])
+            if assembled.legacy_terminal:
+                capture_state = CAPTURE_UNKNOWN_LEGACY
+                metadata_authenticated = False
         else:
             announce = assembled.announce or {}
             announced_state = (
@@ -2005,6 +2401,8 @@ class RawSpillStore:
             quarantined=quarantined,
             stream_id=header.stream_id,
             plaintext_bytes=len(assembled.plaintext),
+            metadata_authenticated=metadata_authenticated,
+            format_legacy=assembled.legacy_terminal,
         )
 
     def _fsync_directory(self) -> None:
