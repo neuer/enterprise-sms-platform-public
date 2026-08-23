@@ -182,7 +182,7 @@ async def _cleanup(
                     DELETE FROM audit_log
                     WHERE action='raw_replay'
                       AND object_type='raw_vendor_log'
-                      AND object_id=CAST(:raw_id AS text)
+                      AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                     """
                 ),
                 {"raw_id": raw_id},
@@ -472,7 +472,7 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
                         FROM audit_log
                         WHERE action='raw_replay'
                           AND object_type='raw_vendor_log'
-                          AND object_id=CAST(:raw_id AS text)
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                         ORDER BY id
                         """
                     ),
