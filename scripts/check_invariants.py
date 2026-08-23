@@ -691,12 +691,21 @@ def check_vendor_live_invariants() -> None:
         ROOT / "scripts/classify_ci_changes.py",
         "protected_change_category",
         'VENDOR_LIVE: RuleResult = (True, True, True, True, "vendor-live")',
+        'FRONTEND_SECURITY: RuleResult = (False, True, False, True, "frontend-security")',
+        "--name-status",
     )
     require_fragments(
         ROOT / "deploy/scripts/test_update_contract.py",
         "_VENDOR_LIVE_PROTECTED_EXACT",
-        "_BACKEND_CRITICAL_PROTECTED_EXACT",
+        "security_domain_category",
         "def protected_change_category(",
+    )
+    require_fragments(
+        ROOT / "deploy/scripts/protected_path_policy.py",
+        "BACKEND_CRITICAL_DOMAINS",
+        "FRONTEND_SECURITY_DOMAINS",
+        "REVIEWED_ORDINARY_EXACT",
+        "def security_domain_category(",
     )
     require_fragments(
         ROOT / "scripts/verify_release.sh",
@@ -993,7 +1002,56 @@ def check_async_import_invariants() -> None:
     )
 
 
+def check_protected_path_policy_invariants() -> None:
+    """安全域 manifest 必须是分类与 CODEOWNERS 的同一来源。"""
+
+    import subprocess
+
+    sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
+    from protected_path_policy import (  # noqa: E402
+        REQUIRED_CODEOWNERS_PATTERNS,
+        REVIEWED_ORDINARY_EXACT,
+        unclassified_security_domain_paths,
+    )
+
+    codeowners = require_fragments(ROOT / ".github" / "CODEOWNERS", *REQUIRED_CODEOWNERS_PATTERNS)
+    for pattern in REQUIRED_CODEOWNERS_PATTERNS:
+        if not re.search(rf"^{re.escape(pattern)}\s+@neuer\s*$", codeowners, flags=re.MULTILINE):
+            fail(ROOT / ".github" / "CODEOWNERS", f"缺少安全域 CODEOWNERS 规则: {pattern}")
+    contract = (ROOT / "deploy" / "scripts" / "test_update_contract.py").read_text(
+        encoding="utf-8"
+    )
+    if "_BACKEND_CRITICAL_PROTECTED_EXACT" in contract:
+        fail(
+            ROOT / "deploy" / "scripts" / "test_update_contract.py",
+            "禁止继续用 exact allowlist 作为 backend-critical 分类来源",
+        )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        )
+        tracked = [item.decode("utf-8") for item in completed.stdout.split(b"\0") if item]
+    except (OSError, subprocess.CalledProcessError, UnicodeError):
+        fail(ROOT / "deploy" / "scripts" / "protected_path_policy.py", "无法枚举受跟踪文件")
+        return
+    missing = unclassified_security_domain_paths(tracked)
+    if missing:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            f"安全域存在未归类路径: {missing[:8]}",
+        )
+    for relative in REVIEWED_ORDINARY_EXACT:
+        if relative not in tracked:
+            fail(
+                ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+                f"显式降级路径已不存在: {relative}",
+            )
+
+
 check_vendor_live_invariants()
+check_protected_path_policy_invariants()
 check_outbox_invariants()
 check_usage_ledger_invariants()
 check_import_reservation_invariants()

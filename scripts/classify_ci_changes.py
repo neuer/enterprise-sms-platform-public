@@ -103,6 +103,8 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
         return VENDOR_LIVE, False
     if protected_category == "backend-critical":
         return BACKEND_CRITICAL, False
+    if protected_category == "frontend-security":
+        return FRONTEND_SECURITY, False
     if path in ACTIVE_BLOCKER_DOCS:
         return NONE, False
     if path.startswith("docs/plans/") or fnmatchcase(path, "docs/TEST-REPORT-*"):
@@ -194,17 +196,47 @@ def classify_paths(paths: Iterable[str]) -> Classification:
     )
 
 
+_STATUS_TWO_PATHS = frozenset("CR")
+_STATUS_ONE_PATH = frozenset("ADMT")
+
+
+def _paths_from_name_status(raw: bytes) -> list[str]:
+    """解析 ``git diff --name-status -z``，删除/重命名两侧路径都参与分类。"""
+
+    items = [os.fsdecode(item) for item in raw.split(b"\0") if item]
+    paths: list[str] = []
+    index = 0
+    while index < len(items):
+        status = items[index]
+        if not status:
+            raise ChangeDetectionError("git diff failed")
+        kind = status[0]
+        if kind in _STATUS_TWO_PATHS:
+            if index + 2 >= len(items):
+                raise ChangeDetectionError("git diff failed")
+            paths.extend((items[index + 1], items[index + 2]))
+            index += 3
+        elif kind in _STATUS_ONE_PATH:
+            if index + 1 >= len(items):
+                raise ChangeDetectionError("git diff failed")
+            paths.append(items[index + 1])
+            index += 2
+        else:
+            raise ChangeDetectionError("git diff failed")
+    return paths
+
+
 def _git_paths(repo: Path, revision_range: str) -> list[str]:
     try:
         completed = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", "-z", revision_range],
+            ["git", "diff", "--name-status", "--no-renames", "-z", revision_range],
             cwd=repo,
             check=True,
             capture_output=True,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ChangeDetectionError("git diff failed") from exc
-    return [os.fsdecode(item) for item in completed.stdout.split(b"\0") if item]
+    return _paths_from_name_status(completed.stdout)
 
 
 def _full(reason: str) -> Classification:

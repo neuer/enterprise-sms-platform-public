@@ -12,6 +12,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from protected_path_policy import security_domain_category
+
 
 class TestUpdateContractError(ValueError):
     """快速更新请求或变更范围不符合安全契约。"""
@@ -182,6 +184,7 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "deploy/sms-compose",
             "scripts/check_invariants.py",
             "scripts/classify_ci_changes.py",
+            "deploy/scripts/protected_path_policy.py",
             "scripts/test_update.sh",
             "scripts/verify_vendor_live_test.sh",
             "frontend/src/api/admin.ts",
@@ -201,65 +204,6 @@ _VENDOR_LIVE_PROTECTED_PREFIXES = (
     "deploy/scripts/vendor_test_",
     "deploy/scripts/test_update_",
     "deploy/scripts/test_secure_access_",
-)
-_BACKEND_CRITICAL_PROTECTED_EXACT = frozenset(
-    {
-        "backend/app/api/admin.py",
-        "backend/app/api/approvals.py",
-        "backend/app/api/auth.py",
-        "backend/app/api/ops.py",
-        "backend/app/api/reports.py",
-        "backend/app/core/apikey.py",
-        "backend/app/core/audit.py",
-        "backend/app/core/ratelimit.py",
-        "backend/app/services/admin.py",
-        "backend/app/services/admin_repository.py",
-        "backend/app/services/approval.py",
-        "backend/app/services/approval_repository.py",
-        "backend/app/services/auth_provider.py",
-        "backend/app/services/auth_provider_repository.py",
-        "backend/app/services/blacklist.py",
-        "backend/app/services/blacklist_repository.py",
-        "backend/app/services/callback.py",
-        "backend/app/services/callback_repository.py",
-        "backend/app/services/callback_worker.py",
-        "backend/app/services/category.py",
-        "backend/app/services/crypto.py",
-        "backend/app/services/export.py",
-        "backend/app/services/export_file.py",
-        "backend/app/services/export_repository.py",
-        "backend/app/services/export_worker.py",
-        "backend/app/services/freq.py",
-        "backend/app/services/idempotency.py",
-        "backend/app/services/import_repository.py",
-        "backend/app/services/imports.py",
-        "backend/app/services/masking.py",
-        "backend/app/services/pipeline_repository.py",
-        "backend/app/services/quota.py",
-        "backend/app/services/raw_replay.py",
-        "backend/app/services/raw_spill.py",
-        "backend/app/services/reply_ingest.py",
-        "backend/app/services/report_ingest.py",
-        "backend/app/services/resend.py",
-        "backend/app/services/sensitive.py",
-        "backend/app/services/sensitive_repository.py",
-        "backend/app/services/uncertain.py",
-        "backend/app/services/uncertain_repository.py",
-        "backend/app/services/usage_ledger.py",
-        "backend/app/services/user_management.py",
-        "backend/app/services/user_repository.py",
-        "backend/app/services/vendor_test_security_audit.py",
-        "frontend/src/api/auth.ts",
-        "frontend/src/api/refreshLock.ts",
-        "frontend/src/api/sessionTokens.ts",
-        "frontend/src/api/webMessages.ts",
-        "frontend/src/stores/session.ts",
-    }
-)
-_BACKEND_CRITICAL_PROTECTED_PREFIXES = (
-    "backend/app/core/auth/",
-    "backend/app/tasks/",
-    "backend/app/vendor/",
 )
 _SAFE_OPERATIONAL_DOCS = frozenset(
     {
@@ -723,7 +667,7 @@ def _reject_forbidden_path(path: str) -> None:
 
 def protected_change_category(
     path: str,
-) -> Literal["vendor-live", "backend-critical"] | None:
+) -> Literal["vendor-live", "backend-critical", "frontend-security"] | None:
     """返回 CI 与测试发布共用的受保护路径类别。"""
 
     if (
@@ -732,11 +676,7 @@ def protected_change_category(
         or path.startswith(_VENDOR_LIVE_PROTECTED_PREFIXES)
     ):
         return "vendor-live"
-    if path in _BACKEND_CRITICAL_PROTECTED_EXACT or path.startswith(
-        _BACKEND_CRITICAL_PROTECTED_PREFIXES
-    ):
-        return "backend-critical"
-    return None
+    return security_domain_category(path)
 
 
 def _is_high_risk(path: str) -> bool:

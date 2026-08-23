@@ -502,6 +502,7 @@ def test_each_migration_source_sets_migration_changed(
         "deploy/sms-compose",
         "scripts/check_invariants.py",
         "scripts/classify_ci_changes.py",
+        "deploy/scripts/protected_path_policy.py",
         "scripts/test_update.sh",
         "frontend/src/api/admin.ts",
         "frontend/src/components/VendorCredentialDialog.vue",
@@ -539,6 +540,8 @@ def test_classifies_vendor_live_control_changes_as_high_risk(path: str) -> None:
         ("backend/app/services/masking.py", frozenset({"api"})),
         ("backend/app/services/raw_spill.py", frozenset({"api"})),
         ("backend/app/services/usage_ledger.py", frozenset({"api"})),
+        ("backend/app/services/raw_capture_legacy.py", frozenset({"api"})),
+        ("backend/app/services/ops_repository.py", frozenset({"api"})),
         ("backend/app/tasks/poll_report.py", frozenset({"api"})),
         ("frontend/src/api/auth.ts", frozenset({"web"})),
         ("frontend/src/api/refreshLock.ts", frozenset({"web"})),
@@ -1078,7 +1081,7 @@ def test_classifies_github_metadata_as_non_runtime(path: str) -> None:
 def test_github_metadata_does_not_block_mixed_application_change() -> None:
     change = classify_changed_paths(
         [
-            "backend/app/api/replies.py",
+            "backend/app/services/dashboard.py",
             ".github/workflows/auto-merge-owner-pr.yml",
             "docs/DECISIONS.md",
         ]

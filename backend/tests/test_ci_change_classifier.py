@@ -33,6 +33,7 @@ from classify_ci_changes import (  # noqa: E402
         ("deploy/README.md", (True, False, False)),
         ("openapi.yaml", (True, True, True)),
         ("schema.sql", (True, True, True)),
+        ("frontend/src/views/DashboardView.vue", (False, True, False)),
         ("frontend/src/App.vue", (False, True, False)),
         ("frontend/tests/app-shell.test.ts", (False, True, False)),
         ("frontend/package-lock.json", (False, True, False)),
@@ -59,6 +60,7 @@ from classify_ci_changes import (  # noqa: E402
         ("scripts/perf_smoke.py", (True, False, True)),
         ("scripts/verify_all.sh", (True, False, True)),
         ("scripts/classify_ci_changes.py", (True, True, True)),
+        ("deploy/scripts/protected_path_policy.py", (True, True, True)),
         ("scripts/verify_ci_results.py", (True, False, True)),
         ("scripts/verify_vendor_live_test.sh", (True, True, True)),
         ("backend/app/services/vendor_test_budget.py", (True, True, True)),
@@ -85,7 +87,7 @@ def test_mixed_changes_take_union() -> None:
         frontend=True,
         g2=True,
         security=True,
-        categories=frozenset({"frontend", "vendor-live"}),
+        categories=frozenset({"frontend-security", "vendor-live"}),
         full_fallback=False,
         performance=True,
     )
@@ -176,6 +178,8 @@ def test_vendor_live_high_risk_paths_always_select_full_ci_and_g2(path: str) -> 
         "backend/app/services/pipeline_repository.py",
         "backend/app/services/raw_replay.py",
         "backend/app/services/raw_spill.py",
+        "backend/app/services/raw_capture_legacy.py",
+        "backend/app/services/ops_repository.py",
         "backend/app/services/usage_ledger.py",
         "backend/app/tasks/poll_report.py",
         "backend/app/vendor/mock_server.py",
@@ -282,7 +286,7 @@ def test_pull_request_uses_three_dot_diff_and_excludes_base_only_changes(tmp_pat
     repo = init_repo(tmp_path)
     commit_file(repo, "docs/plans/base.md", "base")
     git(repo, "checkout", "-b", "feature")
-    feature_sha = commit_file(repo, "frontend/src/App.vue", "feature")
+    feature_sha = commit_file(repo, "frontend/src/views/DashboardView.vue", "feature")
     git(repo, "checkout", "main")
     base_sha = commit_file(repo, "backend/app/base_only.py", "base only")
 
@@ -473,10 +477,101 @@ def test_ordinary_backend_pull_request_uses_fast_backend_only(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (
+            "backend/app/services/raw_capture_legacy.py",
+            (True, False, True, True, "backend-critical"),
+        ),
+        (
+            "backend/app/services/ops_repository.py",
+            (True, False, True, True, "backend-critical"),
+        ),
+        (
+            "frontend/src/App.vue",
+            (False, True, False, True, "frontend-security"),
+        ),
+    ],
+)
+def test_raw_capture_ops_and_session_shell_are_not_skipped(
+    path: str,
+    expected: tuple[bool, bool, bool, bool, str],
+) -> None:
+    backend, frontend, g2, security, category = expected
+    result = classify_paths([path])
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        backend,
+        frontend,
+        g2,
+        security,
+    )
+    assert result.categories == frozenset({category})
+    assert result.full_fallback is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backend/app/services/new_replay_guard.py",
+        "backend/app/api/new_privileged_ops.py",
+        "backend/app/core/new_origin_guard.py",
+        "frontend/src/stores/new_session_lock.ts",
+        "frontend/src/api/new_session_client.ts",
+        "frontend/src/router/new_guard.ts",
+    ],
+)
+def test_new_security_domain_files_default_to_full_protection(path: str) -> None:
+    result = classify_paths([path])
+
+    assert result.security is True
+    assert result.full_fallback is False
+    if path.startswith("frontend/"):
+        assert (result.backend, result.frontend, result.g2) == (False, True, False)
+        assert result.categories == frozenset({"frontend-security"})
+    else:
+        assert (result.backend, result.frontend, result.g2) == (True, False, True)
+        assert result.categories == frozenset({"backend-critical"})
+
+
+def test_reviewed_ordinary_dashboard_stays_backend_only() -> None:
+    result = classify_paths(["backend/app/services/dashboard.py"])
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        True,
+        False,
+        False,
+        False,
+    )
+    assert result.categories == frozenset({"backend-check"})
+
+
+def test_deleting_protected_domain_file_keeps_g2(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "backend/app/services/raw_capture_legacy.py", "old")
+    git(repo, "rm", "--", "backend/app/services/raw_capture_legacy.py")
+    git(repo, "commit", "-m", "delete")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        True,
+        False,
+        True,
+        True,
+    )
+    assert result.categories == frozenset({"backend-critical"})
+    assert result.full_fallback is False
+
+
+@pytest.mark.parametrize(
     "path",
     [
         "backend/app/services/usage_ledger.py",
         "backend/app/services/raw_spill.py",
+        "backend/app/services/raw_capture_legacy.py",
+        "backend/app/services/ops_repository.py",
         "frontend/src/api/sessionTokens.ts",
         "frontend/src/api/auth.ts",
         "frontend/src/api/webMessages.ts",
@@ -522,7 +617,7 @@ def test_renaming_protected_lifeline_keeps_g2_without_forcing_full(
         True,
     )
     assert result.full_fallback is False
-    assert result.categories == frozenset({"backend-critical", "backend-check"})
+    assert result.categories == frozenset({"backend-critical"})
 
 
 def test_rename_is_classified_as_delete_plus_add(tmp_path: Path) -> None:
