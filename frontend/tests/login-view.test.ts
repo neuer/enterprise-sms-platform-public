@@ -4,7 +4,7 @@ import { createPinia } from "pinia"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { beforeEach, vi } from "vitest"
 
-import { clearAccessSession } from "../src/api/sessionTokens"
+import { resetAccessSessionModule } from "../src/api/sessionTokens"
 import LoginView from "../src/views/LoginView.vue"
 
 function response(body: unknown, status = 200) {
@@ -42,7 +42,7 @@ describe("登录页", () => {
   beforeEach(() => {
     localStorage.clear()
     sessionStorage.clear()
-    clearAccessSession()
+    resetAccessSessionModule()
     vi.unstubAllGlobals()
   })
 
