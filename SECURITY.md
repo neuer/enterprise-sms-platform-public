@@ -130,12 +130,16 @@
 - 本公开仓库不得引入私有历史、私有 Git 对象、真实 `.env`、运行 Secret、客户数据、日志、导入/导出文件、内部地址或其他受限证据。
 - GitHub Actions 默认使用只读权限；fork 工作流不得取得环境 Secret 或写权限。任何工作流、发布或自动合并逻辑不得绕过 required checks、required reviews、受保护分支或精确提交绑定。
 - 发布候选、镜像和制品必须可追溯到经过审查并通过门禁的受保护 `main` 提交；标签、构建输入或产物替换不得破坏该绑定。
-- 至少下列路径属于安全敏感边界，并应按 `.github/CODEOWNERS` 和仓库 ruleset 进行独立评审：
-  - `backend/app/core/auth/`
-  - `backend/app/core/apikey.py`
-  - `backend/app/services/crypto.py`
-  - `backend/app/services/idempotency.py`
-  - `backend/app/tasks/send.py`
+- 至少下列安全域属于安全敏感边界，并应按 `.github/CODEOWNERS` 和仓库 ruleset 进行独立评审；分类来源是 `deploy/scripts/protected_path_policy.py`，域内新文件默认 FULL：
+  - `backend/app/core/`
+  - `backend/app/api/`
+  - `backend/app/services/`
+  - `backend/app/tasks/`
+  - `backend/app/vendor/`
+  - `frontend/src/App.vue`
+  - `frontend/src/stores/`
+  - `frontend/src/router/`
+  - `frontend/src/api/`
   - `backend/migrations/`
   - `schema.sql`
   - `deploy/`
