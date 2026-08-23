@@ -1,4 +1,4 @@
-"""0075 回填与自动扫描：真实 PostgreSQL 行级覆盖。"""
+"""0075 回填与自动扫描：在已升级 recovery 目录上做行级覆盖，不另建库。"""
 
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ REVISION_0075 = BACKEND / "migrations/versions/0075_raw_parse_eligibility.py"
 
 
 def _0075_backfill_sql() -> str:
+    """取出 0075 回填 UPDATE，不调用 Alembic，不改共享库 schema。"""
+
     spec = importlib.util.spec_from_file_location(
         "rev_0075_raw_parse_eligibility", REVISION_0075
     )
@@ -48,19 +50,10 @@ def _0075_backfill_sql() -> str:
         if "UPDATE raw_vendor_log SET" in sql and "replay_eligibility=" in sql
     ]
     assert len(updates) == 1
+    assert "ALTER TABLE" not in updates[0]
+    assert "CREATE INDEX" not in updates[0]
+    assert "GRANT" not in updates[0]
     return updates[0]
-
-
-async def _has_eligibility_column(connection: AsyncConnection) -> bool:
-    found = await connection.scalar(
-        text(
-            """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name='raw_vendor_log' AND column_name='replay_eligibility'
-            """
-        )
-    )
-    return found is not None
 
 
 async def _insert(
@@ -130,12 +123,12 @@ async def _load(connection: AsyncConnection, raw_id: int) -> dict[str, object]:
 
 @pytest.mark.asyncio
 async def test_http_encoding_json_and_transient_matrix_on_postgres() -> None:
+    """在已升级库上执行 0075 UPDATE 后回滚：资格矩阵不得另建 catalog。"""
+
     assert os.environ.get("ENVIRONMENT") == "test"
     engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
     try:
         async with engine.connect() as connection:
-            if not await _has_eligibility_column(connection):
-                pytest.skip("0075 columns not present")
             transaction = await connection.begin()
             try:
                 http_id = await _insert(
