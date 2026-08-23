@@ -18,13 +18,16 @@ from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
+    CAPTURE_UNKNOWN_LEGACY,
     RawSpillStore,
     RecoverRoundBudget,
     SpillQuotaExceeded,
     discard_header_only_stream,
+    durable_persist_capture_state,
     is_non_replayable_capture,
     iter_records_for_recover,
     manage_raw_spill_stream,
+    spill_file_identity_matches,
 )
 from app.vendor.identifiers import (
     degrade_vendor_identifier,
@@ -303,6 +306,13 @@ class ReportIngestService:
             title="厂商拉走即消费响应协议异常，不得当作正常可重放 raw",
         )
 
+    async def _alert_unknown_legacy(self, source: str) -> None:
+        await self._emit_capture_alert(
+            source,
+            alert_type="vendor_raw_unknown_legacy",
+            title="未认证 raw spill 已进入人工盘点，不得默认 complete 或自动重放",
+        )
+
     async def _alert_quarantine(self, source: str, stream_id: str) -> None:
         """terminal 失败的 quarantine 告警不可被恢复路径静默吞掉。"""
 
@@ -465,6 +475,7 @@ class ReportIngestService:
                 http_status=http_status,
                 content_encoding=content_encoding,
                 payload_enc=payload_enc,
+                crypto=self.crypto,
                 capture_state=capture_state,
             )
             return True
@@ -684,6 +695,15 @@ class ReportIngestService:
             ):
                 break
             size = int(getattr(record, "recover_weight_bytes", 0) or len(record.payload_enc))
+            if not spill_file_identity_matches(record):
+                LOGGER.warning(
+                    "raw spill recover skipped identity mismatch",
+                    extra={"source": "report", "kind": "spill"},
+                )
+                attempted += 1
+                used_bytes += size
+                continue
+            capture_state = durable_persist_capture_state(record)
             try:
                 raw_id = await self.repository.persist_raw(
                     payload_enc=record.payload_enc,
@@ -693,26 +713,31 @@ class ReportIngestService:
                     content_encoding=record.content_encoding,
                     custom_ids=[],
                     item_count=0,
-                    capture_state=record.capture_state,
+                    capture_state=capture_state,
                 )
             except Exception as error:
                 await self._alert_consume_gap("report", type(error).__name__)
                 attempted += 1
                 used_bytes += size
                 continue
-            if record.capture_state == CAPTURE_TRUNCATED:
+            if capture_state == CAPTURE_TRUNCATED:
                 await self.repository.mark_error(
                     raw_id, "report truncated vendor response beyond recovery limit"
                 )
                 await self._alert_truncated("report")
-            elif record.capture_state == CAPTURE_PROTOCOL_INVALID:
+            elif capture_state == CAPTURE_PROTOCOL_INVALID:
                 await self.repository.mark_error(raw_id, "report protocol-invalid vendor response")
                 await self._alert_protocol_invalid("report")
-            elif record.capture_state == CAPTURE_COMPLETE_TOO_LARGE:
+            elif capture_state == CAPTURE_COMPLETE_TOO_LARGE:
                 await self.repository.mark_error(
                     raw_id, "report oversized payload persisted after consume gap"
                 )
                 await self._alert_oversized_complete("report")
+            elif capture_state == CAPTURE_UNKNOWN_LEGACY:
+                await self.repository.mark_error(
+                    raw_id, "report unknown-legacy unauthenticated spill"
+                )
+                await self._alert_unknown_legacy("report")
             if record.quarantined:
                 await self._alert_quarantine("report", record.stream_id)
             record.path.unlink(missing_ok=True)
@@ -722,6 +747,7 @@ class ReportIngestService:
             attempted += 1
             used_bytes += size
             recovered += 1
+        await self._alert_artifact_quarantine("report", getattr(self.spill, "last_reclaim", None))
         return recovered
 
     async def poll_once(self) -> int:

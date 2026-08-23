@@ -343,6 +343,7 @@ def test_atomic_write_temps_are_promoted_or_isolated(tmp_path: Path) -> None:
         http_status=200,
         content_encoding="identity",
         payload_enc=payload,
+        crypto=crypto(),
     )
     final = tmp_path / f"report-{digest}.spill"
     tmp = tmp_path / f"report-{digest}.spill.tmp"
