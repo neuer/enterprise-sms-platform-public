@@ -161,6 +161,12 @@ class CryptoService:
         self._hmac_keys = dict(hmac_keys)
         self.active_version = active_version
 
+    @property
+    def key_versions(self) -> tuple[int, ...]:
+        """可供认证尝试的 keyring 版本；不得只信任未认证 header 里的版本号。"""
+
+        return tuple(sorted(self._aes_keys))
+
     @classmethod
     def from_secret_values(cls, aes_secret: str, hmac_secret: str) -> CryptoService:
         """从两个 Docker secret 文件内容构造服务。"""

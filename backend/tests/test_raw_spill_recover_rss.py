@@ -69,6 +69,7 @@ def _write_spill(
         http_status=200,
         content_encoding="identity",
         payload_enc=payload,
+        crypto=crypto(),
     )
     return payload_sha256
 

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
+from app.services.crypto import CryptoService
 from app.services.raw_spill import RawSpillStore
+
+
+def crypto() -> CryptoService:
+    key = base64.b64encode(b"r" * 32).decode()
+    return CryptoService.from_secret_values(key, key)
 
 
 def test_spill_write_is_durable_and_round_trips(tmp_path: Path) -> None:
@@ -16,6 +23,7 @@ def test_spill_write_is_durable_and_round_trips(tmp_path: Path) -> None:
         http_status=200,
         content_encoding="identity",
         payload_enc=payload,
+        crypto=crypto(),
     )
     assert path.exists()
     pending = store.list_pending()

@@ -598,6 +598,7 @@ async def test_spill_survives_persist_gap_and_can_be_recovered(tmp_path: Any) ->
         http_status=200,
         content_encoding="identity",
         payload_enc=encrypted.payload,
+        crypto=crypto(),
     )
     assert spill.list_pending()
     assert await service.recover_spills() == 1
