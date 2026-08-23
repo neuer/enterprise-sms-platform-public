@@ -11,13 +11,14 @@ import os
 import re
 import secrets
 import struct
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 from zoneinfo import ZoneInfo
 
 from app.services.crypto import EncryptedValue, EncryptionContext
@@ -54,6 +55,8 @@ NON_REPLAYABLE_CAPTURE_STATES = frozenset(
 )
 DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_PENDING_FILES = 32
+DEFAULT_RECOVER_MAX_FILES = 8
+DEFAULT_RECOVER_MAX_SECONDS = 8.0
 SYNC_EVERY_BYTES = 1024 * 1024
 RECOVERY_CAPTURE_BYTES = 64 * 1024 * 1024
 # 文件头、announce/terminal 控制帧、GCM 信封、目录项与隔离标记的文档化上限。
@@ -183,6 +186,50 @@ class SpillReservation:
     path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class RecoverRoundBudget:
+    """单轮恢复上限；一次 poll 不得把整个 backlog 读进 RSS。"""
+
+    max_files: int = DEFAULT_RECOVER_MAX_FILES
+    max_plaintext_bytes: int = RECOVERY_CAPTURE_BYTES
+    max_seconds: float = DEFAULT_RECOVER_MAX_SECONDS
+
+    def exhausted(self, *, recovered: int, used_bytes: int, started_at: float) -> bool:
+        if recovered >= self.max_files:
+            return True
+        if recovered > 0 and used_bytes >= self.max_plaintext_bytes:
+            return True
+        return recovered > 0 and (time.monotonic() - started_at) >= self.max_seconds
+
+
+@dataclass
+class RecoverMemoryProbe:
+    """测试用：记录同时物化的字节峰值与已读 payload 文件名，不含 PII。"""
+
+    live_bytes: int = 0
+    peak_bytes: int = 0
+    payload_reads: list[str] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def note_payload_read(self, name: str) -> None:
+        with self._lock:
+            self.payload_reads.append(name)
+
+    def acquire(self, nbytes: int) -> None:
+        if nbytes <= 0:
+            return
+        with self._lock:
+            self.live_bytes += nbytes
+            if self.live_bytes > self.peak_bytes:
+                self.peak_bytes = self.live_bytes
+
+    def release(self, nbytes: int) -> None:
+        if nbytes <= 0:
+            return
+        with self._lock:
+            self.live_bytes = max(0, self.live_bytes - nbytes)
+
+
 class StreamChunkCrypto(Protocol):
     def encrypt_bound_bytes(
         self, plaintext: bytes, context: EncryptionContext
@@ -202,6 +249,9 @@ class RawSpillSettings(Protocol):
     raw_spill_dir: Path
     raw_spill_max_total_bytes: int
     raw_spill_max_pending_files: int
+    raw_spill_recover_max_files: int
+    raw_spill_recover_max_plaintext_bytes: int
+    raw_spill_recover_max_seconds: float
 
 
 def normalize_capture_state(value: str | None) -> str:
@@ -273,6 +323,36 @@ class RawSpillRecord:
     capture_state: str = CAPTURE_COMPLETE
     quarantined: bool = False
     stream_id: str = ""
+    plaintext_bytes: int = 0
+
+    @property
+    def recover_weight_bytes(self) -> int:
+        """单轮预算按明文字节计；spill 密文用信封长度近似。"""
+
+        return self.plaintext_bytes or len(self.payload_enc)
+
+
+def iter_records_for_recover(
+    spill: Any,
+    crypto: StreamChunkCrypto,
+    source: str,
+) -> Iterator[RawSpillRecord]:
+    """优先走惰性恢复接口；旧 mock 仍可 list 后按 source 过滤。"""
+
+    iterate = getattr(spill, "iter_recoverable", None)
+    if callable(iterate):
+        yield from iterate(crypto, source)
+        return
+    list_pending = getattr(spill, "list_pending", None)
+    if callable(list_pending):
+        for record in list_pending():
+            if getattr(record, "source", None) == source:
+                yield record
+    list_streams = getattr(spill, "list_pending_streams", None)
+    if callable(list_streams):
+        for record in list_streams(crypto):
+            if getattr(record, "source", None) == source:
+                yield record
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,20 +360,20 @@ class _StreamFileHeader:
     source: str
     stream_id: str
     key_version: int
-    body: bytes
     path: Path
 
 
 @dataclass(frozen=True, slots=True)
 class _AssembledStream:
-    chunks: list[bytes]
+    plaintext: bytes
+    digest: str
     announce: dict[str, object] | None
     terminal: dict[str, object] | None
     incomplete: bool
 
     @property
     def empty(self) -> bool:
-        return not self.chunks and self.announce is None and self.terminal is None
+        return not self.plaintext and self.announce is None and self.terminal is None
 
 
 class RawSpillStore:
@@ -306,6 +386,8 @@ class RawSpillStore:
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
         max_pending_files: int = DEFAULT_MAX_PENDING_FILES,
         header_only_min_age_s: float = HEADER_ONLY_RECLAIM_AFTER_S,
+        recover_budget: RecoverRoundBudget | None = None,
+        memory_probe: RecoverMemoryProbe | None = None,
     ) -> None:
         if max_total_bytes < 1 or max_pending_files < 1:
             raise ValueError("raw spill quotas must be positive")
@@ -315,6 +397,8 @@ class RawSpillStore:
         self.max_total_bytes = max_total_bytes
         self.max_pending_files = max_pending_files
         self.header_only_min_age_s = header_only_min_age_s
+        self.recover_budget = recover_budget or RecoverRoundBudget()
+        self._probe = memory_probe
         self._header_only_cleaned = 0
         self.last_reclaim = SpillReclaimResult()
 
@@ -324,6 +408,25 @@ class RawSpillStore:
             settings.raw_spill_dir,
             max_total_bytes=int(settings.raw_spill_max_total_bytes),
             max_pending_files=int(settings.raw_spill_max_pending_files),
+            recover_budget=RecoverRoundBudget(
+                max_files=int(
+                    getattr(settings, "raw_spill_recover_max_files", DEFAULT_RECOVER_MAX_FILES)
+                ),
+                max_plaintext_bytes=int(
+                    getattr(
+                        settings,
+                        "raw_spill_recover_max_plaintext_bytes",
+                        RECOVERY_CAPTURE_BYTES,
+                    )
+                ),
+                max_seconds=float(
+                    getattr(
+                        settings,
+                        "raw_spill_recover_max_seconds",
+                        DEFAULT_RECOVER_MAX_SECONDS,
+                    )
+                ),
+            ),
         )
 
     def _path(self, source: str, payload_sha256: str) -> Path:
@@ -446,29 +549,95 @@ class RawSpillStore:
         self._fsync_directory()
         return target
 
-    def list_pending(self) -> list[RawSpillRecord]:
-        if not self.directory.exists():
-            return []
-        records: list[RawSpillRecord] = []
-        for path in sorted(self.directory.glob("*.spill")):
-            record = self._read(path)
-            if record is not None:
-                records.append(record)
-        return records
+    def list_pending(self, source: str | None = None) -> list[RawSpillRecord]:
+        return list(self.iter_pending(source))
 
-    def list_pending_streams(self, crypto: StreamChunkCrypto) -> list[RawSpillRecord]:
+    def list_pending_streams(
+        self, crypto: StreamChunkCrypto, source: str | None = None
+    ) -> list[RawSpillRecord]:
         """把接收中崩溃留下的加密流装配为可落库的截断/完整 spill 记录。"""
 
+        return list(self.iter_pending_streams(crypto, source))
+
+    def iter_pending(self, source: str | None = None) -> Iterator[RawSpillRecord]:
+        """按文件惰性产出 .spill；可先按文件名 source 过滤，不读其它来源 payload。"""
+
+        yield from self._iter_records(source, streams=False, crypto=None)
+
+    def iter_pending_streams(
+        self, crypto: StreamChunkCrypto, source: str | None = None
+    ) -> Iterator[RawSpillRecord]:
+        """按文件惰性装配 .stream；可先按文件名 source 过滤。"""
+
+        yield from self._iter_records(source, streams=True, crypto=crypto)
+
+    def iter_recoverable(
+        self, crypto: StreamChunkCrypto, source: str
+    ) -> Iterator[RawSpillRecord]:
+        """恢复入口：只产出指定 source，一次一条，损坏文件跳过。"""
+
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            raise ValueError("invalid raw spill source")
+        yield from self.iter_pending(source)
+        yield from self.iter_pending_streams(crypto, source)
+
+    def _iter_records(
+        self,
+        source: str | None,
+        *,
+        streams: bool,
+        crypto: StreamChunkCrypto | None,
+    ) -> Iterator[RawSpillRecord]:
+        if source is not None and SOURCE_PATTERN.fullmatch(source) is None:
+            raise ValueError("invalid raw spill source")
         if not self.directory.exists():
-            return []
-        records: list[RawSpillRecord] = []
-        for path in sorted(
-            (*self.directory.glob("*.stream"), *self.directory.glob("*.stream.tmp"))
-        ):
-            record = self._read_stream(path, crypto)
-            if record is not None:
-                records.append(record)
-        return records
+            return
+        for path in self._pending_paths(source, streams=streams):
+            try:
+                if streams:
+                    if crypto is None:
+                        continue
+                    record = self._read_stream(path, crypto, expected_source=source)
+                else:
+                    record = self._read(path, expected_source=source)
+            except Exception as exc:
+                LOGGER.warning(
+                    "raw spill recover skipped unreadable file",
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "kind": "stream" if streams else "spill",
+                    },
+                )
+                continue
+            if record is None:
+                continue
+            size = len(record.payload_enc)
+            self._probe_acquire(size)
+            try:
+                yield record
+            finally:
+                self._probe_release(size)
+
+    def _pending_paths(self, source: str | None, *, streams: bool) -> list[Path]:
+        prefix = f"{source}-*" if source else "*"
+        if streams:
+            return [
+                *sorted(self.directory.glob(f"{prefix}.stream")),
+                *sorted(self.directory.glob(f"{prefix}.stream.tmp")),
+            ]
+        return sorted(self.directory.glob(f"{prefix}.spill"))
+
+    def _probe_acquire(self, nbytes: int) -> None:
+        if self._probe is not None:
+            self._probe.acquire(nbytes)
+
+    def _probe_release(self, nbytes: int) -> None:
+        if self._probe is not None:
+            self._probe.release(nbytes)
+
+    def _probe_payload_read(self, name: str) -> None:
+        if self._probe is not None:
+            self._probe.note_payload_read(name)
 
     def remove(self, source: str, payload_sha256: str) -> None:
         path = self._path(source, payload_sha256)
@@ -794,29 +963,51 @@ class RawSpillStore:
         *,
         now_ts: float,
     ) -> _StreamInspection | None:
-        """区分合法 header-only、部分 header、损坏 header 与已认证事实。"""
+        """按最小 header/首帧分类；不解密、不装载全文，以免回收路径 OOM。"""
 
         match = STREAM_FILE_NAME.fullmatch(path.name)
         named_source = match.group("source") if match else ""
         named_id = match.group("stream_id") if match else ""
         age = self._file_age_seconds(path, now_ts)
         try:
-            raw = path.read_bytes()
+            handle = path.open("rb")
         except OSError:
             return None
-        if not raw or (len(raw) < len(STREAM_MAGIC) and STREAM_MAGIC.startswith(raw)):
+        try:
+            return self._classify_stream_header(
+                handle,
+                named_source=named_source,
+                named_id=named_id,
+                age=age,
+                path=path,
+                crypto=crypto,
+            )
+        finally:
+            handle.close()
+
+    def _classify_stream_header(
+        self,
+        handle: BinaryIO,
+        *,
+        named_source: str,
+        named_id: str,
+        age: float,
+        path: Path,
+        crypto: StreamChunkCrypto | None,
+    ) -> _StreamInspection | None:
+        magic = handle.read(len(STREAM_MAGIC))
+        if not magic or (len(magic) < len(STREAM_MAGIC) and STREAM_MAGIC.startswith(magic)):
             return _StreamInspection(STREAM_LIFE_PARTIAL_HEADER, named_source, named_id, age, path)
-        if not raw.startswith(STREAM_MAGIC):
+        if magic != STREAM_MAGIC:
             return _StreamInspection(STREAM_LIFE_CORRUPT_HEADER, named_source, named_id, age, path)
-        rest = raw[len(STREAM_MAGIC) :]
-        if b"\n" not in rest:
+        header_bytes = handle.readline()
+        if not header_bytes.endswith(b"\n"):
             return _StreamInspection(STREAM_LIFE_PARTIAL_HEADER, named_source, named_id, age, path)
-        header_bytes, body = rest.split(b"\n", maxsplit=1)
         try:
             parsed = json.loads(header_bytes.decode("utf-8"))
             source = str(parsed["source"])
             stream_id = str(parsed["stream_id"])
-            key_version = int(parsed["key_version"])
+            int(parsed["key_version"])
             if (
                 self._stream_tmp(source, stream_id) != path
                 and self._stream_path(source, stream_id) != path
@@ -824,43 +1015,32 @@ class RawSpillStore:
                 return _StreamInspection(
                     STREAM_LIFE_CORRUPT_HEADER, named_source, named_id, age, path
                 )
-            header = _StreamFileHeader(source, stream_id, key_version, body, path)
         except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return _StreamInspection(STREAM_LIFE_CORRUPT_HEADER, named_source, named_id, age, path)
-        if not body:
+        first = handle.read(STREAM_RECORD_HEADER.size)
+        if not first:
             return _StreamInspection(
-                STREAM_LIFE_LEGAL_HEADER_ONLY,
-                header.source,
-                header.stream_id,
-                age,
-                path,
+                STREAM_LIFE_LEGAL_HEADER_ONLY, source, stream_id, age, path
             )
         if crypto is None:
             return None
-        assembled = self._assemble_stream_records(header, crypto)
-        if assembled.chunks:
+        if len(first) < STREAM_RECORD_HEADER.size:
             return _StreamInspection(
-                STREAM_LIFE_HAS_AUTHENTICATED_DATA,
-                header.source,
-                header.stream_id,
-                age,
-                path,
+                STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path
             )
-        if assembled.announce is not None or assembled.terminal is not None:
+        (length,) = STREAM_RECORD_HEADER.unpack(first)
+        if length in {STREAM_CONTROL_SENTINEL, 0}:
+            return _StreamInspection(STREAM_LIFE_HAS_CONTROL, source, stream_id, age, path)
+        rest = handle.read(min(length, 1))
+        if length > 0 and len(rest) == 0:
             return _StreamInspection(
-                STREAM_LIFE_HAS_CONTROL,
-                header.source,
-                header.stream_id,
-                age,
-                path,
+                STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path
             )
-        return _StreamInspection(
-            STREAM_LIFE_INCOMPLETE_FRAMES,
-            header.source,
-            header.stream_id,
-            age,
-            path,
-        )
+        if length > 0:
+            return _StreamInspection(
+                STREAM_LIFE_HAS_AUTHENTICATED_DATA, source, stream_id, age, path
+            )
+        return _StreamInspection(STREAM_LIFE_INCOMPLETE_FRAMES, source, stream_id, age, path)
 
     def _write_header_quarantine(self, source: str, stream_id: str, kind: str) -> Path:
         """损坏 header 的无 PII 隔离标记；不计入 pending_count 文件配额。"""
@@ -895,37 +1075,45 @@ class RawSpillStore:
             return
         inspection.path.unlink(missing_ok=True)
 
-    def _read(self, path: Path) -> RawSpillRecord | None:
+    def _read(self, path: Path, *, expected_source: str | None = None) -> RawSpillRecord | None:
         try:
-            raw = path.read_bytes()
-            header_bytes, payload_enc = raw.split(b"\n", maxsplit=1)
-            header = json.loads(header_bytes.decode("utf-8"))
-            source = str(header["source"])
-            payload_sha256 = str(header["payload_sha256"])
-            if self._path(source, payload_sha256) != path:
-                return None
-            if not payload_enc:
-                return None
-            return RawSpillRecord(
-                source=source,
-                payload_sha256=payload_sha256,
-                key_version=int(header["key_version"]),
-                http_status=int(header["http_status"]),
-                content_encoding=str(header["content_encoding"]),
-                payload_enc=payload_enc,
-                path=path,
-                capture_state=normalize_capture_state(header.get("capture_state")),
-            )
+            with path.open("rb") as handle:
+                header_bytes = handle.readline()
+                header = json.loads(header_bytes.decode("utf-8"))
+                source = str(header["source"])
+                if expected_source is not None and source != expected_source:
+                    return None
+                payload_sha256 = str(header["payload_sha256"])
+                if self._path(source, payload_sha256) != path:
+                    return None
+                self._probe_payload_read(path.name)
+                payload_enc = handle.read()
+                if not payload_enc:
+                    return None
+                return RawSpillRecord(
+                    source=source,
+                    payload_sha256=payload_sha256,
+                    key_version=int(header["key_version"]),
+                    http_status=int(header["http_status"]),
+                    content_encoding=str(header["content_encoding"]),
+                    payload_enc=payload_enc,
+                    path=path,
+                    capture_state=normalize_capture_state(header.get("capture_state")),
+                    plaintext_bytes=len(payload_enc),
+                )
         except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
 
-    def _parse_stream_file_header(self, path: Path) -> _StreamFileHeader | None:
+    def _parse_stream_header_handle(
+        self, handle: BinaryIO, path: Path
+    ) -> _StreamFileHeader | None:
         try:
-            raw = path.read_bytes()
-            if not raw.startswith(STREAM_MAGIC):
+            magic = handle.read(len(STREAM_MAGIC))
+            if magic != STREAM_MAGIC:
                 return None
-            rest = raw[len(STREAM_MAGIC) :]
-            header_bytes, body = rest.split(b"\n", maxsplit=1)
+            header_bytes = handle.readline()
+            if not header_bytes.endswith(b"\n"):
+                return None
             header = json.loads(header_bytes.decode("utf-8"))
             source = str(header["source"])
             stream_id = str(header["stream_id"])
@@ -934,7 +1122,7 @@ class RawSpillStore:
             expected_final = self._stream_path(source, stream_id)
             if path not in {expected_tmp, expected_final}:
                 return None
-            return _StreamFileHeader(source, stream_id, key_version, body, path)
+            return _StreamFileHeader(source, stream_id, key_version, path)
         except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
 
@@ -1015,33 +1203,59 @@ class RawSpillStore:
         except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
 
-    def _assemble_stream_records(
+    def _read_control_handle(
         self,
+        handle: BinaryIO,
+        crypto: StreamChunkCrypto,
+        header: _StreamFileHeader,
+        *,
+        seq: int,
+    ) -> tuple[dict[str, object] | None, bool]:
+        raw_len = handle.read(STREAM_RECORD_HEADER.size)
+        if len(raw_len) < STREAM_RECORD_HEADER.size:
+            return None, False
+        (frame_len,) = STREAM_RECORD_HEADER.unpack(raw_len)
+        if frame_len < STREAM_META_HEADER.size:
+            return None, False
+        frame = handle.read(frame_len)
+        if len(frame) != frame_len:
+            return None, False
+        fields, _offset, ok = self._read_control_frame(
+            STREAM_RECORD_HEADER.pack(frame_len) + frame,
+            0,
+            crypto,
+            source=header.source,
+            stream_id=header.stream_id,
+            key_version=header.key_version,
+            seq=seq,
+        )
+        return fields, ok
+
+    def _assemble_stream_handle(
+        self,
+        handle: BinaryIO,
         header: _StreamFileHeader,
         crypto: StreamChunkCrypto,
     ) -> _AssembledStream:
-        chunks: list[bytes] = []
+        """流式解密：同一时刻只持有当前帧 + 累计明文，不保留 raw 全文与 chunks 列表。"""
+
+        plaintext = bytearray()
+        hasher = hashlib.sha256()
         announce: dict[str, object] | None = None
         terminal: dict[str, object] | None = None
         incomplete = False
-        offset = 0
         seq = 0
-        body = header.body
-        while offset < len(body):
-            if offset + STREAM_RECORD_HEADER.size > len(body):
+        while True:
+            raw_len = handle.read(STREAM_RECORD_HEADER.size)
+            if not raw_len:
+                break
+            if len(raw_len) < STREAM_RECORD_HEADER.size:
                 incomplete = True
                 break
-            (length,) = STREAM_RECORD_HEADER.unpack_from(body, offset)
-            offset += STREAM_RECORD_HEADER.size
+            (length,) = STREAM_RECORD_HEADER.unpack(raw_len)
             if length == STREAM_CONTROL_SENTINEL:
-                fields, offset, ok = self._read_control_frame(
-                    body,
-                    offset,
-                    crypto,
-                    source=header.source,
-                    stream_id=header.stream_id,
-                    key_version=header.key_version,
-                    seq=0,
+                fields, ok = self._read_control_handle(
+                    handle, crypto, header, seq=0
                 )
                 if not ok or fields is None or fields.get("kind") != STREAM_KIND_ANNOUNCE:
                     incomplete = True
@@ -1049,47 +1263,44 @@ class RawSpillStore:
                 announce = fields
                 continue
             if length == 0:
-                fields, _ignored, ok = self._read_control_frame(
-                    body,
-                    offset,
-                    crypto,
-                    source=header.source,
-                    stream_id=header.stream_id,
-                    key_version=header.key_version,
-                    seq=seq,
-                )
+                marked = handle.tell()
+                fields, ok = self._read_control_handle(handle, crypto, header, seq=seq)
                 if ok and fields is not None and fields.get("kind") == STREAM_KIND_TERMINAL:
                     terminal = fields
                 else:
-                    legacy = self._parse_legacy_footer(body[offset:])
+                    handle.seek(marked)
+                    line = handle.readline()
+                    footer = line if line.endswith(b"\n") else line + b"\n"
+                    legacy = self._parse_legacy_footer(footer)
                     if legacy is None:
                         incomplete = True
                     else:
                         terminal = legacy
                 break
-            ciphertext = body[offset : offset + length]
+            ciphertext = handle.read(length)
             if len(ciphertext) != length:
                 incomplete = True
                 break
-            offset += length
             try:
-                chunks.append(
-                    crypto.decrypt_bound_bytes(
-                        ciphertext,
-                        header.key_version,
-                        EncryptionContext(
-                            domain="vendor-raw",
-                            table="raw_spill",
-                            column="chunk",
-                            object_id=f"{header.source}:{header.stream_id}:{seq:08d}",
-                        ),
-                    )
+                chunk = crypto.decrypt_bound_bytes(
+                    ciphertext,
+                    header.key_version,
+                    EncryptionContext(
+                        domain="vendor-raw",
+                        table="raw_spill",
+                        column="chunk",
+                        object_id=f"{header.source}:{header.stream_id}:{seq:08d}",
+                    ),
                 )
             except (ValueError, TypeError):
                 incomplete = True
                 break
+            hasher.update(chunk)
+            plaintext.extend(chunk)
             seq += 1
-        return _AssembledStream(chunks, announce, terminal, incomplete)
+        assembled = bytes(plaintext)
+        plaintext.clear()
+        return _AssembledStream(assembled, hasher.hexdigest(), announce, terminal, incomplete)
 
     def _write_quarantine(self, source: str, stream_id: str) -> Path:
         """为不完整 terminal 写下无 PII 的 quarantine 标记，便于巡检与配额记账。"""
@@ -1110,18 +1321,39 @@ class RawSpillStore:
         self._fsync_directory()
         return target
 
-    def _read_stream(self, path: Path, crypto: StreamChunkCrypto) -> RawSpillRecord | None:
-        header = self._parse_stream_file_header(path)
-        if header is None:
+    def _read_stream(
+        self,
+        path: Path,
+        crypto: StreamChunkCrypto,
+        *,
+        expected_source: str | None = None,
+    ) -> RawSpillRecord | None:
+        try:
+            handle = path.open("rb")
+        except OSError:
             return None
-        assembled = self._assemble_stream_records(header, crypto)
+        try:
+            header = self._parse_stream_header_handle(handle, path)
+            if header is None:
+                return None
+            if expected_source is not None and header.source != expected_source:
+                return None
+            self._probe_payload_read(path.name)
+            assembled = self._assemble_stream_handle(handle, header, crypto)
+        except Exception as exc:
+            LOGGER.warning(
+                "raw spill stream recover skipped",
+                extra={"error_type": type(exc).__name__},
+            )
+            return None
+        finally:
+            handle.close()
         if assembled.empty:
             return None
-        plaintext = b"".join(assembled.chunks)
         try:
-            payload_sha256 = hashlib.sha256(plaintext).hexdigest()
+            payload_sha256 = assembled.digest
             encrypted = crypto.encrypt_bound_bytes(
-                plaintext,
+                assembled.plaintext,
                 EncryptionContext(
                     domain="vendor-raw",
                     table="raw_vendor_log",
@@ -1162,6 +1394,7 @@ class RawSpillStore:
             capture_state=capture_state,
             quarantined=quarantined,
             stream_id=header.stream_id,
+            plaintext_bytes=len(assembled.plaintext),
         )
 
     def _fsync_directory(self) -> None:

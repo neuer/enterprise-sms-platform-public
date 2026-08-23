@@ -950,6 +950,25 @@
 - 影响：`raw_spill`/`report_ingest`/`reply_ingest`、vendor-api 恢复句。
   未改 Vue、OpenAPI、Alembic、D082 预留账本。
 
+## D084 Raw 恢复按文件迭代并与 Worker RSS 预算对齐
+
+- 决策：`recover_spills()` 改为按 source 过滤的惰性 iterator，一次只物化一个
+  `.spill`/`.stream`。文件名与最小 header 不匹配则不读 payload；Report 恢复不读
+  Reply 正文，反之亦然。stream 按帧解密、累计摘要后一次性再加密，禁止
+  whole-file + chunks 列表 + join 同时存活。单轮恢复受文件数 / 明文字节 /
+  时间预算约束。单文件损坏只跳过。启动校验
+  `RAW_SPILL_MAX_TOTAL_BYTES ≤ WORKER_RSS_LIMIT_BYTES`，且
+  `恢复并发 × 2 × 64MiB` 不得超过该 RSS 预算；默认 768MiB / 并发 2 拒绝 8GiB
+  backlog。不新增独立 recover 队列：恢复仍是 `poll_report`/`poll_reply` 的前缀，
+  拆出去会与同目录 poll 竞态；iterator + source 过滤 + 单轮预算已把峰值绑到
+  单文件并把发送域时间片让出。未改 Vue、OpenAPI、Alembic、D082 预留、D083
+  header-only 回收语义。
+- 原因：#440 共享 backlog 一次性物化会在 768MiB realtime Worker（`-c 2`）上
+  OOM，重启后重读同一 backlog 形成循环。#410/#422 处理事实能否保留，本项处理
+  恢复能否在部署 RSS 预算内完成。
+- 影响：`raw_spill`/`report_ingest`/`reply_ingest`/`settings`、vendor-api 恢复句。
+  未改队列名、Compose 服务名或 CI 门禁。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
