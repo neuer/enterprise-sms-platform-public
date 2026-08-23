@@ -60,6 +60,50 @@ def test_qingluan_is_the_only_root_spa() -> None:
     assert '{ path: "/:pathMatch(.*)*", redirect: "/dashboard" }' in router
 
 
+SESSION_GENERATION_API_NAMES = (
+    "getSessionGeneration",
+    "isCurrentSessionGeneration",
+    "invalidateSessionGeneration",
+    "withSessionGeneration",
+)
+
+
+def has_session_generation_api(source: str) -> bool:
+    return all(name in source for name in SESSION_GENERATION_API_NAMES)
+
+
+def has_browser_session_generation_surface(
+    web_messages: str,
+    session_generation: str | None,
+) -> bool:
+    """代际面：当前 main 的 sessionEpoch，或 #442 的 sessionGeneration API，任一即可。"""
+    generation_ok = session_generation is not None and has_session_generation_api(
+        session_generation
+    )
+    return generation_ok or "sessionEpoch" in web_messages
+
+
+def read_optional(path: str) -> str | None:
+    target = ROOT / path
+    if not target.is_file():
+        return None
+    return target.read_text(encoding="utf-8")
+
+
+def test_browser_session_generation_surface_accepts_epoch_or_generation_api() -> None:
+    generation = "\n".join(
+        f"export function {name}(): void {{}}" for name in SESSION_GENERATION_API_NAMES
+    )
+    assert has_browser_session_generation_surface("let sessionEpoch = 0", None)
+    assert has_browser_session_generation_surface("/* no epoch */", generation)
+    assert has_browser_session_generation_surface("let sessionEpoch = 0", generation)
+    assert not has_browser_session_generation_surface("/* neither */", None)
+    assert not has_browser_session_generation_surface(
+        "/* no epoch */",
+        "export function getSessionGeneration(): number { return 0 }",
+    )
+
+
 def test_single_spa_keeps_the_browser_session_contract() -> None:
     session = read("frontend/src/stores/session.ts")
 
@@ -87,7 +131,14 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
 
     web_messages = read("frontend/src/api/webMessages.ts")
     assert "withRefreshLock" in web_messages
-    assert "sessionEpoch" in web_messages
+    assert has_browser_session_generation_surface(
+        web_messages,
+        read_optional("frontend/src/api/sessionGeneration.ts"),
+    ), (
+        "browser session must expose sessionEpoch or the sessionGeneration API "
+        "(getSessionGeneration / isCurrentSessionGeneration / "
+        "invalidateSessionGeneration / withSessionGeneration)"
+    )
     assert "BroadcastChannel" not in web_messages
 
     shell = read("frontend/src/App.vue")
