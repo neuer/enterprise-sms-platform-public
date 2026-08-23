@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.raw_replay import (
     RawIntegrityConflict,
@@ -15,6 +16,8 @@ from app.services.raw_replay import (
     RawReplayService,
 )
 from app.services.report_ingest import ReportApplyResult, ReportIngestService
+
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 
 def payload(data: list[dict[str, object]]) -> bytes:
@@ -54,6 +57,7 @@ class FakeRepository:
         self.claim_calls: list[int] = []
         self.errors: list[tuple[int, str]] = []
         self.audits: list[dict[str, object]] = []
+        self.has_audit = True
 
     async def get_raw_for_replay(self, raw_id: int) -> RawReplayRecord | None:
         return self.record
@@ -71,6 +75,9 @@ class FakeRepository:
     async def mark_replay_error(self, raw_id: int, error: str) -> None:
         self.errors.append((raw_id, error))
 
+    async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
+        return self.has_audit
+
     async def audit_raw_replay(
         self,
         raw_id: int,
@@ -80,6 +87,7 @@ class FakeRepository:
         actor: str,
         ip: str,
         system_producer: bool = False,
+        principal: SecurityPrincipal | None = None,
     ) -> None:
         self.audits.append(
             {
@@ -89,6 +97,7 @@ class FakeRepository:
                 "actor": actor,
                 "ip": ip,
                 "system_producer": system_producer,
+                "account_id": None if principal is None else principal.account_id,
             }
         )
 
@@ -156,7 +165,7 @@ async def test_raw_replay_verifies_hash_routes_existing_payload_and_audits_metad
         FakeProcessor("reply", events),
     )
 
-    count = await service.replay(9, actor="admin01", ip="10.0.0.8")
+    count = await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert count == 1 and events[0][0] == source
     assert repository.audits == [
@@ -167,6 +176,7 @@ async def test_raw_replay_verifies_hash_routes_existing_payload_and_audits_metad
             "actor": "admin01",
             "ip": "10.0.0.8",
             "system_producer": False,
+            "account_id": 1,
         }
     ]
     assert "payload" not in str(repository.audits).lower()
@@ -197,6 +207,7 @@ async def test_system_replay_requests_system_audit_producer() -> None:
             "actor": "system-reconcile",
             "ip": "127.0.0.1",
             "system_producer": True,
+            "account_id": None,
         }
     ]
 
@@ -232,7 +243,7 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
         FakeProcessor("reply", []),
     )
 
-    assert await service.replay(9, actor="admin01", ip="10.0.0.8") == 1
+    assert await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN) == 1
 
     # 重放路径重建 custom_ids 索引元数据（#341），再应用回执。
     assert [event[0] for event in report_repository.events] == [
@@ -251,6 +262,7 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
             "actor": "admin01",
             "ip": "10.0.0.8",
             "system_producer": False,
+            "account_id": 1,
         }
     ]
 
@@ -269,7 +281,7 @@ async def test_processed_raw_is_rejected_before_decryption() -> None:
     )
 
     with pytest.raises(RawReplayConflict):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert crypto.calls == []
 
@@ -290,7 +302,7 @@ async def test_concurrent_raw_replay_is_rejected_before_decryption() -> None:
     )
 
     with pytest.raises(RawReplayConflict, match="处理中"):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert repository.claim_calls == [9]
     assert crypto.calls == []
@@ -309,7 +321,7 @@ async def test_integrity_failure_keeps_raw_unprocessed_and_records_safe_error() 
     )
 
     with pytest.raises(RawIntegrityConflict):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert events == []
     assert repository.errors == [(9, "raw payload integrity mismatch")]
@@ -338,6 +350,90 @@ async def test_unsupported_wire_encoding_remains_rejected_during_replay() -> Non
     )
 
     with pytest.raises(RawIntegrityConflict, match="envelope"):
-        await service.replay(9, actor="admin01", ip="10.0.0.8")
+        await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert repository.errors == [(9, "raw vendor envelope is invalid")]
+
+
+@pytest.mark.asyncio
+async def test_human_replay_fails_closed_before_claim_when_actor_mismatches() -> None:
+    repository = FakeRepository(
+        RawReplayRecord(9, "report", b"x", "0" * 64, 1, False)
+    )
+    service = RawReplayService(
+        repository,
+        FakeCrypto(b""),
+        FakeProcessor("report", []),
+        FakeProcessor("reply", []),
+    )
+
+    with pytest.raises(RuntimeError, match="audit principal"):
+        await service.replay(9, actor="other-admin", ip="10.0.0.8", principal=ADMIN)
+
+    assert repository.claim_calls == []
+    assert repository.audits == []
+
+
+@pytest.mark.asyncio
+async def test_system_replay_rejects_human_principal_before_claim() -> None:
+    repository = FakeRepository(
+        RawReplayRecord(9, "reply", b"x", "0" * 64, 1, False)
+    )
+    service = RawReplayService(
+        repository,
+        FakeCrypto(b""),
+        FakeProcessor("report", []),
+        FakeProcessor("reply", []),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot bind a human"):
+        await service.replay(
+            9,
+            actor="system-reconcile",
+            ip="127.0.0.1",
+            system_producer=True,
+            principal=ADMIN,
+        )
+
+    assert repository.claim_calls == []
+
+
+@pytest.mark.asyncio
+async def test_processed_raw_retries_missing_human_audit_without_reprocessing() -> None:
+    raw = payload([{"customId": "safe-custom-id"}])
+    repository = FakeRepository(
+        RawReplayRecord(
+            9,
+            "report",
+            b"ciphertext",
+            hashlib.sha256(raw).hexdigest(),
+            2,
+            True,
+            item_count=3,
+        ),
+        claimed=False,
+    )
+    repository.has_audit = False
+    events: list[tuple[str, object]] = []
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        FakeProcessor("report", events),
+        FakeProcessor("reply", events),
+    )
+
+    count = await service.replay(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
+
+    assert count == 3
+    assert events == []
+    assert repository.audits == [
+        {
+            "raw_id": 9,
+            "source": "report",
+            "items": 3,
+            "actor": "admin01",
+            "ip": "10.0.0.8",
+            "system_producer": False,
+            "account_id": 1,
+        }
+    ]
