@@ -131,15 +131,12 @@
 - GitHub Actions 默认使用只读权限；fork 工作流不得取得环境 Secret 或写权限。任何工作流、发布或自动合并逻辑不得绕过 required checks、required reviews、受保护分支或精确提交绑定。
 - 发布候选、镜像和制品必须可追溯到经过审查并通过门禁的受保护 `main` 提交；标签、构建输入或产物替换不得破坏该绑定。
 - 至少下列安全域属于安全敏感边界，并应按 `.github/CODEOWNERS` 和仓库 ruleset 进行独立评审；分类来源是 `deploy/scripts/protected_path_policy.py`，域内新文件默认 FULL：
-  - `backend/app/core/`
-  - `backend/app/api/`
-  - `backend/app/services/`
-  - `backend/app/tasks/`
-  - `backend/app/vendor/`
+  - `backend/app/`
   - `frontend/src/App.vue`
   - `frontend/src/stores/`
   - `frontend/src/router/`
   - `frontend/src/api/`
+  - `frontend/src/views/`
   - `backend/migrations/`
   - `schema.sql`
   - `deploy/`

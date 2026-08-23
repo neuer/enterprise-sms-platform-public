@@ -693,6 +693,8 @@ def check_vendor_live_invariants() -> None:
         'VENDOR_LIVE: RuleResult = (True, True, True, True, "vendor-live")',
         'FRONTEND_SECURITY: RuleResult = (False, True, False, True, "frontend-security")',
         "--name-status",
+        "--find-renames",
+        "--find-copies-harder",
     )
     require_fragments(
         ROOT / "deploy/scripts/test_update_contract.py",
@@ -705,7 +707,11 @@ def check_vendor_live_invariants() -> None:
         "BACKEND_CRITICAL_DOMAINS",
         "FRONTEND_SECURITY_DOMAINS",
         "REVIEWED_ORDINARY_EXACT",
+        "REVIEWED_ORDINARY_REASONS",
+        "REQUIRED_TRACKED_SOURCE_TREES",
         "def security_domain_category(",
+        "def unclassified_tracked_source_paths(",
+        "def render_codeowners(",
     )
     require_fragments(
         ROOT / "scripts/verify_release.sh",
@@ -1028,15 +1034,44 @@ def check_protected_path_policy_invariants() -> None:
 
     sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
     from protected_path_policy import (  # noqa: E402
-        REQUIRED_CODEOWNERS_PATTERNS,
+        BACKEND_CRITICAL_DOMAINS,
+        FRONTEND_SECURITY_DOMAINS,
+        REQUIRED_TRACKED_SOURCE_TREES,
         REVIEWED_ORDINARY_EXACT,
-        unclassified_security_domain_paths,
+        REVIEWED_ORDINARY_REASONS,
+        parse_codeowners_patterns,
+        render_codeowners,
+        required_codeowners_patterns,
+        unclassified_tracked_source_paths,
     )
 
-    codeowners = require_fragments(ROOT / ".github" / "CODEOWNERS", *REQUIRED_CODEOWNERS_PATTERNS)
-    for pattern in REQUIRED_CODEOWNERS_PATTERNS:
-        if not re.search(rf"^{re.escape(pattern)}\s+@neuer\s*$", codeowners, flags=re.MULTILINE):
-            fail(ROOT / ".github" / "CODEOWNERS", f"缺少安全域 CODEOWNERS 规则: {pattern}")
+    codeowners_path = ROOT / ".github" / "CODEOWNERS"
+    codeowners = require_fragments(codeowners_path, *required_codeowners_patterns())
+    if codeowners != render_codeowners():
+        fail(codeowners_path, "CODEOWNERS 必须由 protected_path_policy.render_codeowners 逐字生成")
+    try:
+        parsed = parse_codeowners_patterns(codeowners)
+    except ValueError as exc:
+        fail(codeowners_path, str(exc))
+        parsed = ()
+    if parsed != required_codeowners_patterns():
+        fail(codeowners_path, "CODEOWNERS 规则与安全域 manifest 双向不一致")
+    if "backend/app/" not in BACKEND_CRITICAL_DOMAINS:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "backend/app/ 必须是 backend-critical 默认域",
+        )
+    if "frontend/src/views/" not in FRONTEND_SECURITY_DOMAINS:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "frontend/src/views/ 必须是 frontend-security 默认域",
+        )
+    required_prefixes = {prefix for prefix, _suffixes in REQUIRED_TRACKED_SOURCE_TREES}
+    if required_prefixes != {"backend/app/", "frontend/src/views/"}:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "反向枚举树必须独立覆盖 backend/app/ 与 frontend/src/views/",
+        )
     contract = (ROOT / "deploy" / "scripts" / "test_update_contract.py").read_text(
         encoding="utf-8"
     )
@@ -1055,18 +1090,28 @@ def check_protected_path_policy_invariants() -> None:
     except (OSError, subprocess.CalledProcessError, UnicodeError):
         fail(ROOT / "deploy" / "scripts" / "protected_path_policy.py", "无法枚举受跟踪文件")
         return
-    missing = unclassified_security_domain_paths(tracked)
+    missing = unclassified_tracked_source_paths(tracked)
     if missing:
         fail(
             ROOT / "deploy" / "scripts" / "protected_path_policy.py",
-            f"安全域存在未归类路径: {missing[:8]}",
+            f"tracked source 存在未归类路径: {missing[:8]}",
         )
-    for relative in REVIEWED_ORDINARY_EXACT:
+    for relative, reason in REVIEWED_ORDINARY_REASONS.items():
         if relative not in tracked:
             fail(
                 ROOT / "deploy" / "scripts" / "protected_path_policy.py",
                 f"显式降级路径已不存在: {relative}",
             )
+        if not reason.strip():
+            fail(
+                ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+                f"显式降级缺少理由: {relative}",
+            )
+    if frozenset(REVIEWED_ORDINARY_REASONS) != REVIEWED_ORDINARY_EXACT:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "REVIEWED_ORDINARY_EXACT 必须与理由表同源",
+        )
 
 
 check_vendor_live_invariants()
