@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.crypto import EncryptionContext
 from app.services.raw_capture_legacy import replay_forbidden_message
 from app.services.raw_spill import is_non_replayable_capture
@@ -39,6 +40,7 @@ class RawReplayRecord:
     http_status: int = 200
     content_encoding: str = "identity"
     capture_state: str = "complete"
+    item_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,8 @@ class RawReplayRepository(Protocol):
 
     async def mark_replay_error(self, raw_id: int, error: str) -> None: ...
 
+    async def has_human_raw_replay_audit(self, raw_id: int) -> bool: ...
+
     async def audit_raw_replay(
         self,
         raw_id: int,
@@ -61,6 +65,7 @@ class RawReplayRepository(Protocol):
         actor: str,
         ip: str,
         system_producer: bool = False,
+        principal: SecurityPrincipal | None = None,
     ) -> None: ...
 
 
@@ -97,6 +102,22 @@ class RawReplayService:
     async def _integrity_error(self, raw_id: int, message: str) -> None:
         await self.repository.mark_replay_error(raw_id, message)
 
+    def _require_replay_actors(
+        self,
+        *,
+        actor: str,
+        system_producer: bool,
+        principal: SecurityPrincipal | None,
+    ) -> None:
+        """人类路径必须带已验证主体；系统路径禁止混入人类主体。"""
+
+        if system_producer:
+            if principal is not None:
+                raise RuntimeError("system raw replay cannot bind a human principal")
+            return
+        if principal is None or principal.actor_name != actor:
+            raise RuntimeError("raw replay audit principal unavailable")
+
     async def replay(
         self,
         raw_id: int,
@@ -104,7 +125,19 @@ class RawReplayService:
         actor: str,
         ip: str,
         system_producer: bool = False,
+        principal: SecurityPrincipal | None = None,
     ) -> int:
+        """重放已落地 raw；人类路径在副作用前校验 JWT 主体。
+
+        业务投影由 ingest 固化 processed/item_count；人类审计随后 bind+insert。
+        若审计未写入，已处理 raw 的重试只补写审计，不重放业务。
+        """
+
+        self._require_replay_actors(
+            actor=actor,
+            system_producer=system_producer,
+            principal=principal,
+        )
         claim = await self.repository.claim_raw_for_replay(raw_id)
         if claim is None:
             raise RawReplayNotFound(raw_id)
@@ -115,7 +148,19 @@ class RawReplayService:
             if is_non_replayable_capture(claim.record.capture_state):
                 raise RawReplayConflict("截断或协议异常 raw 不得当作正常可重放")
             if claim.record.processed:
-                raise RawReplayConflict("仅未处理 raw 可重放")
+                if system_producer:
+                    raise RawReplayConflict("仅未处理 raw 可重放")
+                if await self.repository.has_human_raw_replay_audit(raw_id):
+                    raise RawReplayConflict("仅未处理 raw 可重放")
+                await self.repository.audit_raw_replay(
+                    raw_id,
+                    source=claim.record.source,
+                    items=claim.record.item_count,
+                    actor=actor,
+                    ip=ip,
+                    principal=principal,
+                )
+                return claim.record.item_count
             raise RawReplayConflict("raw 正在处理中，请稍后重试")
         record = claim.record
         if is_non_replayable_capture(record.capture_state):
@@ -158,5 +203,6 @@ class RawReplayService:
             actor=actor,
             ip=ip,
             system_producer=system_producer,
+            principal=principal,
         )
         return count
