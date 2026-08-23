@@ -286,22 +286,33 @@ _ACTIVE_RESERVATION_STATES = (
     "release_requested",
 )
 
+# live 归并可接受的未来窗口偏差：1 个分钟/自然日边界是合法跨窗，再往前 fail closed。
+FREQUENCY_MERGE_FUTURE_MINUTE_SKEW = 2
+FREQUENCY_MERGE_FUTURE_DAY_SKEW = 1
+
+
+def _frequency_window_sort_key(row: Any) -> tuple[date, int | str]:
+    """按 (usage_date, window_key) 比较窗口新旧；数字窗口按整数排，避免 '9'>'10'。"""
+
+    window_key = str(row["window_key"])
+    if window_key.isdigit():
+        return (row["usage_date"], int(window_key))
+    return (row["usage_date"], window_key)
+
 
 def _choose_frequency_merge_window(
     rows: Sequence[Any],
     *,
     target_key: str,
 ) -> tuple[str, date, str, datetime, tuple[Any, ...]] | None:
-    """从一组频控投影中选出 canonical 窗口；无行则返回 None。"""
+    """从 live 行先选最新 (usage_date, window_key)，同窗内再优先 canonical。"""
 
     if not rows:
         return None
-    target_rows = [row for row in rows if str(row["dimension_key"]) == target_key]
-    chosen = (
-        target_rows[0]
-        if target_rows
-        else max(rows, key=lambda row: (row["usage_date"], str(row["window_key"])))
-    )
+    newest_key = max(_frequency_window_sort_key(row) for row in rows)
+    newest_rows = [row for row in rows if _frequency_window_sort_key(row) == newest_key]
+    target_rows = [row for row in newest_rows if str(row["dimension_key"]) == target_key]
+    chosen = target_rows[0] if target_rows else newest_rows[0]
     kind = str(chosen["kind"])
     usage_date = chosen["usage_date"]
     window_key = str(chosen["window_key"])
@@ -315,6 +326,23 @@ def _choose_frequency_merge_window(
     if not matching:
         return None
     return kind, usage_date, window_key, max(row["expires_at"] for row in matching), matching
+
+
+def _frequency_window_is_future_skewed(
+    *,
+    dimension_key: str,
+    usage_date: date,
+    window_key: str,
+    observed: datetime,
+) -> bool:
+    """对照数据库权威时钟，判断 live 窗口是否超出可接受的未来偏差。"""
+
+    minute, _, _date_key, current_date, _ = frequency_windows(observed)
+    if dimension_key.endswith(":m"):
+        if not window_key.isdigit():
+            return True
+        return int(window_key) - int(minute) > FREQUENCY_MERGE_FUTURE_MINUTE_SKEW
+    return (usage_date - current_date).days > FREQUENCY_MERGE_FUTURE_DAY_SKEW
 
 
 def _release_change_should_apply(
@@ -522,6 +550,36 @@ async def _lock_frequency_merge_keys(
     await _lock_projection_keys(connection, sorted(lock_keys), namespace=43)
 
 
+async def _assert_canonical_holds_newest_window(
+    connection: AsyncConnection,
+    *,
+    target_key: str,
+    usage_date: date,
+    window_key: str,
+    value: int,
+) -> None:
+    """删除 source 前确认最新窗口计数已落在 canonical 行。"""
+
+    result = await connection.execute(
+        text(
+            """
+            SELECT usage_date,window_key,value
+            FROM usage_projection
+            WHERE dimension_key=:target_key
+            """
+        ),
+        {"target_key": target_key},
+    )
+    row = result.mappings().one_or_none()
+    if (
+        row is None
+        or row["usage_date"] != usage_date
+        or str(row["window_key"]) != window_key
+        or int(row["value"]) != value
+    ):
+        raise UsageReservationConflict("frequency merge newest window missing on canonical")
+
+
 async def _write_absolute_frequency_projection(
     connection: AsyncConnection,
     *,
@@ -618,6 +676,7 @@ async def _merge_frequency_projections(
     written: list[ProjectionRow] = []
     stale_keys: list[str] = []
     ensured_targets: set[str] = set()
+    live_expectations: list[tuple[str, date, str, int]] = []
     for target_key, group in groups.items():
         source_keys = [
             str(row["dimension_key"]) for row in group if str(row["dimension_key"]) != target_key
@@ -631,6 +690,15 @@ async def _merge_frequency_projections(
             if chosen is None:
                 continue
             kind, usage_date, window_key, expires_at, matching = chosen
+            if _frequency_window_is_future_skewed(
+                dimension_key=target_key,
+                usage_date=usage_date,
+                window_key=window_key,
+                observed=observed,
+            ):
+                raise UsageReservationConflict("frequency merge window clock skew")
+            expected_value = sum(int(row["value"]) for row in matching)
+            live_expectations.append((target_key, usage_date, window_key, expected_value))
             ensured_targets.add(target_key)
             if not source_keys and len(matching) == 1:
                 continue
@@ -641,7 +709,7 @@ async def _merge_frequency_projections(
                     kind=kind,
                     usage_date=usage_date,
                     window_key=window_key,
-                    value=sum(int(row["value"]) for row in matching),
+                    value=expected_value,
                     expires_at=expires_at,
                 )
             )
@@ -704,6 +772,14 @@ async def _merge_frequency_projections(
             {"source_key": source_key, "target_key": target_key},
         )
     unique_stale = sorted({key for key in stale_keys if key not in protected_sources})
+    for target_key, usage_date, window_key, value in live_expectations:
+        await _assert_canonical_holds_newest_window(
+            connection,
+            target_key=target_key,
+            usage_date=usage_date,
+            window_key=window_key,
+            value=value,
+        )
     if unique_stale:
         await connection.execute(
             text(
