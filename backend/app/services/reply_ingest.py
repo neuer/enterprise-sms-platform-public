@@ -19,7 +19,9 @@ from app.services.raw_spill import (
     CAPTURE_TRUNCATED,
     RawSpillStore,
     SpillQuotaExceeded,
+    discard_header_only_stream,
     is_non_replayable_capture,
+    manage_raw_spill_stream,
 )
 from app.vendor.identifiers import (
     degrade_vendor_identifier,
@@ -41,22 +43,9 @@ VENDOR_LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1
 def _discard_unused_stream(stream: Any) -> None:
     """仅释放 announce 前的 header-only 租约；已 announce 的捕获留给恢复。"""
 
-    if stream is None:
-        return
-    if getattr(stream, "has_announced", False):
-        return
-    if getattr(stream, "has_captured_bytes", True):
-        return
-    discard = getattr(stream, "discard", None)
-    if not callable(discard):
-        return
-    try:
-        discard()
-    except Exception as exc:
-        LOGGER.warning(
-            "unused raw spill reservation release failed",
-            extra={"error_type": type(exc).__name__},
-        )
+    discard_header_only_stream(stream)
+
+
 # 退订语判定与前端 ReplyView 的 OPT_OUT_RE 同规则；在打码后内容上判定，
 # 打码只替换数字，不影响 TD/T/退订 识别。
 OPT_OUT_CONTENT = re.compile(r"(?:TD|T|退订)", re.IGNORECASE)
@@ -307,6 +296,33 @@ class ReplyIngestService:
             title="raw spill 配额已满，已停止继续拉取以防消费缺口",
         )
 
+    async def _alert_header_only(self, result: Any) -> None:
+        """超龄 header-only 回收必须可观测，避免配额耗尽后静默停轮询。"""
+
+        cleaned = int(getattr(result, "header_cleaned", getattr(result, "total", result)) or 0)
+        if cleaned < 1 or self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_header_only",
+                level="crit",
+                title="raw spill 存在超龄 header-only 残留，已回收以免耗尽拉取配额",
+                detail={
+                    "source": "reply",
+                    "cleaned": cleaned,
+                    "header_only": int(getattr(result, "header_only", 0) or 0),
+                    "partial_header": int(getattr(result, "partial_header", 0) or 0),
+                    "corrupt_header": int(getattr(result, "corrupt_header", 0) or 0),
+                    "incomplete_frames": int(getattr(result, "incomplete_frames", 0) or 0),
+                },
+                dedup_key="vendor_raw_header_only:reply",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw header-only alert unavailable",
+                extra={"source": "reply", "error_type": type(exc).__name__},
+            )
+
     async def _emit_capture_alert(self, *, alert_type: str, title: str) -> None:
         if self.alerts is None:
             return
@@ -484,7 +500,9 @@ class ReplyIngestService:
             return 0
         reclaim = getattr(self.spill, "reclaim_idle", None)
         if callable(reclaim):
-            reclaim("reply", self.crypto)
+            result = reclaim("reply", self.crypto)
+            if result:
+                await self._alert_header_only(result)
         recovered = 0
         pending = [
             *self.spill.list_pending(),
@@ -541,7 +559,8 @@ class ReplyIngestService:
                 await self._alert_spill_quota()
                 return 0
         try:
-            pulled = await self.gateway.get_reply_raw(body_sink=stream)
+            with manage_raw_spill_stream(stream):
+                pulled = await self.gateway.get_reply_raw(body_sink=stream)
         except VendorResponseTooLarge as error:
             if error.raw_body:
                 await self._persist_lost_payload(
@@ -551,11 +570,9 @@ class ReplyIngestService:
                     stream=stream,
                 )
             else:
-                _discard_unused_stream(stream)
                 await self._alert_consume_gap(type(error).__name__)
             raise
         except Exception as error:
-            _discard_unused_stream(stream)
             await self._alert_consume_gap(type(error).__name__)
             raise
         payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()

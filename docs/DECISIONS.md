@@ -934,6 +934,23 @@
 - 影响：`raw_spill`/`report_ingest`/`reply_ingest`/`settings`、vendor-api 预留句、
   启动配置下限。未改 Vue、OpenAPI、Alembic。
 
+## D083 Raw Spill header-only 生命周期与超龄回收
+
+- 决策：`RawSpillStream` 以 context manager 管理生命周期。`announce()` 前的
+  transport/超时/进程退出只允许删除纯 header-only（无 announce、无 terminal、
+  无认证 data frame）并释放 D082 预留。启动 `reclaim_idle` 按文件头分类：
+  合法 header-only 与部分 header 超过 `HEADER_ONLY_RECLAIM_AFTER_S`（30s，
+  3× 厂商绝对超时）后删除；损坏 header 删除 stream 后写无 PII `.headerq`；
+  已认证 data、已 announce/terminal，或 header 后已有未完成帧的文件不得删除。
+  清理覆盖共享目录全部
+  来源，避免 Report 残留永久阻断 Reply。告警 `vendor_raw_header_only`；
+  目录级 `header_only_stats` 提供数量、最老年龄与清理次数。无数据库迁移。
+- 原因：#422 只覆盖已认证 chunk 后的 terminal/handoff；#438 预留之后，
+  DNS/connect/TLS 失败仍可能留下 header-only `.stream.tmp`，`pending_count`
+  计入 32 文件上限且空流恢复返回 None，厂商恢复后轮询仍永久停止。
+- 影响：`raw_spill`/`report_ingest`/`reply_ingest`、vendor-api 恢复句。
+  未改 Vue、OpenAPI、Alembic、D082 预留账本。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
