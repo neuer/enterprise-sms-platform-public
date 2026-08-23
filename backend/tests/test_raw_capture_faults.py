@@ -14,6 +14,7 @@ from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
+    INTERNAL_FRAME_SIZE,
     RawSpillStore,
     SpillQuotaExceeded,
 )
@@ -158,11 +159,13 @@ class TruncatedReplayRepository:
 def test_stream_survives_mid_receive_crash_as_truncated(tmp_path: Path) -> None:
     store = RawSpillStore(tmp_path, max_total_bytes=2 * 1024 * 1024, max_pending_files=8)
     stream = store.open_stream("report", crypto(), capture_bytes=64 * 1024)
-    assert stream.feed(b'{"code":0,"data":[') is True
+    payload = b"x" * INTERNAL_FRAME_SIZE
+    assert stream.feed(payload) is True
     recovered = store.list_pending_streams(crypto())
     assert len(recovered) == 1
     assert recovered[0].capture_state == CAPTURE_TRUNCATED
     assert recovered[0].payload_sha256
+    assert recovered[0].plaintext_bytes == INTERNAL_FRAME_SIZE
 
 
 def test_finished_complete_stream_round_trips(tmp_path: Path) -> None:

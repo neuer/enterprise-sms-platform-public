@@ -136,6 +136,7 @@ def test_partial_terminal_after_zero_marker_recovers_authenticated_chunks(
     stream.announce(http_status=500, content_encoding="identity")
     raw = b'{"code":0,"data":[{"ok":true}]}'
     assert stream.feed(raw) is True
+    assert stream.flush() is True
     before = stream.path.stat().st_size
     with stream.path.open("ab") as handle:
         handle.write(STREAM_RECORD_HEADER.pack(0))
@@ -158,6 +159,7 @@ def test_terminal_byte_boundary_kill_yields_complete_or_truncated(tmp_path: Path
     stream.announce(http_status=429, content_encoding="unsupported")
     raw = b'{"code":0,"data":[]}'
     assert stream.feed(raw) is True
+    assert stream.flush() is True
     before = stream.path.stat().st_size
     stream.finish(complete=True, http_status=429, content_encoding="unsupported")
     complete = stream.path.read_bytes()
@@ -210,6 +212,7 @@ def test_finish_fsync_failure_does_not_skip_authenticated_chunks(
     stream.announce(http_status=500, content_encoding="identity")
     raw = b'{"code":0,"data":[1]}'
     assert stream.feed(raw) is True
+    assert stream.flush() is True
     real_fsync = os.fsync
 
     def boom(fd: int) -> None:
@@ -285,6 +288,7 @@ async def test_recover_spills_persists_quarantined_truncated_and_alerts(
     stream.announce(http_status=500, content_encoding="identity")
     raw = b'{"code":0,"data":[]}'
     assert stream.feed(raw) is True
+    assert stream.flush() is True
     with stream.path.open("ab") as handle:
         handle.write(STREAM_RECORD_HEADER.pack(0))
         handle.write(b'{"capture_state":"comp')
@@ -448,6 +452,7 @@ def test_real_restart_recovers_partial_terminal(tmp_path: Path) -> None:
                 "stream = store.open_stream('report', crypto)",
                 "stream.announce(http_status=500, content_encoding='identity')",
                 'stream.feed(b\'{"code":0,"data":[1]}\')',
+                "assert stream.flush() is True",
                 "with stream.path.open('ab') as handle:",
                 "    handle.write(STREAM_RECORD_HEADER.pack(0))",
                 '    handle.write(b\'{"capture_state":"complete"\')',

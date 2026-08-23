@@ -19,10 +19,17 @@ from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_FRAME_OVERHEAD_BYTES,
     CAPTURE_TRUNCATED,
+    CONTROL_FRAME_BUDGET_BYTES,
+    CONTROL_FRAME_COUNT,
+    DATA_FRAME_OVERHEAD_BYTES,
+    DIRECTORY_METADATA_BYTES,
+    INTERNAL_FRAME_SIZE,
     RECOVERY_CAPTURE_BYTES,
+    STREAM_HEADER_BUDGET_BYTES,
     RawSpillStore,
     SpillQuotaExceeded,
     capture_reservation_bytes,
+    max_internal_frames,
 )
 from app.services.reply_ingest import (
     ReplyIngestService,
@@ -38,8 +45,15 @@ from app.services.report_ingest import (
 )
 from app.settings import (
     RAW_SPILL_CAPTURE_OVERHEAD_BYTES,
+    RAW_SPILL_CONTROL_FRAME_BUDGET_BYTES,
+    RAW_SPILL_CONTROL_FRAME_COUNT,
+    RAW_SPILL_DATA_FRAME_OVERHEAD_BYTES,
+    RAW_SPILL_DIRECTORY_METADATA_BYTES,
+    RAW_SPILL_INTERNAL_FRAME_SIZE,
+    RAW_SPILL_MAX_INTERNAL_FRAMES,
     RAW_SPILL_MIN_TOTAL_BYTES,
     RAW_SPILL_RECOVERY_CAPTURE_BYTES,
+    RAW_SPILL_STREAM_HEADER_BUDGET_BYTES,
 )
 from app.vendor.zhihui import RawPulledPayload, ZhihuiClient
 
@@ -202,9 +216,26 @@ def empty_payload() -> RawPulledPayload:
 
 
 def test_reservation_constants_match_settings_floor() -> None:
+    frames = max_internal_frames(RECOVERY_CAPTURE_BYTES)
+    assert INTERNAL_FRAME_SIZE == RAW_SPILL_INTERNAL_FRAME_SIZE == 64 * 1024
+    assert frames == RAW_SPILL_MAX_INTERNAL_FRAMES == 1024
+    assert DATA_FRAME_OVERHEAD_BYTES == RAW_SPILL_DATA_FRAME_OVERHEAD_BYTES == 36
+    assert STREAM_HEADER_BUDGET_BYTES == RAW_SPILL_STREAM_HEADER_BUDGET_BYTES
+    assert CONTROL_FRAME_COUNT == RAW_SPILL_CONTROL_FRAME_COUNT
+    assert CONTROL_FRAME_BUDGET_BYTES == RAW_SPILL_CONTROL_FRAME_BUDGET_BYTES
+    assert DIRECTORY_METADATA_BYTES == RAW_SPILL_DIRECTORY_METADATA_BYTES
+    expected = (
+        frames * INTERNAL_FRAME_SIZE
+        + frames * DATA_FRAME_OVERHEAD_BYTES
+        + STREAM_HEADER_BUDGET_BYTES
+        + CONTROL_FRAME_COUNT * CONTROL_FRAME_BUDGET_BYTES
+        + DIRECTORY_METADATA_BYTES
+    )
+    assert capture_reservation_bytes(RECOVERY_CAPTURE_BYTES) == expected
     assert RECOVERY_CAPTURE_BYTES == RAW_SPILL_RECOVERY_CAPTURE_BYTES
     assert CAPTURE_FRAME_OVERHEAD_BYTES == RAW_SPILL_CAPTURE_OVERHEAD_BYTES
     assert capture_reservation_bytes(RECOVERY_CAPTURE_BYTES) == RAW_SPILL_MIN_TOTAL_BYTES
+    assert CAPTURE_FRAME_OVERHEAD_BYTES < 1024 * 1024
 
 
 def test_near_quota_63mib_does_not_open_64mib_stream(tmp_path: Path) -> None:
@@ -374,7 +405,8 @@ def test_feed_enospc_returns_false_and_keeps_reservation(
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", boom)
-    assert stream.feed(b'{"code":0,"data":[]}') is False
+    assert stream.feed(b'{"code":0,"data":[]}') is True
+    assert stream.flush() is False
     assert store.list_reservations()
     monkeypatch.setattr(Path, "open", real_open)
     stream.discard()
@@ -521,6 +553,7 @@ def test_kill_recovery_releases_reservation_after_persist(tmp_path: Path) -> Non
                 "stream = store.open_stream('report', crypto, capture_bytes=4096)",
                 "stream.announce(http_status=200, content_encoding='identity')",
                 'stream.feed(b\'{"code":0,"data":[]}\')',
+                "assert stream.flush() is True",
                 "os._exit(9)",
             ]
         ),

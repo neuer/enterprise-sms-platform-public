@@ -21,7 +21,13 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 from zoneinfo import ZoneInfo
 
-from app.services.crypto import EncryptedValue, EncryptionContext
+from app.services.crypto import (
+    BOUND_ENVELOPE_MAGIC,
+    NONCE_SIZE,
+    TAG_SIZE,
+    EncryptedValue,
+    EncryptionContext,
+)
 
 SOURCE_PATTERN = re.compile(r"^(report|reply)$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -59,10 +65,16 @@ DEFAULT_RECOVER_MAX_FILES = 8
 DEFAULT_RECOVER_MAX_SECONDS = 8.0
 SYNC_EVERY_BYTES = 1024 * 1024
 RECOVERY_CAPTURE_BYTES = 64 * 1024 * 1024
-# 文件头、announce/terminal 控制帧、GCM 信封、目录项与隔离标记的文档化上限。
-# 按 httpx aiter_raw 典型 ≥16KiB 分片估算；1MiB 覆盖 64MiB 捕获的最坏分片开销。
-CAPTURE_FRAME_OVERHEAD_BYTES = 1024 * 1024
-CHUNK_WRITE_OVERHEAD_BYTES = STREAM_RECORD_HEADER.size + 48
+# 平台内部帧合同：网络 chunk 不得映射为持久化 AES-GCM 帧。
+# reservation 只由帧大小、最大帧数、控制帧和目录元数据证明，与 httpx 分片无关。
+INTERNAL_FRAME_SIZE = 64 * 1024
+DATA_FRAME_OVERHEAD_BYTES = (
+    STREAM_RECORD_HEADER.size + len(BOUND_ENVELOPE_MAGIC) + NONCE_SIZE + TAG_SIZE
+)
+STREAM_HEADER_BUDGET_BYTES = 256
+CONTROL_FRAME_COUNT = 2
+CONTROL_FRAME_BUDGET_BYTES = 256
+DIRECTORY_METADATA_BYTES = 768
 # 3× 厂商绝对超时，避免回收仍在 DNS/connect/TLS 中的在途 header-only。
 HEADER_ONLY_RECLAIM_AFTER_S = 30.0
 QUOTA_LOCK_NAME = ".quota.lock"
@@ -82,12 +94,35 @@ STREAM_LIFE_HAS_AUTHENTICATED_DATA = "has_authenticated_data"
 LOGGER = logging.getLogger(__name__)
 
 
-def capture_reservation_bytes(capture_bytes: int) -> int:
-    """一次请求生命周期必须预留的字节：捕获上限 + 文档化帧/元数据开销。"""
+def max_internal_frames(capture_bytes: int) -> int:
+    """明文捕获上限对应的内部帧数硬上限；最后一帧允许不足 INTERNAL_FRAME_SIZE。"""
 
     if capture_bytes < 1:
         raise ValueError("capture reservation must be positive")
-    return capture_bytes + CAPTURE_FRAME_OVERHEAD_BYTES
+    return (capture_bytes + INTERNAL_FRAME_SIZE - 1) // INTERNAL_FRAME_SIZE
+
+
+def capture_reservation_bytes(capture_bytes: int) -> int:
+    """按内部帧合同预留：帧容量 × 最大帧数 + 每帧信封 + 控制帧 + 目录元数据。
+
+    不得用网络传输分片估算。容量无法由此式证明时，open_stream 必须在厂商
+    HTTP 之前失败，禁止已经开始消费后再因帧开销截断。
+    """
+
+    frames = max_internal_frames(capture_bytes)
+    return (
+        frames * INTERNAL_FRAME_SIZE
+        + frames * DATA_FRAME_OVERHEAD_BYTES
+        + STREAM_HEADER_BUDGET_BYTES
+        + CONTROL_FRAME_COUNT * CONTROL_FRAME_BUDGET_BYTES
+        + DIRECTORY_METADATA_BYTES
+    )
+
+
+# 64MiB 恢复捕获的文档化开销；由上面帧合同算出，不是独立配额。
+CAPTURE_FRAME_OVERHEAD_BYTES = (
+    capture_reservation_bytes(RECOVERY_CAPTURE_BYTES) - RECOVERY_CAPTURE_BYTES
+)
 
 
 class SpillQuotaExceeded(RuntimeError):
@@ -141,6 +176,25 @@ class _StreamInspection:
     path: Path
 
 
+def flush_announced_pending_frames(stream: Any | None) -> None:
+    """announce 之后、finish 之前的异常边界必须把不足一帧的缓冲落盘。"""
+
+    if stream is None or getattr(stream, "has_announced", False) is not True:
+        return
+    if getattr(stream, "_finished", False):
+        return
+    flush = getattr(stream, "flush", None)
+    if not callable(flush):
+        return
+    try:
+        flush()
+    except Exception as exc:
+        LOGGER.warning(
+            "raw spill pending frame flush failed",
+            extra={"error_type": type(exc).__name__},
+        )
+
+
 def discard_header_only_stream(stream: Any | None) -> None:
     """announce 前失败只删除纯 header-only；已认证 data/announce 留给恢复。"""
 
@@ -168,11 +222,12 @@ def discard_header_only_stream(stream: Any | None) -> None:
 
 @contextmanager
 def manage_raw_spill_stream(stream: Any | None) -> Iterator[Any]:
-    """上下文退出时回收 announce 前的 header-only，不碰已认证事实。"""
+    """退出时先 flush 已 announce 的短帧，再回收 announce 前的 header-only。"""
 
     try:
         yield stream
     finally:
+        flush_announced_pending_frames(stream)
         discard_header_only_stream(stream)
 
 
@@ -669,7 +724,13 @@ class RawSpillStore:
                     raise SpillQuotaExceeded("raw spill disk full") from exc
                 raise
             try:
-                stream = RawSpillStream(self, source, crypto, reservation)
+                stream = RawSpillStream(
+                    self,
+                    source,
+                    crypto,
+                    reservation,
+                    capture_bytes=capture_bytes,
+                )
             except OSError as exc:
                 self._remove_stream_locked(source, lease_id)
                 if exc.errno == errno.ENOSPC:
@@ -1406,7 +1467,7 @@ class RawSpillStore:
 
 
 class RawSpillStream:
-    """按 chunk 写入认证加密流；接收中崩溃只留下密文，不得落明文。"""
+    """合并为固定内部帧后写入认证加密流；网络 chunk 不得成为持久化帧。"""
 
     def __init__(
         self,
@@ -1414,12 +1475,16 @@ class RawSpillStream:
         source: str,
         crypto: StreamChunkCrypto,
         reservation: SpillReservation,
+        *,
+        capture_bytes: int = RECOVERY_CAPTURE_BYTES,
     ) -> None:
         self.store = store
         self.source = source
         self.crypto = crypto
         self.reservation = reservation
         self.stream_id = reservation.lease_id
+        self._capture_bytes = capture_bytes
+        self._max_frames = max_internal_frames(capture_bytes)
         self._seq = 0
         self._unsynced = 0
         self._finished = False
@@ -1428,6 +1493,10 @@ class RawSpillStream:
         self._http_status = 200
         self._content_encoding = "identity"
         self._protocol_invalid = False
+        self._plaintext_bytes = 0
+        self._ondisk_bytes = 0
+        self._buffer = bytearray()
+        self._capture_state: str | None = None
         self.path = store._stream_tmp(source, self.stream_id)
         store.directory.mkdir(parents=True, exist_ok=True)
         header = json.dumps(
@@ -1442,18 +1511,25 @@ class RawSpillStream:
             handle.flush()
             os.fsync(handle.fileno())
         store._fsync_directory()
+        self._refresh_ondisk_bytes()
 
     def __enter__(self) -> RawSpillStream:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        flush_announced_pending_frames(self)
         discard_header_only_stream(self)
 
     @property
     def is_header_only(self) -> bool:
-        """尚未 announce、尚未写入认证 data frame 的纯文件头。"""
+        """尚未 announce、尚未接受正文、也没有待 flush 缓冲的纯文件头。"""
 
-        return not self._finished and not self._announced and self._seq == 0
+        return (
+            not self._finished
+            and not self._announced
+            and self._seq == 0
+            and not self._buffer
+        )
 
     @property
     def has_announced(self) -> bool:
@@ -1463,47 +1539,78 @@ class RawSpillStream:
 
     @property
     def has_captured_bytes(self) -> bool:
-        """是否已写入认证正文 chunk。announce 前的空租约才可立即释放。"""
+        """是否已接受正文（含未 flush 缓冲）。announce 前的空租约才可立即释放。"""
 
-        return self._seq > 0
+        return self._seq > 0 or bool(self._buffer)
+
+    @property
+    def plaintext_bytes(self) -> int:
+        """已接受的明文字节；含仍在内部帧缓冲、尚未加密落盘的尾部。"""
+
+        return self._plaintext_bytes
+
+    @property
+    def on_disk_bytes(self) -> int:
+        """当前加密流文件字节；与明文计数分离，二者各自有硬上限。"""
+
+        return self._ondisk_bytes
+
+    @property
+    def frame_count(self) -> int:
+        """已持久化的内部 data frame 数，不是网络 chunk 数。"""
+
+        return self._seq
+
+    @property
+    def pending_plaintext_bytes(self) -> int:
+        """尚未加密落盘的短帧缓冲。"""
+
+        return len(self._buffer)
+
+    @property
+    def capture_state(self) -> str | None:
+        """finish 后的完整性状态；未结束则为 None。"""
+
+        return self._capture_state
+
+    @property
+    def max_frames(self) -> int:
+        """本请求允许的内部 data frame 硬上限。"""
+
+        return self._max_frames
 
     def feed(self, chunk: bytes) -> bool:
-        """追加一个认证加密 chunk。超出本请求预留或磁盘满时返回 False。"""
+        """把网络/调用方 chunk 合并进固定内部帧。超出明文或落盘上限返回 False。"""
 
-        if self._finished or not chunk:
-            return not self._finished
-        framed = len(chunk) + CHUNK_WRITE_OVERHEAD_BYTES
-        try:
-            current = self.path.stat().st_size
-        except OSError:
+        if self._finished:
             return False
-        if current + framed > self.reservation.reserved_bytes:
-            return False
-        encrypted = self.crypto.encrypt_bound_bytes(
-            chunk,
-            EncryptionContext(
-                domain="vendor-raw",
-                table="raw_spill",
-                column="chunk",
-                object_id=f"{self.source}:{self.stream_id}:{self._seq:08d}",
-            ),
-        )
-        self._bind_key_version(encrypted.key_version)
-        try:
-            with self.path.open("ab") as handle:
-                handle.write(STREAM_RECORD_HEADER.pack(len(encrypted.payload)))
-                handle.write(encrypted.payload)
-                handle.flush()
-                self._unsynced += STREAM_RECORD_HEADER.size + len(encrypted.payload)
-                if self._unsynced >= SYNC_EVERY_BYTES:
-                    os.fsync(handle.fileno())
-                    self._unsynced = 0
-        except OSError as exc:
-            if exc.errno == errno.ENOSPC:
+        if not chunk:
+            return True
+        view = memoryview(chunk)
+        offset = 0
+        while offset < len(chunk):
+            remaining_plain = self._capture_bytes - self._plaintext_bytes
+            if remaining_plain <= 0:
                 return False
-            raise
-        self._seq += 1
+            remaining_frame = INTERNAL_FRAME_SIZE - len(self._buffer)
+            take = min(len(chunk) - offset, remaining_plain, remaining_frame)
+            if take <= 0:
+                return False
+            self._buffer.extend(view[offset : offset + take])
+            self._plaintext_bytes += take
+            offset += take
+            if len(self._buffer) >= INTERNAL_FRAME_SIZE and not self._emit_full_frames():
+                return False
         return True
+
+    def flush(self) -> bool:
+        """把不足一帧的尾部加密落盘。finish 与异常边界必须调用。"""
+
+        if self._finished:
+            return False
+        if not self._buffer:
+            return True
+        return self._emit_frame(bytes(self._buffer))
 
     def announce(
         self,
@@ -1516,6 +1623,8 @@ class RawSpillStream:
 
         if self._finished:
             return
+        if self._buffer and not self.flush():
+            raise OSError(errno.ENOSPC, "raw spill announce flush failed")
         self._http_status = _normalize_http_status(http_status)
         self._content_encoding = content_encoding or "identity"
         self._protocol_invalid = bool(protocol_invalid)
@@ -1543,12 +1652,16 @@ class RawSpillStream:
 
         if self._finished:
             return
+        durable = self.flush()
         if http_status is not None:
             self._http_status = _normalize_http_status(http_status)
         if content_encoding is not None:
             self._content_encoding = content_encoding or "identity"
         if protocol_invalid:
             self._protocol_invalid = True
+        if not durable:
+            complete = False
+            too_large = False
         if self._protocol_invalid:
             capture_state = CAPTURE_PROTOCOL_INVALID
         elif complete and too_large:
@@ -1557,6 +1670,7 @@ class RawSpillStream:
             capture_state = CAPTURE_COMPLETE
         else:
             capture_state = CAPTURE_TRUNCATED
+        self._capture_state = capture_state
         self._write_control_frame(
             kind=STREAM_KIND_TERMINAL,
             sentinel=0,
@@ -1569,6 +1683,7 @@ class RawSpillStream:
         os.replace(self.path, final)
         self.store._fsync_directory()
         self.path = final
+        self._refresh_ondisk_bytes()
         self._finished = True
 
     def discard(self) -> None:
@@ -1576,7 +1691,64 @@ class RawSpillStream:
         self.store.remove_stream(self.source, self.stream_id)
         if header_only:
             self.store._header_only_cleaned += 1
+        self._buffer.clear()
         self._finished = True
+
+    def _emit_full_frames(self) -> bool:
+        """只写出已满的内部帧；尾部短帧留给 flush。"""
+
+        while len(self._buffer) >= INTERNAL_FRAME_SIZE:
+            payload = bytes(self._buffer[:INTERNAL_FRAME_SIZE])
+            del self._buffer[:INTERNAL_FRAME_SIZE]
+            if not self._emit_frame(payload, clear_buffer=False):
+                self._buffer = bytearray(payload) + self._buffer
+                return False
+        return True
+
+    def _emit_frame(self, payload: bytes, *, clear_buffer: bool = True) -> bool:
+        """把一个内部帧加密落盘。明文已在 feed 计入，这里只检查帧数与落盘上限。"""
+
+        if not payload:
+            return True
+        if self._seq >= self._max_frames:
+            return False
+        framed = len(payload) + DATA_FRAME_OVERHEAD_BYTES
+        if self._ondisk_bytes + framed > self.reservation.reserved_bytes:
+            return False
+        encrypted = self.crypto.encrypt_bound_bytes(
+            payload,
+            EncryptionContext(
+                domain="vendor-raw",
+                table="raw_spill",
+                column="chunk",
+                object_id=f"{self.source}:{self.stream_id}:{self._seq:08d}",
+            ),
+        )
+        self._bind_key_version(encrypted.key_version)
+        try:
+            with self.path.open("ab") as handle:
+                handle.write(STREAM_RECORD_HEADER.pack(len(encrypted.payload)))
+                handle.write(encrypted.payload)
+                handle.flush()
+                self._unsynced += STREAM_RECORD_HEADER.size + len(encrypted.payload)
+                if self._unsynced >= SYNC_EVERY_BYTES:
+                    os.fsync(handle.fileno())
+                    self._unsynced = 0
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                return False
+            raise
+        self._seq += 1
+        if clear_buffer:
+            self._buffer.clear()
+        self._refresh_ondisk_bytes()
+        return True
+
+    def _refresh_ondisk_bytes(self) -> None:
+        try:
+            self._ondisk_bytes = self.path.stat().st_size
+        except OSError:
+            return
 
     def _bind_key_version(self, key_version: int) -> None:
         if self._key_version is None:
@@ -1626,6 +1798,7 @@ class RawSpillStream:
             handle.flush()
             os.fsync(handle.fileno())
         self._unsynced = 0
+        self._refresh_ondisk_bytes()
 
     def _rewrite_header_key_version(self, key_version: int) -> None:
         raw = self.path.read_bytes()
@@ -1648,3 +1821,4 @@ class RawSpillStream:
             os.fsync(handle.fileno())
         os.replace(tmp, self.path)
         self.store._fsync_directory()
+        self._refresh_ondisk_bytes()

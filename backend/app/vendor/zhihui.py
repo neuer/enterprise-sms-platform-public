@@ -192,6 +192,23 @@ def _announce_body_sink(
         )
 
 
+def _flush_body_sink(body_sink: Any | None) -> None:
+    """异常边界把不足一帧的内部缓冲加密落盘；未 announce 或已 finish 则为空操作。"""
+
+    if body_sink is None:
+        return
+    flush = getattr(body_sink, "flush", None)
+    if not callable(flush):
+        return
+    try:
+        flush()
+    except Exception as exc:
+        LOGGER.warning(
+            "vendor raw body sink flush failed",
+            extra={"error_type": type(exc).__name__},
+        )
+
+
 def _finish_body_sink(
     body_sink: Any,
     *,
@@ -424,10 +441,13 @@ class ZhihuiClient:
                 finally:
                     await response.aclose()
         except TimeoutError:
+            _flush_body_sink(body_sink)
             raise VendorTotalTimeout("vendor request exceeded absolute deadline") from None
         except VendorError:
+            _flush_body_sink(body_sink)
             raise
         except httpx.TransportError:
+            _flush_body_sink(body_sink)
             LOGGER.error("vendor transport error endpoint=%s", path)
             raise VendorTransportError("vendor transport failed; result unknown") from None
 
