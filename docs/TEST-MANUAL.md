@@ -850,6 +850,7 @@ Web 地址：${TEST_BASE_URL}
 1. 同时触发两个需要登录的列表刷新，使两边几乎同时收到 access 401。浏览器应通过 Web Locks 串行 `POST /api/v1/web/auth/refresh`；两个标签页都必须继续停留在已登录壳，不得互相踢下线。因 access 只存在于当前标签页 sessionStorage，第二个标签页在锁释放后仍可各自 refresh 领取本页 access，这不是 family 吊销。
 2. 在标签页 A 发起 refresh 的同时，标签页 B 立即注销。两边最终都必须回到登录页，且不得再用旧 refresh Cookie 恢复会话。
 3. 在已登录页使用浏览器后退进入 BFCache 后，再前进恢复。若该会话已在其他标签页注销，恢复后必须回到登录页，不得显示已登录壳。
+4. TEST-MANUAL #442：标签页 B 已登录且 Refresh 仍在途时，标签页 A 登录另一账号。B 必须回到登录页且不得出现 A 登录前的旧主体；跨标签页信号只允许无凭据时间戳，开发者工具不得看到 Access/Refresh 被写入 Web Storage。若 B 的旧 Refresh 在清理后才返回，B 仍不得写回旧 Access Token。浏览器仍可能把已在途 Refresh 的 `Set-Cookie` 覆盖为旧 Cookie（前端无法拦截）；此时 B 必须保持未登录，不得用旧主体继续操作。
 
 ### 8.2 厂商 Mock 故障矩阵
 
