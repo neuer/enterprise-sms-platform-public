@@ -9,7 +9,12 @@ import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.export import ExportFilterSet
-from app.services.export_repository import ExportClaim, SqlExportRepository
+from app.services.export_repository import (
+    ExpiredExport,
+    ExportClaim,
+    ExportLeaseRef,
+    SqlExportRepository,
+)
 
 PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000134")
 LEASE_ID = UUID("20000000-0000-4000-8000-000000000009")
@@ -49,6 +54,9 @@ class FakeResult:
 
     def scalars(self) -> list[object]:
         return [self.scalar] if self.scalar is not None else []
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        return iter(self.rows)
 
 
 class FakeConnection:
@@ -317,3 +325,34 @@ async def test_download_authorization_and_pii_free_audit_share_one_transaction()
         "row_count": 2,
     }
     assert "phone" not in repr(audit_params).casefold()
+
+
+@pytest.mark.asyncio
+async def test_ready_active_and_unreadable_queries_stay_lease_safe() -> None:
+    repository = SqlExportRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[{"id": 9, "file_path": "/safe/export-9.smsx"}]),
+            FakeResult(rows=[{"id": 9, "lease_id": LEASE_ID}]),
+            FakeResult(),
+        ]
+    )
+    bind(repository, connection)
+
+    ready = await repository.ready_files(7)
+    leases = await repository.active_leases()
+    await repository.mark_unreadable(9, "/safe/export-9.smsx")
+
+    assert ready == [ExpiredExport(9, "/safe/export-9.smsx")]
+    assert leases == [ExportLeaseRef(9, LEASE_ID)]
+    ready_sql, ready_params = connection.calls[0]
+    assert "status='done'" in ready_sql
+    assert "finished_at+make_interval(days=>:days)>now()" in ready_sql
+    assert ready_params == {"days": 7}
+    lease_sql, _lease_params = connection.calls[1]
+    assert "status='running'" in lease_sql
+    assert "lease_expires_at>now()" in lease_sql
+    fail_sql, fail_params = connection.calls[2]
+    assert "status='failed'" in fail_sql
+    assert "status='done'" in fail_sql
+    assert fail_params == {"task_id": 9, "file_path": "/safe/export-9.smsx"}

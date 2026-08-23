@@ -21,6 +21,7 @@ from app.services.crypto import (
     CryptoService,
     EncryptionContext,
 )
+from app.services.file_durability import fsync_directory
 
 LOGGER = logging.getLogger(__name__)
 MAGIC_V1 = b"SMSI1"
@@ -133,11 +134,7 @@ class ImportFileCodec:
                 os.fsync(output.fileno())
             os.replace(part, final)
             os.chmod(final, 0o600)
-            directory_fd = os.open(self.root, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            fsync_directory(self.root)
             return final.name
         except BaseException:
             part.unlink(missing_ok=True)

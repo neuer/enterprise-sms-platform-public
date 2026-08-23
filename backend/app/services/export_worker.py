@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -83,6 +83,7 @@ class ExportWorker:
         max_rows: int = MAX_EXPORT_ROWS,
         lease_seconds: int = 900,
         heartbeat_interval_s: float | None = None,
+        on_complete_stage: Callable[[str], None] | None = None,
     ) -> None:
         if lease_seconds < 3:
             raise ValueError("export lease must be at least 3 seconds")
@@ -92,6 +93,7 @@ class ExportWorker:
         self.max_rows = max_rows
         self.lease_seconds = lease_seconds
         self.heartbeat_interval_s = heartbeat_interval_s or lease_seconds / 3
+        self.on_complete_stage = on_complete_stage
 
     def _phone(self, claim: ExportClaim, row: dict[str, object]) -> str:
         if not claim.decrypted:
@@ -118,8 +120,21 @@ class ExportWorker:
             return 0
         count = 0
         completed_path: Path | None = None
+        created_here = False
         stopped = asyncio.Event()
         lease_lost = asyncio.Event()
+
+        reusable = self.codec.find_reusable_final(claim.id)
+        if reusable is not None and reusable.row_count is not None:
+            if self.on_complete_stage is not None:
+                self.on_complete_stage("before_mark_done")
+            await self.repository.mark_done(
+                claim.id,
+                lease_id=claim.lease_id,
+                file_path=str(reusable.path),
+                row_count=reusable.row_count,
+            )
+            return reusable.row_count
 
         async def csv_rows() -> AsyncIterator[tuple[str, ...]]:
             nonlocal count
@@ -202,8 +217,19 @@ class ExportWorker:
                     await build_task
                 raise ExportLeaseLost("export lease lost during file generation")
             completed_path = await build_task
+            created_here = True
             if lease_lost.is_set():
                 raise ExportLeaseLost("export lease lost before completion")
+            proof = self.codec.verify_ready(
+                completed_path,
+                expected_task_id=claim.id,
+                expected_lease_id=claim.lease_id,
+                require_manifest=True,
+            )
+            if proof.row_count != count:
+                raise RuntimeError("export row count mismatch")
+            if self.on_complete_stage is not None:
+                self.on_complete_stage("before_mark_done")
             await self.repository.mark_done(
                 claim.id,
                 lease_id=claim.lease_id,
@@ -211,8 +237,8 @@ class ExportWorker:
                 row_count=count,
             )
             return count
-        except BaseException as error:
-            if completed_path is not None:
+        except Exception as error:
+            if created_here and completed_path is not None:
                 self.codec.remove(completed_path)
             if not isinstance(error, ExportLeaseLost):
                 with suppress(Exception):
