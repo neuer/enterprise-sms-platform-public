@@ -896,6 +896,7 @@ class RawSpillStream:
         self._seq = 0
         self._unsynced = 0
         self._finished = False
+        self._announced = False
         self._key_version: int | None = None
         self._http_status = 200
         self._content_encoding = "identity"
@@ -916,8 +917,14 @@ class RawSpillStream:
         store._fsync_directory()
 
     @property
+    def has_announced(self) -> bool:
+        """announce 控制帧是否已持久化；此后不得当 unused header-only 丢弃。"""
+
+        return self._announced
+
+    @property
     def has_captured_bytes(self) -> bool:
-        """是否已写入认证正文 chunk；仅文件头的租约可在异常路径立即释放。"""
+        """是否已写入认证正文 chunk。announce 前的空租约才可立即释放。"""
 
         return self._seq > 0
 
@@ -982,6 +989,7 @@ class RawSpillStream:
             content_encoding=self._content_encoding,
             capture_state=capture_state,
         )
+        self._announced = True
 
     def finish(
         self,

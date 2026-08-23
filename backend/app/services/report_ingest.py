@@ -39,9 +39,13 @@ SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _discard_unused_stream(stream: Any) -> None:
-    """厂商调用前或未写入正文时释放预留；已捕获 chunk 留给崩溃恢复。"""
+    """仅释放 announce 前的 header-only 租约；已 announce 的捕获留给恢复。"""
 
-    if stream is None or getattr(stream, "has_captured_bytes", True):
+    if stream is None:
+        return
+    if getattr(stream, "has_announced", False):
+        return
+    if getattr(stream, "has_captured_bytes", True):
         return
     discard = getattr(stream, "discard", None)
     if not callable(discard):

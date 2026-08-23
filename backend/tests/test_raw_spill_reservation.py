@@ -18,13 +18,24 @@ from app.services.crypto import CryptoService
 from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_FRAME_OVERHEAD_BYTES,
+    CAPTURE_TRUNCATED,
     RECOVERY_CAPTURE_BYTES,
     RawSpillStore,
     SpillQuotaExceeded,
     capture_reservation_bytes,
 )
-from app.services.reply_ingest import ReplyIngestService
-from app.services.report_ingest import ReportIngestService
+from app.services.reply_ingest import (
+    ReplyIngestService,
+)
+from app.services.reply_ingest import (
+    _discard_unused_stream as discard_unused_reply,
+)
+from app.services.report_ingest import (
+    ReportIngestService,
+)
+from app.services.report_ingest import (
+    _discard_unused_stream as discard_unused_report,
+)
 from app.settings import (
     RAW_SPILL_CAPTURE_OVERHEAD_BYTES,
     RAW_SPILL_MIN_TOTAL_BYTES,
@@ -138,6 +149,20 @@ class BoomGateway:
     async def get_report_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
         self.calls += 1
         raise RuntimeError("vendor transport failed")
+
+
+class AnnounceThenBoomGateway:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_report_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
+        self.calls += 1
+        if body_sink is not None:
+            body_sink.announce(http_status=502, content_encoding="identity")
+        raise RuntimeError("body unread after announce")
+
+    async def get_reply_raw(self, body_sink: Any | None = None) -> RawPulledPayload:
+        return await self.get_report_raw(body_sink)
 
 
 class _RawStream(httpx.AsyncByteStream):
@@ -366,6 +391,49 @@ async def test_exception_before_body_releases_reservation(tmp_path: Path) -> Non
         ).poll_once()
     assert gateway.calls == 1
     assert leftover_names(tmp_path, ".reserve", ".stream", ".stream.tmp") == []
+
+
+@pytest.mark.asyncio
+async def test_announce_then_exception_before_feed_keeps_stream_and_lease(
+    tmp_path: Path,
+) -> None:
+    store = RawSpillStore(tmp_path)
+    gateway = AnnounceThenBoomGateway()
+    repository = FakeRepository()
+    service = ReportIngestService(
+        gateway, repository, crypto(), alerts=FakeAlerts(), spill=store
+    )
+    with pytest.raises(RuntimeError, match="body unread after announce"):
+        await service.poll_once()
+    assert gateway.calls == 1
+    assert leftover_names(tmp_path, ".stream", ".stream.tmp")
+    reservations = store.list_reservations()
+    assert len(reservations) == 1
+    recovered = store.list_pending_streams(crypto())
+    assert len(recovered) == 1
+    assert recovered[0].capture_state == CAPTURE_TRUNCATED
+    assert recovered[0].http_status == 502
+    assert recovered[0].quarantined is True
+    assert await service.recover_spills() == 1
+    persisted = [value for event, value in repository.events if event == "persist_raw"]
+    assert persisted[0]["capture_state"] == CAPTURE_TRUNCATED
+    assert persisted[0]["http_status"] == 502
+    assert leftover_names(tmp_path, ".reserve", ".stream", ".stream.tmp", ".quarantine") == []
+
+
+def test_discard_unused_does_not_drop_announced_stream(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path)
+    stream = store.open_stream("reply", crypto(), capture_bytes=4096)
+    stream.announce(http_status=429, content_encoding="identity")
+    assert stream.has_announced is True
+    assert stream.has_captured_bytes is False
+    discard_unused_report(stream)
+    discard_unused_reply(stream)
+    assert stream.path.exists()
+    assert store.list_reservations()
+    recovered = store.list_pending_streams(crypto())
+    assert recovered[0].http_status == 429
+    assert recovered[0].capture_state == CAPTURE_TRUNCATED
 
 
 @pytest.mark.asyncio
