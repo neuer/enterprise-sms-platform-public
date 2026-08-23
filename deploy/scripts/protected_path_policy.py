@@ -30,17 +30,10 @@ FRONTEND_SECURITY_DOMAINS: tuple[str, ...] = (
     "frontend/src/api/",
 )
 
-# 已审查、必须继续走 backend-critical（含 G2）的前端会话文件。
-# 域默认是 frontend-security；这里只升不降，避免削弱既有 G2。
-BACKEND_CRITICAL_RAISE_EXACT: frozenset[str] = frozenset(
-    {
-        "frontend/src/api/auth.ts",
-        "frontend/src/api/refreshLock.ts",
-        "frontend/src/api/sessionTokens.ts",
-        "frontend/src/api/webMessages.ts",
-        "frontend/src/stores/session.ts",
-    }
-)
+# 已审查、必须继续走 backend-critical（含 G2）的前端路径。
+# 域默认是 frontend-security；这里只升不降。当前无条目：
+# 既有会话文件走域默认 frontend-security（#454），不再升格到 backend job。
+BACKEND_CRITICAL_RAISE_EXACT: frozenset[str] = frozenset()
 
 # 安全域内已审查降级为普通组件门禁的路径。新增条目即显式削弱保护。
 REVIEWED_ORDINARY_EXACT: frozenset[str] = frozenset(
