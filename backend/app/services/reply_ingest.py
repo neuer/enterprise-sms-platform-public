@@ -36,6 +36,23 @@ from app.vendor.zhihui import (
 
 LOGGER = logging.getLogger(__name__)
 VENDOR_LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
+
+
+def _discard_unused_stream(stream: Any) -> None:
+    """厂商调用前或未写入正文时释放预留；已捕获 chunk 留给崩溃恢复。"""
+
+    if stream is None or getattr(stream, "has_captured_bytes", True):
+        return
+    discard = getattr(stream, "discard", None)
+    if not callable(discard):
+        return
+    try:
+        discard()
+    except Exception as exc:
+        LOGGER.warning(
+            "unused raw spill reservation release failed",
+            extra={"error_type": type(exc).__name__},
+        )
 # 退订语判定与前端 ReplyView 的 OPT_OUT_RE 同规则；在打码后内容上判定，
 # 打码只替换数字，不影响 TD/T/退订 识别。
 OPT_OUT_CONTENT = re.compile(r"(?:TD|T|退订)", re.IGNORECASE)
@@ -461,6 +478,9 @@ class ReplyIngestService:
 
         if self.spill is None:
             return 0
+        reclaim = getattr(self.spill, "reclaim_idle", None)
+        if callable(reclaim):
+            reclaim("reply", self.crypto)
         recovered = 0
         pending = [
             *self.spill.list_pending(),
@@ -509,9 +529,6 @@ class ReplyIngestService:
         if self.gateway is None:
             raise RuntimeError("reply gateway is not configured")
         await self.recover_spills()
-        if self.spill is not None and not self.spill.can_accept():
-            await self._alert_spill_quota()
-            return 0
         stream = None
         if self.spill is not None:
             try:
@@ -530,9 +547,11 @@ class ReplyIngestService:
                     stream=stream,
                 )
             else:
+                _discard_unused_stream(stream)
                 await self._alert_consume_gap(type(error).__name__)
             raise
         except Exception as error:
+            _discard_unused_stream(stream)
             await self._alert_consume_gap(type(error).__name__)
             raise
         payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()

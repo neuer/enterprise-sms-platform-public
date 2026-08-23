@@ -38,6 +38,23 @@ VENDOR_LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
+def _discard_unused_stream(stream: Any) -> None:
+    """厂商调用前或未写入正文时释放预留；已捕获 chunk 留给崩溃恢复。"""
+
+    if stream is None or getattr(stream, "has_captured_bytes", True):
+        return
+    discard = getattr(stream, "discard", None)
+    if not callable(discard):
+        return
+    try:
+        discard()
+    except Exception as exc:
+        LOGGER.warning(
+            "unused raw spill reservation release failed",
+            extra={"error_type": type(exc).__name__},
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ProtectedReport:
     event_key: str
@@ -575,6 +592,9 @@ class ReportIngestService:
 
         if self.spill is None:
             return 0
+        reclaim = getattr(self.spill, "reclaim_idle", None)
+        if callable(reclaim):
+            reclaim("report", self.crypto)
         recovered = 0
         pending = [
             *self.spill.list_pending(),
@@ -623,9 +643,6 @@ class ReportIngestService:
         if self.gateway is None:
             raise RuntimeError("report gateway is not configured")
         await self.recover_spills()
-        if self.spill is not None and not self.spill.can_accept():
-            await self._alert_spill_quota("report")
-            return 0
         stream = None
         if self.spill is not None:
             try:
@@ -645,9 +662,11 @@ class ReportIngestService:
                     stream=stream,
                 )
             else:
+                _discard_unused_stream(stream)
                 await self._alert_consume_gap("report", type(error).__name__)
             raise
         except Exception as error:
+            _discard_unused_stream(stream)
             await self._alert_consume_gap("report", type(error).__name__)
             raise
         payload_sha256 = hashlib.sha256(pulled.raw_payload).hexdigest()

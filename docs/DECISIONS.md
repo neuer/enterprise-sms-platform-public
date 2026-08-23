@@ -917,6 +917,22 @@
   OpenAPI `unknown_legacy`。未改 Vue；运维列表对未知状态仍走现有截断展示回退，
   服务端拒绝重放。
 
+## D082 Raw Spill 拉取前原子预留 64MiB 恢复合同
+
+- 决策：`open_stream()` 在创建 stream 之前，于共享目录 `fcntl.flock` 下写入
+  `{source}-{lease_id}.reserve`，预留
+  `max_response_capture_bytes + CAPTURE_FRAME_OVERHEAD_BYTES`（64MiB + 1MiB）。
+  Report/Reply 共用同一账本与锁，剩余不足一次完整恢复捕获时不得发起厂商 HTTP。
+  预留覆盖成功、异常、取消与 kill -9 后的 stream 恢复；`remove_stream` /
+  `discard` / `reclaim_idle` 释放。`feed()` 只受本租约预算约束，不得因拉取开始后
+  的已知目录压力把 4–64MiB 完整响应降为 `truncated`。账本只含 source、lease_id、
+  reserved_bytes、created_at。`RAW_SPILL_MAX_TOTAL_BYTES` 启动下限为一次预留，
+  16MiB 配置必须失败。无数据库迁移。
+- 原因：#410/#422 之后仍只按 64KiB 瞬时 `can_accept` 开门，目录压力会在拉走即消费
+  已经开始后截断本可完整捕获的响应；双轮询还会超卖同一 Volume。
+- 影响：`raw_spill`/`report_ingest`/`reply_ingest`/`settings`、vendor-api 预留句、
+  启动配置下限。未改 Vue、OpenAPI、Alembic。
+
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 
 - 决策：修订 D032 的“旧 refresh 重放即吊销整个 family”。服务端 Redis Lua 在首次轮换后
