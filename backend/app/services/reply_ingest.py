@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -18,9 +19,11 @@ from app.services.raw_spill import (
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     RawSpillStore,
+    RecoverRoundBudget,
     SpillQuotaExceeded,
     discard_header_only_stream,
     is_non_replayable_capture,
+    iter_records_for_recover,
     manage_raw_spill_stream,
 )
 from app.vendor.identifiers import (
@@ -504,13 +507,16 @@ class ReplyIngestService:
             if result:
                 await self._alert_header_only(result)
         recovered = 0
-        pending = [
-            *self.spill.list_pending(),
-            *self.spill.list_pending_streams(self.crypto),
-        ]
-        for record in pending:
-            if record.source != "reply":
-                continue
+        attempted = 0
+        used_bytes = 0
+        started_at = time.monotonic()
+        budget = getattr(self.spill, "recover_budget", None) or RecoverRoundBudget()
+        for record in iter_records_for_recover(self.spill, self.crypto, "reply"):
+            if budget.exhausted(
+                recovered=attempted, used_bytes=used_bytes, started_at=started_at
+            ):
+                break
+            size = int(getattr(record, "recover_weight_bytes", 0) or len(record.payload_enc))
             try:
                 raw_id = await self.repository.persist_raw(
                     payload_enc=record.payload_enc,
@@ -524,6 +530,8 @@ class ReplyIngestService:
                 )
             except Exception as error:
                 await self._alert_consume_gap(type(error).__name__)
+                attempted += 1
+                used_bytes += size
                 continue
             if record.capture_state == CAPTURE_TRUNCATED:
                 await self.repository.mark_error(
@@ -544,6 +552,8 @@ class ReplyIngestService:
             self._spill_remove(record.source, record.payload_sha256)
             if record.stream_id:
                 self.spill.remove_stream(record.source, record.stream_id)
+            attempted += 1
+            used_bytes += size
             recovered += 1
         return recovered
 

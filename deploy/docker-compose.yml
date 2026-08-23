@@ -22,6 +22,8 @@ x-backend: &backend
   environment: *backend-environment
   user: "10001:10001"
   pids_limit: 256
+  # 768m 与 Settings.worker_rss_limit_bytes / RAW_SPILL 恢复峰值模型对齐；
+  # 8GiB backlog 在未提高该预算前必须启动失败。恢复仍走 poll_report/poll_reply。
   mem_limit: 768m
   cpus: 1.5
   tmpfs:

@@ -820,6 +820,35 @@ def test_raw_spill_quotas_have_upper_and_lower_bounds() -> None:
         raw_spill_max_total_bytes=module.RAW_SPILL_MIN_TOTAL_BYTES,
     )
     assert settings.raw_spill_max_total_bytes == module.RAW_SPILL_MIN_TOTAL_BYTES
+    with pytest.raises(ValueError, match="WORKER_RSS_LIMIT_BYTES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_max_total_bytes=8 * 1024 * 1024 * 1024,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_RECOVER_CONCURRENCY"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            worker_rss_limit_bytes=768 * 1024 * 1024,
+            raw_spill_recover_concurrency=8,
+        )
+    raised = module.Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        raw_spill_max_total_bytes=8 * 1024 * 1024 * 1024,
+        worker_rss_limit_bytes=8 * 1024 * 1024 * 1024,
+    )
+    assert raised.raw_spill_max_total_bytes == 8 * 1024 * 1024 * 1024
     with pytest.raises(ValueError, match="RAW_SPILL_MAX_PENDING_FILES"):
         module.Settings(
             _env_file=None,
