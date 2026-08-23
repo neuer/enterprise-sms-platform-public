@@ -387,7 +387,8 @@
 - 原因：access 与高风险令牌没有跨刷新恢复需求，写入 Web Storage 只会扩大 XSS、扩展和
   依赖污染后的暴露窗口；refresh 改用 HttpOnly Cookie 降低脚本可读面，并因此必须对
   Cookie 写路径施加同源 CSRF 防护。普通会话仍由数据库权威安全版本、refresh family 撤销
-  与跨标签页清理共同限制生命周期。传输探针将文档性 HTTPS 要求变为可持续机器证据。
+  与跨标签页清理共同限制生命周期。成功登录在签发新 family 前吊销请求携带的既有
+  Cookie family（与登出共用既有 Redis family 吊销），使迟到的旧 family refresh 失败关闭且不写 Set-Cookie。传输探针将文档性 HTTPS 要求变为可持续机器证据。
 - 影响：前端登录/首次改密/注销/多标签页与 Cookie 刷新测试、会话 store、CSP、部署手册、
   OpenAPI、AGENTS.md、PRD 与生产证书监控。真实浏览器仍须在每次生产发布后验证唯一入口
   无 CSP violation。

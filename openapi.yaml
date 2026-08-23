@@ -470,6 +470,10 @@ paths:
         本地临时密码验证成功只返回十分钟单用途改密令牌，不签发访问 JWT。
         登录成功将 refresh 写入 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，
         生产 Secure），JSON 只返回 Bearer access token。
+        成功签发新会话前，若请求携带既有 sms_refresh_token Cookie，先吊销该 Cookie
+        family（与登出共用 Redis family 吊销），再签发新 family；过期或无效 Cookie
+        忽略。登录失败或仅返回首次改密令牌时不吊销。被吊销 family 的后续 refresh
+        按无效令牌 401，且不写 Set-Cookie。
       requestBody:
         required: true
         content:

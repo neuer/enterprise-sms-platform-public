@@ -81,7 +81,7 @@
 | 只读用户 | 本地维护 / AD 组映射或人工覆盖 | 本部门记录与报表 |
 | 接入应用 | API Key | 发送/查询 API，受 allowed_categories、配额、限流、频控约束 |
 
-- Web 登录必须**显式选择认证源**并提交 `provider_code`；服务端只调用所选 Provider，**禁止自动回退**到其他认证源。所有 Provider 共享账号锁定（5次/15min）、IP 限流（5min 内失败≥20 封 15min）和统一错误话术。访问 JWT 固定 15 分钟，refresh JWT 最长 7 天且每次使用后由 Redis Lua 原子单次轮换；5 秒有界且不可延长的 grace 内，同一旧 token 的合法并发或丢响应重试不得吊销 family，超出窗口的重放仍吊销该 refresh family。
+- Web 登录必须**显式选择认证源**并提交 `provider_code`；服务端只调用所选 Provider，**禁止自动回退**到其他认证源。所有 Provider 共享账号锁定（5次/15min）、IP 限流（5min 内失败≥20 封 15min）和统一错误话术。访问 JWT 固定 15 分钟，refresh JWT 最长 7 天且每次使用后由 Redis Lua 原子单次轮换；5 秒有界且不可延长的 grace 内，同一旧 token 的合法并发或丢响应重试不得吊销 family，超出窗口的重放仍吊销该 refresh family。成功登录若请求携带既有 refresh Cookie，须先吊销该 Cookie family 再签发新 family，避免在途旧 refresh 的 Set-Cookie 覆盖新会话；登录失败或仅返回首次改密令牌时不吊销。
 - 每次访问 JWT 验证都必须读取数据库权威投影，并逐项匹配稳定 `account_id`、`identity_id`、Provider、登录名、部门、角色和统一 `security_version`，同时要求账号、身份及 Provider 均启用。账号/身份状态、部门、角色/覆盖、外部组映射、Provider 启停/生效配置、密码重置和强制下线的事务必须递增 `security_version`，使旧 access/refresh JWT 立即 401；数据库或 Redis 吊销/轮换状态不可用时返回 `AUTH_SESSION_UNAVAILABLE`/503 并 fail closed。
 - 平台使用**全局不区分大小写登录名空间**，用户名规范化后唯一，归属按**先到先得**确定。本地账号创建时不探测 AD；后续真实 AD 登录若与既有本地身份冲突，则拒绝并审计 `ACCOUNT_SOURCE_CONFLICT`，由管理员线下处理。
 - 平台**不开放自助注册**，本地账号仅由管理员维护；管理员可创建、启停、重置临时密码、设置角色与强制下线，但不得重命名或硬删除账号。禁止停用自己，且不得停用或降级最后一个有效管理员。

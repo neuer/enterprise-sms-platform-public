@@ -7,12 +7,25 @@ from typing import Any, cast
 
 import pytest
 
-from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.backends import (
+    AuthenticatedIdentity,
+    InvalidCredentials,
+    SessionStateUnavailable,
+)
 from app.core.auth.jwt import (
+    _REVOKE_SESSION_LUA,
     _ROTATE_REFRESH_LUA,
     REFRESH_GRACE_SECONDS,
     JwtClaims,
     JwtService,
+)
+from app.core.auth.runtime import AuthFacade, LoginSuccess
+from tests.test_auth_runtime import (
+    IP,
+    FakeAuthService,
+    FakeHasher,
+    FakeUserRepository,
+    account,
 )
 
 TAB_ID = "a" * 32
@@ -287,3 +300,64 @@ def test_lua_updates_family_and_grace_atomically_without_storing_token() -> None
     assert str(REFRESH_GRACE_SECONDS) in success
     assert "replacement_token" not in _ROTATE_REFRESH_LUA
     assert "ARGV[1] == previous_binding" in _ROTATE_REFRESH_LUA
+
+
+class RevokingAtomicStore(FakeAtomicStore):
+    async def eval(self, script: str, numkeys: int, *args: object) -> object:
+        if script == _REVOKE_SESSION_LUA:
+            assert numkeys == 3
+            revoked_jti, revoked_session, refresh_family = map(str, args[:3])
+            async with self.lock:
+                self.values[revoked_jti] = "1"
+                self.values[revoked_session] = "1"
+                self.values.pop(refresh_family, None)
+            return 1
+        return await super().eval(script, numkeys, *args)
+
+
+@pytest.mark.asyncio
+async def test_login_revokes_old_family_without_self_revoking_new_concurrent_refresh() -> None:
+    store = RevokingAtomicStore()
+    tokens = JwtService(SECRET, cast(Any, store))
+    value = account(must_change_password=False)
+    identity = AuthenticatedIdentity(
+        provider_code="local",
+        login_name="admin",
+        external_subject="local:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    service = AuthFacade(
+        FakeAuthService(identity),
+        FakeUserRepository(value),
+        tokens,
+        FakeHasher(),
+    )
+    prior = await tokens.issue_pair(claims(), TAB_ID)
+
+    login = await service.login(
+        "local",
+        "admin",
+        "Valid@Password123",
+        IP,
+        TAB_ID,
+        prior.refresh_token,
+    )
+    assert isinstance(login, LoginSuccess)
+
+    with pytest.raises(InvalidCredentials):
+        await tokens.rotate_refresh(prior.refresh_token, TAB_ID)
+
+    left, right = await asyncio.gather(
+        tokens.rotate_refresh(login.refresh_token, TAB_ID),
+        tokens.rotate_refresh(login.refresh_token, TAB_ID),
+    )
+    assert left.refresh_token == right.refresh_token
+    state = store.values[session_state_key(tokens, left.refresh_token)]
+    assert state.startswith("grace\n")
+    assert (await tokens.verify(left.token)).account_id == 8
+    assert (await tokens.verify(right.token)).account_id == 8
+    third = await tokens.rotate_refresh(left.refresh_token, TAB_ID)
+    assert third.refresh_token != left.refresh_token
