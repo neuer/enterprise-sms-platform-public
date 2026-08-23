@@ -47,11 +47,12 @@ from classify_ci_changes import (  # noqa: E402
         ("backend/app/services/crypto.py", (True, False, True)),
         ("backend/app/services/usage_ledger.py", (True, False, True)),
         ("backend/app/services/raw_spill.py", (True, False, True)),
-        ("frontend/src/api/sessionTokens.ts", (True, False, True)),
-        ("frontend/src/api/auth.ts", (True, False, True)),
-        ("frontend/src/api/webMessages.ts", (True, False, True)),
-        ("frontend/src/api/refreshLock.ts", (True, False, True)),
-        ("frontend/src/stores/session.ts", (True, False, True)),
+        ("frontend/src/api/sessionTokens.ts", (False, True, False)),
+        ("frontend/src/api/auth.ts", (False, True, False)),
+        ("frontend/src/api/webMessages.ts", (False, True, False)),
+        ("frontend/src/api/refreshLock.ts", (False, True, False)),
+        ("frontend/src/stores/session.ts", (False, True, False)),
+        ("frontend/src/api/sessionGeneration.ts", (False, True, False)),
         ("backend/app/main.py", (True, True, True)),
         ("backend/migrations/versions/0013_example.py", (True, False, True)),
         ("backend/uv.lock", (True, False, True)),
@@ -183,11 +184,6 @@ def test_vendor_live_high_risk_paths_always_select_full_ci_and_g2(path: str) -> 
         "backend/app/services/usage_ledger.py",
         "backend/app/tasks/poll_report.py",
         "backend/app/vendor/mock_server.py",
-        "frontend/src/api/auth.ts",
-        "frontend/src/api/refreshLock.ts",
-        "frontend/src/api/sessionTokens.ts",
-        "frontend/src/api/webMessages.ts",
-        "frontend/src/stores/session.ts",
     ],
 )
 def test_backend_security_and_pii_paths_select_backend_and_g2(path: str) -> None:
@@ -572,14 +568,9 @@ def test_deleting_protected_domain_file_keeps_g2(tmp_path: Path) -> None:
         "backend/app/services/raw_spill.py",
         "backend/app/services/raw_capture_legacy.py",
         "backend/app/services/ops_repository.py",
-        "frontend/src/api/sessionTokens.ts",
-        "frontend/src/api/auth.ts",
-        "frontend/src/api/webMessages.ts",
-        "frontend/src/api/refreshLock.ts",
-        "frontend/src/stores/session.ts",
     ],
 )
-def test_usage_ledger_raw_spill_and_session_paths_select_backend_critical(
+def test_usage_ledger_raw_spill_and_backend_critical_paths_select_g2(
     path: str,
 ) -> None:
     result = classify_paths([path])
@@ -591,6 +582,32 @@ def test_usage_ledger_raw_spill_and_session_paths_select_backend_critical(
         True,
     )
     assert result.categories == frozenset({"backend-critical"})
+    assert result.full_fallback is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/refreshLock.ts",
+        "frontend/src/api/webMessages.ts",
+        "frontend/src/stores/session.ts",
+        "frontend/src/api/sessionTokens.ts",
+        "frontend/src/api/sessionGeneration.ts",
+    ],
+)
+def test_frontend_session_paths_select_frontend_security_without_backend_job(
+    path: str,
+) -> None:
+    result = classify_paths([path])
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        False,
+        True,
+        False,
+        True,
+    )
+    assert result.categories == frozenset({"frontend-security"})
     assert result.full_fallback is False
 
 

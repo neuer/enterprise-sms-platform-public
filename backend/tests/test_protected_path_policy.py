@@ -23,6 +23,15 @@ from test_update_contract import (  # noqa: E402
     protected_change_category,
 )
 
+FRONTEND_SESSION_SECURITY_PATHS = (
+    "frontend/src/api/auth.ts",
+    "frontend/src/api/refreshLock.ts",
+    "frontend/src/api/webMessages.ts",
+    "frontend/src/stores/session.ts",
+    "frontend/src/api/sessionTokens.ts",
+    "frontend/src/api/sessionGeneration.ts",
+)
+
 
 def tracked_files() -> list[str]:
     completed = subprocess.run(
@@ -44,6 +53,26 @@ def test_issue_427_paths_are_classified_full_and_not_skipped() -> None:
     assert ops.categories == frozenset({"backend-critical"})
     assert (app.frontend, app.security, app.g2, app.full_fallback) == (True, True, False, False)
     assert app.categories == frozenset({"frontend-security"})
+
+
+@pytest.mark.parametrize("path", FRONTEND_SESSION_SECURITY_PATHS)
+def test_issue_454_session_paths_are_frontend_security_not_backend_critical(
+    path: str,
+) -> None:
+    result = classify_paths([path])
+
+    assert path not in BACKEND_CRITICAL_RAISE_EXACT
+    assert path not in REVIEWED_ORDINARY_EXACT
+    assert security_domain_category(path) == "frontend-security"
+    assert protected_change_category(path) == "frontend-security"
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        False,
+        True,
+        False,
+        True,
+    )
+    assert result.categories == frozenset({"frontend-security"})
+    assert result.full_fallback is False
 
 
 def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
