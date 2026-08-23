@@ -199,10 +199,26 @@ class SqlOpsRepository:
         *,
         actor: str,
         ip: str,
+        principal: SecurityPrincipal,
     ) -> tuple[PausedBatch, ...]:
+        """队列恢复与审计必须同事务：显式绑定人类主体后再改状态并落库。
+
+        独立 `engine.begin()` 不能只靠 begin 事件里的 ContextVar 签名。
+        主体来自已验证 JWT，与 actor 不一致时在 UPDATE 之前 fail closed。
+        """
+
+        if principal.actor_name != actor:
+            raise RuntimeError("queue resume audit principal unavailable")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
                 result = await connection.execute(
                     text(
                         """
@@ -216,18 +232,17 @@ class SqlOpsRepository:
                     PausedBatch(str(row["batch_no"]), str(row["category"]))
                     for row in result.mappings()
                 )
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO audit_log(
-                          actor,role,ip,action,object_type,object_id,after_val
-                        ) VALUES(
-                          :actor,'admin',CAST(:ip AS inet),'queue_resume','queue','all',
-                          jsonb_build_object('resumed_batches',CAST(:count AS integer))
-                        )
-                        """
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="queue_resume",
+                        object_type="queue",
+                        object_id="all",
+                        after={"resumed_batches": len(batches)},
                     ),
-                    {"actor": actor, "ip": ip, "count": len(batches)},
                 )
                 return batches
         finally:
@@ -290,15 +305,17 @@ class SqlOpsRepository:
                               OR processing_started_at<=now()-interval '15 minutes'
                             )
                           RETURNING id,source,payload_enc,payload_sha256,
-                            key_version,processed,http_status,content_encoding,
-                            capture_state
+                            key_version,processed,item_count,http_status,
+                            content_encoding,capture_state
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,http_status,content_encoding,capture_state,true claimed
+                          processed,item_count,http_status,content_encoding,
+                          capture_state,true claimed
                         FROM claimed
                         UNION ALL
                         SELECT id,source,payload_enc,payload_sha256,key_version,
-                          processed,http_status,content_encoding,capture_state,false claimed
+                          processed,item_count,http_status,content_encoding,
+                          capture_state,false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
                           AND NOT EXISTS (SELECT 1 FROM claimed)
@@ -321,6 +338,7 @@ class SqlOpsRepository:
                         int(row["http_status"]),
                         str(row["content_encoding"]),
                         str(row.get("capture_state") or "complete"),
+                        int(row["item_count"]) if row.get("item_count") is not None else 0,
                     ),
                     claimed=bool(row["claimed"]),
                 )
@@ -366,6 +384,31 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
+    async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
+        """该 raw 是否已有 raw_replay 审计事实（人类补写前的结果边界）。
+
+        系统重放若已落 system 审计，人类路径不得再补写或混用主体。
+        """
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                found = await connection.scalar(
+                    text(
+                        """
+                        SELECT 1 FROM audit_log
+                        WHERE action='raw_replay'
+                          AND object_type='raw_vendor_log'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        LIMIT 1
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+                return found is not None
+        finally:
+            await engine.dispose()
+
     async def audit_raw_replay(
         self,
         raw_id: int,
@@ -375,15 +418,21 @@ class SqlOpsRepository:
         actor: str,
         ip: str,
         system_producer: bool = False,
+        principal: SecurityPrincipal | None = None,
     ) -> None:
         """记录 raw 重放审计。
 
-        API 触发时依赖请求事务注入的已签名人类上下文；后台任务（reconcile
+        人类路径必须用接口已验证的 SecurityPrincipal 显式绑定后再
+        insert_audit；禁止只写 actor 字符串。后台任务（reconcile
         自动重放）没有认证会话，必须绑定 system 生产者上下文并以
-        actor_subject_kind='system' 落库，否则审计触发器会拒绝写入并让
-        整个 reconcile 任务失败。
+        actor_subject_kind='system' 落库，且不得混入人类主体。
         """
 
+        if system_producer:
+            if principal is not None:
+                raise RuntimeError("system raw replay cannot bind a human principal")
+        elif principal is None or principal.actor_name != actor:
+            raise RuntimeError("raw replay audit principal unavailable")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -416,26 +465,25 @@ class SqlOpsRepository:
                         },
                     )
                     return
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO audit_log(
-                          actor,role,ip,action,object_type,object_id,after_val
-                        ) VALUES(
-                          :actor,'admin',CAST(:ip AS inet),'raw_replay','raw_vendor_log',
-                          CAST(CAST(:raw_id AS bigint) AS text),jsonb_build_object(
-                            'source',CAST(:source AS text),'items',CAST(:items AS integer)
-                          )
-                        )
-                        """
+                assert principal is not None
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="raw_replay",
+                        object_type="raw_vendor_log",
+                        object_id=str(raw_id),
+                        after={"source": source, "items": items},
                     ),
-                    {
-                        "actor": actor,
-                        "ip": ip,
-                        "raw_id": raw_id,
-                        "source": source,
-                        "items": items,
-                    },
                 )
         finally:
             await engine.dispose()

@@ -502,9 +502,14 @@ async def resume_queue(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     force: bool = False,
 ) -> QueueResumeResult:
-    actor = await _admin(facade, credentials)
+    claims = await _admin_claims(facade, credentials)
     try:
-        return await service.resume(force=force, actor=actor, ip=_ip(request))
+        return await service.resume(
+            force=force,
+            actor=claims.login_name,
+            ip=_ip(request),
+            principal=claims.principal,
+        )
     except QueueResumeConflict as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
 
@@ -522,9 +527,14 @@ async def replay_raw(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ReplayResultModel:
-    actor = await _admin(facade, credentials)
+    claims = await _admin_claims(facade, credentials)
     try:
-        count = await service.replay(id, actor=actor, ip=_ip(request))
+        count = await service.replay(
+            id,
+            actor=claims.login_name,
+            ip=_ip(request),
+            principal=claims.principal,
+        )
     except RawReplayNotFound:
         raise ApiError(404, "NOT_FOUND", "原始报文不存在", None) from None
     except (RawReplayConflict, RawIntegrityConflict) as error:
