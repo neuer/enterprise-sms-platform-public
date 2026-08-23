@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -19,7 +21,9 @@ from app.core.audit import insert_audit as real_insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.core.runtime_resources import close_runtime_resources
+from app.services.crypto import EncryptionContext
 from app.services.ops_repository import SqlOpsRepository
+from app.services.raw_replay import RawReplayConflict, RawReplayService
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -162,6 +166,119 @@ async def _batch_status(owner: AsyncEngine, batch_no: str) -> str:
         )
 
 
+async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
+    async with owner.connect() as connection:
+        raw = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT processed,item_count,replay_attempts
+                    FROM raw_vendor_log WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": raw_id},
+            )
+        ).mappings().one()
+        events = (
+            await connection.execute(
+                text("SELECT count(*) FROM report_event WHERE raw_id=:raw_id"),
+                {"raw_id": raw_id},
+            )
+        ).scalar_one()
+        audits = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT actor,actor_subject_kind,actor_account_id,
+                      actor_identity_id,correlation_id,object_id,after_val
+                    FROM audit_log
+                    WHERE action='raw_replay'
+                      AND object_type='raw_vendor_log'
+                      AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                    ORDER BY id
+                    """
+                ),
+                {"raw_id": raw_id},
+            )
+        ).mappings().all()
+    return {
+        "processed": bool(raw["processed"]),
+        "item_count": int(raw["item_count"]),
+        "replay_attempts": int(raw["replay_attempts"]),
+        "report_events": int(events),
+        "audits": list(audits),
+    }
+
+
+class _ReplayCrypto:
+    def __init__(self, raw: bytes) -> None:
+        self.raw = raw
+        self.calls: list[tuple[bytes, int]] = []
+
+    def decrypt_bound_bytes(
+        self,
+        payload: bytes,
+        key_version: int,
+        context: EncryptionContext,
+        *,
+        allow_legacy: bool = True,
+    ) -> bytes:
+        del context, allow_legacy
+        self.calls.append((payload, key_version))
+        return self.raw
+
+
+class _RecordingIngest:
+    def __init__(self, owner: AsyncEngine) -> None:
+        self.owner = owner
+        self.calls: list[tuple[int, object]] = []
+
+    async def process_existing(self, raw_id: int, data: object) -> int:
+        self.calls.append((raw_id, data))
+        count = len(data) if isinstance(data, list) else 0
+        event_key = hashlib.sha256(f"replay-effect:{raw_id}".encode()).hexdigest()
+        async with self.owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET processed=TRUE,item_count=:item_count,error=NULL,
+                      processing_started_at=NULL
+                    WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": raw_id, "item_count": count},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO report_event(
+                      event_key,raw_id,vendor_task_id,custom_id,phone_enc,
+                      phone_hmac,phone_mask,key_version,report_status,
+                      message_status,report_desc,report_time
+                    ) VALUES (
+                      :event_key,:raw_id,:vendor_task_id,:custom_id,:phone_enc,
+                      :phone_hmac,'138****8000',1,1,'delivered','DELIVRD',now()
+                    )
+                    """
+                ),
+                {
+                    "event_key": event_key,
+                    "raw_id": raw_id,
+                    "vendor_task_id": "b" * 64,
+                    "custom_id": "c" * 64,
+                    "phone_enc": b"ciphertext-only",
+                    "phone_hmac": "d" * 64,
+                },
+            )
+        return count
+
+
+class _ForbiddenIngest:
+    async def process_existing(self, raw_id: int, data: object) -> int:
+        raise AssertionError(f"reply ingest must not run for raw {raw_id}: {data!r}")
+
+
 async def _cleanup(
     owner: AsyncEngine,
     *,
@@ -185,6 +302,10 @@ async def _cleanup(
                       AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                     """
                 ),
+                {"raw_id": raw_id},
+            )
+            await connection.execute(
+                text("DELETE FROM report_event WHERE raw_id=:raw_id"),
                 {"raw_id": raw_id},
             )
             await connection.execute(
@@ -491,4 +612,116 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
         assert all(row["after_val"]["source"] == "report" for row in rows)
         assert all(int(row["after_val"]["items"]) == 2 for row in rows)
     finally:
+        await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
+    accept_runtime: tuple[AsyncEngine, URL],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已提交的 processed 事实在审计失败后，重试只补人类审计、不重放业务。"""
+
+    owner, accept_url = accept_runtime
+    login = f"ops-replay-audit-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    correlation_id = uuid4()
+    items = [{"customId": "safe-custom-1"}, {"customId": "safe-custom-2"}]
+    raw = json.dumps({"code": 0, "msg": "ok", "data": items}).encode()
+    crypto = _ReplayCrypto(raw)
+    ingest = _RecordingIngest(owner)
+    repository = _repository(accept_url)
+    service = RawReplayService(repository, crypto, ingest, _ForbiddenIngest())
+    raw_id: int | None = None
+    attempts = {"n": 0}
+
+    async def flaky(connection: object, event: object) -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("synthetic audit failure")
+        await real_insert_audit(connection, event)
+
+    monkeypatch.setattr("app.services.ops_repository.insert_audit", flaky)
+    async with owner.begin() as connection:
+        await connection.execute(text("GRANT UPDATE ON raw_vendor_log TO sms_accept"))
+        raw_id = int(
+            (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO raw_vendor_log(
+                          source,payload_enc,payload_sha256,processed,item_count
+                        ) VALUES (
+                          'report',:payload_enc,:sha,FALSE,0
+                        ) RETURNING id
+                        """
+                    ),
+                    {"payload_enc": b"ciphertext-only", "sha": hashlib.sha256(raw).hexdigest()},
+                )
+            ).scalar_one()
+        )
+    try:
+        with correlation_scope(correlation_id), pytest.raises(RuntimeError, match="synthetic"):
+            await service.replay(
+                raw_id,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+            )
+        after_fail = await _raw_effects(owner, raw_id)
+        assert after_fail["processed"] is True
+        assert after_fail["item_count"] == 2
+        assert after_fail["report_events"] == 1
+        assert after_fail["audits"] == []
+        assert [call[0] for call in ingest.calls] == [raw_id]
+        assert isinstance(ingest.calls[0][1], list)
+        assert len(ingest.calls[0][1]) == 2
+        assert len(crypto.calls) == 1
+
+        with correlation_scope(correlation_id):
+            retried = await service.replay(
+                raw_id,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+            )
+        after_retry = await _raw_effects(owner, raw_id)
+        assert retried == 2
+        assert after_retry["processed"] is True
+        assert after_retry["item_count"] == 2
+        assert after_retry["report_events"] == 1
+        assert after_retry["replay_attempts"] == after_fail["replay_attempts"]
+        assert len(ingest.calls) == 1
+        assert len(crypto.calls) == 1
+        assert len(after_retry["audits"]) == 1
+        audit = after_retry["audits"][0]
+        assert str(audit["actor"]) == login
+        assert str(audit["actor_subject_kind"]) == "human"
+        assert int(audit["actor_account_id"]) == principal.account_id
+        assert int(audit["actor_identity_id"]) == principal.identity_id
+        assert audit["correlation_id"] == correlation_id
+        assert str(audit["object_id"]) == str(raw_id)
+        assert audit["after_val"] == {"source": "report", "items": 2}
+
+        with (
+            correlation_scope(correlation_id),
+            pytest.raises(RawReplayConflict, match="仅未处理"),
+        ):
+            await service.replay(
+                raw_id,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+            )
+        after_conflict = await _raw_effects(owner, raw_id)
+        assert after_conflict["item_count"] == 2
+        assert after_conflict["report_events"] == 1
+        assert len(after_conflict["audits"]) == 1
+        assert len(ingest.calls) == 1
+        assert len(crypto.calls) == 1
+    finally:
+        async with owner.begin() as connection:
+            await connection.execute(
+                text("REVOKE UPDATE ON raw_vendor_log FROM sms_accept")
+            )
         await _cleanup(owner, raw_id=raw_id, principal=principal)
