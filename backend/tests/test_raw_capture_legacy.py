@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.raw_capture_legacy import (
     AUTO_PARSE_LIMIT_BYTES,
     BOUND_ENVELOPE_MAGIC,
@@ -28,16 +29,15 @@ from app.services.raw_capture_legacy import (
     replay_eligibility,
     replay_forbidden_message,
 )
-from app.core.auth.accounts import SecurityPrincipal
 from app.services.raw_replay import RawReplayConflict, RawReplayRecord, RawReplayService
-
-ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 from app.services.raw_spill import (
     VALID_CAPTURE_STATES,
     is_non_replayable_capture,
     normalize_capture_state,
 )
 from scripts_support.inventory_raw_capture_legacy import render_inventory
+
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"

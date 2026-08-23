@@ -7,11 +7,9 @@ from typing import Any
 
 import pytest
 
-from app.services.crypto import CryptoService
 from app.core.auth.accounts import SecurityPrincipal
+from app.services.crypto import CryptoService
 from app.services.raw_replay import RawReplayConflict, RawReplayRecord, RawReplayService
-
-ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 from app.services.raw_spill import (
     CAPTURE_COMPLETE_TOO_LARGE,
     CAPTURE_PROTOCOL_INVALID,
@@ -21,6 +19,8 @@ from app.services.raw_spill import (
 )
 from app.services.report_ingest import ReportIngestService
 from app.vendor.zhihui import RawPulledPayload, VendorResponseTooLarge
+
+ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 
 def leftover_names(directory: Path, *suffixes: str) -> list[str]:

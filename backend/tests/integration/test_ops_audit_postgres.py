@@ -363,7 +363,10 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
             )
 
         assert await repository.has_human_raw_replay_audit(raw_id) is False
-        with correlation_scope(correlation_id), pytest.raises(RuntimeError, match="audit principal"):
+        with (
+            correlation_scope(correlation_id),
+            pytest.raises(RuntimeError, match="audit principal"),
+        ):
             await repository.audit_raw_replay(
                 raw_id,
                 source="report",
