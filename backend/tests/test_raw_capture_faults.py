@@ -187,6 +187,7 @@ def test_spill_quota_rejects_additional_write(tmp_path: Path) -> None:
         http_status=200,
         content_encoding="identity",
         payload_enc=b"encrypted-raw",
+        crypto=crypto(),
     )
     with pytest.raises(SpillQuotaExceeded):
         store.write(
@@ -196,6 +197,7 @@ def test_spill_quota_rejects_additional_write(tmp_path: Path) -> None:
             http_status=200,
             content_encoding="identity",
             payload_enc=b"another",
+            crypto=crypto(),
         )
     assert store.can_accept() is False
 
@@ -211,6 +213,7 @@ def test_in_flight_stream_does_not_block_same_capture_spill(tmp_path: Path) -> N
         http_status=200,
         content_encoding="identity",
         payload_enc=b"encrypted-same-capture",
+        crypto=crypto(),
     )
     assert path.exists()
     stream.discard()
