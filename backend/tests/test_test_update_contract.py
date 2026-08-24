@@ -773,7 +773,10 @@ def test_phase0_production_control_paths_are_safe_non_runtime_inputs() -> None:
             "deploy/scripts/continuity_manager.py",
             "deploy/scripts/failover_common.py",
             "deploy/scripts/host_python_preflight.py",
+            "deploy/scripts/install_production_host_assets.py",
             "deploy/scripts/lifecycle_manager.py",
+            "deploy/scripts/production_host_preflight.py",
+            "public-repository.json",
             "deploy/scripts/prepare_runtime_secrets.py",
             "deploy/scripts/redis_tls_preflight.py",
             "deploy/scripts/redis_tls_rotation_guard.py",
@@ -799,6 +802,16 @@ def test_phase0_production_control_paths_are_safe_non_runtime_inputs() -> None:
     assert change.components == frozenset()
     assert change.runtime_changed is False
     assert change.risk == "none"
+
+
+def test_retired_resend_installer_stays_vendor_live() -> None:
+    path = "deploy/scripts/install_resend_api_key.py"
+    change = classify_changed_paths([path])
+
+    assert protected_change_category(path) == "vendor-live"
+    assert change.risk == "high-risk"
+    assert change.components == frozenset({"api"})
+    assert change.high_risk_paths == (path,)
 
 
 def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
@@ -837,6 +850,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
             "docs/runbooks/production-phase0-baseline.md",
+            "docs/runbooks/production-resource-responsibility-freeze.md",
             "docs/runbooks/test-fast-update.md",
             "docs/runbooks/usage-ledger-recovery.md",
             "docs/runbooks/worker-fencing-recovery.md",
