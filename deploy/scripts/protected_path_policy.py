@@ -5,10 +5,11 @@ exact allowlist；新文件落在安全域内即默认 backend-critical 或
 frontend-security。只有经过独立审查的低风险文件才能写入
 ``REVIEWED_ORDINARY_REASONS``。
 
-T5-05 / T7-04：``backend/app/``、``frontend/src/views/`` 与
-``frontend/src/components/`` 默认进入安全域。安全逻辑抽到组件后不得脱离
-动态门禁。反向枚举以 ``REQUIRED_TRACKED_SOURCE_TREES`` 为准，不先用域清单
-过滤，避免 manifest 漏项被测试跳过。
+T5-05 / T7-04 / T8-02：``backend/app/``、``frontend/src/views/``、
+``frontend/src/components/`` 与 Frontend 根启动入口 ``frontend/src/*.ts|vue``
+默认进入安全域。安全逻辑抽到组件或启动入口后不得脱离动态门禁。反向枚举以
+``REQUIRED_TRACKED_SOURCE_TREES`` 与 ``REQUIRED_TRACKED_ROOT_GLOBS`` 为准，
+不先用域清单过滤，避免 manifest 漏项被测试跳过。
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ FRONTEND_SECURITY_DOMAINS: tuple[str, ...] = (
     "frontend/src/api/",
     "frontend/src/views/",
     "frontend/src/components/",
+    "frontend/src/*.ts",
+    "frontend/src/*.vue",
 )
 
 # 已审查、必须继续走 backend-critical（含 G2）的前端路径。
@@ -64,6 +67,12 @@ REQUIRED_TRACKED_SOURCE_TREES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("backend/app/", (".py",)),
     ("frontend/src/views/", (".vue",)),
     ("frontend/src/components/", (".vue",)),
+)
+
+# 仅 Frontend 根目录文件（不含子树）。新启动入口默认 FAIL CLOSED。
+REQUIRED_TRACKED_ROOT_GLOBS: tuple[str, ...] = (
+    "frontend/src/*.ts",
+    "frontend/src/*.vue",
 )
 
 CODEOWNERS_OWNER = "@neuer"
@@ -121,12 +130,27 @@ def parse_codeowners_patterns(text: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
+def _matches_single_star_glob(path: str, pattern: str) -> bool:
+    """只匹配最后一段的单星号，例如 ``frontend/src/*.ts``，不跨目录。"""
+
+    if pattern.count("*") != 1 or "/" in pattern.split("*", 1)[1]:
+        return False
+    prefix, suffix = pattern.split("*", 1)
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return False
+    rest = path[len(prefix) : len(path) - len(suffix) if suffix else None]
+    return bool(rest) and "/" not in rest
+
+
 def matches_domain(path: str, domains: tuple[str, ...]) -> bool:
-    """判断路径是否落在域规则内；目录规则以 ``/`` 结尾，否则为精确文件。"""
+    """判断路径是否落在域规则内；目录以 ``/`` 结尾，``*`` 只匹配单段文件名。"""
 
     for domain in domains:
         if domain.endswith("/"):
             if path.startswith(domain):
+                return True
+        elif "*" in domain:
+            if _matches_single_star_glob(path, domain):
                 return True
         elif path == domain:
             return True
@@ -163,7 +187,7 @@ def is_required_tracked_source_file(path: str) -> bool:
     for prefix, suffixes in REQUIRED_TRACKED_SOURCE_TREES:
         if path.startswith(prefix) and path.endswith(suffixes):
             return True
-    return False
+    return matches_domain(path, REQUIRED_TRACKED_ROOT_GLOBS)
 
 
 def unclassified_tracked_source_paths(paths: Iterable[str]) -> tuple[str, ...]:

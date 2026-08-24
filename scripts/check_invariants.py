@@ -709,6 +709,7 @@ def check_vendor_live_invariants() -> None:
         "REVIEWED_ORDINARY_EXACT",
         "REVIEWED_ORDINARY_REASONS",
         "REQUIRED_TRACKED_SOURCE_TREES",
+        "REQUIRED_TRACKED_ROOT_GLOBS",
         "def security_domain_category(",
         "def unclassified_tracked_source_paths(",
         "def render_codeowners(",
@@ -1036,6 +1037,7 @@ def check_protected_path_policy_invariants() -> None:
     from protected_path_policy import (  # noqa: E402
         BACKEND_CRITICAL_DOMAINS,
         FRONTEND_SECURITY_DOMAINS,
+        REQUIRED_TRACKED_ROOT_GLOBS,
         REQUIRED_TRACKED_SOURCE_TREES,
         REVIEWED_ORDINARY_EXACT,
         REVIEWED_ORDINARY_REASONS,
@@ -1070,6 +1072,21 @@ def check_protected_path_policy_invariants() -> None:
         fail(
             ROOT / "deploy" / "scripts" / "protected_path_policy.py",
             "frontend/src/components/ 必须是 frontend-security 默认域",
+        )
+    if "frontend/src/*.ts" not in FRONTEND_SECURITY_DOMAINS:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "frontend/src/*.ts 必须是 frontend-security 默认域",
+        )
+    if "frontend/src/*.vue" not in FRONTEND_SECURITY_DOMAINS:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "frontend/src/*.vue 必须是 frontend-security 默认域",
+        )
+    if REQUIRED_TRACKED_ROOT_GLOBS != ("frontend/src/*.ts", "frontend/src/*.vue"):
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "反向枚举必须独立覆盖 Frontend 根目录 *.ts 与 *.vue",
         )
     required_prefixes = {prefix for prefix, _suffixes in REQUIRED_TRACKED_SOURCE_TREES}
     if required_prefixes != {

@@ -25,6 +25,7 @@ from app.services.raw_lease import (
     commit_fenced_raw_update,
     fenced_terminal_sql,
     new_lease_id,
+    record_raw_heartbeat_lost,
     renew_raw_lease,
     require_lease,
 )
@@ -122,6 +123,22 @@ class SqlReportRepository:
         engine = self._engine()
         try:
             await renew_raw_lease(engine, lease)
+        finally:
+            await engine.dispose()
+
+    async def record_heartbeat_failure(
+        self,
+        lease: RawProcessingLease,
+        _error: Exception,
+    ) -> None:
+        """记录无 PII 的 heartbeat_lost；失败向外抛出让 Heartbeat 记日志。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await record_raw_heartbeat_lost(
+                    connection, raw_id=lease.raw_id, lease_id=lease.lease_id
+                )
         finally:
             await engine.dispose()
 

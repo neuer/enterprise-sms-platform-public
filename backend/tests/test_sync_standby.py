@@ -47,6 +47,7 @@ class FakeRunner:
         database_size: int = 100,
         timer: ManualTimer | None = None,
         expire_pipeline_at: float | None = None,
+        remote_fail_at: str | None = None,
     ) -> None:
         self.dirty = dirty
         self.pipeline_error = pipeline_error
@@ -54,6 +55,7 @@ class FakeRunner:
         self.database_size = database_size
         self.timer = timer
         self.expire_pipeline_at = expire_pipeline_at
+        self.remote_fail_at = remote_fail_at
         self.rev_parse_calls = 0
         self.calls: list[list[str]] = []
         self.pipeline_calls: list[tuple[list[str], list[str], Path]] = []
@@ -83,6 +85,33 @@ class FakeRunner:
                 else b"a"
             )
             return (marker * 40) + b"\n"
+        if argv[0] == "ssh" and "df -Pk" in " ".join(argv):
+            if getattr(self, "remote_fail_at", None) == "capacity":
+                return b"/dev/sda1 100 99 0 100% /\n"
+            return b"/dev/sda1 100000000 1 99999999 1% /\n"
+        if argv[0] == "rsync" and getattr(self, "remote_fail_at", None) == "rsync":
+            raise CommandFailure("rsync", 255, "Connection reset by peer")
+        if argv[0] == "rsync" and getattr(self, "remote_fail_at", None) == "enospc":
+            raise CommandFailure("rsync", 12, "No space left on device")
+        if argv[0] == "rsync" and getattr(self, "remote_fail_at", None) == "slow_net":
+            raise CommandFailure("rsync", 30, "Connection timed out")
+        fail_at = getattr(self, "remote_fail_at", None)
+        remote = argv[-1] if argv else ""
+        if argv[0] == "ssh" and fail_at == "checksum" and "shasum" in remote:
+            raise CommandFailure("ssh", 1, "SHA256 mismatch")
+        if (
+            argv[0] == "ssh"
+            and fail_at == "move"
+            and "mv " in remote
+            and "current.next" not in remote
+        ):
+            raise CommandFailure("ssh", 1, "cannot move snapshot")
+        if argv[0] == "ssh" and fail_at == "remote_current" and "ln -sfn" in remote:
+            raise CommandFailure("ssh", 1, "cannot switch current")
+        if argv[0] == "ssh" and fail_at == "ssh_drop" and "shasum" in remote:
+            raise CommandFailure("ssh", 255, "Connection reset")
+        if argv[0] == "ssh" and fail_at == "digest_mismatch" and "cmp -s" in remote:
+            raise CommandFailure("ssh", 1, "snapshot-digest-mismatch")
         if argv[0] == "git" and argv[1] == "archive":
             output_value = next(
                 item.split("=", 1)[1] for item in argv if item.startswith("--output=")
@@ -240,13 +269,20 @@ def test_remote_publish_uses_incoming_hash_check_then_atomic_current(
     make_sync_service(runner).run(config)
 
     rsync = next(call for call in runner.calls if call[0] == "rsync")
-    ssh = [call for call in runner.calls if call[0] == "ssh"][-1]
+    ssh_calls = [call for call in runner.calls if call[0] == "ssh"]
+    stage = next(call for call in ssh_calls if "shasum" in call[-1])
+    commit = next(call for call in ssh_calls if "ln -sfn" in call[-1])
     assert ".incoming/20260712T050000Z_aaaaaaaaaaaa/" in rsync[-1]
-    remote = ssh[-1]
-    assert "shasum -a 256 -c SHA256SUMS" in remote
-    assert ".incoming" in remote and "snapshots" in remote
-    assert remote.index("shasum") < remote.index("mv") < remote.index("current")
-    assert "secrets" not in " ".join(rsync + ssh)
+    assert "shasum -a 256 -c SHA256SUMS" in stage[-1]
+    assert "cmp -s" in stage[-1]
+    assert "ln -sfn" not in stage[-1]
+    prepare = next(call for call in ssh_calls if "mkdir -p" in call[-1])
+    assert f"-mmin +{sync_module.REMOTE_INCOMING_TTL_MINUTES}" in prepare[-1]
+    assert sync_module.REMOTE_INCOMING_TTL_MINUTES == 24 * 60
+    assert stage[-1].index("shasum") < stage[-1].index("mv")
+    assert "current" in commit[-1]
+    assert runner.calls.index(stage) < runner.calls.index(commit)
+    assert "secrets" not in " ".join(rsync + stage + commit)
 
 
 def test_backup_failure_never_publishes_current(tmp_path: Path) -> None:
@@ -433,3 +469,156 @@ def test_generation_rotation_during_long_backup_discards_incoming(
     assert not config.output_dir.joinpath("current").exists()
     incoming = config.output_dir / ".incoming"
     assert not incoming.exists() or list(incoming.iterdir()) == []
+
+
+class SimulatedPowerLoss(RuntimeError):
+    """生产等价文件系统上的掉电注入：fsync 之后进程消失。"""
+
+
+@pytest.mark.parametrize(
+    "barrier",
+    ("dump_fsync", "archive_fsync", "payload_durable", "snapshot_rename", "current_switch"),
+)
+def test_power_loss_at_each_local_commit_barrier_does_not_report_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    barrier: str,
+) -> None:
+    config = make_config(tmp_path)
+
+    def inject(name: str, path: Path | None = None) -> None:
+        if name == barrier:
+            raise SimulatedPowerLoss(name)
+
+    monkeypatch.setattr(sync_module, "durability_barrier", inject)
+    with pytest.raises(SimulatedPowerLoss, match=barrier):
+        make_sync_service(FakeRunner()).run(config)
+    current = config.output_dir / "current"
+    if barrier in {"dump_fsync", "archive_fsync", "payload_durable", "snapshot_rename"}:
+        assert not current.exists() or (
+            current.is_symlink()
+            and "20260712T050000Z_aaaaaaaaaaaa" not in str(current.readlink())
+        )
+
+
+def test_successful_backup_is_power_loss_durable_after_all_barriers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def record(name: str, path: Path | None = None) -> None:
+        seen.append(name)
+
+    monkeypatch.setattr(sync_module, "durability_barrier", record)
+    config = make_config(tmp_path)
+    result = make_sync_service(FakeRunner()).run(config)
+    remount = config.output_dir / "snapshots" / result.snapshot_id
+    assert remount.is_dir()
+    assert (remount / "SHA256SUMS").is_file()
+    assert (remount / "manifest.json").is_file()
+    assert config.output_dir.joinpath("current").resolve() == remount.resolve()
+    assert seen == [
+        "dump_fsync",
+        "archive_fsync",
+        "payload_durable",
+        "snapshot_rename",
+        "current_switch",
+    ]
+
+
+@pytest.mark.parametrize(
+    "fail_at",
+    (
+        "rsync",
+        "checksum",
+        "move",
+        "remote_current",
+        "ssh_drop",
+        "enospc",
+        "slow_net",
+        "capacity",
+    ),
+)
+def test_remote_publish_failures_converge_without_leading_current(
+    tmp_path: Path,
+    fail_at: str,
+) -> None:
+    runner = FakeRunner(remote_fail_at=fail_at)
+    config = make_config(tmp_path, build_only=False)
+    with pytest.raises((CommandFailure, BackupCapacityExceeded)):
+        make_sync_service(runner).run(config)
+    commit_calls = [
+        call for call in runner.calls if call[0] == "ssh" and "ln -sfn" in call[-1]
+    ]
+    rollback_calls = [
+        call
+        for call in runner.calls
+        if call[0] == "ssh" and "readlink current" in call[-1]
+    ]
+    cleanup_calls = [
+        call
+        for call in runner.calls
+        if call[0] == "ssh" and "rm -rf" in call[-1] and ".incoming" in call[-1]
+    ]
+    assert commit_calls == [] or fail_at == "remote_current"
+    if fail_at == "remote_current":
+        assert rollback_calls or cleanup_calls
+    else:
+        assert cleanup_calls or rollback_calls
+    incoming = config.output_dir / ".incoming"
+    assert not incoming.exists() or list(incoming.iterdir()) == []
+
+
+def test_remote_existing_target_with_different_digest_fails_closed(tmp_path: Path) -> None:
+    runner = FakeRunner(remote_fail_at="digest_mismatch")
+    config = make_config(tmp_path, build_only=False)
+    with pytest.raises(CommandFailure, match="digest"):
+        make_sync_service(runner).run(config)
+    assert not any(
+        call[0] == "ssh" and "ln -sfn" in call[-1] for call in runner.calls
+    )
+
+
+def test_local_failure_after_remote_stage_rolls_back_uncommitted_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner()
+    config = make_config(tmp_path, build_only=False)
+
+    def fail_local(self: SyncService, *args: object, **kwargs: object) -> Path:
+        raise RuntimeError("local publish failed after remote stage")
+
+    monkeypatch.setattr(sync_module.SyncService, "_publish_local", fail_local)
+    with pytest.raises(RuntimeError, match="local publish"):
+        make_sync_service(runner).run(config)
+    assert any("readlink current" in call[-1] for call in runner.calls if call[0] == "ssh")
+    assert not any(
+        call[0] == "ssh" and "ln -sfn" in call[-1] for call in runner.calls
+    )
+
+
+def test_retry_same_snapshot_is_idempotent(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    first = make_sync_service(FakeRunner()).run(config)
+    second = make_sync_service(FakeRunner()).run(config)
+    assert first.snapshot_id == second.snapshot_id
+    snapshots = list((config.output_dir / "snapshots").iterdir())
+    assert [item.name for item in snapshots] == [first.snapshot_id]
+
+
+def test_build_only_path_still_skips_remote(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    make_sync_service(runner).run(make_config(tmp_path, build_only=True))
+    assert not any(call[0] in {"ssh", "rsync"} for call in runner.calls)
+
+
+def test_remote_enospc_does_not_pollute_next_backup(tmp_path: Path) -> None:
+    config = make_config(tmp_path, build_only=False)
+    with pytest.raises(CommandFailure, match="space"):
+        make_sync_service(FakeRunner(remote_fail_at="enospc")).run(config)
+    assert not config.output_dir.joinpath("current").exists()
+    result = make_sync_service(FakeRunner()).run(config)
+    assert config.output_dir.joinpath("current").resolve() == result.snapshot_dir.resolve()
+    assert (result.snapshot_dir / "SHA256SUMS").is_file()

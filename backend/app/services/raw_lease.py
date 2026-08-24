@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
+LOGGER = logging.getLogger(__name__)
 
 RAW_LEASE_SECONDS = 15 * 60
 RAW_LEASE_HEARTBEAT_SECONDS = RAW_LEASE_SECONDS / 3
@@ -20,6 +24,22 @@ SYSTEM_REPLAY_AUDIT_COMPLETED = "completed"
 
 class RawLeaseLost(RuntimeError):
     """当前调用方已不再持有处理权；不得覆盖现有状态。"""
+
+
+class RawLeaseHeartbeatFailed(RawLeaseLost):
+    """续租过程发生非所有权丢失的故障；旧处理器必须停止后续业务写入。"""
+
+
+def _is_transient_renew_error(error: BaseException) -> bool:
+    """连接、超时与 DBAPI 暂态错误可在原租约到期前有界重试。"""
+
+    return isinstance(error, (TimeoutError, ConnectionError, OSError, DBAPIError))
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,10 +285,13 @@ class RawLeaseHeartbeat:
         lease: RawProcessingLease,
         *,
         interval_s: float = RAW_LEASE_HEARTBEAT_SECONDS,
+        on_failure: Callable[[RawProcessingLease, RawLeaseLost], Awaitable[None]]
+        | None = None,
     ) -> None:
         self._renew = renew
         self.lease = lease
         self.interval_s = interval_s
+        self._on_failure = on_failure
         self._lost: RawLeaseLost | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
@@ -276,29 +299,133 @@ class RawLeaseHeartbeat:
     def raise_if_lost(self) -> None:
         if self._lost is not None:
             raise self._lost
+        task = self._task
+        if task is None or not task.done() or self._stopped.is_set():
+            return
+        if task.cancelled():
+            return
+        error = task.exception()
+        if isinstance(error, asyncio.CancelledError):
+            return
+        if error is not None:
+            self._lost = RawLeaseHeartbeatFailed(
+                "raw processing lease heartbeat failed"
+            )
+            self._lost.__cause__ = error
+            raise self._lost
+        self._lost = RawLeaseHeartbeatFailed(
+            "raw processing lease heartbeat ended unexpectedly"
+        )
+        raise self._lost
 
-    async def _loop(self) -> None:
-        while not self._stopped.is_set():
-            try:
-                await asyncio.wait_for(self._stopped.wait(), timeout=self.interval_s)
-                return
-            except TimeoutError:
-                pass
+    async def _notify_failure(self, error: RawLeaseLost) -> None:
+        LOGGER.warning(
+            "raw lease heartbeat failed",
+            extra={
+                "raw_id": self.lease.raw_id,
+                "epoch": self.lease.epoch,
+                "error_type": type(error).__name__,
+            },
+        )
+        if self._on_failure is None:
+            return
+        try:
+            await self._on_failure(self.lease, error)
+        except Exception as notify_error:
+            LOGGER.warning(
+                "raw lease heartbeat event unavailable",
+                extra={
+                    "raw_id": self.lease.raw_id,
+                    "epoch": self.lease.epoch,
+                    "error_type": type(notify_error).__name__,
+                },
+            )
+
+    async def _renew_until_confirmed(self) -> None:
+        """暂态错误可重试，但不得越过内存中的原租约到期点继续等待。"""
+
+        expiry = self.lease.expires_at
+        last: BaseException | None = None
+        attempt = 0
+        while True:
             try:
                 await self._renew(self.lease)
-            except RawLeaseLost as error:
-                self._lost = error
                 return
+            except RawLeaseLost:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                last = error
+                if not _is_transient_renew_error(error):
+                    raise RawLeaseHeartbeatFailed(
+                        "raw processing lease heartbeat failed"
+                    ) from error
+                attempt += 1
+                if expiry is not None and datetime.now(UTC) >= _aware_utc(expiry):
+                    raise RawLeaseHeartbeatFailed(
+                        "raw processing lease heartbeat expired before renew"
+                    ) from error
+                if attempt >= 3:
+                    raise RawLeaseHeartbeatFailed(
+                        "raw processing lease heartbeat failed"
+                    ) from error
+                delay = min(0.2 * attempt, 1.0)
+                if expiry is not None:
+                    remaining = (_aware_utc(expiry) - datetime.now(UTC)).total_seconds()
+                    if remaining <= 0:
+                        raise RawLeaseHeartbeatFailed(
+                            "raw processing lease heartbeat expired before renew"
+                        ) from error
+                    delay = min(delay, remaining / 2)
+                    if delay <= 0:
+                        raise RawLeaseHeartbeatFailed(
+                            "raw processing lease heartbeat expired before renew"
+                        ) from last
+                await asyncio.sleep(delay)
+
+    async def _loop(self) -> None:
+        try:
+            while not self._stopped.is_set():
+                try:
+                    await asyncio.wait_for(self._stopped.wait(), timeout=self.interval_s)
+                    return
+                except TimeoutError:
+                    pass
+                try:
+                    await self._renew_until_confirmed()
+                except asyncio.CancelledError:
+                    raise
+                except RawLeaseLost as error:
+                    self._lost = error
+                    await self._notify_failure(error)
+                    return
+                except Exception as error:
+                    wrapped = RawLeaseHeartbeatFailed(
+                        "raw processing lease heartbeat failed"
+                    )
+                    wrapped.__cause__ = error
+                    self._lost = wrapped
+                    await self._notify_failure(wrapped)
+                    return
+        except asyncio.CancelledError:
+            raise
 
     async def __aenter__(self) -> RawLeaseHeartbeat:
         self._task = asyncio.create_task(self._loop())
         return self
 
-    async def __aexit__(self, *_exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        *_exc: object,
+    ) -> None:
+        """正文已成功时吞掉迟到的续租异常，避免成功终态被当成可重试失败。"""
+
         self._stopped.set()
         if self._task is not None:
             self._task.cancel()
-            with suppress(asyncio.CancelledError, RawLeaseLost):
+            with suppress(asyncio.CancelledError, RawLeaseLost, Exception):
                 await self._task
 
 
@@ -315,5 +442,11 @@ async def bind_raw_lease_heartbeat(
     if lease is None or not callable(renewer):
         yield None
         return
-    async with RawLeaseHeartbeat(renewer, lease, interval_s=interval_s) as beat:
+    recorder = getattr(repository, "record_heartbeat_failure", None)
+    async with RawLeaseHeartbeat(
+        renewer,
+        lease,
+        interval_s=interval_s,
+        on_failure=recorder if callable(recorder) else None,
+    ) as beat:
         yield beat

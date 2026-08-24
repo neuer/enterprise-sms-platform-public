@@ -25,6 +25,25 @@ def _store(tmp_path: Path) -> ReleaseStore:
     return ReleaseStore(tmp_path / "releases", "release-1")
 
 
+def test_atomic_write_fsyncs_parent_directory_after_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synced_directories: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd: int) -> None:
+        info = os.fstat(fd)
+        if stat.S_ISDIR(info.st_mode):
+            synced_directories.append(info.st_ino)
+        real_fsync(fd)
+
+    monkeypatch.setattr(release_store_module.os, "fsync", spy_fsync)
+    store = _store(tmp_path)
+    store.create(MANIFEST_BYTES)
+    assert synced_directories, "ReleaseStore 必须 fsync 父目录"
+
+
 def test_store_creates_root_owned_style_0700_directories(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.create(MANIFEST_BYTES)

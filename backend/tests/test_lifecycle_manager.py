@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -1076,3 +1077,147 @@ def test_alert_output_never_includes_exception_message_or_sensitive_values(
 
 def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
+
+
+def test_successful_backup_ledger_matches_current_after_remount(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync)
+    evidence = service.backup(config)
+    remount = json.loads(
+        config.output_root.joinpath("lifecycle-state.json").read_text(encoding="utf-8")
+    )
+    current = (config.output_root / "current").readlink().name
+    assert current == evidence.snapshot_id
+    assert remount["last_successful_backup"]["snapshot_id"] == evidence.snapshot_id
+    assert remount["snapshots"][evidence.snapshot_id]["commit_phase"] == "ledger_committed"
+
+
+def test_unregistered_snapshot_is_isolated_and_old_orphans_are_pruned(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    extra = config.output_root / "snapshots" / SNAPSHOT_ONE
+    extra.mkdir(mode=0o700)
+    (extra / "junk").write_text("x", encoding="utf-8")
+    stale = config.output_root / "orphans" / SNAPSHOT_TWO
+    stale.mkdir(parents=True, mode=0o700)
+    os.utime(stale, (0, 0))
+    service.backup_status(config)
+    assert not extra.exists()
+    assert (config.output_root / "orphans" / SNAPSHOT_ONE).is_dir()
+    assert not stale.exists()
+
+
+def test_ledger_write_failure_adopts_published_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    real_save = lifecycle_manager_module.LifecycleService._save_state
+    calls = {"n": 0}
+
+    def fail_first(
+        self: lifecycle_manager_module.LifecycleService,
+        cfg: LifecycleConfig,
+        state: Mapping[str, object],
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("state replace failed")
+        real_save(self, cfg, state)
+
+    monkeypatch.setattr(
+        lifecycle_manager_module.LifecycleService, "_save_state", fail_first
+    )
+    with pytest.raises(OSError, match="state replace"):
+        service.backup(config)
+    state = read_state(config)
+    current = config.output_root / "current"
+    assert SNAPSHOT_THREE in state["snapshots"]
+    assert current.is_symlink()
+    assert current.readlink().name == SNAPSHOT_THREE
+
+
+def test_state_replace_barrier_is_reached_on_ledger_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def record(name: str, path: Path | None = None) -> None:
+        seen.append(name)
+
+    monkeypatch.setattr(lifecycle_manager_module, "atomic_write_json", atomic_write_json)
+    import failover_common as failover_module
+
+    monkeypatch.setattr(failover_module, "durability_barrier", record)
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    assert "state_replace" in seen
+
+
+class SimulatedLedgerPowerLoss(RuntimeError):
+    """State Replace 屏障之后的生产等价掉电。"""
+
+
+def test_state_replace_power_loss_does_not_report_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hits = {"n": 0}
+
+    def inject(name: str, path: Path | None = None) -> None:
+        if (
+            name == "state_replace"
+            and path is not None
+            and path.name == "lifecycle-state.json"
+        ):
+            hits["n"] += 1
+            if hits["n"] == 1:
+                raise SimulatedLedgerPowerLoss(name)
+
+    monkeypatch.setattr(lifecycle_manager_module, "atomic_write_json", atomic_write_json)
+    import failover_common as failover_module
+
+    monkeypatch.setattr(failover_module, "durability_barrier", inject)
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    with pytest.raises(SimulatedLedgerPowerLoss, match="state_replace"):
+        service.backup(config)
+    current = config.output_root / "current"
+    assert current.is_symlink()
+    assert current.readlink().name == SNAPSHOT_THREE
+    remount = read_state(config)
+    assert SNAPSHOT_THREE in remount["snapshots"]
+
+
+def test_stale_incoming_is_pruned_on_status(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    incoming = config.output_root / ".incoming" / SNAPSHOT_ONE
+    incoming.mkdir(parents=True, mode=0o700)
+    (incoming / "partial.dump.enc").write_bytes(b"x")
+    os.utime(incoming, (0, 0))
+    service.backup_status(config)
+    assert not incoming.exists()
