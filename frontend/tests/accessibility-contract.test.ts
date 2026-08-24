@@ -104,7 +104,7 @@ describe("无障碍样式契约", () => {
 
   it("移动治理列表在加载期间保留可见高度", () => {
     expect(css).toMatch(
-      /\.approval-rows,[\s\S]*\.sign-mobile-list,[\s\S]*\.blacklist-mobile-list\s*\{[^}]*min-height:\s*120px/s,
+      /\.approval-rows,[\s\S]*\.sign-mobile-list,[\s\S]*\.blacklist-mobile-list,[\s\S]*\.user-mobile-list\s*\{[^}]*min-height:\s*120px/s,
     )
   })
 

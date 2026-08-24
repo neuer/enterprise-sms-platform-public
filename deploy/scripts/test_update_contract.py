@@ -247,6 +247,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/templates-redesign-prototype.html",
         "docs/previews/templates-redesign-shots.md",
         "docs/previews/templates-redesign-shots/full.png",
+        "docs/previews/users-redesign-prototype.html",
         "deploy/prometheus.example.yml",
         "deploy/redis-ha.md",
         "deploy/vendor-egress.md",

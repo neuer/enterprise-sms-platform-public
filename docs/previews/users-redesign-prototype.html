@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 用户与角色重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:560px}
+.head-ops{display:flex;align-items:center;gap:12px;flex:none}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{background:none;color:#ef9b89}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 检索条（单卡片单行） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search-bar .go{height:34px;display:inline-flex;align-items:center;gap:10px;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 规则条（FR-18a 常驻，卡片瘦身） ═══════════ */
+.rules-strip{display:flex;gap:26px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.rules-strip>div{display:flex;gap:8px;align-items:baseline;min-width:0}
+.rules-strip span{flex:none;font-size:10.5px;color:var(--tx-3)}
+.rules-strip p{font-size:11px;color:var(--tx-2)}
+
+/* ═══════════ 结果面板：身份台账（账本表格） ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:9px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+tbody tr.off{opacity:.55}
+.cell-main{display:block;font-size:13px;font-weight:600;color:var(--tx-hi)}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:3px}
+.cell-sub code{font-family:var(--mono);color:var(--tx-2)}
+.id-tags{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t-time{font:11.5px var(--mono);color:var(--tx);white-space:nowrap}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.verdi{background:rgba(47,161,132,.12);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.tag.amb{background:rgba(216,163,92,.13);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.tag.slate{background:rgba(69,116,163,.14);color:#8fb4dd;border:1px solid rgba(69,116,163,.4)}
+.tag.verm{background:rgba(228,106,79,.12);color:#ef9b89;border:1px solid rgba(228,106,79,.35)}
+.tag.gray{background:rgba(255,255,255,.04);color:var(--tx-2);border:1px solid var(--hair)}
+.sync{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;color:var(--tx-3);margin-left:8px}
+.sync i{width:6px;height:6px;border-radius:50%;background:var(--tx-3)}
+.sync.ok i{background:var(--verdi-l)}
+.sync.pend i{background:var(--amber)}
+.sync.off i{background:var(--verm)}
+.grp{display:inline-block;font:10px/1.8 var(--mono);padding:0 7px;border-radius:4px;border:1px solid var(--hair);color:var(--tx-2);background:var(--sink);margin:2px 4px 2px 0}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{margin-left:auto;display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 抽屉（实现为 el-drawer 440px） ═══════════ */
+.drawer-zone{display:grid;grid-template-columns:5fr 7fr;gap:14px;align-items:start}
+.drawer{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:18px 20px;display:grid;gap:13px;max-width:520px;justify-self:end;width:100%}
+.drawer-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--hair-2);padding-bottom:11px}
+.drawer-head .tt{font-size:13.5px;color:var(--tx-hi);font-weight:600}
+.drawer-head code{font:11px var(--mono);color:var(--tx-3);display:block;margin-top:3px}
+.drawer-head .x{color:var(--tx-3);font-size:14px}
+.text-input{display:flex;align-items:center;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx)}
+.text-input.mono{font-family:var(--mono)}
+.rule-line{font-size:10.5px;color:var(--tx-3);margin-top:5px}
+.parse{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px;border:1px solid var(--hair);color:var(--tx-2);background:var(--sink)}
+.chip.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.chip.bad{color:#ef9b89;border-color:rgba(228,106,79,.45)}
+.err{font-size:11px;color:#ef9b89}
+.subject{display:grid;gap:2px;padding:11px 14px;background:var(--sink);border:1px solid var(--hair);border-radius:8px}
+.subject b{font-size:13px;color:var(--tx-hi)}
+.subject code{font:11px var(--mono);color:var(--tx-2)}
+.subject small{font-size:10.5px;color:var(--tx-3)}
+.switch{display:inline-flex;align-items:center;gap:9px}
+.pill{width:34px;height:18px;border-radius:9px;background:var(--verdi);position:relative;flex:none}
+.pill::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:#eaf1ed}
+.pill.off{background:var(--panel-2);border:1px solid var(--hair)}
+.pill.off::after{right:auto;left:2px;background:var(--tx-3)}
+.drawer-foot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--hair-2);padding-top:12px;gap:12px}
+.drawer-foot small{font-size:10px;color:var(--tx-3);max-width:280px}
+.drawer-foot .btns{display:flex;gap:10px}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.empty-duo .empty{display:grid;align-content:center}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-duo{grid-template-columns:1fr} .drawer-zone{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 用户与角色重设计原型</b>
+  <span>v1 评审稿 · 拟新增 docs/ui-design.md §8b · 路由 /users（admin 专属）</span>
+  <em>2026-08-24 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>筛选收进单行检索条</b>：关键词 220px + 认证源 / 角色 / 状态三组 seg，与黑名单、敏感词、应用管理同一胶囊语言；seg 点选即重查，关键词走「查询」按钮；口径说明沉条底。filter-grid 旧栅格在本页退役（审计页另行处理）。<span class="need calc">前端</span></li>
+  <li><b>撤下页头「有效 X/Y · 本地 Z」摘要</b>：原数字只统计当前页 items，翻页后即失真，易被误读为全量口径；总数沉底栏「共 N 名用户 · 每页 20」，页头不再放任何页级计数。若未来需要全量统计，须新增汇总端点（ext），本期不做。<span class="need calc">前端</span></li>
+  <li><b>用户名 / 密码规则条保留但瘦身</b>：FR-18a 要求两类规则常驻显示，由独立卡片改为检索条下的 slim 双格条；密码规则文案仍来自 <code>GET /auth/password-policy</code>，接口短暂不可用时保留安全缺省文案。<span class="need ok">现有</span></li>
+  <li><b>台账表格账本化</b>：th 规范、双行单元格与行悬停对齐批次 / 黑名单语言——主行姓名（13px/600）+ mono 用户名，副行认证源与凭据 tag；角色列 = 角色 tag + 来源副行（本地固定 / 跟随 AD / 人工覆盖）；状态列 = 账号 tag + 同步态圆点 + mono 时间；停用行整行 opacity .55。<span class="need calc">前端</span></li>
+  <li><b>三抽屉统一骨架</b>：抽屉头 = 标题 + mono 端点行（<code>POST /local</code>、<code>PUT /{id}/role</code>、<code>POST /{id}/password/reset</code>），抽屉底 = 左侧机制 / 审计脚注 + 右侧按钮；创建抽屉保留提交前即时校验（用户名 3–64 位字符集、密码长度 / 字符类别 / 不含用户名，与服务端同规则），重置密码抽屉复用同一骨架不再单独立屏。<span class="need calc">前端</span></li>
+  <li><b>确认框拆后果正文与审计细字</b>：停用 / 重置密码 / 强制下线均如实告知后果（无法登录、既有会话立即失效、下次登录必须改密）+ 审计细字（只记操作人与对象 account_id）；toast 统一带「本次操作已记入审计」。<span class="need ok">现有</span></li>
+  <li><b>空态两行规约双变体</b>：空库引导「创建本地账号」，筛选无结果引导「清除筛选」。<span class="need calc">前端</span></li>
+  <li><b>行为与 testid 全量保留</b>：创建 / 角色 / 重置 / 停用 / 下线既有 data-testid 不改名；移动端 760px 双渲染（表格 ↔ 卡片）与 44px 触达目标维持现状。<span class="need calc">前端</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认列表（admin 视角 · 全量要素） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认列表（admin 视角 · 单行检索条 + 身份台账全量要素）</div>
+<div class="variant-caption">三组 seg 覆盖认证源 / 角色 / 状态，点选即重查；规则条常驻（FR-18a）；台账五列双行单元格，末行演示停用态整行降不透明。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">IDENTITY LEDGER / 身份治理</div>
+      <h1>用户与角色</h1>
+      <div class="sub">本地账号由管理员维护，AD 账号首次成功登录后进入台账；角色人工覆盖优先于目录组映射。账号、角色与凭据变更即递增 security_version，既有会话立即失效；写操作全部写入审计。</div>
+    </div>
+    <div class="head-ops">
+      <span class="btn primary">＋ 创建本地账号</span>
+    </div>
+  </div>
+
+  <div class="search-bar">
+    <label class="fld"><span>关键词</span>
+      <div class="kw-input">用户名、姓名或部门</div>
+    </label>
+    <label class="fld"><span>认证源</span>
+      <div class="seg"><b class="on">全部</b><b>本地</b><b>AD</b></div>
+    </label>
+    <label class="fld"><span>角色</span>
+      <div class="seg"><b class="on">全部</b><b>管理员</b><b>审批人</b><b>操作员</b><b>只读</b></div>
+    </label>
+    <label class="fld"><span>状态</span>
+      <div class="seg"><b class="on">全部</b><b>有效</b><b>停用</b></div>
+    </label>
+    <span class="go"><span class="btn primary">查询</span><span class="btn">重置</span></span>
+    <p class="privacy-note">关键词服务端匹配用户名、显示姓名与部门；认证源 / 角色 / 状态点选即重查。台账服务端分页，全部写操作经审计，停用与重置密码须二次确认。</p>
+  </div>
+
+  <div class="rules-strip">
+    <div><span>用户名规则</span><p>本地用户名：3–64 位字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</p></div>
+    <div><span>密码规则</span><p>12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名；创建 / 重置后为临时密码，首次登录必须修改。</p></div>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr><th>账号</th><th>部门 / 来源组</th><th>角色</th><th>状态 / 同步</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="cell-main">系统管理员</span><span class="cell-sub"><code>admin</code></span>
+            <span class="id-tags"><span class="tag gray">本地账号</span><span class="tag verdi">密码有效</span></span></td>
+          <td>平台运维<div class="cell-sub">本地维护，无目录来源组</div></td>
+          <td><span class="tag verm">系统管理员</span><div class="cell-sub">本地固定</div></td>
+          <td><span class="tag verdi">账号有效</span><span class="sync"><i></i>本地维护</span>
+            <div class="cell-sub">最近登录 <span class="t-time">2026-08-24 09:12:44</span></div></td>
+          <td><span class="btn link">角色</span><span class="btn link">重置密码</span><span class="btn link danger">停用</span><span class="btn link danger">下线</span></td>
+        </tr>
+        <tr>
+          <td><span class="cell-main">王五</span><span class="cell-sub"><code>wang.wu</code></span>
+            <span class="id-tags"><span class="tag slate">AD 账号</span><span class="tag gray">目录认证</span></span></td>
+          <td>财务部<div><span class="grp">FIN-APPROVERS</span></div></td>
+          <td><span class="tag amb">审批人</span><div class="cell-sub">跟随 AD</div></td>
+          <td><span class="tag verdi">账号有效</span><span class="sync ok"><i></i>已同步</span>
+            <div class="cell-sub">同步 <span class="t-time">2026-08-23 18:02:11</span> · 登录 <span class="t-time">2026-08-24 08:41:03</span></div></td>
+          <td><span class="btn link">角色</span><span class="btn link danger">停用</span><span class="btn link danger">下线</span></td>
+        </tr>
+        <tr>
+          <td><span class="cell-main">李四</span><span class="cell-sub"><code>li.si</code></span>
+            <span class="id-tags"><span class="tag slate">AD 账号</span><span class="tag gray">目录认证</span></span></td>
+          <td>市场部<div><span class="grp">MKT-OPS</span><span class="grp">CN-EAST</span></div></td>
+          <td><span class="tag slate">操作员</span><div class="cell-sub">人工覆盖</div></td>
+          <td><span class="tag verdi">账号有效</span><span class="sync ok"><i></i>已同步</span>
+            <div class="cell-sub">同步 <span class="t-time">2026-08-22 11:30:00</span> · 登录 <span class="t-time">2026-08-23 16:05:37</span></div></td>
+          <td><span class="btn link">角色</span><span class="btn link danger">停用</span><span class="btn link danger">下线</span></td>
+        </tr>
+        <tr>
+          <td><span class="cell-main">赵六</span><span class="cell-sub"><code>zhao.liu</code></span>
+            <span class="id-tags"><span class="tag gray">本地账号</span><span class="tag amb">首次登录待改密</span></span></td>
+          <td>未分配部门<div class="cell-sub">本地维护，无目录来源组</div></td>
+          <td><span class="tag gray">只读用户</span><div class="cell-sub">本地固定</div></td>
+          <td><span class="tag verdi">账号有效</span><span class="sync"><i></i>本地维护</span>
+            <div class="cell-sub">最近登录 —</div></td>
+          <td><span class="btn link">角色</span><span class="btn link">重置密码</span><span class="btn link danger">停用</span><span class="btn link danger">下线</span></td>
+        </tr>
+        <tr class="off">
+          <td><span class="cell-main">钱七</span><span class="cell-sub"><code>qian.qi</code></span>
+            <span class="id-tags"><span class="tag gray">本地账号</span><span class="tag verdi">密码有效</span></span></td>
+          <td>客服部<div class="cell-sub">本地维护，无目录来源组</div></td>
+          <td><span class="tag gray">只读用户</span><div class="cell-sub">本地固定</div></td>
+          <td><span class="tag verm">账号停用</span><span class="sync off"><i></i>已停用</span>
+            <div class="cell-sub">最近登录 <span class="t-time">2026-08-10 21:48:19</span></div></td>
+          <td><span class="btn link">角色</span><span class="btn link">重置密码</span><span class="btn link">启用</span><span class="btn link danger">下线</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 57 名用户 · 每页 20</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：创建本地账号抽屉（提交前即时校验 · 含拦截态） ════════════════ -->
+<div class="stage-label">SCREEN B · 创建本地账号抽屉（实现为 el-drawer 440px · 提交前即时校验拦截态）</div>
+<div class="variant-caption">输入即按服务端同规则预检：长度 / 字符类别 / 不含用户名三项 chips；存在不合规即内联报错并禁用提交（演示密码包含用户名的拦截态）。</div>
+<div class="viewport"><div class="screen">
+  <div class="drawer-zone">
+    <div class="result-panel dim" style="position:relative">
+      <table>
+        <thead><tr><th>账号</th><th>角色</th><th>状态 / 同步</th></tr></thead>
+        <tbody>
+          <tr><td><span class="cell-main">系统管理员</span><span class="cell-sub"><code>admin</code></span></td>
+            <td><span class="tag verm">系统管理员</span></td>
+            <td><span class="tag verdi">账号有效</span><span class="sync"><i></i>本地维护</span></td></tr>
+          <tr><td><span class="cell-main">王五</span><span class="cell-sub"><code>wang.wu</code></span></td>
+            <td><span class="tag amb">审批人</span></td>
+            <td><span class="tag verdi">账号有效</span><span class="sync ok"><i></i>已同步</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="tt">创建本地账号</div>
+          <code>POST /api/v1/web/admin/users/local · 临时密码不回显</code>
+        </div>
+        <span class="x">✕</span>
+      </div>
+
+      <label class="fld"><span>用户名（创建后不可修改）</span>
+        <div class="text-input mono">zhao.liu</div>
+        <p class="rule-line">3–64 位字母、数字、点、下划线或短横线；不区分大小写，全局先到先得。</p>
+      </label>
+      <label class="fld"><span>显示名称</span><div class="text-input">赵六</div></label>
+      <label class="fld"><span>部门</span><div class="text-input">客服部</div></label>
+      <label class="fld"><span>角色</span>
+        <div class="text-input">只读用户 ▾</div>
+        <p class="rule-line">本部门记录与报表，只读。</p>
+      </label>
+      <label class="fld"><span>临时密码</span>
+        <div class="text-input mono">••••••••••••</div>
+      </label>
+      <div class="parse">
+        <span class="chip ok">长度 12–128 ✓</span>
+        <span class="chip ok">字符类别 ≥3 ✓</span>
+        <span class="chip bad">不含用户名 ✗</span>
+      </div>
+      <p class="err">密码不能包含用户名；修正后才可提交。服务端仍执行同一策略的权威校验。</p>
+
+      <div class="drawer-foot">
+        <small>账号创建后立即生效，用户首次登录必须修改临时密码；创建行为与操作人写入审计日志。</small>
+        <div class="btns"><span class="btn">取消</span><span class="btn primary" disabled>创建账号</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：角色抽屉（AD 账号 · 人工覆盖态） ════════════════ -->
+<div class="stage-label">SCREEN C · 角色抽屉（实现为 el-drawer 440px · AD 账号人工覆盖态）</div>
+<div class="variant-caption">本地账号角色恒为人工维护；AD 账号演示「人工覆盖」开启态——保存后固定为所选角色，后续目录同步不改写；关闭则按最近来源组与当前组映射恢复。</div>
+<div class="viewport"><div class="screen">
+  <div class="drawer-zone">
+    <div class="result-panel dim" style="position:relative">
+      <table>
+        <thead><tr><th>账号</th><th>角色</th><th>状态 / 同步</th></tr></thead>
+        <tbody>
+          <tr><td><span class="cell-main">李四</span><span class="cell-sub"><code>li.si</code></span></td>
+            <td><span class="tag slate">操作员</span></td>
+            <td><span class="tag verdi">账号有效</span><span class="sync ok"><i></i>已同步</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-head">
+        <div>
+          <div class="tt">角色策略</div>
+          <code>PUT /api/v1/web/admin/users/12/role · 保存即失效旧会话</code>
+        </div>
+        <span class="x">✕</span>
+      </div>
+
+      <div class="subject">
+        <b>李四</b>
+        <code>li.si</code>
+        <small>AD 账号 · 市场部</small>
+      </div>
+
+      <label class="fld"><span>目标角色</span>
+        <div class="text-input">操作员 ▾</div>
+        <p class="rule-line">Web 人工发送（通知 / 营销），本部门记录与模板。</p>
+      </label>
+      <label class="fld"><span>角色来源</span>
+        <div class="switch"><span class="pill"></span><b style="font-weight:400">人工覆盖</b></div>
+        <p class="rule-line">保存后固定为所选角色，后续目录同步不改写；关闭则按最近来源组和当前映射恢复。</p>
+      </label>
+      <label class="fld"><span>最近来源组</span>
+        <div><span class="grp">MKT-OPS</span><span class="grp">CN-EAST</span></div>
+      </label>
+
+      <div class="drawer-foot">
+        <small>保存即递增 security_version，该账号全部既有会话立即失效；角色变更与操作人写入审计日志。</small>
+        <div class="btns"><span class="btn">取消</span><span class="btn primary">保存角色</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：停用确认 + 成功 toast ════════════════ -->
+<div class="stage-label">SCREEN D · 停用账号确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认拆后果正文（无法登录、既有会话立即失效）与审计细字；确认后重查列表，toast 如实告知留痕。重置密码与强制下线复用同一双段结构。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">账号已停用 · 本次操作已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">IDENTITY LEDGER / 身份治理</div>
+      <h1>用户与角色</h1>
+    </div>
+    <div class="head-ops"><span class="btn primary">＋ 创建本地账号</span></div>
+  </div>
+
+  <div class="result-panel dim">
+    <table>
+      <thead><tr><th>账号</th><th>角色</th><th>状态 / 同步</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr><td><span class="cell-main">赵六</span><span class="cell-sub"><code>zhao.liu</code></span></td>
+          <td><span class="tag gray">只读用户</span></td>
+          <td><span class="tag verdi">账号有效</span><span class="sync"><i></i>本地维护</span></td>
+          <td><span class="btn link">角色</span><span class="btn link">重置密码</span><span class="btn link danger">停用</span><span class="btn link danger">下线</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal">
+    <h3>确认停用账号</h3>
+    <p>停用 <b>赵六（zhao.liu）</b> 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时由管理员重新启用。</p>
+    <p class="audit-hint">停用行为、操作人与对象 account_id 将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">停用</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 E：空态（双变体） ════════════════ -->
+<div class="stage-label">SCREEN E · 空态（左：台账为空 · 右：筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；空库引导创建本地账号，筛选态引导清除筛选。</div>
+<div class="viewport"><div class="screen">
+  <div class="empty-duo">
+    <div class="empty">
+      <div><b>尚无平台账号</b>
+      <span>本地账号由管理员创建；AD 账号在首次成功登录后进入台账。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合条件的账号</b>
+      <span>调整关键词或筛选条件后重新查询，也可清除筛选查看全部账号。</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表 <code>GET /api/v1/web/admin/users</code> 参数 <code>keyword / provider_code / role / status / page / page_size</code>，响应 <code>UserPage{items,total}</code>；keyword 服务端匹配 login_name / display_name / dept。三组 seg 直接映射现有三个枚举参数，不新增查询参数。<span class="need ok">现有</span></li>
+  <li>创建 <code>POST /local</code>（username / display_name / dept / role / temporary_password writeOnly）；用户名规范化 3–64 位小写字符集，密码策略以 <code>GET /auth/password-policy</code> 下发为准、服务端权威校验，前端仅做同规则提交前拦截。<span class="need ok">现有</span></li>
+  <li>角色 <code>PUT /{account_id}/role</code>（role, role_override）：本地账号恒 override=true；AD 恢复跟随即 override=false，恢复目标角色由服务端按 external_role_mapping 计算，界面只展示来源组快照、不预览计算结果。<span class="need ok">现有</span></li>
+  <li>状态 <code>PUT /{account_id}/status</code>、重置 <code>POST /{account_id}/password/reset</code>、下线 <code>POST /{account_id}/sessions/revoke</code>：全部按稳定 account_id 定位；写操作分别落审计 local_account_create / role_override / account_status_change / local_password_reset / force_logout。<span class="need ok">现有</span></li>
+  <li>错误如实展示：404 NOT_FOUND、409 LAST_ADMIN_PROTECTED / ACCOUNT_SOURCE_CONFLICT / STATE_CONFLICT、422 PASSWORD_POLICY_VIOLATION、403 停用本人；页面不另造错误文案。<span class="need ok">现有</span></li>
+  <li>零契约变更：不新增端点、不新增字段、不做全量统计计数（撤下的页头摘要即为此口径纠错）、不加导出；页面 admin 专属（PRD 附录 A #14），路由守卫与导航维持现状。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>

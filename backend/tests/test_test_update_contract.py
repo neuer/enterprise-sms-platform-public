@@ -833,6 +833,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/templates-redesign-prototype.html",
             "docs/previews/templates-redesign-shots.md",
             "docs/previews/templates-redesign-shots/full.png",
+            "docs/previews/users-redesign-prototype.html",
             "PROGRESS.md",
         ]
     )
@@ -1031,6 +1032,23 @@ def test_signs_preview_does_not_block_web_only_update() -> None:
             "frontend/src/styles/workspace.css",
             "frontend/src/views/SignView.vue",
             "frontend/tests/sign-view.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_users_preview_does_not_block_web_only_update() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/users-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/UserView.vue",
+            "frontend/tests/user-view.test.ts",
         ]
     )
 
