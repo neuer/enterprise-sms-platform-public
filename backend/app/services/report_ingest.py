@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
+from app.services.raw_lease import RawProcessingLease, remember_if_supported
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
     CAPTURE_COMPLETE_TOO_LARGE,
@@ -99,6 +100,7 @@ class ReportRepository(Protocol):
         *,
         custom_ids: list[str],
         item_count: int,
+        lease: object | None = None,
     ) -> None: ...
 
     async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]: ...
@@ -113,9 +115,11 @@ class ReportRepository(Protocol):
 
     async def persist_unmatched(self, raw_id: int, report: ProtectedReport) -> None: ...
 
-    async def mark_processed(self, raw_id: int) -> None: ...
+    async def mark_processed(self, raw_id: int, *, lease: object | None = None) -> None: ...
 
-    async def mark_error(self, raw_id: int, error: str) -> None: ...
+    async def mark_error(
+        self, raw_id: int, error: str, *, lease: object | None = None
+    ) -> None: ...
 
 
 class AlertEmitter(Protocol):
@@ -357,7 +361,17 @@ class ReportIngestService:
         temps = int(getattr(result, "temps_reclaimed", 0) or 0)
         expired = int(getattr(result, "quarantine_expired", 0) or 0)
         dropped = int(getattr(result, "quarantine_capacity_dropped", 0) or 0)
-        if isolated < 1 and temps < 1 and expired < 1 and dropped < 1:
+        key_unavailable = int(getattr(result, "key_unavailable", 0) or 0)
+        transient_io = int(getattr(result, "transient_io", 0) or 0)
+        auth_failed = int(getattr(result, "auth_failed", 0) or 0)
+        if (
+            isolated < 1
+            and temps < 1
+            and expired < 1
+            and dropped < 1
+            and key_unavailable < 1
+            and transient_io < 1
+        ):
             return
         if self.alerts is None:
             LOGGER.error(
@@ -380,6 +394,9 @@ class ReportIngestService:
                     "orphans": int(getattr(result, "orphans", 0) or 0),
                     "quarantine_expired": expired,
                     "quarantine_capacity_dropped": dropped,
+                    "key_unavailable": key_unavailable,
+                    "transient_io": transient_io,
+                    "auth_failed": auth_failed,
                 },
                 dedup_key=f"vendor_raw_nonactive_quarantine:{source}",
             )
@@ -814,9 +831,16 @@ class ReportIngestService:
             raise
         return await self.process_existing(raw_id, data)
 
-    async def process_existing(self, raw_id: int, data: object) -> int:
+    async def process_existing(
+        self,
+        raw_id: int,
+        data: object,
+        *,
+        lease: RawProcessingLease | None = None,
+    ) -> int:
         """解析已独立提交的 raw；供轮询、spill 恢复与受控重放共用。"""
 
+        remember_if_supported(self.repository, lease)
         try:
             if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                 raise ValueError("GetReport.data must be an object array")
@@ -829,6 +853,7 @@ class ReportIngestService:
                 raw_id,
                 custom_ids=custom_ids,
                 item_count=len(data),
+                **({} if lease is None else {"lease": lease}),
             )
             skipped = 0
             for index, item in enumerate(data):
@@ -856,14 +881,21 @@ class ReportIngestService:
                 elif applied.changed:
                     await self._alert_failure_rate(applied.batch_id)
         except Exception as error:
-            await self.repository.mark_error(raw_id, f"{type(error).__name__}: {error}"[:256])
+            await self.repository.mark_error(
+                raw_id,
+                f"{type(error).__name__}: {error}"[:256],
+                **({} if lease is None else {"lease": lease}),
+            )
             raise
         if skipped:
             await self.repository.mark_error(
                 raw_id,
                 f"skipped {skipped} invalid report items",
+                **({} if lease is None else {"lease": lease}),
             )
             await self._alert_skipped(raw_id, skipped, source="report")
             return len(data)
-        await self.repository.mark_processed(raw_id)
+        await self.repository.mark_processed(
+            raw_id, **({} if lease is None else {"lease": lease})
+        )
         return len(data)

@@ -23,6 +23,17 @@ from app.core.correlation import correlation_scope
 from app.core.runtime_resources import close_runtime_resources
 from app.services.crypto import EncryptionContext
 from app.services.ops_repository import SqlOpsRepository
+from app.services.raw_lease import RawLeaseLost
+from app.services.raw_parse import (
+    ELIGIBILITY_AUTOMATIC,
+    ELIGIBILITY_MANUAL,
+    ELIGIBILITY_NEVER,
+    PARSE_PROCESSED,
+    PARSE_PROTOCOL_INVALID,
+    PARSE_UNATTEMPTED,
+    RAW_PARSER_VERSION,
+    RawParseDisposition,
+)
 from app.services.raw_replay import RawReplayConflict, RawReplayService
 
 pytestmark = pytest.mark.skipif(
@@ -233,7 +244,7 @@ class _RecordingIngest:
         self.owner = owner
         self.calls: list[tuple[int, object]] = []
 
-    async def process_existing(self, raw_id: int, data: object) -> int:
+    async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
         self.calls.append((raw_id, data))
         count = len(data) if isinstance(data, list) else 0
         event_key = hashlib.sha256(f"replay-effect:{raw_id}".encode()).hexdigest()
@@ -243,7 +254,9 @@ class _RecordingIngest:
                     """
                     UPDATE raw_vendor_log
                     SET processed=TRUE,item_count=:item_count,error=NULL,
-                      processing_started_at=NULL
+                      processing_started_at=NULL,
+                      parse_state='processed',replay_eligibility='never',
+                      processing_lease_id=NULL,processing_lease_expires_at=NULL
                     WHERE id=:raw_id
                     """
                 ),
@@ -275,7 +288,7 @@ class _RecordingIngest:
 
 
 class _ForbiddenIngest:
-    async def process_existing(self, raw_id: int, data: object) -> int:
+    async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
         raise AssertionError(f"reply ingest must not run for raw {raw_id}: {data!r}")
 
 
@@ -521,9 +534,11 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
                         text(
                             """
                             INSERT INTO raw_vendor_log(
-                              source,payload_enc,payload_sha256,processed,item_count
+                              source,payload_enc,payload_sha256,processed,item_count,
+                              parse_state,replay_eligibility
                             ) VALUES (
-                              'report',:payload_enc,:sha,TRUE,2
+                              'report',:payload_enc,:sha,TRUE,2,
+                              'processed','never'
                             ) RETURNING id
                             """
                         ),
@@ -643,7 +658,6 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
 
     monkeypatch.setattr("app.services.ops_repository.insert_audit", flaky)
     async with owner.begin() as connection:
-        await connection.execute(text("GRANT UPDATE ON raw_vendor_log TO sms_accept"))
         raw_id = int(
             (
                 await connection.execute(
@@ -720,8 +734,434 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
         assert len(ingest.calls) == 1
         assert len(crypto.calls) == 1
     finally:
+        await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_reevaluate_audit_failure_leaves_parse_state_unchanged(
+    accept_runtime: tuple[AsyncEngine, URL],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, accept_url = accept_runtime
+    login = f"ops-reeval-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    repository = _repository(accept_url)
+    raw_id: int | None = None
+
+    async def boom(_connection: object, _event: object) -> None:
+        raise RuntimeError("synthetic reevaluate audit failure")
+
+    monkeypatch.setattr("app.services.ops_repository.insert_audit", boom)
+    try:
+        async with owner.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,processed,
+                              parse_state,replay_eligibility,error
+                            ) VALUES (
+                              'report',:payload_enc,:sha,FALSE,
+                              'protocol_invalid','manual','VendorProtocolError'
+                            ) RETURNING id
+                            """
+                        ),
+                        {"payload_enc": b"ciphertext-only", "sha": "e" * 64},
+                    )
+                ).scalar_one()
+            )
+        disposition = RawParseDisposition(
+            PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+        )
+        with correlation_scope(), pytest.raises(RuntimeError, match="synthetic"):
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=False,
+                expected_parse_state=PARSE_PROTOCOL_INVALID,
+                expected_eligibility=ELIGIBILITY_MANUAL,
+                disposition=disposition,
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_PROTOCOL_INVALID,
+                    "replay_eligibility": ELIGIBILITY_MANUAL,
+                    "processed": False,
+                },
+                after={
+                    "parse_state": PARSE_UNATTEMPTED,
+                    "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+                    "reason": "decoded_ok",
+                    "parser_version": RAW_PARSER_VERSION,
+                    "source": "report",
+                },
+            )
+        async with owner.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT parse_state,replay_eligibility,error,processed
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+            audits = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM audit_log
+                        WHERE action='raw_reevaluate'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).scalar_one()
+        assert str(row["parse_state"]) == PARSE_PROTOCOL_INVALID
+        assert str(row["replay_eligibility"]) == ELIGIBILITY_MANUAL
+        assert bool(row["processed"]) is False
+        assert int(audits) == 0
+    finally:
+        await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_reevaluate_same_txn_audit_and_live_lease_conflict(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    owner, accept_url = accept_runtime
+    login = f"ops-reeval-ok-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    repository = _repository(accept_url)
+    raw_id: int | None = None
+    try:
+        async with owner.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,processed,
+                              parse_state,replay_eligibility
+                            ) VALUES (
+                              'report',:payload_enc,:sha,FALSE,
+                              'protocol_invalid','manual'
+                            ) RETURNING id
+                            """
+                        ),
+                        {"payload_enc": b"ciphertext-only", "sha": "f" * 64},
+                    )
+                ).scalar_one()
+            )
+        disposition = RawParseDisposition(
+            PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+        )
+        after = {
+            "parse_state": PARSE_UNATTEMPTED,
+            "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+            "reason": "decoded_ok",
+            "parser_version": RAW_PARSER_VERSION,
+            "source": "report",
+        }
+        with correlation_scope():
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=False,
+                expected_parse_state=PARSE_PROTOCOL_INVALID,
+                expected_eligibility=ELIGIBILITY_MANUAL,
+                disposition=disposition,
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_PROTOCOL_INVALID,
+                    "replay_eligibility": ELIGIBILITY_MANUAL,
+                    "processed": False,
+                },
+                after=after,
+            )
+        async with owner.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT parse_state,replay_eligibility
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+            audit = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT actor,actor_subject_kind,actor_account_id,
+                          actor_identity_id,after_val,before_val
+                        FROM audit_log
+                        WHERE action='raw_reevaluate'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+        assert str(row["parse_state"]) == PARSE_UNATTEMPTED
+        assert str(row["replay_eligibility"]) == ELIGIBILITY_AUTOMATIC
+        assert str(audit["actor"]) == login
+        assert str(audit["actor_subject_kind"]) == "human"
+        assert int(audit["actor_account_id"]) == principal.account_id
+        assert int(audit["actor_identity_id"]) == principal.identity_id
+        assert audit["after_val"]["parser_version"] == RAW_PARSER_VERSION
+        assert "phone" not in str(audit["after_val"]).casefold()
+        assert "ciphertext" not in str(audit["after_val"]).casefold()
+
+        with correlation_scope():
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=False,
+                expected_parse_state=PARSE_UNATTEMPTED,
+                expected_eligibility=ELIGIBILITY_AUTOMATIC,
+                disposition=disposition,
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_UNATTEMPTED,
+                    "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+                    "processed": False,
+                },
+                after=after,
+            )
+        async with owner.connect() as connection:
+            audit_count = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM audit_log
+                        WHERE action='raw_reevaluate'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).scalar_one()
+        assert int(audit_count) == 1
+
         async with owner.begin() as connection:
             await connection.execute(
-                text("REVOKE UPDATE ON raw_vendor_log FROM sms_accept")
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET processing_lease_id=gen_random_uuid(),
+                        processing_lease_epoch=processing_lease_epoch+1,
+                        processing_lease_expires_at=now()+interval '15 minutes'
+                    WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": raw_id},
             )
+        with pytest.raises(RawLeaseLost):
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=False,
+                expected_parse_state=PARSE_UNATTEMPTED,
+                expected_eligibility=ELIGIBILITY_AUTOMATIC,
+                disposition=RawParseDisposition(
+                    PARSE_UNATTEMPTED, ELIGIBILITY_MANUAL, "manual_review"
+                ),
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_UNATTEMPTED,
+                    "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+                    "processed": False,
+                },
+                after=after,
+            )
+    finally:
+        await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_reevaluate_processed_raw_cannot_return_to_replayable(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    owner, accept_url = accept_runtime
+    login = f"ops-reeval-proc-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    repository = _repository(accept_url)
+    raw_id: int | None = None
+    try:
+        async with owner.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,processed,
+                              parse_state,replay_eligibility
+                            ) VALUES (
+                              'report',:payload_enc,:sha,TRUE,
+                              'processed','never'
+                            ) RETURNING id
+                            """
+                        ),
+                        {"payload_enc": b"ciphertext-only", "sha": "g" * 64},
+                    )
+                ).scalar_one()
+            )
+        with pytest.raises(RawReplayConflict, match="已处理 raw"):
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=True,
+                expected_parse_state=PARSE_PROCESSED,
+                expected_eligibility=ELIGIBILITY_NEVER,
+                disposition=RawParseDisposition(
+                    PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+                ),
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_PROCESSED,
+                    "replay_eligibility": ELIGIBILITY_NEVER,
+                    "processed": True,
+                },
+                after={
+                    "parse_state": PARSE_UNATTEMPTED,
+                    "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+                    "reason": "decoded_ok",
+                    "parser_version": RAW_PARSER_VERSION,
+                    "source": "report",
+                },
+            )
+        async with owner.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT processed,parse_state,replay_eligibility
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+            audits = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM audit_log
+                        WHERE action='raw_reevaluate'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).scalar_one()
+        assert bool(row["processed"]) is True
+        assert str(row["parse_state"]) == PARSE_PROCESSED
+        assert str(row["replay_eligibility"]) == ELIGIBILITY_NEVER
+        assert int(audits) == 0
+    finally:
+        await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_reevaluate_expected_state_miss_does_not_audit(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    owner, accept_url = accept_runtime
+    login = f"ops-reeval-cas-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    repository = _repository(accept_url)
+    raw_id: int | None = None
+    try:
+        async with owner.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,processed,
+                              parse_state,replay_eligibility
+                            ) VALUES (
+                              'report',:payload_enc,:sha,FALSE,
+                              'protocol_invalid','manual'
+                            ) RETURNING id
+                            """
+                        ),
+                        {"payload_enc": b"ciphertext-only", "sha": "h" * 64},
+                    )
+                ).scalar_one()
+            )
+        with pytest.raises(RawReplayConflict, match="状态已变化"):
+            await repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=False,
+                expected_parse_state=PARSE_UNATTEMPTED,
+                expected_eligibility=ELIGIBILITY_AUTOMATIC,
+                disposition=RawParseDisposition(
+                    PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+                ),
+                error=None,
+                actor=principal.login_name,
+                ip="10.0.0.8",
+                principal=principal,
+                before={
+                    "parse_state": PARSE_PROTOCOL_INVALID,
+                    "replay_eligibility": ELIGIBILITY_MANUAL,
+                    "processed": False,
+                },
+                after={
+                    "parse_state": PARSE_UNATTEMPTED,
+                    "replay_eligibility": ELIGIBILITY_AUTOMATIC,
+                    "reason": "decoded_ok",
+                    "parser_version": RAW_PARSER_VERSION,
+                    "source": "report",
+                },
+            )
+        async with owner.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT parse_state,replay_eligibility
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+            audits = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM audit_log
+                        WHERE action='raw_reevaluate'
+                          AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).scalar_one()
+        assert str(row["parse_state"]) == PARSE_PROTOCOL_INVALID
+        assert str(row["replay_eligibility"]) == ELIGIBILITY_MANUAL
+        assert int(audits) == 0
+    finally:
         await _cleanup(owner, raw_id=raw_id, principal=principal)

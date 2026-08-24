@@ -17,7 +17,6 @@ from app.services.raw_spill import (
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
-    HEADER_QUARANTINE_SUFFIX,
     SPILL_MAGIC,
     STREAM_META_HEADER,
     STREAM_RECORD_HEADER,
@@ -207,7 +206,7 @@ def test_metadata_bit_flip_fails_auth_and_does_not_persist(tmp_path: Path) -> No
         assert recovered == 0, field
         assert repository.events == [], field
         assert leftover_names(work, ".spill") == [], field
-        assert leftover_names(work, HEADER_QUARANTINE_SUFFIX), field
+        assert leftover_names(work, ".cq"), field
         assert store.pending_count() == 0, field
         assert any(
             item["alert_type"] == "vendor_raw_nonactive_quarantine" for item in alerts.events
@@ -233,7 +232,7 @@ def test_header_and_payload_swap_fails_auth(tmp_path: Path) -> None:
     assert recovered == 0
     assert repository.events == []
     assert leftover_names(tmp_path, ".spill") == []
-    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert leftover_names(tmp_path, ".cq")
 
 
 def test_cross_source_header_swap_fails_auth(tmp_path: Path) -> None:
@@ -326,7 +325,7 @@ def test_auth_failure_does_not_consume_activity_quota(tmp_path: Path) -> None:
     assert repository.events == []
     assert store.pending_count() == 0
     assert store.can_accept() is True
-    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert leftover_names(tmp_path, ".cq")
     assert any(item["alert_type"] == "vendor_raw_nonactive_quarantine" for item in alerts.events)
     for item in alerts.events:
         detail = item.get("detail") or {}
@@ -339,6 +338,9 @@ def test_auth_failure_does_not_consume_activity_quota(tmp_path: Path) -> None:
             "quarantine_expired",
             "quarantine_capacity_dropped",
             "dropped",
+            "key_unavailable",
+            "transient_io",
+            "auth_failed",
         }
 
 

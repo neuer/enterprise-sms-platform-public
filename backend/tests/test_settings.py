@@ -858,3 +858,30 @@ def test_raw_spill_quotas_have_upper_and_lower_bounds() -> None:
             vendor_mock=True,
             raw_spill_max_pending_files=0,
         )
+    with pytest.raises(ValueError, match="RAW_SPILL_MAX_CIPHERQ_FILES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_max_cipherq_files=0,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_MAX_CIPHERQ_BYTES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_max_cipherq_bytes=1024,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_CIPHERQ_RETENTION_S"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_cipherq_retention_s=-1,
+        )

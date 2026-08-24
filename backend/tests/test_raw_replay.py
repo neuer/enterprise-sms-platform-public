@@ -69,19 +69,16 @@ class FakeRepository:
         return type(
             "Claim",
             (),
-            {"record": self.record, "claimed": self.claimed},
+            {"record": self.record, "claimed": self.claimed, "lease": None},
         )()
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None:
+    async def mark_replay_error(self, raw_id: int, error: str, **_: object) -> None:
         self.errors.append((raw_id, error))
 
     async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None:
         return self.record
 
-    async def update_parse_disposition(self, raw_id: int, **_: object) -> None:
-        return None
-
-    async def audit_raw_reevaluate(self, raw_id: int, **_: object) -> None:
+    async def apply_raw_reevaluation(self, raw_id: int, **_: object) -> None:
         return None
 
     async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
@@ -116,7 +113,7 @@ class FakeProcessor:
         self.label = label
         self.events = events
 
-    async def process_existing(self, raw_id: int, data: object) -> int:
+    async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
         self.events.append((self.label, (raw_id, data)))
         return len(data) if isinstance(data, list) else 0
 

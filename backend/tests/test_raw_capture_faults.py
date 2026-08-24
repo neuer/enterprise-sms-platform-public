@@ -134,6 +134,7 @@ class TruncatedReplayRepository:
             (),
             {
                 "claimed": False,
+                "lease": None,
                 "record": RawReplayRecord(
                     raw_id,
                     "report",
@@ -146,7 +147,7 @@ class TruncatedReplayRepository:
             },
         )()
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None:
+    async def mark_replay_error(self, raw_id: int, error: str, **_: object) -> None:
         return None
 
     async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
@@ -338,6 +339,7 @@ async def test_protocol_invalid_raw_replay_is_rejected() -> None:
                 (),
                 {
                     "claimed": True,
+                    "lease": None,
                     "record": RawReplayRecord(
                         raw_id,
                         "report",

@@ -992,9 +992,10 @@
 
 - 决策：在 D083 header-only 与 D082/D085 预留合同之上，给 spill 目录对象补齐
   有界终态。活动对象只包括仍可能完成或恢复为 `raw_vendor_log` 事实的
-  `.stream` / `.stream.tmp` / `.spill` / `.spill.tmp`。分类器必须认证首个
+  `.stream` / `.stream.tmp` / `.spill` / `.spill.tmp`。  分类器必须认证首个
   announce/control/data 整帧；长度头后的部分字节或认证失败不得当作已认证
-  data，也不得静默删除。超龄后写入无 PII 的 `.headerq` 证据并释放活动配额。
+  data，也不得静默删除。超龄后把仍可能有效的原密文原子迁入 `.cq`（manifest
+  先落盘），仅可证明为空的 header-only 删除；`.headerq` 只作空/损坏文件头标记。
   损坏 final `.spill`、原子写临时文件（`*.spill.tmp` / `*.quarantine.tmp` /
   `*.headerq.tmp` / `*.hdr`）与 stream 删除后的孤儿 reservation/handoff
   marker 在启动和每轮 `reclaim_idle` 统一分类：完整 tmp 晋升，不可读对象
@@ -1064,8 +1065,10 @@
   `raw_vendor_log` 的 `source:payload_sha256` 身份。keyring 全版本都可尝试
   解密 header，不得只信未认证 header 里的 `key_version`。未认证旧格式
   （明文 JSON header + newline + payload_enc）强制 `unknown_legacy`，
-  不得默认 `complete` 或进入自动重放。认证失败立即写入无 PII 的 `.headerq`
-  并离开活动配额，不消耗 live pull 名额。不扩大活动磁盘配额、不缩小 64MiB
+  不得默认 `complete` 或进入自动重放。header 提示版本不在 keyring 时记
+  `key_unavailable`，暂态 I/O 记 `transient_io`，二者保留原密文、告警并重试，
+  不得销毁。真实认证失败把原字节原子迁入 `.cq`（先写无 PII manifest 再
+  `os.replace`），离开活动配额，不消耗 live pull 名额。不扩大活动磁盘配额、不缩小 64MiB
   恢复上限、不放松 payload AES-GCM，不改 payload AAD，无数据库迁移。
   `.stream` terminal、`.spill` header 与库行 `capture_state` 使用同一套
   replay 资格事实。
@@ -1075,6 +1078,41 @@
 - 影响：`raw_spill`/`report_ingest`/`reply_ingest`、vendor-api 恢复句。
   未改 Vue、OpenAPI、Alembic、D082/D085 预留与内部帧、D086 隔离配额、D087
   Import/Export 持久化合同。D088 已由 #331 / #468 占用，本项使用 D089。
+
+## D090 Raw Artifact 密文隔离禁止 unlink-first
+
+- 决策：修订 D086/D089 中「认证失败写 `.headerq` 并删除原文件」。分类必须区分
+  `key_unavailable` / `transient_io` / `auth_failed` / `corrupt` / `provably_empty`。
+  缺历史 Key 与暂态 I/O 保留原密文、告警、稍后重试，cipherq 容量淘汰不得驱逐它们。
+  真实 bit-flip / 已证明认证失败把原字节原子迁入 `{source}-{token}.cq`，并先
+  fsync 无 PII 的 `{source}-{token}.cq.man`（state=pending→sealed）。ENOSPC 写
+  manifest 时源文件不动；kill -9 后重入封印或重试改名，禁止出现「源已删且无
+  dest/manifest」。仅可证明为空的 header-only / 截断空头超龄后删除。`.cq` 不占
+  活动 32 文件/512MiB 配额，独立文件数/字节/保留期（默认 64 个、至少一次
+  64MiB 预留、86400s）。Key 归还后 `iter_recoverable` 可从封印 `.cq` 完整恢复。
+  Report/Reply 共享同一 Volume。日志/告警/manifest 不得含手机号、短信正文、
+  Token 机密、Key、密文或不受控完整路径。无数据库迁移。
+- 原因：#439 第六轮确认当前隔离把缺 Key、暂态 I/O 与真实认证失败合并，并在
+  保存可恢复密文前 unlink，滚动部署或 EIO 会永久丢掉拉走即消费事实。
+- 影响：`raw_spill`/`crypto`/`settings`/`report_ingest`/`reply_ingest`、vendor-api
+  恢复句。未改 Vue、OpenAPI、Alembic、D082/D085 预留与内部帧。
+
+## D091 Raw 处理租约 epoch fencing
+
+- 决策：`raw_vendor_log` 增加 `processing_lease_id` / `processing_lease_epoch` /
+  `processing_lease_expires_at`。初始 persist 与 replay claim 使用同一合同：
+  Python 生成 UUID，epoch 自增（persist 从 1 起），租约 15 分钟。超时扫描与
+  接管只认 lease 过期或空租约，不再把 `processing_started_at` 当作所有权。
+  `update_metadata` / `mark_processed` / `mark_error` / `mark_replay_error`
+  必须带 expected lease CAS；miss 只写无 PII 的 `worker_lease_event(task_kind='raw',
+  event_type='fencing_miss')`，不得覆盖现态。成功终态清空 lease_id/expires_at，
+  不回退 epoch。parser reevaluate 与审计同事务，遇活租约失败关闭。CHECK
+  `ck_raw_vendor_processed_consistency` 拒绝
+  processed/parse_state/replay_eligibility 矛盾组合。
+- 原因：#475/#441 第六轮确认仅 `processing_started_at` 无法阻止过期处理器覆盖
+  接管后的终态，且 reevaluate 资格变更与审计分事务。
+- 影响：schema v1.6.64、0076、`raw_lease`、ops/report/reply 仓储、raw 重放与
+  ingest 共享解析路径。不削弱 uncertain 禁重发、PII 加密和资格 never 粘滞。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 

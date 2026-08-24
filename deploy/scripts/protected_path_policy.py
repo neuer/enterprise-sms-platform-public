@@ -35,34 +35,23 @@ FRONTEND_SECURITY_DOMAINS: tuple[str, ...] = (
 # 既有会话文件走域默认 frontend-security（#454），不再升格到 backend job。
 BACKEND_CRITICAL_RAISE_EXACT: frozenset[str] = frozenset()
 
-# T5-05 R&D：既有非敏感视图保持普通 frontend 门禁；新增 views 不得写入本表。
-_T505_ORDINARY_VIEW_REASON = (
-    "T5-05 已审查：该既有视图保持普通 frontend 组件门禁；"
-    "frontend-security 仅覆盖 Login/PasswordChange/AppManagement/Approval/Config "
-    "以及此后新增的 frontend/src/views/*.vue。"
-)
-
-# 安全域内已审查降级为普通组件门禁的路径。新增条目即显式削弱保护，必须写理由。
+# 安全域内已审查降级为普通组件门禁的路径。新增条目即显式削弱保护，必须
+# 写独立结构化理由（allowed_apis / excluded / review），不得多页复用泛化文案。
+# 含密码、角色、Raw 重放、队列恢复、解密导出、发送或策略写入的视图不得入表。
 REVIEWED_ORDINARY_REASONS: MappingProxyType[str, str] = MappingProxyType(
     {
         "backend/app/services/dashboard.py": (
-            "已审查：只读仪表盘聚合，不含认证、加密、PII 持久化或厂商下发。"
+            "allowed_apis=dashboard_read_aggregate; "
+            "excluded=auth,crypto,pii-decrypt,send,replay,resume,retry,trigger,"
+            "export-step-up,role,session,config-mutation,blacklist,callback,"
+            "vendor-bind; review=display-only"
         ),
-        "frontend/src/views/AuditView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/BatchView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/BlacklistView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/CallbackView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/DashboardView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/MessageView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/OpsView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/ReplyView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/ReportView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/SecurityDailyView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/SendView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/SensitiveWordView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/SignView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/TemplateView.vue": _T505_ORDINARY_VIEW_REASON,
-        "frontend/src/views/UserView.vue": _T505_ORDINARY_VIEW_REASON,
+        "frontend/src/views/DashboardView.vue": (
+            "allowed_apis=getDashboard; "
+            "excluded=auth,crypto,pii-decrypt,send,replay,resume,retry,trigger,"
+            "export-step-up,role,session,config-mutation,blacklist,callback,"
+            "vendor-bind; review=display-only"
+        ),
     }
 )
 REVIEWED_ORDINARY_EXACT: frozenset[str] = frozenset(REVIEWED_ORDINARY_REASONS)

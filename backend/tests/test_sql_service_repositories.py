@@ -792,6 +792,8 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     raw_insert_sql = connection.calls[0][0]
     assert "raw_vendor_log" in raw_insert_sql
     assert "processing_started_at" in raw_insert_sql
+    assert "processing_lease_id" in raw_insert_sql
+    assert "processing_lease_epoch" in raw_insert_sql
     assert "capture_state" in raw_insert_sql
     assert "now()" in raw_insert_sql
 
@@ -900,12 +902,22 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = SqlReportRepository()
-    connection = FakeConnection([FakeResult(), FakeResult()])
+    connection = FakeConnection([FakeResult(rowcount=1), FakeResult(rowcount=1)])
     bind_engine(monkeypatch, repository, connection)
+    from uuid import UUID
+
+    from app.services.raw_lease import RawProcessingLease
+
+    processed_lease = RawProcessingLease(4, UUID(int=4), 1)
+    error_lease = RawProcessingLease(5, UUID(int=5), 2)
+    repository.remember_lease(processed_lease)
+    repository.remember_lease(error_lease)
     await repository.mark_processed(4)
     await repository.mark_error(5, "bad payload")
     assert "processing_started_at=NULL" in connection.calls[0][0]
     assert "processing_started_at=NULL" in connection.calls[1][0]
+    assert "processing_lease_id" in connection.calls[0][0]
+    assert "processing_lease_epoch" in connection.calls[0][0]
     assert "parse_state" in connection.calls[0][0]
     assert "replay_eligibility" in connection.calls[0][0]
     assert connection.calls[0][1] == {
@@ -914,6 +926,8 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "error": None,
         "parse_state": "processed",
         "replay_eligibility": "never",
+        "lease_id": str(processed_lease.lease_id),
+        "epoch": 1,
     }
     assert connection.calls[1][1] == {
         "id": 5,
@@ -921,6 +935,8 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "error": "bad payload",
         "parse_state": "unattempted",
         "replay_eligibility": "manual",
+        "lease_id": str(error_lease.lease_id),
+        "epoch": 2,
     }
 
     connection = FakeConnection(
