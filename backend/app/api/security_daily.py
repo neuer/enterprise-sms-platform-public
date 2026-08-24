@@ -16,6 +16,8 @@ from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.security_daily import (
+    SENDER_ADDRESS,
+    SENDER_DOMAIN,
     ConfigurationState,
     DeliveryAction,
     FileSecurityDailyControl,
@@ -211,8 +213,8 @@ def _configuration_model(
         enabled=configuration.enabled,
         recipients=list(configuration.recipients),
         resend_api_key_configured=bool(configuration.api_key),
-        sender_domain="reports.neuer.cn",
-        sender_address="security-daily@reports.neuer.cn",
+        sender_domain=SENDER_DOMAIN,
+        sender_address=SENDER_ADDRESS,
     )
 
 
