@@ -107,7 +107,7 @@ fail closed。远端当前 HEAD 也必须已经存在于本地对象库；缺失
 
 跨历史基线迁移必须另立变更单，在**不属于本公开工作区**的隔离临时证据仓库和受控服务端
 维护窗口中完成。方案至少要经过：私有证据访问授权、公开快照逐文件复验、数据/volume
-保留与回退设计、24 件 secrets/三域 Redis/七职责数据库角色迁移评审、清理证明，以及
+保留与回退设计、25 件 secrets/三域 Redis/七职责数据库角色迁移评审、清理证明，以及
 服务器最终 HEAD/origin 都绑定公开仓库 commit 的复核。任何私有 URL、ref、commit 或
 Git 对象不得回流到公开工作区。完成新公开基线后，先运行只读 `status`，再从干净且已合并
 的 `origin/main` 恢复本手册的按需 `apply` 流程；不得用 raw Git/Compose 绕过。
@@ -167,9 +167,10 @@ host-control 快照，并确认该 commit 的 `backend`、`frontend`、`security
 随后完整复用 high-risk 的暂停、`uncertain` 拦截、密文 checkpoint、expand-only 检查、
 prepare/apply/verify/status 和 operator Git 复核。当前唯一批准的
 `0053_idempotency_scope → 0061_vendor_binding_outbox` 重对齐还会在 lifecycle lock 内把
-权威运行密钥从精确旧 18 件合同扩展到 24 件：仅追加四个两两独立的审计 context key 和
+历史 rebaseline 把权威运行密钥从精确旧 18 件合同扩展到 24 件：仅追加四个两两独立的审计 context key 和
 一对匹配的 X25519 告警凭据 key，由服务器本机生成并逐文件 `O_EXCL`/`fsync` 提交；不会
-输出值、长度、摘要或派生信息，不会替换既有 18 件密钥或厂商凭据。完整 24 件清单时幂等
+输出值、长度、摘要或派生信息，不会替换既有 18 件密钥或厂商凭据。Phase 0 的第 25 件
+`redis_tls_server_key` 必须作为独立运行密钥流程准备，旧 rebaseline 不会代生成生产 TLS 私钥；完整 24 件历史清单时该旧流程幂等
 复核，合法的 private-first 中断可续写公钥；缺件、额外文件、错误权限、重复审计 key、
 public-only 或不匹配 keypair 一律失败关闭。密文 checkpoint 完成后才扩展权威清单，切换
 目标源码后再由目标提交的固定预处理器原子生成新 runtime generation，然后才允许迁移。

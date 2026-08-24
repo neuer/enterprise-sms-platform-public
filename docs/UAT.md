@@ -3,12 +3,12 @@
 > 自动化执行环境：预生产（VENDOR_MOCK=1、AUTH_MOCK=1、告警渠道为空的 log-sink；mock 契约见 vendor-api.md 第3节）。任何自动化用例不得请求真实 LDAP、厂商、企微或 SMTP。
 > 每例记录：执行人 / 日期 / 结果（P/F）/ 截图或日志编号，汇总到受限测试归档；真实
 > 号码、内部证据与报告不进入公开仓库。
-> 角色账号：admin01 / approver01 / operator01 / viewer01（seed-dev mock 用户，密码从本机 0600 `ldap_bind_password` secret 读取）+ 应用 app-iam(verify)、app-oa(notice)、app-mkt(market)。真人 UAT 在 AUTH_MOCK=0 的预生产环境重复 01–04。
+> 角色账号：admin01 / approver01 / operator01 / viewer01（seed-dev mock 用户，密码从本机 0600 `ldap_bind_password` secret 读取）+ 应用 app-iam(verify)、app-oa(notice)、app-mkt(market)。Phase 0 真人 UAT 在 AUTH_MOCK=0 的预生产环境以四个本地账号重复 01–04；AD 登录与角色映射仅在 AD Provider 后续启用前另行复验。
 > 用例临时修改 sys_config 时，必须先保存原值并在 finally 阶段恢复；失败退出也必须恢复，禁止污染后续用例。
 
 | # | 用例 | 步骤要点 | 预期 | 映射 |
 |---|---|---|---|---|
-| 01 | AD 登录与角色映射 | 四账号分别登录 | 各自菜单与数据权限正确（附录A 可见性） | FR-3章 |
+| 01 | 登录与角色权限 | Phase 0 用四个本地账号分别登录；AD 启用前再用四个目录账号复验 | 各自菜单与数据权限正确（附录A 可见性），Provider 不自动回退 | FR-3章 |
 | 02 | 账号锁定 | operator01 连续错密 5 次 | 第 6 次提示锁定，15min 后可登录 | 3章 |
 | 03 | 登录 IP 限流 | 同 IP 5min 内错 20 次（脚本） | 返回 429，IP 封 15min，正确密码也被拒 | 3章 |
 | 04 | 强制下线 | admin 对 operator01 执行 revoke | 其已登录会话下一请求 401 | FR-18a |

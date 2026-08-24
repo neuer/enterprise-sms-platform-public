@@ -57,6 +57,9 @@ def test_production_disables_interactive_api_documentation(tmp_path: Path) -> No
         auth_mock=False,
         vendor_mock=False,
         redis_ha_mode="managed",
+        redis_broker_host="broker.redis.example",
+        redis_auth_host="auth.redis.example",
+        redis_control_host="control.redis.example",
         vendor_base_url="https://vendor.example.test",
         ldap_ca_certs_file=ca_file,
     )

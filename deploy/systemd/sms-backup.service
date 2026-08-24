@@ -1,7 +1,9 @@
 [Unit]
 Description=Enterprise SMS Platform encrypted backup
-Requires=docker.service sms-platform.service
+Requires=docker.service
+Requisite=sms-platform.service
 After=docker.service sms-platform.service
+RequiresMountsFor=/var/lib/sms-platform/runtime
 StartLimitIntervalSec=20min
 StartLimitBurst=3
 
@@ -10,16 +12,16 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/etc/sms-platform/lifecycle.env
-ExecStart=/opt/sms-platform/backend/.venv/bin/python /opt/sms-platform/deploy/scripts/lifecycle_manager.py backup
+ExecStartPre=/usr/local/sbin/sms-storage-preflight --mode startup
+ExecStartPre=/usr/bin/python3 /opt/sms-platform/deploy/scripts/host_python_preflight.py lifecycle
+ExecStart=/usr/bin/python3 /opt/sms-platform/deploy/scripts/lifecycle_manager.py backup
 Restart=on-failure
 RestartSec=5min
-TimeoutStartSec=2h
+# Internal deadline is 4h; the outer 5h guard leaves bounded staging cleanup margin.
+TimeoutStartSec=5h
 UMask=0077
-StateDirectory=sms-platform/backups
-StateDirectoryMode=0700
 NoNewPrivileges=yes
 PrivateTmp=yes
-PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes
@@ -32,7 +34,8 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
-ReadWritePaths=/var/lib/sms-platform/backups /run/docker.sock
-ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /run/backup-secrets
+DevicePolicy=closed
+ReadWritePaths=/var/lib/sms-platform/runtime/backups /run/docker.sock
+ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid
 StandardOutput=journal
 StandardError=journal

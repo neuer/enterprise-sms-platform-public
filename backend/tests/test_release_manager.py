@@ -11,6 +11,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from release_manager import (  # noqa: E402
     ReleaseManager,
     ReleaseManagerError,
     ReleaseState,
+    ReleaseStore,
     RuntimeObservation,
     reconcile_release,
 )
@@ -63,6 +65,7 @@ RUNTIME_SERVICES = (
     "beat",
 )
 WORKER_SERVICES = ("worker-realtime", "worker-bulk", "worker-callback")
+RECOVERY_RUNTIME_TARGET = "generations/generation-" + "a" * 32
 
 
 def _image_id(name: str) -> str:
@@ -113,9 +116,10 @@ def _write_bound_release_report(
 
 def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
     production = manifest["mode"] == "production"
+    commit = manifest["commit"]
     source = {
         "app_version": "1.6.0",
-        "git_sha": COMMIT,
+        "git_sha": commit,
         "schema_revision": manifest["migration"]["target"],
         "openapi_sha256": "9" * 64,
         "workflow_repository": (
@@ -128,7 +132,7 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "gate_type": "release",
-        "candidate_commit": COMMIT,
+        "candidate_commit": commit,
         "source": source,
         "generated_at": "2026-07-14T07:00:00Z",
         "trivy_image": "aquasec/trivy:0.70.0@sha256:" + "f" * 64,
@@ -145,11 +149,11 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "promotion_source": (
             {
                 "report_sha256": "a" * 64,
-                "candidate_commit": COMMIT,
+                "candidate_commit": commit,
                 "source": source,
                 "images": {
                     name: {
-                        "ref": f"sms-platform-release-{name}:{COMMIT}",
+                        "ref": f"sms-platform-release-{name}:{commit}",
                         "image_id": manifest["images"][name]["id"],
                         "scan_report_sha256": "b" * 64,
                     }
@@ -214,24 +218,95 @@ def _data_report(manifest: dict[str, Any], *, postgres_major: int = 16) -> dict[
     }
 
 
+RESTORE_CRYPTO_COVERAGE_FIELDS = (
+    "app.callback_secret_enc",
+    "blacklist.phone_enc",
+    "callback_task.callback_secret_enc",
+    "import_phone.phone_enc",
+    "raw_vendor_log.payload_enc",
+    "reply_event.content_enc",
+    "reply_event.phone_enc",
+    "report_event.phone_enc",
+    "sensitive_metadata_archive.value_enc",
+    "sms_batch.display_content_enc",
+    "sms_batch.send_content_enc",
+    "sms_message.phone_enc",
+    "sms_reply.phone_enc",
+    "sms_template.content_enc",
+    "sms_template.name_enc",
+    "unmatched_report.phone_enc",
+    "vendor_test_recipient.phone_enc",
+)
+
+
+def _restore_crypto_probe_receipt() -> dict[str, Any]:
+    coverage = {
+        label: {"rows": 0, "key_versions_verified": 0}
+        for label in RESTORE_CRYPTO_COVERAGE_FIELDS
+    }
+    coverage["raw_vendor_log.payload_enc"] = {
+        "rows": 30,
+        "key_versions_verified": 1,
+    }
+    coverage["sms_batch.display_content_enc"] = {
+        "rows": 10,
+        "key_versions_verified": 1,
+    }
+    coverage["sms_batch.send_content_enc"] = {
+        "rows": 10,
+        "key_versions_verified": 1,
+    }
+    return {
+        "schema_version": 2,
+        "status": "performed",
+        "counts": {
+            "audit_context_keys": 4,
+            "encrypted_columns": len(RESTORE_CRYPTO_COVERAGE_FIELDS),
+            "encrypted_rows": 50,
+            "ciphertext_samples_verified": 3,
+            "key_version_columns": 8,
+            "referenced_key_versions": 1,
+            "sms_message_rows": 0,
+        },
+        "coverage": coverage,
+    }
+
+
 def _restore_report() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "success",
+        "metric_scope": "database_restore",
+        "business_rto_evidence": False,
         "snapshot_id": "snapshot-20260714",
+        "recovery_crypto_generation_id": "recovery-generation-01",
+        "backup_passphrase_generation_id": "backup-generation-01",
         "git_commit": COMMIT,
         "database": "sms_drill_release_20260714",
         "started_at": "2026-07-14T07:10:00+00:00",
         "finished_at": "2026-07-14T07:20:00+00:00",
         "restore_seconds": 600.0,
-        "rto_limit_seconds": 1800.0,
-        "within_rto": True,
+        "restore_budget_seconds": 43200.0,
+        "within_restore_budget": True,
         "checks": {
-            "alembic_version": "0011",
-            "role_flags": "false|false|false",
-            "audit_privileges": "true|false|false",
+            "alembic_version": "0012",
+            "role_flags": "7|true",
+            "audit_privileges": "true",
+            "crypto_generation_binding": "matched_host_generation_ids",
+            "historical_ciphertext_validation": "performed",
+            "pre_migration_crypto_validation": "performed",
+            "post_migration_crypto_validation": "performed",
         },
-        "table_counts": {"sms_batch": 10, "audit_log": 20, "raw_vendor_log": 30},
+        "crypto_probe_receipts": {
+            "pre_migration": _restore_crypto_probe_receipt(),
+            "post_migration": _restore_crypto_probe_receipt(),
+        },
+        "table_counts": {
+            "sms_batch": 10,
+            "audit_log": 20,
+            "raw_vendor_log": 30,
+            "sms_message": 0,
+        },
     }
 
 
@@ -241,7 +316,7 @@ def _production_change_record(manifest: dict[str, Any], report_path: Path) -> di
         "record_type": "postgres_backup_restore_change",
         "change_id": "CHG-20260714-001",
         "release_id": manifest["release_id"],
-        "target_commit": COMMIT,
+        "target_commit": manifest["commit"],
         "target_postgres_image_id": manifest["images"]["postgres"]["id"],
         "approval": {
             "status": "approved",
@@ -298,7 +373,7 @@ def _bundle(
     data_name = "data-images.json" if postgres_changed else None
     backup = (
         {"record": "backup-change.json", "restore_report": "restore-report.json"}
-        if mode == "production" and postgres_changed
+        if mode == "production"
         else None
     )
     manifest = {
@@ -343,10 +418,29 @@ def _bundle(
     return manifest_path, manifest, current_refs
 
 
-def _platform(tmp_path: Path, current_refs: dict[str, str]) -> tuple[Path, Path]:
+def _platform(
+    tmp_path: Path,
+    current_refs: dict[str, str],
+    *,
+    migration_from: str,
+    migration_target: str,
+) -> tuple[Path, Path]:
     root = tmp_path / "platform"
     (root / "deploy").mkdir(parents=True)
     (root / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    for name in ("docker-compose.production-storage.yml", "docker-compose.redis-tls.yml"):
+        (root / "deploy" / name).write_text(f"# {name}\nservices: {{}}\n", encoding="utf-8")
+    versions = root / "backend" / "migrations" / "versions"
+    versions.mkdir(parents=True)
+    (versions / "0001_from.py").write_text(
+        f'revision = "{migration_from}"\ndown_revision = None\n',
+        encoding="utf-8",
+    )
+    if migration_target != migration_from:
+        (versions / "0002_target.py").write_text(
+            f'revision = "{migration_target}"\ndown_revision = "{migration_from}"\n',
+            encoding="utf-8",
+        )
     keys = {
         "api": "SMS_API_IMAGE",
         "web": "SMS_WEB_IMAGE",
@@ -354,7 +448,8 @@ def _platform(tmp_path: Path, current_refs: dict[str, str]) -> tuple[Path, Path]
         "redis": "SMS_REDIS_IMAGE",
     }
     (root / ".env").write_text(
-        "\n".join(f"{keys[name]}={current_refs[name]}" for name in IMAGE_NAMES) + "\n",
+        "\n".join(f"{keys[name]}={current_refs[name]}" for name in IMAGE_NAMES)
+        + "\nREDIS_HA_MODE=isolated-standalone\n",
         encoding="utf-8",
     )
     release_root = tmp_path / "release-store"
@@ -400,6 +495,33 @@ class FakeRunner:
         self.missing_worker_ping: str | None = None
         self.after_action: Any = None
         self.after_ping: Any = None
+        self.volume_inventory = ""
+        self.recovery_watermark: dict[str, object] = {
+            "batch_queued": 2,
+            "batch_sending": 1,
+            "chunk_pending": 3,
+            "submitting": 0,
+            "retrying": 0,
+            "submitted": 4,
+            "uncertain": 1,
+            "max_chunk_id": 9,
+            "outbox_pending": 2,
+            "outbox_leased": 0,
+            "outbox_processing": 0,
+            "max_outbox_created_at": "2026-08-24 00:00:00+00",
+        }
+        self.recovery_database_fingerprint: dict[str, object] = {
+            "database": "sms",
+            "database_oid": "16384",
+            "migration_head": self.manifest["migration"]["target"],
+            "batch_rows": 10,
+            "chunk_rows": 9,
+            "outbox_rows": 4,
+            "max_batch_id": 10,
+            "max_chunk_id": 9,
+        }
+        self.recovery_crypto_probe = _restore_crypto_probe_receipt()
+        self.recovery_crypto_probe_calls = 0
 
     def run(
         self,
@@ -429,6 +551,8 @@ class FakeRunner:
                 else ([ref] if self.manifest["mode"] == "production" else [])
             )
             return self._result(command, f"{image_id} linux/amd64 {json.dumps(digests)}\n")
+        if command[:3] == ["docker", "volume", "ls"]:
+            return self._result(command, self.volume_inventory)
         if command[:2] == ["docker", "inspect"]:
             container = command[-1]
             service = next(
@@ -479,6 +603,16 @@ class FakeRunner:
             if command[-4:-1] == ["ps", "--all", "-q"]:
                 service = command[-1]
                 return self._result(command, f"{self.service_container_ids[service]}\n")
+            if command[-3:] == ["ps", "--all", "-q"]:
+                identifiers = [
+                    self.service_container_ids[service]
+                    for service in RUNTIME_SERVICES
+                    if self.service_running[service]
+                ]
+                return self._result(
+                    command,
+                    "" if not identifiers else "\n".join(identifiers) + "\n",
+                )
             if command[-3:-1] == ["ps", "-q"]:
                 service = command[-1]
                 value = (
@@ -496,8 +630,30 @@ class FakeRunner:
             if (
                 command[-6:-3] == ["exec", "-T", "postgres"]
                 and "SELECT version_num FROM alembic_version" in command[-1]
+                and "json_build_object" not in command[-1]
             ):
                 return self._result(command, f"{self.migration_head}\n")
+            if (
+                command[-6:-3] == ["exec", "-T", "postgres"]
+                and "'batch_queued'" in command[-1]
+                and "'outbox_processing'" in command[-1]
+            ):
+                return self._result(command, json.dumps(self.recovery_watermark) + "\n")
+            if (
+                command[-6:-3] == ["exec", "-T", "postgres"]
+                and "'database_oid'" in command[-1]
+                and "'outbox_rows'" in command[-1]
+            ):
+                value = dict(self.recovery_database_fingerprint)
+                value["migration_head"] = self.migration_head
+                return self._result(command, json.dumps(value) + "\n")
+            if command[-3:] == [
+                "python",
+                "-m",
+                "scripts_support.recovery_crypto_probe",
+            ]:
+                self.recovery_crypto_probe_calls += 1
+                return self._result(command, json.dumps(self.recovery_crypto_probe) + "\n")
             if command[-8:] == [
                 "exec",
                 "-T",
@@ -559,6 +715,12 @@ class FakeRunner:
                         image_name = _service_image_name(service)
                         self.runtime_refs[image_name] = env[keys[image_name]]
                         self.service_running[service] = True
+                        if (
+                            self.unhealthy_service == service
+                            and env[keys[image_name]]
+                            != self.manifest["images"][image_name]["ref"]
+                        ):
+                            self.unhealthy_service = None
                         self.recreate_count += 1
                         self.service_container_ids[service] = hashlib.sha256(
                             f"recreated:{service}:{self.recreate_count}".encode()
@@ -594,7 +756,12 @@ def _manager(
     manifest: dict[str, Any],
     current_refs: dict[str, str],
 ) -> tuple[ReleaseManager, FakeRunner, Path, Path]:
-    root, release_root = _platform(tmp_path, current_refs)
+    root, release_root = _platform(
+        tmp_path,
+        current_refs,
+        migration_from=manifest["migration"]["from"],
+        migration_target=manifest["migration"]["target"],
+    )
     runner = FakeRunner(manifest, current_refs)
     manager = ReleaseManager(
         root=root,
@@ -645,6 +812,301 @@ def _bundle_for_changes(
         for name in IMAGE_NAMES
     }
     return manifest_path, manifest, current_refs
+
+
+def _production_baseline_bundle(
+    tmp_path: Path,
+) -> tuple[Path, dict[str, Any], dict[str, str]]:
+    manifest_path, manifest, _ = _bundle(tmp_path, mode="production")
+    for image in manifest["images"].values():
+        image["changed"] = False
+    manifest["migration"] = {"from": "0012", "target": "0012", "compatibility": "none"}
+    manifest["evidence"]["backup_restore_change"] = None
+    for name in ("backup-change.json", "restore-report.json"):
+        (manifest_path.parent / name).unlink()
+    _write_bound_release_report(
+        manifest_path.parent / "release-gate.json",
+        manifest,
+        _release_report(manifest),
+    )
+    _write_private_json(manifest_path, manifest)
+    refs = {name: manifest["images"][name]["ref"] for name in IMAGE_NAMES}
+    return manifest_path, manifest, refs
+
+
+def _recovery_evidence(
+    tmp_path: Path,
+    root: Path,
+    manifest: dict[str, Any],
+) -> tuple[Path, str, Path, str, Path, str]:
+    snapshot_dir = tmp_path / "verified-snapshot"
+    snapshot_dir.mkdir(mode=0o700)
+    snapshot_dir.chmod(0o700)
+    contents = {
+        "database": ("sms_snapshot.dump.enc", b"encrypted-production-database"),
+        "repository_archive": ("repository_snapshot.tar.gz", b"tracked-repository"),
+        "environment": ("production.env", (root / ".env").read_bytes()),
+    }
+    files: dict[str, dict[str, object]] = {}
+    for label, (name, payload) in contents.items():
+        path = snapshot_dir / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        files[label] = {
+            "name": name,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+    now = datetime.now(UTC)
+    created_at = (now - timedelta(hours=2)).isoformat()
+    window_ended_at = (now - timedelta(hours=1)).isoformat()
+    approved_at = (now - timedelta(minutes=30)).isoformat()
+    snapshot_manifest = snapshot_dir / "manifest.json"
+    _write_private_json(
+        snapshot_manifest,
+        {
+            "schema_version": 1,
+            "snapshot_id": "20260714T060000Z_cccccccccccc",
+            "created_at": created_at,
+            "git_commit": manifest["commit"],
+            "alembic_version": manifest["migration"]["target"],
+            "database": "sms",
+            "secrets_included": False,
+            "recovery_crypto_generation_id": "recovery-generation-01",
+            "backup_passphrase_generation_id": "backup-generation-01",
+            "files": files,
+        },
+    )
+    snapshot_sha256 = hashlib.sha256(snapshot_manifest.read_bytes()).hexdigest()
+    checksum_lines = [
+        f"{item['sha256']}  {item['name']}" for item in files.values()
+    ] + [f"{snapshot_sha256}  manifest.json"]
+    checksums = snapshot_dir / "SHA256SUMS"
+    checksums.write_text("\n".join(checksum_lines) + "\n", encoding="ascii")
+    checksums.chmod(0o600)
+
+    live_database = {
+        "database": "sms",
+        "database_oid": "16384",
+        "migration_head": manifest["migration"]["target"],
+        "batch_rows": 10,
+        "chunk_rows": 9,
+        "outbox_rows": 4,
+        "max_batch_id": 10,
+        "max_chunk_id": 9,
+    }
+    live_digest = hashlib.sha256(
+        json.dumps(live_database, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    crypto_probe = _restore_crypto_probe_receipt()
+    crypto_probe_digest = hashlib.sha256(
+        json.dumps(crypto_probe, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt_dir = tmp_path / "approved-restore-receipt"
+    receipt_dir.mkdir(mode=0o700)
+    receipt_dir.chmod(0o700)
+    receipt = receipt_dir / "restore-receipt.json"
+    restored_at = (now - timedelta(minutes=45)).isoformat()
+    receipt_approved_at = (now - timedelta(minutes=20)).isoformat()
+    _write_private_json(
+        receipt,
+        {
+            "schema_version": 1,
+            "record_type": "production_recovery_restore_receipt",
+            "status": "approved",
+            "snapshot_id": "20260714T060000Z_cccccccccccc",
+            "snapshot_manifest_sha256": snapshot_sha256,
+            "snapshot_database_sha256": files["database"]["sha256"],
+            "git_commit": manifest["commit"],
+            "migration_head": manifest["migration"]["target"],
+            "database": "sms",
+            "recovery_crypto_generation_id": "recovery-generation-01",
+            "backup_passphrase_generation_id": "backup-generation-01",
+            "live_database_fingerprint_sha256": live_digest,
+            "crypto_probe_status": "performed",
+            "crypto_probe_sha256": crypto_probe_digest,
+            "restored_at": restored_at,
+            "approved_by": ["operator01", "reviewer02"],
+            "approved_at": receipt_approved_at,
+        },
+    )
+    receipt_sha256 = hashlib.sha256(receipt.read_bytes()).hexdigest()
+
+    fence_dir = tmp_path / "approved-gap-fence"
+    fence_dir.mkdir(mode=0o700)
+    fence_dir.chmod(0o700)
+    fence = fence_dir / "gap-fence.json"
+    _write_private_json(
+        fence,
+        {
+            "schema_version": 1,
+            "record_type": "production_recovery_gap_fence",
+            "status": "approved",
+            "snapshot_id": "20260714T060000Z_cccccccccccc",
+            "snapshot_manifest_sha256": snapshot_sha256,
+            "git_commit": manifest["commit"],
+            "migration_head": manifest["migration"]["target"],
+            "window_started_at": created_at,
+            "window_ended_at": window_ended_at,
+            "upstream_request_count": 7,
+            "vendor_accepted_or_sent_count": 3,
+            "vendor_not_accepted_count": 2,
+            "vendor_unknown_count": 2,
+            "old_primary_isolated": True,
+            "upstream_retries_frozen": True,
+            "unknown_results_blocked": True,
+            "automatic_resend_forbidden": True,
+            "approved_by": ["operator01", "reviewer02"],
+            "approved_at": approved_at,
+        },
+    )
+    fence_sha256 = hashlib.sha256(fence.read_bytes()).hexdigest()
+    return (
+        snapshot_manifest,
+        snapshot_sha256,
+        receipt,
+        receipt_sha256,
+        fence,
+        fence_sha256,
+    )
+
+
+def _start_and_adopt_recovery(
+    manager: ReleaseManager,
+    runner: FakeRunner,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    evidence: tuple[Path, str, Path, str, Path, str],
+) -> dict[str, object]:
+    snapshot_path, snapshot_sha, _, _, _, _ = evidence
+    started = manager.start_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+    assert started["phase"] == "data_started"
+    evidence = _approve_gap_after_recovery_start(evidence)
+    _, _, _, _, fence_path, fence_sha = evidence
+    runner.migration_head = manifest["migration"]["target"]
+    receipt_path, receipt_sha = _observe_and_approve_recovery(
+        manager,
+        manifest_path,
+        evidence,
+    )
+    adopted = manager.adopt_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        restore_receipt_path=receipt_path,
+        restore_receipt_sha256=receipt_sha,
+        gap_fence_path=fence_path,
+        gap_fence_sha256=fence_sha,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+    assert adopted["phase"] == "adopted"
+    return adopted
+
+
+def _approve_gap_after_recovery_start(
+    evidence: tuple[Path, str, Path, str, Path, str],
+) -> tuple[Path, str, Path, str, Path, str]:
+    snapshot_path, snapshot_sha, receipt_path, receipt_sha, fence_path, _ = evidence
+    fence = json.loads(fence_path.read_text(encoding="utf-8"))
+    fence["approved_at"] = datetime.now(UTC).isoformat()
+    _write_private_json(fence_path, fence)
+    return (
+        snapshot_path,
+        snapshot_sha,
+        receipt_path,
+        receipt_sha,
+        fence_path,
+        hashlib.sha256(fence_path.read_bytes()).hexdigest(),
+    )
+
+
+def _observe_and_approve_recovery(
+    manager: ReleaseManager,
+    manifest_path: Path,
+    evidence: tuple[Path, str, Path, str, Path, str],
+) -> tuple[Path, str]:
+    snapshot_path, snapshot_sha, receipt_seed, _, _, _ = evidence
+    output = receipt_seed.parent / "observed-restore-receipt.json"
+    template = manager.observe_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        output_path=output,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+    approved = dict(template)
+    approved["status"] = "approved"
+    approved["approved_by"] = ["operator01", "reviewer02"]
+    approved["approved_at"] = datetime.now(UTC).isoformat()
+    _write_private_json(output, approved)
+    return output, hashlib.sha256(output.read_bytes()).hexdigest()
+
+
+def _finish_recovery(manager: ReleaseManager) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for stage in ("api", "callback", "workers", "outbox", "beat", "web"):
+        result = manager.resume_recovery(
+            stage=stage,  # type: ignore[arg-type]
+            runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+            confirmed_recovered_host=True,
+        )
+    return result
+
+
+def _forward_candidate_bundle(
+    tmp_path: Path,
+    source: dict[str, Any],
+    *,
+    direct_previous_ref: str | None = None,
+    direct_previous_id: str | None = None,
+    downgrade: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    manifest_path, manifest, _ = _bundle(tmp_path, mode="production")
+    manifest["release_id"] = "release-forward-rollback"
+    manifest["commit"] = "d" * 40
+    for name in IMAGE_NAMES:
+        manifest["images"][name].update(source["images"][name])
+        manifest["images"][name]["archive_file"] = None
+        manifest["images"][name]["archive_sha256"] = None
+        manifest["images"][name]["changed"] = False
+    web = manifest["images"]["web"]
+    web["ref"] = direct_previous_ref or (
+        "registry.example.com/sms/web@sha256:" + "5" * 64
+    )
+    web["id"] = direct_previous_id or ("sha256:" + "f" * 64)
+    web["changed"] = True
+    if downgrade:
+        manifest["migration"] = {"from": "0012", "target": "0011", "compatibility": "expand"}
+    else:
+        manifest["migration"] = {"from": "0012", "target": "0012", "compatibility": "none"}
+        manifest["evidence"]["backup_restore_change"] = None
+        for name in ("backup-change.json", "restore-report.json"):
+            (manifest_path.parent / name).unlink()
+    _write_bound_release_report(
+        manifest_path.parent / "release-gate.json",
+        manifest,
+        _release_report(manifest),
+    )
+    if downgrade:
+        report_path = manifest_path.parent / "restore-report.json"
+        report = _restore_report()
+        report["git_commit"] = manifest["commit"]
+        report["checks"]["alembic_version"] = "0012"
+        _write_private_json(report_path, report)
+        _write_private_json(
+            manifest_path.parent / "backup-change.json",
+            _production_change_record(manifest, report_path),
+        )
+    _write_private_json(manifest_path, manifest)
+    return manifest_path, manifest
 
 
 def _control_smoke_bundle(
@@ -730,6 +1192,27 @@ def test_prepare_copies_closed_bundle_and_records_safe_prepared_snapshot(
         command[-5:] == ["exec", "-T", "api", "alembic", "current"]
         for command in runner.calls
     )
+
+
+def test_migration_target_must_be_a_static_forward_descendant(tmp_path: Path) -> None:
+    manifest_path, manifest, current_refs = _bundle(tmp_path)
+    manager, _, _, _ = _manager(tmp_path, manifest, current_refs)
+    manifest["migration"] = {"from": "0012", "target": "0011", "compatibility": "expand"}
+    _write_private_json(manifest_path, manifest)
+    reversed_manifest = load_manifest(manifest_path)
+
+    with pytest.raises(ReleaseManagerError, match="forward descendant"):
+        manager._validate_migration_direction(reversed_manifest)
+
+    manifest["migration"] = {
+        "from": "missing_revision",
+        "target": "missing_revision",
+        "compatibility": "none",
+    }
+    _write_private_json(manifest_path, manifest)
+    missing_manifest = load_manifest(manifest_path)
+    with pytest.raises(ReleaseManagerError, match="endpoints are absent"):
+        manager._validate_migration_direction(missing_manifest)
 
 
 def test_release_git_checks_disable_optional_index_refresh(tmp_path: Path) -> None:
@@ -944,6 +1427,8 @@ def test_production_postgres_change_accepts_bound_approval_and_restore_report(
     )
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
 
+    assert manifest["migration"]["from"] != manifest["migration"]["target"]
+
     manager.prepare(manifest_path)
 
     assert manager.status(manifest["release_id"])["state"] == "prepared"
@@ -1075,6 +1560,7 @@ def test_prepare_accepts_control_smoke_only_with_isolated_smoke_context(
         "snapshot_binding",
         "time_order",
         "report_checks",
+        "crypto_receipt",
         "report_tables",
     ],
 )
@@ -1102,7 +1588,11 @@ def test_production_backup_contract_rejects_any_unbound_or_unsafe_evidence(
     elif mutation == "time_order":
         change["approval"]["approved_at"] = "2026-07-14T07:15:00+00:00"
     elif mutation == "report_checks":
-        report["checks"]["role_flags"] = "true|false|false"
+        report["checks"]["role_flags"] = "6|true"
+    elif mutation == "crypto_receipt":
+        report["crypto_probe_receipts"]["pre_migration"]["counts"][
+            "encrypted_rows"
+        ] += 1
     else:
         report["table_counts"]["extra"] = 0
     _write_private_json(report_path, report)
@@ -1538,7 +2028,8 @@ def test_activate_orders_data_migrate_backend_and_web_with_exact_groups(
         compose
         + ["up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "120", "web"],
     ]
-    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+    release_state = manager.status(manifest["release_id"])
+    assert release_state["state"] == "succeeded"
 
 
 def test_successful_migrate_command_must_reach_declared_target(tmp_path: Path) -> None:
@@ -2546,6 +3037,113 @@ def test_explicit_rollback_after_data_observation_uses_same_compensation_matrix(
     assert resumed.status(manifest["release_id"])["state"] == "rolled_back"
 
 
+@pytest.mark.parametrize("post_compensation_drift", [False, True])
+def test_explicit_rollback_recovers_effect_missing_its_completed_observation(
+    tmp_path: Path,
+    post_compensation_drift: bool,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
+    manifest["migration"]["target"] = manifest["migration"]["from"]
+    manifest["migration"]["compatibility"] = "none"
+    _write_private_json(manifest_path, manifest)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+
+    def interrupt_after_web_effect(action: str, count: int) -> None:
+        if action == "up" and count == 1:
+            raise KeyboardInterrupt
+        if action == "up" and count == 2 and post_compensation_drift:
+            runner.runtime_refs["web"] = manifest["images"]["web"]["ref"]
+
+    runner.after_action = interrupt_after_web_effect
+    with pytest.raises(KeyboardInterrupt):
+        manager.activate(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "activating"
+    assert runner.runtime_refs["web"] == manifest["images"]["web"]["ref"]
+
+    runner.calls.clear()
+    resumed = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    expected_error = "recovery_required" if post_compensation_drift else "rolled_back"
+    with pytest.raises(ReleaseManagerError, match=expected_error):
+        resumed.rollback(manifest["release_id"])
+
+    expected_state = "recovery_required" if post_compensation_drift else "rolled_back"
+    assert resumed.status(manifest["release_id"])["state"] == expected_state
+    expected_ref = (
+        manifest["images"]["web"]["ref"]
+        if post_compensation_drift
+        else current_refs["web"]
+    )
+    assert runner.runtime_refs["web"] == expected_ref
+    assert any("up" in command and command[-1] == "web" for command in runner.calls)
+
+
+def test_prepared_data_release_rollback_does_not_recreate_unchanged_backend(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"postgres"})
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        manager.rollback(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "rolled_back"
+    assert not any("up" in command for command in runner.calls)
+
+
+def test_rolling_back_resume_closes_effective_compensation_without_repeating_it(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
+    manifest["migration"]["target"] = manifest["migration"]["from"]
+    manifest["migration"]["compatibility"] = "none"
+    _write_private_json(manifest_path, manifest)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+
+    def interrupt_after_each_web_effect(action: str, count: int) -> None:
+        if action == "up" and count in {1, 2}:
+            raise KeyboardInterrupt
+
+    runner.after_action = interrupt_after_each_web_effect
+    with pytest.raises(KeyboardInterrupt):
+        manager.activate(manifest["release_id"])
+    first_resume = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        first_resume.rollback(manifest["release_id"])
+    assert first_resume.status(manifest["release_id"])["state"] == "rolling_back"
+    assert runner.runtime_refs["web"] == current_refs["web"]
+
+    runner.after_action = None
+    runner.calls.clear()
+    second_resume = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        second_resume.rollback(manifest["release_id"])
+
+    assert second_resume.status(manifest["release_id"])["state"] == "rolled_back"
+    assert not any("up" in command and command[-1] == "web" for command in runner.calls)
+
+
 def test_resume_complete_staged_store_is_idempotent(tmp_path: Path) -> None:
     import release_manager as release_manager_module
 
@@ -2569,6 +3167,1291 @@ def test_resume_complete_staged_store_is_idempotent(tmp_path: Path) -> None:
 
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
     assert runner.calls == completed_calls
+
+
+def _succeeded_production_release(
+    tmp_path: Path,
+) -> tuple[ReleaseManager, FakeRunner, Path, dict[str, Any], Path]:
+    source_bundle = tmp_path / "source-bundle"
+    source_bundle.mkdir()
+    manifest_path, manifest, current_refs = _bundle(source_bundle, mode="production")
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    manager.activate(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+    return manager, runner, root, manifest, manifest_path
+
+
+@pytest.fixture
+def production_storage_bind_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, ...]:
+    import release_manager as release_manager_module
+
+    base = tmp_path / "production-storage"
+    paths = (
+        base / "postgres" / "pgdata",
+        base / "redis" / "broker",
+        base / "redis" / "auth",
+        base / "redis" / "control",
+        base / "runtime" / "imports",
+        base / "runtime" / "exports",
+        base / "runtime" / "raw-spill",
+        base / "runtime" / "backups",
+    )
+    for path in paths:
+        path.mkdir(parents=True)
+    monkeypatch.setattr(
+        release_manager_module,
+        "_PRODUCTION_STORAGE_BIND_PATHS",
+        paths,
+    )
+    return paths
+
+
+def test_succeeded_release_prepares_bound_forward_rollback_candidate(
+    tmp_path: Path,
+) -> None:
+    manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
+    candidate_root = tmp_path / "candidate-bundle"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(candidate_root, source)
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    runner.calls.clear()
+
+    manager.prepare_forward_rollback(source["release_id"], candidate_path)
+    prepared = manager.status(candidate["release_id"])
+
+    assert prepared["state"] == "prepared"
+    assert prepared["release_kind"] == "forward_rollback"
+    assert prepared["forward_rollback_of"] == source["release_id"]
+    assert prepared["schema_retained_at"] == source["migration"]["target"]
+    first_calls = list(runner.calls)
+    manager.prepare_forward_rollback(source["release_id"], candidate_path)
+    assert runner.calls == first_calls
+
+
+def test_forward_rollback_rejects_source_topology_drift_before_candidate_work(
+    tmp_path: Path,
+) -> None:
+    manager, runner, root, source, source_manifest_path = _succeeded_production_release(tmp_path)
+    env_path = root / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "REDIS_HA_MODE=isolated-standalone",
+            "REDIS_HA_MODE=managed",
+        ),
+        encoding="utf-8",
+    )
+    resumed = ReleaseManager(
+        root=root,
+        release_root=manager.release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="topology.*drifted"):
+        resumed.prepare_forward_rollback(source["release_id"], source_manifest_path)
+
+    assert not runner.calls
+
+
+@pytest.mark.parametrize("unsafe", ["schema_downgrade", "direct_previous_image"])
+def test_forward_rollback_rejects_schema_downgrade_and_direct_image_restore(
+    tmp_path: Path,
+    unsafe: str,
+) -> None:
+    manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
+    source_store = ReleaseStore(manager.release_root, source["release_id"])
+    snapshot = manager._read_snapshot(source_store)
+    candidate_root = tmp_path / "candidate-bundle"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(
+        candidate_root,
+        source,
+        downgrade=unsafe == "schema_downgrade",
+        direct_previous_ref=(
+            snapshot["current_refs"]["web"] if unsafe == "direct_previous_image" else None
+        ),
+        direct_previous_id=(
+            snapshot["image_ids"]["web"] if unsafe == "direct_previous_image" else None
+        ),
+    )
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="schema|previous image|historical image"):
+        manager.prepare_forward_rollback(source["release_id"], candidate_path)
+
+    assert not (manager.release_root / candidate["release_id"]).exists()
+    assert not runner.calls
+
+
+def test_standard_prepare_cannot_bypass_forward_rollback_with_historical_image(
+    tmp_path: Path,
+) -> None:
+    manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
+    snapshot = manager._read_snapshot(
+        ReleaseStore(manager.release_root, source["release_id"])
+    )
+    candidate_root = tmp_path / "candidate-bundle"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(
+        candidate_root,
+        source,
+        direct_previous_ref=snapshot["current_refs"]["web"],
+        direct_previous_id=snapshot["image_ids"]["web"],
+    )
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="historical image"):
+        manager.prepare(candidate_path)
+
+    assert not (manager.release_root / candidate["release_id"]).exists()
+    assert not runner.calls
+
+
+def test_staged_forward_resume_revalidates_bound_source_before_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, runner, root, source, _ = _succeeded_production_release(tmp_path)
+    candidate_root = tmp_path / "candidate-bundle"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(candidate_root, source)
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+
+    def interrupt_copy(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(manager, "_copy_bundle", interrupt_copy)
+    with pytest.raises(KeyboardInterrupt):
+        manager.prepare_forward_rollback(source["release_id"], candidate_path)
+
+    staged = manager.status(candidate["release_id"])
+    assert staged["state"] == "staged"
+    assert staged["release_kind"] == "forward_rollback"
+    assert staged["forward_rollback_of"] == source["release_id"]
+    env_path = root / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            f"SMS_WEB_IMAGE={source['images']['web']['ref']}",
+            "SMS_WEB_IMAGE=registry.example.com/sms/web@sha256:" + "8" * 64,
+        ),
+        encoding="utf-8",
+    )
+    resumed = ReleaseManager(
+        root=root,
+        release_root=manager.release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="current baseline"):
+        resumed.resume(candidate["release_id"])
+
+    assert resumed.status(candidate["release_id"])["state"] == "staged"
+    assert not runner.calls
+
+
+def test_production_bootstrap_is_empty_host_only_idempotent_and_seals_release(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+
+    state = manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert state["status"] == "succeeded"
+    assert state["phase"] == "complete"
+    release_state = manager.status(manifest["release_id"])
+    assert release_state["state"] == "succeeded"
+    assert release_state["release_kind"] == "bootstrap"
+    assert release_state["release_gate_kind"] == "release"
+    assert release_state["release_scan_performed"] is True
+    assert release_state["control_smoke_only"] is False
+    assert isinstance(release_state["prepared_at"], str)
+    assert (release_root / "bootstrap-state.json").stat().st_mode & 0o777 == 0o600
+    assert runner.migration_head == manifest["migration"]["target"]
+    first_calls = list(runner.calls)
+    assert manager.bootstrap(manifest_path, confirmed_empty_host=True) == state
+    assert runner.calls == first_calls
+    assert state["production_topology"]["redis_ha_mode"] == "isolated-standalone"
+    (manager.root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+        "services: {redis: {}}\n",
+        encoding="utf-8",
+    )
+    restarted = ReleaseManager(
+        root=manager.root,
+        release_root=release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    with pytest.raises(ReleaseManagerError, match="manual recovery"):
+        restarted.bootstrap(manifest_path, confirmed_empty_host=True)
+
+
+def test_production_bootstrap_seals_frozen_manifest_after_staging_replacement(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+    replacement_release_id = "replacement-bootstrap"
+
+    def replace_staging_manifest(action: str, count: int) -> None:
+        if action != "up" or count != 1:
+            return
+        replacement = json.loads(manifest_path.read_text(encoding="utf-8"))
+        replacement["release_id"] = replacement_release_id
+        _write_private_json(manifest_path, replacement)
+
+    runner.after_action = replace_staging_manifest
+    state = manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert state["release_id"] == manifest["release_id"]
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+    assert not (release_root / replacement_release_id).exists()
+
+
+def test_unfinished_bootstrap_blocks_generic_release_mutations(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+
+    def interrupt_before_activation(_release_id: str) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(manager, "activate", interrupt_before_activation)
+    with pytest.raises(KeyboardInterrupt):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+    bootstrap_state = json.loads(
+        (release_root / "bootstrap-state.json").read_text(encoding="utf-8")
+    )
+    assert bootstrap_state["status"] == "failed"
+    assert bootstrap_state["phase"] == "contained"
+    assert all(
+        runner.service_running[service] is False
+        for service in ("web", *_QUIESCE_TEST_SERVICES)
+    )
+    restarted = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    runner.calls.clear()
+
+    for action in ("activate", "resume", "rollback"):
+        with pytest.raises(ReleaseManagerError, match="bootstrap.*manual recovery"):
+            getattr(restarted, action)(manifest["release_id"])
+
+    assert restarted.status(manifest["release_id"])["state"] == "prepared"
+    assert not runner.calls
+
+
+def test_production_bootstrap_fails_closed_on_existing_volume_and_after_failure(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.volume_inventory = "sms-platform_pgdata\n"
+
+    with pytest.raises(ReleaseManagerError, match="explicit empty-host confirmation"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=False)
+    assert not runner.calls
+
+    with pytest.raises(ReleaseManagerError, match="not empty"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert not (release_root / "bootstrap-state.json").exists()
+    runner.volume_inventory = ""
+    runner.fail_action = "up"
+    with pytest.raises(ReleaseManagerError, match="bootstrap failed"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+    state = json.loads((release_root / "bootstrap-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed"
+    assert state["phase"] == "contained"
+    assert any("stop" in command for command in runner.calls)
+    calls = list(runner.calls)
+    with pytest.raises(ReleaseManagerError, match="manual recovery"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+    assert runner.calls == calls
+
+
+@pytest.mark.parametrize("path_index", range(8))
+def test_production_bootstrap_rejects_any_nonempty_bind_source_before_docker(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    path_index: int,
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    (production_storage_bind_paths[path_index] / ".existing-data").write_text(
+        "occupied\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseManagerError, match="bind source is not empty"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert not (release_root / "bootstrap-state.json").exists()
+    assert not runner.calls
+
+
+@pytest.mark.parametrize("unsafe_kind", ["missing", "file", "symlink"])
+def test_production_bootstrap_requires_real_bind_source_directories(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    unsafe_kind: str,
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    unsafe = production_storage_bind_paths[0]
+    unsafe.rmdir()
+    if unsafe_kind == "file":
+        unsafe.write_text("not-a-directory\n", encoding="utf-8")
+    elif unsafe_kind == "symlink":
+        unsafe.symlink_to(production_storage_bind_paths[1], target_is_directory=True)
+
+    with pytest.raises(ReleaseManagerError, match="unavailable or unsafe"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert not (release_root / "bootstrap-state.json").exists()
+    assert not runner.calls
+
+
+def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    _, snapshot_sha, _, _, fence_path, _ = evidence
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    fence_sha = hashlib.sha256(fence_path.read_bytes()).hexdigest()
+    with pytest.raises(ReleaseManagerError):
+        manager.assert_production_start_allowed()
+    baseline = _finish_recovery(manager)
+
+    assert baseline["status"] == "succeeded"
+    assert baseline["phase"] == "succeeded"
+    release_state = manager.status(manifest["release_id"])
+    assert release_state["state"] == "succeeded"
+    assert release_state["release_kind"] == "recovery_baseline"
+    assert release_state["snapshot_manifest_sha256"] == snapshot_sha
+    assert release_state["gap_fence_sha256"] == fence_sha
+    assert release_state["verified_migration_head"] == manifest["migration"]["target"]
+    watermark_path = (
+        release_root
+        / manifest["release_id"]
+        / "artifacts"
+        / "recovery-watermark.json"
+    )
+    assert watermark_path.is_file()
+
+    restarted = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    runner.calls.clear()
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    restarted.assert_production_start_allowed()
+    assert not any("compose" in command for command in runner.calls)
+
+    historical = json.loads(manifest_path.read_text(encoding="utf-8"))
+    historical["release_id"] = "release-historical"
+    historical["commit"] = "d" * 40
+    historical_store = ReleaseStore(release_root, historical["release_id"])
+    historical_store.create(json.dumps(historical).encode())
+    historical_store.checkpoint(
+        ReleaseState.STAGED,
+        production_topology=release_state["production_topology"],
+        release_kind="standard",
+    )
+    historical_store.transition(ReleaseState.STAGED, ReleaseState.PREPARED)
+    historical_store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+    historical_store.transition(
+        ReleaseState.ACTIVATING,
+        ReleaseState.SUCCEEDED,
+        verified_migration_head=historical["migration"]["target"],
+    )
+
+    restarted.assert_production_start_allowed()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "confirmation",
+        "empty_runtime",
+        "snapshot_digest",
+        "snapshot_commit",
+        "gap_unverified",
+        "gap_counts",
+        "migration",
+    ],
+)
+def test_recovery_adoption_rejects_unconfirmed_empty_unverified_or_drifted_host(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    (
+        snapshot_path,
+        snapshot_sha,
+        receipt_path,
+        receipt_sha,
+        fence_path,
+        fence_sha,
+    ) = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    confirmed = True
+    if failure == "confirmation":
+        confirmed = False
+    elif failure == "snapshot_digest":
+        snapshot_sha = "0" * 64
+    elif failure == "snapshot_commit":
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["git_commit"] = "d" * 40
+        _write_private_json(snapshot_path, snapshot)
+        snapshot_sha = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+        checksums = snapshot_path.parent / "SHA256SUMS"
+        lines = [
+            line
+            for line in checksums.read_text(encoding="ascii").splitlines()
+            if not line.endswith("  manifest.json")
+        ]
+        checksums.write_text(
+            "\n".join([*lines, f"{snapshot_sha}  manifest.json"]) + "\n",
+            encoding="ascii",
+        )
+        checksums.chmod(0o600)
+    elif failure in {"gap_unverified", "gap_counts"}:
+        fence = json.loads(fence_path.read_text(encoding="utf-8"))
+        if failure == "gap_unverified":
+            fence["unknown_results_blocked"] = False
+        else:
+            fence["upstream_request_count"] = 8
+        _write_private_json(fence_path, fence)
+        fence_sha = hashlib.sha256(fence_path.read_bytes()).hexdigest()
+    if failure == "confirmation":
+        with pytest.raises(ReleaseManagerError, match="explicit"):
+            manager.start_recovery(
+                manifest_path,
+                snapshot_manifest_path=snapshot_path,
+                snapshot_manifest_sha256=snapshot_sha,
+                runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+                confirmed_recovered_host=False,
+            )
+        assert not (release_root / "recovery-state.json").exists()
+        return
+
+    if failure in {"snapshot_digest", "snapshot_commit"}:
+        with pytest.raises(ReleaseManagerError):
+            manager.start_recovery(
+                manifest_path,
+                snapshot_manifest_path=snapshot_path,
+                snapshot_manifest_sha256=snapshot_sha,
+                runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+                confirmed_recovered_host=True,
+            )
+        assert not (release_root / "bootstrap-state.json").exists()
+        return
+
+    manager.start_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+    (
+        snapshot_path,
+        snapshot_sha,
+        receipt_path,
+        receipt_sha,
+        fence_path,
+        fence_sha,
+    ) = _approve_gap_after_recovery_start(
+        (
+            snapshot_path,
+            snapshot_sha,
+            receipt_path,
+            receipt_sha,
+            fence_path,
+            fence_sha,
+        )
+    )
+    runner.migration_head = manifest["migration"]["target"]
+    receipt_path, receipt_sha = _observe_and_approve_recovery(
+        manager,
+        manifest_path,
+        (
+            snapshot_path,
+            snapshot_sha,
+            receipt_path,
+            receipt_sha,
+            fence_path,
+            fence_sha,
+        ),
+    )
+    if failure == "empty_runtime":
+        runner.service_running["postgres"] = False
+    elif failure == "migration":
+        runner.migration_head = "0011"
+
+    with pytest.raises(ReleaseManagerError):
+        manager.adopt_recovery(
+            manifest_path,
+            snapshot_manifest_path=snapshot_path,
+            snapshot_manifest_sha256=snapshot_sha,
+            restore_receipt_path=receipt_path,
+            restore_receipt_sha256=receipt_sha,
+            gap_fence_path=fence_path,
+            gap_fence_sha256=fence_sha,
+            runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+            confirmed_recovered_host=confirmed,
+        )
+
+    assert not (release_root / "bootstrap-state.json").exists()
+    assert not (release_root / manifest["release_id"]).exists()
+    assert manager._read_recovery_state()["status"] in {"failed", "recovery_required"}
+
+
+def test_recovery_observation_generates_bound_pending_receipt_before_adoption(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    (
+        snapshot_path,
+        snapshot_sha,
+        receipt_path,
+        receipt_sha,
+        fence_path,
+        fence_sha,
+    ) = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    manager.start_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+    refreshed = _approve_gap_after_recovery_start(
+        (
+            snapshot_path,
+            snapshot_sha,
+            receipt_path,
+            receipt_sha,
+            fence_path,
+            fence_sha,
+        )
+    )
+    fence_sha = refreshed[5]
+    runner.migration_head = manifest["migration"]["target"]
+    output_dir = tmp_path / "observed-receipt"
+    output_dir.mkdir(mode=0o700)
+    output_dir.chmod(0o700)
+    output = output_dir / "restore-receipt.json"
+    template = manager.observe_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        output_path=output,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+
+    producer_probe = _restore_crypto_probe_receipt()
+    producer_probe_digest = hashlib.sha256(
+        json.dumps(producer_probe, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert template["status"] == "pending_approval"
+    assert template["approved_by"] == []
+    assert template["crypto_probe_status"] == producer_probe["status"]
+    assert template["crypto_probe_sha256"] == producer_probe_digest
+    assert runner.recovery_crypto_probe_calls == 1
+    assert output.stat().st_mode & 0o777 == 0o600
+    approved = dict(template)
+    approved["status"] = "approved"
+    approved["approved_by"] = ["operator01", "reviewer02"]
+    approved["approved_at"] = datetime.now(UTC).isoformat()
+    _write_private_json(output, approved)
+    manager.adopt_recovery(
+        manifest_path,
+        snapshot_manifest_path=snapshot_path,
+        snapshot_manifest_sha256=snapshot_sha,
+        restore_receipt_path=output,
+        restore_receipt_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
+        gap_fence_path=fence_path,
+        gap_fence_sha256=fence_sha,
+        runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+        confirmed_recovered_host=True,
+    )
+
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+    assert runner.recovery_crypto_probe_calls == 3
+    assert not (release_root / "bootstrap-state.json").exists()
+    with pytest.raises(ReleaseManagerError):
+        manager.assert_production_start_allowed()
+
+
+def test_recovery_crypto_probe_rejects_legacy_v1_shape(tmp_path: Path) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    _, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    runner.recovery_crypto_probe = {
+        "schema_version": 1,
+        "status": "performed",
+        "counts": {
+            "audit_context_keys": 4,
+            "encrypted_version_columns": 8,
+            "referenced_key_versions": 2,
+            "sms_message_rows": 10,
+            "sms_message_key_versions_verified": 2,
+        },
+    }
+
+    with pytest.raises(ReleaseManagerError, match="recovery crypto probe"):
+        manager._recovery_crypto_probe()
+
+
+def test_recovery_required_fence_remains_readable_and_blocks_gate_and_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, _, root, _ = _manager(tmp_path, manifest, refs)
+    snapshot_path, snapshot_sha, _, _, _, _ = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+
+    def containment_failure() -> None:
+        raise ReleaseManagerError("injected containment failure")
+
+    monkeypatch.setattr(manager, "_contain_recovery_consumers", containment_failure)
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.start_recovery(
+            manifest_path,
+            snapshot_manifest_path=snapshot_path,
+            snapshot_manifest_sha256=snapshot_sha,
+            runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+            confirmed_recovered_host=True,
+        )
+
+    state = manager._read_recovery_state()
+    assert state is not None
+    assert state["status"] == "recovery_required"
+    assert state["phase"] == "failed"
+    with pytest.raises(ReleaseManagerError):
+        manager.assert_production_start_allowed()
+    with pytest.raises(ReleaseManagerError, match="manual recovery"):
+        manager.resume_recovery(
+            stage="api",
+            runtime_secrets_target=RECOVERY_RUNTIME_TARGET,
+            confirmed_recovered_host=True,
+        )
+
+
+@pytest.mark.parametrize("state", ["prepared", "failed", "recovery_required"])
+def test_start_gate_rejects_non_succeeded_current_release(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, _ = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    _finish_recovery(manager)
+    state_path = manager.release_root / manifest["release_id"] / "state.json"
+    current = json.loads(state_path.read_text(encoding="utf-8"))
+    current["state"] = state
+    _write_private_json(state_path, current)
+
+    with pytest.raises(ReleaseManagerError):
+        manager.assert_production_start_allowed()
+
+
+@pytest.mark.parametrize("drift", ["missing", "duplicate", "refs", "topology", "migration"])
+def test_start_gate_binds_unique_current_commit_refs_topology_and_migration(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    _finish_recovery(manager)
+    if drift == "missing":
+        runner.git_commit = "d" * 40
+    elif drift == "duplicate":
+        duplicate = json.loads(manifest_path.read_text(encoding="utf-8"))
+        duplicate["release_id"] = "release-current-duplicate"
+        duplicate_store = ReleaseStore(release_root, duplicate["release_id"])
+        duplicate_store.create(json.dumps(duplicate).encode())
+        topology = manager.status(manifest["release_id"])["production_topology"]
+        duplicate_store.checkpoint(
+            ReleaseState.STAGED,
+            production_topology=topology,
+            release_kind="standard",
+        )
+        duplicate_store.transition(ReleaseState.STAGED, ReleaseState.PREPARED)
+        duplicate_store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+        duplicate_store.transition(
+            ReleaseState.ACTIVATING,
+            ReleaseState.SUCCEEDED,
+            verified_migration_head=duplicate["migration"]["target"],
+        )
+    elif drift == "refs":
+        env = root / ".env"
+        env.write_text(
+            env.read_text(encoding="utf-8").replace(
+                refs["web"],
+                "registry.example.com/sms/web@sha256:" + "f" * 64,
+            ),
+            encoding="utf-8",
+        )
+    elif drift == "topology":
+        (root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+            "services: {redis: {image: changed}}\n",
+            encoding="utf-8",
+        )
+    else:
+        state_path = release_root / manifest["release_id"] / "state.json"
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        current["verified_migration_head"] = "0011"
+        _write_private_json(state_path, current)
+
+    with pytest.raises(ReleaseManagerError):
+        manager.assert_production_start_allowed()
+
+
+def test_start_gate_translates_release_store_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import release_manager as release_manager_module
+
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, _ = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(
+        tmp_path,
+        root,
+        manifest,
+    )
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    _finish_recovery(manager)
+
+    def unavailable(_store: ReleaseStore) -> dict[str, object]:
+        raise release_manager_module.ReleaseStoreError("corrupt state")
+
+    monkeypatch.setattr(release_manager_module.ReleaseStore, "read_state", unavailable)
+    with pytest.raises(ReleaseManagerError, match="baseline is unavailable"):
+        manager.assert_production_start_allowed()
+
+
+def test_production_compose_overlays_are_strict_and_development_stays_base_only(
+    tmp_path: Path,
+) -> None:
+    development_root = tmp_path / "development"
+    development_root.mkdir()
+    _, development, refs = _bundle(development_root)
+    development_manager, _, _, _ = _manager(
+        tmp_path / "development-manager",
+        development,
+        refs,
+    )
+    development_files = [
+        Path(value).name
+        for value in development_manager._compose()
+        if value.endswith(".yml")
+    ]
+    assert development_files == ["docker-compose.yml"]
+
+    production_root = tmp_path / "production"
+    production_root.mkdir()
+    _, production, production_refs = _bundle(production_root, mode="production")
+    production_manager, production_runner, root, release_root = _manager(
+        tmp_path / "production-manager",
+        production,
+        production_refs,
+    )
+    production_files = [
+        Path(value).name
+        for value in production_manager._compose()
+        if value.endswith(".yml")
+    ]
+    assert production_files == [
+        "docker-compose.yml",
+        "docker-compose.production-storage.yml",
+        "docker-compose.redis-tls.yml",
+    ]
+
+    env_path = root / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            "REDIS_HA_MODE=isolated-standalone",
+            "REDIS_HA_MODE=managed",
+        ),
+        encoding="utf-8",
+    )
+    production_files = [
+        Path(value).name
+        for value in production_manager._compose()
+        if value.endswith(".yml")
+    ]
+    assert production_files == [
+        "docker-compose.yml",
+        "docker-compose.production-storage.yml",
+        "docker-compose.redis-tls.yml",
+    ]
+
+    managed_manager = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode="production",
+        runner=production_runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    managed_files = [
+        Path(value).name
+        for value in managed_manager._compose()
+        if value.endswith(".yml")
+    ]
+    assert managed_files == [
+        "docker-compose.yml",
+        "docker-compose.production-storage.yml",
+    ]
+
+    for invalid in ("standalone", "managed\nREDIS_HA_MODE=managed", ""):
+        lines = [
+            line
+            for line in env_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("REDIS_HA_MODE=")
+        ]
+        if invalid:
+            lines.append(f"REDIS_HA_MODE={invalid}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        invalid_manager = ReleaseManager(
+            root=root,
+            release_root=release_root,
+            mode="production",
+            runner=production_runner,
+            expected_staging_uid=os.geteuid(),
+        )
+        with pytest.raises(ReleaseManagerError, match="REDIS_HA_MODE"):
+            invalid_manager._compose()
+
+
+@pytest.mark.parametrize("action", ["activate", "resume", "rollback"])
+@pytest.mark.parametrize(
+    "drift",
+    ["mode", "compose_file", "non_image_env", "duplicate_image_ref"],
+)
+@pytest.mark.parametrize("restart_manager", [False, True])
+def test_release_mutations_reject_persisted_production_topology_drift(
+    tmp_path: Path,
+    action: str,
+    drift: str,
+    restart_manager: bool,
+) -> None:
+    bundle_root = tmp_path / "release-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _bundle(bundle_root, mode="production")
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    manager.prepare(manifest_path)
+    if drift == "mode":
+        env_path = root / ".env"
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8").replace(
+                "REDIS_HA_MODE=isolated-standalone",
+                "REDIS_HA_MODE=managed",
+            ),
+            encoding="utf-8",
+        )
+    elif drift == "compose_file":
+        (root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+            "services: {redis: {}}\n",
+            encoding="utf-8",
+        )
+    elif drift == "non_image_env":
+        env_path = root / ".env"
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8") + "SAFE_CONFIG=changed\n",
+            encoding="utf-8",
+        )
+    else:
+        env_path = root / ".env"
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8")
+            + f"SMS_WEB_IMAGE={refs['web']}\n",
+            encoding="utf-8",
+        )
+    restarted = manager
+    if restart_manager:
+        restarted = ReleaseManager(
+            root=root,
+            release_root=release_root,
+            mode="production",
+            runner=runner,
+            expected_staging_uid=os.geteuid(),
+        )
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="topology.*drifted"):
+        getattr(restarted, action)(manifest["release_id"])
+
+    assert restarted.status(manifest["release_id"])["state"] == "prepared"
+    assert not runner.calls
+
+
+def test_production_topology_ignores_only_release_image_ref_changes(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "release-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _bundle(bundle_root, mode="production")
+    manager, _, root, _ = _manager(tmp_path, manifest, refs)
+
+    manager.prepare(manifest_path)
+    expected = manager.status(manifest["release_id"])["production_topology"]
+    env_path = root / ".env"
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8").replace(
+            f"SMS_WEB_IMAGE={refs['web']}",
+            f"SMS_WEB_IMAGE={manifest['images']['web']['ref']}",
+        ),
+        encoding="utf-8",
+    )
+
+    assert manager._production_topology() == expected
+
+
+def _recovery_cli_state_result(
+    *,
+    runtime_target: str,
+    backup_generation: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "running",
+        "phase": "adopted",
+        "release_id": "release-recovery-cli",
+        "commit": COMMIT,
+        "manifest_sha256": "1" * 64,
+        "production_topology": {
+            "schema_version": 1,
+            "redis_ha_mode": "isolated-standalone",
+            "compose_files": [
+                {"name": "deploy/docker-compose.yml", "sha256": "2" * 64},
+                {
+                    "name": "deploy/docker-compose.production-storage.yml",
+                    "sha256": "c" * 64,
+                },
+                {
+                    "name": "deploy/docker-compose.redis-tls.yml",
+                    "sha256": "d" * 64,
+                },
+            ],
+            "root_env_non_image_sha256": "3" * 64,
+            "topology_id": "4" * 64,
+        },
+        "runtime_secrets_target": runtime_target,
+        "migration_head": "0012",
+        "snapshot_id": "snapshot-recovery-cli",
+        "snapshot_manifest_sha256": "5" * 64,
+        "snapshot_database_sha256": "6" * 64,
+        "recovery_crypto_generation_id": "crypto-generation-01",
+        "backup_passphrase_generation_id": backup_generation,
+        "restore_receipt_sha256": "7" * 64,
+        "live_database_fingerprint_sha256": "8" * 64,
+        "crypto_probe_status": "performed",
+        "crypto_probe_sha256": "9" * 64,
+        "gap_fence_sha256": "a" * 64,
+        "recovery_watermark_sha256": "b" * 64,
+        "started_at": "2026-08-24T00:00:00Z",
+        "updated_at": "2026-08-24T00:01:00Z",
+        "failure_type": None,
+    }
+
+
+def _recovery_cli_receipt_result(*, backup_generation: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "record_type": "production_recovery_restore_receipt",
+        "status": "pending_approval",
+        "snapshot_id": "snapshot-recovery-cli",
+        "snapshot_manifest_sha256": "5" * 64,
+        "snapshot_database_sha256": "6" * 64,
+        "git_commit": COMMIT,
+        "migration_head": "0012",
+        "database": "sms",
+        "recovery_crypto_generation_id": "crypto-generation-01",
+        "backup_passphrase_generation_id": backup_generation,
+        "live_database_fingerprint_sha256": "8" * 64,
+        "crypto_probe_status": "performed",
+        "crypto_probe_sha256": "9" * 64,
+        "restored_at": "2026-08-24T00:01:00Z",
+        "approved_by": [],
+        "approved_at": None,
+    }
+
+
+def _recovery_cli_arguments(action: str) -> list[str]:
+    common = [
+        "--root",
+        "/tmp/platform",
+        "--release-root",
+        "/var/lib/sms-platform/releases",
+        "--mode",
+        "production",
+        action,
+        "--manifest",
+        "/tmp/staging/manifest.json",
+        "--snapshot-manifest",
+        "/tmp/snapshot/manifest.json",
+        "--snapshot-manifest-sha256",
+        "password-cli-value",
+    ]
+    if action == "observe-recovery":
+        return [
+            *common,
+            "--output",
+            "/tmp/passphrase-cli-value.json",
+            "--runtime-secrets-target",
+            "secret-runtime-cli-value",
+            "--confirm-recovered-host",
+        ]
+    return [
+        *common,
+        "--restore-receipt",
+        "/tmp/restore-receipt.json",
+        "--restore-receipt-sha256",
+        "passphrase-cli-value",
+        "--gap-fence-evidence",
+        "/tmp/gap-fence.json",
+        "--gap-fence-sha256",
+        "secret-cli-value",
+        "--runtime-secrets-target",
+        "secret-runtime-cli-value",
+        "--confirm-recovered-host",
+    ]
+
+
+@pytest.mark.parametrize("action", ("observe-recovery", "adopt-recovery"))
+def test_recovery_main_serializes_only_public_closed_set(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    seen: dict[str, object] = {}
+    result = (
+        _recovery_cli_receipt_result(backup_generation="passphrase-result-value")
+        if action == "observe-recovery"
+        else _recovery_cli_state_result(
+            runtime_target="secret-runtime-cli-value",
+            backup_generation="passphrase-result-value",
+        )
+    )
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def observe_recovery(self, _manifest: Path, **kwargs: object) -> dict[str, object]:
+            seen.update(kwargs)
+            return result
+
+        def adopt_recovery(self, _manifest: Path, **kwargs: object) -> dict[str, object]:
+            seen.update(kwargs)
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(_recovery_cli_arguments(action))
+    captured = capsys.readouterr()
+
+    assert return_code == 0
+    payload = json.loads(captured.out)
+    assert payload["status"] == result["status"]
+    assert payload["snapshot_id"] == result["snapshot_id"]
+    serialized = captured.out.casefold()
+    for marker in ("password", "passphrase", "secret"):
+        assert marker not in serialized
+    assert "runtime_secrets_target" not in payload
+    assert "backup_passphrase_generation_id" not in payload
+    assert captured.err == ""
+    assert seen["snapshot_manifest_sha256"] == "password-cli-value"
+    assert seen["runtime_secrets_target"] == "secret-runtime-cli-value"
+
+
+@pytest.mark.parametrize("field", ("password", "passphrase", "secret"))
+def test_recovery_main_rejects_unapproved_sensitive_result_fields_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    result = _recovery_cli_state_result(
+        runtime_target="secret-runtime-cli-value",
+        backup_generation="passphrase-result-value",
+    )
+    result[field] = f"{field}-result-value"
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def adopt_recovery(self, _manifest: Path, **_kwargs: object) -> dict[str, object]:
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(
+        _recovery_cli_arguments("adopt-recovery")
+    )
+    captured = capsys.readouterr()
+
+    assert return_code == 1
+    assert captured.out == ""
+    assert f"{field}-result-value" not in captured.err
+    assert "invalid fields" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("status", "password-running"),
+        ("release_id", "passphrase-result-value"),
+        ("failure_type", "SecretFailure"),
+    ),
+)
+def test_recovery_main_rejects_sensitive_values_in_public_fields_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    value: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    result = _recovery_cli_state_result(
+        runtime_target="secret-runtime-cli-value",
+        backup_generation="passphrase-result-value",
+    )
+    result[field] = value
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def adopt_recovery(self, _manifest: Path, **_kwargs: object) -> dict[str, object]:
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(
+        _recovery_cli_arguments("adopt-recovery")
+    )
+    captured = capsys.readouterr()
+
+    assert return_code == 1
+    assert captured.out == ""
+    assert value not in captured.err
+    assert "invalid" in captured.err
 
 
 def test_main_registers_and_restores_term_int_hup_handlers(

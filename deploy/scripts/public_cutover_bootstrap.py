@@ -65,6 +65,7 @@ _NEW_SECRET_NAMES = frozenset(
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
+        "redis_tls_server_key",
     }
 )
 _GENERATED_SECRET_NAMES = _NEW_SECRET_NAMES - _OLD_SECRET_NAMES
@@ -851,7 +852,7 @@ class PublicCutoverBootstrap:
             )
 
     def run(self) -> dict[str, object]:
-        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 17:
+        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 18:
             raise PublicCutoverBootstrapError(
                 "public cutover bootstrap is not explicitly confirmed"
             )

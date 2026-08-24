@@ -1,0 +1,28 @@
+[Unit]
+Description=Enterprise SMS Platform production storage preflight
+Documentation=file:/opt/sms-platform/deploy/storage.md
+After=local-fs.target
+Before=docker.service sms-platform.service
+RequiresMountsFor=/var/lib/docker /var/lib/sms-platform/postgres /var/lib/sms-platform/redis /var/lib/sms-platform/runtime
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sms-storage-preflight --mode startup
+TimeoutStartSec=30
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+DevicePolicy=closed
+ReadOnlyPaths=/etc/fstab /dev/disk/by-uuid
+StandardOutput=journal
+StandardError=journal

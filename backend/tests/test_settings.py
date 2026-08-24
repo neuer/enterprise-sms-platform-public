@@ -229,6 +229,9 @@ def test_production_vendor_endpoint_requires_https(tmp_path: Path) -> None:
         auth_mock=False,
         vendor_mock=False,
         redis_ha_mode="managed",
+        redis_broker_host="broker.redis.internal",
+        redis_auth_host="auth.redis.internal",
+        redis_control_host="control.redis.internal",
         ldap_ca_certs_file=ca_file,
         vendor_base_url="https://vendor.example.test",
     )
@@ -458,6 +461,9 @@ def test_callback_deployment_egress_boundary_is_private_and_fail_closed(
         auth_mock=False,
         vendor_mock=False,
         redis_ha_mode="managed",
+        redis_broker_host="broker.redis.internal",
+        redis_auth_host="auth.redis.internal",
+        redis_control_host="control.redis.internal",
         ldap_ca_certs_file=ca_file,
         vendor_base_url="https://vendor.example.invalid",
     )
@@ -513,7 +519,11 @@ def test_redis_failure_domains_use_distinct_secret_backed_endpoints(
     ) == 3
 
 
-def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
+@pytest.mark.parametrize("redis_ha_mode", ["managed", "isolated-standalone"])
+def test_production_redis_domains_require_verified_tls(
+    tmp_path: Path,
+    redis_ha_mode: str,
+) -> None:
     module = load_settings_module()
     from redis.asyncio.connection import SSLConnection, parse_url
     broker = tmp_path / "broker"
@@ -538,7 +548,12 @@ def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
         debug=False,
         auth_mock=False,
         vendor_mock=False,
-        redis_ha_mode="managed",
+        redis_ha_mode=redis_ha_mode,
+        redis_broker_host=("broker.redis.example" if redis_ha_mode == "managed" else "redis"),
+        redis_auth_host=("auth.redis.example" if redis_ha_mode == "managed" else "redis-auth"),
+        redis_control_host=(
+            "control.redis.example" if redis_ha_mode == "managed" else "redis-control"
+        ),
         redis_broker_password_file=broker,
         redis_auth_password_file=auth,
         redis_control_password_file=control,
@@ -552,14 +567,19 @@ def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
         f"{str(ca_file).replace('/', '%2F')}"
         "&ssl_cert_reqs=required&ssl_check_hostname=true"
     )
+    expected_hosts = (
+        ("broker.redis.example", "auth.redis.example", "control.redis.example")
+        if redis_ha_mode == "managed"
+        else ("redis", "redis-auth", "redis-control")
+    )
     assert settings.redis_broker_url == (
-        "rediss://sms_broker:broker-pass@redis:6379/0" + expected_query
+        f"rediss://sms_broker:broker-pass@{expected_hosts[0]}:6379/0" + expected_query
     )
     assert settings.redis_auth_url == (
-        "rediss://sms_auth:auth-pass@redis-auth:6379/0" + expected_query
+        f"rediss://sms_auth:auth-pass@{expected_hosts[1]}:6379/0" + expected_query
     )
     assert settings.redis_control_url == (
-        "rediss://sms_control:control-pass@redis-control:6379/0" + expected_query
+        f"rediss://sms_control:control-pass@{expected_hosts[2]}:6379/0" + expected_query
     )
     assert settings.redis_tls_options == {
         "ssl_ca_certs": str(ca_file),
@@ -573,7 +593,30 @@ def test_production_redis_domains_require_verified_tls(tmp_path: Path) -> None:
     assert parsed["ssl_check_hostname"] is True
 
 
-def test_production_rejects_missing_redis_ca(tmp_path: Path) -> None:
+def test_production_managed_rejects_local_compose_service_names(tmp_path: Path) -> None:
+    module = load_settings_module()
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test-ca", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="explicit external service names"):
+        module.Settings(
+            _env_file=None,
+            environment="production",
+            trusted_hosts="testserver,sms.example.test",
+            debug=False,
+            auth_mock=False,
+            vendor_mock=False,
+            redis_ha_mode="managed",
+            ldap_ca_certs_file=ca_file,
+            vendor_base_url="https://vendor.example.test",
+        )
+
+
+@pytest.mark.parametrize("redis_ha_mode", ["managed", "isolated-standalone"])
+def test_production_rejects_missing_redis_ca(
+    tmp_path: Path,
+    redis_ha_mode: str,
+) -> None:
     module = load_settings_module()
     ldap_ca_file = tmp_path / "ldap-ca.pem"
     ldap_ca_file.write_text("ldap-ca", encoding="utf-8")
@@ -586,14 +629,14 @@ def test_production_rejects_missing_redis_ca(tmp_path: Path) -> None:
             debug=False,
             auth_mock=False,
             vendor_mock=False,
-            redis_ha_mode="managed",
+            redis_ha_mode=redis_ha_mode,
             redis_ca_certs_file=tmp_path / "missing-redis-ca.pem",
             ldap_ca_certs_file=ldap_ca_file,
             vendor_base_url="https://vendor.example.test",
         )
 
 
-def test_redis_domains_reject_single_host_and_production_standalone(
+def test_redis_domains_reject_duplicate_endpoint_and_credential_file(
     tmp_path: Path,
 ) -> None:
     module = load_settings_module()
@@ -607,9 +650,50 @@ def test_redis_domains_reject_single_host_and_production_standalone(
             redis_auth_host="redis",
         )
 
+    shared_password_file = tmp_path / "shared-redis-password"
+    with pytest.raises(ValueError, match="credential files must be distinct"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            redis_broker_password_file=shared_password_file,
+            redis_auth_password_file=shared_password_file,
+        )
+
+
+def test_redis_domains_allow_one_host_with_three_distinct_ports() -> None:
+    module = load_settings_module()
+
+    settings = module.Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        redis_broker_host="redis.internal",
+        redis_broker_port=6379,
+        redis_auth_host="redis.internal",
+        redis_auth_port=6380,
+        redis_control_host="redis.internal",
+        redis_control_port=6381,
+    )
+
+    assert settings.redis_broker_port == 6379
+    assert settings.redis_auth_port == 6380
+    assert settings.redis_control_port == 6381
+
+
+def test_production_rejects_ambiguous_standalone_mode(tmp_path: Path) -> None:
+    module = load_settings_module()
+
     ca_file = tmp_path / "ca.pem"
     ca_file.write_text("test-ca", encoding="utf-8")
-    with pytest.raises(ValueError, match="managed Redis"):
+    with pytest.raises(
+        ValueError,
+        match="REDIS_HA_MODE=managed or isolated-standalone",
+    ):
         module.Settings(
             _env_file=None,
             environment="production",
@@ -620,6 +704,30 @@ def test_redis_domains_reject_single_host_and_production_standalone(
             ldap_ca_certs_file=ca_file,
             vendor_base_url="https://vendor.example.test",
         )
+
+
+def test_production_isolated_standalone_fails_closed_without_secret(
+    tmp_path: Path,
+) -> None:
+    module = load_settings_module()
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text("test-ca", encoding="utf-8")
+    settings = module.Settings(
+        _env_file=None,
+        environment="production",
+        trusted_hosts="testserver,sms.example.test",
+        sms_component="worker",
+        debug=False,
+        auth_mock=False,
+        vendor_mock=False,
+        redis_ha_mode="isolated-standalone",
+        redis_broker_password_file=tmp_path / "missing-broker-password",
+        ldap_ca_certs_file=ca_file,
+        vendor_base_url="https://vendor.example.test",
+    )
+
+    with pytest.raises(RuntimeError, match="secret file unavailable"):
+        _ = settings.redis_broker_url
 
 
 def test_ldap_connection_config_and_bootstrap_users_are_not_environment_settings() -> None:

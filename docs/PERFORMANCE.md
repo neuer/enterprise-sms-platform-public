@@ -42,7 +42,7 @@ PERF_KEYS_FILE=../deploy/secrets/dev-apikeys.txt \
 ### 运行中监控
 
 - Locust 每分钟 RPS、失败率与受理 P50/P95/P99；失败率非零立即记录错误码分布。
-- `/metrics` 七组 family、PostgreSQL 连接/锁/磁盘、Redis 内存/队列、worker CPU/重启、uncertain 与 alert_log。
+- `/metrics` 十二组 family、PostgreSQL 连接/锁/磁盘、Redis 内存/队列、worker CPU/重启、uncertain 与 alert_log。
 - 不得打开含 query/body 的访问日志，不得把失败响应正文或 secrets 写入报告。
 
 ### 通过与停止
