@@ -531,6 +531,34 @@ def test_raw_processing_lease_epoch_is_in_schema_and_followup_migration() -> Non
     assert "sms_accept" in source
 
 
+def test_system_replay_audit_state_is_in_schema_and_followup_migration() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0077_raw_system_replay_audit.py"
+
+    raw_table = schema.split(
+        "CREATE TABLE raw_vendor_log",
+        maxsplit=1,
+    )[1].split("CREATE INDEX idx_raw_unprocessed", maxsplit=1)[0]
+    assert "system_replay_audit_state VARCHAR(16)" in raw_table
+    assert "idx_raw_system_replay_audit_pending" in schema
+    assert "idx_audit_raw_replay_system_epoch" in schema
+    assert revision.is_file()
+
+    spec = importlib.util.spec_from_file_location(
+        "raw_system_replay_audit_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0077_raw_system_replay_audit"
+    assert module.down_revision == "0076_raw_processing_lease"
+    source = revision.read_text(encoding="utf-8")
+    assert "system_replay_audit_state" in source
+    assert "idx_audit_raw_replay_system_epoch" in source
+    assert "REVOKE UPDATE ON raw_vendor_log" not in source
+
+
 def test_correlation_audit_guard_preserves_immutable_legacy_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

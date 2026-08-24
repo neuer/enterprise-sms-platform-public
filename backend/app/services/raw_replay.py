@@ -38,6 +38,15 @@ class RawIntegrityConflict(RawReplayConflict):
     pass
 
 
+class RawReplaySystemAuditIncomplete(RuntimeError):
+    """业务终态已提交，但系统审计尚未可证明写入。"""
+
+    def __init__(self, raw_id: int, lease_epoch: int) -> None:
+        super().__init__("system raw replay audit incomplete")
+        self.raw_id = raw_id
+        self.lease_epoch = lease_epoch
+
+
 @dataclass(frozen=True, slots=True)
 class RawReplayRecord:
     id: int
@@ -53,6 +62,8 @@ class RawReplayRecord:
     parse_state: str = "unattempted"
     replay_eligibility: str = "automatic"
     error: str | None = None
+    system_replay_audit_state: str | None = None
+    lease_epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +116,7 @@ class RawReplayRepository(Protocol):
         ip: str,
         system_producer: bool = False,
         principal: SecurityPrincipal | None = None,
+        lease_epoch: int | None = None,
     ) -> None: ...
 
 
@@ -126,6 +138,7 @@ class ExistingRawProcessor(Protocol):
         data: object,
         *,
         lease: RawProcessingLease | None = None,
+        system_audit_intent: bool = False,
     ) -> int: ...
 
 
@@ -202,6 +215,16 @@ class RawReplayService:
                 raise RawReplayConflict("截断或协议异常 raw 不得当作正常可重放")
             if claim.record.processed:
                 if system_producer:
+                    if claim.record.system_replay_audit_state == "pending":
+                        await self._write_system_audit(
+                            raw_id,
+                            source=claim.record.source,
+                            items=claim.record.item_count,
+                            actor=actor,
+                            ip=ip,
+                            lease_epoch=claim.record.lease_epoch,
+                        )
+                        return claim.record.item_count
                     raise RawReplayConflict("仅未处理 raw 可重放")
                 if await self.repository.has_human_raw_replay_audit(raw_id):
                     raise RawReplayConflict("仅未处理 raw 可重放")
@@ -259,11 +282,17 @@ class RawReplayService:
         try:
             if record.source == "report":
                 count = await self.reports.process_existing(
-                    raw_id, data, lease=claim.lease
+                    raw_id,
+                    data,
+                    lease=claim.lease,
+                    system_audit_intent=system_producer,
                 )
             elif record.source == "reply":
                 count = await self.replies.process_existing(
-                    raw_id, data, lease=claim.lease
+                    raw_id,
+                    data,
+                    lease=claim.lease,
+                    system_audit_intent=system_producer,
                 )
             else:
                 await self._integrity_error(
@@ -272,16 +301,48 @@ class RawReplayService:
                 raise RawIntegrityConflict("raw source is invalid")
         except RawLeaseLost as error:
             raise RawReplayConflict("raw 处理权已被接管") from error
-        await self.repository.audit_raw_replay(
-            raw_id,
-            source=record.source,
-            items=count,
-            actor=actor,
-            ip=ip,
-            system_producer=system_producer,
-            principal=principal,
-        )
+        if system_producer:
+            await self._write_system_audit(
+                raw_id,
+                source=record.source,
+                items=count,
+                actor=actor,
+                ip=ip,
+                lease_epoch=claim.lease.epoch if claim.lease is not None else record.lease_epoch,
+            )
+        else:
+            await self.repository.audit_raw_replay(
+                raw_id,
+                source=record.source,
+                items=count,
+                actor=actor,
+                ip=ip,
+                principal=principal,
+            )
         return count
+
+    async def _write_system_audit(
+        self,
+        raw_id: int,
+        *,
+        source: str,
+        items: int,
+        actor: str,
+        ip: str,
+        lease_epoch: int,
+    ) -> None:
+        try:
+            await self.repository.audit_raw_replay(
+                raw_id,
+                source=source,
+                items=items,
+                actor=actor,
+                ip=ip,
+                system_producer=True,
+                lease_epoch=lease_epoch,
+            )
+        except Exception as error:
+            raise RawReplaySystemAuditIncomplete(raw_id, lease_epoch) from error
 
     async def reevaluate(
         self,

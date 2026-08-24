@@ -5,9 +5,10 @@ exact allowlist；新文件落在安全域内即默认 backend-critical 或
 frontend-security。只有经过独立审查的低风险文件才能写入
 ``REVIEWED_ORDINARY_REASONS``。
 
-T5-05：``backend/app/`` 与 ``frontend/src/views/`` 默认进入安全域。
-反向枚举以 ``REQUIRED_TRACKED_SOURCE_TREES`` 为准，不先用域清单过滤，
-避免 manifest 漏项被测试跳过。
+T5-05 / T7-04：``backend/app/``、``frontend/src/views/`` 与
+``frontend/src/components/`` 默认进入安全域。安全逻辑抽到组件后不得脱离
+动态门禁。反向枚举以 ``REQUIRED_TRACKED_SOURCE_TREES`` 为准，不先用域清单
+过滤，避免 manifest 漏项被测试跳过。
 """
 
 from __future__ import annotations
@@ -21,13 +22,15 @@ SecurityDomainCategory = Literal["backend-critical", "frontend-security"]
 # 后端运行时安全域。backend/app 根模块、models 与域内新文件默认 backend + G2 + security。
 BACKEND_CRITICAL_DOMAINS: tuple[str, ...] = ("backend/app/",)
 
-# 前端会话、请求面与敏感视图。views 目录默认 frontend-security；新视图 FAIL CLOSED。
+# 前端会话、请求面、敏感视图与可抽离的安全组件。views/components 默认
+# frontend-security；新文件 FAIL CLOSED，禁止只把安全文件名追加到 exact 表。
 FRONTEND_SECURITY_DOMAINS: tuple[str, ...] = (
     "frontend/src/App.vue",
     "frontend/src/stores/",
     "frontend/src/router/",
     "frontend/src/api/",
     "frontend/src/views/",
+    "frontend/src/components/",
 )
 
 # 已审查、必须继续走 backend-critical（含 G2）的前端路径。
@@ -60,6 +63,7 @@ REVIEWED_ORDINARY_EXACT: frozenset[str] = frozenset(REVIEWED_ORDINARY_REASONS)
 REQUIRED_TRACKED_SOURCE_TREES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("backend/app/", (".py",)),
     ("frontend/src/views/", (".vue",)),
+    ("frontend/src/components/", (".vue",)),
 )
 
 CODEOWNERS_OWNER = "@neuer"

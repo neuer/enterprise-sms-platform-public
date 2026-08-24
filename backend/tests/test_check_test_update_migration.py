@@ -89,6 +89,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0074_raw_legacy_capture",
         "0075_raw_parse_eligibility",
         "0076_raw_processing_lease",
+        "0077_raw_system_replay_audit",
     ]
 
 

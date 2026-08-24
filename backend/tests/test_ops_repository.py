@@ -58,10 +58,21 @@ class FakeResult:
         return [row["id"] for row in self.rows]
 
 
+class _NestedBegin:
+    async def __aenter__(self) -> _NestedBegin:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
         self.results = results
         self.calls: list[tuple[str, Any]] = []
+
+    def begin_nested(self) -> _NestedBegin:
+        return _NestedBegin()
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
         self.calls.append((str(statement), params))
@@ -141,11 +152,12 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "processing_lease_id" in normalized_sql
     assert "processing_lease_epoch=processing_lease_epoch+1" in normalized_sql
     assert "processing_lease_expires_at" in normalized_sql
-    assert "interval '15 minutes'" in normalized_sql
+    assert "make_interval(secs => :lease_seconds)" in normalized_sql
     assert "RETURNING" in normalized_sql
     assert "item_count" in normalized_sql
     assert params["raw_id"] == 9
     assert params["lease_id"]
+    assert params["lease_seconds"] == 15 * 60
 
 
 @pytest.mark.asyncio
@@ -387,7 +399,7 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
         "app.services.ops_repository.bind_connection_system_audit",
         fake_bind,
     )
-    repo, connection = repository([FakeResult()])
+    repo, connection = repository([FakeResult(), FakeResult()])
 
     await repo.audit_raw_replay(
         9,
@@ -396,6 +408,7 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
         actor="system-reconcile",
         ip="127.0.0.1",
         system_producer=True,
+        lease_epoch=3,
     )
 
     assert bound == [
@@ -408,9 +421,14 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
     sql, params = connection.calls[0]
     assert "actor_subject_kind" in sql
     assert "'system'" in sql
+    assert "lease_epoch" in sql
+    assert "producer_domain" in sql
     assert params["actor"] == "system-reconcile"
     assert params["raw_id"] == 9
+    assert params["lease_epoch"] == 3
+    assert params["producer_domain"] == "realtime"
     assert "ip" not in params
+    assert "phone" not in sql.lower()
 
 
 @pytest.mark.asyncio

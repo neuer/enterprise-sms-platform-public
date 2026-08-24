@@ -46,6 +46,9 @@ RAW_SPILL_RECOVER_CONCURRENCY_DEFAULT = 2
 RAW_SPILL_RECOVER_FILE_RSS_BYTES = 2 * RAW_SPILL_RECOVERY_CAPTURE_BYTES
 RAW_SPILL_RECOVER_MAX_FILES_DEFAULT = 8
 RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT = 8.0
+RAW_SPILL_RECLAIM_MAX_FILES_DEFAULT = 16
+RAW_SPILL_RECLAIM_MAX_SECONDS_DEFAULT = 2.0
+RAW_SPILL_RECLAIM_MAX_HEADER_BYTES_DEFAULT = 64 * 1024
 
 DatabaseRole = Literal[
     "auth",
@@ -156,6 +159,9 @@ class Settings(BaseSettings):
     raw_spill_recover_max_files: int = RAW_SPILL_RECOVER_MAX_FILES_DEFAULT
     raw_spill_recover_max_plaintext_bytes: int = RAW_SPILL_RECOVERY_CAPTURE_BYTES
     raw_spill_recover_max_seconds: float = RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT
+    raw_spill_reclaim_max_files: int = RAW_SPILL_RECLAIM_MAX_FILES_DEFAULT
+    raw_spill_reclaim_max_seconds: float = RAW_SPILL_RECLAIM_MAX_SECONDS_DEFAULT
+    raw_spill_reclaim_max_header_bytes: int = RAW_SPILL_RECLAIM_MAX_HEADER_BYTES_DEFAULT
     raw_spill_max_cipherq_files: int = 64
     raw_spill_max_cipherq_bytes: int = RAW_SPILL_MIN_TOTAL_BYTES
     raw_spill_cipherq_retention_s: float = 86400.0
@@ -460,6 +466,16 @@ class Settings(BaseSettings):
             )
         if not 0.1 <= self.raw_spill_recover_max_seconds <= 60:
             raise ValueError("RAW_SPILL_RECOVER_MAX_SECONDS must be between 0.1 and 60")
+        if not 1 <= self.raw_spill_reclaim_max_files <= self.raw_spill_max_pending_files:
+            raise ValueError(
+                "RAW_SPILL_RECLAIM_MAX_FILES must be between 1 and RAW_SPILL_MAX_PENDING_FILES"
+            )
+        if not 0.1 <= self.raw_spill_reclaim_max_seconds <= 15:
+            raise ValueError("RAW_SPILL_RECLAIM_MAX_SECONDS must be between 0.1 and 15")
+        if not 768 <= self.raw_spill_reclaim_max_header_bytes <= 1024 * 1024:
+            raise ValueError(
+                "RAW_SPILL_RECLAIM_MAX_HEADER_BYTES must be between 768 and 1MiB"
+            )
         if not 1 <= self.raw_spill_max_cipherq_files <= 4096:
             raise ValueError("RAW_SPILL_MAX_CIPHERQ_FILES must be between 1 and 4096")
         if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_cipherq_bytes <= max_spill_bytes:

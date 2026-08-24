@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Any, cast
 
 from redis.asyncio import Redis
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
@@ -36,7 +38,10 @@ from app.services.raw_lease import (
     CLAIM_LEASE_PREDICATE_SQL,
     CLAIM_LEASE_SET_SQL,
     FENCED_TERMINAL_SQL,
+    RAW_LEASE_SECONDS,
     STALE_LEASE_PREDICATE_SQL,
+    SYSTEM_REPLAY_AUDIT_COMPLETED,
+    SYSTEM_REPLAY_AUDIT_PENDING,
     RawLeaseLost,
     RawProcessingLease,
     commit_fenced_raw_update,
@@ -305,6 +310,28 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
+    async def list_pending_system_replay_audit_ids(self, *, limit: int = 20) -> list[int]:
+        """已处理但系统审计未完成的 raw，只补审计、不再认领。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT id FROM raw_vendor_log
+                        WHERE processed=true
+                          AND system_replay_audit_state=:pending
+                        ORDER BY id
+                        LIMIT :limit
+                        """
+                    ),
+                    {"pending": SYSTEM_REPLAY_AUDIT_PENDING, "limit": limit},
+                )
+                return [int(value) for value in result.scalars()]
+        finally:
+            await engine.dispose()
+
     async def claim_raw_for_replay(
         self, raw_id: int, *, allow_manual: bool = True
     ) -> RawReplayClaim | None:
@@ -334,13 +361,14 @@ class SqlOpsRepository:
                             key_version,processed,item_count,http_status,
                             content_encoding,capture_state,parse_state,
                             replay_eligibility,error,processing_lease_id,
-                            processing_lease_epoch,processing_lease_expires_at
+                            processing_lease_epoch,processing_lease_expires_at,
+                            system_replay_audit_state
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
                           capture_state,parse_state,replay_eligibility,error,
                           processing_lease_id,processing_lease_epoch,
-                          processing_lease_expires_at,
+                          processing_lease_expires_at,system_replay_audit_state,
                           true claimed
                         FROM claimed
                         UNION ALL
@@ -348,7 +376,7 @@ class SqlOpsRepository:
                           processed,item_count,http_status,content_encoding,
                           capture_state,parse_state,replay_eligibility,error,
                           processing_lease_id,processing_lease_epoch,
-                          processing_lease_expires_at,
+                          processing_lease_expires_at,system_replay_audit_state,
                           false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
@@ -356,7 +384,11 @@ class SqlOpsRepository:
                         LIMIT 1
                         """
                     ),
-                    {"raw_id": raw_id, "lease_id": str(lease_id)},
+                    {
+                        "raw_id": raw_id,
+                        "lease_id": str(lease_id),
+                        "lease_seconds": RAW_LEASE_SECONDS,
+                    },
                 )
                 row = result.mappings().one_or_none()
                 if row is None:
@@ -390,6 +422,12 @@ class SqlOpsRepository:
             str(row.get("parse_state") or "unattempted"),
             str(row.get("replay_eligibility") or "manual"),
             str(row["error"]) if row.get("error") is not None else None,
+            str(row["system_replay_audit_state"])
+            if row.get("system_replay_audit_state") is not None
+            else None,
+            int(row["processing_lease_epoch"] or 0)
+            if row.get("processing_lease_epoch") is not None
+            else 0,
         )
 
     async def raw_replay_exhausted(
@@ -439,6 +477,7 @@ class SqlOpsRepository:
                     "replay_eligibility": columns["replay_eligibility"],
                     "lease_id": str(token.lease_id),
                     "epoch": token.epoch,
+                    "system_replay_audit_state": None,
                 },
                 lease=token,
             )
@@ -627,6 +666,7 @@ class SqlOpsRepository:
         ip: str,
         system_producer: bool = False,
         principal: SecurityPrincipal | None = None,
+        lease_epoch: int | None = None,
     ) -> None:
         """记录 raw 重放审计。
 
@@ -645,33 +685,100 @@ class SqlOpsRepository:
         try:
             async with engine.begin() as connection:
                 if system_producer:
+                    epoch = lease_epoch
+                    if epoch is None:
+                        epoch = int(
+                            await connection.scalar(
+                                text(
+                                    """
+                                    SELECT processing_lease_epoch
+                                    FROM raw_vendor_log WHERE id=:raw_id
+                                    """
+                                ),
+                                {"raw_id": raw_id},
+                            )
+                            or 0
+                        )
+                    producer_domain = self.settings.audit_producer_domain or "realtime"
                     await bind_connection_system_audit(
                         connection,
                         actor_name=actor,
                         action="raw_replay",
                     )
-                    await connection.execute(
+                    async with connection.begin_nested():
+                        with suppress(IntegrityError):
+                            await connection.execute(
+                                text(
+                                    """
+                                    INSERT INTO audit_log(
+                                      actor,actor_subject_kind,role,action,object_type,
+                                      object_id,after_val
+                                    )
+                                    SELECT
+                                      :actor,'system','system','raw_replay',
+                                      'raw_vendor_log',
+                                      CAST(CAST(:raw_id AS bigint) AS text),
+                                      jsonb_build_object(
+                                        'source',CAST(:source AS text),
+                                        'items',CAST(:items AS integer),
+                                        'lease_epoch',CAST(:lease_epoch AS bigint),
+                                        'producer_domain',CAST(:producer_domain AS text)
+                                      )
+                                    WHERE NOT EXISTS (
+                                      SELECT 1 FROM audit_log
+                                      WHERE action='raw_replay'
+                                        AND actor_subject_kind='system'
+                                        AND object_type='raw_vendor_log'
+                                        AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                                        AND after_val->>'lease_epoch'=CAST(:lease_epoch AS text)
+                                    )
+                                    """
+                                ),
+                                {
+                                    "actor": actor,
+                                    "raw_id": raw_id,
+                                    "source": source,
+                                    "items": items,
+                                    "lease_epoch": epoch,
+                                    "producer_domain": producer_domain,
+                                },
+                            )
+                    completed = await connection.execute(
                         text(
                             """
-                            INSERT INTO audit_log(
-                              actor,actor_subject_kind,role,action,object_type,
-                              object_id,after_val
-                            ) VALUES(
-                              :actor,'system','system','raw_replay','raw_vendor_log',
-                              CAST(CAST(:raw_id AS bigint) AS text),jsonb_build_object(
-                                'source',CAST(:source AS text),
-                                'items',CAST(:items AS integer)
+                            UPDATE raw_vendor_log
+                            SET system_replay_audit_state=:completed
+                            WHERE id=:raw_id
+                              AND system_replay_audit_state=:pending
+                              AND EXISTS (
+                                SELECT 1 FROM audit_log
+                                WHERE action='raw_replay'
+                                  AND actor_subject_kind='system'
+                                  AND object_type='raw_vendor_log'
+                                  AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                                  AND after_val->>'lease_epoch'=CAST(:lease_epoch AS text)
                               )
-                            )
                             """
                         ),
                         {
-                            "actor": actor,
                             "raw_id": raw_id,
-                            "source": source,
-                            "items": items,
+                            "lease_epoch": epoch,
+                            "pending": SYSTEM_REPLAY_AUDIT_PENDING,
+                            "completed": SYSTEM_REPLAY_AUDIT_COMPLETED,
                         },
                     )
+                    if getattr(completed, "rowcount", 0) == 0:
+                        state = await connection.scalar(
+                            text(
+                                """
+                                SELECT system_replay_audit_state
+                                FROM raw_vendor_log WHERE id=:raw_id
+                                """
+                            ),
+                            {"raw_id": raw_id},
+                        )
+                        if state != SYSTEM_REPLAY_AUDIT_COMPLETED:
+                            raise RuntimeError("system raw replay audit incomplete")
                     return
                 assert principal is not None
                 await bind_connection_audit_subject(

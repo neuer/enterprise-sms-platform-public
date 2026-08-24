@@ -92,7 +92,7 @@ class FakeRepository:
     async def persist_unmatched(self, raw_id: int, report: Any) -> None:
         self.events.append(("unmatched", report))
 
-    async def mark_processed(self, raw_id: int) -> None:
+    async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
     async def mark_error(self, raw_id: int, error: str) -> None:

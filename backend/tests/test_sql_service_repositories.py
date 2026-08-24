@@ -928,6 +928,7 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "replay_eligibility": "never",
         "lease_id": str(processed_lease.lease_id),
         "epoch": 1,
+        "system_replay_audit_state": None,
     }
     assert connection.calls[1][1] == {
         "id": 5,
@@ -937,6 +938,7 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "replay_eligibility": "manual",
         "lease_id": str(error_lease.lease_id),
         "epoch": 2,
+        "system_replay_audit_state": None,
     }
 
     connection = FakeConnection(

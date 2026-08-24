@@ -993,3 +993,30 @@ def test_raw_spill_quotas_have_upper_and_lower_bounds() -> None:
             vendor_mock=True,
             raw_spill_cipherq_retention_s=-1,
         )
+    with pytest.raises(ValueError, match="RAW_SPILL_RECLAIM_MAX_FILES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_reclaim_max_files=0,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_RECLAIM_MAX_SECONDS"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_reclaim_max_seconds=20,
+        )
+    with pytest.raises(ValueError, match="RAW_SPILL_RECLAIM_MAX_HEADER_BYTES"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            raw_spill_reclaim_max_header_bytes=64,
+        )

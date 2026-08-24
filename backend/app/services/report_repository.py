@@ -19,9 +19,13 @@ from app.services.raw_lease import (
     FENCED_TERMINAL_SQL,
     PERSIST_LEASE_COLUMNS,
     PERSIST_LEASE_VALUES,
+    PERSIST_STARTED_AT_SQL,
+    RAW_LEASE_SECONDS,
+    SYSTEM_REPLAY_AUDIT_PENDING,
     RawProcessingLease,
     commit_fenced_raw_update,
     new_lease_id,
+    renew_raw_lease,
     require_lease,
 )
 from app.services.raw_parse import (
@@ -69,6 +73,7 @@ class SqlReportRepository:
         """独立事务提交完整 raw 密文，返回后业务解析才可开始。"""
 
         payload = dict(values)
+        acquire = bool(payload.pop("acquire_processing_lease", True))
         payload["capture_state"] = payload.get("capture_state") or "complete"
         payload.update(
             persist_column_values(
@@ -77,8 +82,10 @@ class SqlReportRepository:
                 content_encoding=str(payload.get("content_encoding") or "identity"),
             )
         )
-        lease_id = new_lease_id()
-        payload["processing_lease_id"] = str(lease_id)
+        lease_id = new_lease_id() if acquire else None
+        payload["acquire_processing_lease"] = acquire
+        payload["processing_lease_id"] = str(lease_id) if lease_id is not None else None
+        payload["lease_seconds"] = RAW_LEASE_SECONDS
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -93,7 +100,8 @@ class SqlReportRepository:
                         ) VALUES (
                           'report',:payload_enc,:payload_sha256,:key_version,:http_status,
                           :content_encoding,
-                          CAST(:custom_ids AS text[]),:item_count,now(),
+                          CAST(:custom_ids AS text[]),:item_count,
+                          {PERSIST_STARTED_AT_SQL.strip()},
                           COALESCE(:capture_state,'complete'),
                           COALESCE(:parse_state,'unattempted'),
                           COALESCE(:replay_eligibility,'manual'),
@@ -106,8 +114,16 @@ class SqlReportRepository:
                 raw_id = int(result.scalar_one())
         finally:
             await engine.dispose()
-        self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
+        if lease_id is not None:
+            self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
         return raw_id
+
+    async def renew_processing_lease(self, lease: RawProcessingLease) -> None:
+        engine = self._engine()
+        try:
+            await renew_raw_lease(engine, lease)
+        finally:
+            await engine.dispose()
 
     async def update_metadata(
         self,
@@ -534,7 +550,11 @@ class SqlReportRepository:
             await engine.dispose()
 
     async def mark_processed(
-        self, raw_id: int, *, lease: RawProcessingLease | None = None
+        self,
+        raw_id: int,
+        *,
+        lease: RawProcessingLease | None = None,
+        system_audit_intent: bool = False,
     ) -> None:
         await self._mark_raw(
             raw_id,
@@ -543,6 +563,9 @@ class SqlReportRepository:
             parse_state=PARSE_PROCESSED,
             replay_eligibility=ELIGIBILITY_NEVER,
             lease=lease,
+            system_replay_audit_state=(
+                SYSTEM_REPLAY_AUDIT_PENDING if system_audit_intent else None
+            ),
         )
 
     async def mark_error(
@@ -567,6 +590,7 @@ class SqlReportRepository:
         parse_state: str,
         replay_eligibility: str,
         lease: RawProcessingLease | None = None,
+        system_replay_audit_state: str | None = None,
     ) -> None:
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
@@ -582,6 +606,7 @@ class SqlReportRepository:
                     "replay_eligibility": replay_eligibility,
                     "lease_id": str(token.lease_id),
                     "epoch": token.epoch,
+                    "system_replay_audit_state": system_replay_audit_state,
                 },
                 lease=token,
             )

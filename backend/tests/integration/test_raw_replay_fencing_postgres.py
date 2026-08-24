@@ -258,3 +258,158 @@ async def test_concurrent_claims_produce_one_winner_and_check_rejects_illegal_co
                     {"id": raw_id},
                 )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_extends_expired_lease_and_writes_terminal() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    ops = SqlOpsRepository(settings, redis=object())
+    raw_id: int | None = None
+    try:
+        raw_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="d" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        lease = reports._leases[raw_id]
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET processing_lease_expires_at=now()-interval '1 second',
+                        replay_eligibility='automatic',
+                        processed=false
+                    WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": raw_id},
+            )
+        await reports.renew_processing_lease(lease)
+        await reports.mark_processed(raw_id, lease=lease)
+        assert raw_id not in await ops.list_stale_unprocessed_raw_ids()
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT processed,processing_lease_id,processing_lease_epoch
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+        assert row["processed"] is True
+        assert row["processing_lease_id"] is None
+        assert int(row["processing_lease_epoch"]) == 1
+    finally:
+        if raw_id is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_wrong_epoch_heartbeat_stops_and_complete_spill_has_no_idle_lease() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    ops = SqlOpsRepository(settings, redis=object())
+    owned_id: int | None = None
+    idle_id: int | None = None
+    try:
+        owned_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="e" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        idle_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="f" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+            acquire_processing_lease=False,
+        )
+        stale = RawProcessingLease(owned_id, reports._leases[owned_id].lease_id, 99)
+        with pytest.raises(RawLeaseLost):
+            await reports.renew_processing_lease(stale)
+        async with engine.connect() as connection:
+            events = [
+                str(row[0])
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT event_type FROM worker_lease_event
+                            WHERE task_kind='raw' AND task_id=:id
+                            """
+                        ),
+                        {"id": owned_id},
+                    )
+                ).all()
+            ]
+            idle = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT processing_lease_id,processing_lease_epoch,
+                          processing_started_at
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": idle_id},
+                )
+            ).mappings().one()
+        assert events == ["heartbeat_lost"]
+        assert idle["processing_lease_id"] is None
+        assert int(idle["processing_lease_epoch"]) == 0
+        assert idle["processing_started_at"] is None
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET replay_eligibility='automatic',capture_state='complete'
+                    WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": idle_id},
+            )
+        assert idle_id in await ops.list_stale_unprocessed_raw_ids()
+    finally:
+        for raw_id in (owned_id, idle_id):
+            if raw_id is None:
+                continue
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+        await engine.dispose()

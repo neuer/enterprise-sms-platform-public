@@ -68,6 +68,9 @@ DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_PENDING_FILES = 32
 DEFAULT_RECOVER_MAX_FILES = 8
 DEFAULT_RECOVER_MAX_SECONDS = 8.0
+DEFAULT_RECLAIM_MAX_FILES = 16
+DEFAULT_RECLAIM_MAX_SECONDS = 2.0
+DEFAULT_RECLAIM_MAX_HEADER_BYTES = 64 * 1024
 SYNC_EVERY_BYTES = 1024 * 1024
 RECOVERY_CAPTURE_BYTES = 64 * 1024 * 1024
 # 平台内部帧合同：网络 chunk 不得映射为持久化 AES-GCM 帧。
@@ -98,7 +101,9 @@ REASON_PROVABLY_EMPTY = "provably_empty"
 CIPHERQ_STATE_PENDING = "pending"
 CIPHERQ_STATE_SEALED = "sealed"
 CIPHERQ_SUFFIX = ".cq"
+CIPHERQ_WIP_SUFFIX = ".cq.wip"
 CIPHERQ_MANIFEST_SUFFIX = ".cq.man"
+RECLAIM_CURSOR_NAME = ".reclaim.cursor"
 CIPHERQ_EVICTABLE_REASONS = frozenset({REASON_AUTH_FAILED, REASON_CORRUPT})
 CIPHERQ_RETAIN_REASONS = frozenset({REASON_KEY_UNAVAILABLE, REASON_TRANSIENT_IO})
 CIPHERQ_MANIFEST_KEYS = frozenset(
@@ -128,6 +133,7 @@ STREAM_FILE_NAME = re.compile(
 )
 ACTIVITY_FILE_NAME = re.compile(
     r"^(?:report|reply)-[0-9a-f]{32}\.stream(?:\.tmp)?$"
+    r"|^(?:report|reply)-[0-9a-f]{32}\.spill(?:\.tmp)?$"
     r"|^(?:report|reply)-[0-9a-f]{64}\.spill(?:\.tmp)?$"
 )
 STREAM_UNIT_NAME = re.compile(
@@ -135,7 +141,7 @@ STREAM_UNIT_NAME = re.compile(
     r"(?:stream(?:\.tmp)?(?:\.hdr)?|reserve|quarantine|headerq)(?:\.tmp)?$"
 )
 SPILL_FILE_NAME = re.compile(
-    r"^(?P<source>report|reply)-(?P<digest>[0-9a-f]{64})\.spill(?:\.tmp)?$"
+    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32}|[0-9a-f]{64})\.spill(?:\.tmp)?$"
 )
 REWRITE_HDR_NAME = re.compile(
     r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\.stream(?:\.tmp)?\.hdr$"
@@ -145,7 +151,11 @@ MARKER_TMP_NAME = re.compile(
     r"(?:headerq|quarantine|reserve|cq\.man)\.tmp$"
 )
 CIPHERQ_FILE_NAME = re.compile(
-    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32,64})\.cq(?:\.man)?(?:\.tmp)?$"
+    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32,64})\.cq(?:\.wip|\.man)?(?:\.tmp)?$"
+)
+SPILL_OR_CIPHERQ_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32}|[0-9a-f]{64})"
+    r"(?P<rest>\.spill(?:\.tmp)?|\.cq(?:\.wip)?)$"
 )
 STREAM_LIFE_LEGAL_HEADER_ONLY = "legal_header_only"
 STREAM_LIFE_PARTIAL_HEADER = "partial_header"
@@ -162,6 +172,21 @@ SPILL_LIFE_INCOMPLETE = "incomplete_spill"
 SPILL_LIFE_CORRUPT = "corrupt_spill"
 SPILL_LIFE_TRANSIENT = REASON_TRANSIENT_IO
 LOGGER = logging.getLogger(__name__)
+
+
+def parse_spill_filename(name: str) -> tuple[str, str, str] | None:
+    """解析 spill / cipherq 文件名，得到 source、token 与后缀。"""
+
+    match = SPILL_OR_CIPHERQ_NAME.fullmatch(name)
+    if match is None:
+        return None
+    return match.group("source"), match.group("token"), match.group("rest")
+
+
+def artifact_id_from_token(token: str) -> str:
+    """32 位 hex 是独立 artifact_id；64 位 hex 是历史 digest 文件名。"""
+
+    return token if len(token) == 32 else ""
 
 
 def is_activity_filename(name: str) -> bool:
@@ -181,6 +206,8 @@ def is_nonactive_quota_filename(name: str) -> bool:
             HANDOFF_QUARANTINE_SUFFIX + ".tmp",
             CIPHERQ_SUFFIX,
             CIPHERQ_SUFFIX + ".tmp",
+            CIPHERQ_WIP_SUFFIX,
+            CIPHERQ_WIP_SUFFIX + ".tmp",
             CIPHERQ_MANIFEST_SUFFIX,
             CIPHERQ_MANIFEST_SUFFIX + ".tmp",
         )
@@ -247,6 +274,7 @@ class SpillReclaimResult:
     auth_failed: int = 0
     cipherq_expired: int = 0
     cipherq_capacity_dropped: int = 0
+    cipherq_manifest_only: int = 0
 
     @property
     def header_cleaned(self) -> int:
@@ -396,6 +424,22 @@ class RecoverRoundBudget:
         if recovered > 0 and used_bytes >= self.max_plaintext_bytes:
             return True
         return recovered > 0 and (time.monotonic() - started_at) >= self.max_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class ReclaimRoundBudget:
+    """单轮 reclaim 上限；只约束 header 分类，不得扫描完整 payload。"""
+
+    max_files: int = DEFAULT_RECLAIM_MAX_FILES
+    max_header_bytes: int = DEFAULT_RECLAIM_MAX_HEADER_BYTES
+    max_seconds: float = DEFAULT_RECLAIM_MAX_SECONDS
+
+    def exhausted(self, *, inspected: int, used_header_bytes: int, started_at: float) -> bool:
+        if inspected >= self.max_files:
+            return True
+        if used_header_bytes >= self.max_header_bytes:
+            return True
+        return inspected > 0 and (time.monotonic() - started_at) >= self.max_seconds
 
 
 @dataclass
@@ -624,12 +668,25 @@ def durable_persist_capture_state(record: RawSpillRecord) -> str:
 
 
 def spill_file_identity_matches(record: RawSpillRecord) -> bool:
-    """文件名、header source/digest 与库行身份必须是同一对 source+digest。"""
+    """文件名必须属于该 source，且是 digest 旧名、独立 artifact_id 或 cipherq 认领名。"""
 
     if record.stream_id:
         return True
-    expected = f"{record.source}-{record.payload_sha256}.spill"
-    return record.path.name in {expected, f"{expected}.tmp"}
+    parsed = parse_spill_filename(record.path.name)
+    if parsed is None:
+        return False
+    named_source, token, rest = parsed
+    if named_source != record.source:
+        return False
+    if rest.startswith(".cq"):
+        if record.artifact_id:
+            return token == record.artifact_id
+        return len(token) != 64 or token == record.payload_sha256
+    if len(token) == 64:
+        return token == record.payload_sha256
+    if record.artifact_id:
+        return token == record.artifact_id
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,6 +704,7 @@ class RawSpillRecord:
     plaintext_bytes: int = 0
     metadata_authenticated: bool = True
     format_legacy: bool = False
+    artifact_id: str = ""
 
     @property
     def recover_weight_bytes(self) -> int:
@@ -711,6 +769,7 @@ class RawSpillStore:
         max_pending_files: int = DEFAULT_MAX_PENDING_FILES,
         header_only_min_age_s: float = HEADER_ONLY_RECLAIM_AFTER_S,
         recover_budget: RecoverRoundBudget | None = None,
+        reclaim_budget: ReclaimRoundBudget | None = None,
         memory_probe: RecoverMemoryProbe | None = None,
         max_quarantine_files: int = DEFAULT_MAX_QUARANTINE_FILES,
         max_quarantine_bytes: int = DEFAULT_MAX_QUARANTINE_BYTES,
@@ -742,6 +801,7 @@ class RawSpillStore:
         self.max_cipherq_bytes = max_cipherq_bytes
         self.cipherq_retention_s = cipherq_retention_s
         self.recover_budget = recover_budget or RecoverRoundBudget()
+        self.reclaim_budget = reclaim_budget or ReclaimRoundBudget()
         self._probe = memory_probe
         self._header_only_cleaned = 0
         self._isolated_total = 0
@@ -776,6 +836,25 @@ class RawSpillStore:
                     )
                 ),
             ),
+            reclaim_budget=ReclaimRoundBudget(
+                max_files=int(
+                    getattr(settings, "raw_spill_reclaim_max_files", DEFAULT_RECLAIM_MAX_FILES)
+                ),
+                max_header_bytes=int(
+                    getattr(
+                        settings,
+                        "raw_spill_reclaim_max_header_bytes",
+                        DEFAULT_RECLAIM_MAX_HEADER_BYTES,
+                    )
+                ),
+                max_seconds=float(
+                    getattr(
+                        settings,
+                        "raw_spill_reclaim_max_seconds",
+                        DEFAULT_RECLAIM_MAX_SECONDS,
+                    )
+                ),
+            ),
             max_quarantine_files=int(
                 getattr(settings, "raw_spill_max_quarantine_files", DEFAULT_MAX_QUARANTINE_FILES)
             ),
@@ -807,6 +886,21 @@ class RawSpillStore:
             raise ValueError("invalid raw spill digest")
         return self.directory / f"{source}-{payload_sha256}.spill"
 
+    def _spill_path_matches_identity(
+        self, path: Path, source: str, payload_sha256: str
+    ) -> bool:
+        """接受历史 digest 文件名、独立 artifact_id，以及 cipherq 认领名。"""
+
+        parsed = parse_spill_filename(path.name)
+        if parsed is None:
+            return False
+        named_source, token, _rest = parsed
+        if named_source != source:
+            return False
+        if len(token) == 64:
+            return token == payload_sha256
+        return True
+
     def _stream_tmp(self, source: str, stream_id: str) -> Path:
         if SOURCE_PATTERN.fullmatch(source) is None:
             raise ValueError("invalid raw spill source")
@@ -831,7 +925,7 @@ class RawSpillStore:
         return sum(
             path.stat().st_size
             for path in self.directory.iterdir()
-            if path.is_file() and path.name != QUOTA_LOCK_NAME
+            if path.is_file() and path.name not in {QUOTA_LOCK_NAME, RECLAIM_CURSOR_NAME}
         )
 
     def accounted_usage(self) -> int:
@@ -918,9 +1012,14 @@ class RawSpillStore:
                 not same_capture and self._accounted_usage_locked() + extra > self.max_total_bytes
             ):
                 raise SpillQuotaExceeded("raw spill quota exceeded")
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            raise ValueError("invalid raw spill source")
+        if SHA256_PATTERN.fullmatch(payload_sha256) is None:
+            raise ValueError("invalid raw spill digest")
         self.directory.mkdir(parents=True, exist_ok=True)
-        target = self._path(source, payload_sha256)
-        tmp = target.with_suffix(".spill.tmp")
+        artifact_id = secrets.token_hex(16)
+        target = self.directory / f"{source}-{artifact_id}.spill"
+        tmp = self.directory / f"{source}-{artifact_id}.spill.tmp"
         with tmp.open("wb") as handle:
             handle.write(SPILL_MAGIC)
             handle.write(STREAM_RECORD_HEADER.pack(len(frame)))
@@ -1056,6 +1155,8 @@ class RawSpillStore:
             self._probe.note_payload_read(name)
 
     def remove(self, source: str, payload_sha256: str) -> None:
+        """只删除历史 digest 文件名；权威清理以 record.path 为准。"""
+
         path = self._path(source, payload_sha256)
         path.unlink(missing_ok=True)
 
@@ -1160,13 +1261,10 @@ class RawSpillStore:
                 except OSError:
                     continue
                 oldest = age if oldest is None else max(oldest, age)
-            for item in self._iter_cipherq_entries_locked():
-                if item.state != CIPHERQ_STATE_SEALED or not item.dest.exists():
-                    continue
-                cipherq_count += 1
+            cipherq_count, cipherq_bytes = self._cipherq_usage_locked()
+            for path in self._iter_cipherq_payload_paths_locked():
                 try:
-                    cipherq_bytes += item.dest.stat().st_size
-                    age = self._file_age_seconds(item.dest, now_ts)
+                    age = self._file_age_seconds(path, now_ts)
                 except OSError:
                     continue
                 oldest_cipherq = age if oldest_cipherq is None else max(oldest_cipherq, age)
@@ -1319,7 +1417,7 @@ class RawSpillStore:
         covered = self._covered_names_locked(reservations)
         uncovered = 0
         for path in self.directory.iterdir():
-            if not path.is_file() or path.name == QUOTA_LOCK_NAME:
+            if not path.is_file() or path.name in {QUOTA_LOCK_NAME, RECLAIM_CURSOR_NAME}:
                 continue
             if path.name in covered or path.name.endswith(RESERVE_SUFFIX):
                 continue
@@ -1624,7 +1722,7 @@ class RawSpillStore:
         cipherq_dropped_before = self._cipherq_capacity_dropped
         temps = self._reclaim_rewrite_tmps_locked(now_ts)
         temps += self._reclaim_marker_tmps_locked()
-        temps += self._reclaim_cipherq_pending_locked()
+        temps += self._reclaim_cipherq_pending_locked(now_ts)
         spill_counts = self._reclaim_spills_locked(now_ts, crypto)
         isolated += spill_counts[0]
         key_unavailable += spill_counts[1]
@@ -1682,6 +1780,7 @@ class RawSpillStore:
         dropped = self._enforce_quarantine_quota_locked()
         cipherq_expired = self._expire_cipherq_locked(now_ts)
         self._enforce_cipherq_quota_locked()
+        cipherq_manifest_only = self._reclaim_cipherq_manifest_only_locked()
         cipherq_dropped = self._cipherq_capacity_dropped - cipherq_dropped_before
         cleaned = header_only + partial_header + corrupt_header
         self._header_only_cleaned += cleaned
@@ -1705,6 +1804,7 @@ class RawSpillStore:
             auth_failed=auth_failed,
             cipherq_expired=cipherq_expired,
             cipherq_capacity_dropped=cipherq_dropped,
+            cipherq_manifest_only=cipherq_manifest_only,
         )
         self.last_reclaim = result
         if cleaned or isolated or temps or orphans or key_unavailable or transient_io:
@@ -1736,7 +1836,7 @@ class RawSpillStore:
         """spill/tmp/孤儿分类；有 crypto 时认证失败的 .spill 立即离开活动配额。"""
 
         self._reclaim_marker_tmps_locked()
-        self._reclaim_cipherq_pending_locked()
+        self._reclaim_cipherq_pending_locked(now_ts)
         self._reclaim_spills_locked(now_ts, crypto)
         self._reclaim_orphans_locked(None)
         self._reclaim_orphan_handoff_locked()
@@ -1744,6 +1844,7 @@ class RawSpillStore:
         self._enforce_quarantine_quota_locked()
         self._expire_cipherq_locked(now_ts)
         self._enforce_cipherq_quota_locked()
+        self._reclaim_cipherq_manifest_only_locked()
 
     def _iter_evidence_paths(self) -> list[Path]:
         if not self.directory.exists():
@@ -1828,7 +1929,10 @@ class RawSpillStore:
     def _reclaim_spills_locked(
         self, now_ts: float, crypto: StreamChunkCrypto | None = None
     ) -> tuple[int, int, int, int]:
-        """损坏/认证失败的 .spill 进入 cipherq；缺 Key / 暂态 I/O 不得销毁。"""
+        """损坏/认证失败的 .spill 进入 cipherq；缺 Key / 暂态 I/O 不得销毁。
+
+        锁内只认证小 header，并受文件数/header 字节/时间预算约束。
+        """
 
         if not self.directory.exists():
             return 0, 0, 0, 0
@@ -1836,18 +1940,39 @@ class RawSpillStore:
         key_unavailable = 0
         transient_io = 0
         auth_failed = 0
-        for path in [
-            *sorted(self.directory.glob("*.spill")),
-            *sorted(self.directory.glob("*.spill.tmp")),
-        ]:
-            if not path.is_file():
-                continue
+        paths = [
+            path
+            for path in [
+                *sorted(self.directory.glob("*.spill")),
+                *sorted(self.directory.glob("*.spill.tmp")),
+            ]
+            if path.is_file()
+        ]
+        after = self._read_reclaim_cursor_locked()
+        if after:
+            paths = [path for path in paths if path.name > after] + [
+                path for path in paths if path.name <= after
+            ]
+        started_at = time.monotonic()
+        inspected = 0
+        used_header_bytes = 0
+        last_name = after
+        for path in paths:
+            if self.reclaim_budget.exhausted(
+                inspected=inspected,
+                used_header_bytes=used_header_bytes,
+                started_at=started_at,
+            ):
+                break
             kind, source, token = self._classify_spill_path(path)
+            inspected += 1
+            last_name = path.name
+            used_header_bytes += SPILL_HEADER_BUDGET_BYTES
             if kind == SPILL_LIFE_TRANSIENT:
                 transient_io += 1
                 continue
             if kind == SPILL_LIFE_VALID and path.name.endswith(".spill.tmp"):
-                target = self._path(source, token)
+                target = path.with_name(path.name[: -len(".tmp")])
                 os.replace(path, target)
                 self._fsync_directory()
                 path = target
@@ -1884,12 +2009,35 @@ class RawSpillStore:
                 kind="spill",
             ):
                 isolated += 1
+        if last_name:
+            self._write_reclaim_cursor_locked(last_name)
         return isolated, key_unavailable, transient_io, auth_failed
+
+    def _read_reclaim_cursor_locked(self) -> str:
+        path = self.directory / RECLAIM_CURSOR_NAME
+        try:
+            raw = json.loads(path.read_bytes().decode("utf-8"))
+            if not isinstance(raw, dict):
+                return ""
+            after = str(raw.get("after") or "")
+            if not after or "/" in after or "\\" in after or after.startswith("."):
+                return ""
+            return after
+        except (OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            return ""
+
+    def _write_reclaim_cursor_locked(self, after: str) -> None:
+        if not after or "/" in after or "\\" in after:
+            return
+        try:
+            self._write_json_atomic(self.directory / RECLAIM_CURSOR_NAME, {"after": after})
+        except OSError:
+            return
 
     def _classify_spill_path(self, path: Path) -> tuple[str, str, str]:
         match = SPILL_FILE_NAME.fullmatch(path.name)
         named_source = match.group("source") if match else ""
-        named_digest = match.group("digest") if match else ""
+        named_digest = match.group("token") if match else ""
         try:
             with path.open("rb") as handle:
                 magic = handle.read(len(SPILL_MAGIC))
@@ -2110,12 +2258,14 @@ class RawSpillStore:
 
     def _isolate_spill_auth_failure(self, path: Path, *, locked: bool) -> None:
         match = SPILL_FILE_NAME.fullmatch(path.name)
-        source = match.group("source") if match else "report"
-        token = (
-            match.group("digest")
-            if match
-            else hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
-        )
+        parsed = parse_spill_filename(path.name)
+        source = match.group("source") if match else (parsed[0] if parsed else "report")
+        if match is not None:
+            token = match.group("token")
+        elif parsed is not None:
+            token = parsed[1]
+        else:
+            token = hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
         if locked:
             self._isolate_named_file_locked(
                 path, source=source, token=token, state="auth_failed", kind="spill"
@@ -2143,6 +2293,7 @@ class RawSpillStore:
             auth_failed=previous.auth_failed + 1,
             cipherq_expired=previous.cipherq_expired,
             cipherq_capacity_dropped=previous.cipherq_capacity_dropped,
+            cipherq_manifest_only=previous.cipherq_manifest_only,
         )
 
     def _parse_spill_header_frame(
@@ -2228,16 +2379,7 @@ class RawSpillStore:
                     return REASON_AUTH_FAILED
                 if not _crypto_has_version(crypto, hint):
                     return REASON_KEY_UNAVAILABLE
-                authenticated = self._decrypt_spill_header(meta, ciphertext, crypto)
-                expected = str(authenticated["payload_enc_sha256"])
-                hasher = hashlib.sha256()
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    hasher.update(chunk)
-                if hasher.hexdigest() != expected:
-                    return REASON_AUTH_FAILED
+                self._decrypt_spill_header(meta, ciphertext, crypto)
                 return None
         except UnknownKeyVersionError:
             return REASON_KEY_UNAVAILABLE
@@ -2294,7 +2436,7 @@ class RawSpillStore:
             return None
         if expected_source is not None and source != expected_source:
             return None
-        if self._path(source, payload_sha256) != path:
+        if not self._spill_path_matches_identity(path, source, payload_sha256):
             if crypto is not None:
                 raise SpillMetadataAuthError("spill filename identity mismatch")
             return None
@@ -2304,7 +2446,7 @@ class RawSpillStore:
             source = str(authenticated["source"])
             payload_sha256 = str(authenticated["payload_sha256"])
             payload_enc_sha256 = str(authenticated["payload_enc_sha256"])
-            if self._path(source, payload_sha256) != path:
+            if not self._spill_path_matches_identity(path, source, payload_sha256):
                 raise SpillMetadataAuthError("spill filename identity mismatch")
             if expected_source is not None and source != expected_source:
                 return None
@@ -2317,6 +2459,8 @@ class RawSpillStore:
                 raise SpillMetadataAuthError("spill payload digest mismatch")
             return None
         fields = authenticated or visible
+        parsed_name = parse_spill_filename(path.name)
+        artifact_id = artifact_id_from_token(parsed_name[1]) if parsed_name else ""
         return RawSpillRecord(
             source=source,
             payload_sha256=payload_sha256,
@@ -2329,6 +2473,7 @@ class RawSpillStore:
             plaintext_bytes=len(payload_enc),
             metadata_authenticated=authenticated is not None,
             format_legacy=False,
+            artifact_id=artifact_id,
         )
 
     def _read_legacy_spill(
@@ -2344,7 +2489,7 @@ class RawSpillStore:
         if expected_source is not None and source != expected_source:
             return None
         payload_sha256 = str(header["payload_sha256"])
-        if self._path(source, payload_sha256) != path:
+        if not self._spill_path_matches_identity(path, source, payload_sha256):
             return None
         self._probe_payload_read(path.name)
         payload_enc = handle.read()
@@ -2393,7 +2538,13 @@ class RawSpillStore:
             expected_tmp = self._stream_tmp(source, stream_id)
             expected_final = self._stream_path(source, stream_id)
             if path not in {expected_tmp, expected_final}:
-                return None
+                parsed = parse_spill_filename(path.name)
+                if (
+                    parsed is None
+                    or parsed[0] != source
+                    or not parsed[2].startswith(".cq")
+                ):
+                    return None
             return _StreamFileHeader(source, stream_id, key_version, path)
         except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
@@ -2696,6 +2847,24 @@ class RawSpillStore:
             self.directory / f"{stem}{CIPHERQ_MANIFEST_SUFFIX}",
         )
 
+    def _cipherq_wip(self, dest: Path) -> Path:
+        return dest.with_name(dest.name + ".wip")
+
+    def _allocate_cipherq_dest_locked(
+        self, source: str, token: str
+    ) -> tuple[str, Path, Path]:
+        """同一 artifact 复用原路径；不同 artifact 分配新 token，禁止覆盖。"""
+
+        dest, manifest_path = self._cipherq_paths(source, token)
+        if not dest.exists() and not self._cipherq_wip(dest).exists():
+            return token, dest, manifest_path
+        existing = self._parse_cipherq_manifest(manifest_path)
+        if existing is not None and existing.token == token and existing.source == source:
+            return token, dest, manifest_path
+        token = secrets.token_hex(16)
+        dest, manifest_path = self._cipherq_paths(source, token)
+        return token, dest, manifest_path
+
     def _safe_src_name(self, name: str) -> str | None:
         if not name or name in {".", ".."} or "/" in name or "\\" in name:
             return None
@@ -2731,7 +2900,7 @@ class RawSpillStore:
             return None
         try:
             raw = json.loads(path.read_bytes().decode("utf-8"))
-            if not isinstance(raw, dict) or set(raw) != CIPHERQ_MANIFEST_KEYS:
+            if not isinstance(raw, dict) or not CIPHERQ_MANIFEST_KEYS.issubset(raw):
                 return None
             if CIPHERQ_FORBIDDEN_KEYS.intersection(raw):
                 return None
@@ -2789,14 +2958,25 @@ class RawSpillStore:
                 items.append(entry)
         return items
 
+    def _iter_cipherq_payload_paths_locked(self) -> list[Path]:
+        if not self.directory.exists():
+            return []
+        items: list[Path] = []
+        for path in [
+            *sorted(self.directory.glob("*.cq")),
+            *sorted(self.directory.glob("*.cq.wip")),
+        ]:
+            if not path.is_file() or path.name.endswith(".tmp"):
+                continue
+            items.append(path)
+        return items
+
     def _cipherq_usage_locked(self) -> tuple[int, int]:
         count = 0
         total = 0
-        for entry in self._iter_cipherq_entries_locked():
-            if not entry.dest.exists():
-                continue
+        for path in self._iter_cipherq_payload_paths_locked():
             try:
-                total += entry.dest.stat().st_size
+                total += path.stat().st_size
             except OSError:
                 continue
             count += 1
@@ -2804,6 +2984,7 @@ class RawSpillStore:
 
     def _drop_cipherq_entry_locked(self, entry: _CipherqEntry) -> None:
         entry.dest.unlink(missing_ok=True)
+        self._cipherq_wip(entry.dest).unlink(missing_ok=True)
         entry.manifest.unlink(missing_ok=True)
         entry.dest.with_name(entry.dest.name + ".tmp").unlink(missing_ok=True)
         entry.manifest.with_name(entry.manifest.name + ".tmp").unlink(missing_ok=True)
@@ -2886,21 +3067,24 @@ class RawSpillStore:
         except OSError:
             return False
 
-    def _reclaim_cipherq_pending_locked(self) -> int:
-        """重入未完成隔离：有源则改名，有目标则封印，禁止源与目标同时消失。"""
+    def _reclaim_cipherq_pending_locked(self, now_ts: float | None = None) -> int:
+        """重入未完成隔离：有源则改名，有目标则封印；过期 .cq.wip 退回 .cq。"""
 
         reclaimed = 0
+        now_value = time.time() if now_ts is None else now_ts
         for entry in self._iter_cipherq_entries_locked():
             source_path = self.directory / entry.src_name
+            wip = self._cipherq_wip(entry.dest)
+            if wip.exists() and not entry.dest.exists():
+                if self._file_age_seconds(wip, now_value) >= self.header_only_min_age_s:
+                    try:
+                        os.replace(wip, entry.dest)
+                        self._fsync_directory()
+                        reclaimed += 1
+                    except OSError:
+                        continue
+                continue
             if entry.state == CIPHERQ_STATE_SEALED:
-                if entry.dest.exists():
-                    continue
-                if source_path.exists():
-                    entry.manifest.unlink(missing_ok=True)
-                    reclaimed += 1
-                    continue
-                entry.manifest.unlink(missing_ok=True)
-                reclaimed += 1
                 continue
             if entry.dest.exists():
                 self._seal_cipherq_manifest_locked(entry)
@@ -2916,6 +3100,33 @@ class RawSpillStore:
                     continue
         return reclaimed
 
+    def _iter_orphan_cipherq_paths_locked(self) -> list[Path]:
+        known = {entry.dest.name for entry in self._iter_cipherq_entries_locked()}
+        known.update(name + ".wip" for name in list(known))
+        return [
+            path
+            for path in self._iter_cipherq_payload_paths_locked()
+            if path.name not in known
+        ]
+
+    def _reclaim_cipherq_manifest_only_locked(self) -> int:
+        """清单无密文：确定终态后删除清单；不得 silently 留下不可恢复孤儿。"""
+
+        dropped = 0
+        for entry in self._iter_cipherq_entries_locked():
+            if entry.dest.exists() or self._cipherq_wip(entry.dest).exists():
+                continue
+            source_path = self.directory / entry.src_name
+            if entry.state == CIPHERQ_STATE_PENDING and source_path.exists():
+                continue
+            LOGGER.warning(
+                "raw spill cipherq manifest missing ciphertext",
+                extra={"kind": entry.kind, "reason": entry.reason, "source": entry.source},
+            )
+            entry.manifest.unlink(missing_ok=True)
+            dropped += 1
+        return dropped
+
     def _isolate_ciphertext_locked(
         self,
         path: Path,
@@ -2930,13 +3141,26 @@ class RawSpillStore:
         if SOURCE_PATTERN.fullmatch(source) is None:
             source = "report"
         if not token:
-            token = hashlib.sha256(kind.encode("utf-8")).hexdigest()[:32]
-        dest, manifest_path = self._cipherq_paths(source, token)
-        if dest.exists() and not path.exists():
+            token = secrets.token_hex(16)
+        token, dest, manifest_path = self._allocate_cipherq_dest_locked(source, token)
+        if dest.exists() or self._cipherq_wip(dest).exists():
             existing = self._parse_cipherq_manifest(manifest_path)
-            if existing is not None and existing.state != CIPHERQ_STATE_SEALED:
-                self._seal_cipherq_manifest_locked(existing)
-            return dest.exists()
+            if existing is not None and existing.token == token:
+                wip = self._cipherq_wip(dest)
+                if path == wip and not dest.exists():
+                    try:
+                        os.replace(path, dest)
+                        self._fsync_directory()
+                    except OSError:
+                        return True
+                if existing.state != CIPHERQ_STATE_SEALED:
+                    self._seal_cipherq_manifest_locked(existing)
+                return True
+            LOGGER.warning(
+                "raw spill cipherq dest exists without overwrite",
+                extra={"kind": kind, "reason": reason, "source": source},
+            )
+            return False
         if not path.exists():
             return False
         try:
@@ -2981,6 +3205,12 @@ class RawSpillStore:
                 },
             )
             return False
+        if dest.exists() or self._cipherq_wip(dest).exists():
+            LOGGER.warning(
+                "raw spill cipherq dest exists without overwrite",
+                extra={"kind": kind, "reason": reason, "source": source},
+            )
+            return False
         try:
             os.replace(path, dest)
             self._fsync_directory()
@@ -3013,27 +3243,26 @@ class RawSpillStore:
         reserve.unlink(missing_ok=True)
         reserve.with_name(reserve.name + ".tmp").unlink(missing_ok=True)
 
-    def _restore_cipherq_locked(self, entry: _CipherqEntry) -> Path | None:
-        """把封印密文原子改回原文件名，供既有 _read 恢复。"""
+    def _claim_cipherq_locked(self, entry: _CipherqEntry) -> Path | None:
+        """原子 .cq → .cq.wip 取得所有权；失败者看不到 dest。"""
 
-        dest_name = self._safe_src_name(entry.src_name)
-        if dest_name is None:
+        dest = entry.dest
+        wip = self._cipherq_wip(dest)
+        if wip.exists():
             return None
-        target = self.directory / dest_name
-        if target.exists():
-            entry.manifest.unlink(missing_ok=True)
-            return target
-        if not entry.dest.exists():
-            entry.manifest.unlink(missing_ok=True)
+        if not dest.exists():
             return None
         try:
-            os.replace(entry.dest, target)
+            os.replace(dest, wip)
             self._fsync_directory()
-            entry.manifest.unlink(missing_ok=True)
-            self._fsync_directory()
-            return target
+            return wip
         except OSError:
             return None
+
+    def _restore_cipherq_locked(self, entry: _CipherqEntry) -> Path | None:
+        """认领封印密文供原位读取；禁止改回 src_name，避免覆盖活动文件或丢掉 manifest。"""
+
+        return self._claim_cipherq_locked(entry)
 
     def _iter_cipherq_recoverable(
         self, crypto: StreamChunkCrypto, source: str
@@ -3093,6 +3322,81 @@ class RawSpillStore:
                     )
                 continue
             yield record
+        for claimed, entry in self._claim_orphan_cipherq_locked(source):
+            try:
+                record = self._read(claimed, expected_source=source, crypto=crypto)
+            except UnknownKeyVersionError:
+                with self._quota_lock():
+                    self._isolate_ciphertext_locked(
+                        claimed,
+                        source=entry.source,
+                        token=entry.token,
+                        kind="spill",
+                        reason=REASON_KEY_UNAVAILABLE,
+                    )
+                continue
+            except SpillMetadataAuthError:
+                with self._quota_lock():
+                    self._isolate_ciphertext_locked(
+                        claimed,
+                        source=entry.source,
+                        token=entry.token,
+                        kind="spill",
+                        reason=REASON_AUTH_FAILED,
+                    )
+                continue
+            except OSError:
+                continue
+            if record is None:
+                continue
+            yield record
+
+    def _claim_orphan_cipherq_locked(
+        self, source: str
+    ) -> list[tuple[Path, _CipherqEntry]]:
+        claimed: list[tuple[Path, _CipherqEntry]] = []
+        with self._quota_lock():
+            for path in self._iter_orphan_cipherq_paths_locked():
+                parsed = parse_spill_filename(path.name)
+                if parsed is None or parsed[0] != source:
+                    continue
+                if path.name.endswith(".cq.wip"):
+                    continue
+                token = parsed[1]
+                entry = _CipherqEntry(
+                    source=source,
+                    token=token,
+                    kind="spill",
+                    reason=REASON_CORRUPT,
+                    src_name=path.name,
+                    size_bytes=0,
+                    sha256="0" * 64,
+                    state=CIPHERQ_STATE_SEALED,
+                    dest=path,
+                    manifest=path.with_name(path.name + ".man"),
+                    isolated_at="",
+                )
+                restored = self._claim_cipherq_locked(entry)
+                if restored is not None:
+                    claimed.append((restored, entry))
+        return claimed
+
+    def remove_claimed_cipherq(self, path: Path) -> None:
+        """落库成功后删除认领密文与对应 manifest。"""
+
+        parsed = parse_spill_filename(path.name)
+        path.unlink(missing_ok=True)
+        if parsed is None:
+            return
+        source, token, rest = parsed
+        if not rest.startswith(".cq"):
+            return
+        dest, manifest = self._cipherq_paths(source, token)
+        dest.unlink(missing_ok=True)
+        self._cipherq_wip(dest).unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        dest.with_name(dest.name + ".tmp").unlink(missing_ok=True)
+        manifest.with_name(manifest.name + ".tmp").unlink(missing_ok=True)
 
     def _fsync_directory(self) -> None:
         directory_fd = os.open(self.directory, os.O_RDONLY)

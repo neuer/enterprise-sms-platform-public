@@ -33,6 +33,12 @@ class FakeConnection:
         self.calls.append((str(statement), params))
         return self.results.pop(0)
 
+    async def scalar(self, statement: object, params: Any = None) -> object:
+        result = await self.execute(statement, params)
+        if not result.rows:
+            return 0
+        return next(iter(result.rows[0].values()))
+
 
 class FakeContext:
     def __init__(self, connection: FakeConnection) -> None:
@@ -117,6 +123,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
                     {"replay_eligibility": "never", "count": 7},
                 ]
             ),
+            FakeResult([{"count": 0}]),
         ]
     )
     engine = FakeEngine(connection)
@@ -157,6 +164,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
     assert "asia/shanghai" in sql and "removed_freq" in sql
     assert "poll_report" in sql and "poll_reply" in sql and "status='success'" in sql
     assert "replay_eligibility" in sql and "count(replay_eligibility)" in sql
+    assert "system_replay_audit_state" in sql
     for forbidden in ("phone_enc", "phone_hmac", "phone_mask", "vendor_msg", "content"):
         assert forbidden not in sql
 
@@ -189,6 +197,7 @@ async def test_repository_clamps_clock_skew_and_orders_labels() -> None:
             ),
             FakeResult([]),
             FakeResult([]),
+            FakeResult([{"count": 0}]),
         ]
     )
     repository = SqlMetricsRepository()

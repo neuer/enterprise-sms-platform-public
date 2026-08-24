@@ -30,5 +30,6 @@ def test_spill_write_is_durable_and_round_trips(tmp_path: Path) -> None:
     assert len(pending) == 1
     assert pending[0].payload_enc == payload
     assert pending[0].payload_sha256 == digest
-    store.remove("report", digest)
+    assert path.name != f"report-{digest}.spill"
+    path.unlink()
     assert store.list_pending() == []
