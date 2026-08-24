@@ -15,7 +15,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.services.ops_repository import SqlOpsRepository
-from app.services.raw_lease import RawLeaseLost, RawProcessingLease
+from app.services.raw_lease import (
+    RawLeaseHeartbeat,
+    RawLeaseHeartbeatFailed,
+    RawLeaseLost,
+    RawProcessingLease,
+    renew_raw_lease,
+)
 from app.services.report_repository import SqlReportRepository
 
 pytestmark = pytest.mark.skipif(
@@ -403,6 +409,181 @@ async def test_wrong_epoch_heartbeat_stops_and_complete_spill_has_no_idle_lease(
         for raw_id in (owned_id, idle_id):
             if raw_id is None:
                 continue
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_fails_closed_on_postgres_disconnect() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    raw_id: int | None = None
+    try:
+        raw_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="g" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        lease = reports._leases[raw_id]
+
+        async def renew(token: RawProcessingLease) -> None:
+            await renew_raw_lease(engine, token)
+
+        async with RawLeaseHeartbeat(
+            renew,
+            lease,
+            interval_s=0.02,
+            on_failure=reports.record_heartbeat_failure,
+        ) as beat:
+            await asyncio.sleep(0.05)
+            await engine.dispose()
+            await asyncio.sleep(0.08)
+            with pytest.raises(RawLeaseHeartbeatFailed):
+                beat.raise_if_lost()
+        probe = create_async_engine(database_url)
+        try:
+            async with probe.begin() as connection:
+                events = [
+                    str(row[0])
+                    for row in (
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT event_type FROM worker_lease_event
+                                WHERE task_kind='raw' AND task_id=:id
+                                """
+                            ),
+                            {"id": raw_id},
+                        )
+                    ).all()
+                ]
+        finally:
+            await probe.dispose()
+        assert "heartbeat_lost" in events
+        assert "13800138000" not in str(events)
+        assert "ciphertext-only" not in str(events)
+    finally:
+        if raw_id is not None:
+            cleanup = create_async_engine(database_url)
+            async with cleanup.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+            await cleanup.dispose()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_fails_closed_on_postgres_pool_timeout() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    reports = SqlReportRepository(settings)
+    engine = create_async_engine(
+        database_url,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.2,
+    )
+    raw_id: int | None = None
+    try:
+        raw_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="h" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        lease = reports._leases[raw_id]
+
+        async def renew(token: RawProcessingLease) -> None:
+            await renew_raw_lease(engine, token)
+
+        async with engine.connect(), RawLeaseHeartbeat(
+            renew, lease, interval_s=0.02
+        ) as beat:
+            await asyncio.sleep(0.4)
+            with pytest.raises(RawLeaseHeartbeatFailed):
+                beat.raise_if_lost()
+    finally:
+        await engine.dispose()
+        if raw_id is not None:
+            cleanup = create_async_engine(database_url)
+            async with cleanup.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+            await cleanup.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generic_renew_error_fails_closed_without_takeover_regression() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    raw_id: int | None = None
+    try:
+        raw_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="i" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        lease = reports._leases[raw_id]
+
+        async def renew(_token: RawProcessingLease) -> None:
+            raise RuntimeError("ordinary renew failure")
+
+        async with RawLeaseHeartbeat(renew, lease, interval_s=0.02) as beat:
+            await asyncio.sleep(0.06)
+            with pytest.raises(RawLeaseHeartbeatFailed):
+                beat.raise_if_lost()
+        await reports.renew_processing_lease(lease)
+        await reports.mark_processed(raw_id, lease=lease)
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT processed,processing_lease_id
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+        assert row["processed"] is True
+        assert row["processing_lease_id"] is None
+    finally:
+        if raw_id is not None:
             async with engine.begin() as connection:
                 await connection.execute(
                     text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),

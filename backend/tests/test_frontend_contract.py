@@ -104,6 +104,33 @@ def test_browser_session_generation_surface_accepts_epoch_or_generation_api() ->
     )
 
 
+ROOT_ENTRY_FORBIDDEN_PERSISTENCE = (
+    "localStorage",
+    "sessionStorage",
+    "indexedDB",
+    "document.cookie",
+    "persist(",
+)
+
+
+def test_main_entry_restores_session_before_installing_auth_guard() -> None:
+    source = read("frontend/src/main.ts")
+    pinia = source.index("createPinia()")
+    restore = source.index("useSessionStore(pinia).restore()")
+    cookie = source.index("restoreFromCookie()")
+    guard = source.index("installAuthGuard(router, pinia, sessionReady)")
+    mount = source.index('application.mount("#app")')
+    assert pinia < restore < cookie < guard < mount
+    assert source.index("const sessionReady") < guard
+
+
+def test_frontend_root_entry_rejects_storage_token_session_persistence_apis() -> None:
+    for relative in ("frontend/src/main.ts", "frontend/src/env.d.ts"):
+        source = read(relative)
+        hits = [name for name in ROOT_ENTRY_FORBIDDEN_PERSISTENCE if name in source]
+        assert hits == [], f"{relative} 根入口不得新增持久化 API: {hits}"
+
+
 def test_single_spa_keeps_the_browser_session_contract() -> None:
     session = read("frontend/src/stores/session.ts")
 

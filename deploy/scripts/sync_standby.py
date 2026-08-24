@@ -27,6 +27,9 @@ from failover_common import (
     CommandRunner,
     DeadlineExceeded,
     atomic_write_json,
+    durability_barrier,
+    fsync_directory,
+    fsync_file,
     read_root_generation_id_file,
     sha256_file,
     validate_generation_id,
@@ -45,6 +48,7 @@ PRODUCTION_FLAGS = {
 BACKUP_CAPACITY_PERCENT = 70
 BACKUP_SIZE_NUMERATOR = 3
 BACKUP_SIZE_DENOMINATOR = 2
+REMOTE_INCOMING_TTL_MINUTES = 24 * 60
 
 
 class Runner(Protocol):
@@ -199,6 +203,7 @@ def _write_text_0600(path: Path, value: str) -> None:
         output.write(value)
         output.flush()
         os.fsync(output.fileno())
+    fsync_directory(path.parent)
 
 
 def _write_bytes_0600(path: Path, value: bytes) -> None:
@@ -207,6 +212,7 @@ def _write_bytes_0600(path: Path, value: bytes) -> None:
         output.write(value)
         output.flush()
         os.fsync(output.fileno())
+    fsync_directory(path.parent)
 
 
 class SyncService:
@@ -337,6 +343,15 @@ class SyncService:
             raise ValueError("snapshot clock must be timezone-aware")
         return f"{moment.astimezone(UTC):%Y%m%dT%H%M%SZ}_{commit[:12]}"
 
+    def _same_snapshot_digest(self, left: Path, right: Path) -> bool:
+        left_sum = left / "SHA256SUMS"
+        right_sum = right / "SHA256SUMS"
+        return (
+            left_sum.is_file()
+            and right_sum.is_file()
+            and left_sum.read_bytes() == right_sum.read_bytes()
+        )
+
     def _publish_local(
         self,
         config: SyncConfig,
@@ -347,8 +362,6 @@ class SyncService:
         snapshots = config.output_dir / "snapshots"
         snapshots.mkdir(parents=True, exist_ok=True, mode=0o700)
         destination = snapshots / snapshot_id
-        if destination.exists() or destination.is_symlink():
-            raise FileExistsError(f"snapshot already exists: {snapshot_id}")
         current = config.output_dir / "current"
         if current.exists() and not current.is_symlink():
             raise ValueError("backup current pointer must be a symlink")
@@ -357,15 +370,29 @@ class SyncService:
         next_link.unlink(missing_ok=True)
         destination_created = False
         current_replaced = False
+        reused = False
         try:
             self._remaining(deadline)
-            os.replace(staging, destination)
-            destination_created = True
+            if destination.exists() or destination.is_symlink():
+                if not self._same_snapshot_digest(staging, destination):
+                    raise ValueError(f"snapshot digest mismatch: {snapshot_id}")
+                shutil.rmtree(staging, ignore_errors=True)
+                reused = True
+            else:
+                os.replace(staging, destination)
+                destination_created = True
+            incoming = config.output_dir / ".incoming"
+            fsync_directory(snapshots)
+            if incoming.is_dir():
+                fsync_directory(incoming)
+            durability_barrier("snapshot_rename", destination)
             self._remaining(deadline)
             next_link.symlink_to(Path("snapshots") / snapshot_id)
             self._remaining(deadline)
             os.replace(next_link, current)
             current_replaced = True
+            fsync_directory(config.output_dir)
+            durability_barrier("current_switch", current)
             self._remaining(deadline)
             return destination
         except BaseException:
@@ -378,31 +405,58 @@ class SyncService:
                     rollback.unlink(missing_ok=True)
                     rollback.symlink_to(previous_target)
                     os.replace(rollback, current)
-            if destination_created:
+            if destination_created and not reused:
                 shutil.rmtree(destination, ignore_errors=True)
             raise
 
-    def _publish_remote(
+    def _ssh(self, target: StandbyTarget) -> list[str]:
+        return ["ssh", "-p", str(target.port), f"{target.user}@{target.host}"]
+
+    def _precheck_remote_capacity(
+        self,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+        estimated_bytes: int,
+    ) -> None:
+        output = self._run_command(
+            self._ssh(target)
+            + [f"set -eu; df -Pk {shlex.quote(target.root)} | tail -n 1"],
+            config,
+            deadline,
+        ).decode("utf-8", errors="replace").split()
+        if len(output) < 4 or not output[3].isdecimal():
+            raise ValueError("remote backup capacity unavailable")
+        available = int(output[3]) * 1024
+        if available < estimated_bytes:
+            raise BackupCapacityExceeded
+
+    def _stage_remote(
         self,
         snapshot_dir: Path,
         snapshot_id: str,
         target: StandbyTarget,
         config: SyncConfig,
         deadline: float,
+        estimated_bytes: int,
     ) -> None:
         endpoint = f"{target.user}@{target.host}"
-        ssh = ["ssh", "-p", str(target.port), endpoint]
-        incoming = f"{target.root}/.incoming/{snapshot_id}"
+        incoming_root = f"{target.root}/.incoming"
+        incoming = f"{incoming_root}/{snapshot_id}"
+        destination = f"{target.root}/snapshots/{snapshot_id}"
         self._run_command(
-            ssh
+            self._ssh(target)
             + [
                 "set -eu; "
-                f"mkdir -p {shlex.quote(target.root + '/.incoming')} "
-                f"{shlex.quote(target.root + '/snapshots')}"
+                f"mkdir -p {shlex.quote(incoming_root)} "
+                f"{shlex.quote(target.root + '/snapshots')}; "
+                f"find {shlex.quote(incoming_root)} -mindepth 1 -maxdepth 1 "
+                f"-mmin +{REMOTE_INCOMING_TTL_MINUTES} -exec rm -rf {{}} +"
             ],
             config,
             deadline,
         )
+        self._precheck_remote_capacity(target, config, deadline, estimated_bytes)
         self._run_command(
             [
                 "rsync",
@@ -419,14 +473,69 @@ class SyncService:
             "set -eu; "
             f"cd {shlex.quote(incoming)}; "
             "shasum -a 256 -c SHA256SUMS; "
-            f"test ! -e {shlex.quote(target.root + '/snapshots/' + snapshot_id)}; "
-            f"mv {shlex.quote(incoming)} "
-            f"{shlex.quote(target.root + '/snapshots/' + snapshot_id)}; "
+            f"if [ -e {shlex.quote(destination)} ]; then "
+            f"cmp -s SHA256SUMS {shlex.quote(destination + '/SHA256SUMS')} "
+            "|| { echo snapshot-digest-mismatch >&2; exit 1; }; "
+            f"rm -rf {shlex.quote(incoming)}; "
+            "else "
+            f"mv {shlex.quote(incoming)} {shlex.quote(destination)}; "
+            "fi; "
+            f"sync {shlex.quote(target.root + '/snapshots')}"
+        )
+        self._run_command(self._ssh(target) + [remote], config, deadline)
+
+    def _commit_remote_current(
+        self,
+        snapshot_id: str,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+    ) -> None:
+        destination = f"{target.root}/snapshots/{snapshot_id}"
+        remote = (
+            "set -eu; "
+            f"test -d {shlex.quote(destination)}; "
             f"cd {shlex.quote(target.root)}; "
             f"ln -sfn {shlex.quote('snapshots/' + snapshot_id)} current.next; "
-            "mv -f current.next current"
+            "mv -f current.next current; "
+            "sync"
         )
-        self._run_command(ssh + [remote], config, deadline)
+        self._run_command(self._ssh(target) + [remote], config, deadline)
+
+    def _cleanup_remote_incoming(
+        self,
+        snapshot_id: str,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+    ) -> None:
+        incoming = f"{target.root}/.incoming/{snapshot_id}"
+        self._run_command(
+            self._ssh(target) + [f"set -eu; rm -rf {shlex.quote(incoming)}"],
+            config,
+            deadline,
+        )
+
+    def _rollback_uncommitted_remote_snapshot(
+        self,
+        snapshot_id: str,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+    ) -> None:
+        destination = f"{target.root}/snapshots/{snapshot_id}"
+        incoming = f"{target.root}/.incoming/{snapshot_id}"
+        remote = (
+            "set -eu; "
+            f"cd {shlex.quote(target.root)}; "
+            "cur=; "
+            "if [ -L current ]; then cur=$(readlink current); fi; "
+            f"if [ \"$cur\" != {shlex.quote('snapshots/' + snapshot_id)} ]; then "
+            f"rm -rf {shlex.quote(destination)}; "
+            "fi; "
+            f"rm -rf {shlex.quote(incoming)}"
+        )
+        self._run_command(self._ssh(target) + [remote], config, deadline)
 
     def run(self, config: SyncConfig) -> SyncResult:
         started = self.timer()
@@ -497,6 +606,8 @@ class SyncService:
         lock_fd: int | None = None
         staging: Path | None = None
         failure: BaseException | None = None
+        snapshot_id: str | None = None
+        remote_staged = False
         try:
             config.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             self._remaining(deadline)
@@ -581,6 +692,9 @@ class SyncService:
                 config,
                 deadline,
             )
+            fsync_file(backup)
+            fsync_directory(staging)
+            durability_barrier("dump_fsync", backup)
 
             archive = staging / f"repository_{snapshot_id}.tar.gz"
             self._run_command(
@@ -597,6 +711,9 @@ class SyncService:
             if not archive.is_file():
                 raise RuntimeError("git archive was not created")
             archive.chmod(0o600)
+            fsync_file(archive)
+            fsync_directory(staging)
+            durability_barrier("archive_fsync", archive)
             self._remaining(deadline)
             environment = staging / "production.env"
             _write_bytes_0600(environment, environment_bytes)
@@ -697,12 +814,25 @@ class SyncService:
             ]
             checksum_lines.append(f"{self._sha256(manifest, deadline)}  {manifest.name}")
             _write_text_0600(staging / "SHA256SUMS", "\n".join(checksum_lines) + "\n")
+            fsync_directory(staging)
+            durability_barrier("payload_durable", staging)
             self._remaining(deadline)
 
+            remote_staged = False
             if target is not None:
-                self._publish_remote(staging, snapshot_id, target, config, deadline)
+                self._stage_remote(
+                    staging,
+                    snapshot_id,
+                    target,
+                    config,
+                    deadline,
+                    estimated_bytes,
+                )
+                remote_staged = True
             snapshot_dir = self._publish_local(config, staging, snapshot_id, deadline)
             staging = None
+            if target is not None:
+                self._commit_remote_current(snapshot_id, target, config, deadline)
             return SyncResult(snapshot_id, snapshot_dir, target is not None)
         except BaseException as error:
             failure = error
@@ -717,6 +847,19 @@ class SyncService:
                         cleanup_failure.add_note(
                             "backup failed before staging cleanup also failed"
                         )
+            if target is not None and snapshot_id is not None:
+                try:
+                    if failure is not None and remote_staged:
+                        self._rollback_uncommitted_remote_snapshot(
+                            snapshot_id, target, config, deadline
+                        )
+                    else:
+                        self._cleanup_remote_incoming(
+                            snapshot_id, target, config, deadline
+                        )
+                except BaseException:
+                    if cleanup_failure is None:
+                        cleanup_failure = BackupCleanupFailure()
             if lock_fd is not None:
                 os.close(lock_fd)
             if cleanup_failure is not None:

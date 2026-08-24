@@ -15,6 +15,8 @@ from failover_common import (  # noqa: E402
     CommandFailure,
     CommandRunner,
     atomic_write_json,
+    fsync_directory,
+    fsync_file,
     sha256_file,
     validate_drill_database,
     validate_passphrase_file,
@@ -106,6 +108,42 @@ def test_runner_pipeline_streams_without_shell(tmp_path: Path) -> None:
 
     assert output.read_bytes() == b"ABC"
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+
+def test_pipeline_and_atomic_json_fsync_file_and_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synced: list[Path] = []
+    import failover_common as module
+
+    def spy_file(path: Path) -> None:
+        synced.append(path)
+        fsync_file(path)
+
+    def spy_dir(path: Path) -> None:
+        synced.append(path)
+        fsync_directory(path)
+
+    monkeypatch.setattr(module, "fsync_file", spy_file)
+    monkeypatch.setattr(module, "fsync_directory", spy_dir)
+    output = tmp_path / "output.bin"
+    runner = CommandRunner()
+    runner.pipeline_to_file(
+        [sys.executable, "-c", "import sys;sys.stdout.buffer.write(b'abc')"],
+        [
+            sys.executable,
+            "-c",
+            "import sys;sys.stdout.buffer.write(sys.stdin.buffer.read().upper())",
+        ],
+        output,
+    )
+    destination = tmp_path / "manifest.json"
+    atomic_write_json(destination, {"ok": True})
+    assert output in synced
+    assert output.parent in synced
+    assert destination in synced
+    assert destination.parent in synced
 
 
 def test_runner_removes_partial_output_and_redacts_failure(tmp_path: Path) -> None:

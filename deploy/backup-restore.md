@@ -78,6 +78,17 @@ PBKDF2 + AES-256-CBC，不写明文 dump、临时 SQL 或未加密 tar；它原�
 `0600` snapshot manifest/哈希/账本，并记录不含 PII 的计数、Alembic 与密码学代次。
 不得用手工管道代替，也不得把密文哈希或 service 退出 0 单独解释为可恢复。
 
+进程退出码 0 只表示该次 backup/status 命令在用户态走完了检查与返回。Power-Loss Durable
+是另一条合同：Dump、Archive、Snapshot rename、`current` 切换和 Lifecycle
+State 替换都必须先 `fsync` 文件与父目录，再越过对应提交屏障
+（`staging → payload_durable → snapshot_published → current_switched →
+ledger_committed`）。只有命令成功返回且这些屏障都完成后，重挂载才保证仍能找到
+完整可验证 Snapshot 以及与 `current` 一致的账本。未完成屏障的中断必须把未登记
+Snapshot 隔离到 `orphans/`（保留 24 小时）或回退 `current`，不得把 page cache 里
+的成功当成掉电后仍可恢复。生产等价故障注入与 ReleaseStore 相同：以文件
+`fsync`、父目录 `fsync` 和 `os.replace` 为提交屏障；测试在这些屏障上模拟进程
+消失，不把 page cache 里的成功当成 ext4/XFS 掉电后仍可恢复。
+
 ## 密文与可恢复性校验
 
 仅计算出哈希不代表可恢复。首份生产备份、重大迁移和恢复窗口都必须把密文快照送到独立

@@ -17,6 +17,7 @@ from protected_path_policy import (  # noqa: E402
     BACKEND_CRITICAL_RAISE_EXACT,
     FRONTEND_SECURITY_DOMAINS,
     REQUIRED_CODEOWNERS_PATTERNS,
+    REQUIRED_TRACKED_ROOT_GLOBS,
     REQUIRED_TRACKED_SOURCE_TREES,
     REVIEWED_ORDINARY_EXACT,
     REVIEWED_ORDINARY_REASONS,
@@ -260,6 +261,7 @@ def test_reverse_enum_does_not_filter_by_manifest_membership_first(
             "backend/app/cli.py",
             "frontend/src/views/LoginView.vue",
             "frontend/src/components/DailyPasswordChangeDialog.vue",
+            "frontend/src/main.ts",
             "docs/UAT.md",
         ]
     )
@@ -268,6 +270,7 @@ def test_reverse_enum_does_not_filter_by_manifest_membership_first(
     assert "backend/app/models/__init__.py" in missing
     assert "frontend/src/views/LoginView.vue" in missing
     assert "frontend/src/components/DailyPasswordChangeDialog.vue" in missing
+    assert "frontend/src/main.ts" in missing
     assert "docs/UAT.md" not in missing
 
 
@@ -324,6 +327,9 @@ def test_each_explicit_downgrade_has_reason_and_ordinary_gates(path: str) -> Non
         ("frontend/src/views/BrandNewView.vue", "frontend-security"),
         ("frontend/src/components/BrandNewDialog.vue", "frontend-security"),
         ("frontend/src/App.vue", "frontend-security"),
+        ("frontend/src/main.ts", "frontend-security"),
+        ("frontend/src/brand_new_entry.ts", "frontend-security"),
+        ("frontend/src/BrandNewRoot.vue", "frontend-security"),
     ],
 )
 def test_domain_default_does_not_require_an_exact_filename(
@@ -424,6 +430,36 @@ def test_required_source_trees_stay_independent_of_domain_list() -> None:
         ("frontend/src/views/", (".vue",)),
         ("frontend/src/components/", (".vue",)),
     )
+    assert REQUIRED_TRACKED_ROOT_GLOBS == (
+        "frontend/src/*.ts",
+        "frontend/src/*.vue",
+    )
+
+
+def test_frontend_root_entry_is_frontend_security_not_ordinary_fallback() -> None:
+    assert "frontend/src/*.ts" in FRONTEND_SECURITY_DOMAINS
+    assert "frontend/src/*.vue" in FRONTEND_SECURITY_DOMAINS
+    assert security_domain_category("frontend/src/main.ts") == "frontend-security"
+    assert protected_change_category("frontend/src/main.ts") == "frontend-security"
+    result = classify_paths(["frontend/src/main.ts"])
+    assert (result.frontend, result.security, result.g2, result.full_fallback) == (
+        True,
+        True,
+        False,
+        False,
+    )
+    assert result.categories == frozenset({"frontend-security"})
+    assert classify_changed_paths(["frontend/src/main.ts"]).risk == "high-risk"
+    assert "frontend/src/*.ts" in required_codeowners_patterns()
+    assert "frontend/src/*.vue" in required_codeowners_patterns()
+
+
+def test_frontend_lib_is_not_silently_pulled_into_root_security_glob() -> None:
+    path = "frontend/src/lib/formatTime.ts"
+    assert security_domain_category(path) is None
+    result = classify_paths([path])
+    assert result.security is False
+    assert result.categories == frozenset({"frontend"})
 
 
 def test_missing_codeowners_pattern_or_gate_would_fail_contract() -> None:

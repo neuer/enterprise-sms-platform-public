@@ -443,6 +443,9 @@ def test_backup_runbook_streams_encryption_and_verifies_isolated_restore() -> No
         assert token in runbook
     assert "明文 dump" in runbook and "禁止" in runbook
     assert "BACKUP_PASSPHRASE_FILE" in runbook
+    assert "Power-Loss Durable" in runbook
+    assert "进程退出码 0" in runbook
+    assert "ledger_committed" in runbook
     assert "--password" not in runbook
     assert "sudo /usr/local/sbin/sms-compose exec" not in runbook
     assert not re.search(r"^\s*pg_restore\b", runbook, flags=re.MULTILINE)

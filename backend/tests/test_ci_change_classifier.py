@@ -564,6 +564,9 @@ def test_raw_capture_ops_and_session_shell_are_not_skipped(
         "frontend/src/components/BrandNewDialog.vue",
         "frontend/src/components/DailyPasswordChangeDialog.vue",
         "frontend/src/components/ApprovalList.vue",
+        "frontend/src/main.ts",
+        "frontend/src/brand_new_entry.ts",
+        "frontend/src/BrandNewRoot.vue",
     ],
 )
 def test_new_security_domain_files_default_to_full_protection(path: str) -> None:
@@ -742,6 +745,54 @@ def test_copying_sensitive_component_to_ordinary_path_keeps_security(
     assert "frontend-security" in result.categories
 
 
+def test_renaming_frontend_root_entry_to_ordinary_path_keeps_security(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "frontend/src/main.ts", "bootstrap")
+    (repo / "docs").mkdir(exist_ok=True)
+    git(repo, "mv", "frontend/src/main.ts", "docs/main-moved.md")
+    git(repo, "commit", "-m", "rename-root-entry-escape")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.frontend is True
+    assert result.security is True
+    assert "frontend-security" in result.categories
+
+
+def test_copying_frontend_root_entry_to_ordinary_path_keeps_security(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "frontend/src/main.ts", "bootstrap")
+    target = repo / "docs" / "copied-main.ts"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("bootstrap", encoding="utf-8")
+    git(repo, "add", "--", "docs/copied-main.ts")
+    git(repo, "commit", "-m", "copy-root-entry")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.security is True
+    assert result.frontend is True
+    assert "frontend-security" in result.categories
+
+
+def test_new_frontend_root_entry_defaults_to_security(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "docs/note.md", "note")
+    head_sha = commit_file(repo, "frontend/src/bootstrap.ts", "createPinia()")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.frontend is True
+    assert result.security is True
+    assert "frontend-security" in result.categories
+
+
 def test_renaming_protected_lifeline_keeps_g2_without_forcing_full(
     tmp_path: Path,
 ) -> None:
@@ -780,7 +831,7 @@ def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
 
     assert (result.backend, result.frontend, result.g2) == (True, True, True)
     assert result.full_fallback is True
-    assert result.categories == frozenset({"frontend", "unknown"})
+    assert result.categories == frozenset({"frontend-security", "unknown"})
 
 
 def test_nul_diff_preserves_spaces_and_newlines_in_filename(tmp_path: Path) -> None:

@@ -806,6 +806,8 @@ class ReplyIngestService:
                         )
                         continue
                     await self.repository.store_reply(raw_id, reply)
+                    if beat is not None:
+                        beat.raise_if_lost()
             except RawLeaseLost:
                 raise
             except Exception as error:
@@ -845,5 +847,7 @@ class ReplyIngestService:
                 mark_kwargs["lease"] = lease
             if system_audit_intent:
                 mark_kwargs["system_audit_intent"] = True
+            if beat is not None:
+                beat.raise_if_lost()
             await self.repository.mark_processed(raw_id, **mark_kwargs)
             return len(data)

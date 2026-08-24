@@ -138,6 +138,8 @@
   - `frontend/src/api/`
   - `frontend/src/views/`
   - `frontend/src/components/`
+  - `frontend/src/*.ts`
+  - `frontend/src/*.vue`
   - `backend/migrations/`
   - `schema.sql`
   - `deploy/`
