@@ -19,6 +19,14 @@ vi.mock("../src/api/securityDaily", () => api)
 
 import SecurityDailyView from "../src/views/SecurityDailyView.vue"
 
+// ElMessageBox.confirm 的消息为 h() VNode（security-daily-confirm-dialog），递归提取文本用于断言。
+function vnodeText(node: unknown): string {
+  if (typeof node === "string") return node
+  if (Array.isArray(node)) return node.map(vnodeText).join("")
+  if (node && typeof node === "object" && "children" in node) return vnodeText((node as { children: unknown }).children)
+  return ""
+}
+
 const payload = {
   schema_version: 1,
   report_date: "2026-07-15",
@@ -127,7 +135,7 @@ describe("安全日报页面", () => {
     expect(wrapper.text()).toContain("1 人（只展示数量）")
     expect(wrapper.text()).toContain("2026-07-14 08:00:00")
     expect(wrapper.text()).not.toContain("2026/7/14")
-    expect(wrapper.text()).not.toContain("Resend Key")
+    expect(wrapper.text()).toContain("Key 保存后不回显")
     expect(wrapper.text()).not.toContain("security-owner@example.com")
     wrapper.unmount()
   })
@@ -210,37 +218,59 @@ describe("安全日报页面", () => {
     wrapper.unmount()
   })
 
-  it("筛选生效时空态提示匹配筛选条件且不显示生成引导", async () => {
+  it("安全状态 seg 点选即重查，筛选生效时空态提示匹配筛选条件且不显示生成引导", async () => {
     api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
-    const selects = wrapper.findAllComponents({ name: "ElSelect" })
-    selects[0].vm.$emit("update:modelValue", "high")
-    selects[0].vm.$emit("change", "high")
+    await wrapper.get("[data-testid='security-daily-status-high']").trigger("click")
     await flushPromises()
 
     expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
       expect.objectContaining({ status: "high", page: 1 }),
     )
     expect(wrapper.text()).toContain("没有符合筛选条件的安全日报")
-    expect(wrapper.text()).not.toContain("暂无已生成安全日报；可点击")
+    expect(wrapper.text()).not.toContain("暂无已生成安全日报")
+
+    await wrapper.get("[data-testid='security-daily-clear-filters']").trigger("click")
+    await flushPromises()
+    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: undefined, page: 1 }),
+    )
     wrapper.unmount()
   })
 
-  it("起始日期晚于结束日期时不发起列表请求", async () => {
+  it("起始日期晚于结束日期时点击查询不发起列表请求", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     const pickers = wrapper.findAllComponents({ name: "ElDatePicker" })
 
     pickers[0].vm.$emit("update:modelValue", "2026-07-20")
-    pickers[0].vm.$emit("change", "2026-07-20")
-    await flushPromises()
     pickers[1].vm.$emit("update:modelValue", "2026-07-10")
-    pickers[1].vm.$emit("change", "2026-07-10")
     await flushPromises()
+    expect(api.listSecurityDailyReports).toHaveBeenCalledTimes(1)
 
-    expect(api.listSecurityDailyReports).toHaveBeenCalledTimes(2)
+    await wrapper.get("form.security-daily-filter-bar").trigger("submit")
+    await flushPromises()
+    expect(api.listSecurityDailyReports).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it("报告日期经查询按钮生效，日期变更本身不重查", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const pickers = wrapper.findAllComponents({ name: "ElDatePicker" })
+
+    pickers[0].vm.$emit("update:modelValue", "2026-07-01")
+    pickers[1].vm.$emit("update:modelValue", "2026-07-15")
+    await flushPromises()
+    expect(api.listSecurityDailyReports).toHaveBeenCalledTimes(1)
+
+    await wrapper.get("form.security-daily-filter-bar").trigger("submit")
+    await flushPromises()
+    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
+      expect.objectContaining({ dateFrom: "2026-07-01", dateTo: "2026-07-15", page: 1 }),
+    )
     wrapper.unmount()
   })
 
@@ -358,7 +388,7 @@ describe("安全日报页面", () => {
   })
 
   it("手动投递前要求确认，并只提交结构化确认动作", async () => {
-    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     await wrapper.findAll("button").filter((button) => button.text().includes("查看详情")).at(0)!.trigger("click")
@@ -366,20 +396,31 @@ describe("安全日报页面", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("手动投递"))!.trigger("click")
     await flushPromises()
 
+    const message = vnodeText(confirm.mock.calls[0][0])
+    expect(message).toContain("已脱敏结构化报告")
+    expect(message).toContain("独立 mailer")
+    expect(message).toContain("幂等")
+    expect(message).toContain("写入审计日志")
     expect(api.sendSecurityDailyReport).toHaveBeenCalledWith(1)
     expect(api.sendSecurityDailyReport.mock.calls[0]).toHaveLength(1)
     wrapper.unmount()
     vi.restoreAllMocks()
   })
 
-  it("允许管理员立即生成上一日报并在生成后打开详情", async () => {
-    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+  it("允许管理员立即生成上一日报，确认拆后果并在生成后打开详情", async () => {
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
     await wrapper.findAll("button").find((button) => button.text().includes("立即生成"))!.trigger("click")
     await flushPromises()
 
+    const message = vnodeText(confirm.mock.calls[0][0])
+    expect(message).toContain("新增一条日报记录")
+    expect(message).toContain("不覆盖历史记录")
+    expect(message).toContain("立即提交邮件投递")
+    expect(message).toContain("处理中的投递请求时将被拒绝")
+    expect(message).toContain("写入审计日志")
     expect(api.generateSecurityDailyReport).toHaveBeenCalledOnce()
     expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3)
     expect(wrapper.text()).toContain("安全预览")
@@ -460,8 +501,8 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("安全日报独立投递控制面不可用")
-    expect(wrapper.text()).toContain("安全日报记录暂不可用，请刷新重试")
-    expect(wrapper.text()).not.toContain("正常")
+    expect(wrapper.text()).toContain("安全日报记录暂不可用")
+    expect(wrapper.text()).not.toContain("2026-07-13")
     wrapper.unmount()
   })
 

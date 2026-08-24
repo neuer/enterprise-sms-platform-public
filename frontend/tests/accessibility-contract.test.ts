@@ -14,6 +14,7 @@ const datePickerViews = [
   "SendView.vue",
   "ReplyView.vue",
   "MessageView.vue",
+  "SecurityDailyView.vue",
 ].map((name) => readFileSync(resolve(process.cwd(), "src/views", name), "utf8"))
 
 function channel(value: number): number {
@@ -144,7 +145,7 @@ describe("无障碍样式契约", () => {
       0,
     )
 
-    expect(pickerCount).toBe(7)
+    expect(pickerCount).toBe(9)
     expect(themedPickerCount).toBe(pickerCount)
   })
 

@@ -258,18 +258,20 @@ button:focus-visible {
 .blacklist-heading,
 .user-heading,
 .config-heading,
-.callback-heading {
+.callback-heading,
+.security-daily-heading {
   align-items: end;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务共享选择器：ops-* 与 callback-* 均并入同一组，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务/安全日报共享选择器：ops-*、callback-* 与 security-daily-* 均并入同一组，按页复制即缺陷。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
 .sensitive-filter-bar,
 .user-filter-bar,
 .config-filter-bar,
 .ops-filter-bar,
-.callback-filter-bar {
+.callback-filter-bar,
+.security-daily-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -287,7 +289,8 @@ button:focus-visible {
 .user-fld,
 .config-fld,
 .ops-fld,
-.callback-fld {
+.callback-fld,
+.security-daily-fld {
   display: grid;
   gap: 5px;
 }
@@ -298,7 +301,8 @@ button:focus-visible {
 .user-fld > span,
 .config-fld > span,
 .ops-fld > span,
-.callback-fld > span {
+.callback-fld > span,
+.security-daily-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -340,7 +344,8 @@ button:focus-visible {
 .user-seg,
 .config-seg,
 .ops-seg,
-.callback-seg {
+.callback-seg,
+.security-daily-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -354,7 +359,8 @@ button:focus-visible {
 .user-seg button,
 .config-seg button,
 .ops-seg button,
-.callback-seg button {
+.callback-seg button,
+.security-daily-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -374,7 +380,8 @@ button:focus-visible {
 .user-seg button.on,
 .config-seg button.on,
 .ops-seg button.on,
-.callback-seg button.on {
+.callback-seg button.on,
+.security-daily-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
@@ -384,7 +391,8 @@ button:focus-visible {
 .sensitive-filter-go,
 .user-filter-go,
 .ops-filter-go,
-.callback-filter-go {
+.callback-filter-go,
+.security-daily-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -397,7 +405,8 @@ button:focus-visible {
 .user-privacy,
 .config-privacy,
 .ops-privacy,
-.callback-privacy {
+.callback-privacy,
+.security-daily-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -412,7 +421,8 @@ button:focus-visible {
 .user-privacy code,
 .config-privacy code,
 .ops-privacy code,
-.callback-privacy code {
+.callback-privacy code,
+.security-daily-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -427,7 +437,8 @@ button:focus-visible {
 .sensitive-results,
 .user-results,
 .ops-results,
-.callback-results {
+.callback-results,
+.security-daily-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -508,7 +519,8 @@ button:focus-visible {
 .sensitive-pagination,
 .user-pagination,
 .ops-pagination,
-.callback-pagination {
+.callback-pagination,
+.security-daily-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -536,8 +548,9 @@ button:focus-visible {
   .sensitive-heading,
   .user-heading,
   .config-heading,
-.ops-heading,
-.callback-heading {
+  .ops-heading,
+  .callback-heading,
+  .security-daily-heading {
     align-items: start;
   }
 
@@ -546,8 +559,9 @@ button:focus-visible {
   .sensitive-filter-bar,
   .user-filter-bar,
   .config-filter-bar,
-.ops-filter-bar,
-.callback-filter-bar {
+  .ops-filter-bar,
+  .callback-filter-bar,
+  .security-daily-filter-bar {
     align-items: flex-start;
   }
 
@@ -557,11 +571,13 @@ button:focus-visible {
   .sensitive-keyword,
   .user-keyword,
   .config-keyword,
-.ops-keyword,
-.ops-phone,
-.ops-dates,
-.callback-keyword,
-.callback-app-select {
+  .ops-keyword,
+  .ops-phone,
+  .ops-dates,
+  .callback-keyword,
+  .callback-app-select,
+  .security-daily-dates,
+  .security-daily-date {
     width: 100%;
   }
 
@@ -574,8 +590,9 @@ button:focus-visible {
   .blacklist-filter-go,
   .sensitive-filter-go,
   .user-filter-go,
-.ops-filter-go,
-.callback-filter-go {
+  .ops-filter-go,
+  .callback-filter-go,
+  .security-daily-filter-go {
     width: 100%;
     margin-left: 0;
   }
@@ -584,8 +601,9 @@ button:focus-visible {
   .blacklist-filter-go .el-button,
   .sensitive-filter-go .el-button,
   .user-filter-go .el-button,
-.ops-filter-go .el-button,
-.callback-filter-go .el-button {
+  .ops-filter-go .el-button,
+  .callback-filter-go .el-button,
+  .security-daily-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -596,8 +614,9 @@ button:focus-visible {
   .blacklist-pagination,
   .sensitive-pagination,
   .user-pagination,
-.ops-pagination,
-.callback-pagination {
+  .ops-pagination,
+  .callback-pagination,
+  .security-daily-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -4188,7 +4207,8 @@ main {
   border-radius: 12px;
 }
 
-.sign-table .el-table__row {
+.sign-table .el-table__row,
+.security-daily-table .el-table__row {
   cursor: pointer;
 }
 
@@ -4215,7 +4235,7 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务共享选择器：ops-* 与 callback-* 均并入同一组，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务/安全日报共享选择器：ops-*、callback-* 与 security-daily-* 均并入同一组，按页复制即缺陷。 */
 .sign-drawer-head,
 .blacklist-drawer-head,
 .sensitive-drawer-head,
@@ -4306,7 +4326,8 @@ main {
 .user-confirm-dialog p,
 .config-confirm-dialog p,
 .ops-confirm-dialog p,
-.callback-confirm-dialog p {
+.callback-confirm-dialog p,
+.security-daily-confirm-dialog p {
   margin: 0;
 }
 
@@ -4316,7 +4337,8 @@ main {
 .user-confirm-audit,
 .config-confirm-audit,
 .ops-confirm-audit,
-.callback-confirm-audit {
+.callback-confirm-audit,
+.security-daily-confirm-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -5665,11 +5687,12 @@ main {
 /* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
    检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
    本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
-   config-rules / ops-rules / callback-rules 与 user-rules 同构，共用本组规则。 */
+   config-rules / ops-rules / callback-rules / security-daily-rules 与 user-rules 同构，共用本组规则。 */
 .user-rules,
 .config-rules,
 .ops-rules,
-.callback-rules {
+.callback-rules,
+.security-daily-rules {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 28px;
@@ -5683,7 +5706,8 @@ main {
 .user-rules > div,
 .config-rules > div,
 .ops-rules > div,
-.callback-rules > div {
+.callback-rules > div,
+.security-daily-rules > div {
   display: flex;
   gap: 8px;
   align-items: baseline;
@@ -5693,7 +5717,8 @@ main {
 .user-rules span,
 .config-rules span,
 .ops-rules span,
-.callback-rules span {
+.callback-rules span,
+.security-daily-rules span {
   flex: none;
   color: var(--tx-3);
   font-size: 10.5px;
@@ -5703,7 +5728,8 @@ main {
 .user-rules p,
 .config-rules p,
 .ops-rules p,
-.callback-rules p {
+.callback-rules p,
+.security-daily-rules p {
   margin: 0;
   color: var(--tx-2);
   font-size: 11px;
@@ -5712,7 +5738,8 @@ main {
 
 .user-alert,
 .ops-alert,
-.callback-alert { margin-bottom: 14px; }
+.callback-alert,
+.security-daily-alert { margin-bottom: 14px; }
 
 .user-name {
   display: block;
@@ -5805,7 +5832,8 @@ main {
 .user-row-actions .el-button + .el-button { margin-left: 0; }
 
 .user-empty-action,
-.callback-empty-action {
+.callback-empty-action,
+.security-daily-empty-action {
   display: grid;
   justify-items: center;
   gap: 12px;
@@ -5896,7 +5924,8 @@ main {
   .user-rules > div,
   .config-rules > div,
   .ops-rules > div,
-  .callback-rules > div { width: 100%; }
+  .callback-rules > div,
+  .security-daily-rules > div { width: 100%; }
   .user-table { display: none; }
   .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
   .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
@@ -6636,7 +6665,11 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .demo-script { padding: 13px 15px; margin: 6px 0 0; overflow-x: auto; color: #cfe3ff; font: 12px/1.7 var(--mono); white-space: pre; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 .demo-dialog .el-tabs__item { font-size: 13px; }
 
+/* 安全日报：页头/检索条/规则条/结果面板/分页/空态/确认框已并入 reply-*、user-rules 与 sign-* 共享组，
+   按页复制即缺陷；本区只保留页头操作组、日期双输入、概览卡（运行状态 + 事实格）与详情抽屉/预览的页级专属样式。 */
 .security-daily-heading-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.security-daily-dates { display: flex; gap: 8px; flex-wrap: wrap; }
+.security-daily-date { width: 148px; }
 .security-daily-overview { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 2fr); gap: 1px; margin-bottom: 16px; background: var(--hair); border: 1px solid var(--hair); border-radius: 12px; overflow: hidden; }
 .security-daily-state-card { display: grid; gap: 8px; align-content: center; justify-items: start; padding: 20px; background: linear-gradient(145deg, #162b23, #13221c); }
 .security-daily-state-card strong { color: var(--tx-hi); font-size: 18px; }
@@ -6645,12 +6678,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .security-daily-facts > div { min-width: 0; padding: 13px 15px; background: var(--panel); }
 .security-daily-facts dt { color: var(--tx-3); font-size: 10px; }
 .security-daily-facts dd { margin: 5px 0 0; overflow: hidden; color: var(--tx); font: 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.security-daily-filters { display: flex; gap: 8px; flex-wrap: wrap; }
-.security-daily-filters .el-select { width: 130px; }
-.security-daily-pagination { justify-content: flex-end; margin-top: 16px; }
-.card-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-.card-heading > div { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.card-heading strong { color: var(--tx-hi); font-size: 14px; }
 .section-heading { display: flex; gap: 10px; align-items: center; }
 .section-heading strong { color: var(--tx-2); font-size: 11px; font-weight: 500; }
 .security-section-label { color: var(--tx-3); font: 10px var(--mono); letter-spacing: 0.08em; }
@@ -6696,11 +6723,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .security-timeline span { color: var(--tx-2); overflow-wrap: anywhere; }
 .security-preview-text { max-height: 60vh; padding: 14px; margin: 0; overflow: auto; color: var(--tx); font: 12px/1.65 var(--mono); white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--hair); }
 
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .security-daily-overview { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 640px) {
   .security-daily-facts { grid-template-columns: 1fr; }
   .security-evidence-list > div, .security-timeline li { grid-template-columns: 1fr; gap: 5px; }
 }
