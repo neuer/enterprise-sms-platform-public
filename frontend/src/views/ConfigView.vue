@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, nextTick, onMounted, reactive, ref } from "vue"
+import { computed, h, nextTick, onMounted, reactive, ref } from "vue"
 
 import {
   activateAuthProvider,
@@ -43,6 +43,7 @@ const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref("")
 const searchQuery = ref("")
+const activeGroup = ref("")
 
 const adProvider = ref<AuthProviderAdmin | null>(null)
 const providerLoading = ref(false)
@@ -84,10 +85,20 @@ const FORMAT_HINTS: Record<string, string> = {
   alert_mail_to: "格式：邮箱地址，逗号分隔；留空则仅落日志",
 }
 
+const groupOptions = computed(() => {
+  const present = new Set(configs.value.map((item) => item.group))
+  const ordered = GROUP_ORDER.filter((name) => present.has(name))
+  const rest = [...present].filter((name) => !GROUP_ORDER.includes(name)).sort()
+  return [...ordered, ...rest]
+})
+
 const groups = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
   const result = new Map<string, ConfigItem[]>()
   for (const item of configs.value) {
+    if (activeGroup.value && item.group !== activeGroup.value) {
+      continue
+    }
     if (
       query &&
       ![item.key, item.description ?? "", item.group].some((text) =>
@@ -136,6 +147,10 @@ async function moveTab(direction: -1 | 1): Promise<void> {
   activeTab.value = configTabs.value[next].name
   await nextTick()
   document.getElementById(`config-tab-${activeTab.value}`)?.focus()
+}
+
+function setGroup(name: string): void {
+  activeGroup.value = name
 }
 
 function hydrate(items: ConfigItem[]): void {
@@ -232,14 +247,17 @@ async function save(): Promise<void> {
   try {
     if (items.some((item) => restartKeys.has(item.key))) {
       await ElMessageBox.confirm(
-        "包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效。",
+        h("div", { class: "config-confirm-dialog" }, [
+          h("p", "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。"),
+          h("p", { class: "config-confirm-audit" }, "每个变更键的旧值与新值将写入审计日志。"),
+        ]),
         "确认调度参数变更",
-        { type: "warning", confirmButtonText: "保存变更" },
+        { type: "warning", confirmButtonText: "保存变更", cancelButtonText: "取消", customClass: "config-confirm-box" },
       )
     }
     saving.value = true
     hydrate(await updateConfigs(items))
-    ElMessage.success("系统参数已更新并写入审计")
+    ElMessage.success("系统参数已更新 · 本次操作已记入审计")
   } catch (error) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(errorText(error, "参数保存失败"))
@@ -270,7 +288,7 @@ async function saveProviderDraft(): Promise<void> {
   try {
     hydrateProvider(await saveAuthProviderDraft("ad", providerDraft()))
     disabledPreserved.value = false
-    ElMessage.success("AD 配置草稿已保存，请测试当前版本")
+    ElMessage.success("AD 配置草稿已保存，请测试当前版本 · 本次操作已记入审计")
   } catch (error) {
     ElMessage.error(errorText(error, "AD 配置草稿保存失败"))
   } finally {
@@ -300,7 +318,7 @@ async function activateProvider(): Promise<void> {
   try {
     hydrateProvider(await activateAuthProvider("ad"))
     disabledPreserved.value = false
-    ElMessage.success("AD 认证源已启用")
+    ElMessage.success("AD 认证源已启用 · 本次操作已记入审计")
   } catch (error) {
     ElMessage.error(errorText(error, "AD 认证源启用失败"))
   } finally {
@@ -311,14 +329,17 @@ async function activateProvider(): Promise<void> {
 async function disableProvider(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      "禁用后登录页不再显示 AD，已登录会话不受影响；配置与角色映射继续保留。",
+      h("div", { class: "config-confirm-dialog" }, [
+        h("p", "禁用后登录页不再显示 AD，已登录会话不受影响；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。"),
+        h("p", { class: "config-confirm-audit" }, "禁用行为与操作人将写入审计日志。"),
+      ]),
       "确认禁用 AD",
-      { type: "warning", confirmButtonText: "禁用 AD", cancelButtonText: "取消" },
+      { type: "warning", confirmButtonText: "禁用 AD", cancelButtonText: "取消", customClass: "config-confirm-box" },
     )
     providerSaving.value = true
     hydrateProvider(await disableAuthProvider("ad"))
     disabledPreserved.value = true
-    ElMessage.success("AD 已禁用，配置与角色映射均已保留")
+    ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(errorText(error, "AD 认证源禁用失败"))
@@ -348,7 +369,7 @@ async function saveRoleMappings(): Promise<void> {
       .filter((item) => item.external_group)
     const result = await replaceAuthProviderRoleMappings("ad", mappings)
     roleMappings.value = result.mappings.map((item) => ({ ...item }))
-    ElMessage.success("AD 目录组角色映射已更新")
+    ElMessage.success("AD 目录组角色映射已更新 · 本次操作已记入审计")
   } catch (error) {
     ElMessage.error(errorText(error, "角色映射保存失败"))
   } finally {
@@ -367,9 +388,8 @@ onMounted(() => {
     <div>
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>
       <h1>系统参数</h1>
-      <p>运行参数、认证源与真实联调统一在此受控；安全日报邮件配置请进入独立的“安全日报”页面。</p>
+      <p>运行参数、认证源与真实联调统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART 的项需重启容器生效，敏感值不回显。安全日报邮件配置请进入独立的“安全日报”页面。</p>
     </div>
-    <div class="config-heading-note"><strong>{{ configs.length }}</strong><span>项受控运行参数</span></div>
   </section>
 
   <nav class="config-tabs" role="tablist" aria-label="系统配置模块">
@@ -389,21 +409,18 @@ onMounted(() => {
     >{{ tab.label }}</button>
   </nav>
 
-  <el-card
+  <section
     v-show="activeTab === 'providers'"
     id="config-panel-providers"
     v-loading="providerLoading"
-    shadow="never"
-    class="provider-config-card"
+    class="provider-panel"
     role="tabpanel"
     aria-labelledby="config-tab-providers"
   >
-    <template #header>
-      <div class="provider-section-title">
-        <div><p class="eyebrow">AUTHENTICATION SOURCES</p><strong>认证源</strong></div>
-        <span>登录时由用户明确选择，不自动回退</span>
-      </div>
-    </template>
+    <header class="provider-panel-head">
+      <div><p class="eyebrow">AUTHENTICATION SOURCES</p><strong>认证源</strong></div>
+      <span>登录时由用户明确选择，不自动回退</span>
+    </header>
 
     <el-alert v-if="providerError" :title="providerError" type="error" :closable="false" show-icon>
       <template #default><el-button link type="primary" @click="loadProvider">重新加载</el-button></template>
@@ -497,7 +514,7 @@ onMounted(() => {
         <footer><el-button data-testid="save-role-mappings" type="primary" :loading="mappingsSaving" @click="saveRoleMappings">保存角色映射</el-button></footer>
       </section>
     </article>
-  </el-card>
+  </section>
 
   <section
     v-show="activeTab === 'runtime'"
@@ -509,23 +526,43 @@ onMounted(() => {
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
       <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
     </el-alert>
-    <el-alert class="config-restart-alert" title="调度生效规则" type="warning" :closable="false" show-icon description="标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。" />
 
-    <div class="config-toolbar">
-      <el-input
-        v-model="searchQuery"
-        data-testid="config-search"
-        clearable
-        placeholder="按参数名、说明或分组搜索"
-        aria-label="搜索系统参数"
-      />
-      <span>{{ groups.reduce((total, [, items]) => total + items.length, 0) }} / {{ configs.length }} 项</span>
-    </div>
+    <form class="config-filter-bar" @submit.prevent>
+      <label class="config-fld"><span>关键词</span>
+        <el-input
+          v-model="searchQuery"
+          data-testid="config-search"
+          class="config-keyword"
+          clearable
+          placeholder="参数名、说明或分组"
+          aria-label="搜索系统参数"
+        />
+      </label>
+      <div class="config-fld"><span>分组</span>
+        <div class="config-seg" role="group" aria-label="参数分组筛选" data-testid="config-group-seg">
+          <button type="button" :class="{ on: activeGroup === '' }" data-testid="config-group-all" @click="setGroup('')">全部</button>
+          <button
+            v-for="group in groupOptions"
+            :key="group"
+            type="button"
+            :class="{ on: activeGroup === group }"
+            :data-testid="`config-group-${group}`"
+            @click="setGroup(group)"
+          >{{ group }}</button>
+        </div>
+      </div>
+      <p class="config-privacy">接口全量返回，关键词与分组均为前端过滤；改动逐键写入审计日志，敏感值不回显。</p>
+    </form>
+
+    <aside class="config-rules" aria-label="调度生效与敏感值规则">
+      <div><span>调度生效规则</span><p>标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。</p></div>
+      <div><span>敏感值规则</span><p>SENSITIVE 项已配置值不回显；留空保持原值，「清除配置」即将其置空。</p></div>
+    </aside>
 
     <section v-loading="loading" class="config-groups">
-      <EmptyState v-if="!groups.length && !loading" title="没有匹配的系统参数" description="换个关键字试试，或清空搜索查看全部参数。" />
-      <el-card v-for="[group, items] in groups" :key="group" shadow="never" class="config-group-card">
-        <template #header><div class="config-group-title"><strong>{{ group }}</strong><span>{{ items.length }} PARAMETERS</span></div></template>
+      <EmptyState v-if="!groups.length && !loading" title="没有匹配的系统参数" description="换个关键字或分组试试，也可清空搜索查看全部参数。" />
+      <section v-for="[group, items] in groups" :key="group" class="config-group">
+        <header class="config-group-title"><strong>{{ group }}</strong><span>{{ items.length }} PARAMETERS</span></header>
         <div class="config-grid">
           <article v-for="item in items" :key="item.key" class="config-item">
             <header><code>{{ item.key }}</code><span v-if="item.beat_restart_required" class="restart-badge">BEAT RESTART</span><span v-if="item.sensitive" class="secret-badge">SENSITIVE</span></header>
@@ -553,9 +590,9 @@ onMounted(() => {
             </div>
           </article>
         </div>
-      </el-card>
+      </section>
     </section>
-    <footer class="config-savebar"><span>{{ changes().length }} 项待保存</span><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer>
+    <footer class="config-savebar"><span>共 {{ configs.length }} 项受控参数 · <b :class="{ 'is-pending': changes().length > 0 }">{{ changes().length }} 项待保存</b></span><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer>
   </section>
 
   <VendorTestConsole

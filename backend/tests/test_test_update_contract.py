@@ -806,6 +806,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/blacklist-redesign-prototype.html",
             "docs/previews/blacklist-redesign-shots.md",
             "docs/previews/blacklist-redesign-shots/full.png",
+            "docs/previews/configs-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/filter-bar-single-row-prototype.html",
             "docs/previews/login-redesign-prototype.html",
@@ -1055,6 +1056,26 @@ def test_users_preview_does_not_block_web_only_update() -> None:
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
     assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_configs_preview_keeps_config_view_high_risk() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/configs-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/ConfigView.vue",
+            "frontend/tests/admin-views.test.ts",
+            "frontend/tests/filter-layout-contract.test.ts",
+            "frontend/tests/qingluan-screen-fidelity.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/ConfigView.vue",)
     assert change.migration_changed is False
 
 
