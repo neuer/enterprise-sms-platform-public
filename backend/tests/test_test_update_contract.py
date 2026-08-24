@@ -543,6 +543,8 @@ def test_classifies_vendor_live_control_changes_as_high_risk(path: str) -> None:
         ("backend/app/services/usage_ledger.py", frozenset({"api"})),
         ("backend/app/services/raw_capture_legacy.py", frozenset({"api"})),
         ("backend/app/services/ops_repository.py", frozenset({"api"})),
+        ("backend/app/outbox_dispatcher.py", frozenset({"api"})),
+        ("backend/app/models/__init__.py", frozenset({"api"})),
         ("backend/app/tasks/poll_report.py", frozenset({"api"})),
     ],
 )
@@ -567,6 +569,10 @@ def test_ci_and_test_update_share_backend_critical_paths(
         "frontend/src/stores/session.ts",
         "frontend/src/api/sessionTokens.ts",
         "frontend/src/api/sessionGeneration.ts",
+        "frontend/src/views/LoginView.vue",
+        "frontend/src/views/PasswordChangeView.vue",
+        "frontend/src/views/AppManagementView.vue",
+        "frontend/src/views/ApprovalView.vue",
     ],
 )
 def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> None:
@@ -832,7 +838,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
     assert change.risk == "none"
 
 
-def test_login_redesign_preview_does_not_block_web_only_update() -> None:
+def test_login_redesign_preview_does_not_block_classified_update() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/login-redesign-prototype.html",
@@ -850,7 +856,11 @@ def test_login_redesign_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == (
+        "frontend/src/views/LoginView.vue",
+        "frontend/src/views/PasswordChangeView.vue",
+    )
     assert change.migration_changed is False
 
 
@@ -1026,7 +1036,7 @@ def test_signs_preview_does_not_block_web_only_update() -> None:
     assert change.migration_changed is False
 
 
-def test_filter_bar_preview_does_not_block_web_only_update() -> None:
+def test_filter_bar_preview_keeps_approval_view_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/filter-bar-single-row-prototype.html",
@@ -1039,7 +1049,8 @@ def test_filter_bar_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/ApprovalView.vue",)
     assert change.migration_changed is False
 
 

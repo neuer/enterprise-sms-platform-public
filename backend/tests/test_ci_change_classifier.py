@@ -43,6 +43,13 @@ from classify_ci_changes import (  # noqa: E402
         ("backend/scripts_support/check_migration.py", (True, False, False)),
         ("scripts/check_contract.py", (True, False, False)),
         ("backend/app/services/dashboard.py", (True, False, False)),
+        ("backend/app/outbox_dispatcher.py", (True, False, True)),
+        ("backend/app/models/__init__.py", (True, False, True)),
+        ("backend/app/healthcheck.py", (True, False, True)),
+        ("frontend/src/views/LoginView.vue", (False, True, False)),
+        ("frontend/src/views/PasswordChangeView.vue", (False, True, False)),
+        ("frontend/src/views/AppManagementView.vue", (False, True, False)),
+        ("frontend/src/views/ApprovalView.vue", (False, True, False)),
         ("backend/app/core/auth/jwt.py", (True, False, True)),
         ("backend/app/services/crypto.py", (True, False, True)),
         ("backend/app/services/usage_ledger.py", (True, False, True)),
@@ -181,6 +188,10 @@ def test_vendor_live_high_risk_paths_always_select_full_ci_and_g2(path: str) -> 
         "backend/app/services/raw_spill.py",
         "backend/app/services/raw_capture_legacy.py",
         "backend/app/services/ops_repository.py",
+        "backend/app/outbox_dispatcher.py",
+        "backend/app/models/__init__.py",
+        "backend/app/healthcheck.py",
+        "backend/app/build_info.py",
         "backend/app/services/usage_ledger.py",
         "backend/app/tasks/poll_report.py",
         "backend/app/vendor/mock_server.py",
@@ -512,9 +523,12 @@ def test_raw_capture_ops_and_session_shell_are_not_skipped(
         "backend/app/services/new_replay_guard.py",
         "backend/app/api/new_privileged_ops.py",
         "backend/app/core/new_origin_guard.py",
+        "backend/app/brand_new_root.py",
+        "backend/app/models/brand_new_model.py",
         "frontend/src/stores/new_session_lock.ts",
         "frontend/src/api/new_session_client.ts",
         "frontend/src/router/new_guard.ts",
+        "frontend/src/views/BrandNewView.vue",
     ],
 )
 def test_new_security_domain_files_default_to_full_protection(path: str) -> None:
@@ -611,6 +625,43 @@ def test_frontend_session_paths_select_frontend_security_without_backend_job(
     assert result.full_fallback is False
 
 
+def test_copying_protected_file_to_ordinary_path_keeps_security(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "backend/app/outbox_dispatcher.py", "protected")
+    target = repo / "docs" / "copied-outbox.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("protected", encoding="utf-8")
+    git(repo, "add", "--", "docs/copied-outbox.py")
+    git(repo, "commit", "-m", "copy")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.security is True
+    assert result.g2 is True
+    assert result.backend is True
+    assert "backend-critical" in result.categories
+
+
+def test_renaming_security_file_to_ordinary_path_keeps_both_sides(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(repo, "frontend/src/views/LoginView.vue", "login")
+    (repo / "docs").mkdir(exist_ok=True)
+    git(repo, "mv", "frontend/src/views/LoginView.vue", "docs/login-moved.md")
+    git(repo, "commit", "-m", "rename-escape")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.frontend is True
+    assert result.security is True
+    assert "frontend-security" in result.categories
+
+
 def test_renaming_protected_lifeline_keeps_g2_without_forcing_full(
     tmp_path: Path,
 ) -> None:
@@ -637,7 +688,7 @@ def test_renaming_protected_lifeline_keeps_g2_without_forcing_full(
     assert result.categories == frozenset({"backend-critical"})
 
 
-def test_rename_is_classified_as_delete_plus_add(tmp_path: Path) -> None:
+def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
     repo = init_repo(tmp_path)
     before_sha = commit_file(repo, "frontend/src/Old.vue", "old")
     (repo / "new-top-level").mkdir()

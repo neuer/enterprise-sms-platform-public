@@ -1,16 +1,13 @@
 # 安全敏感边界：短信、手机号、认证、凭据、会话与发布基础设施的变更应经过独立 Code Review。
-# 路径集合必须与 deploy/scripts/protected_path_policy.py 的安全域及发布面一致。
-backend/app/core/ @neuer
-backend/app/api/ @neuer
-backend/app/services/ @neuer
-backend/app/tasks/ @neuer
-backend/app/vendor/ @neuer
+# 路径集合必须与 deploy/scripts/protected_path_policy.py 的安全域及发布面一致。 不要手写额外安全域规则。
+backend/app/ @neuer
 frontend/src/App.vue @neuer
 frontend/src/stores/ @neuer
 frontend/src/router/ @neuer
 frontend/src/api/ @neuer
-deploy/scripts/protected_path_policy.py @neuer
+frontend/src/views/ @neuer
 backend/migrations/ @neuer
 schema.sql @neuer
 deploy/ @neuer
 .github/workflows/ @neuer
+deploy/scripts/protected_path_policy.py @neuer

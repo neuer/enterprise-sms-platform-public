@@ -201,7 +201,7 @@ _STATUS_ONE_PATH = frozenset("ADMT")
 
 
 def _paths_from_name_status(raw: bytes) -> list[str]:
-    """解析 ``git diff --name-status -z``，删除/重命名两侧路径都参与分类。"""
+    """解析 ``git diff --name-status -z``，删除/重命名/复制两侧路径都参与分类。"""
 
     items = [os.fsdecode(item) for item in raw.split(b"\0") if item]
     paths: list[str] = []
@@ -229,7 +229,15 @@ def _paths_from_name_status(raw: bytes) -> list[str]:
 def _git_paths(repo: Path, revision_range: str) -> list[str]:
     try:
         completed = subprocess.run(
-            ["git", "diff", "--name-status", "--no-renames", "-z", revision_range],
+            [
+                "git",
+                "diff",
+                "--name-status",
+                "--find-renames",
+                "--find-copies-harder",
+                "-z",
+                revision_range,
+            ],
             cwd=repo,
             check=True,
             capture_output=True,

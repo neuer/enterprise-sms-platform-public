@@ -12,11 +12,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from classify_ci_changes import classify_paths  # noqa: E402
 from protected_path_policy import (  # noqa: E402
+    BACKEND_CRITICAL_DOMAINS,
     BACKEND_CRITICAL_RAISE_EXACT,
+    FRONTEND_SECURITY_DOMAINS,
     REQUIRED_CODEOWNERS_PATTERNS,
+    REQUIRED_TRACKED_SOURCE_TREES,
     REVIEWED_ORDINARY_EXACT,
+    REVIEWED_ORDINARY_REASONS,
+    parse_codeowners_patterns,
+    render_codeowners,
+    required_codeowners_patterns,
     security_domain_category,
-    unclassified_security_domain_paths,
+    unclassified_tracked_source_paths,
 )
 from test_update_contract import (  # noqa: E402
     classify_changed_paths,
@@ -30,6 +37,21 @@ FRONTEND_SESSION_SECURITY_PATHS = (
     "frontend/src/stores/session.ts",
     "frontend/src/api/sessionTokens.ts",
     "frontend/src/api/sessionGeneration.ts",
+)
+ISSUE_427_BACKEND_CRITICAL_PATHS = (
+    "backend/app/settings.py",
+    "backend/app/main.py",
+    "backend/app/outbox_dispatcher.py",
+    "backend/app/cli.py",
+    "backend/app/models/__init__.py",
+    "backend/app/models/brand_new_model.py",
+)
+ISSUE_427_FRONTEND_SECURITY_VIEWS = (
+    "frontend/src/views/LoginView.vue",
+    "frontend/src/views/PasswordChangeView.vue",
+    "frontend/src/views/AppManagementView.vue",
+    "frontend/src/views/ApprovalView.vue",
+    "frontend/src/views/ConfigView.vue",
 )
 
 
@@ -103,17 +125,69 @@ def test_app_vue_uses_existing_frontend_security_gate() -> None:
     assert (ROOT / "frontend" / "tests" / "app-shell.test.ts").is_file()
 
 
-def test_codeowners_lists_every_required_security_domain() -> None:
+def test_codeowners_matches_manifest_bidirectionally() -> None:
     codeowners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
-    for pattern in REQUIRED_CODEOWNERS_PATTERNS:
-        assert f"{pattern} @neuer" in codeowners
+    assert codeowners == render_codeowners()
+    assert parse_codeowners_patterns(codeowners) == required_codeowners_patterns()
+    assert required_codeowners_patterns() == REQUIRED_CODEOWNERS_PATTERNS
+    assert "deploy/scripts/protected_path_policy.py" in required_codeowners_patterns()
 
 
-def test_tracked_security_domain_files_are_classified() -> None:
-    missing = unclassified_security_domain_paths(tracked_files())
+def test_tracked_source_files_are_classified_or_explicitly_downgraded() -> None:
+    tracked = tracked_files()
+    missing = unclassified_tracked_source_paths(tracked)
     assert missing == ()
     for relative in REVIEWED_ORDINARY_EXACT | BACKEND_CRITICAL_RAISE_EXACT:
-        assert relative in tracked_files()
+        assert relative in tracked
+    for _relative, reason in REVIEWED_ORDINARY_REASONS.items():
+        assert reason.strip()
+
+
+def test_reverse_enum_does_not_filter_by_manifest_membership_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缩小域清单时，必扫树上的 source 仍必须被报告为未分类。"""
+
+    import protected_path_policy as policy
+
+    monkeypatch.setattr(
+        policy,
+        "BACKEND_CRITICAL_DOMAINS",
+        (
+            "backend/app/core/",
+            "backend/app/api/",
+            "backend/app/services/",
+            "backend/app/tasks/",
+            "backend/app/vendor/",
+        ),
+    )
+    monkeypatch.setattr(
+        policy,
+        "FRONTEND_SECURITY_DOMAINS",
+        (
+            "frontend/src/App.vue",
+            "frontend/src/stores/",
+            "frontend/src/router/",
+            "frontend/src/api/",
+        ),
+    )
+
+    missing = policy.unclassified_tracked_source_paths(
+        [
+            "backend/app/settings.py",
+            "backend/app/main.py",
+            "backend/app/outbox_dispatcher.py",
+            "backend/app/models/__init__.py",
+            "backend/app/cli.py",
+            "frontend/src/views/LoginView.vue",
+            "docs/UAT.md",
+        ]
+    )
+    assert "backend/app/settings.py" in missing
+    assert "backend/app/outbox_dispatcher.py" in missing
+    assert "backend/app/models/__init__.py" in missing
+    assert "frontend/src/views/LoginView.vue" in missing
+    assert "docs/UAT.md" not in missing
 
 
 def test_reviewed_ordinary_is_an_explicit_downgrade() -> None:
@@ -122,13 +196,39 @@ def test_reviewed_ordinary_is_an_explicit_downgrade() -> None:
     assert "backend/app/services/raw_capture_legacy.py" not in REVIEWED_ORDINARY_EXACT
     assert "backend/app/services/ops_repository.py" not in REVIEWED_ORDINARY_EXACT
     assert "frontend/src/App.vue" not in REVIEWED_ORDINARY_EXACT
+    for path in ISSUE_427_FRONTEND_SECURITY_VIEWS:
+        assert path not in REVIEWED_ORDINARY_EXACT
+    for path in ISSUE_427_BACKEND_CRITICAL_PATHS:
+        if path.endswith("brand_new_model.py"):
+            continue
+        assert path not in REVIEWED_ORDINARY_EXACT
+
+
+@pytest.mark.parametrize("path", REVIEWED_ORDINARY_REASONS)
+def test_each_explicit_downgrade_has_reason_and_ordinary_gates(path: str) -> None:
+    assert REVIEWED_ORDINARY_REASONS[path].strip()
+    assert security_domain_category(path) is None
+    result = classify_paths([path])
+    assert result.security is False
+    assert result.g2 is False
+    assert result.full_fallback is False
+    if path.startswith("frontend/"):
+        assert (result.backend, result.frontend) == (False, True)
+        assert result.categories == frozenset({"frontend"})
+        assert classify_changed_paths([path]).risk == "web-only"
+    else:
+        assert (result.backend, result.frontend) == (True, False)
+        assert result.categories == frozenset({"backend-check"})
 
 
 @pytest.mark.parametrize(
     ("path", "category"),
     [
         ("backend/app/services/brand_new_ledger.py", "backend-critical"),
+        ("backend/app/brand_new_root.py", "backend-critical"),
+        ("backend/app/models/brand_new_model.py", "backend-critical"),
         ("frontend/src/stores/brand_new_session.ts", "frontend-security"),
+        ("frontend/src/views/BrandNewView.vue", "frontend-security"),
         ("frontend/src/App.vue", "frontend-security"),
     ],
 )
@@ -138,3 +238,54 @@ def test_domain_default_does_not_require_an_exact_filename(
 ) -> None:
     assert security_domain_category(path) == category
     assert protected_change_category(path) == category
+
+
+@pytest.mark.parametrize("path", ISSUE_427_BACKEND_CRITICAL_PATHS)
+def test_issue_427_backend_root_and_models_select_backend_security_g2(path: str) -> None:
+    assert "backend/app/" in BACKEND_CRITICAL_DOMAINS
+    assert security_domain_category(path) == "backend-critical"
+    result = classify_paths([path])
+    assert (result.backend, result.g2, result.security) == (True, True, True)
+    assert result.full_fallback is False
+    protected = protected_change_category(path)
+    assert protected in {"backend-critical", "vendor-live"}
+
+
+@pytest.mark.parametrize("path", ISSUE_427_FRONTEND_SECURITY_VIEWS)
+def test_issue_427_sensitive_views_are_frontend_security(path: str) -> None:
+    assert "frontend/src/views/" in FRONTEND_SECURITY_DOMAINS
+    assert security_domain_category(path) == "frontend-security"
+    result = classify_paths([path])
+    assert result.frontend is True
+    assert result.security is True
+    assert result.full_fallback is False
+    if path == "frontend/src/views/ConfigView.vue":
+        assert protected_change_category(path) == "vendor-live"
+        assert (result.backend, result.g2) == (True, True)
+    else:
+        assert protected_change_category(path) == "frontend-security"
+        assert (result.backend, result.g2) == (False, False)
+        assert result.categories == frozenset({"frontend-security"})
+        assert classify_changed_paths([path]).risk == "high-risk"
+
+
+def test_required_source_trees_stay_independent_of_domain_list() -> None:
+    assert REQUIRED_TRACKED_SOURCE_TREES == (
+        ("backend/app/", (".py",)),
+        ("frontend/src/views/", (".vue",)),
+    )
+
+
+def test_missing_codeowners_pattern_or_gate_would_fail_contract() -> None:
+    """合同本身即合并门禁：缺 CODEOWNERS 或缺所需门禁分类会失败。"""
+
+    generated = render_codeowners()
+    tampered = "\n".join(
+        line
+        for line in generated.splitlines()
+        if not line.startswith("backend/app/ ")
+    ) + "\n"
+    assert parse_codeowners_patterns(tampered) != required_codeowners_patterns()
+    assert security_domain_category("backend/app/settings.py") == "backend-critical"
+    assert classify_paths(["backend/app/settings.py"]).security is True
+    assert classify_paths(["backend/app/settings.py"]).g2 is True
