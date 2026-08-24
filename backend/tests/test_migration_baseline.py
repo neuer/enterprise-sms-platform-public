@@ -564,6 +564,17 @@ def test_system_raw_replay_audit_producer_is_whitelisted() -> None:
     revision = BACKEND / "migrations/versions/0078_system_raw_replay_audit_producer.py"
     assert "NEW.actor='system-reconcile' AND NEW.action='raw_replay'" in schema
     assert "GRANT UPDATE (system_replay_audit_state)" not in schema
+    send_grants = schema.split("-- 发送、拉取、对账、统计与业务 worker。", maxsplit=1)[1].split(
+        "-- 回调 worker", maxsplit=1
+    )[0]
+    send_select = send_grants.split("GRANT SELECT ON", maxsplit=1)[1].split(
+        "TO sms_send;", maxsplit=1
+    )[0]
+    assert "audit_log" not in send_select
+    assert (
+        "GRANT INSERT ON\n    report_event, reply_event, worker_lease_event, audit_log\n"
+        "TO sms_send;"
+    ) in send_grants
     assert revision.is_file()
 
     spec = importlib.util.spec_from_file_location(

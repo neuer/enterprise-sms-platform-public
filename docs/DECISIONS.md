@@ -1163,11 +1163,15 @@
 ## D093 系统 Raw 重放审计必须通过角色白名单
 
 - 决策：reconcile 跑在 realtime worker，数据库角色是 `sms_send`，生产者域是
-  `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_accept` 不得获得
-  `system_replay_audit_state` 列 UPDATE。补审计失败保持 pending，不得重投影。
-- 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`，
-  缺口会永久化。
-- 影响：0078、`enforce_live_audit_principal`、终态 SQL 分流。
+  `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_send` 对 `audit_log`
+  只有 INSERT、没有 SELECT，补写必须 `INSERT VALUES` + 部分唯一索引
+  `ON CONFLICT DO NOTHING`，禁止 `WHERE NOT EXISTS` / `EXISTS` 回读审计表。
+  `sms_accept` 不得获得 `system_replay_audit_state` 列 UPDATE。补审计失败保持
+  pending，不得重投影。
+- 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`；
+  随后 CI 证实 `INSERT … SELECT WHERE NOT EXISTS` 会被 `sms_send` 缺 SELECT
+  权限拒绝，缺口仍会永久化。
+- 影响：0078、`enforce_live_audit_principal`、终态 SQL 分流、系统审计写入语句。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 

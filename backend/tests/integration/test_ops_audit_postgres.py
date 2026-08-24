@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -47,6 +48,16 @@ pytestmark = pytest.mark.skipif(
 
 PRINCIPAL_KEY = bytes.fromhex("11" * 32)
 SYSTEM_REALTIME_KEY = bytes.fromhex("22" * 32)
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _system_audit_function_sql() -> str:
+    """从 schema.sql 取出当前触发器函数，供快照库尚未升到 0078 时安装。"""
+
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    start = schema.index("CREATE OR REPLACE FUNCTION enforce_live_audit_principal()")
+    end = schema.index("REVOKE ALL ON FUNCTION enforce_live_audit_principal()")
+    return schema[start:end].rstrip().rstrip(";")
 
 
 @pytest.fixture
@@ -132,6 +143,7 @@ async def send_runtime(
             ),
             {"key": SYSTEM_REALTIME_KEY},
         )
+        await connection.exec_driver_sql(_system_audit_function_sql())
     monkeypatch.setattr(
         "app.core.runtime_resources._audit_context_key",
         lambda name: (
@@ -1334,7 +1346,7 @@ async def test_sms_send_system_raw_replay_audit_rewrites_after_trigger_or_connec
         assert audit["actor_account_id"] is None
         assert audit["after_val"]["source"] == "report"
         assert int(audit["after_val"]["items"]) == 2
-        assert int(audit["after_val"]["lease_epoch"]) == 0
+        assert int(audit["after_val"]["lease_epoch"]) == 1
         assert audit["after_val"]["producer_domain"] == "realtime"
         assert "phone" not in json.dumps(audit["after_val"])
 
@@ -1346,7 +1358,7 @@ async def test_sms_send_system_raw_replay_audit_rewrites_after_trigger_or_connec
                 actor="system-reconcile",
                 ip="127.0.0.1",
                 system_producer=True,
-                lease_epoch=0,
+                lease_epoch=1,
             )
         after_unique = await _raw_effects(owner, raw_id)
         assert len(after_unique["audits"]) == 1

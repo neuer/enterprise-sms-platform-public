@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Any, cast
 
 from redis.asyncio import Redis
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
@@ -705,44 +703,41 @@ class SqlOpsRepository:
                         action="raw_replay",
                         producer_domain=producer_domain,
                     )
-                    async with connection.begin_nested():
-                        with suppress(IntegrityError):
-                            await connection.execute(
-                                text(
-                                    """
-                                    INSERT INTO audit_log(
-                                      actor,actor_subject_kind,role,action,object_type,
-                                      object_id,after_val
-                                    )
-                                    SELECT
-                                      :actor,'system','system','raw_replay',
-                                      'raw_vendor_log',
-                                      CAST(CAST(:raw_id AS bigint) AS text),
-                                      jsonb_build_object(
-                                        'source',CAST(:source AS text),
-                                        'items',CAST(:items AS integer),
-                                        'lease_epoch',CAST(:lease_epoch AS bigint),
-                                        'producer_domain',CAST(:producer_domain AS text)
-                                      )
-                                    WHERE NOT EXISTS (
-                                      SELECT 1 FROM audit_log
-                                      WHERE action='raw_replay'
-                                        AND actor_subject_kind='system'
-                                        AND object_type='raw_vendor_log'
-                                        AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
-                                        AND after_val->>'lease_epoch'=CAST(:lease_epoch AS text)
-                                    )
-                                    """
-                                ),
-                                {
-                                    "actor": actor,
-                                    "raw_id": raw_id,
-                                    "source": source,
-                                    "items": items,
-                                    "lease_epoch": epoch,
-                                    "producer_domain": producer_domain,
-                                },
+                    # sms_send 只有 audit_log INSERT，没有 SELECT。唯一性靠部分
+                    # 唯一索引冲突吞掉重复写入，禁止回读审计表。
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(
+                              actor,actor_subject_kind,role,action,object_type,
+                              object_id,after_val
+                            ) VALUES (
+                              :actor,'system','system','raw_replay',
+                              'raw_vendor_log',
+                              CAST(CAST(:raw_id AS bigint) AS text),
+                              jsonb_build_object(
+                                'source',CAST(:source AS text),
+                                'items',CAST(:items AS integer),
+                                'lease_epoch',CAST(:lease_epoch AS bigint),
+                                'producer_domain',CAST(:producer_domain AS text)
+                              )
                             )
+                            ON CONFLICT (object_id, ((after_val->>'lease_epoch')))
+                            WHERE action='raw_replay'
+                              AND actor_subject_kind='system'
+                              AND object_type='raw_vendor_log'
+                            DO NOTHING
+                            """
+                        ),
+                        {
+                            "actor": actor,
+                            "raw_id": raw_id,
+                            "source": source,
+                            "items": items,
+                            "lease_epoch": epoch,
+                            "producer_domain": producer_domain,
+                        },
+                    )
                     completed = await connection.execute(
                         text(
                             """
@@ -750,19 +745,10 @@ class SqlOpsRepository:
                             SET system_replay_audit_state=:completed
                             WHERE id=:raw_id
                               AND system_replay_audit_state=:pending
-                              AND EXISTS (
-                                SELECT 1 FROM audit_log
-                                WHERE action='raw_replay'
-                                  AND actor_subject_kind='system'
-                                  AND object_type='raw_vendor_log'
-                                  AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
-                                  AND after_val->>'lease_epoch'=CAST(:lease_epoch AS text)
-                              )
                             """
                         ),
                         {
                             "raw_id": raw_id,
-                            "lease_epoch": epoch,
                             "pending": SYSTEM_REPLAY_AUDIT_PENDING,
                             "completed": SYSTEM_REPLAY_AUDIT_COMPLETED,
                         },

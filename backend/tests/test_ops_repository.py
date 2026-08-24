@@ -382,6 +382,9 @@ def test_human_raw_replay_audit_source_does_not_use_legacy_unattributed_insert()
     assert "bind_connection_audit_subject" in source
     assert "insert_audit" in source
     assert ":actor,'admin',CAST(:ip AS inet),'raw_replay'" not in source
+    assert "ON CONFLICT" in source
+    assert "WHERE NOT EXISTS" not in source
+    assert "SELECT 1 FROM audit_log" not in source
 
 
 @pytest.mark.asyncio
@@ -433,6 +436,11 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
         }
     ]
     sql, params = connection.calls[0]
+    assert "INSERT INTO audit_log" in sql
+    assert "VALUES" in sql
+    assert "ON CONFLICT" in sql
+    assert "WHERE NOT EXISTS" not in sql
+    assert "FROM audit_log" not in sql
     assert "actor_subject_kind" in sql
     assert "'system'" in sql
     assert "lease_epoch" in sql
@@ -443,6 +451,11 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
     assert params["producer_domain"] == "realtime"
     assert "ip" not in params
     assert "phone" not in sql.lower()
+    update_sql, update_params = connection.calls[1]
+    assert "system_replay_audit_state=:completed" in update_sql
+    assert "FROM audit_log" not in update_sql
+    assert update_params["raw_id"] == 9
+    assert "lease_epoch" not in update_params
 
 
 @pytest.mark.asyncio
