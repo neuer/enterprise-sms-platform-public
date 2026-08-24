@@ -446,25 +446,34 @@ async def test_heartbeat_fails_closed_on_postgres_disconnect() -> None:
             epoch=live.epoch,
             expires_at=datetime.now(UTC) - timedelta(seconds=1),
         )
+        refused = create_async_engine(
+            make_url(os.environ["OUTBOX_POSTGRES_DSN"]).set(host="127.0.0.1", port=1),
+            connect_args={"timeout": 0.2},
+            pool_timeout=0.2,
+        )
+        holder = {"engine": engine}
 
         async def renew(token: RawProcessingLease) -> None:
-            await renew_raw_lease(engine, token)
+            await renew_raw_lease(holder["engine"], token)
 
-        async with RawLeaseHeartbeat(
-            renew,
-            lease,
-            interval_s=0.02,
-            on_failure=reports.record_heartbeat_failure,
-        ) as beat:
-            await asyncio.sleep(0.05)
-            await engine.dispose()
-            deadline = asyncio.get_running_loop().time() + 2.0
-            with pytest.raises(RawLeaseHeartbeatFailed):
-                while True:
-                    beat.raise_if_lost()
-                    if asyncio.get_running_loop().time() >= deadline:
-                        break
-                    await asyncio.sleep(0.05)
+        try:
+            async with RawLeaseHeartbeat(
+                renew,
+                lease,
+                interval_s=0.02,
+                on_failure=reports.record_heartbeat_failure,
+            ) as beat:
+                await asyncio.sleep(0.05)
+                holder["engine"] = refused
+                deadline = asyncio.get_running_loop().time() + 2.0
+                with pytest.raises(RawLeaseHeartbeatFailed):
+                    while True:
+                        beat.raise_if_lost()
+                        if asyncio.get_running_loop().time() >= deadline:
+                            break
+                        await asyncio.sleep(0.05)
+        finally:
+            await refused.dispose()
         probe = create_async_engine(database_url)
         try:
             async with probe.begin() as connection:
@@ -488,6 +497,7 @@ async def test_heartbeat_fails_closed_on_postgres_disconnect() -> None:
         assert "13800138000" not in str(events)
         assert "ciphertext-only" not in str(events)
     finally:
+        await engine.dispose()
         if raw_id is not None:
             cleanup = create_async_engine(database_url)
             async with cleanup.begin() as connection:
