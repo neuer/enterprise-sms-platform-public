@@ -48,6 +48,8 @@ docker compose -f deploy/security-report/docker-compose.yml --profile send up -d
 
 mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabilities、无入站端口。它只读取 UI 同步的 `/run/config/resend.json` 和脱敏 control 请求，通过 `api.resend.com:443/emails` 投递，再把不含正文、地址或 Key 的结果写回 control 目录。
 
+mailer 镜像不参与 CI 构建、test_update 快速更新（快速更新只覆盖 api/web 组件）和四个最终镜像的 Trivy 自动门禁。`deploy/scripts/send_security_daily_report_resend.py`、`deploy/scripts/render_security_daily_report.py` 或 `deploy/templates/security_daily_report.*` 变更后，必须在目标主机用上述命令手工重新 build 并重启该容器，平台快速更新不会代为完成。
+
 主 Compose API 需要挂载 `./security-report-config` 和 `./security-report-control`；独立 mailer 只读前者、读写后者。日报生成任务仍由 bulk worker 每分钟检查，在上海时间 08:00 后消费前一自然日的脱敏快照；缺少快照时记录 `unavailable`，不会用 0 伪造指标。
 
 自动投递：生成任务在 08:00 后每天只提交一次投递——正常报告直接发送；

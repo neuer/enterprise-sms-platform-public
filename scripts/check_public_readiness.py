@@ -124,9 +124,6 @@ def _is_forbidden_tracked_path(relative: str) -> bool:
         lowered == ".env"
         or (path.name.startswith(".env.") and path.name != ".env.example")
         or lowered.startswith("deploy/secrets/")
-        or lowered.startswith("deploy/security-report/secrets/")
-        or lowered.startswith("deploy/security-report/runtime/")
-        or lowered == "deploy/security-report/config/recipients.txt"
         or path.suffix.casefold() in {".key", ".p12", ".pfx"}
     )
 

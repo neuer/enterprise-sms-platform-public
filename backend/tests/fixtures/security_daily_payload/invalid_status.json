@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "report_date": "2026-07-15",
+  "period_start": "2026-07-15T00:00:00+08:00",
+  "period_end": "2026-07-15T23:59:59+08:00",
+  "generated_at": "2026-07-16T08:00:00+08:00",
+  "status": "critical",
+  "summary": "未发现成功入侵或未授权持久化证据。主机防护链路工作正常，但存在一项管理来源需要人工确认。",
+  "pending_confirmation": "文档示例管理出口在 14:42 触发 housekeeping，请确认是否属于授权运维窗口。",
+  "metrics": [
+    {
+      "label": "攻击尝试",
+      "value": "5",
+      "tone": "neutral",
+      "note": "均未通过认证"
+    },
+    {
+      "label": "SSH 成功来源",
+      "value": "1",
+      "tone": "good",
+      "note": "密钥指纹匹配"
+    },
+    {
+      "label": "Fail2ban 封禁",
+      "value": "1",
+      "tone": "good",
+      "note": "策略已执行"
+    },
+    {
+      "label": "待确认操作",
+      "value": "1",
+      "tone": "warn",
+      "note": "需要人工核对"
+    },
+    {
+      "label": "Critical 告警",
+      "value": "0",
+      "tone": "good",
+      "note": "无高危告警"
+    }
+  ],
+  "ssh": [
+    {
+      "label": "认证面",
+      "value": "仅允许受控账号公钥登录；root、密码和端口转发均关闭",
+      "assessment": "符合基线",
+      "tone": "good"
+    },
+    {
+      "label": "成功来源",
+      "value": "1 个文档管理出口；授权密钥指纹匹配",
+      "assessment": "已知来源",
+      "tone": "good"
+    },
+    {
+      "label": "失败来源",
+      "value": "198.51.100.27 共 5 次无效 root 尝试",
+      "assessment": "已封禁",
+      "tone": "good"
+    },
+    {
+      "label": "账号 / 密钥变更",
+      "value": "0 / 0",
+      "assessment": "无变化",
+      "tone": "good"
+    }
+  ],
+  "web": [
+    {
+      "label": "外部请求",
+      "value": "112 次；以静态资源和首页访问为主",
+      "assessment": "流量较低",
+      "tone": "neutral"
+    },
+    {
+      "label": "拒绝请求",
+      "value": "14 次；包括格式错误、未授权与不支持方法",
+      "assessment": "均已拒绝",
+      "tone": "good"
+    },
+    {
+      "label": "服务端错误",
+      "value": "0 次 5xx",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "敏感路径",
+      "value": "未命中环境文件、代码仓库、调试端点或监控端点",
+      "assessment": "0 命中",
+      "tone": "good"
+    }
+  ],
+  "audit": [
+    {
+      "time": "14:41",
+      "actor": "security-admin",
+      "source_ip": "203.0.113.18",
+      "action": "管理端登录",
+      "assessment": "待确认",
+      "tone": "warn"
+    },
+    {
+      "time": "14:42",
+      "actor": "security-admin",
+      "source_ip": "203.0.113.18",
+      "action": "手动触发 housekeeping",
+      "assessment": "待确认",
+      "tone": "warn"
+    }
+  ],
+  "runtime": [
+    {
+      "label": "关键服务",
+      "value": "SSH、Fail2ban、短信平台 3 / 3 active",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "容器",
+      "value": "9 / 9 running；健康检查无失败",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "系统异常单元",
+      "value": "0 个 failed unit",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "边界策略",
+      "value": "UFW active，默认拒绝入站；Fail2ban journal 匹配有效",
+      "assessment": "正常",
+      "tone": "good"
+    }
+  ],
+  "actions": [
+    {
+      "priority": "medium",
+      "title": "确认管理操作来源",
+      "detail": "核对文档管理出口与当日运维窗口；若不属于授权操作，立即转入账号吊销、来源封禁和证据保全。"
+    },
+    {
+      "priority": "low",
+      "title": "补齐跨容器日志留存",
+      "detail": "当前 Web 日志随容器生命周期轮转，建议接入集中日志或独立持久化，避免重建后出现审计空窗。"
+    }
+  ],
+  "coverage": [
+    {
+      "source": "SSH journal",
+      "window": "00:00 — 23:59（UTC+8）",
+      "status": "完整",
+      "note": "覆盖成功、失败、账号与密钥变更证据",
+      "tone": "good"
+    },
+    {
+      "source": "audit_log",
+      "window": "00:00 — 23:59（UTC+8）",
+      "status": "完整",
+      "note": "只读核验管理登录与状态变更操作",
+      "tone": "good"
+    },
+    {
+      "source": "Web access",
+      "window": "20:40 — 23:59（UTC+8）",
+      "status": "部分",
+      "note": "示例容器在统计日内重建，重建前访问日志不可用",
+      "tone": "warn"
+    }
+  ]
+}

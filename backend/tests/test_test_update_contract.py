@@ -516,7 +516,6 @@ def test_each_migration_source_sets_migration_changed(
         "deploy/docker-compose.yml",
         "deploy/.env.example",
         ".dockerignore",
-        "deploy/scripts/install_resend_api_key.py",
         "deploy/scripts/send_security_daily_report_resend.py",
         "deploy/security-report/Dockerfile",
         "deploy/security-report/docker-compose.yml",
