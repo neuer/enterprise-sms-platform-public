@@ -8,6 +8,15 @@ verify/market 窗口的 `usage_projection` 绝对值写入 canonical 键。只�
 expires_at 已过期的 canonical 墓碑供后续驳回/过期/取消释放命中；无引用则删除且不得
 重建过期限流。生产轮换前确认该归并已上线，并盘点是否仍有一个号码对应多个未过期频控主体。
 
+> **生产边界：**生产通用 `exec` 已失败关闭，当前也没有 lifecycle lock、持久状态、审计
+> receipt 和失败恢复均闭合的专用“账本解释/投影重建”入口。因此本手册中的生产手工解释和
+> 手工重建当前均为 **No-Go**；不得用 raw Compose、通用 `exec`、`docker exec`、临时容器或
+> 直接连接 Redis/数据库绕过。事故时保持发送失败关闭，保留漂移/Outbox 聚合证据并发起受控
+> 修复变更；实现并验收 dedicated action 前，5 分钟巡检只负责检测漂移和恢复超时预留，不能
+> 代替全量投影重建。发送入口自身的 `ensure_ready` 自动重建仍是正式产品路径：ready marker
+> 缺失且 PostgreSQL 存在有效事实时，它先抢短时重建锁，再按事实表执行版本化绝对覆盖；抢锁
+> 失败、Redis 不可确认或重建失败时继续返回 503。该自动路径不授权任何人工容器命令。
+
 ## 状态与自动恢复
 
 - `reserved`：已建立受理事实，尚未与批次同事务提交。
@@ -25,14 +34,15 @@ expires_at 已过期的 canonical 墓碑供后续驳回/过期/取消释放命�
 
 ## 无 PII 解释
 
-按批次或预留 UUID 解释计数来源：
+生产如需按批次或预留 UUID 解释计数来源，必须等待专用受控 action 实现并通过契约测试；
+不得从生产容器直接调用内部 Python CLI。下列命令只用于隔离的 development/test 项目做
+实现验证，不是生产操作步骤：
 
 ```bash
-sudo /usr/local/sbin/sms-compose exec -T api \
-  python -m app.cli usage-ledger-explain --batch-no <32位批次号>
+cd backend
+uv run python -m app.cli usage-ledger-explain --batch-no <32位批次号>
 
-sudo /usr/local/sbin/sms-compose exec -T api \
-  python -m app.cli usage-ledger-explain --reservation-id <UUID>
+uv run python -m app.cli usage-ledger-explain --reservation-id <UUID>
 ```
 
 输出只包含应用/部门、配额维度、不可逆主体 UUID、窗口、是否计数和释放状态；不得扩展为手机号、密文、HMAC、摘要或密钥版本的回显。
@@ -41,16 +51,24 @@ sudo /usr/local/sbin/sms-compose exec -T api \
 
 1. 记录当前两组漂移指标、Outbox backlog/dead 数量和 API 503 比例，不读取或导出号码维度。
 2. 确认 PostgreSQL 正常且 0028 迁移已到 head；不要清空事实表、改写状态或删除 Outbox。
-3. 执行版本化绝对覆盖：
+3. 保持发送失败关闭并停止手工处置。由一个受控发送请求触发 `ensure_ready` 的自动重建；并发
+   请求在锁持有或依赖不可确认期间继续 503，不得靠重试风暴催促恢复。Lua 版本比较必须拒绝旧
+   快照覆盖更新值，自动重建审计只记录聚合维度数量。
+4. 下一次巡检只能刷新漂移观测和恢复超时预留，不会自动执行全量重建；不得因巡检成功退出
+   就解除失败关闭。只有自动重建成功、随后两组漂移指标归零、critical 告警不再新增且发送入口
+   不再返回 `USAGE_PROJECTION_UNAVAILABLE`，才可恢复业务。自动路径失败时，当前生产没有
+   可执行的 dedicated manual rebuild action，因而人工重建仍为 **No-Go**；不得把 development/test
+   的 `python -m app.cli usage-projection-rebuild` 搬到生产。未来人工入口必须在 lifecycle lock
+   和持久 recovery fence 内执行，生成无 PII 的审计 receipt，并证明失败后仍保持 fail closed。
+5. 若仍有差异，继续保留失败关闭，检查 Outbox dead-letter 与
+   `release_requested/uncertain` 聚合数量；不得用 Redis `SET/DEL/FLUSH*` 直接修数。
 
-   ```bash
-   sudo /usr/local/sbin/sms-compose exec -T api \
-     python -m app.cli usage-projection-rebuild
-   ```
+隔离 development/test 项目可用以下命令验证重建实现；它不构成生产授权或演练证据：
 
-   命令可与受理并发；Lua 版本比较会拒绝旧快照覆盖更新值。重建审计只记录配额、频控和总维度数量。
-4. 等待下一次巡检，确认两组漂移指标归零、critical 告警不再新增，发送入口不再返回 `USAGE_PROJECTION_UNAVAILABLE`。
-5. 若仍有差异，保留失败关闭，检查 Outbox dead-letter 与 `release_requested/uncertain` 聚合数量；不得用 Redis `SET/DEL/FLUSH*` 直接修数。
+```bash
+cd backend
+uv run python -m app.cli usage-projection-rebuild
+```
 
 ## 保留与降级
 
