@@ -100,7 +100,7 @@ class ReportRepository(Protocol):
         *,
         custom_ids: list[str],
         item_count: int,
-        lease: object | None = None,
+        lease: RawProcessingLease | None = None,
     ) -> None: ...
 
     async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]: ...
@@ -115,10 +115,12 @@ class ReportRepository(Protocol):
 
     async def persist_unmatched(self, raw_id: int, report: ProtectedReport) -> None: ...
 
-    async def mark_processed(self, raw_id: int, *, lease: object | None = None) -> None: ...
+    async def mark_processed(
+        self, raw_id: int, *, lease: RawProcessingLease | None = None
+    ) -> None: ...
 
     async def mark_error(
-        self, raw_id: int, error: str, *, lease: object | None = None
+        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
     ) -> None: ...
 
 

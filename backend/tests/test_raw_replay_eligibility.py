@@ -20,6 +20,7 @@ from app.services.raw_parse import (
     PARSE_TRANSIENT_FAILURE,
     PARSE_UNATTEMPTED,
     RAW_PARSER_VERSION,
+    RawParseDisposition,
     auto_replay_allowed,
     classify_raw_disposition,
     historical_sql_case,
@@ -95,7 +96,7 @@ class FakeReevaluateRepository:
         expected_processed: bool,
         expected_parse_state: str,
         expected_eligibility: str,
-        disposition: object,
+        disposition: RawParseDisposition,
         error: str | None,
         actor: str,
         ip: str,
@@ -106,8 +107,8 @@ class FakeReevaluateRepository:
         self.updates.append(
             {
                 "raw_id": raw_id,
-                "parse_state": getattr(disposition, "parse_state"),
-                "replay_eligibility": getattr(disposition, "replay_eligibility"),
+                "parse_state": disposition.parse_state,
+                "replay_eligibility": disposition.replay_eligibility,
                 "error": error,
             }
         )

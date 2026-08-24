@@ -90,17 +90,19 @@ class ReplyRepository(Protocol):
         *,
         custom_ids: list[str],
         item_count: int,
-        lease: object | None = None,
+        lease: RawProcessingLease | None = None,
     ) -> None: ...
 
     async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]: ...
 
     async def store_reply(self, raw_id: int, reply: ProtectedReply) -> None: ...
 
-    async def mark_processed(self, raw_id: int, *, lease: object | None = None) -> None: ...
+    async def mark_processed(
+        self, raw_id: int, *, lease: RawProcessingLease | None = None
+    ) -> None: ...
 
     async def mark_error(
-        self, raw_id: int, error: str, *, lease: object | None = None
+        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
     ) -> None: ...
 
 
