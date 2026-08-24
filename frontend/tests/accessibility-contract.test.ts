@@ -95,11 +95,11 @@ describe("无障碍样式契约", () => {
     expect(css).toContain("@media (prefers-reduced-motion: reduce)")
   })
 
-  it("移动筛选器和日期范围可收缩且仅运维标签保留横向滚动", () => {
+  it("移动筛选器和日期范围可收缩且运维页签条保留横向滚动", () => {
     expect(css).toMatch(/\.filter-grid[^}]*min-width:\s*0/s)
     expect(css).toMatch(/\.filter-grid \.el-date-editor[^}]*width:\s*100%[^}]*min-width:\s*0/s)
     expect(css).not.toMatch(/\.(?:query-filter-card|message-search-card|audit-filter-card|reply-filter-card)[^{]*\{[^}]*overflow-x:\s*auto/s)
-    expect(css).toContain(".ops-tabs .el-tabs__nav-wrap { overflow-x: auto; }")
+    expect(css).toMatch(/\.config-tabs,\s*\.ops-tabs\s*\{[^}]*overflow-x:\s*auto/s)
   })
 
   it("移动治理列表在加载期间保留可见高度", () => {

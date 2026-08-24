@@ -8,10 +8,11 @@ const replyView = read("src/views/ReplyView.vue")
 const auditView = read("src/views/AuditView.vue")
 const userView = read("src/views/UserView.vue")
 const configView = read("src/views/ConfigView.vue")
+const opsView = read("src/views/OpsView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews = ["CallbackView.vue", "OpsView.vue"].map(
+const compactViews = ["CallbackView.vue"].map(
   (name) => read(`src/views/${name}`),
 )
 const approvalView = read("src/views/ApprovalView.vue")
@@ -48,8 +49,8 @@ describe("全站筛选布局契约", () => {
     expect(replyView).not.toContain("<el-segmented")
     expect(replyView).not.toContain("↗")
     expect(replyView).not.toContain("厂商未回传 customId")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("管理筛选遵循同一表单语义", () => {
@@ -71,9 +72,9 @@ describe("全站筛选布局契约", () => {
     expect(userView).not.toContain("<el-card")
     expect(userView).not.toContain("user-pulse")
     expect(userView).not.toContain("account-rules")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg\s*\{[^}]*border-radius:\s*7px/s)
-    expect(css).toMatch(/\.user-rules,\s*\.config-rules\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules\s*\{[^}]*display:\s*flex/s)
   })
 
   it("系统参数使用方案 A 单行检索条与常驻规则条", () => {
@@ -92,8 +93,8 @@ describe("全站筛选布局契约", () => {
     expect(configView).not.toContain("config-toolbar")
     expect(configView).not.toContain("config-restart-alert")
     expect(configView).not.toContain("config-heading-note")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("号码搜索使用方案 A 单行检索条", () => {
@@ -193,8 +194,8 @@ describe("全站筛选布局契约", () => {
     expect(sensitiveWordView).not.toContain("<el-table")
     expect(sensitiveWordView).not.toContain("governance-entry")
     expect(sensitiveWordView).not.toContain("sensitive-mobile-list")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.sensitive-wall\s*\{[^}]*display:\s*grid[^}]*auto-fill/s)
   })
 
@@ -209,8 +210,35 @@ describe("全站筛选布局契约", () => {
     expect(blacklistView).not.toContain("<el-segmented")
     expect(blacklistView).not.toContain("<el-card")
     expect(blacklistView).not.toContain("governance-entry")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
+  })
+
+  it("运维中心使用方案 A 单行检索条与常驻规则条", () => {
+    expect(opsView).toContain("ops-filter-bar")
+    expect(opsView).toContain("ops-seg")
+    expect(opsView).toContain("ops-keyword")
+    expect(opsView).toContain("ops-phone")
+    expect(opsView).toContain("ops-dates")
+    expect(opsView).toContain("ops-privacy")
+    expect(opsView).toContain("ops-rules")
+    expect(opsView).toContain("ops-results")
+    expect(opsView).toContain("ops-confirm-dialog")
+    expect(opsView).toContain("ops-confirm-audit")
+    expect(opsView).toContain("共 {{ alertTotal }} 条 · 每页 20")
+    expect(opsView).toContain("共 {{ rawTotal }} 条 · 每页 20")
+    expect(opsView).toContain("共 {{ unmatchedTotal }} 条 · 每页 20")
+    expect(opsView).toContain("共 {{ outboxTotal }} 条 · 每页 20")
+    expect(opsView).toContain("本次操作已记入审计")
+    expect(opsView).not.toContain("filter-grid")
+    expect(opsView).not.toContain("filter-toolbar")
+    expect(opsView).not.toContain("<el-tabs")
+    expect(opsView).not.toContain("<el-card")
+    expect(opsView).not.toContain("ops-workbench")
+    expect(opsView).not.toContain("ops-filter-title")
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules\s*\{[^}]*display:\s*flex/s)
   })
 
   it("不再保留会覆盖共享栅格的旧筛选补丁", () => {

@@ -261,16 +261,17 @@ button:focus-visible {
   align-items: end;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/
-   sensitive-filter-bar/user-filter-bar/config-filter-bar/blacklist-fld/sensitive-fld/user-fld/config-fld/
-   blacklist-seg/sensitive-policy-seg/user-seg/config-seg/blacklist-filter-go/sensitive-filter-go/
-   user-filter-go/blacklist-privacy/sensitive-filter-note/user-privacy/config-privacy 共用 reply-* 规则，
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/
+   sensitive-filter-bar/user-filter-bar/config-filter-bar/ops-filter-bar/blacklist-fld/sensitive-fld/user-fld/config-fld/ops-fld/
+   blacklist-seg/sensitive-policy-seg/user-seg/config-seg/ops-seg/blacklist-filter-go/sensitive-filter-go/
+   user-filter-go/ops-filter-go/blacklist-privacy/sensitive-filter-note/user-privacy/config-privacy/ops-privacy 共用 reply-* 规则，
    按页复制即缺陷。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
 .sensitive-filter-bar,
 .user-filter-bar,
-.config-filter-bar {
+.config-filter-bar,
+.ops-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -286,7 +287,8 @@ button:focus-visible {
 .blacklist-fld,
 .sensitive-fld,
 .user-fld,
-.config-fld {
+.config-fld,
+.ops-fld {
   display: grid;
   gap: 5px;
 }
@@ -295,31 +297,39 @@ button:focus-visible {
 .blacklist-fld > span,
 .sensitive-fld > span,
 .user-fld > span,
-.config-fld > span {
+.config-fld > span,
+.ops-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
 }
 
-.reply-filter-phone {
+/* 运维中心 unmatched 手机号精确查询与上行回复同构：mono 数据字 + 固定宽。 */
+.reply-filter-phone,
+.ops-phone {
   width: 250px;
 }
 
-.reply-filter-phone .el-input__inner {
+.reply-filter-phone .el-input__inner,
+.ops-phone .el-input__inner {
   font-family: var(--mono);
   letter-spacing: 0.06em;
 }
 
-.reply-filter-dates {
+/* 运维中心告警/无主报告时间范围与上行回复同构：mono 范围输入。 */
+.reply-filter-dates,
+.ops-dates {
   --el-date-editor-datetimerange-width: 244px;
 }
 
-.reply-filter-dates.el-date-editor.el-input__wrapper {
+.reply-filter-dates.el-date-editor.el-input__wrapper,
+.ops-dates.el-date-editor.el-input__wrapper {
   padding-right: 8px;
   padding-left: 8px;
 }
 
-.reply-filter-dates .el-range-input {
+.reply-filter-dates .el-range-input,
+.ops-dates .el-range-input {
   font-family: var(--mono);
   font-size: 11px;
 }
@@ -328,7 +338,8 @@ button:focus-visible {
 .blacklist-seg,
 .sensitive-policy-seg,
 .user-seg,
-.config-seg {
+.config-seg,
+.ops-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -340,7 +351,8 @@ button:focus-visible {
 .blacklist-seg button,
 .sensitive-policy-seg button,
 .user-seg button,
-.config-seg button {
+.config-seg button,
+.ops-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -358,7 +370,8 @@ button:focus-visible {
 .blacklist-seg button.on,
 .sensitive-policy-seg button.on,
 .user-seg button.on,
-.config-seg button.on {
+.config-seg button.on,
+.ops-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
@@ -366,7 +379,8 @@ button:focus-visible {
 .reply-filter-go,
 .blacklist-filter-go,
 .sensitive-filter-go,
-.user-filter-go {
+.user-filter-go,
+.ops-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -377,7 +391,8 @@ button:focus-visible {
 .blacklist-privacy,
 .sensitive-filter-note,
 .user-privacy,
-.config-privacy {
+.config-privacy,
+.ops-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -390,7 +405,8 @@ button:focus-visible {
 .blacklist-privacy code,
 .sensitive-filter-note code,
 .user-privacy code,
-.config-privacy code {
+.config-privacy code,
+.ops-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -403,7 +419,8 @@ button:focus-visible {
 .reply-results,
 .blacklist-results,
 .sensitive-results,
-.user-results {
+.user-results,
+.ops-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -482,7 +499,8 @@ button:focus-visible {
 .reply-pagination,
 .blacklist-pagination,
 .sensitive-pagination,
-.user-pagination {
+.user-pagination,
+.ops-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -509,7 +527,8 @@ button:focus-visible {
   .blacklist-heading,
   .sensitive-heading,
   .user-heading,
-  .config-heading {
+  .config-heading,
+  .ops-heading {
     align-items: start;
   }
 
@@ -517,7 +536,8 @@ button:focus-visible {
   .blacklist-filter-bar,
   .sensitive-filter-bar,
   .user-filter-bar,
-  .config-filter-bar {
+  .config-filter-bar,
+  .ops-filter-bar {
     align-items: flex-start;
   }
 
@@ -526,18 +546,23 @@ button:focus-visible {
   .blacklist-keyword,
   .sensitive-keyword,
   .user-keyword,
-  .config-keyword {
+  .config-keyword,
+  .ops-keyword,
+  .ops-phone,
+  .ops-dates {
     width: 100%;
   }
 
-  .reply-filter-dates {
+  .reply-filter-dates,
+  .ops-dates {
     --el-date-editor-datetimerange-width: 100%;
   }
 
   .reply-filter-go,
   .blacklist-filter-go,
   .sensitive-filter-go,
-  .user-filter-go {
+  .user-filter-go,
+  .ops-filter-go {
     width: 100%;
     margin-left: 0;
   }
@@ -545,7 +570,8 @@ button:focus-visible {
   .reply-filter-go .el-button,
   .blacklist-filter-go .el-button,
   .sensitive-filter-go .el-button,
-  .user-filter-go .el-button {
+  .user-filter-go .el-button,
+  .ops-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -555,7 +581,8 @@ button:focus-visible {
   .reply-pagination,
   .blacklist-pagination,
   .sensitive-pagination,
-  .user-pagination {
+  .user-pagination,
+  .ops-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -3763,7 +3790,8 @@ main {
 .sign-keyword,
 .blacklist-keyword,
 .user-keyword,
-.config-keyword {
+.config-keyword,
+.ops-keyword {
   width: 220px;
 }
 
@@ -4198,10 +4226,10 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
    user-drawer-head/blacklist-drawer-title/sensitive-drawer-title/user-drawer-title/blacklist-delete-dialog/
-   sensitive-delete-dialog/user-confirm-dialog/config-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/
-   user-confirm-audit/config-confirm-audit/
+   sensitive-delete-dialog/user-confirm-dialog/config-confirm-dialog/ops-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/
+   user-confirm-audit/config-confirm-audit/ops-confirm-audit/
    blacklist-form/blacklist-editor-foot/sensitive-editor-foot/user-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
 .sign-drawer-head,
 .blacklist-drawer-head,
@@ -4285,7 +4313,8 @@ main {
 .blacklist-delete-dialog p,
 .sensitive-delete-dialog p,
 .user-confirm-dialog p,
-.config-confirm-dialog p {
+.config-confirm-dialog p,
+.ops-confirm-dialog p {
   margin: 0;
 }
 
@@ -4293,7 +4322,8 @@ main {
 .blacklist-delete-audit,
 .sensitive-delete-audit,
 .user-confirm-audit,
-.config-confirm-audit {
+.config-confirm-audit,
+.ops-confirm-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -5640,9 +5670,10 @@ main {
 /* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
    检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
    本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
-   config-rules 与 user-rules 同构（系统参数页调度/敏感值规则条），共用本组规则。 */
+   config-rules（系统参数页调度/敏感值规则条）与 ops-rules（运维中心守卫/PII 边界规则条）与 user-rules 同构，共用本组规则。 */
 .user-rules,
-.config-rules {
+.config-rules,
+.ops-rules {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 28px;
@@ -5654,7 +5685,8 @@ main {
 }
 
 .user-rules > div,
-.config-rules > div {
+.config-rules > div,
+.ops-rules > div {
   display: flex;
   gap: 8px;
   align-items: baseline;
@@ -5662,7 +5694,8 @@ main {
 }
 
 .user-rules span,
-.config-rules span {
+.config-rules span,
+.ops-rules span {
   flex: none;
   color: var(--tx-3);
   font-size: 10.5px;
@@ -5670,14 +5703,16 @@ main {
 }
 
 .user-rules p,
-.config-rules p {
+.config-rules p,
+.ops-rules p {
   margin: 0;
   color: var(--tx-2);
   font-size: 11px;
   line-height: 1.6;
 }
 
-.user-alert { margin-bottom: 14px; }
+.user-alert,
+.ops-alert { margin-bottom: 14px; }
 
 .user-name {
   display: block;
@@ -5853,7 +5888,9 @@ main {
 
 @media (max-width: 760px) {
   .user-heading { align-items: stretch; }
-  .user-rules > div { width: 100%; }
+  .user-rules > div,
+  .config-rules > div,
+  .ops-rules > div { width: 100%; }
   .user-table { display: none; }
   .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
   .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
@@ -5868,23 +5905,18 @@ main {
   .user-mobile-list footer .el-button + .el-button { margin-left: 8px; }
 }
 
-/* 运维中心：高密度控制室，危险动作和事实状态保持清晰分层。 */
+/* 运维中心：高密度控制室，危险动作和事实状态保持清晰分层。
+   页签与 config-tabs 同组、检索条/分页并入 reply-* 共享组、规则条与 user-rules 同组、确认框并入 sign-* 共享组，按页复制即缺陷；
+   本区只保留页头状态、面板题、移动端卡片与队列/Outbox 事实格的页级专属样式。 */
 .ops-heading { align-items: flex-end; }
 .ops-mode { display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .06em; }
 .ops-mode i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-.ops-workbench { margin-top: 18px; }
-.ops-tabs > .el-tabs__header { margin-bottom: 18px; }
-.ops-panel { min-height: 320px; }
-.ops-panel-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 16px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
-.ops-panel-title > div:first-child { display: grid; gap: 4px; }
-.ops-panel-title strong { font-size: 16px; }
-.ops-panel-title small,
-.ops-panel-title > span { color: var(--muted); font: 10px/1.4 var(--mono); }
-.ops-filter-title > div:last-child { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.ops-filter-title .el-input { width: 190px; }
-.ops-filter-title .el-select { width: 130px; }
-.ops-filter-title .el-date-editor--datetimerange { width: 360px; }
-.ops-pagination { display: flex; justify-content: flex-end; margin-top: 18px; }
+.ops-panel { min-width: 0; min-height: 320px; }
+.ops-rules { margin-top: 18px; }
+.ops-panel-title { margin-bottom: 14px; }
+.ops-panel-title > div { display: grid; gap: 4px; }
+.ops-panel-title strong { font-size: 14px; color: var(--tx-hi); }
+.ops-panel-title small { color: var(--muted); font: 10px/1.4 var(--mono); }
 .export-task-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .ops-mobile-list { display: none; }
 .job-health { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font: 11px/1 var(--mono); }
@@ -5906,7 +5938,7 @@ main {
 .queue-status-grid small { color: var(--muted); }
 .break-glass { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; margin-top: 18px; padding: 16px; border: 1px solid color-mix(in srgb, var(--red), transparent 60%); background: color-mix(in srgb, var(--red), var(--surface) 96%); }
 .break-glass p { margin: 0; color: var(--ink-soft); font-size: 12px; }
-.ops-workbench .callback-filter-card { margin-top: 0; }
+.ops-panel > .callback-filter-card { margin-top: 0; }
 .outbox-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; margin-bottom: 16px; border: 1px solid var(--line); background: var(--line); }
 .outbox-stats article { display: grid; gap: 8px; padding: 12px 14px; background: var(--surface-soft); }
 .outbox-stats span { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; }
@@ -5923,17 +5955,6 @@ main {
 @media (max-width: 760px) {
   .ops-heading { align-items: stretch; }
   .ops-mode { align-self: flex-start; }
-  .ops-workbench > .el-card__body { padding: 12px; }
-  .ops-tabs .el-tabs__nav-wrap { overflow-x: auto; }
-  .ops-tabs .el-tabs__nav-wrap::after { display: none; }
-  .ops-tabs .el-tabs__nav { float: none; width: max-content; }
-  .ops-panel-title { align-items: flex-start; }
-  .ops-filter-title { display: grid; }
-  .ops-filter-title > .ops-query-filters { display: flex; align-items: stretch; justify-content: flex-start; width: 100%; }
-  .ops-filter-title .el-input { width: 100%; }
-  .ops-filter-title .el-select { width: calc(50% - 4px); }
-  .ops-filter-title .el-date-editor--datetimerange { width: 100%; }
-  .ops-pagination { justify-content: center; overflow-x: auto; }
   .ops-table { display: none; }
   .ops-mobile-list { display: grid; gap: 10px; }
   .ops-mobile-list article { display: grid; gap: 9px; padding: 14px; border: 1px solid var(--line); background: var(--surface-soft); }
@@ -5951,14 +5972,22 @@ main {
 
 /* 审计与参数：不可变账本和分组策略面板。
    检索条并入 reply-* 共享组、确认框并入 sign-* 共享组、规则条与 user-rules 同组，按页复制即缺陷；
-   本区只保留页签、分组参数网格、保存栏与认证源面板的页级专属样式。 */
-.config-tabs { display: flex; gap: 22px; min-height: 46px; margin-top: -8px; border-bottom: 1px solid var(--line-2); }
-.config-tabs button { position: relative; min-height: 44px; padding: 0 2px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: 600 12px/1.2 inherit; }
-.config-tabs button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: transparent; content: ""; transform: scaleX(.25); transition: background-color 140ms cubic-bezier(.25, 1, .5, 1), transform 140ms cubic-bezier(.25, 1, .5, 1); }
-.config-tabs button:hover { color: var(--ink); }
-.config-tabs button.active { color: var(--verdi); }
-.config-tabs button.active::after { background: var(--verdi); transform: scaleX(1); }
-.config-tabs button:focus-visible { outline: 2px solid var(--verdi); outline-offset: 3px; }
+   本区只保留页签、分组参数网格、保存栏与认证源面板的页级专属样式。
+   运维中心 ops-tabs 与 config-tabs 同构（自定义页签条 + 键盘左右切换 + 横向溢出滚动），共用本组规则。 */
+.config-tabs,
+.ops-tabs { display: flex; gap: 22px; min-height: 46px; margin-top: -8px; border-bottom: 1px solid var(--line-2); overflow-x: auto; }
+.config-tabs button,
+.ops-tabs button { position: relative; flex: none; min-height: 44px; padding: 0 2px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: 600 12px/1.2 inherit; }
+.config-tabs button::after,
+.ops-tabs button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: transparent; content: ""; transform: scaleX(.25); transition: background-color 140ms cubic-bezier(.25, 1, .5, 1), transform 140ms cubic-bezier(.25, 1, .5, 1); }
+.config-tabs button:hover,
+.ops-tabs button:hover { color: var(--ink); }
+.config-tabs button.active,
+.ops-tabs button.active { color: var(--verdi); }
+.config-tabs button.active::after,
+.ops-tabs button.active::after { background: var(--verdi); transform: scaleX(1); }
+.config-tabs button:focus-visible,
+.ops-tabs button:focus-visible { outline: 2px solid var(--verdi); outline-offset: 3px; }
 .config-runtime-panel { min-width: 0; padding-top: 18px; }
 .config-runtime-panel > .el-alert { margin-bottom: 14px; }
 .provider-panel { margin-top: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
@@ -6524,8 +6553,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .circuit-banner strong { display: block; font-size: 13.5px; }
 .circuit-banner p { margin: 2px 0 0; color: var(--tx-2); font-size: 12px; }
 .circuit-actions { display: flex; gap: 9px; align-items: center; margin-left: auto; }
-.ops-workbench { background: transparent; border: 0; }
-.ops-tabs .el-tabs__header { border-bottom-color: var(--hair); }
 
 /* 应用管理（/apps）：单行筛选条 + 账本表格 + 560 详情抽屉 + 三段分组表单。 */
 .apps-heading p:not(.eyebrow) { max-width: 620px; }
