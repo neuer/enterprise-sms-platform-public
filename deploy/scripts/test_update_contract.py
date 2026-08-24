@@ -171,6 +171,8 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "deploy/docker-compose.yml",
             "deploy/.env.example",
             "deploy/scripts/install_vendor_credentials.py",
+            # 已删除的一次性安装器仍会出现在历史 diff 里，必须继续按 vendor-live 识别。
+            "deploy/scripts/install_resend_api_key.py",
             "deploy/scripts/send_security_daily_report_resend.py",
             "deploy/scripts/vendor_control_agent.py",
             "deploy/scripts/vendor_control_journal.py",
@@ -269,6 +271,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
         "docs/runbooks/controlled-real-vendor-test.md",
         "docs/runbooks/production-phase0-baseline.md",
+        "docs/runbooks/production-resource-responsibility-freeze.md",
         "docs/runbooks/test-fast-update.md",
         "docs/runbooks/usage-ledger-recovery.md",
         "docs/runbooks/worker-fencing-recovery.md",
@@ -292,7 +295,9 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "deploy/scripts/continuity_manager.py",
         "deploy/scripts/failover_common.py",
         "deploy/scripts/host_python_preflight.py",
+        "deploy/scripts/install_production_host_assets.py",
         "deploy/scripts/lifecycle_manager.py",
+        "deploy/scripts/production_host_preflight.py",
         "deploy/scripts/prepare_runtime_secrets.py",
         "deploy/scripts/redis_tls_preflight.py",
         "deploy/scripts/redis_tls_rotation_guard.py",
@@ -317,6 +322,7 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         # 仅用于把 UI 同步的安全日报配置目录保留在 Git 中；实际配置不入库。
         "deploy/security-report-config/.gitignore",
         "docs/runbooks/public-baseline-activation.md",
+        "public-repository.json",
         "scripts/e2e_api.py",
         # 仅用于本地/隔离测试栈的目录与凭据准备；不进入服务镜像或运行态。
         "scripts/dev_check.sh",
