@@ -6,6 +6,7 @@ frontend/src/stores/ @neuer
 frontend/src/router/ @neuer
 frontend/src/api/ @neuer
 frontend/src/views/ @neuer
+frontend/src/components/ @neuer
 backend/migrations/ @neuer
 schema.sql @neuer
 deploy/ @neuer

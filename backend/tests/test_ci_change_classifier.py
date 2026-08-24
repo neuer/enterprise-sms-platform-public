@@ -561,6 +561,9 @@ def test_raw_capture_ops_and_session_shell_are_not_skipped(
         "frontend/src/api/new_session_client.ts",
         "frontend/src/router/new_guard.ts",
         "frontend/src/views/BrandNewView.vue",
+        "frontend/src/components/BrandNewDialog.vue",
+        "frontend/src/components/DailyPasswordChangeDialog.vue",
+        "frontend/src/components/ApprovalList.vue",
     ],
 )
 def test_new_security_domain_files_default_to_full_protection(path: str) -> None:
@@ -691,6 +694,51 @@ def test_renaming_security_file_to_ordinary_path_keeps_both_sides(
 
     assert result.frontend is True
     assert result.security is True
+    assert "frontend-security" in result.categories
+
+
+def test_renaming_sensitive_component_to_ordinary_path_keeps_security(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(
+        repo, "frontend/src/components/DailyPasswordChangeDialog.vue", "password"
+    )
+    (repo / "docs").mkdir(exist_ok=True)
+    git(
+        repo,
+        "mv",
+        "frontend/src/components/DailyPasswordChangeDialog.vue",
+        "docs/password-moved.md",
+    )
+    git(repo, "commit", "-m", "rename-component-escape")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.frontend is True
+    assert result.security is True
+    assert "frontend-security" in result.categories
+
+
+def test_copying_sensitive_component_to_ordinary_path_keeps_security(
+    tmp_path: Path,
+) -> None:
+    repo = init_repo(tmp_path)
+    before_sha = commit_file(
+        repo, "frontend/src/components/ApprovalList.vue", "approval"
+    )
+    target = repo / "docs" / "copied-approval.vue"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("approval", encoding="utf-8")
+    git(repo, "add", "--", "docs/copied-approval.vue")
+    git(repo, "commit", "-m", "copy-component")
+    head_sha = git(repo, "rev-parse", "HEAD")
+
+    result = classify_push(repo, before_sha=before_sha, head_sha=head_sha)
+
+    assert result.security is True
+    assert result.frontend is True
     assert "frontend-security" in result.categories
 
 

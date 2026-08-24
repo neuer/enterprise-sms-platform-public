@@ -137,6 +137,7 @@
   - `frontend/src/router/`
   - `frontend/src/api/`
   - `frontend/src/views/`
+  - `frontend/src/components/`
   - `backend/migrations/`
   - `schema.sql`
   - `deploy/`

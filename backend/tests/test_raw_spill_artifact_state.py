@@ -342,7 +342,7 @@ def test_atomic_write_temps_are_promoted_or_isolated(tmp_path: Path) -> None:
     store = RawSpillStore(tmp_path, header_only_min_age_s=0)
     digest = "b" * 64
     payload = b"encrypted-raw"
-    store.write(
+    final = store.write(
         source="report",
         payload_sha256=digest,
         key_version=1,
@@ -351,12 +351,11 @@ def test_atomic_write_temps_are_promoted_or_isolated(tmp_path: Path) -> None:
         payload_enc=payload,
         crypto=crypto(),
     )
-    final = tmp_path / f"report-{digest}.spill"
-    tmp = tmp_path / f"report-{digest}.spill.tmp"
+    tmp = final.with_name(final.name + ".tmp")
     final.rename(tmp)
     assert leftover_names(tmp_path, ".spill") == []
     store.reclaim_idle("report", crypto())
-    assert (tmp_path / f"report-{digest}.spill").exists()
+    assert final.exists()
     assert store.list_pending("report")
 
     incomplete = tmp_path / f"report-{'c' * 64}.spill.tmp"

@@ -1066,11 +1066,20 @@ def check_protected_path_policy_invariants() -> None:
             ROOT / "deploy" / "scripts" / "protected_path_policy.py",
             "frontend/src/views/ 必须是 frontend-security 默认域",
         )
-    required_prefixes = {prefix for prefix, _suffixes in REQUIRED_TRACKED_SOURCE_TREES}
-    if required_prefixes != {"backend/app/", "frontend/src/views/"}:
+    if "frontend/src/components/" not in FRONTEND_SECURITY_DOMAINS:
         fail(
             ROOT / "deploy" / "scripts" / "protected_path_policy.py",
-            "反向枚举树必须独立覆盖 backend/app/ 与 frontend/src/views/",
+            "frontend/src/components/ 必须是 frontend-security 默认域",
+        )
+    required_prefixes = {prefix for prefix, _suffixes in REQUIRED_TRACKED_SOURCE_TREES}
+    if required_prefixes != {
+        "backend/app/",
+        "frontend/src/views/",
+        "frontend/src/components/",
+    }:
+        fail(
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
+            "反向枚举树必须独立覆盖 backend/app/、frontend/src/views/ 与 frontend/src/components/",
         )
     contract = (ROOT / "deploy" / "scripts" / "test_update_contract.py").read_text(
         encoding="utf-8"

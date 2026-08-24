@@ -29,6 +29,7 @@ def test_schema_rejects_new_legacy_audit_and_uses_transaction_correlation() -> N
     assert "session_user='sms_auth'" in schema
     assert "session_user='sms_accept'" in schema
     assert "session_user='sms_send'" in schema
+    assert "NEW.actor='system-reconcile' AND NEW.action='raw_replay'" in schema
 
 
 def test_runtime_binds_human_and_api_key_principals_before_business_writes() -> None:

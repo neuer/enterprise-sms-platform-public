@@ -177,6 +177,9 @@ def _install_reconcile_probe(
         async def list_stale_unprocessed_raw_ids(self) -> list[int]:
             return [11]
 
+        async def list_pending_system_replay_audit_ids(self) -> list[int]:
+            return []
+
         async def raw_replay_exhausted(self, raw_id: int) -> bool:
             return False
 
@@ -613,6 +616,9 @@ async def test_replay_stale_raw_marks_system_producer_for_audit(
         async def list_stale_unprocessed_raw_ids(self) -> list[int]:
             return [11, 12]
 
+        async def list_pending_system_replay_audit_ids(self) -> list[int]:
+            return []
+
         async def raw_replay_exhausted(self, raw_id: int) -> bool:
             return False
 
@@ -652,6 +658,66 @@ async def test_replay_stale_raw_marks_system_producer_for_audit(
 
 
 @pytest.mark.asyncio
+async def test_replay_stale_raw_emits_system_audit_gap_instead_of_silent_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services.raw_replay import RawReplaySystemAuditIncomplete
+    from app.tasks import reconcile as task_module
+
+    alerts: list[dict[str, object]] = []
+
+    class FakeAlerts:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def emit(self, **kwargs: object) -> None:
+            alerts.append(kwargs)
+
+    class FakeReplay:
+        async def replay(self, raw_id: int, **_: object) -> int:
+            raise RawReplaySystemAuditIncomplete(raw_id, 3)
+
+    class FakeOps:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        async def list_stale_unprocessed_raw_ids(self) -> list[int]:
+            return [21]
+
+        async def list_pending_system_replay_audit_ids(self) -> list[int]:
+            return [22]
+
+        async def raw_replay_exhausted(self, raw_id: int) -> bool:
+            raise AssertionError("audit gap must not use replay_exhausted")
+
+    monkeypatch.setattr(task_module, "redis_client", lambda _url: "redis")
+    monkeypatch.setattr(task_module, "SqlOpsRepository", FakeOps)
+    monkeypatch.setattr(
+        task_module.CryptoService, "from_settings", lambda settings: "crypto"
+    )
+    monkeypatch.setattr(task_module, "SqlAlertService", FakeAlerts)
+    monkeypatch.setattr(task_module, "SqlReportRepository", lambda settings: "reports")
+    monkeypatch.setattr(task_module, "SqlReplyRepository", lambda settings: "replies")
+    monkeypatch.setattr(task_module, "ReportIngestService", lambda *a, **k: "report-ingest")
+    monkeypatch.setattr(task_module, "ReplyIngestService", lambda *a, **k: "reply-ingest")
+    monkeypatch.setattr(task_module, "RawReplayService", lambda *a, **k: FakeReplay())
+
+    count = await task_module._replay_stale_raw(
+        SimpleNamespace(redis_control_url="redis://control")
+    )
+
+    assert count == 0
+    assert [item["alert_type"] for item in alerts] == [
+        "raw_system_audit_gap",
+        "raw_system_audit_gap",
+    ]
+    assert alerts[0]["detail"] == {"raw_id": 21, "lease_epoch": 3}
+    assert "phone" not in str(alerts).lower()
+
+
+@pytest.mark.asyncio
 async def test_replay_stale_raw_isolates_poison_and_alerts_once_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -668,6 +734,9 @@ async def test_replay_stale_raw_isolates_poison_and_alerts_once_exhausted(
 
         async def list_stale_unprocessed_raw_ids(self) -> list[int]:
             return [1, 2, 3]
+
+        async def list_pending_system_replay_audit_ids(self) -> list[int]:
+            return []
 
         async def raw_replay_exhausted(self, raw_id: int) -> bool:
             return raw_id == 1

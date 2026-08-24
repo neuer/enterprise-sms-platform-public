@@ -573,6 +573,8 @@ def test_ci_and_test_update_share_backend_critical_paths(
         "frontend/src/views/PasswordChangeView.vue",
         "frontend/src/views/AppManagementView.vue",
         "frontend/src/views/ApprovalView.vue",
+        "frontend/src/components/DailyPasswordChangeDialog.vue",
+        "frontend/src/components/ApprovalList.vue",
     ],
 )
 def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> None:

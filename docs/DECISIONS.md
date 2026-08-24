@@ -1103,16 +1103,24 @@
 - 决策：修订 D086/D089 中「认证失败写 `.headerq` 并删除原文件」。分类必须区分
   `key_unavailable` / `transient_io` / `auth_failed` / `corrupt` / `provably_empty`。
   缺历史 Key 与暂态 I/O 保留原密文、告警、稍后重试，cipherq 容量淘汰不得驱逐它们。
-  真实 bit-flip / 已证明认证失败把原字节原子迁入 `{source}-{token}.cq`，并先
+  真实 bit-flip / 已证明认证失败把原字节原子迁入 `{source}-{artifact_id}.cq`，并先
   fsync 无 PII 的 `{source}-{token}.cq.man`（state=pending→sealed）。ENOSPC 写
   manifest 时源文件不动；kill -9 后重入封印或重试改名，禁止出现「源已删且无
   dest/manifest」。仅可证明为空的 header-only / 截断空头超龄后删除。`.cq` 不占
   活动 32 文件/512MiB 配额，独立文件数/字节/保留期（默认 64 个、至少一次
-  64MiB 预留、86400s）。Key 归还后 `iter_recoverable` 可从封印 `.cq` 完整恢复。
-  Report/Reply 共享同一 Volume。日志/告警/manifest 不得含手机号、短信正文、
-  Token 机密、Key、密文或不受控完整路径。无数据库迁移。
+  64MiB 预留、86400s）。每次捕获使用独立 `artifact_id` 命名 `.spill`/`.cq`，
+  禁止用 `payload_sha256` 覆盖或孤立旧密文；dest 已存在时仅同一 artifact
+  幂等，否则换新路径。恢复以 `.cq → .cq.wip` 原子认领并原位读取，禁止改回
+  `src_name` 后删除旧 manifest。无 manifest 的 `.cq` 可盘点恢复；无 `.cq` 的
+  manifest 记确定终态并告警后删除。`reclaim_idle` 锁内只认证 header，并受
+  文件数/header 字节/时间预算；完整 payload SHA 只在单文件恢复阶段核对。
+  同步 reclaim 经 `asyncio.to_thread` 离开 Event Loop。Key 归还后
+  `iter_recoverable` 可从封印 `.cq` 完整恢复。Report/Reply 共享同一 Volume。
+  日志/告警/manifest 不得含手机号、短信正文、Token 机密、Key、密文或不受控
+  完整路径。无数据库迁移。
 - 原因：#439 第六轮确认当前隔离把缺 Key、暂态 I/O 与真实认证失败合并，并在
-  保存可恢复密文前 unlink，滚动部署或 EIO 会永久丢掉拉走即消费事实。
+  保存可恢复密文前 unlink；第七轮确认相同正文会覆盖 `.cq` 或产生无
+  manifest 孤儿，且 reclaim 在全局锁内全量哈希 payload。
 - 影响：`raw_spill`/`crypto`/`settings`/`report_ingest`/`reply_ingest`、vendor-api
   恢复句。未改 Vue、OpenAPI、Alembic、D082/D085 预留与内部帧。
 
@@ -1123,15 +1131,48 @@
   Python 生成 UUID，epoch 自增（persist 从 1 起），租约 15 分钟。超时扫描与
   接管只认 lease 过期或空租约，不再把 `processing_started_at` 当作所有权。
   `update_metadata` / `mark_processed` / `mark_error` / `mark_replay_error`
-  必须带 expected lease CAS；miss 只写无 PII 的 `worker_lease_event(task_kind='raw',
-  event_type='fencing_miss')`，不得覆盖现态。成功终态清空 lease_id/expires_at，
+  必须带 expected lease CAS（只认 lease_id+epoch，不以刚过期时刻无条件拒绝仍
+  未被接管的所有者）。当前所有者按 `RAW_LEASE_SECONDS` 续租；heartbeat miss
+  先提交无 PII 的 `heartbeat_lost` 再失败关闭。成功终态清空 lease_id/expires_at，
   不回退 epoch。parser reevaluate 与审计同事务，遇活租约失败关闭。CHECK
   `ck_raw_vendor_processed_consistency` 拒绝
-  processed/parse_state/replay_eligibility 矛盾组合。
+  processed/parse_state/replay_eligibility 矛盾组合。Spill 仅落库的完整 raw
+  不创建无人处理的活动租约。
 - 原因：#475/#441 第六轮确认仅 `processing_started_at` 无法阻止过期处理器覆盖
-  接管后的终态，且 reevaluate 资格变更与审计分事务。
-- 影响：schema v1.6.64、0076、`raw_lease`、ops/report/reply 仓储、raw 重放与
-  ingest 共享解析路径。不削弱 uncertain 禁重发、PII 加密和资格 never 粘滞。
+  接管后的终态，且 reevaluate 资格变更与审计分事务；第七轮确认固定 15 分钟
+  无续租会让合法长批次失去写入资格。
+- 影响：schema v1.6.64/v1.6.65、0076/0077、`raw_lease`、ops/report/reply 仓储、
+  raw 重放与 ingest 共享解析路径。不削弱 uncertain 禁重发、PII 加密和资格
+  never 粘滞。
+
+## D092 系统 Raw 重放审计意图与补写
+
+- 决策：系统 reconcile 在 `mark_processed` 同事务写入
+  `system_replay_audit_state='pending'`；完整系统审计在随后独立事务写入，
+  成功后把该列置 `completed`。同一 raw + lease epoch 最多一条成功系统
+  `raw_replay` 审计。审计失败不得回滚业务终态，也不得再次投影；后续任务只
+  补审计。轮询/人工路径保持 NULL，避免把成功 poll 误报成审计缺口。
+- 原因：#441 第七轮确认系统重放先提交 processed 再独立审计，失败后扫描只
+  认 processed=false，缺口会永久化。
+- 影响：0077、`raw_replay`/`ops_repository`/`reconcile`、metrics pending 计数。
+  人类 replay/reevaluate 原子与补审计行为不回退。审计载荷仅 source/items/
+  lease_epoch/producer_domain。0078 把 `system-reconcile`/`raw_replay` 加入
+  `sms_send` + realtime 触发器白名单；人工/轮询终态 SQL 不再 SET
+  `system_replay_audit_state`，避免 `sms_accept` 无列权失败。
+
+## D093 系统 Raw 重放审计必须通过角色白名单
+
+- 决策：reconcile 跑在 realtime worker，数据库角色是 `sms_send`，生产者域是
+  `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_send` 对 `audit_log`
+  只有 INSERT、没有 SELECT。补写必须 `INSERT VALUES`；重复写入只在独立
+  savepoint 内吞 `unique_violation`。禁止 `WHERE NOT EXISTS`、`EXISTS` 或
+  `ON CONFLICT`，这些语句都会触发表级读权限检查。
+  `sms_accept` 不得获得 `system_replay_audit_state` 列 UPDATE。补审计失败保持
+  pending，不得重投影。
+- 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`；
+  随后 CI 证实 `INSERT … SELECT WHERE NOT EXISTS` 会被 `sms_send` 缺 SELECT
+  权限拒绝，缺口仍会永久化。
+- 影响：0078、`enforce_live_audit_principal`、终态 SQL 分流、系统审计写入语句。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 

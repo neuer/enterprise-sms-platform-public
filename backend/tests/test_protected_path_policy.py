@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -113,7 +114,21 @@ SENSITIVE_VIEW_IMPORTS = frozenset(
         "createApp",
         "updateApp",
         "passwordPolicyRequest",
+        "changePassword",
+        "decideApproval",
+        "listApprovals",
+        "issueVendorTestStepUp",
+        "installVendorCredentials",
+        "activateVendorTest",
+        "resumeVendorTest",
     }
+)
+ISSUE_427_FRONTEND_SECURITY_COMPONENTS = (
+    "frontend/src/components/DailyPasswordChangeDialog.vue",
+    "frontend/src/components/ApprovalList.vue",
+)
+SECURITY_VIEW_COMPONENT_IMPORT = (
+    r"""from\s+["'](?:\.\./components|\./components)/([^"']+\.vue)["']"""
 )
 ORDINARY_REASON_REQUIRED_FIELDS = ("allowed_apis=", "excluded=", "review=")
 
@@ -244,6 +259,7 @@ def test_reverse_enum_does_not_filter_by_manifest_membership_first(
             "backend/app/models/__init__.py",
             "backend/app/cli.py",
             "frontend/src/views/LoginView.vue",
+            "frontend/src/components/DailyPasswordChangeDialog.vue",
             "docs/UAT.md",
         ]
     )
@@ -251,6 +267,7 @@ def test_reverse_enum_does_not_filter_by_manifest_membership_first(
     assert "backend/app/outbox_dispatcher.py" in missing
     assert "backend/app/models/__init__.py" in missing
     assert "frontend/src/views/LoginView.vue" in missing
+    assert "frontend/src/components/DailyPasswordChangeDialog.vue" in missing
     assert "docs/UAT.md" not in missing
 
 
@@ -263,6 +280,8 @@ def test_reviewed_ordinary_is_an_explicit_downgrade() -> None:
     for path in ISSUE_427_FRONTEND_SECURITY_VIEWS:
         assert path not in REVIEWED_ORDINARY_EXACT
     for path in ISSUE_427_CAPABILITY_SECURITY_VIEWS:
+        assert path not in REVIEWED_ORDINARY_EXACT
+    for path in ISSUE_427_FRONTEND_SECURITY_COMPONENTS:
         assert path not in REVIEWED_ORDINARY_EXACT
     for path in ISSUE_427_BACKEND_CRITICAL_PATHS:
         if path.endswith("brand_new_model.py"):
@@ -303,6 +322,7 @@ def test_each_explicit_downgrade_has_reason_and_ordinary_gates(path: str) -> Non
         ("backend/app/models/brand_new_model.py", "backend-critical"),
         ("frontend/src/stores/brand_new_session.ts", "frontend-security"),
         ("frontend/src/views/BrandNewView.vue", "frontend-security"),
+        ("frontend/src/components/BrandNewDialog.vue", "frontend-security"),
         ("frontend/src/App.vue", "frontend-security"),
     ],
 )
@@ -367,10 +387,42 @@ def test_ordinary_views_do_not_import_sensitive_apis() -> None:
         assert hits == [], f"{path} ordinary but imports {hits}"
 
 
+def test_security_view_local_components_cannot_be_ordinary() -> None:
+    """安全 View 抽到本地组件后，依赖不得因重构落入 ordinary。"""
+
+    pattern = re.compile(SECURITY_VIEW_COMPONENT_IMPORT)
+    surfaces = (
+        "frontend/src/App.vue",
+        *ISSUE_427_FRONTEND_SECURITY_VIEWS,
+        *ISSUE_427_CAPABILITY_SECURITY_VIEWS,
+    )
+    for view_path in surfaces:
+        source = (ROOT / view_path).read_text(encoding="utf-8")
+        for name in pattern.findall(source):
+            component = f"frontend/src/components/{name}"
+            assert component not in REVIEWED_ORDINARY_EXACT, component
+            category = security_domain_category(component)
+            protected = protected_change_category(component)
+            assert category == "frontend-security" or protected == "vendor-live"
+
+
+@pytest.mark.parametrize("path", ISSUE_427_FRONTEND_SECURITY_COMPONENTS)
+def test_issue_427_sensitive_components_are_frontend_security(path: str) -> None:
+    assert "frontend/src/components/" in FRONTEND_SECURITY_DOMAINS
+    assert security_domain_category(path) == "frontend-security"
+    result = classify_paths([path])
+    assert result.frontend is True
+    assert result.security is True
+    assert result.full_fallback is False
+    assert result.categories == frozenset({"frontend-security"})
+    assert classify_changed_paths([path]).risk == "high-risk"
+
+
 def test_required_source_trees_stay_independent_of_domain_list() -> None:
     assert REQUIRED_TRACKED_SOURCE_TREES == (
         ("backend/app/", (".py",)),
         ("frontend/src/views/", (".vue",)),
+        ("frontend/src/components/", (".vue",)),
     )
 
 

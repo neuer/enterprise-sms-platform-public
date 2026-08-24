@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
-from app.services.raw_lease import RawProcessingLease, remember_if_supported
+from app.services.raw_lease import (
+    RawLeaseLost,
+    RawProcessingLease,
+    bind_raw_lease_heartbeat,
+    remember_if_supported,
+)
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
     CAPTURE_COMPLETE_TOO_LARGE,
@@ -116,7 +123,11 @@ class ReportRepository(Protocol):
     async def persist_unmatched(self, raw_id: int, report: ProtectedReport) -> None: ...
 
     async def mark_processed(
-        self, raw_id: int, *, lease: RawProcessingLease | None = None
+        self,
+        raw_id: int,
+        *,
+        lease: RawProcessingLease | None = None,
+        system_audit_intent: bool = False,
     ) -> None: ...
 
     async def mark_error(
@@ -423,6 +434,26 @@ class ReportIngestService:
                 extra={"source": source, "error_type": type(exc).__name__},
             )
 
+    async def _alert_cipherq_manifest_only(self, source: str, result: Any) -> None:
+        """清单无密文必须有确定终态告警；载荷不含路径或密文。"""
+
+        dropped = int(getattr(result, "cipherq_manifest_only", 0) or 0)
+        if dropped < 1 or self.alerts is None:
+            return
+        try:
+            await self.alerts.emit(
+                alert_type="vendor_raw_cipherq_manifest_only",
+                level="crit",
+                title="raw spill cipherq 清单缺少密文，已记确定终态",
+                detail={"source": source, "dropped": dropped},
+                dedup_key=f"vendor_raw_cipherq_manifest_only:{source}",
+            )
+        except Exception as exc:
+            LOGGER.error(
+                "vendor raw cipherq manifest-only alert unavailable",
+                extra={"source": source, "error_type": type(exc).__name__},
+            )
+
     async def _alert_header_only(self, source: str, result: Any) -> None:
         """超龄 header-only 回收必须可观测，避免配额耗尽后静默停轮询。"""
 
@@ -481,13 +512,13 @@ class ReportIngestService:
         content_encoding: str,
         payload_enc: bytes,
         capture_state: str = CAPTURE_COMPLETE,
-    ) -> bool:
+    ) -> Path | None:
         """secondary spill 必须回报成败；失败只告警，不得当作已形成持久副本。"""
 
         if self.spill is None:
-            return False
+            return None
         try:
-            self.spill.write(
+            return self.spill.write(
                 source=source,
                 payload_sha256=payload_sha256,
                 key_version=key_version,
@@ -497,10 +528,9 @@ class ReportIngestService:
                 crypto=self.crypto,
                 capture_state=capture_state,
             )
-            return True
         except SpillQuotaExceeded:
             await self._alert_spill_quota(source)
-            return False
+            return None
         except Exception as exc:
             LOGGER.error(
                 "raw spill write failed",
@@ -520,7 +550,7 @@ class ReportIngestService:
                         "raw spill alert unavailable",
                         extra={"source": source, "error_type": type(alert_exc).__name__},
                     )
-            return False
+            return None
 
     async def _commit_raw(
         self,
@@ -536,7 +566,7 @@ class ReportIngestService:
     ) -> int:
         """PostgreSQL 提交成功前不得删除 stream，除非 secondary spill 已 fsync。"""
 
-        spill_ok = await self._spill_write(
+        spill_path = await self._spill_write(
             source=source,
             payload_sha256=payload_sha256,
             key_version=key_version,
@@ -545,7 +575,7 @@ class ReportIngestService:
             payload_enc=payload_enc,
             capture_state=capture_state,
         )
-        if spill_ok and stream is not None:
+        if spill_path is not None and stream is not None:
             stream.discard()
         try:
             raw_id = await self.repository.persist_raw(
@@ -563,6 +593,8 @@ class ReportIngestService:
             raise
         if stream is not None:
             stream.discard()
+        if spill_path is not None:
+            spill_path.unlink(missing_ok=True)
         self._spill_remove(source, payload_sha256)
         return raw_id
 
@@ -699,10 +731,11 @@ class ReportIngestService:
             return 0
         reclaim = getattr(self.spill, "reclaim_idle", None)
         if callable(reclaim):
-            result = reclaim("report", self.crypto)
+            result = await asyncio.to_thread(reclaim, "report", self.crypto)
             if result:
                 await self._alert_header_only("report", result)
             await self._alert_artifact_quarantine("report", result)
+            await self._alert_cipherq_manifest_only("report", result)
         recovered = 0
         attempted = 0
         used_bytes = 0
@@ -733,6 +766,7 @@ class ReportIngestService:
                     custom_ids=[],
                     item_count=0,
                     capture_state=capture_state,
+                    acquire_processing_lease=capture_state != CAPTURE_COMPLETE,
                 )
             except Exception as error:
                 await self._alert_consume_gap("report", type(error).__name__)
@@ -759,14 +793,24 @@ class ReportIngestService:
                 await self._alert_unknown_legacy("report")
             if record.quarantined:
                 await self._alert_quarantine("report", record.stream_id)
-            record.path.unlink(missing_ok=True)
-            self._spill_remove(record.source, record.payload_sha256)
+            if record.path.name.endswith((".cq", ".cq.wip")):
+                remover = getattr(self.spill, "remove_claimed_cipherq", None)
+                if callable(remover):
+                    remover(record.path)
+                else:
+                    record.path.unlink(missing_ok=True)
+            else:
+                record.path.unlink(missing_ok=True)
+                self._spill_remove(record.source, record.payload_sha256)
             if record.stream_id:
                 self.spill.remove_stream(record.source, record.stream_id)
             attempted += 1
             used_bytes += size
             recovered += 1
         await self._alert_artifact_quarantine("report", getattr(self.spill, "last_reclaim", None))
+        await self._alert_cipherq_manifest_only(
+            "report", getattr(self.spill, "last_reclaim", None)
+        )
         return recovered
 
     async def poll_once(self) -> int:
@@ -839,65 +883,77 @@ class ReportIngestService:
         data: object,
         *,
         lease: RawProcessingLease | None = None,
+        system_audit_intent: bool = False,
     ) -> int:
         """解析已独立提交的 raw；供轮询、spill 恢复与受控重放共用。"""
 
         remember_if_supported(self.repository, lease)
-        try:
-            if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
-                raise ValueError("GetReport.data must be an object array")
-            # custom_ids 索引元数据在共享路径重建：spill 恢复与人工/自动重放
-            # 落库的 raw 同样要对 uncertain 定位可见（规则 4 数据源）。
-            custom_ids = await self.repository.filter_known_custom_ids(
-                _collect_vendor_custom_ids(data)
-            )
-            await self.repository.update_metadata(
-                raw_id,
-                custom_ids=custom_ids,
-                item_count=len(data),
-                **({} if lease is None else {"lease": lease}),
-            )
-            skipped = 0
-            for index, item in enumerate(data):
-                try:
-                    report = self._parse(item)
-                except (ValueError, KeyError, TypeError) as error:
-                    skipped += 1
-                    LOGGER.warning(
-                        "skipping invalid report item",
-                        extra={
-                            "raw_id": raw_id,
-                            "item_index": index,
-                            "error_type": type(error).__name__,
-                        },
-                    )
-                    continue
-                if report.match_custom_id:
-                    applied = await self.repository.apply_report(raw_id, report)
-                else:
-                    # 空/非法 customId 无可匹配的平台批次；空串匹配可能
-                    # 误连旧发送的空 custom_id 分片，必须直接落 unmatched。
-                    applied = None
-                if applied is None:
-                    await self.repository.persist_unmatched(raw_id, report)
-                elif applied.changed:
-                    await self._alert_failure_rate(applied.batch_id)
-        except Exception as error:
-            await self.repository.mark_error(
-                raw_id,
-                f"{type(error).__name__}: {error}"[:256],
-                **({} if lease is None else {"lease": lease}),
-            )
-            raise
-        if skipped:
-            await self.repository.mark_error(
-                raw_id,
-                f"skipped {skipped} invalid report items",
-                **({} if lease is None else {"lease": lease}),
-            )
-            await self._alert_skipped(raw_id, skipped, source="report")
+        token = lease or getattr(self.repository, "_leases", {}).get(raw_id)
+        async with bind_raw_lease_heartbeat(self.repository, token) as beat:
+            try:
+                if not isinstance(data, list) or any(
+                    not isinstance(item, dict) for item in data
+                ):
+                    raise ValueError("GetReport.data must be an object array")
+                # custom_ids 索引元数据在共享路径重建：spill 恢复与人工/自动重放
+                # 落库的 raw 同样要对 uncertain 定位可见（规则 4 数据源）。
+                custom_ids = await self.repository.filter_known_custom_ids(
+                    _collect_vendor_custom_ids(data)
+                )
+                await self.repository.update_metadata(
+                    raw_id,
+                    custom_ids=custom_ids,
+                    item_count=len(data),
+                    **({} if lease is None else {"lease": lease}),
+                )
+                skipped = 0
+                for index, item in enumerate(data):
+                    if beat is not None:
+                        beat.raise_if_lost()
+                    try:
+                        report = self._parse(item)
+                    except (ValueError, KeyError, TypeError) as error:
+                        skipped += 1
+                        LOGGER.warning(
+                            "skipping invalid report item",
+                            extra={
+                                "raw_id": raw_id,
+                                "item_index": index,
+                                "error_type": type(error).__name__,
+                            },
+                        )
+                        continue
+                    if report.match_custom_id:
+                        applied = await self.repository.apply_report(raw_id, report)
+                    else:
+                        # 空/非法 customId 无可匹配的平台批次；空串匹配可能
+                        # 误连旧发送的空 custom_id 分片，必须直接落 unmatched。
+                        applied = None
+                    if applied is None:
+                        await self.repository.persist_unmatched(raw_id, report)
+                    elif applied.changed:
+                        await self._alert_failure_rate(applied.batch_id)
+            except RawLeaseLost:
+                raise
+            except Exception as error:
+                await self.repository.mark_error(
+                    raw_id,
+                    f"{type(error).__name__}: {error}"[:256],
+                    **({} if lease is None else {"lease": lease}),
+                )
+                raise
+            if skipped:
+                await self.repository.mark_error(
+                    raw_id,
+                    f"skipped {skipped} invalid report items",
+                    **({} if lease is None else {"lease": lease}),
+                )
+                await self._alert_skipped(raw_id, skipped, source="report")
+                return len(data)
+            mark_kwargs: dict[str, Any] = {}
+            if lease is not None:
+                mark_kwargs["lease"] = lease
+            if system_audit_intent:
+                mark_kwargs["system_audit_intent"] = True
+            await self.repository.mark_processed(raw_id, **mark_kwargs)
             return len(data)
-        await self.repository.mark_processed(
-            raw_id, **({} if lease is None else {"lease": lease})
-        )
-        return len(data)

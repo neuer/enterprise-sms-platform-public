@@ -48,6 +48,7 @@ class MetricsFacts:
     worker_lease_events: tuple[tuple[str, str, int], ...] = ()
     queue_depths: tuple[tuple[str, int], ...] = ()
     raw_replay_eligibility: tuple[tuple[str, int], ...] = ()
+    system_replay_audit_pending: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +260,13 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     eligibility_values = _values(snapshot.facts.raw_replay_eligibility)
     for label in RAW_REPLAY_ELIGIBILITIES:
         eligibility.labels(eligibility=label).set(eligibility_values.get(label, 0.0))
+
+    pending_audit = Gauge(
+        "sms_raw_system_replay_audit_pending",
+        "processed raw rows still waiting for a system replay audit rewrite.",
+        registry=registry,
+    )
+    pending_audit.set(max(0, snapshot.facts.system_replay_audit_pending))
 
     if snapshot.runtime is not None:
         loop_delay = Gauge(
