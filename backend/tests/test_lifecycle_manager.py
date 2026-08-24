@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +13,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[2] / "deploy" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import lifecycle_manager as lifecycle_manager_module  # noqa: E402
 from failover_common import (  # noqa: E402
     BACKUP_PASSPHRASE_GENERATION_ID_FILE,
     RECOVERY_CRYPTO_GENERATION_ID_FILE,
@@ -24,8 +25,10 @@ from lifecycle_manager import (  # noqa: E402
     PRODUCTION_BACKUP_ROOT,
     LifecycleConfig,
     LifecycleService,
+    LifecycleStatus,
     _alert,
     _runtime_config,
+    _serialize_lifecycle_cli_result,
     load_config,
 )
 from restore_drill import (  # noqa: E402
@@ -275,6 +278,48 @@ def read_state(config: LifecycleConfig) -> dict[str, object]:
     return json.loads(
         config.output_root.joinpath("lifecycle-state.json").read_text(encoding="utf-8")
     )
+
+
+def valid_drill_cli_result() -> dict[str, object]:
+    return {
+        "snapshot_id": SNAPSHOT_THREE,
+        "finished_at": "2026-07-12T06:00:00+00:00",
+        "restore_seconds": 25.5,
+        "drill_budget_seconds": 43200.0,
+        "restore_step_budget_seconds": 43199.5,
+        "within_drill_budget": True,
+        "data_gap_seconds": 3600,
+        "report_sha256": "a" * 64,
+        "recovery_crypto_generation_id": "RECOVERY-SECRET-VALUE-MARKER",
+        "backup_passphrase_generation_id": "BACKUP-PASSPHRASE-VALUE-MARKER",
+    }
+
+
+def run_main_with_drill_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: Mapping[str, object],
+) -> int:
+    class StubLifecycleService:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def drill(self, _config: LifecycleConfig) -> Mapping[str, object]:
+            return result
+
+    monkeypatch.setattr(
+        lifecycle_manager_module,
+        "_runtime_config",
+        lambda: (
+            make_config(tmp_path),
+            Path("/run/backup-secrets/CONFIG-PASSPHRASE-PATH-MARKER"),
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle_manager_module, "LifecycleService", StubLifecycleService
+    )
+    monkeypatch.setattr(sys, "argv", ["lifecycle_manager.py", "drill"])
+    return lifecycle_manager_module.main()
 
 
 def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> None:
@@ -830,6 +875,187 @@ def test_restore_runs_outside_lifecycle_lock(tmp_path: Path) -> None:
     service.drill(config)
 
     assert observed == [False]
+
+
+def test_main_emits_only_validated_machine_readable_drill_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = valid_drill_cli_result()
+
+    assert run_main_with_drill_result(tmp_path, monkeypatch, result) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert captured.err == ""
+    assert payload == {
+        "snapshot_id": SNAPSHOT_THREE,
+        "finished_at": "2026-07-12T06:00:00+00:00",
+        "restore_seconds": 25.5,
+        "drill_budget_seconds": 43200.0,
+        "restore_step_budget_seconds": 43199.5,
+        "within_drill_budget": True,
+        "data_gap_seconds": 3600,
+        "report_sha256": "a" * 64,
+    }
+    for forbidden in (
+        "CONFIG-PASSPHRASE-PATH-MARKER",
+        "RECOVERY-SECRET-VALUE-MARKER",
+        "BACKUP-PASSPHRASE-VALUE-MARKER",
+        "passphrase",
+        "secret",
+        "password",
+    ):
+        assert forbidden.casefold() not in captured.out.casefold()
+
+
+@pytest.mark.parametrize(
+    ("field", "marker"),
+    [
+        pytest.param("password", "PASSWORD-VALUE-MARKER", id="password-field"),
+        pytest.param(
+            "passphrase", "PASSPHRASE-VALUE-MARKER", id="passphrase-field"
+        ),
+        pytest.param("secret", "SECRET-VALUE-MARKER", id="secret-field"),
+    ],
+)
+def test_main_rejects_unapproved_sensitive_fields_without_disclosure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    marker: str,
+) -> None:
+    result = valid_drill_cli_result()
+    result[field] = marker
+
+    assert run_main_with_drill_result(tmp_path, monkeypatch, result) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert '"error_type": "ValueError"' in captured.err
+    for forbidden in (field, marker, "CONFIG-PASSPHRASE-PATH-MARKER"):
+        assert forbidden.casefold() not in captured.err.casefold()
+
+
+@pytest.mark.parametrize(
+    ("field", "marker"),
+    [
+        pytest.param("snapshot_id", "PASSWORD-VALUE-MARKER", id="snapshot-id"),
+        pytest.param("finished_at", "PASSPHRASE-VALUE-MARKER", id="timestamp"),
+        pytest.param("report_sha256", "SECRET-VALUE-MARKER", id="digest"),
+    ],
+)
+def test_main_rejects_sensitive_values_smuggled_through_public_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    marker: str,
+) -> None:
+    result = valid_drill_cli_result()
+    result[field] = marker
+
+    assert run_main_with_drill_result(tmp_path, monkeypatch, result) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert '"error_type": "ValueError"' in captured.err
+    assert marker not in captured.err
+    assert "CONFIG-PASSPHRASE-PATH-MARKER" not in captured.err
+
+
+def test_main_rejects_invalid_omitted_generation_id_without_disclosure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = valid_drill_cli_result()
+    result["backup_passphrase_generation_id"] = "INVALID PASSPHRASE VALUE MARKER"
+
+    assert run_main_with_drill_result(tmp_path, monkeypatch, result) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert '"error_type": "ValueError"' in captured.err
+    assert "INVALID PASSPHRASE VALUE MARKER" not in captured.err
+
+
+def test_main_preserves_stale_but_intact_backup_status_machine_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync)
+    service.backup(config)
+    evidence = dict(service.backup_status(config).evidence)
+    evidence.update(
+        {
+            "status": "stale",
+            "backup_age_seconds": 7200,
+            "snapshot_age_seconds": 7200,
+            "max_backup_age_seconds": 3600,
+            "failure_type": "EvidenceStale",
+        }
+    )
+
+    class StubLifecycleService:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def backup_status(self, _config: LifecycleConfig) -> LifecycleStatus:
+            return LifecycleStatus(evidence, False)
+
+    monkeypatch.setattr(
+        lifecycle_manager_module,
+        "_runtime_config",
+        lambda: (config, Path("/run/backup-secrets/PASSPHRASE-PATH-MARKER")),
+    )
+    monkeypatch.setattr(
+        lifecycle_manager_module, "LifecycleService", StubLifecycleService
+    )
+    monkeypatch.setattr(sys, "argv", ["lifecycle_manager.py", "backup-status"])
+
+    assert lifecycle_manager_module.main() == 2
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert captured.err == ""
+    assert payload["status"] == "stale"
+    assert payload["integrity_verified"] is True
+    assert payload["event"] == "lifecycle_alert"
+    assert payload["error_type"] == "EvidenceStale"
+    assert "passphrase" not in captured.out.casefold()
+
+
+def test_status_cli_projection_rejects_nested_secret_and_omits_generation_ids(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync)
+    service.backup(config)
+    service.drill(config)
+    status = service.status(config)
+
+    rendered = _serialize_lifecycle_cli_result(
+        "status", status.evidence, healthy=status.healthy
+    )
+
+    payload = json.loads(rendered)
+    assert payload["status"] == "healthy"
+    assert payload["last_successful_backup"]["snapshot_id"] == SNAPSHOT_THREE
+    assert payload["last_successful_restore"]["snapshot_id"] == SNAPSHOT_THREE
+    assert "generation_id" not in rendered
+    hostile = dict(status.evidence)
+    backup = dict(hostile["last_successful_backup"])
+    backup["secret"] = "NESTED-SECRET-VALUE-MARKER"
+    hostile["last_successful_backup"] = backup
+    with pytest.raises(ValueError, match="fields"):
+        _serialize_lifecycle_cli_result("status", hostile, healthy=True)
 
 
 def test_alert_output_never_includes_exception_message_or_sensitive_values(

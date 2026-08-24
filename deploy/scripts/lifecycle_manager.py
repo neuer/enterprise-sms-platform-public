@@ -94,6 +94,81 @@ CONFIG_FIELDS = frozenset(
         "max_restore_seconds",
     }
 )
+CLI_BACKUP_FIELDS = frozenset(
+    {"status", "snapshot_id", "integrity_verified", "available"}
+)
+CLI_RESTORE_INTERNAL_FIELDS = frozenset(
+    {
+        "snapshot_id",
+        "finished_at",
+        "restore_seconds",
+        "drill_budget_seconds",
+        "restore_step_budget_seconds",
+        "within_drill_budget",
+        "data_gap_seconds",
+        "report_sha256",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
+    }
+)
+CLI_BACKUP_RECORD_INTERNAL_FIELDS = frozenset(
+    {
+        "snapshot_id",
+        "completed_at",
+        "created_at",
+        "integrity_verified",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
+    }
+)
+CLI_RETENTION_FIELDS = frozenset(
+    {
+        "checked_at",
+        "boundary",
+        "retention_days",
+        "minimum_snapshots",
+        "removed_count",
+        "retained_count",
+    }
+)
+CLI_STATUS_FIELDS = frozenset(
+    {
+        "schema_version",
+        "evidence_scope",
+        "status",
+        "checked_at",
+        "last_successful_backup",
+        "last_successful_restore",
+        "backup_age_seconds",
+        "snapshot_age_seconds",
+        "restore_age_seconds",
+        "max_backup_age_seconds",
+        "max_restore_age_seconds",
+        "usable_snapshot_count",
+        "recovery_point_snapshot_id",
+        "recovery_point_age_seconds",
+        "retention",
+        "failure_type",
+    }
+)
+CLI_BACKUP_STATUS_FIELDS = frozenset(
+    {
+        "schema_version",
+        "evidence_scope",
+        "status",
+        "checked_at",
+        "last_successful_backup",
+        "snapshot_id",
+        "backup_age_seconds",
+        "snapshot_age_seconds",
+        "max_backup_age_seconds",
+        "integrity_verified",
+        "restore_evidence_counted",
+        "failure_type",
+    }
+)
+CLI_SENSITIVE_FIELD = re.compile(r"(?:password|passphrase|secret)", re.IGNORECASE)
+CLI_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_BACKUP_ROOT = Path("/var/lib/sms-platform/runtime/backups")
 
 
@@ -167,6 +242,366 @@ def _restore_report_datetime(value: object, label: str) -> datetime:
     ):
         raise ValueError(f"invalid {label}")
     return _aware_datetime(value, label)
+
+
+def _exact_cli_object(
+    value: object,
+    fields: frozenset[str],
+    label: str,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError(f"{label} fields are invalid")
+    return value
+
+
+def _cli_literal(value: object, expected: str, label: str) -> str:
+    if value != expected:
+        raise ValueError(f"{label} is invalid")
+    return expected
+
+
+def _cli_bool(value: object, expected: bool | None, label: str) -> bool:
+    if type(value) is not bool or (expected is not None and value is not expected):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _cli_nonnegative_int(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _cli_optional_nonnegative_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    return _cli_nonnegative_int(value, label)
+
+
+def _cli_duration(
+    value: object,
+    label: str,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 43200.0,
+) -> int | float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not minimum <= float(value) <= maximum
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _cli_snapshot_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or SNAPSHOT_ID.fullmatch(value) is None:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _cli_optional_snapshot_id(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _cli_snapshot_id(value, label)
+
+
+def _cli_utc_timestamp(value: object, label: str) -> str:
+    return _restore_report_datetime(value, label).isoformat()
+
+
+def _cli_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or CLI_SHA256.fullmatch(value) is None:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _cli_failure_type(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    if value == "EvidenceStale":
+        return "EvidenceStale"
+    if value == "SnapshotIntegrityFailed":
+        return "SnapshotIntegrityFailed"
+    raise ValueError(f"{label} is invalid")
+
+
+def _public_backup_record(value: object, label: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    internal = _exact_cli_object(value, CLI_BACKUP_RECORD_INTERNAL_FIELDS, label)
+    validate_generation_id(internal["recovery_crypto_generation_id"])
+    validate_generation_id(internal["backup_passphrase_generation_id"])
+    # 两个 generation ID 只用于内部绑定；CLI 验证后不输出其值。
+    return {
+        "snapshot_id": _cli_snapshot_id(internal["snapshot_id"], f"{label} snapshot"),
+        "completed_at": _cli_utc_timestamp(
+            internal["completed_at"], f"{label} completion time"
+        ),
+        "created_at": _cli_utc_timestamp(
+            internal["created_at"], f"{label} creation time"
+        ),
+        "integrity_verified": _cli_bool(
+            internal["integrity_verified"], True, f"{label} integrity"
+        ),
+    }
+
+
+def _public_restore_record(value: object, label: str) -> Mapping[str, Any]:
+    internal = _exact_cli_object(value, CLI_RESTORE_INTERNAL_FIELDS, label)
+    validate_generation_id(internal["recovery_crypto_generation_id"])
+    validate_generation_id(internal["backup_passphrase_generation_id"])
+    restore_seconds = _cli_duration(
+        internal["restore_seconds"], f"{label} restore seconds"
+    )
+    drill_budget = _cli_duration(
+        internal["drill_budget_seconds"],
+        f"{label} drill budget",
+        minimum=60.0,
+    )
+    step_budget = _cli_duration(
+        internal["restore_step_budget_seconds"],
+        f"{label} restore step budget",
+        minimum=0.001,
+    )
+    if float(restore_seconds) > float(step_budget) or float(step_budget) > float(
+        drill_budget
+    ):
+        raise ValueError(f"{label} duration binding is invalid")
+    # 两个 generation ID 保留在 0600 账本和恢复报告中，不属于 CLI 公共闭集。
+    return {
+        "snapshot_id": _cli_snapshot_id(internal["snapshot_id"], f"{label} snapshot"),
+        "finished_at": _cli_utc_timestamp(
+            internal["finished_at"], f"{label} completion time"
+        ),
+        "restore_seconds": restore_seconds,
+        "drill_budget_seconds": drill_budget,
+        "restore_step_budget_seconds": step_budget,
+        "within_drill_budget": _cli_bool(
+            internal["within_drill_budget"], True, f"{label} budget result"
+        ),
+        "data_gap_seconds": _cli_nonnegative_int(
+            internal["data_gap_seconds"], f"{label} data gap"
+        ),
+        "report_sha256": _cli_sha256(
+            internal["report_sha256"], f"{label} report digest"
+        ),
+    }
+
+
+def _public_retention(value: object, label: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    internal = _exact_cli_object(value, CLI_RETENTION_FIELDS, label)
+    return {
+        "checked_at": _cli_utc_timestamp(
+            internal["checked_at"], f"{label} check time"
+        ),
+        "boundary": _cli_utc_timestamp(internal["boundary"], f"{label} boundary"),
+        "retention_days": _bounded_int(
+            internal["retention_days"], f"{label} days", 7, 365
+        ),
+        "minimum_snapshots": _bounded_int(
+            internal["minimum_snapshots"], f"{label} minimum snapshots", 2, 30
+        ),
+        "removed_count": _cli_nonnegative_int(
+            internal["removed_count"], f"{label} removed count"
+        ),
+        "retained_count": _cli_nonnegative_int(
+            internal["retained_count"], f"{label} retained count"
+        ),
+    }
+
+
+def _assert_public_cli_contract(value: object, label: str = "lifecycle CLI") -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if not isinstance(key, str) or CLI_SENSITIVE_FIELD.search(key):
+                raise ValueError(f"{label} contains a forbidden field")
+            _assert_public_cli_contract(nested, f"{label}.{key}")
+        return
+    if value is not None and type(value) not in {str, int, float, bool}:
+        raise ValueError(f"{label} contains an invalid value")
+
+
+def _serialize_lifecycle_cli_result(
+    operation: str,
+    value: object,
+    *,
+    healthy: bool | None = None,
+) -> str:
+    """只将生命周期动作已批准、逐字段验证的非敏感闭集写入 stdout。"""
+
+    if operation == "backup":
+        if healthy is not None:
+            raise ValueError("backup CLI health binding is invalid")
+        internal = _exact_cli_object(value, CLI_BACKUP_FIELDS, "backup CLI result")
+        public: dict[str, object] = {
+            "status": _cli_literal(
+                internal["status"], "success", "backup CLI status"
+            ),
+            "snapshot_id": _cli_snapshot_id(
+                internal["snapshot_id"], "backup CLI snapshot"
+            ),
+            "integrity_verified": _cli_bool(
+                internal["integrity_verified"], True, "backup CLI integrity"
+            ),
+            "available": _cli_bool(
+                internal["available"], False, "backup CLI availability"
+            ),
+        }
+    elif operation == "drill":
+        if healthy is not None:
+            raise ValueError("drill CLI health binding is invalid")
+        public = dict(_public_restore_record(value, "drill CLI result"))
+    elif operation == "status":
+        if type(healthy) is not bool:
+            raise ValueError("status CLI health binding is invalid")
+        internal = _exact_cli_object(value, CLI_STATUS_FIELDS, "status CLI result")
+        failure_type = _cli_failure_type(
+            internal["failure_type"], "status CLI failure type"
+        )
+        expected_status = "healthy" if healthy else "stale"
+        if (healthy and failure_type is not None) or (
+            not healthy and failure_type is None
+        ):
+            raise ValueError("status CLI failure binding is invalid")
+        public = {
+            "schema_version": _bounded_int(
+                internal["schema_version"], "status CLI schema", 1, 1
+            ),
+            "evidence_scope": _cli_literal(
+                internal["evidence_scope"],
+                "preproduction_restore",
+                "status CLI evidence scope",
+            ),
+            "status": _cli_literal(
+                internal["status"], expected_status, "status CLI status"
+            ),
+            "checked_at": _cli_utc_timestamp(
+                internal["checked_at"], "status CLI check time"
+            ),
+            "last_successful_backup": _public_backup_record(
+                internal["last_successful_backup"], "status CLI backup"
+            ),
+            "last_successful_restore": (
+                None
+                if internal["last_successful_restore"] is None
+                else _public_restore_record(
+                    internal["last_successful_restore"], "status CLI restore"
+                )
+            ),
+            "backup_age_seconds": _cli_optional_nonnegative_int(
+                internal["backup_age_seconds"], "status CLI backup age"
+            ),
+            "snapshot_age_seconds": _cli_optional_nonnegative_int(
+                internal["snapshot_age_seconds"], "status CLI snapshot age"
+            ),
+            "restore_age_seconds": _cli_optional_nonnegative_int(
+                internal["restore_age_seconds"], "status CLI restore age"
+            ),
+            "max_backup_age_seconds": _bounded_int(
+                internal["max_backup_age_seconds"],
+                "status CLI maximum backup age",
+                3600,
+                168 * 3600,
+            ),
+            "max_restore_age_seconds": _bounded_int(
+                internal["max_restore_age_seconds"],
+                "status CLI maximum restore age",
+                3600,
+                744 * 3600,
+            ),
+            "usable_snapshot_count": _cli_nonnegative_int(
+                internal["usable_snapshot_count"], "status CLI usable snapshot count"
+            ),
+            "recovery_point_snapshot_id": _cli_optional_snapshot_id(
+                internal["recovery_point_snapshot_id"],
+                "status CLI recovery point",
+            ),
+            "recovery_point_age_seconds": _cli_optional_nonnegative_int(
+                internal["recovery_point_age_seconds"],
+                "status CLI recovery point age",
+            ),
+            "retention": _public_retention(
+                internal["retention"], "status CLI retention"
+            ),
+            "failure_type": failure_type,
+        }
+    elif operation == "backup-status":
+        if type(healthy) is not bool:
+            raise ValueError("backup status CLI health binding is invalid")
+        internal = _exact_cli_object(
+            value, CLI_BACKUP_STATUS_FIELDS, "backup status CLI result"
+        )
+        failure_type = _cli_failure_type(
+            internal["failure_type"], "backup status CLI failure type"
+        )
+        integrity_verified = _cli_bool(
+            internal["integrity_verified"],
+            None,
+            "backup status CLI integrity",
+        )
+        expected_status = "healthy" if healthy else "stale"
+        if (healthy and failure_type is not None) or (
+            not healthy and failure_type is None
+        ) or (healthy and not integrity_verified):
+            raise ValueError("backup status CLI failure binding is invalid")
+        public = {
+            "schema_version": _bounded_int(
+                internal["schema_version"], "backup status CLI schema", 1, 1
+            ),
+            "evidence_scope": _cli_literal(
+                internal["evidence_scope"],
+                "production_latest_backup",
+                "backup status CLI evidence scope",
+            ),
+            "status": _cli_literal(
+                internal["status"], expected_status, "backup status CLI status"
+            ),
+            "checked_at": _cli_utc_timestamp(
+                internal["checked_at"], "backup status CLI check time"
+            ),
+            "last_successful_backup": _public_backup_record(
+                internal["last_successful_backup"], "backup status CLI backup"
+            ),
+            "snapshot_id": _cli_optional_snapshot_id(
+                internal["snapshot_id"], "backup status CLI snapshot"
+            ),
+            "backup_age_seconds": _cli_optional_nonnegative_int(
+                internal["backup_age_seconds"], "backup status CLI backup age"
+            ),
+            "snapshot_age_seconds": _cli_optional_nonnegative_int(
+                internal["snapshot_age_seconds"], "backup status CLI snapshot age"
+            ),
+            "max_backup_age_seconds": _bounded_int(
+                internal["max_backup_age_seconds"],
+                "backup status CLI maximum backup age",
+                3600,
+                168 * 3600,
+            ),
+            "integrity_verified": integrity_verified,
+            "restore_evidence_counted": _cli_bool(
+                internal["restore_evidence_counted"],
+                False,
+                "backup status CLI restore evidence",
+            ),
+            "failure_type": failure_type,
+        }
+    else:
+        raise ValueError("lifecycle CLI operation is invalid")
+
+    if operation in {"status", "backup-status"} and healthy is False:
+        public.update(
+            {
+                "event": "lifecycle_alert",
+                "operation": operation,
+                "error_type": public["failure_type"],
+            }
+        )
+    _assert_public_cli_contract(public)
+    return json.dumps(public, sort_keys=True, allow_nan=False)
 
 
 def _absolute_path(value: object, label: str) -> Path:
@@ -1272,6 +1707,7 @@ def main() -> int:
     try:
         config, passphrase = _runtime_config()
         service = LifecycleService(root, passphrase)
+        healthy: bool | None = None
         if args.operation == "backup":
             evidence = service.backup(config)
             output: Mapping[str, Any] = {
@@ -1287,28 +1723,20 @@ def main() -> int:
         elif args.operation == "status":
             result = service.status(config)
             output = dict(result.evidence)
-            if not result.healthy:
-                output.update(
-                    {
-                        "event": "lifecycle_alert",
-                        "operation": "status",
-                        "error_type": output["failure_type"],
-                    }
-                )
+            healthy = result.healthy
             exit_code = 0 if result.healthy else 2
         else:
             result = service.backup_status(config)
             output = dict(result.evidence)
-            if not result.healthy:
-                output.update(
-                    {
-                        "event": "lifecycle_alert",
-                        "operation": "backup-status",
-                        "error_type": output["failure_type"],
-                    }
-                )
+            healthy = result.healthy
             exit_code = 0 if result.healthy else 2
-        print(json.dumps(output, sort_keys=True))
+        print(
+            _serialize_lifecycle_cli_result(
+                args.operation,
+                output,
+                healthy=healthy,
+            )
+        )
         return exit_code
     except Exception as error:
         _alert(args.operation, error)

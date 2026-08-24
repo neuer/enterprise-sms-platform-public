@@ -583,6 +583,41 @@ _RECOVERY_STATE_FIELDS = frozenset(
         "failure_type",
     }
 )
+_RECOVERY_CLI_TOPOLOGY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "redis_ha_mode",
+        "compose_files",
+        "root_env_non_image_sha256",
+        "topology_id",
+    }
+)
+_RECOVERY_CLI_TOPOLOGY_FILE_FIELDS = frozenset({"name", "sha256"})
+_RECOVERY_CLI_PHASES = frozenset(
+    {
+        "validated",
+        "data_starting",
+        "data_started",
+        "observed",
+        "adopted",
+        "api_started",
+        "callback_started",
+        "workers_started",
+        "outbox_started",
+        "beat_started",
+        "succeeded",
+        "failed",
+    }
+)
+_RECOVERY_CLI_BASE_TOPOLOGY_FILES = (
+    f"deploy/{_BASE_COMPOSE_FILE}",
+    f"deploy/{_PRODUCTION_STORAGE_COMPOSE_FILE}",
+)
+_RECOVERY_CLI_TLS_TOPOLOGY_FILE = f"deploy/{_REDIS_TLS_COMPOSE_FILE}"
+_SENSITIVE_CLI_RESULT_TOKEN_RE = re.compile(
+    r"(?:password|passphrase|secret)",
+    re.IGNORECASE,
+)
 _QUIESCE_SERVICES = (
     "beat",
     "outbox-dispatcher",
@@ -738,6 +773,306 @@ def _exact_object(
     if set(result) != fields:
         raise ReleaseManagerError(f"{context} has invalid fields")
     return result
+
+
+def _public_cli_schema_version(value: object, context: str) -> int:
+    if type(value) is not int or value != 1:
+        raise ReleaseManagerError(f"{context} is invalid")
+    return value
+
+
+def _public_cli_enum(
+    value: object,
+    allowed: frozenset[str],
+    context: str,
+) -> str:
+    if type(value) is not str or len(value) > 64 or value not in allowed:
+        raise ReleaseManagerError(f"{context} is invalid")
+    return value
+
+
+def _public_cli_safe_id(value: object, context: str) -> str:
+    result = _safe_id(value, context)
+    if _SENSITIVE_CLI_RESULT_TOKEN_RE.search(result) is not None:
+        raise ReleaseManagerError(f"{context} is invalid")
+    return result
+
+
+def _public_cli_optional_safe_id(value: object, context: str) -> str | None:
+    if value is None:
+        return None
+    return _public_cli_safe_id(value, context)
+
+
+def _public_cli_commit(value: object, context: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise ReleaseManagerError(f"{context} is invalid")
+    return value
+
+
+def _public_cli_sha256(value: object, context: str) -> str:
+    if type(value) is not str or _REPORT_HASH_RE.fullmatch(value) is None:
+        raise ReleaseManagerError(f"{context} is invalid")
+    return value
+
+
+def _public_cli_optional_sha256(value: object, context: str) -> str | None:
+    if value is None:
+        return None
+    return _public_cli_sha256(value, context)
+
+
+def _public_cli_migration(value: object, context: str) -> str:
+    if (
+        type(value) is not str
+        or _MIGRATION_RE.fullmatch(value) is None
+        or _SENSITIVE_CLI_RESULT_TOKEN_RE.search(value) is not None
+    ):
+        raise ReleaseManagerError(f"{context} is invalid")
+    return value
+
+
+def _public_cli_timestamp(value: object, context: str) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 64
+        or _SENSITIVE_CLI_RESULT_TOKEN_RE.search(value) is not None
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ReleaseManagerError(f"{context} is invalid")
+    _parse_utc(value, context)
+    return value
+
+
+def _public_recovery_topology(value: object) -> dict[str, object]:
+    topology = _exact_object(
+        value,
+        _RECOVERY_CLI_TOPOLOGY_FIELDS,
+        "recovery CLI topology",
+    )
+    compose_files = topology["compose_files"]
+    schema_version = _public_cli_schema_version(
+        topology["schema_version"],
+        "recovery CLI topology schema version",
+    )
+    redis_ha_mode = _public_cli_enum(
+        topology["redis_ha_mode"],
+        _PRODUCTION_REDIS_HA_MODES,
+        "recovery CLI Redis HA mode",
+    )
+    expected_names: tuple[str, ...] = _RECOVERY_CLI_BASE_TOPOLOGY_FILES
+    if redis_ha_mode == "isolated-standalone":
+        expected_names = (*expected_names, _RECOVERY_CLI_TLS_TOPOLOGY_FILE)
+    if type(compose_files) is not list or len(compose_files) != len(expected_names):
+        raise ReleaseManagerError("recovery CLI topology is invalid")
+    public_files: list[dict[str, str]] = []
+    for raw_file, expected_name in zip(compose_files, expected_names, strict=True):
+        item = _exact_object(
+            raw_file,
+            _RECOVERY_CLI_TOPOLOGY_FILE_FIELDS,
+            "recovery CLI topology file",
+        )
+        name = item["name"]
+        if type(name) is not str or name != expected_name:
+            raise ReleaseManagerError("recovery CLI topology file is invalid")
+        digest = _public_cli_sha256(
+            item["sha256"],
+            "recovery CLI topology file digest",
+        )
+        public_files.append({"name": name, "sha256": digest})
+    return {
+        "schema_version": schema_version,
+        "redis_ha_mode": redis_ha_mode,
+        "compose_files": public_files,
+        "root_env_non_image_sha256": _public_cli_sha256(
+            topology["root_env_non_image_sha256"],
+            "recovery CLI root env digest",
+        ),
+        "topology_id": _public_cli_sha256(
+            topology["topology_id"],
+            "recovery CLI topology id",
+        ),
+    }
+
+
+def _serialize_recovery_cli_result(action: str, value: object) -> str:
+    """只把恢复动作已批准的非敏感闭集编码为单行 JSON。"""
+
+    if action == "observe-recovery":
+        internal = _exact_object(
+            value,
+            _RECOVERY_RESTORE_RECEIPT_FIELDS,
+            "recovery CLI internal receipt",
+        )
+        if internal["approved_by"] != [] or internal["approved_at"] is not None:
+            raise ReleaseManagerError("recovery CLI receipt approval state is invalid")
+        public: dict[str, object] = {
+            "schema_version": _public_cli_schema_version(
+                internal["schema_version"],
+                "recovery CLI receipt schema version",
+            ),
+            "record_type": _public_cli_enum(
+                internal["record_type"],
+                frozenset({"production_recovery_restore_receipt"}),
+                "recovery CLI receipt record type",
+            ),
+            "status": _public_cli_enum(
+                internal["status"],
+                frozenset({"pending_approval"}),
+                "recovery CLI receipt status",
+            ),
+            "snapshot_id": _public_cli_safe_id(
+                internal["snapshot_id"],
+                "recovery CLI receipt snapshot id",
+            ),
+            "snapshot_manifest_sha256": _public_cli_sha256(
+                internal["snapshot_manifest_sha256"],
+                "recovery CLI receipt snapshot manifest digest",
+            ),
+            "snapshot_database_sha256": _public_cli_sha256(
+                internal["snapshot_database_sha256"],
+                "recovery CLI receipt snapshot database digest",
+            ),
+            "git_commit": _public_cli_commit(
+                internal["git_commit"],
+                "recovery CLI receipt commit",
+            ),
+            "migration_head": _public_cli_migration(
+                internal["migration_head"],
+                "recovery CLI receipt migration head",
+            ),
+            "database": _public_cli_enum(
+                internal["database"],
+                frozenset({"sms"}),
+                "recovery CLI receipt database",
+            ),
+            "recovery_crypto_generation_id": _public_cli_safe_id(
+                internal["recovery_crypto_generation_id"],
+                "recovery CLI receipt crypto generation id",
+            ),
+            "live_database_fingerprint_sha256": _public_cli_sha256(
+                internal["live_database_fingerprint_sha256"],
+                "recovery CLI receipt database fingerprint",
+            ),
+            "crypto_probe_status": _public_cli_enum(
+                internal["crypto_probe_status"],
+                frozenset({"performed", "not_applicable_empty"}),
+                "recovery CLI receipt crypto probe status",
+            ),
+            "crypto_probe_sha256": _public_cli_sha256(
+                internal["crypto_probe_sha256"],
+                "recovery CLI receipt crypto probe digest",
+            ),
+            "restored_at": _public_cli_timestamp(
+                internal["restored_at"],
+                "recovery CLI receipt restored_at",
+            ),
+            "approved_by": [],
+            "approved_at": None,
+        }
+    elif action in {"start-recovery", "adopt-recovery", "resume-recovery"}:
+        internal = _exact_object(
+            value,
+            _RECOVERY_STATE_FIELDS,
+            "recovery CLI internal state",
+        )
+        probe_status = internal["crypto_probe_status"]
+        public = {
+            "schema_version": _public_cli_schema_version(
+                internal["schema_version"],
+                "recovery CLI state schema version",
+            ),
+            "status": _public_cli_enum(
+                internal["status"],
+                frozenset({"running", "succeeded", "failed", "recovery_required"}),
+                "recovery CLI state status",
+            ),
+            "phase": _public_cli_enum(
+                internal["phase"],
+                _RECOVERY_CLI_PHASES,
+                "recovery CLI state phase",
+            ),
+            "release_id": _public_cli_safe_id(
+                internal["release_id"],
+                "recovery CLI state release id",
+            ),
+            "commit": _public_cli_commit(
+                internal["commit"],
+                "recovery CLI state commit",
+            ),
+            "manifest_sha256": _public_cli_sha256(
+                internal["manifest_sha256"],
+                "recovery CLI state manifest digest",
+            ),
+            "production_topology": _public_recovery_topology(
+                internal["production_topology"]
+            ),
+            "migration_head": _public_cli_migration(
+                internal["migration_head"],
+                "recovery CLI state migration head",
+            ),
+            "snapshot_id": _public_cli_safe_id(
+                internal["snapshot_id"],
+                "recovery CLI state snapshot id",
+            ),
+            "snapshot_manifest_sha256": _public_cli_sha256(
+                internal["snapshot_manifest_sha256"],
+                "recovery CLI state snapshot manifest digest",
+            ),
+            "snapshot_database_sha256": _public_cli_sha256(
+                internal["snapshot_database_sha256"],
+                "recovery CLI state snapshot database digest",
+            ),
+            "recovery_crypto_generation_id": _public_cli_safe_id(
+                internal["recovery_crypto_generation_id"],
+                "recovery CLI state crypto generation id",
+            ),
+            "restore_receipt_sha256": _public_cli_optional_sha256(
+                internal["restore_receipt_sha256"],
+                "recovery CLI state restore receipt digest",
+            ),
+            "live_database_fingerprint_sha256": _public_cli_optional_sha256(
+                internal["live_database_fingerprint_sha256"],
+                "recovery CLI state database fingerprint",
+            ),
+            "crypto_probe_status": (
+                None
+                if probe_status is None
+                else _public_cli_enum(
+                    probe_status,
+                    frozenset({"performed", "not_applicable_empty"}),
+                    "recovery CLI state crypto probe status",
+                )
+            ),
+            "crypto_probe_sha256": _public_cli_optional_sha256(
+                internal["crypto_probe_sha256"],
+                "recovery CLI state crypto probe digest",
+            ),
+            "gap_fence_sha256": _public_cli_optional_sha256(
+                internal["gap_fence_sha256"],
+                "recovery CLI state gap fence digest",
+            ),
+            "recovery_watermark_sha256": _public_cli_optional_sha256(
+                internal["recovery_watermark_sha256"],
+                "recovery CLI state watermark digest",
+            ),
+            "started_at": _public_cli_timestamp(
+                internal["started_at"],
+                "recovery CLI state started_at",
+            ),
+            "updated_at": _public_cli_timestamp(
+                internal["updated_at"],
+                "recovery CLI state updated_at",
+            ),
+            "failure_type": _public_cli_optional_safe_id(
+                internal["failure_type"],
+                "recovery CLI state failure type",
+            ),
+        }
+    else:
+        raise ReleaseManagerError("recovery CLI result action is invalid")
+    return json.dumps(public, sort_keys=True, allow_nan=False)
 
 
 def _safe_id(value: object, context: str) -> str:
@@ -5820,58 +6155,47 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
         elif arguments.action == "start-recovery":
-            print(
-                json.dumps(
-                    manager.start_recovery(
-                        arguments.manifest,
-                        snapshot_manifest_path=arguments.snapshot_manifest,
-                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
-                        runtime_secrets_target=arguments.runtime_secrets_target,
-                        confirmed_recovered_host=arguments.confirm_recovered_host,
-                    ),
-                    sort_keys=True,
-                )
+            result = manager.start_recovery(
+                arguments.manifest,
+                snapshot_manifest_path=arguments.snapshot_manifest,
+                snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                runtime_secrets_target=arguments.runtime_secrets_target,
+                confirmed_recovered_host=arguments.confirm_recovered_host,
             )
+            print(_serialize_recovery_cli_result(arguments.action, result))
         elif arguments.action == "observe-recovery":
-            print(
-                json.dumps(
-                    manager.observe_recovery(
-                        arguments.manifest,
-                        snapshot_manifest_path=arguments.snapshot_manifest,
-                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
-                        output_path=arguments.output,
-                        runtime_secrets_target=arguments.runtime_secrets_target,
-                        confirmed_recovered_host=arguments.confirm_recovered_host,
-                    ),
-                    sort_keys=True,
-                )
+            result = manager.observe_recovery(
+                arguments.manifest,
+                snapshot_manifest_path=arguments.snapshot_manifest,
+                snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                output_path=arguments.output,
+                runtime_secrets_target=arguments.runtime_secrets_target,
+                confirmed_recovered_host=arguments.confirm_recovered_host,
             )
+            print(_serialize_recovery_cli_result(arguments.action, result))
         elif arguments.action == "adopt-recovery":
-            print(
-                json.dumps(
-                    manager.adopt_recovery(
-                        arguments.manifest,
-                        snapshot_manifest_path=arguments.snapshot_manifest,
-                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
-                        restore_receipt_path=arguments.restore_receipt,
-                        restore_receipt_sha256=arguments.restore_receipt_sha256,
-                        gap_fence_path=arguments.gap_fence_evidence,
-                        gap_fence_sha256=arguments.gap_fence_sha256,
-                        runtime_secrets_target=arguments.runtime_secrets_target,
-                        confirmed_recovered_host=arguments.confirm_recovered_host,
-                    ),
-                    sort_keys=True,
-                )
+            result = manager.adopt_recovery(
+                arguments.manifest,
+                snapshot_manifest_path=arguments.snapshot_manifest,
+                snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                restore_receipt_path=arguments.restore_receipt,
+                restore_receipt_sha256=arguments.restore_receipt_sha256,
+                gap_fence_path=arguments.gap_fence_evidence,
+                gap_fence_sha256=arguments.gap_fence_sha256,
+                runtime_secrets_target=arguments.runtime_secrets_target,
+                confirmed_recovered_host=arguments.confirm_recovered_host,
             )
+            print(_serialize_recovery_cli_result(arguments.action, result))
         elif arguments.action == "resume-recovery":
+            result = manager.resume_recovery(
+                stage=arguments.stage,
+                runtime_secrets_target=arguments.runtime_secrets_target,
+                confirmed_recovered_host=arguments.confirm_recovered_host,
+            )
             print(
-                json.dumps(
-                    manager.resume_recovery(
-                        stage=arguments.stage,
-                        runtime_secrets_target=arguments.runtime_secrets_target,
-                        confirmed_recovered_host=arguments.confirm_recovered_host,
-                    ),
-                    sort_keys=True,
+                _serialize_recovery_cli_result(
+                    arguments.action,
+                    result,
                 )
             )
         elif arguments.action == "prepare-forward-rollback":

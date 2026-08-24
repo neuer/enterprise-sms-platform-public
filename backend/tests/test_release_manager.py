@@ -4209,6 +4209,251 @@ def test_production_topology_ignores_only_release_image_ref_changes(
     assert manager._production_topology() == expected
 
 
+def _recovery_cli_state_result(
+    *,
+    runtime_target: str,
+    backup_generation: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "running",
+        "phase": "adopted",
+        "release_id": "release-recovery-cli",
+        "commit": COMMIT,
+        "manifest_sha256": "1" * 64,
+        "production_topology": {
+            "schema_version": 1,
+            "redis_ha_mode": "isolated-standalone",
+            "compose_files": [
+                {"name": "deploy/docker-compose.yml", "sha256": "2" * 64},
+                {
+                    "name": "deploy/docker-compose.production-storage.yml",
+                    "sha256": "c" * 64,
+                },
+                {
+                    "name": "deploy/docker-compose.redis-tls.yml",
+                    "sha256": "d" * 64,
+                },
+            ],
+            "root_env_non_image_sha256": "3" * 64,
+            "topology_id": "4" * 64,
+        },
+        "runtime_secrets_target": runtime_target,
+        "migration_head": "0012",
+        "snapshot_id": "snapshot-recovery-cli",
+        "snapshot_manifest_sha256": "5" * 64,
+        "snapshot_database_sha256": "6" * 64,
+        "recovery_crypto_generation_id": "crypto-generation-01",
+        "backup_passphrase_generation_id": backup_generation,
+        "restore_receipt_sha256": "7" * 64,
+        "live_database_fingerprint_sha256": "8" * 64,
+        "crypto_probe_status": "performed",
+        "crypto_probe_sha256": "9" * 64,
+        "gap_fence_sha256": "a" * 64,
+        "recovery_watermark_sha256": "b" * 64,
+        "started_at": "2026-08-24T00:00:00Z",
+        "updated_at": "2026-08-24T00:01:00Z",
+        "failure_type": None,
+    }
+
+
+def _recovery_cli_receipt_result(*, backup_generation: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "record_type": "production_recovery_restore_receipt",
+        "status": "pending_approval",
+        "snapshot_id": "snapshot-recovery-cli",
+        "snapshot_manifest_sha256": "5" * 64,
+        "snapshot_database_sha256": "6" * 64,
+        "git_commit": COMMIT,
+        "migration_head": "0012",
+        "database": "sms",
+        "recovery_crypto_generation_id": "crypto-generation-01",
+        "backup_passphrase_generation_id": backup_generation,
+        "live_database_fingerprint_sha256": "8" * 64,
+        "crypto_probe_status": "performed",
+        "crypto_probe_sha256": "9" * 64,
+        "restored_at": "2026-08-24T00:01:00Z",
+        "approved_by": [],
+        "approved_at": None,
+    }
+
+
+def _recovery_cli_arguments(action: str) -> list[str]:
+    common = [
+        "--root",
+        "/tmp/platform",
+        "--release-root",
+        "/var/lib/sms-platform/releases",
+        "--mode",
+        "production",
+        action,
+        "--manifest",
+        "/tmp/staging/manifest.json",
+        "--snapshot-manifest",
+        "/tmp/snapshot/manifest.json",
+        "--snapshot-manifest-sha256",
+        "password-cli-value",
+    ]
+    if action == "observe-recovery":
+        return [
+            *common,
+            "--output",
+            "/tmp/passphrase-cli-value.json",
+            "--runtime-secrets-target",
+            "secret-runtime-cli-value",
+            "--confirm-recovered-host",
+        ]
+    return [
+        *common,
+        "--restore-receipt",
+        "/tmp/restore-receipt.json",
+        "--restore-receipt-sha256",
+        "passphrase-cli-value",
+        "--gap-fence-evidence",
+        "/tmp/gap-fence.json",
+        "--gap-fence-sha256",
+        "secret-cli-value",
+        "--runtime-secrets-target",
+        "secret-runtime-cli-value",
+        "--confirm-recovered-host",
+    ]
+
+
+@pytest.mark.parametrize("action", ("observe-recovery", "adopt-recovery"))
+def test_recovery_main_serializes_only_public_closed_set(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    seen: dict[str, object] = {}
+    result = (
+        _recovery_cli_receipt_result(backup_generation="passphrase-result-value")
+        if action == "observe-recovery"
+        else _recovery_cli_state_result(
+            runtime_target="secret-runtime-cli-value",
+            backup_generation="passphrase-result-value",
+        )
+    )
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def observe_recovery(self, _manifest: Path, **kwargs: object) -> dict[str, object]:
+            seen.update(kwargs)
+            return result
+
+        def adopt_recovery(self, _manifest: Path, **kwargs: object) -> dict[str, object]:
+            seen.update(kwargs)
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(_recovery_cli_arguments(action))
+    captured = capsys.readouterr()
+
+    assert return_code == 0
+    payload = json.loads(captured.out)
+    assert payload["status"] == result["status"]
+    assert payload["snapshot_id"] == result["snapshot_id"]
+    serialized = captured.out.casefold()
+    for marker in ("password", "passphrase", "secret"):
+        assert marker not in serialized
+    assert "runtime_secrets_target" not in payload
+    assert "backup_passphrase_generation_id" not in payload
+    assert captured.err == ""
+    assert seen["snapshot_manifest_sha256"] == "password-cli-value"
+    assert seen["runtime_secrets_target"] == "secret-runtime-cli-value"
+
+
+@pytest.mark.parametrize("field", ("password", "passphrase", "secret"))
+def test_recovery_main_rejects_unapproved_sensitive_result_fields_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    result = _recovery_cli_state_result(
+        runtime_target="secret-runtime-cli-value",
+        backup_generation="passphrase-result-value",
+    )
+    result[field] = f"{field}-result-value"
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def adopt_recovery(self, _manifest: Path, **_kwargs: object) -> dict[str, object]:
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(
+        _recovery_cli_arguments("adopt-recovery")
+    )
+    captured = capsys.readouterr()
+
+    assert return_code == 1
+    assert captured.out == ""
+    assert f"{field}-result-value" not in captured.err
+    assert "invalid fields" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("status", "password-running"),
+        ("release_id", "passphrase-result-value"),
+        ("failure_type", "SecretFailure"),
+    ),
+)
+def test_recovery_main_rejects_sensitive_values_in_public_fields_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+    value: str,
+) -> None:
+    import release_manager as release_manager_module
+
+    result = _recovery_cli_state_result(
+        runtime_target="secret-runtime-cli-value",
+        backup_generation="passphrase-result-value",
+    )
+    result[field] = value
+
+    class StubManager:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def adopt_recovery(self, _manifest: Path, **_kwargs: object) -> dict[str, object]:
+            return result
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+
+    return_code = release_manager_module.main(
+        _recovery_cli_arguments("adopt-recovery")
+    )
+    captured = capsys.readouterr()
+
+    assert return_code == 1
+    assert captured.out == ""
+    assert value not in captured.err
+    assert "invalid" in captured.err
+
+
 def test_main_registers_and_restores_term_int_hup_handlers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
