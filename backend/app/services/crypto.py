@@ -29,6 +29,14 @@ BOUND_ENVELOPE_SCHEMA_VERSION = 2
 CONTEXT_COMPONENT_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
+class UnknownKeyVersionError(ValueError):
+    """当前 keyring 不包含请求的密钥版本；不是认证失败。"""
+
+    def __init__(self, version: int) -> None:
+        self.version = version
+        super().__init__(f"unknown key version: {version}")
+
+
 class CredentialSettings(Protocol):
     """加密服务所需的最小 settings 接口。"""
 
@@ -201,13 +209,13 @@ class CryptoService:
         try:
             return self._aes_keys[version]
         except KeyError:
-            raise ValueError(f"unknown key version: {version}") from None
+            raise UnknownKeyVersionError(version) from None
 
     def _hmac_key(self, version: int) -> bytes:
         try:
             return self._hmac_keys[version]
         except KeyError:
-            raise ValueError(f"unknown key version: {version}") from None
+            raise UnknownKeyVersionError(version) from None
 
     def encrypt_bytes_legacy(self, plaintext: bytes) -> EncryptedValue:
         """旧版通用 AAD 加密；禁止新持久化调用，仅历史兼容。"""

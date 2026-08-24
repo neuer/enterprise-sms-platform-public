@@ -322,7 +322,7 @@ def test_incomplete_frames_are_not_deleted_as_header_only(tmp_path: Path) -> Non
     assert result.isolated >= 1
     assert not stream.path.exists()
     assert store.list_pending_streams(crypto()) == []
-    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert leftover_names(tmp_path, ".cq")
     assert_quota(store, 0)
 
 

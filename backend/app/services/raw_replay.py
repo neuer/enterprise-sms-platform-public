@@ -9,6 +9,7 @@ from typing import Protocol
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.crypto import EncryptionContext
 from app.services.raw_capture_legacy import replay_forbidden_message
+from app.services.raw_lease import RawLeaseLost, RawProcessingLease
 from app.services.raw_parse import (
     RawParseDisposition,
     disposition_payload,
@@ -58,6 +59,7 @@ class RawReplayRecord:
 class RawReplayClaim:
     record: RawReplayRecord
     claimed: bool
+    lease: RawProcessingLease | None = None
 
 
 class RawReplayRepository(Protocol):
@@ -65,26 +67,29 @@ class RawReplayRepository(Protocol):
         self, raw_id: int, *, allow_manual: bool = True
     ) -> RawReplayClaim | None: ...
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None: ...
+    async def mark_replay_error(
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        lease: RawProcessingLease | None = None,
+    ) -> None: ...
 
     async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None: ...
 
-    async def update_parse_disposition(
+    async def apply_raw_reevaluation(
         self,
         raw_id: int,
         *,
-        parse_state: str,
-        replay_eligibility: str,
+        expected_processed: bool,
+        expected_parse_state: str,
+        expected_eligibility: str,
+        disposition: RawParseDisposition,
         error: str | None,
-    ) -> None: ...
-
-    async def audit_raw_reevaluate(
-        self,
-        raw_id: int,
-        *,
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
+        before: dict[str, object],
         after: dict[str, object],
     ) -> None: ...
 
@@ -115,7 +120,13 @@ class RawCrypto(Protocol):
 
 
 class ExistingRawProcessor(Protocol):
-    async def process_existing(self, raw_id: int, data: object) -> int: ...
+    async def process_existing(
+        self,
+        raw_id: int,
+        data: object,
+        *,
+        lease: RawProcessingLease | None = None,
+    ) -> int: ...
 
 
 class RawReplayService:
@@ -133,8 +144,14 @@ class RawReplayService:
         self.reports = reports
         self.replies = replies
 
-    async def _integrity_error(self, raw_id: int, message: str) -> None:
-        await self.repository.mark_replay_error(raw_id, message)
+    async def _integrity_error(
+        self,
+        raw_id: int,
+        message: str,
+        *,
+        lease: RawProcessingLease | None,
+    ) -> None:
+        await self.repository.mark_replay_error(raw_id, message, lease=lease)
 
     def _require_replay_actors(
         self,
@@ -224,7 +241,9 @@ class RawReplayService:
             ),
         )
         if hashlib.sha256(raw).hexdigest() != record.payload_sha256:
-            await self._integrity_error(raw_id, "raw payload integrity mismatch")
+            await self._integrity_error(
+                raw_id, "raw payload integrity mismatch", lease=claim.lease
+            )
             raise RawIntegrityConflict("raw payload integrity mismatch")
         operation = "GetReport" if record.source == "report" else "GetReply"
         try:
@@ -233,15 +252,26 @@ class RawReplayService:
                 operation,
             )
         except VendorError:
-            await self._integrity_error(raw_id, "raw vendor envelope is invalid")
+            await self._integrity_error(
+                raw_id, "raw vendor envelope is invalid", lease=claim.lease
+            )
             raise RawIntegrityConflict("raw vendor envelope is invalid") from None
-        if record.source == "report":
-            count = await self.reports.process_existing(raw_id, data)
-        elif record.source == "reply":
-            count = await self.replies.process_existing(raw_id, data)
-        else:
-            await self._integrity_error(raw_id, "raw source is invalid")
-            raise RawIntegrityConflict("raw source is invalid")
+        try:
+            if record.source == "report":
+                count = await self.reports.process_existing(
+                    raw_id, data, lease=claim.lease
+                )
+            elif record.source == "reply":
+                count = await self.replies.process_existing(
+                    raw_id, data, lease=claim.lease
+                )
+            else:
+                await self._integrity_error(
+                    raw_id, "raw source is invalid", lease=claim.lease
+                )
+                raise RawIntegrityConflict("raw source is invalid")
+        except RawLeaseLost as error:
+            raise RawReplayConflict("raw 处理权已被接管") from error
         await self.repository.audit_raw_replay(
             raw_id,
             source=record.source,
@@ -313,23 +343,31 @@ class RawReplayService:
             decode_error=decode_error,
             decoded_ok=decoded_ok,
         )
-        await self.repository.update_parse_disposition(
-            raw_id,
-            parse_state=disposition.parse_state,
-            replay_eligibility=disposition.replay_eligibility,
-            error=(
-                None
-                if decoded_ok or record.processed
-                else error_text if error_text is not None else record.error
-            ),
-        )
         after = disposition_payload(disposition)
         after["source"] = record.source
-        await self.repository.audit_raw_reevaluate(
-            raw_id,
-            actor=actor,
-            ip=ip,
-            principal=principal,
-            after=after,
-        )
+        before = {
+            "parse_state": record.parse_state,
+            "replay_eligibility": record.replay_eligibility,
+            "processed": record.processed,
+        }
+        try:
+            await self.repository.apply_raw_reevaluation(
+                raw_id,
+                expected_processed=record.processed,
+                expected_parse_state=record.parse_state,
+                expected_eligibility=record.replay_eligibility,
+                disposition=disposition,
+                error=(
+                    None
+                    if decoded_ok or record.processed
+                    else error_text if error_text is not None else record.error
+                ),
+                actor=actor,
+                ip=ip,
+                principal=principal,
+                before=before,
+                after=after,
+            )
+        except RawLeaseLost as error:
+            raise RawReplayConflict("raw 正在处理中，请稍后重试") from error
         return disposition

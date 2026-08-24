@@ -1702,6 +1702,7 @@ def test_host_source_scope_revalidates_explicit_rebaseline_with_strict_classifie
     assert scope.high_risk_paths == (
         "deploy/scripts/prepare_runtime_secrets.py",
         "deploy/scripts/vendor_runtime_reset.py",
+        "frontend/src/views/SignView.vue",
     )
     fetch_call = next(call for call in calls if "fetch" in call)
     assert "+refs/heads/main:" in fetch_call[-1]

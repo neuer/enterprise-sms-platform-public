@@ -20,6 +20,7 @@ from app.services.raw_parse import (
     PARSE_TRANSIENT_FAILURE,
     PARSE_UNATTEMPTED,
     RAW_PARSER_VERSION,
+    RawParseDisposition,
     auto_replay_allowed,
     classify_raw_disposition,
     historical_sql_case,
@@ -82,38 +83,35 @@ class FakeReevaluateRepository:
             return None
         return type("Claim", (), {"record": self.record, "claimed": True})()
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None:
+    async def mark_replay_error(self, raw_id: int, error: str, **_: object) -> None:
         return None
 
     async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None:
         return self.record
 
-    async def update_parse_disposition(
+    async def apply_raw_reevaluation(
         self,
         raw_id: int,
         *,
-        parse_state: str,
-        replay_eligibility: str,
+        expected_processed: bool,
+        expected_parse_state: str,
+        expected_eligibility: str,
+        disposition: RawParseDisposition,
         error: str | None,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+        before: dict[str, object],
+        after: dict[str, object],
     ) -> None:
         self.updates.append(
             {
                 "raw_id": raw_id,
-                "parse_state": parse_state,
-                "replay_eligibility": replay_eligibility,
+                "parse_state": disposition.parse_state,
+                "replay_eligibility": disposition.replay_eligibility,
                 "error": error,
             }
         )
-
-    async def audit_raw_reevaluate(
-        self,
-        raw_id: int,
-        *,
-        actor: str,
-        ip: str,
-        principal: SecurityPrincipal,
-        after: dict[str, object],
-    ) -> None:
         self.audits.append(
             {
                 "raw_id": raw_id,
@@ -121,6 +119,7 @@ class FakeReevaluateRepository:
                 "ip": ip,
                 "account_id": principal.account_id,
                 "after": after,
+                "before": before,
             }
         )
 
@@ -471,6 +470,51 @@ async def test_reevaluate_missing_raw_is_not_found() -> None:
         await service.reevaluate(99, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
 
+@pytest.mark.asyncio
+async def test_parser_reevaluate_keeps_processed_never() -> None:
+    raw = b'{"code":0,"msg":"ok","data":[]}'
+    repository = FakeReevaluateRepository(
+        RawReplayRecord(
+            14,
+            "report",
+            b"cipher",
+            hashlib.sha256(raw).hexdigest(),
+            1,
+            True,
+            200,
+            "identity",
+            CAPTURE_COMPLETE,
+            1,
+            PARSE_PROCESSED,
+            ELIGIBILITY_NEVER,
+            None,
+        )
+    )
+    service = RawReplayService(
+        repository,  # type: ignore[arg-type]
+        FakeCrypto(raw),
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+    )
+
+    disposition = await service.reevaluate(
+        14, actor="admin01", ip="10.0.0.8", principal=ADMIN
+    )
+
+    assert disposition.parse_state == PARSE_PROCESSED
+    assert disposition.replay_eligibility == ELIGIBILITY_NEVER
+    assert repository.updates == [
+        {
+            "raw_id": 14,
+            "parse_state": PARSE_PROCESSED,
+            "replay_eligibility": ELIGIBILITY_NEVER,
+            "error": None,
+        }
+    ]
+    assert repository.audits[0]["after"]["parse_state"] == PARSE_PROCESSED
+    assert repository.audits[0]["after"]["replay_eligibility"] == ELIGIBILITY_NEVER
+
+
 def test_reevaluate_disposition_does_not_project_business_success() -> None:
     promoted = reevaluate_disposition(
         capture_state=CAPTURE_COMPLETE,
@@ -489,3 +533,12 @@ def test_reevaluate_disposition_does_not_project_business_success() -> None:
         decoded_ok=True,
     )
     assert oversized.replay_eligibility == ELIGIBILITY_MANUAL
+    processed = reevaluate_disposition(
+        capture_state=CAPTURE_COMPLETE,
+        http_status=200,
+        content_encoding="identity",
+        processed=True,
+        decoded_ok=True,
+    )
+    assert processed.parse_state == PARSE_PROCESSED
+    assert processed.replay_eligibility == ELIGIBILITY_NEVER

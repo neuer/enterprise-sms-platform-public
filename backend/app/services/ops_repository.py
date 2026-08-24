@@ -32,13 +32,27 @@ from app.services.ops import (
     UnmatchedQuery,
     UnmatchedRecord,
 )
+from app.services.raw_lease import (
+    CLAIM_LEASE_PREDICATE_SQL,
+    CLAIM_LEASE_SET_SQL,
+    FENCED_TERMINAL_SQL,
+    STALE_LEASE_PREDICATE_SQL,
+    RawLeaseLost,
+    RawProcessingLease,
+    commit_fenced_raw_update,
+    lease_from_row,
+    new_lease_id,
+    require_lease,
+)
 from app.services.raw_parse import (
+    RawParseDisposition,
     claim_eligibilities,
     mark_error_column_values,
 )
 from app.services.raw_replay import (
     MAX_RAW_REPLAY_ATTEMPTS,
     RawReplayClaim,
+    RawReplayConflict,
     RawReplayRecord,
 )
 from app.settings import Settings, get_settings
@@ -272,15 +286,14 @@ class SqlOpsRepository:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text(
-                        """
+                        f"""
                         SELECT id FROM raw_vendor_log
                         WHERE processed=false
                           AND capture_state='complete'
                           AND replay_eligibility='automatic'
                           AND replay_attempts<:max_attempts
                           AND (
-                            processing_started_at IS NULL
-                            OR processing_started_at<=now()-interval '15 minutes'
+                            {STALE_LEASE_PREDICATE_SQL.strip()}
                           )
                         ORDER BY replay_attempts,id
                         LIMIT :limit
@@ -300,6 +313,7 @@ class SqlOpsRepository:
         capture_sql = (
             "'complete','complete_too_large'" if allow_manual else "'complete'"
         )
+        lease_id = new_lease_id()
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -308,29 +322,33 @@ class SqlOpsRepository:
                         f"""
                         WITH claimed AS (
                           UPDATE raw_vendor_log
-                          SET processing_started_at=now(),error=NULL,
+                          SET {CLAIM_LEASE_SET_SQL.strip()},
                             replay_attempts=replay_attempts+1
                           WHERE id=:raw_id AND processed=false
                             AND capture_state IN ({capture_sql})
                             AND replay_eligibility IN ({eligibility_sql})
                             AND (
-                              processing_started_at IS NULL
-                              OR processing_started_at<=now()-interval '15 minutes'
+                            {CLAIM_LEASE_PREDICATE_SQL.strip()}
                             )
                           RETURNING id,source,payload_enc,payload_sha256,
                             key_version,processed,item_count,http_status,
                             content_encoding,capture_state,parse_state,
-                            replay_eligibility,error
+                            replay_eligibility,error,processing_lease_id,
+                            processing_lease_epoch,processing_lease_expires_at
                         )
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
                           capture_state,parse_state,replay_eligibility,error,
+                          processing_lease_id,processing_lease_epoch,
+                          processing_lease_expires_at,
                           true claimed
                         FROM claimed
                         UNION ALL
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
                           capture_state,parse_state,replay_eligibility,error,
+                          processing_lease_id,processing_lease_epoch,
+                          processing_lease_expires_at,
                           false claimed
                         FROM raw_vendor_log
                         WHERE id=:raw_id
@@ -338,14 +356,21 @@ class SqlOpsRepository:
                         LIMIT 1
                         """
                     ),
-                    {"raw_id": raw_id},
+                    {"raw_id": raw_id, "lease_id": str(lease_id)},
                 )
                 row = result.mappings().one_or_none()
                 if row is None:
                     return None
+                claimed = bool(row["claimed"])
+                lease = None
+                if claimed:
+                    lease = lease_from_row(row) or RawProcessingLease(
+                        int(row["id"]), lease_id, 1
+                    )
                 return RawReplayClaim(
                     record=self._raw_replay_record(row),
-                    claimed=bool(row["claimed"]),
+                    claimed=claimed,
+                    lease=lease,
                 )
         finally:
             await engine.dispose()
@@ -391,35 +416,32 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None:
+    async def mark_replay_error(
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        lease: RawProcessingLease | None = None,
+    ) -> None:
         message = error[:256]
         columns = mark_error_column_values(message)
+        token = require_lease(lease, raw_id)
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE raw_vendor_log
-                        SET processed=false,error=:error,processing_started_at=NULL,
-                          parse_state=CASE
-                            WHEN parse_state='processed' THEN 'processed'
-                            ELSE :parse_state
-                          END,
-                          replay_eligibility=CASE
-                            WHEN replay_eligibility='never' THEN 'never'
-                            ELSE :replay_eligibility
-                          END
-                        WHERE id=:raw_id AND processed=false
-                        """
-                    ),
-                    {
-                        "raw_id": raw_id,
-                        "error": message,
-                        "parse_state": columns["parse_state"],
-                        "replay_eligibility": columns["replay_eligibility"],
-                    },
-                )
+            await commit_fenced_raw_update(
+                engine,
+                FENCED_TERMINAL_SQL,
+                {
+                    "id": raw_id,
+                    "processed": False,
+                    "error": message,
+                    "parse_state": columns["parse_state"],
+                    "replay_eligibility": columns["replay_eligibility"],
+                    "lease_id": str(token.lease_id),
+                    "epoch": token.epoch,
+                },
+                lease=token,
+            )
         finally:
             await engine.dispose()
 
@@ -448,52 +470,30 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
-    async def update_parse_disposition(
+    async def apply_raw_reevaluation(
         self,
         raw_id: int,
         *,
-        parse_state: str,
-        replay_eligibility: str,
+        expected_processed: bool,
+        expected_parse_state: str,
+        expected_eligibility: str,
+        disposition: RawParseDisposition,
         error: str | None,
-    ) -> None:
-        """绝对写入解析面资格；人工重评估可改写 never。"""
-
-        engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE raw_vendor_log
-                        SET parse_state=:parse_state,
-                            replay_eligibility=:replay_eligibility,
-                            error=:error
-                        WHERE id=:raw_id
-                        """
-                    ),
-                    {
-                        "raw_id": raw_id,
-                        "parse_state": parse_state,
-                        "replay_eligibility": replay_eligibility,
-                        "error": error,
-                    },
-                )
-        finally:
-            await engine.dispose()
-
-    async def audit_raw_reevaluate(
-        self,
-        raw_id: int,
-        *,
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
+        before: dict[str, Any],
         after: dict[str, Any],
     ) -> None:
-        """parser 升级重评估只允许已验证人类主体。"""
+        """同一事务写入解析面资格与 raw_reevaluate 审计；失败全部回滚。"""
 
         if principal.actor_name != actor:
             raise RuntimeError("raw reevaluate audit principal unavailable")
+        if expected_processed and (
+            disposition.parse_state != "processed"
+            or disposition.replay_eligibility != "never"
+        ):
+            raise RawReplayConflict("已处理 raw 不得改回可重放状态")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -504,6 +504,78 @@ class SqlOpsRepository:
                     account_id=principal.account_id,
                     identity_id=principal.identity_id,
                 )
+                current = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT processed,parse_state,replay_eligibility,
+                              (
+                                processing_lease_id IS NOT NULL
+                                AND processing_lease_expires_at>now()
+                              ) AS live_lease
+                            FROM raw_vendor_log
+                            WHERE id=:raw_id
+                            FOR UPDATE
+                            """
+                        ),
+                        {"raw_id": raw_id},
+                    )
+                ).mappings().one_or_none()
+                if current is None:
+                    raise RawReplayConflict("原始报文不存在")
+                already_applied = (
+                    bool(current["processed"]) == expected_processed
+                    and str(current["parse_state"]) == disposition.parse_state
+                    and str(current["replay_eligibility"])
+                    == disposition.replay_eligibility
+                )
+                if already_applied:
+                    existing_audit = await connection.scalar(
+                        text(
+                            """
+                            SELECT 1 FROM audit_log
+                            WHERE action='raw_reevaluate'
+                              AND object_type='raw_vendor_log'
+                              AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
+                            LIMIT 1
+                            """
+                        ),
+                        {"raw_id": raw_id},
+                    )
+                    if existing_audit is not None:
+                        return
+                if bool(current["live_lease"]):
+                    raise RawLeaseLost("raw processing lease held")
+                result = await connection.execute(
+                    text(
+                        """
+                        UPDATE raw_vendor_log
+                        SET parse_state=:parse_state,
+                            replay_eligibility=:replay_eligibility,
+                            error=:error
+                        WHERE id=:raw_id
+                          AND processed=:expected_processed
+                          AND parse_state=:expected_parse_state
+                          AND replay_eligibility=:expected_eligibility
+                          AND (
+                            processing_lease_id IS NULL
+                            OR processing_lease_expires_at IS NULL
+                            OR processing_lease_expires_at<=now()
+                          )
+                        """
+                    ),
+                    {
+                        "raw_id": raw_id,
+                        "parse_state": disposition.parse_state,
+                        "replay_eligibility": disposition.replay_eligibility,
+                        "error": error,
+                        "expected_processed": expected_processed,
+                        "expected_parse_state": expected_parse_state,
+                        "expected_eligibility": expected_eligibility,
+                    },
+                )
+                if getattr(result, "rowcount", 1) == 0:
+                    raise RawReplayConflict("raw 状态已变化，请刷新后重试")
                 await insert_audit(
                     connection,
                     AuditEvent(
@@ -513,6 +585,7 @@ class SqlOpsRepository:
                         action="raw_reevaluate",
                         object_type="raw_vendor_log",
                         object_id=str(raw_id),
+                        before=before,
                         after=after,
                     ),
                 )

@@ -103,6 +103,7 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
     assert "raw_vendor_log" in sql
     assert "'reply'" in sql
     assert "processing_started_at" in sql
+    assert "processing_lease_id" in sql
     assert "http_status" in sql
     assert "content_encoding" in sql
     assert "capture_state" in sql
@@ -155,18 +156,29 @@ async def test_raw_processed_and_error_flags_are_explicit() -> None:
     repository = SqlReplyRepository()
     connection = FakeConnection([FakeResult(), FakeResult()])
     bind(repository, connection)
+    from uuid import UUID
+
+    from app.services.raw_lease import RawProcessingLease
+
+    processed_lease = RawProcessingLease(19, UUID(int=19), 1)
+    error_lease = RawProcessingLease(20, UUID(int=20), 3)
+    repository.remember_lease(processed_lease)
+    repository.remember_lease(error_lease)
 
     await repository.mark_processed(19)
     await repository.mark_error(20, "ValueError: reply parsing failed")
 
     assert "processing_started_at=NULL" in connection.calls[0][0]
     assert "processing_started_at=NULL" in connection.calls[1][0]
+    assert "processing_lease_id" in connection.calls[0][0]
     assert connection.calls[0][1] == {
         "id": 19,
         "processed": True,
         "error": None,
         "parse_state": "processed",
         "replay_eligibility": "never",
+        "lease_id": str(processed_lease.lease_id),
+        "epoch": 1,
     }
     assert connection.calls[1][1] == {
         "id": 20,
@@ -174,4 +186,6 @@ async def test_raw_processed_and_error_flags_are_explicit() -> None:
         "error": "ValueError: reply parsing failed",
         "parse_state": "protocol_invalid",
         "replay_eligibility": "manual",
+        "lease_id": str(error_lease.lease_id),
+        "epoch": 3,
     }
