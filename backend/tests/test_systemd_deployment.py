@@ -22,6 +22,9 @@ DRILL_SERVICE = ROOT / "deploy" / "systemd" / "sms-restore-drill.service"
 DRILL_TIMER = ROOT / "deploy" / "systemd" / "sms-restore-drill.timer"
 STATUS_SERVICE = ROOT / "deploy" / "systemd" / "sms-lifecycle-status.service"
 STATUS_TIMER = ROOT / "deploy" / "systemd" / "sms-lifecycle-status.timer"
+SECURITY_COLLECTOR_SERVICE = (
+    ROOT / "deploy" / "systemd" / "security-report-collector.service"
+)
 SECRET_NAMES = {
     "vendor_secret_name",
     "vendor_secret_key",
@@ -41,6 +44,7 @@ SECRET_NAMES = {
     "redis_broker_password",
     "redis_auth_password",
     "redis_control_password",
+    "redis_tls_server_key",
 }
 
 
@@ -76,7 +80,8 @@ def test_partition_timer_uses_controlled_owner_job_with_retry_and_hardening() ->
     timer = read_asset(PARTITION_TIMER)
 
     for token in (
-        "Requires=docker.service sms-platform.service",
+        "Requires=docker.service",
+        "Requisite=sms-platform.service",
         "EnvironmentFile=/etc/sms-platform/compose.env",
         "ExecStart=/usr/local/sbin/sms-compose partition-maintenance",
         "Restart=on-failure",
@@ -96,46 +101,86 @@ def test_partition_timer_uses_controlled_owner_job_with_retry_and_hardening() ->
         assert token in timer
 
 
-def test_backup_restore_timers_are_automatic_persistent_and_randomized() -> None:
+def test_backup_and_preproduction_restore_timers_are_persistent() -> None:
     backup_timer = read_asset(BACKUP_TIMER)
     drill_timer = read_asset(DRILL_TIMER)
     status_timer = read_asset(STATUS_TIMER)
 
-    assert "OnCalendar=*-*-* 02:30:00" in backup_timer
-    assert "OnCalendar=Sun *-*-* 04:00:00" in drill_timer
+    assert "OnCalendar=*-*-* 02,14:30:00" in backup_timer
+    assert "OnCalendar=*-*-* 03,15:30:00" in drill_timer
+    assert "latest eligible" in drill_timer
+    assert "random restore" not in drill_timer.casefold()
     assert "OnCalendar=hourly" in status_timer
-    for timer in (backup_timer, drill_timer, status_timer):
+    for timer in (backup_timer, status_timer):
         assert "Persistent=true" in timer
         assert "RandomizedDelaySec=" in timer
         assert "WantedBy=timers.target" in timer
+    assert "Persistent=true" in drill_timer
+    assert "RandomizedDelaySec=" in drill_timer
+    assert (
+        "ConditionPathExists=/etc/sms-platform/preproduction-restore-host"
+        in drill_timer
+    )
+    assert "WantedBy=timers.target" not in drill_timer
 
 
 def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
     expected_operations = {
         BACKUP_SERVICE: "backup",
         DRILL_SERVICE: "drill",
-        STATUS_SERVICE: "status",
+        STATUS_SERVICE: "backup-status",
     }
     for path, operation in expected_operations.items():
         service = read_asset(path)
         for token in (
             "EnvironmentFile=/etc/sms-platform/lifecycle.env",
-            f"lifecycle_manager.py {operation}",
+            (
+                "ExecStart=/usr/bin/python3 /opt/sms-platform/deploy/scripts/"
+                f"lifecycle_manager.py {operation}"
+            ),
+            (
+                "ExecStartPre=/usr/bin/python3 /opt/sms-platform/deploy/scripts/"
+                "host_python_preflight.py lifecycle"
+            ),
             "Restart=on-failure",
             "RestartSec=5min",
-            "StateDirectory=sms-platform/backups",
-            "StateDirectoryMode=0700",
+            "RequiresMountsFor=/var/lib/sms-platform/runtime",
             "NoNewPrivileges=yes",
-            "PrivateDevices=yes",
             "ProtectSystem=strict",
             "ProtectHome=yes",
             "RestrictAddressFamilies=AF_UNIX",
             "CapabilityBoundingSet=",
+            "DevicePolicy=closed",
+            "/dev/disk/by-uuid",
+            "ReadWritePaths=/var/lib/sms-platform/runtime/backups",
             "StandardError=journal",
         ):
             assert token in service
+        preflight_mode = "observe" if operation == "backup-status" else "startup"
+        assert (
+            f"ExecStartPre=/usr/local/sbin/sms-storage-preflight --mode {preflight_mode}"
+            in service
+        )
+        assert "StateDirectory=" not in service
+        assert "/var/lib/sms-platform/backups" not in service
+        assert "PrivateDevices=yes" not in service
         assert "Environment=BACKUP_PASSPHRASE" not in service
         assert "AF_INET" not in service
+        if operation in {"backup", "drill"}:
+            assert "Requisite=sms-platform.service" in service
+            assert "Requires=docker.service sms-platform.service" not in service
+
+    drill_service = read_asset(DRILL_SERVICE)
+    assert (
+        "ConditionPathExists=/etc/sms-platform/preproduction-restore-host"
+        in drill_service
+    )
+    assert "preproduction isolated restore drill" in drill_service
+    assert "isolated database restore engineering deadline" in drill_service
+    assert "12h RTO" not in drill_service
+    status_service = read_asset(STATUS_SERVICE)
+    assert "latest production backup integrity and RPO check" in status_service
+    assert "lifecycle_manager.py status" not in status_service
 
 
 def test_lifecycle_examples_contain_only_paths_and_recovery_targets() -> None:
@@ -147,22 +192,35 @@ def test_lifecycle_examples_contain_only_paths_and_recovery_targets() -> None:
     }
     assert lifecycle_env == {
         "SMS_LIFECYCLE_CONFIG": "/etc/sms-platform/lifecycle.json",
-        "BACKUP_PASSPHRASE_FILE": "/run/backup-secrets/sms-backup-passphrase",
+        "BACKUP_PASSPHRASE_FILE": "/etc/sms-platform/backup-secrets/sms-backup-passphrase",
     }
     assert all(value.startswith("/") for value in lifecycle_env.values())
 
     config = json.loads(read_asset(LIFECYCLE_CONFIG))
     assert config == {
         "schema_version": 1,
-        "environment_file": "/etc/sms-platform/production.env",
-        "output_root": "/var/lib/sms-platform/backups",
+        "environment_file": "/opt/sms-platform/.env",
+        "output_root": "/var/lib/sms-platform/runtime/backups",
+        "recovery_crypto_generation_id_file": (
+            "/etc/sms-platform/recovery-crypto-generation-id"
+        ),
+        "backup_passphrase_generation_id_file": (
+            "/etc/sms-platform/backup-secrets/generation-id"
+        ),
         "database": "sms",
         "retention_days": 35,
         "minimum_snapshots": 2,
+        "max_backup_seconds": 14400,
         "max_backup_age_hours": 24,
-        "max_restore_age_hours": 168,
-        "max_restore_seconds": 1800,
+        "max_restore_age_hours": 192,
+        "max_restore_seconds": 43200,
     }
+    assert "TimeoutStartSec=13h" in read_asset(DRILL_SERVICE)
+    assert config["max_restore_seconds"] < 13 * 3600
+    assert "TimeoutStartSec=5h" in read_asset(BACKUP_SERVICE)
+    assert config["max_backup_seconds"] < 5 * 3600
+    assert config["max_restore_age_hours"] >= 8 * 24
+    assert "RandomizedDelaySec=15min" in read_asset(DRILL_TIMER)
     serialized = json.dumps(config).casefold()
     for forbidden in ("secretkey", "jwt_secret", "ldap_bind_password", "phone"):
         assert forbidden not in serialized
@@ -183,6 +241,19 @@ def test_systemd_unit_coordinates_docker_and_compose_lifecycle() -> None:
         "WantedBy=multi-user.target",
     ):
         assert token in unit
+
+
+def test_persistent_timer_jobs_never_implicitly_restart_stopped_platform() -> None:
+    for path in (
+        PARTITION_SERVICE,
+        BACKUP_SERVICE,
+        DRILL_SERVICE,
+        SECURITY_COLLECTOR_SERVICE,
+    ):
+        service = read_asset(path)
+        assert "Requisite=sms-platform.service" in service
+        assert "Requires=docker.service sms-platform.service" not in service
+        assert "Requires=sms-platform.service" not in service
 
 
 def test_systemd_unit_rate_limits_restart_on_start_failure() -> None:

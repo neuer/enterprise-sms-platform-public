@@ -1,11 +1,9 @@
 [Unit]
-Description=Run a random Enterprise SMS Platform restore drill weekly
+Description=Restore-verify the latest eligible Enterprise SMS Platform backup on preproduction
+ConditionPathExists=/etc/sms-platform/preproduction-restore-host
 
 [Timer]
-OnCalendar=Sun *-*-* 04:00:00
-RandomizedDelaySec=30min
+OnCalendar=*-*-* 03,15:30:00
+RandomizedDelaySec=15min
 Persistent=true
 Unit=sms-restore-drill.service
-
-[Install]
-WantedBy=timers.target

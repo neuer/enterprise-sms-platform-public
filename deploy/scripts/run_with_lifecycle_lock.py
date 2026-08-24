@@ -149,6 +149,8 @@ def _parse_run_args() -> argparse.Namespace:
             "rotate",
             "migrate",
             "partition-maintenance",
+            "init-admin",
+            "continuity",
             "release",
             "vendor-test",
             "test-update",

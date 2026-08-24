@@ -6,25 +6,48 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "deploy" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from failover_common import atomic_write_json, sha256_file  # noqa: E402
+from failover_common import (  # noqa: E402
+    BACKUP_PASSPHRASE_GENERATION_ID_FILE,
+    RECOVERY_CRYPTO_GENERATION_ID_FILE,
+    DeadlineExceeded,
+    atomic_write_json,
+    sha256_file,
+)
 from lifecycle_manager import (  # noqa: E402
+    PRODUCTION_BACKUP_ROOT,
     LifecycleConfig,
     LifecycleService,
     _alert,
+    _runtime_config,
     load_config,
 )
-from restore_drill import RestoreConfig, RestoreResult  # noqa: E402
+from restore_drill import (  # noqa: E402
+    CRYPTO_PROBE_COVERAGE_FIELDS,
+    RestoreConfig,
+    RestoreResult,
+)
 from sync_standby import SyncConfig, SyncResult  # noqa: E402
 
 SNAPSHOT_ONE = "20260501T050000Z_aaaaaaaaaaaa"
 SNAPSHOT_TWO = "20260502T050000Z_bbbbbbbbbbbb"
 SNAPSHOT_THREE = "20260712T050000Z_cccccccccccc"
+RECOVERY_GENERATION_ID = "recovery-v1"
+BACKUP_GENERATION_ID = "backup-passphrase-v1"
+
+
+class ManualTimer:
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
 
 
 def fixed_clock() -> datetime:
@@ -69,10 +92,12 @@ class FakeSync:
                 "schema_version": 1,
                 "snapshot_id": snapshot_id,
                 "created_at": created_at.isoformat(),
-                "git_commit": snapshot_id.rsplit("_", 1)[1] * 4,
+                "git_commit": (snapshot_id.rsplit("_", 1)[1] * 4)[:40],
                 "alembic_version": "0008_audit_payload_guard",
                 "database": "sms",
                 "secrets_included": False,
+                "recovery_crypto_generation_id": RECOVERY_GENERATION_ID,
+                "backup_passphrase_generation_id": BACKUP_GENERATION_ID,
                 "files": files,
             },
         )
@@ -95,25 +120,100 @@ class FakeSync:
 
 
 class FakeRestore:
-    def __init__(self, *, within_rto: bool = True) -> None:
-        self.within_rto = within_rto
+    def __init__(self, *, within_restore_budget: bool = True) -> None:
+        self.within_restore_budget = within_restore_budget
         self.calls: list[RestoreConfig] = []
 
     def run(self, config: RestoreConfig) -> RestoreResult:
         self.calls.append(config)
+        manifest = json.loads(config.manifest_file.read_text(encoding="utf-8"))
+        empty_crypto_receipt = {
+            "schema_version": 2,
+            "status": "not_applicable_empty",
+            "counts": {
+                "audit_context_keys": 4,
+                "encrypted_columns": len(CRYPTO_PROBE_COVERAGE_FIELDS),
+                "encrypted_rows": 0,
+                "ciphertext_samples_verified": 0,
+                "key_version_columns": 8,
+                "referenced_key_versions": 0,
+                "sms_message_rows": 0,
+            },
+            "coverage": {
+                label: {"rows": 0, "key_versions_verified": 0}
+                for label in CRYPTO_PROBE_COVERAGE_FIELDS
+            },
+        }
         atomic_write_json(
             config.report_file,
             {
-                "schema_version": 1,
-                "status": "success" if self.within_rto else "rto_failed",
+                "schema_version": 2,
+                "status": (
+                    "success" if self.within_restore_budget else "budget_failed"
+                ),
+                "metric_scope": "database_restore",
+                "business_rto_evidence": False,
                 "snapshot_id": config.manifest_file.parent.name,
+                "git_commit": manifest["git_commit"],
+                "database": "sms_drill_20260712060000_ab12",
+                "started_at": "2026-07-12T05:59:00+00:00",
+                "finished_at": "2026-07-12T06:00:00+00:00",
+                "restore_seconds": 25.5,
+                "restore_budget_seconds": config.max_restore_seconds,
+                "within_restore_budget": self.within_restore_budget,
+                "recovery_crypto_generation_id": manifest[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": manifest[
+                    "backup_passphrase_generation_id"
+                ],
+                "checks": {
+                    "alembic_version": manifest["alembic_version"],
+                    "role_flags": "7|true",
+                    "audit_privileges": "true",
+                    "crypto_generation_binding": "matched_host_generation_ids",
+                    "historical_ciphertext_validation": "not_applicable_empty",
+                    "pre_migration_crypto_validation": "not_applicable_empty",
+                    "post_migration_crypto_validation": "not_applicable_empty",
+                },
+                "crypto_probe_receipts": {
+                    "pre_migration": empty_crypto_receipt,
+                    "post_migration": empty_crypto_receipt,
+                },
+                "table_counts": {
+                    "sms_batch": 0,
+                    "sms_message": 0,
+                    "audit_log": 0,
+                    "raw_vendor_log": 0,
+                },
             },
         )
         return RestoreResult(
             "sms_drill_20260712060000_ab12",
             25.5,
-            self.within_rto,
+            self.within_restore_budget,
         )
+
+
+class TamperingRestore(FakeRestore):
+    def __init__(self, path: tuple[str, ...], replacement: object) -> None:
+        super().__init__()
+        self.path = path
+        self.replacement = replacement
+
+    def run(self, config: RestoreConfig) -> RestoreResult:
+        result = super().run(config)
+        report: dict[str, Any] = json.loads(
+            config.report_file.read_text(encoding="utf-8")
+        )
+        target = report
+        for key in self.path[:-1]:
+            nested = target[key]
+            assert isinstance(nested, dict)
+            target = nested
+        target[self.path[-1]] = self.replacement
+        atomic_write_json(config.report_file, report)
+        return result
 
 
 def make_config(tmp_path: Path) -> LifecycleConfig:
@@ -126,9 +226,10 @@ def make_config(tmp_path: Path) -> LifecycleConfig:
         database="sms",
         retention_days=30,
         minimum_snapshots=2,
+        max_backup_seconds=14400,
         max_backup_age_hours=24,
         max_restore_age_hours=168,
-        max_restore_seconds=1800,
+        max_restore_seconds=43200,
     )
 
 
@@ -137,7 +238,9 @@ def make_service(
     sync: FakeSync,
     restore: FakeRestore | None = None,
     *,
-    chooser=lambda items: items[0],
+    timer: ManualTimer | None = None,
+    generation_reader=None,
+    marker_validator=lambda: None,
 ) -> LifecycleService:
     repository = tmp_path / "repo"
     repository.mkdir(exist_ok=True)
@@ -154,8 +257,18 @@ def make_service(
         sync_service=sync,
         restore_service=restore or FakeRestore(),
         clock=fixed_clock,
-        chooser=chooser,
+        timer=timer or ManualTimer(),
+        generation_reader=generation_reader or stable_generation_reader,
+        marker_validator=marker_validator,
     )
+
+
+def stable_generation_reader(path: Path) -> str:
+    if path == RECOVERY_CRYPTO_GENERATION_ID_FILE:
+        return RECOVERY_GENERATION_ID
+    if path == BACKUP_PASSPHRASE_GENERATION_ID_FILE:
+        return BACKUP_GENERATION_ID
+    raise AssertionError("unexpected generation id path")
 
 
 def read_state(config: LifecycleConfig) -> dict[str, object]:
@@ -169,13 +282,20 @@ def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> N
     value = {
         "schema_version": 1,
         "environment_file": "/etc/sms-platform/production.env",
-        "output_root": "/var/lib/sms-platform/backups",
+        "output_root": "/var/lib/sms-platform/runtime/backups",
+        "recovery_crypto_generation_id_file": str(
+            RECOVERY_CRYPTO_GENERATION_ID_FILE
+        ),
+        "backup_passphrase_generation_id_file": str(
+            BACKUP_PASSPHRASE_GENERATION_ID_FILE
+        ),
         "database": "sms",
         "retention_days": 35,
         "minimum_snapshots": 2,
+        "max_backup_seconds": 14400,
         "max_backup_age_hours": 24,
         "max_restore_age_hours": 168,
-        "max_restore_seconds": 1800,
+        "max_restore_seconds": 43200,
     }
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
@@ -183,6 +303,7 @@ def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> N
     config = load_config(path)
 
     assert config.retention_days == 35
+    assert config.max_backup_seconds == 14400
     path.chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
         load_config(path)
@@ -191,6 +312,43 @@ def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> N
     path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ValueError, match="fields"):
         load_config(path)
+
+
+def test_runtime_config_fixes_production_backup_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "lifecycle.json"
+    value = {
+        "schema_version": 1,
+        "environment_file": "/etc/sms-platform/production.env",
+        "output_root": str(PRODUCTION_BACKUP_ROOT),
+        "recovery_crypto_generation_id_file": str(
+            RECOVERY_CRYPTO_GENERATION_ID_FILE
+        ),
+        "backup_passphrase_generation_id_file": str(
+            BACKUP_PASSPHRASE_GENERATION_ID_FILE
+        ),
+        "database": "sms",
+        "retention_days": 35,
+        "minimum_snapshots": 2,
+        "max_backup_seconds": 14400,
+        "max_backup_age_hours": 24,
+        "max_restore_age_hours": 168,
+        "max_restore_seconds": 43200,
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+    path.chmod(0o600)
+    monkeypatch.setenv("SMS_LIFECYCLE_CONFIG", str(path))
+    monkeypatch.setenv("BACKUP_PASSPHRASE_FILE", "/run/backup-secrets/passphrase")
+
+    config, _ = _runtime_config()
+
+    assert config.output_root == PRODUCTION_BACKUP_ROOT
+    value["output_root"] = "/var/lib/sms-platform/backups"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    path.chmod(0o600)
+    with pytest.raises(ValueError, match="output root is fixed"):
+        _runtime_config()
 
 
 def test_backup_records_integrity_but_is_unavailable_until_restore(
@@ -209,7 +367,89 @@ def test_backup_records_integrity_but_is_unavailable_until_restore(
     assert snapshot["restore_verified"] is False
     assert snapshot["available"] is False
     assert state["last_successful_backup"]["snapshot_id"] == SNAPSHOT_THREE  # type: ignore[index]
+    assert sync.calls[0].max_backup_seconds == config.max_backup_seconds
     assert stat_mode(config.output_root / "lifecycle-state.json") == 0o600
+
+
+def test_load_config_rejects_backup_deadline_without_outer_cleanup_margin(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "lifecycle.json"
+    value = {
+        "schema_version": 1,
+        "environment_file": "/etc/sms-platform/production.env",
+        "output_root": "/var/lib/sms-platform/runtime/backups",
+        "recovery_crypto_generation_id_file": str(
+            RECOVERY_CRYPTO_GENERATION_ID_FILE
+        ),
+        "backup_passphrase_generation_id_file": str(
+            BACKUP_PASSPHRASE_GENERATION_ID_FILE
+        ),
+        "database": "sms",
+        "retention_days": 35,
+        "minimum_snapshots": 2,
+        "max_backup_seconds": 14401,
+        "max_backup_age_hours": 24,
+        "max_restore_age_hours": 168,
+        "max_restore_seconds": 43200,
+    }
+    path.write_text(json.dumps(value), encoding="utf-8")
+    path.chmod(0o600)
+
+    with pytest.raises(ValueError, match="max backup seconds"):
+        load_config(path)
+
+
+def test_backup_status_checks_latest_backup_rpo_without_counting_restore(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync)
+    service.backup(config)
+
+    before_drill = service.backup_status(config)
+    service.drill(config)
+    after_drill = service.backup_status(config)
+
+    assert before_drill.healthy is True
+    assert after_drill.healthy is True
+    assert after_drill.evidence == before_drill.evidence
+    assert after_drill.evidence["evidence_scope"] == "production_latest_backup"
+    assert after_drill.evidence["snapshot_id"] == SNAPSHOT_THREE
+    assert after_drill.evidence["snapshot_age_seconds"] == 3600
+    assert after_drill.evidence["integrity_verified"] is True
+    assert after_drill.evidence["restore_evidence_counted"] is False
+    assert "last_successful_restore" not in after_drill.evidence
+
+
+def test_backup_status_fails_closed_without_backup_or_after_ciphertext_change(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync)
+
+    missing = service.backup_status(config)
+
+    assert missing.healthy is False
+    assert missing.evidence["failure_type"] == "EvidenceStale"
+    service.backup(config)
+    database = next(
+        config.output_root.joinpath("snapshots", SNAPSHOT_THREE).glob("*.dump.enc")
+    )
+    database.write_bytes(b"changed-after-backup")
+    database.chmod(0o600)
+
+    corrupt = service.backup_status(config)
+
+    assert corrupt.healthy is False
+    assert corrupt.evidence["failure_type"] == "SnapshotIntegrityFailed"
+    state = read_state(config)
+    item = state["snapshots"][SNAPSHOT_THREE]  # type: ignore[index]
+    assert item["integrity_verified"] is False
+    assert item["available"] is False
+    assert state["last_failure"]["operation"] == "backup-status"  # type: ignore[index]
 
 
 def test_backup_rejects_repository_output_and_symlink_children_before_sync(
@@ -232,7 +472,7 @@ def test_backup_rejects_repository_output_and_symlink_children_before_sync(
     assert sync.calls == []
 
 
-def test_random_restore_makes_only_verified_snapshot_available_and_proves_rpo_rto(
+def test_latest_restore_makes_same_snapshot_available_with_engineering_evidence(
     tmp_path: Path,
 ) -> None:
     config = make_config(tmp_path)
@@ -242,7 +482,6 @@ def test_random_restore_makes_only_verified_snapshot_available_and_proves_rpo_rt
         tmp_path,
         sync,
         restore,
-        chooser=lambda candidates: candidates[-1],
     )
     service.backup(config)
 
@@ -259,8 +498,167 @@ def test_random_restore_makes_only_verified_snapshot_available_and_proves_rpo_rt
     assert evidence["data_gap_seconds"] == 3600
     assert status.healthy is True
     assert status.evidence["backup_age_seconds"] == 0
+    assert status.evidence["snapshot_age_seconds"] == 3600
     assert status.evidence["restore_age_seconds"] == 0
     assert status.evidence["usable_snapshot_count"] == 1
+    assert status.evidence["recovery_point_snapshot_id"] == SNAPSHOT_THREE
+    assert status.evidence["recovery_point_age_seconds"] == 3600
+    assert status.evidence["evidence_scope"] == "preproduction_restore"
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        pytest.param(("git_commit",), "d" * 40, id="git-commit"),
+        pytest.param(
+            ("database",),
+            "sms_drill_20260712060000_cd34",
+            id="result-database-binding",
+        ),
+        pytest.param(("database",), "sms", id="drill-database-name"),
+        pytest.param(
+            ("checks", "alembic_version"),
+            "0009_other_head",
+            id="alembic-version",
+        ),
+        pytest.param(
+            ("checks", "role_flags"),
+            "6|true",
+            id="role-flags",
+        ),
+        pytest.param(
+            ("checks", "audit_privileges"),
+            "false",
+            id="audit-privileges",
+        ),
+        pytest.param(
+            ("started_at",),
+            "2026-07-12T06:01:00+00:00",
+            id="timestamp-order",
+        ),
+        pytest.param(
+            ("finished_at",),
+            "2026-07-12T06:00:00Z",
+            id="strict-utc-timestamp",
+        ),
+        pytest.param(
+            ("restore_budget_seconds",),
+            43199.0,
+            id="restore-budget-binding",
+        ),
+    ],
+)
+def test_drill_rejects_tampered_restore_report_contract_fields(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: object,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    service = make_service(tmp_path, sync, TamperingRestore(path, replacement))
+    service.backup(config)
+
+    with pytest.raises(ValueError, match="generation binding"):
+        service.drill(config)
+
+    state = read_state(config)
+    snapshot = state["snapshots"][SNAPSHOT_THREE]  # type: ignore[index]
+    assert snapshot["available"] is False
+    assert snapshot["restore_verified"] is False
+    assert state["last_successful_restore"] is None
+    reports = config.output_root / "reports"
+    assert not reports.exists() or list(reports.iterdir()) == []
+
+
+def test_lifecycle_drill_requires_valid_preproduction_marker(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    restore = FakeRestore()
+
+    def reject_marker() -> None:
+        raise ValueError("preproduction restore marker violates host contract")
+
+    service = make_service(
+        tmp_path,
+        sync,
+        restore,
+        marker_validator=reject_marker,
+    )
+    service.backup(config)
+
+    with pytest.raises(ValueError, match="marker"):
+        service.drill(config)
+
+    assert restore.calls == []
+    state = read_state(config)
+    snapshot = state["snapshots"][SNAPSHOT_THREE]  # type: ignore[index]
+    assert snapshot["available"] is False
+    assert state["last_successful_restore"] is None
+
+
+def test_outer_drill_deadline_removes_report_and_never_marks_available(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    timer = ManualTimer()
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+
+    class ExpiringRestore(FakeRestore):
+        def run(self, restore_config: RestoreConfig) -> RestoreResult:
+            result = super().run(restore_config)
+            timer.value = config.max_restore_seconds + 0.01
+            return result
+
+    service = make_service(
+        tmp_path,
+        sync,
+        ExpiringRestore(),
+        timer=timer,
+    )
+    service.backup(config)
+
+    with pytest.raises(DeadlineExceeded):
+        service.drill(config)
+
+    state = read_state(config)
+    snapshot = state["snapshots"][SNAPSHOT_THREE]  # type: ignore[index]
+    assert snapshot["available"] is False
+    assert snapshot["restore_verified"] is False
+    assert state["last_successful_restore"] is None
+    reports = config.output_root / "reports"
+    assert not reports.exists() or list(reports.iterdir()) == []
+
+
+def test_generation_rotation_during_drill_invalidates_restore_evidence(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    calls: dict[Path, int] = {}
+
+    def rotating_reader(path: Path) -> str:
+        calls[path] = calls.get(path, 0) + 1
+        if path == RECOVERY_CRYPTO_GENERATION_ID_FILE:
+            return RECOVERY_GENERATION_ID if calls[path] == 1 else "recovery-v2"
+        if path == BACKUP_PASSPHRASE_GENERATION_ID_FILE:
+            return BACKUP_GENERATION_ID if calls[path] == 1 else "backup-v2"
+        raise AssertionError("unexpected generation id path")
+
+    service = make_service(
+        tmp_path,
+        sync,
+        generation_reader=rotating_reader,
+    )
+    service.backup(config)
+
+    with pytest.raises(ValueError, match="evidence changed"):
+        service.drill(config)
+
+    state = read_state(config)
+    snapshot = state["snapshots"][SNAPSHOT_THREE]  # type: ignore[index]
+    assert snapshot["available"] is False
+    assert snapshot["restore_verified"] is False
+    assert state["last_successful_restore"] is None
 
 
 def test_corrupt_backup_remains_unavailable_and_failure_state_has_no_details(
@@ -315,10 +713,14 @@ def test_retention_deletes_only_expired_snapshots_and_keeps_minimum(
 def test_failed_restore_never_marks_snapshot_usable(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
-    service = make_service(tmp_path, sync, FakeRestore(within_rto=False))
+    service = make_service(
+        tmp_path,
+        sync,
+        FakeRestore(within_restore_budget=False),
+    )
     service.backup(config)
 
-    with pytest.raises(RuntimeError, match="RTO"):
+    with pytest.raises(RuntimeError, match="engineering budget"):
         service.drill(config)
 
     state = read_state(config)
@@ -336,6 +738,7 @@ def test_status_fails_closed_without_recent_backup_and_restore(tmp_path: Path) -
 
     assert status.healthy is False
     assert status.evidence["backup_age_seconds"] is None
+    assert status.evidence["snapshot_age_seconds"] is None
     assert status.evidence["restore_age_seconds"] is None
     assert status.evidence["usable_snapshot_count"] == 0
     state = read_state(config)
@@ -363,6 +766,70 @@ def test_status_revokes_available_snapshot_when_ciphertext_changes(
     assert item["available"] is False
     assert item["integrity_verified"] is False
     assert state["last_failure"]["error_type"] == "SnapshotIntegrityFailed"  # type: ignore[index]
+
+
+def test_status_uses_one_recent_restored_snapshot_even_if_newer_backup_is_pending(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync(
+        [
+            (SNAPSHOT_TWO, datetime(2026, 7, 12, 4, 0, tzinfo=UTC)),
+            (SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC)),
+        ]
+    )
+    service = make_service(tmp_path, sync)
+    service.backup(config)
+    service.drill(config)
+    service.backup(config)
+
+    status = service.status(config)
+
+    assert status.healthy is True
+    assert status.evidence["last_successful_backup"]["snapshot_id"] == SNAPSHOT_THREE
+    assert status.evidence["last_successful_restore"]["snapshot_id"] == SNAPSHOT_TWO
+    assert status.evidence["usable_snapshot_count"] == 1
+    assert status.evidence["recovery_point_snapshot_id"] == SNAPSHOT_TWO
+
+
+def test_status_rejects_restored_snapshot_older_than_rpo_limit(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync(
+        [
+            (SNAPSHOT_ONE, datetime(2026, 7, 10, 5, 0, tzinfo=UTC)),
+            (SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC)),
+        ]
+    )
+    service = make_service(tmp_path, sync)
+    service.backup(config)
+    service.drill(config)
+    service.backup(config)
+
+    status = service.status(config)
+
+    assert status.healthy is False
+    assert status.evidence["usable_snapshot_count"] == 0
+    assert status.evidence["recovery_point_snapshot_id"] is None
+
+
+def test_restore_runs_outside_lifecycle_lock(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    observed: list[bool] = []
+    holder: dict[str, LifecycleService] = {}
+
+    class InspectingRestore(FakeRestore):
+        def run(self, restore_config: RestoreConfig) -> RestoreResult:
+            observed.append(holder["service"].status(config).healthy)
+            return super().run(restore_config)
+
+    service = make_service(tmp_path, sync, InspectingRestore())
+    holder["service"] = service
+    service.backup(config)
+
+    service.drill(config)
+
+    assert observed == [False]
 
 
 def test_alert_output_never_includes_exception_message_or_sensitive_values(

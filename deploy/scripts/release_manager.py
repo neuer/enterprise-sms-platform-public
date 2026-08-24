@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import hmac
 import json
@@ -295,6 +296,21 @@ _ENV_IMAGE_KEYS = {
     "postgres": "SMS_POSTGRES_IMAGE",
     "redis": "SMS_REDIS_IMAGE",
 }
+_REDIS_HA_MODE_KEY = "REDIS_HA_MODE"
+_PRODUCTION_REDIS_HA_MODES = frozenset({"managed", "isolated-standalone"})
+_BASE_COMPOSE_FILE = "docker-compose.yml"
+_PRODUCTION_STORAGE_COMPOSE_FILE = "docker-compose.production-storage.yml"
+_REDIS_TLS_COMPOSE_FILE = "docker-compose.redis-tls.yml"
+_PRODUCTION_STORAGE_BIND_PATHS = (
+    Path("/var/lib/sms-platform/postgres/pgdata"),
+    Path("/var/lib/sms-platform/redis/broker"),
+    Path("/var/lib/sms-platform/redis/auth"),
+    Path("/var/lib/sms-platform/redis/control"),
+    Path("/var/lib/sms-platform/runtime/imports"),
+    Path("/var/lib/sms-platform/runtime/exports"),
+    Path("/var/lib/sms-platform/runtime/raw-spill"),
+    Path("/var/lib/sms-platform/runtime/backups"),
+)
 _IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?")
@@ -391,25 +407,182 @@ _RESTORE_REPORT_FIELDS = frozenset(
     {
         "schema_version",
         "status",
+        "metric_scope",
+        "business_rto_evidence",
         "snapshot_id",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
         "git_commit",
         "database",
         "started_at",
         "finished_at",
         "restore_seconds",
-        "rto_limit_seconds",
-        "within_rto",
+        "restore_budget_seconds",
+        "within_restore_budget",
         "checks",
+        "crypto_probe_receipts",
         "table_counts",
     }
 )
-_RESTORE_CHECK_FIELDS = frozenset({"alembic_version", "role_flags", "audit_privileges"})
-_TABLE_COUNT_FIELDS = frozenset({"sms_batch", "audit_log", "raw_vendor_log"})
+_RESTORE_CHECK_FIELDS = frozenset(
+    {
+        "alembic_version",
+        "role_flags",
+        "audit_privileges",
+        "crypto_generation_binding",
+        "historical_ciphertext_validation",
+        "pre_migration_crypto_validation",
+        "post_migration_crypto_validation",
+    }
+)
+_TABLE_COUNT_FIELDS = frozenset(
+    {"sms_batch", "audit_log", "raw_vendor_log", "sms_message"}
+)
+_RESTORE_CRYPTO_PROBE_FIELDS = frozenset(
+    {"schema_version", "status", "counts", "coverage"}
+)
+_RESTORE_CRYPTO_PROBE_COUNT_FIELDS = frozenset(
+    {
+        "audit_context_keys",
+        "encrypted_columns",
+        "encrypted_rows",
+        "ciphertext_samples_verified",
+        "key_version_columns",
+        "referenced_key_versions",
+        "sms_message_rows",
+    }
+)
+_RESTORE_CRYPTO_PROBE_COVERAGE_FIELDS = frozenset(
+    {
+        "app.callback_secret_enc",
+        "blacklist.phone_enc",
+        "callback_task.callback_secret_enc",
+        "import_phone.phone_enc",
+        "raw_vendor_log.payload_enc",
+        "reply_event.content_enc",
+        "reply_event.phone_enc",
+        "report_event.phone_enc",
+        "sensitive_metadata_archive.value_enc",
+        "sms_batch.display_content_enc",
+        "sms_batch.send_content_enc",
+        "sms_message.phone_enc",
+        "sms_reply.phone_enc",
+        "sms_template.content_enc",
+        "sms_template.name_enc",
+        "unmatched_report.phone_enc",
+        "vendor_test_recipient.phone_enc",
+    }
+)
+_RESTORE_CRYPTO_PROBE_COVERAGE_VALUE_FIELDS = frozenset(
+    {"rows", "key_versions_verified"}
+)
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _MAX_JSON_BYTES = 1024 * 1024
 _CONTROL_SMOKE_PURPOSE = "release_control_failure_injection"
 _RUNTIME_ROOT_NAME = "runtime-secrets"
+_BOOTSTRAP_STATE_NAME = "bootstrap-state.json"
+_RECOVERY_STATE_NAME = "recovery-state.json"
+_BOOTSTRAP_STATE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "release_id",
+        "commit",
+        "manifest_sha256",
+        "production_topology",
+        "phase",
+        "started_at",
+        "updated_at",
+        "failure_type",
+    }
+)
+_RECOVERY_SNAPSHOT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "snapshot_id",
+        "created_at",
+        "git_commit",
+        "alembic_version",
+        "database",
+        "secrets_included",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
+        "files",
+    }
+)
+_RECOVERY_SNAPSHOT_FILE_FIELDS = frozenset({"name", "sha256", "size"})
+_RECOVERY_GAP_FENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "record_type",
+        "status",
+        "snapshot_id",
+        "snapshot_manifest_sha256",
+        "git_commit",
+        "migration_head",
+        "window_started_at",
+        "window_ended_at",
+        "upstream_request_count",
+        "vendor_accepted_or_sent_count",
+        "vendor_not_accepted_count",
+        "vendor_unknown_count",
+        "old_primary_isolated",
+        "upstream_retries_frozen",
+        "unknown_results_blocked",
+        "automatic_resend_forbidden",
+        "approved_by",
+        "approved_at",
+    }
+)
+_RECOVERY_RESTORE_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "record_type",
+        "status",
+        "snapshot_id",
+        "snapshot_manifest_sha256",
+        "snapshot_database_sha256",
+        "git_commit",
+        "migration_head",
+        "database",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
+        "live_database_fingerprint_sha256",
+        "crypto_probe_status",
+        "crypto_probe_sha256",
+        "restored_at",
+        "approved_by",
+        "approved_at",
+    }
+)
+_RECOVERY_STATE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "phase",
+        "release_id",
+        "commit",
+        "manifest_sha256",
+        "production_topology",
+        "runtime_secrets_target",
+        "migration_head",
+        "snapshot_id",
+        "snapshot_manifest_sha256",
+        "snapshot_database_sha256",
+        "recovery_crypto_generation_id",
+        "backup_passphrase_generation_id",
+        "restore_receipt_sha256",
+        "live_database_fingerprint_sha256",
+        "crypto_probe_status",
+        "crypto_probe_sha256",
+        "gap_fence_sha256",
+        "recovery_watermark_sha256",
+        "started_at",
+        "updated_at",
+        "failure_type",
+    }
+)
 _QUIESCE_SERVICES = (
     "beat",
     "outbox-dispatcher",
@@ -418,6 +591,7 @@ _QUIESCE_SERVICES = (
     "worker-callback",
     "api",
 )
+_BOOTSTRAP_CONTAINMENT_SERVICES = ("web", *_QUIESCE_SERVICES)
 _BACKEND_SERVICES = (
     "api",
     "worker-realtime",
@@ -438,6 +612,18 @@ _RUNTIME_SERVICES = (
     "worker-callback",
     "outbox-dispatcher",
     "beat",
+)
+_RECOVERY_DATA_SERVICES = ("postgres", "redis", "redis-auth", "redis-control")
+_RUNTIME_SECRETS_TARGET_RE = re.compile(
+    r"generations/generation-[0-9a-f]{32}\Z"
+)
+_RECOVERY_RESUME_STAGES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("api", ("api",), "api_started"),
+    ("callback", ("worker-callback",), "callback_started"),
+    ("workers", ("worker-realtime", "worker-bulk"), "workers_started"),
+    ("outbox", ("outbox-dispatcher",), "outbox_started"),
+    ("beat", ("beat",), "beat_started"),
+    ("web", ("web",), "succeeded"),
 )
 _WORKER_SERVICES = ("worker-realtime", "worker-bulk", "worker-callback")
 _WORKER_PROBE_SERVICE = "worker-realtime"
@@ -484,21 +670,26 @@ def build_activation_plan(manifest: ReleaseManifest) -> tuple[ReleaseStep, ...]:
     return tuple(steps)
 
 
-def activation_commands(root: Path, plan: Sequence[ReleaseStep]) -> list[list[str]]:
+def activation_commands(
+    root: Path,
+    plan: Sequence[ReleaseStep],
+    *,
+    compose: Sequence[str] | None = None,
+) -> list[list[str]]:
     """把纯计划映射为固定 argv；不执行命令。"""
 
-    compose = [
+    compose_argv = list(compose) if compose is not None else [
         "docker",
         "compose",
         "--env-file",
         str(root / ".env"),
         "-f",
-        str(root / "deploy" / "docker-compose.yml"),
+        str(root / "deploy" / _BASE_COMPOSE_FILE),
     ]
     commands: list[list[str]] = []
     for step in plan:
         if step.kind is ReleaseStepKind.QUIESCE_BACKEND:
-            command = compose + ["stop", *step.services]
+            command = compose_argv + ["stop", *step.services]
         elif step.kind is ReleaseStepKind.WAIT_BEAT_LEASE:
             command = ["sleep", "31"]
         elif step.kind in {
@@ -507,7 +698,7 @@ def activation_commands(root: Path, plan: Sequence[ReleaseStep]) -> list[list[st
             ReleaseStepKind.RECREATE_BACKEND,
             ReleaseStepKind.RECREATE_WEB,
         }:
-            command = compose + [
+            command = compose_argv + [
                 "up",
                 "-d",
                 "--no-deps",
@@ -518,9 +709,9 @@ def activation_commands(root: Path, plan: Sequence[ReleaseStep]) -> list[list[st
                 *step.services,
             ]
         elif step.kind is ReleaseStepKind.RUN_MIGRATE:
-            command = compose + ["run", "--rm", *step.services]
+            command = compose_argv + ["run", "--rm", *step.services]
         elif step.kind is ReleaseStepKind.VERIFY:
-            command = compose + ["config", "--quiet"]
+            command = compose_argv + ["config", "--quiet"]
         else:  # pragma: no cover - StrEnum exhaustiveness guard
             raise ReleaseManagerError("activation plan contains an unknown step")
         commands.append(command)
@@ -789,6 +980,9 @@ class ReleaseManager:
         self.expected_staging_uid = expected_staging_uid
         self._active_store: ReleaseStore | None = None
         self._stop_signal: int | None = None
+        self._compose_argv: tuple[str, ...] | None = None
+        self._production_redis_mode: str | None = None
+        self._bootstrap_execution_release_id: str | None = None
 
     def request_stop(self, signum: int, _frame: object | None) -> None:
         """信号处理器只记录停止请求；持久化发生在安全步骤边界。"""
@@ -826,14 +1020,292 @@ class ReleaseManager:
         return os.geteuid()
 
     def _compose(self) -> list[str]:
-        return [
+        if self._compose_argv is not None:
+            return list(self._compose_argv)
+        command = [
             "docker",
             "compose",
             "--env-file",
             str(self.root / ".env"),
             "-f",
-            str(self.root / "deploy" / "docker-compose.yml"),
+            str(self.root / "deploy" / _BASE_COMPOSE_FILE),
         ]
+        if self.mode == "development":
+            self._compose_argv = tuple(command)
+            return list(self._compose_argv)
+        command.extend(
+            [
+                "-f",
+                str(self.root / "deploy" / _PRODUCTION_STORAGE_COMPOSE_FILE),
+            ]
+        )
+        self._production_redis_mode = self._production_redis_ha_mode()
+        if self._production_redis_mode == "isolated-standalone":
+            command.extend(
+                [
+                    "-f",
+                    str(self.root / "deploy" / _REDIS_TLS_COMPOSE_FILE),
+                ]
+            )
+        self._compose_argv = tuple(command)
+        return list(self._compose_argv)
+
+    def _production_redis_ha_mode(self) -> str:
+        try:
+            lines = _read_safe_bytes(
+                self.root / ".env",
+                expected_uid=os.geteuid(),
+                maximum=_MAX_JSON_BYTES,
+            ).decode("utf-8").splitlines()
+        except (OSError, UnicodeError) as exc:
+            raise ReleaseManagerError("root env is unavailable") from exc
+        values: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() != _REDIS_HA_MODE_KEY:
+                continue
+            if key != _REDIS_HA_MODE_KEY or value != value.strip() or not value:
+                raise ReleaseManagerError("root env REDIS_HA_MODE is invalid")
+            values.append(value)
+        if len(values) != 1 or values[0] not in _PRODUCTION_REDIS_HA_MODES:
+            raise ReleaseManagerError("root env REDIS_HA_MODE is invalid")
+        return values[0]
+
+    def _production_topology(self) -> dict[str, object]:
+        if self.mode != "production":
+            raise ReleaseManagerError("production topology is unavailable in development")
+        compose = self._compose()
+        files: list[dict[str, str]] = []
+        for index, token in enumerate(compose):
+            if token != "-f":
+                continue
+            try:
+                path = Path(compose[index + 1])
+                relative = path.relative_to(self.root).as_posix()
+                digest = hashlib.sha256(
+                    _read_safe_bytes(path, maximum=_MAX_JSON_BYTES)
+                ).hexdigest()
+            except (IndexError, OSError, ValueError) as exc:
+                raise ReleaseManagerError("production compose topology is invalid") from exc
+            files.append({"name": relative, "sha256": digest})
+        if not files:
+            raise ReleaseManagerError("production compose topology is invalid")
+        if self._production_redis_mode is None:
+            raise ReleaseManagerError("production compose topology is invalid")
+        observed_mode = self._production_redis_ha_mode()
+        if observed_mode != self._production_redis_mode:
+            raise ReleaseManagerError("production compose topology is unstable")
+        identity = {
+            "schema_version": 1,
+            "redis_ha_mode": observed_mode,
+            "compose_files": files,
+            "root_env_non_image_sha256": self._root_env_non_image_sha256(),
+        }
+        topology_id = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {**identity, "topology_id": topology_id}
+
+    def _root_env_non_image_sha256(self) -> str:
+        try:
+            raw = _read_safe_bytes(
+                self.root / ".env",
+                expected_uid=os.geteuid(),
+                maximum=_MAX_JSON_BYTES,
+            )
+            lines = raw.decode("utf-8").splitlines(keepends=True)
+        except (OSError, UnicodeError) as exc:
+            raise ReleaseManagerError("root env is unavailable") from exc
+        image_keys = frozenset(_ENV_IMAGE_KEYS.values())
+        retained: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            body = line.rstrip("\r\n")
+            if "=" in body:
+                key = body.split("=", 1)[0].strip()
+                if key in image_keys:
+                    if key in seen:
+                        raise ReleaseManagerError(
+                            "root env image references are invalid"
+                        )
+                    seen.add(key)
+                    continue
+            retained.append(line)
+        if seen != image_keys:
+            raise ReleaseManagerError("root env image references are invalid")
+        return hashlib.sha256("".join(retained).encode("utf-8")).hexdigest()
+
+    def _assert_production_topology(self, state: Mapping[str, object]) -> None:
+        if self.mode != "production":
+            return
+        try:
+            actual = self._production_topology()
+        except ReleaseManagerError as exc:
+            raise ReleaseManagerError("prepared production topology has drifted") from exc
+        if state.get("production_topology") != actual:
+            raise ReleaseManagerError("prepared production topology has drifted")
+
+    def _assert_bootstrap_mutation_allowed(self, release_id: str | None = None) -> None:
+        if self.mode != "production":
+            return
+        state = self._read_bootstrap_state()
+        if state is None or state["status"] == "succeeded":
+            return
+        internal_release = self._bootstrap_execution_release_id
+        if (
+            internal_release == state["release_id"]
+            and (release_id is None or release_id == internal_release)
+        ):
+            return
+        raise ReleaseManagerError(
+            "unfinished production bootstrap requires manual recovery"
+        )
+
+    def assert_production_start_allowed(self) -> None:
+        """普通生产启动只能恢复一个已封存、当前且无未决副作用的 release。"""
+
+        try:
+            self._assert_production_start_allowed()
+        except ReleaseStoreError as exc:
+            raise ReleaseManagerError("production release baseline is unavailable") from exc
+
+    def _assert_production_start_allowed(self) -> None:
+        if self.mode != "production":
+            raise ReleaseManagerError("production start gate is unavailable in development")
+        bootstrap = self._read_bootstrap_state()
+        if bootstrap is None or bootstrap.get("status") != "succeeded":
+            raise ReleaseManagerError(
+                "production start requires a succeeded bootstrap baseline"
+            )
+        recovery = self._read_recovery_state()
+        if recovery is not None and recovery.get("status") != "succeeded":
+            raise ReleaseManagerError(
+                "unfinished production recovery blocks ordinary startup"
+            )
+        if recovery is not None and (
+            recovery.get("release_id") != bootstrap.get("release_id")
+            or recovery.get("commit") != bootstrap.get("commit")
+            or recovery.get("manifest_sha256") != bootstrap.get("manifest_sha256")
+            or recovery.get("production_topology") != bootstrap.get("production_topology")
+        ):
+            raise ReleaseManagerError("production recovery baseline binding is invalid")
+        bootstrap_store = ReleaseStore(
+            self.release_root, cast(str, bootstrap["release_id"])
+        )
+        if bootstrap_store.read_state().get("state") != ReleaseState.SUCCEEDED.value:
+            raise ReleaseManagerError("production bootstrap release is not succeeded")
+        bootstrap_manifest_bytes = _read_safe_bytes(
+            bootstrap_store.release_dir / "manifest.json",
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(
+            hashlib.sha256(bootstrap_manifest_bytes).hexdigest(),
+            cast(str, bootstrap["manifest_sha256"]),
+        ):
+            raise ReleaseManagerError("production bootstrap manifest binding is invalid")
+        bootstrap_manifest = self._stored_manifest(bootstrap_store)
+        if (
+            bootstrap_manifest.commit != bootstrap.get("commit")
+            or bootstrap_manifest.mode != "production"
+        ):
+            raise ReleaseManagerError("production bootstrap manifest binding is invalid")
+
+        current_commit = self._current_git_commit()
+        current_refs = self._root_env_refs()
+        current_topology = self._production_topology()
+        current_records: list[tuple[ReleaseManifest, dict[str, object]]] = []
+        try:
+            entries = list(os.scandir(self.release_root))
+        except OSError as exc:
+            raise ReleaseManagerError("production release baseline is unavailable") from exc
+        for entry in entries:
+            if entry.name in {_BOOTSTRAP_STATE_NAME, _RECOVERY_STATE_NAME}:
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+                release_id = _safe_id(entry.name, "production release id")
+            except (OSError, ReleaseManagerError) as exc:
+                raise ReleaseManagerError("production release baseline is unsafe") from exc
+            if entry.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise ReleaseManagerError("production release baseline is unsafe")
+            store = ReleaseStore(self.release_root, release_id)
+            state = store.read_state()
+            state_value = state.get("state")
+            if state_value in {
+                ReleaseState.STAGED.value,
+                ReleaseState.PREPARED.value,
+                ReleaseState.ACTIVATING.value,
+                ReleaseState.ROLLING_BACK.value,
+                ReleaseState.RECOVERY_REQUIRED.value,
+            }:
+                raise ReleaseManagerError(
+                    "unfinished production release blocks ordinary startup"
+                )
+            manifest = self._stored_manifest(store)
+            if hmac.compare_digest(manifest.commit, current_commit):
+                current_records.append((manifest, state))
+        if len(current_records) != 1:
+            raise ReleaseManagerError(
+                "production start requires exactly one current succeeded release"
+            )
+        current_manifest, current_state = current_records[0]
+        if current_state.get("state") != ReleaseState.SUCCEEDED.value:
+            raise ReleaseManagerError("current production release is not succeeded")
+        if (
+            current_manifest.mode != "production"
+            or {name: current_manifest.images[name].ref for name in _IMAGE_NAMES}
+            != current_refs
+            or current_state.get("production_topology") != current_topology
+            or current_state.get("verified_migration_head")
+            != current_manifest.migration_target
+        ):
+            raise ReleaseManagerError("current production release baseline has drifted")
+        self._validate_git(current_manifest)
+        if (
+            self._root_env_refs() != current_refs
+            or self._production_topology() != current_topology
+        ):
+            raise ReleaseManagerError("current production release baseline has drifted")
+
+    @staticmethod
+    def _assert_empty_production_storage_sources() -> None:
+        """以逐级 no-follow 目录 FD 证明固定生产 bind 源均为空目录。"""
+
+        if _DIRECTORY == 0 or _NOFOLLOW == 0:
+            raise ReleaseManagerError(
+                "production storage bind source checks are unsupported"
+            )
+        flags = os.O_RDONLY | _DIRECTORY | _NOFOLLOW
+        for path in _PRODUCTION_STORAGE_BIND_PATHS:
+            descriptor = -1
+            try:
+                if not path.is_absolute() or ".." in path.parts:
+                    raise ReleaseManagerError(
+                        "production storage bind source is invalid"
+                    )
+                descriptor = os.open(path.anchor, flags)
+                for component in path.parts[1:]:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                if os.listdir(descriptor):
+                    raise ReleaseManagerError(
+                        "production storage bind source is not empty"
+                    )
+            except ReleaseManagerError:
+                raise
+            except OSError as exc:
+                raise ReleaseManagerError(
+                    "production storage bind source is unavailable or unsafe"
+                ) from exc
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
 
     def _run(self, argv: Sequence[str], context: str) -> subprocess.CompletedProcess[str]:
         if self._active_store is not None:
@@ -872,7 +1344,9 @@ class ReleaseManager:
                 continue
             _copy_atomic(source, artifacts / source.name)
 
-    def _validate_git(self, manifest: ReleaseManifest) -> str:
+    def _current_git_commit(self) -> str:
+        """读取干净工作树的唯一 HEAD，供发布与启动门禁共同绑定。"""
+
         status = self._run(
             [
                 "git",
@@ -894,9 +1368,83 @@ class ReleaseManager:
             ),
             "Git commit check",
         )
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ReleaseManagerError("Git commit is invalid")
+        return commit
+
+    def _validate_git(self, manifest: ReleaseManifest) -> str:
+        commit = self._current_git_commit()
         if not hmac.compare_digest(commit, manifest.commit):
             raise ReleaseManagerError("Git commit does not match the manifest")
         return commit
+
+    def _validate_migration_direction(self, manifest: ReleaseManifest) -> None:
+        """静态证明 target 沿 Alembic down_revision 链向前继承自 from。"""
+
+        versions = self.root / "backend" / "migrations" / "versions"
+        try:
+            metadata = versions.lstat()
+            paths = sorted(versions.glob("*.py"))
+        except OSError as exc:
+            raise ReleaseManagerError("migration graph is unavailable") from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or not paths:
+            raise ReleaseManagerError("migration graph is unavailable")
+
+        parents: dict[str, str | None] = {}
+        for path in paths:
+            try:
+                module = ast.parse(
+                    _read_safe_bytes(path, maximum=_MAX_JSON_BYTES),
+                    filename=path.name,
+                )
+            except (SyntaxError, ValueError) as exc:
+                raise ReleaseManagerError("migration graph is invalid") from exc
+            assignments: dict[str, object] = {}
+            for statement in module.body:
+                target: ast.expr | None = None
+                value: ast.expr | None = None
+                if isinstance(statement, ast.AnnAssign):
+                    target, value = statement.target, statement.value
+                elif isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                    target, value = statement.targets[0], statement.value
+                if (
+                    not isinstance(target, ast.Name)
+                    or target.id not in {"revision", "down_revision"}
+                    or value is None
+                ):
+                    continue
+                if target.id in assignments:
+                    raise ReleaseManagerError("migration graph is invalid")
+                try:
+                    assignments[target.id] = ast.literal_eval(value)
+                except (ValueError, SyntaxError) as exc:
+                    raise ReleaseManagerError("migration graph is invalid") from exc
+            revision = assignments.get("revision")
+            parent = assignments.get("down_revision")
+            if (
+                type(revision) is not str
+                or _MIGRATION_RE.fullmatch(revision) is None
+                or (parent is not None and type(parent) is not str)
+                or (type(parent) is str and _MIGRATION_RE.fullmatch(parent) is None)
+                or revision in parents
+            ):
+                raise ReleaseManagerError("migration graph is invalid")
+            parents[revision] = parent
+
+        if manifest.migration_from not in parents or manifest.migration_target not in parents:
+            raise ReleaseManagerError("migration endpoints are absent from the candidate graph")
+        cursor = manifest.migration_target
+        visited: set[str] = set()
+        while cursor != manifest.migration_from:
+            if cursor in visited:
+                raise ReleaseManagerError("migration graph contains a cycle")
+            visited.add(cursor)
+            parent = parents.get(cursor)
+            if parent is None:
+                raise ReleaseManagerError(
+                    "migration target is not a forward descendant of migration.from"
+                )
+            cursor = parent
 
     def _root_env_refs(self) -> dict[str, str]:
         try:
@@ -1237,6 +1785,80 @@ class ReleaseManager:
             validated[name] = image
         return validated
 
+    @staticmethod
+    def _validate_restore_crypto_probe_receipt(
+        value: object,
+        context: str,
+    ) -> str:
+        probe = _exact_object(value, _RESTORE_CRYPTO_PROBE_FIELDS, context)
+        counts = _exact_object(
+            probe["counts"],
+            _RESTORE_CRYPTO_PROBE_COUNT_FIELDS,
+            context,
+        )
+        coverage = _exact_object(
+            probe["coverage"],
+            _RESTORE_CRYPTO_PROBE_COVERAGE_FIELDS,
+            context,
+        )
+        status = probe["status"]
+        if (
+            probe["schema_version"] != 2
+            or status not in {"performed", "not_applicable_empty"}
+            or any(type(item) is not int or item < 0 for item in counts.values())
+        ):
+            raise ReleaseManagerError("restore report crypto receipt is invalid")
+        encrypted_rows = 0
+        samples = 0
+        sms_message_rows = -1
+        for label in _RESTORE_CRYPTO_PROBE_COVERAGE_FIELDS:
+            item = _exact_object(
+                coverage[label],
+                _RESTORE_CRYPTO_PROBE_COVERAGE_VALUE_FIELDS,
+                context,
+            )
+            rows = item["rows"]
+            verified = item["key_versions_verified"]
+            if (
+                type(rows) is not int
+                or rows < 0
+                or type(verified) is not int
+                or verified < 0
+                or (rows == 0) != (verified == 0)
+                or verified > rows
+            ):
+                raise ReleaseManagerError("restore report crypto receipt is invalid")
+            encrypted_rows += rows
+            samples += verified
+            if label == "sms_message.phone_enc":
+                sms_message_rows = rows
+        if (
+            counts["audit_context_keys"] != 4
+            or counts["encrypted_columns"]
+            != len(_RESTORE_CRYPTO_PROBE_COVERAGE_FIELDS)
+            or counts["key_version_columns"] < 1
+            or counts["encrypted_rows"] != encrypted_rows
+            or counts["ciphertext_samples_verified"] != samples
+            or counts["sms_message_rows"] != sms_message_rows
+            or (
+                status == "performed"
+                and (
+                    counts["encrypted_rows"] < 1
+                    or counts["ciphertext_samples_verified"] < 1
+                    or counts["referenced_key_versions"] < 1
+                )
+            )
+            or (
+                status == "not_applicable_empty"
+                and (
+                    counts["encrypted_rows"] != 0
+                    or counts["ciphertext_samples_verified"] != 0
+                )
+            )
+        ):
+            raise ReleaseManagerError("restore report crypto receipt is invalid")
+        return cast(str, status)
+
     def _validate_backup_evidence(
         self,
         manifest: ReleaseManifest,
@@ -1284,23 +1906,54 @@ class ReleaseManager:
         )
         checks = _exact_object(report["checks"], _RESTORE_CHECK_FIELDS, "restore checks")
         counts = _exact_object(report["table_counts"], _TABLE_COUNT_FIELDS, "table counts")
+        crypto_receipts = _exact_object(
+            report["crypto_probe_receipts"],
+            frozenset({"pre_migration", "post_migration"}),
+            "restore crypto probe receipts",
+        )
+        pre_crypto_status = self._validate_restore_crypto_probe_receipt(
+            crypto_receipts["pre_migration"],
+            "pre-migration restore crypto probe receipt",
+        )
+        post_crypto_status = self._validate_restore_crypto_probe_receipt(
+            crypto_receipts["post_migration"],
+            "post-migration restore crypto probe receipt",
+        )
+        if any(
+            cast(dict[str, object], cast(dict[str, object], crypto_receipts[name])["counts"])[
+                "sms_message_rows"
+            ]
+            != counts["sms_message"]
+            for name in ("pre_migration", "post_migration")
+        ):
+            raise ReleaseManagerError("restore report crypto receipt is not bound")
         if (
-            report["schema_version"] != 1
+            report["schema_version"] != 2
             or report["status"] != "success"
-            or report["within_rto"] is not True
+            or report["metric_scope"] != "database_restore"
+            or report["business_rto_evidence"] is not False
+            or report["within_restore_budget"] is not True
             or type(report["database"]) is not str
             or _DRILL_DATABASE_RE.fullmatch(report["database"]) is None
             or report["git_commit"] != manifest.commit
             or report["snapshot_id"] != restore_binding["snapshot_id"]
-            or checks["role_flags"] != "false|false|false"
-            or checks["audit_privileges"] != "true|false|false"
-            or checks["alembic_version"] != manifest.migration_from
+            or type(report["recovery_crypto_generation_id"]) is not str
+            or _SAFE_ID_RE.fullmatch(report["recovery_crypto_generation_id"]) is None
+            or type(report["backup_passphrase_generation_id"]) is not str
+            or _SAFE_ID_RE.fullmatch(report["backup_passphrase_generation_id"]) is None
+            or checks["role_flags"] != "7|true"
+            or checks["audit_privileges"] != "true"
+            or checks["crypto_generation_binding"] != "matched_host_generation_ids"
+            or checks["alembic_version"] != manifest.migration_target
+            or checks["pre_migration_crypto_validation"] != pre_crypto_status
+            or checks["post_migration_crypto_validation"] != post_crypto_status
+            or checks["historical_ciphertext_validation"] != pre_crypto_status
             or any(
                 type(counts[name]) is not int or counts[name] < 0 for name in _TABLE_COUNT_FIELDS
             )
         ):
             raise ReleaseManagerError("restore report does not satisfy the release contract")
-        for duration_field in ("restore_seconds", "rto_limit_seconds"):
+        for duration_field in ("restore_seconds", "restore_budget_seconds"):
             duration = report[duration_field]
             if type(duration) not in {int, float} or duration < 0:
                 raise ReleaseManagerError("restore report durations are invalid")
@@ -1367,12 +2020,15 @@ class ReleaseManager:
     def _current_runtime(
         self,
         current_refs: Mapping[str, str],
+        services: Sequence[str] = _RUNTIME_SERVICES,
     ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
         compose = self._compose()
         container_ids: dict[str, str] = {}
         image_ids: dict[str, str] = {}
         service_container_ids: dict[str, str] = {}
-        for service in _RUNTIME_SERVICES:
+        for service in services:
+            if service not in _RUNTIME_SERVICES:
+                raise ReleaseManagerError("runtime service selection is invalid")
             image_name = _service_image_name(service)
             container = self._line(
                 self._run(compose + ["ps", "-q", service], "running container lookup"),
@@ -1441,7 +2097,9 @@ class ReleaseManager:
         ):
             raise ReleaseManagerError("cross-major data image release is forbidden")
 
-    def _migration_head(self, manifest: ReleaseManifest) -> str:
+    def _observed_migration_head(self) -> str:
+        """只读取得当前 Alembic head；空库、复数 head 与畸形输出均失败关闭。"""
+
         probe = (
             "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align "
             '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" '
@@ -1454,7 +2112,13 @@ class ReleaseManager:
             ),
             "current migration observation",
         )
-        if _MIGRATION_RE.fullmatch(result) is None or result != manifest.migration_from:
+        if _MIGRATION_RE.fullmatch(result) is None:
+            raise ReleaseManagerError("current migration observation is invalid")
+        return result
+
+    def _migration_head(self, manifest: ReleaseManifest) -> str:
+        result = self._observed_migration_head()
+        if result != manifest.migration_from:
             raise ReleaseManagerError("current migration does not match manifest migration.from")
         return result
 
@@ -1487,24 +2151,73 @@ class ReleaseManager:
     def prepare(self, manifest_path: Path) -> None:
         """验证并持久化发布；任一失败都不修改 env 或运行容器。"""
 
+        self._assert_bootstrap_mutation_allowed()
         manifest, manifest_bytes, staging_files = _validate_staging_bundle(
             manifest_path,
             self._staging_uid(),
         )
+        self._prepare_validated(
+            manifest_path,
+            manifest,
+            manifest_bytes,
+            staging_files,
+        )
+
+    def _prepare_validated(
+        self,
+        manifest_path: Path,
+        manifest: ReleaseManifest,
+        manifest_bytes: bytes,
+        staging_files: Sequence[Path],
+        *,
+        prepared_fields: Mapping[str, object] | None = None,
+    ) -> None:
+        """消费一次严格解析结果，并把可选发布类型绑定进 prepared 状态。"""
+
         if manifest.mode != self.mode:
             raise ReleaseManagerError("staging manifest mode does not match manager mode")
+        extra_fields = dict(prepared_fields or {})
+        if set(extra_fields) & {
+            "prepared_at",
+            "release_gate_kind",
+            "control_smoke_only",
+            "release_scan_performed",
+        }:
+            raise ReleaseManagerError("prepared release metadata is invalid")
+        if self.mode == "production":
+            topology = self._production_topology()
+            existing_topology = extra_fields.get("production_topology")
+            if existing_topology is not None and existing_topology != topology:
+                raise ReleaseManagerError("prepared release metadata is invalid")
+            extra_fields["production_topology"] = topology
+            extra_fields.setdefault("release_kind", "standard")
+            self._reject_historical_production_images(manifest)
         store = ReleaseStore(self.release_root, manifest.release_id)
         try:
+            try:
+                store.release_dir.lstat()
+            except FileNotFoundError:
+                release_existed = False
+            else:
+                release_existed = True
             store.create(manifest_bytes)
             state = store.read_state()
             if state.get("state") == ReleaseState.PREPARED.value:
+                if any(state.get(key) != value for key, value in extra_fields.items()):
+                    raise ReleaseManagerError("prepared release metadata does not match")
                 return
             if state.get("state") != ReleaseState.STAGED.value:
                 raise ReleaseManagerError("release is not in a preparable state")
+            if release_existed:
+                if any(state.get(key) != value for key, value in extra_fields.items()):
+                    raise ReleaseManagerError("staged release metadata does not match")
+            elif extra_fields:
+                store.checkpoint(ReleaseState.STAGED, **extra_fields)
             self._active_store = store
             self._copy_bundle(store, manifest_path, staging_files)
             artifacts = store.release_dir / "artifacts"
             current_commit = self._validate_git(manifest)
+            self._validate_migration_direction(manifest)
             current_refs = self._current_refs(manifest)
             release_gate_kind, release_scan_performed = self._validate_release_evidence(
                 manifest,
@@ -1534,6 +2247,7 @@ class ReleaseManager:
                 release_gate_kind=release_gate_kind,
                 control_smoke_only=release_gate_kind == "release_control_smoke",
                 release_scan_performed=release_scan_performed,
+                **extra_fields,
             )
         except Exception as exc:
             with suppress(Exception):
@@ -1546,6 +2260,2102 @@ class ReleaseManager:
             raise ReleaseManagerError(f"release prepare failed ({type(exc).__name__})") from exc
         finally:
             self._active_store = None
+
+    def _reject_historical_production_images(self, candidate: ReleaseManifest) -> None:
+        """生产 changed 镜像必须是新制品，不能复用任何已进入发布状态的旧制品。"""
+
+        if self.mode != "production":
+            return
+        try:
+            entries = list(os.scandir(self.release_root))
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise ReleaseManagerError("production image history is unavailable") from exc
+        historical: dict[str, set[str]] = {
+            name: set() for name in _IMAGE_NAMES
+        }
+        eligible = {
+            ReleaseState.PREPARED.value,
+            ReleaseState.ACTIVATING.value,
+            ReleaseState.SUCCEEDED.value,
+            ReleaseState.ROLLING_BACK.value,
+            ReleaseState.ROLLED_BACK.value,
+            ReleaseState.RECOVERY_REQUIRED.value,
+        }
+        for entry in entries:
+            if entry.name == _BOOTSTRAP_STATE_NAME or entry.name == candidate.release_id:
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ReleaseManagerError(
+                    "production image history is unavailable"
+                ) from exc
+            if entry.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise ReleaseManagerError("production image history is unsafe")
+            try:
+                release_id = _safe_id(entry.name, "historical release id")
+                store = ReleaseStore(self.release_root, release_id)
+                state = store.read_state()
+                if state.get("state") not in eligible:
+                    continue
+                manifest = self._stored_manifest(store)
+                snapshot = self._read_snapshot(store)
+            except (ReleaseManagerError, ReleaseStoreError) as exc:
+                raise ReleaseManagerError(
+                    "production image history is unavailable"
+                ) from exc
+            current_refs = cast(dict[str, object], snapshot["current_refs"])
+            current_ids = cast(dict[str, object], snapshot["image_ids"])
+            for name in _IMAGE_NAMES:
+                historical[name].update(
+                    {
+                        manifest.images[name].ref,
+                        manifest.images[name].image_id,
+                        cast(str, current_refs[name]),
+                        cast(str, current_ids[name]),
+                    }
+                )
+        for name in _IMAGE_NAMES:
+            image = candidate.images[name]
+            if image.changed and (
+                image.ref in historical[name] or image.image_id in historical[name]
+            ):
+                raise ReleaseManagerError(
+                    "production release cannot reuse a historical image"
+                )
+
+    def prepare_forward_rollback(
+        self,
+        source_release_id: str,
+        manifest_path: Path,
+    ) -> None:
+        """把已成功发布的回退实现为保持 schema 的新候选发布。"""
+
+        self._assert_bootstrap_mutation_allowed()
+        if self.mode != "production":
+            raise ReleaseManagerError("forward rollback candidates are production-only")
+        source_store = ReleaseStore(self.release_root, source_release_id)
+        source_state = source_store.read_state()
+        if source_state.get("state") != ReleaseState.SUCCEEDED.value:
+            raise ReleaseManagerError("forward rollback source release is not succeeded")
+        self._assert_production_topology(source_state)
+        source = self._stored_manifest(source_store)
+        if source.mode != self.mode:
+            raise ReleaseManagerError("forward rollback source mode does not match")
+        snapshot = self._read_snapshot(source_store)
+        candidate, manifest_bytes, staging_files = _validate_staging_bundle(
+            manifest_path,
+            self._staging_uid(),
+        )
+        self._validate_forward_rollback_candidate(source, snapshot, candidate)
+        self._prepare_validated(
+            manifest_path,
+            candidate,
+            manifest_bytes,
+            staging_files,
+            prepared_fields={
+                "release_kind": "forward_rollback",
+                "forward_rollback_of": source.release_id,
+                "forward_rollback_source_commit": source.commit,
+                "schema_retained_at": source.migration_target,
+            },
+        )
+
+    def _validate_forward_rollback_candidate(
+        self,
+        source: ReleaseManifest,
+        snapshot: Mapping[str, object],
+        candidate: ReleaseManifest,
+    ) -> None:
+        if candidate.mode != "production" or candidate.release_id == source.release_id:
+            raise ReleaseManagerError("forward rollback candidate identity is invalid")
+        if candidate.commit == source.commit:
+            raise ReleaseManagerError("forward rollback requires a new commit")
+        if (
+            candidate.migration_from != source.migration_target
+            or candidate.migration_target != source.migration_target
+            or candidate.migration_compatibility is not MigrationCompatibility.NONE
+        ):
+            raise ReleaseManagerError("forward rollback cannot change or downgrade schema")
+        current_refs = self._root_env_refs()
+        source_refs = {name: source.images[name].ref for name in _IMAGE_NAMES}
+        if current_refs != source_refs:
+            raise ReleaseManagerError("forward rollback source is not the current baseline")
+        for name in ("postgres", "redis"):
+            image = candidate.images[name]
+            if (
+                image.changed
+                or image.ref != source.images[name].ref
+                or image.image_id != source.images[name].image_id
+            ):
+                raise ReleaseManagerError("forward rollback cannot replace data images")
+        changed = {name for name in ("api", "web") if candidate.images[name].changed}
+        if not changed:
+            raise ReleaseManagerError("forward rollback must replace an application image")
+        original_refs = cast(dict[str, object], snapshot["current_refs"])
+        original_ids = cast(dict[str, object], snapshot["image_ids"])
+        for name in ("api", "web"):
+            image = candidate.images[name]
+            differs = image.ref != source.images[name].ref
+            if image.changed is not differs:
+                raise ReleaseManagerError("forward rollback changed flags are invalid")
+            if not image.changed:
+                if image.image_id != source.images[name].image_id:
+                    raise ReleaseManagerError("unchanged forward rollback image drifted")
+                continue
+            if (
+                image.image_id == source.images[name].image_id
+                or image.ref == original_refs[name]
+                or image.image_id == original_ids[name]
+            ):
+                raise ReleaseManagerError(
+                    "forward rollback cannot directly restore a previous image"
+                )
+
+    def _validate_staged_production_release(
+        self,
+        store: ReleaseStore,
+        manifest: ReleaseManifest,
+        state: Mapping[str, object],
+    ) -> None:
+        """跨进程恢复前重验 staged 类型；缺失或漂移一律失败关闭。"""
+
+        if store.release_id != manifest.release_id:
+            raise ReleaseManagerError("staged release identity is invalid")
+        self._assert_production_topology(state)
+        self._reject_historical_production_images(manifest)
+        release_kind = state.get("release_kind")
+        if release_kind == "standard":
+            if any(
+                field in state
+                for field in (
+                    "forward_rollback_of",
+                    "forward_rollback_source_commit",
+                    "schema_retained_at",
+                )
+            ):
+                raise ReleaseManagerError("staged release metadata is invalid")
+            return
+        if release_kind == "bootstrap":
+            raise ReleaseManagerError(
+                "staged bootstrap release requires bootstrap manual recovery"
+            )
+        if release_kind != "forward_rollback":
+            raise ReleaseManagerError("staged release metadata is invalid")
+        source_release_id = state.get("forward_rollback_of")
+        source_commit = state.get("forward_rollback_source_commit")
+        retained_schema = state.get("schema_retained_at")
+        if type(source_release_id) is not str:
+            raise ReleaseManagerError("staged forward rollback metadata is invalid")
+        source_store = ReleaseStore(self.release_root, source_release_id)
+        source_state = source_store.read_state()
+        if source_state.get("state") != ReleaseState.SUCCEEDED.value:
+            raise ReleaseManagerError("forward rollback source release is not succeeded")
+        self._assert_production_topology(source_state)
+        source = self._stored_manifest(source_store)
+        if source_commit != source.commit or retained_schema != source.migration_target:
+            raise ReleaseManagerError("staged forward rollback metadata is invalid")
+        self._validate_forward_rollback_candidate(
+            source,
+            self._read_snapshot(source_store),
+            manifest,
+        )
+
+    @property
+    def _bootstrap_state_path(self) -> Path:
+        return self.release_root / _BOOTSTRAP_STATE_NAME
+
+    def _read_bootstrap_state(self) -> dict[str, Any] | None:
+        try:
+            self._bootstrap_state_path.lstat()
+        except FileNotFoundError:
+            return None
+        state = _exact_object(
+            _read_json(self._bootstrap_state_path, "production bootstrap state"),
+            _BOOTSTRAP_STATE_FIELDS,
+            "production bootstrap state",
+        )
+        if (
+            state["schema_version"] != 1
+            or state["status"] not in {"running", "succeeded", "failed"}
+            or type(state["release_id"]) is not str
+            or type(state["commit"]) is not str
+            or type(state["manifest_sha256"]) is not str
+            or _REPORT_HASH_RE.fullmatch(state["manifest_sha256"]) is None
+            or type(state["production_topology"]) is not dict
+            or type(state["phase"]) is not str
+            or type(state["started_at"]) is not str
+            or type(state["updated_at"]) is not str
+            or (state["failure_type"] is not None and type(state["failure_type"]) is not str)
+        ):
+            raise ReleaseManagerError("production bootstrap state is invalid")
+        _safe_id(state["release_id"], "bootstrap release id")
+        _safe_id(state["phase"], "bootstrap phase")
+        _parse_utc(state["started_at"], "bootstrap started_at")
+        _parse_utc(state["updated_at"], "bootstrap updated_at")
+        return state
+
+    def _write_bootstrap_state(self, state: Mapping[str, object]) -> None:
+        rendered = (
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        ReleaseStore._atomic_write(self._bootstrap_state_path, rendered)
+
+    @property
+    def _recovery_state_path(self) -> Path:
+        return self.release_root / _RECOVERY_STATE_NAME
+
+    def _read_recovery_state(self) -> dict[str, Any] | None:
+        try:
+            self._recovery_state_path.lstat()
+        except FileNotFoundError:
+            return None
+        state = _exact_object(
+            _read_json(self._recovery_state_path, "production recovery state"),
+            _RECOVERY_STATE_FIELDS,
+            "production recovery state",
+        )
+        if (
+            state["schema_version"] != 1
+            or state["status"]
+            not in {"running", "succeeded", "failed", "recovery_required"}
+            or state["phase"]
+            not in {
+                "validated",
+                "data_starting",
+                "data_started",
+                "observed",
+                "adopted",
+                "api_started",
+                "callback_started",
+                "workers_started",
+                "outbox_started",
+                "beat_started",
+                "succeeded",
+                "failed",
+            }
+            or type(state["production_topology"]) is not dict
+            or any(
+                type(state[field]) is not str
+                for field in (
+                    "release_id",
+                    "commit",
+                    "manifest_sha256",
+                    "migration_head",
+                    "snapshot_id",
+                    "snapshot_manifest_sha256",
+                    "snapshot_database_sha256",
+                    "recovery_crypto_generation_id",
+                    "backup_passphrase_generation_id",
+                    "runtime_secrets_target",
+                    "started_at",
+                    "updated_at",
+                )
+            )
+            or (
+                state["failure_type"] is not None
+                and type(state["failure_type"]) is not str
+            )
+            or (
+                state["gap_fence_sha256"] is not None
+                and type(state["gap_fence_sha256"]) is not str
+            )
+            or (
+                state["recovery_watermark_sha256"] is not None
+                and type(state["recovery_watermark_sha256"]) is not str
+            )
+            or (
+                state["restore_receipt_sha256"] is not None
+                and type(state["restore_receipt_sha256"]) is not str
+            )
+            or (
+                state["live_database_fingerprint_sha256"] is not None
+                and type(state["live_database_fingerprint_sha256"]) is not str
+            )
+            or (
+                state["crypto_probe_status"] is not None
+                and state["crypto_probe_status"]
+                not in {"performed", "not_applicable_empty"}
+            )
+            or (
+                state["crypto_probe_sha256"] is not None
+                and type(state["crypto_probe_sha256"]) is not str
+            )
+        ):
+            raise ReleaseManagerError("production recovery state is invalid")
+        _safe_id(state["release_id"], "recovery release id")
+        _safe_id(state["snapshot_id"], "recovery snapshot id")
+        if re.fullmatch(r"[0-9a-f]{40}", state["commit"]) is None:
+            raise ReleaseManagerError("production recovery state is invalid")
+        for field in (
+            "manifest_sha256",
+            "snapshot_manifest_sha256",
+            "snapshot_database_sha256",
+        ):
+            self._validate_evidence_digest(state[field], "production recovery state")
+        for field in (
+            "gap_fence_sha256",
+            "recovery_watermark_sha256",
+            "restore_receipt_sha256",
+            "live_database_fingerprint_sha256",
+            "crypto_probe_sha256",
+        ):
+            if state[field] is not None:
+                self._validate_evidence_digest(state[field], "production recovery state")
+        if _MIGRATION_RE.fullmatch(state["migration_head"]) is None:
+            raise ReleaseManagerError("production recovery state is invalid")
+        _parse_utc(state["started_at"], "recovery started_at")
+        _parse_utc(state["updated_at"], "recovery updated_at")
+        return state
+
+    def _write_recovery_state(self, state: Mapping[str, object]) -> None:
+        rendered = (
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        ReleaseStore._atomic_write(self._recovery_state_path, rendered)
+
+    def _checkpoint_recovery_state(
+        self,
+        state: Mapping[str, object],
+        *,
+        status: Literal["running", "succeeded", "failed", "recovery_required"],
+        phase: str,
+        failure_type: str | None = None,
+    ) -> dict[str, object]:
+        updated = {
+            **state,
+            "status": status,
+            "phase": phase,
+            "failure_type": failure_type,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        self._write_recovery_state(updated)
+        return updated
+
+    @staticmethod
+    def _validate_evidence_digest(value: str, context: str) -> str:
+        if _REPORT_HASH_RE.fullmatch(value) is None:
+            raise ReleaseManagerError(f"{context} digest is invalid")
+        return value
+
+    @staticmethod
+    def _validate_runtime_secrets_target(value: str) -> str:
+        if _RUNTIME_SECRETS_TARGET_RE.fullmatch(value) is None:
+            raise ReleaseManagerError("recovery runtime secrets target is invalid")
+        return value
+
+    @staticmethod
+    def _validate_recovery_evidence_path(path: Path, context: str) -> None:
+        if not path.is_absolute() or path.name in {"", ".", ".."}:
+            raise ReleaseManagerError(f"{context} path is invalid")
+        _safe_id(path.name, f"{context} filename")
+        _validate_staging_directory(path.parent, os.geteuid())
+
+    def _validate_recovery_snapshot(
+        self,
+        path: Path,
+        expected_sha256: str,
+        manifest: ReleaseManifest,
+    ) -> dict[str, object]:
+        """重新校验完整快照闭包，并绑定恢复 commit、schema 与当前 env。"""
+
+        self._validate_recovery_evidence_path(path, "recovery snapshot manifest")
+        if path.name != "manifest.json":
+            raise ReleaseManagerError("recovery snapshot manifest filename is invalid")
+        expected_sha256 = self._validate_evidence_digest(
+            expected_sha256,
+            "recovery snapshot manifest",
+        )
+        raw = _read_safe_bytes(
+            path,
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise ReleaseManagerError("recovery snapshot manifest digest does not match")
+        snapshot = _exact_object(
+            _parse_json_bytes(raw, "recovery snapshot manifest"),
+            _RECOVERY_SNAPSHOT_FIELDS,
+            "recovery snapshot manifest",
+        )
+        if (
+            snapshot["schema_version"] != 1
+            or snapshot["secrets_included"] is not False
+            or snapshot["git_commit"] != manifest.commit
+            or snapshot["alembic_version"] != manifest.migration_target
+            or snapshot["database"] != "sms"
+        ):
+            raise ReleaseManagerError("recovery snapshot manifest is not bound")
+        snapshot_id = _safe_id(snapshot["snapshot_id"], "recovery snapshot id")
+        recovery_crypto_generation_id = _safe_id(
+            snapshot["recovery_crypto_generation_id"],
+            "recovery crypto generation id",
+        )
+        backup_passphrase_generation_id = _safe_id(
+            snapshot["backup_passphrase_generation_id"],
+            "backup passphrase generation id",
+        )
+        created_at = _parse_utc(snapshot["created_at"], "recovery snapshot created_at")
+        now = datetime.now(UTC)
+        if created_at > now or (now - created_at).total_seconds() > 35 * 24 * 60 * 60:
+            raise ReleaseManagerError("recovery snapshot is future-dated or beyond retention")
+        files = _exact_object(
+            snapshot["files"],
+            frozenset({"database", "repository_archive", "environment"}),
+            "recovery snapshot files",
+        )
+        expected_entries = {"manifest.json", "SHA256SUMS"}
+        checksum_lines = {f"{expected_sha256}  manifest.json"}
+        verified: dict[str, dict[str, object]] = {}
+        try:
+            for label in ("database", "repository_archive", "environment"):
+                item = _exact_object(
+                    files[label],
+                    _RECOVERY_SNAPSHOT_FILE_FIELDS,
+                    "recovery snapshot file",
+                )
+                name = _safe_id(item["name"], "recovery snapshot filename")
+                if name in expected_entries:
+                    raise ReleaseManagerError("recovery snapshot filenames are not unique")
+                digest = item["sha256"]
+                size = item["size"]
+                if (
+                    type(digest) is not str
+                    or _REPORT_HASH_RE.fullmatch(digest) is None
+                    or type(size) is not int
+                    or size <= 0
+                ):
+                    raise ReleaseManagerError("recovery snapshot file metadata is invalid")
+                candidate = path.parent / name
+                info = candidate.lstat()
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size != size
+                    or not hmac.compare_digest(_hash_file(candidate), digest)
+                ):
+                    raise ReleaseManagerError("recovery snapshot file verification failed")
+                expected_entries.add(name)
+                checksum_lines.add(f"{digest}  {name}")
+                verified[label] = {"name": name, "sha256": digest, "size": size}
+            checksum_path = path.parent / "SHA256SUMS"
+            checksum_info = checksum_path.lstat()
+            if (
+                stat.S_ISLNK(checksum_info.st_mode)
+                or not stat.S_ISREG(checksum_info.st_mode)
+                or checksum_info.st_uid != os.geteuid()
+                or stat.S_IMODE(checksum_info.st_mode) != 0o600
+            ):
+                raise ReleaseManagerError("recovery snapshot checksum file is unsafe")
+            checksum_raw = _read_safe_bytes(
+                checksum_path,
+                expected_uid=os.geteuid(),
+                expected_mode=0o600,
+                maximum=_MAX_JSON_BYTES,
+            )
+            try:
+                observed_checksum_lines = checksum_raw.decode("ascii").splitlines()
+            except UnicodeError as exc:
+                raise ReleaseManagerError(
+                    "recovery snapshot checksum file is invalid"
+                ) from exc
+            if (
+                len(observed_checksum_lines) != len(checksum_lines)
+                or set(observed_checksum_lines) != checksum_lines
+            ):
+                raise ReleaseManagerError("recovery snapshot checksum inventory does not match")
+            entries = list(os.scandir(path.parent))
+            if {entry.name for entry in entries} != expected_entries:
+                raise ReleaseManagerError("recovery snapshot is not a closed file set")
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if entry.is_symlink() or not stat.S_ISREG(info.st_mode):
+                    raise ReleaseManagerError("recovery snapshot contains an unsafe path")
+        except OSError as exc:
+            raise ReleaseManagerError("recovery snapshot is unavailable or unsafe") from exc
+
+        environment = verified["environment"]
+        if not hmac.compare_digest(
+            _hash_file(self.root / ".env"),
+            cast(str, environment["sha256"]),
+        ):
+            raise ReleaseManagerError("recovery snapshot environment has drifted")
+        return {
+            "snapshot_id": snapshot_id,
+            "created_at": created_at,
+            "manifest_sha256": expected_sha256,
+            "database_sha256": verified["database"]["sha256"],
+            "recovery_crypto_generation_id": recovery_crypto_generation_id,
+            "backup_passphrase_generation_id": backup_passphrase_generation_id,
+        }
+
+    def _validate_gap_fence_evidence(
+        self,
+        path: Path,
+        expected_sha256: str,
+        manifest: ReleaseManifest,
+        snapshot: Mapping[str, object],
+        recovery_started_at: str,
+    ) -> str:
+        """验证缺口围栏已双人批准，且未知结果继续禁止自动重发。"""
+
+        self._validate_recovery_evidence_path(path, "recovery gap-fence evidence")
+        expected_sha256 = self._validate_evidence_digest(
+            expected_sha256,
+            "recovery gap-fence evidence",
+        )
+        raw = _read_safe_bytes(
+            path,
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise ReleaseManagerError("recovery gap-fence evidence digest does not match")
+        evidence = _exact_object(
+            _parse_json_bytes(raw, "recovery gap-fence evidence"),
+            _RECOVERY_GAP_FENCE_FIELDS,
+            "recovery gap-fence evidence",
+        )
+        if (
+            evidence["schema_version"] != 1
+            or evidence["record_type"] != "production_recovery_gap_fence"
+            or evidence["status"] != "approved"
+            or evidence["snapshot_id"] != snapshot["snapshot_id"]
+            or evidence["snapshot_manifest_sha256"] != snapshot["manifest_sha256"]
+            or evidence["git_commit"] != manifest.commit
+            or evidence["migration_head"] != manifest.migration_target
+            or any(
+                evidence[field] is not True
+                for field in (
+                    "old_primary_isolated",
+                    "upstream_retries_frozen",
+                    "unknown_results_blocked",
+                    "automatic_resend_forbidden",
+                )
+            )
+        ):
+            raise ReleaseManagerError("recovery gap-fence evidence is not approved and bound")
+        reviewers = evidence["approved_by"]
+        if type(reviewers) is not list or len(reviewers) != 2:
+            raise ReleaseManagerError("recovery gap-fence requires two reviewers")
+        validated_reviewers = [
+            _safe_id(reviewer, "recovery gap-fence reviewer") for reviewer in reviewers
+        ]
+        if len(set(validated_reviewers)) != 2:
+            raise ReleaseManagerError("recovery gap-fence requires two distinct reviewers")
+        counts: list[int] = []
+        for field in (
+            "upstream_request_count",
+            "vendor_accepted_or_sent_count",
+            "vendor_not_accepted_count",
+            "vendor_unknown_count",
+        ):
+            value = evidence[field]
+            if type(value) is not int or value < 0:
+                raise ReleaseManagerError("recovery gap-fence counts are invalid")
+            counts.append(value)
+        if counts[0] != sum(counts[1:]):
+            raise ReleaseManagerError("recovery gap-fence counts do not reconcile")
+        started = _parse_utc(evidence["window_started_at"], "gap-fence window start")
+        ended = _parse_utc(evidence["window_ended_at"], "gap-fence window end")
+        approved = _parse_utc(evidence["approved_at"], "gap-fence approval")
+        recovery_started = _parse_utc(
+            recovery_started_at,
+            "recovery started_at",
+        )
+        now = datetime.now(UTC)
+        if (
+            started != snapshot["created_at"]
+            or not started <= ended <= approved <= now
+            or (ended - started).total_seconds() > 24 * 60 * 60
+            or approved < recovery_started
+        ):
+            raise ReleaseManagerError("recovery gap-fence timestamps are not bound")
+        return expected_sha256
+
+    def _recovery_live_database_fingerprint(self) -> str:
+        """读取无 PII 的生产库身份与事实表水位，绑定实际恢复库而非文件声明。"""
+
+        query = (
+            "SELECT json_build_object("
+            "'database',current_database(),"
+            "'database_oid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),"
+            "'migration_head',(SELECT version_num FROM alembic_version),"
+            "'batch_rows',(SELECT count(*) FROM sms_batch),"
+            "'chunk_rows',(SELECT count(*) FROM sms_chunk),"
+            "'outbox_rows',(SELECT count(*) FROM outbox_event),"
+            "'max_batch_id',COALESCE((SELECT max(id) FROM sms_batch),0),"
+            "'max_chunk_id',COALESCE((SELECT max(id) FROM sms_chunk),0)"
+            ")::text"
+        )
+        probe = (
+            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align "
+            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" '
+            f"--command \"{query}\""
+        )
+        raw = self._line(
+            self._run(
+                self._compose() + ["exec", "-T", "postgres", "sh", "-ec", probe],
+                "recovery live database fingerprint",
+            ),
+            "recovery live database fingerprint",
+        )
+        try:
+            value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ReleaseManagerError("recovery live database fingerprint is invalid") from exc
+        fields = frozenset(
+            {
+                "database",
+                "database_oid",
+                "migration_head",
+                "batch_rows",
+                "chunk_rows",
+                "outbox_rows",
+                "max_batch_id",
+                "max_chunk_id",
+            }
+        )
+        fingerprint = _exact_object(value, fields, "recovery live database fingerprint")
+        if (
+            fingerprint["database"] != "sms"
+            or type(fingerprint["database_oid"]) is not str
+            or not fingerprint["database_oid"].isdigit()
+            or type(fingerprint["migration_head"]) is not str
+            or _MIGRATION_RE.fullmatch(fingerprint["migration_head"]) is None
+            or any(
+                type(fingerprint[field]) is not int or fingerprint[field] < 0
+                for field in fields
+                - {"database", "database_oid", "migration_head"}
+            )
+        ):
+            raise ReleaseManagerError("recovery live database fingerprint is invalid")
+        canonical = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(canonical).hexdigest()
+
+    def _recovery_crypto_probe(self) -> tuple[str, str]:
+        """用当前绑定密钥包只读验证审计 key 与历史密文，输出仅含计数。"""
+
+        result = self._run(
+            self._compose()
+            + [
+                "run",
+                "--rm",
+                "--no-deps",
+                "migrate",
+                "python",
+                "-m",
+                "scripts_support.recovery_crypto_probe",
+            ],
+            "recovery crypto generation probe",
+        )
+        if len(result.stdout.encode()) > 8192:
+            raise ReleaseManagerError("recovery crypto probe result is invalid")
+        try:
+            value = json.loads(result.stdout, object_pairs_hook=_reject_duplicate_keys)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ReleaseManagerError("recovery crypto probe result is invalid") from exc
+        status = self._validate_restore_crypto_probe_receipt(
+            value,
+            "recovery crypto probe",
+        )
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        return status, hashlib.sha256(canonical).hexdigest()
+
+    def _validate_recovery_restore_receipt(
+        self,
+        path: Path,
+        expected_sha256: str,
+        manifest: ReleaseManifest,
+        snapshot: Mapping[str, object],
+        live_fingerprint_sha256: str,
+        crypto_probe_status: str,
+        crypto_probe_sha256: str,
+        recovery_started_at: str,
+    ) -> str:
+        """验证人工批准的实际恢复回执与机器读取的生产库指纹完全一致。"""
+
+        self._validate_recovery_evidence_path(path, "recovery restore receipt")
+        expected_sha256 = self._validate_evidence_digest(
+            expected_sha256,
+            "recovery restore receipt",
+        )
+        raw = _read_safe_bytes(
+            path,
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise ReleaseManagerError("recovery restore receipt digest does not match")
+        receipt = _exact_object(
+            _parse_json_bytes(raw, "recovery restore receipt"),
+            _RECOVERY_RESTORE_RECEIPT_FIELDS,
+            "recovery restore receipt",
+        )
+        if (
+            receipt["schema_version"] != 1
+            or receipt["record_type"] != "production_recovery_restore_receipt"
+            or receipt["status"] != "approved"
+            or receipt["snapshot_id"] != snapshot["snapshot_id"]
+            or receipt["snapshot_manifest_sha256"] != snapshot["manifest_sha256"]
+            or receipt["snapshot_database_sha256"] != snapshot["database_sha256"]
+            or receipt["git_commit"] != manifest.commit
+            or receipt["migration_head"] != manifest.migration_target
+            or receipt["database"] != "sms"
+            or receipt["recovery_crypto_generation_id"]
+            != snapshot["recovery_crypto_generation_id"]
+            or receipt["backup_passphrase_generation_id"]
+            != snapshot["backup_passphrase_generation_id"]
+            or type(receipt["live_database_fingerprint_sha256"]) is not str
+            or not hmac.compare_digest(
+                receipt["live_database_fingerprint_sha256"],
+                live_fingerprint_sha256,
+            )
+            or receipt["crypto_probe_status"] != crypto_probe_status
+            or type(receipt["crypto_probe_sha256"]) is not str
+            or not hmac.compare_digest(
+                receipt["crypto_probe_sha256"],
+                crypto_probe_sha256,
+            )
+        ):
+            raise ReleaseManagerError("recovery restore receipt is not approved and bound")
+        reviewers = receipt["approved_by"]
+        if type(reviewers) is not list or len(reviewers) != 2:
+            raise ReleaseManagerError("recovery restore receipt requires two reviewers")
+        reviewers = [_safe_id(item, "recovery restore reviewer") for item in reviewers]
+        if len(set(reviewers)) != 2:
+            raise ReleaseManagerError("recovery restore receipt requires distinct reviewers")
+        restored_at = _parse_utc(receipt["restored_at"], "recovery restored_at")
+        approved_at = _parse_utc(receipt["approved_at"], "recovery restore approved_at")
+        recovery_started = _parse_utc(
+            recovery_started_at,
+            "recovery started_at",
+        )
+        now = datetime.now(UTC)
+        snapshot_created_at = cast(datetime, snapshot["created_at"])
+        if (
+            not snapshot_created_at <= restored_at <= approved_at <= now
+            or restored_at < recovery_started
+        ):
+            raise ReleaseManagerError("recovery restore receipt timestamps are invalid")
+        return expected_sha256
+
+    def _assert_recovery_services_stopped(self, services: Sequence[str]) -> None:
+        compose = self._compose()
+        for service in services:
+            if service not in _BOOTSTRAP_CONTAINMENT_SERVICES:
+                raise ReleaseManagerError("recovery containment selection is invalid")
+            observed = self.runner.run(compose + ["ps", "-q", service], cwd=self.root)
+            if observed.returncode != 0 or observed.stdout.strip():
+                raise ReleaseManagerError(
+                    "recovery consumer and outbound fence is not closed"
+                )
+
+    def _assert_recovery_consumers_stopped(self) -> None:
+        self._assert_recovery_services_stopped(_BOOTSTRAP_CONTAINMENT_SERVICES)
+
+    def _contain_recovery_consumers(self) -> None:
+        compose = self._compose()
+        self._run(
+            compose + ["stop", *_BOOTSTRAP_CONTAINMENT_SERVICES],
+            "production recovery consumer containment",
+        )
+        self._assert_recovery_consumers_stopped()
+
+    def _record_recovery_failure(
+        self,
+        state: Mapping[str, object],
+        exc: Exception,
+        *,
+        store: ReleaseStore | None = None,
+    ) -> ReleaseManagerError:
+        """任何已建围栏后的异常都先围堵并持久化可读失败状态。"""
+
+        containment_error: Exception | None = None
+        try:
+            self._contain_recovery_consumers()
+        except Exception as failure:
+            containment_error = failure
+        store_state: object = None
+        if store is not None:
+            with suppress(Exception):
+                store_state = store.read_state().get("state")
+            if store_state == ReleaseState.ACTIVATING.value:
+                with suppress(Exception):
+                    store.transition(
+                        ReleaseState.ACTIVATING,
+                        ReleaseState.RECOVERY_REQUIRED,
+                        recovery_failure_type=type(exc).__name__,
+                    )
+        critical = (
+            containment_error is not None
+            or store_state
+            in {ReleaseState.ACTIVATING.value, ReleaseState.SUCCEEDED.value}
+            or state.get("status") == "succeeded"
+        )
+        with suppress(Exception):
+            self._checkpoint_recovery_state(
+                state,
+                status="recovery_required" if critical else "failed",
+                phase="failed",
+                failure_type=(
+                    "RecoveryContainmentFailed"
+                    if containment_error is not None
+                    else type(exc).__name__
+                ),
+            )
+        if containment_error is not None:
+            return ReleaseManagerError("recovery containment failed; recovery_required")
+        if isinstance(exc, ReleaseManagerError):
+            return exc
+        return ReleaseManagerError("recovery operation failed")
+
+    def _recovery_watermark(self) -> dict[str, object]:
+        """在消费面停止时读取不含 PII 的发送/outbox 稳定水位。"""
+
+        query = (
+            "SELECT json_build_object("
+            "'batch_queued',(SELECT count(*) FROM sms_batch WHERE status='queued'),"
+            "'batch_sending',(SELECT count(*) FROM sms_batch WHERE status='sending'),"
+            "'chunk_pending',(SELECT count(*) FROM sms_chunk WHERE status='pending'),"
+            "'submitting',(SELECT count(*) FROM sms_chunk WHERE status='submitting'),"
+            "'retrying',(SELECT count(*) FROM sms_chunk WHERE status='retrying'),"
+            "'submitted',(SELECT count(*) FROM sms_chunk WHERE status='submitted'),"
+            "'uncertain',(SELECT count(*) FROM sms_chunk WHERE status='uncertain'),"
+            "'max_chunk_id',COALESCE((SELECT max(id) FROM sms_chunk),0),"
+            "'outbox_pending',(SELECT count(*) FROM outbox_event WHERE state='pending'),"
+            "'outbox_leased',(SELECT count(*) FROM outbox_event WHERE state='leased'),"
+            "'outbox_processing',(SELECT count(*) FROM outbox_event WHERE state='processing'),"
+            "'max_outbox_created_at',COALESCE("
+            "(SELECT max(created_at)::text FROM outbox_event),'')"
+            ")::text"
+        )
+        probe = (
+            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align "
+            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" '
+            f"--command \"{query}\""
+        )
+        raw = self._line(
+            self._run(
+                self._compose() + ["exec", "-T", "postgres", "sh", "-ec", probe],
+                "recovery stable watermark observation",
+            ),
+            "recovery stable watermark observation",
+        )
+        try:
+            value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ReleaseManagerError("recovery stable watermark is invalid") from exc
+        fields = frozenset(
+            {
+                "submitting",
+                "retrying",
+                "submitted",
+                "uncertain",
+                "batch_queued",
+                "batch_sending",
+                "chunk_pending",
+                "max_chunk_id",
+                "outbox_pending",
+                "outbox_leased",
+                "outbox_processing",
+                "max_outbox_created_at",
+            }
+        )
+        watermark = _exact_object(value, fields, "recovery stable watermark")
+        for field in fields - {"max_outbox_created_at"}:
+            if type(watermark[field]) is not int or watermark[field] < 0:
+                raise ReleaseManagerError("recovery stable watermark is invalid")
+        if type(watermark["max_outbox_created_at"]) is not str:
+            raise ReleaseManagerError("recovery stable watermark is invalid")
+        in_flight_fields = (
+            "submitting",
+            "retrying",
+            "outbox_leased",
+            "outbox_processing",
+        )
+        if any(watermark[field] != 0 for field in in_flight_fields):
+            raise ReleaseManagerError("recovery runtime has in-flight sending work")
+        return cast(dict[str, object], watermark)
+
+    def _stored_recovery_watermark(
+        self,
+        store: ReleaseStore,
+        expected_sha256: str,
+    ) -> dict[str, object]:
+        raw = _read_safe_bytes(
+            store.release_dir / "artifacts" / "recovery-watermark.json",
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+            raise ReleaseManagerError("stored recovery watermark receipt has drifted")
+        receipt = _exact_object(
+            _parse_json_bytes(raw, "recovery watermark receipt"),
+            frozenset({"schema_version", "captured_at", "values"}),
+            "recovery watermark receipt",
+        )
+        if receipt["schema_version"] != 1:
+            raise ReleaseManagerError("stored recovery watermark receipt is invalid")
+        _parse_utc(receipt["captured_at"], "recovery watermark captured_at")
+        if type(receipt["values"]) is not dict:
+            raise ReleaseManagerError("stored recovery watermark receipt is invalid")
+        return cast(dict[str, object], receipt["values"])
+
+    def start_recovery(
+        self,
+        manifest_path: Path,
+        *,
+        snapshot_manifest_path: Path,
+        snapshot_manifest_sha256: str,
+        runtime_secrets_target: str,
+        confirmed_recovered_host: bool,
+    ) -> dict[str, object]:
+        """建立持久恢复围栏，停止消费面后只启动四个数据服务。"""
+
+        if self.mode != "production" or not confirmed_recovered_host:
+            raise ReleaseManagerError(
+                "recovery start requires explicit recovered-host confirmation"
+            )
+        try:
+            ReleaseStore._validate_directory(self.release_root)
+            if self._read_bootstrap_state() is not None:
+                raise ReleaseManagerError("recovery start refuses an initialized release host")
+            entries = {entry.name for entry in os.scandir(self.release_root)}
+            if entries - {_RECOVERY_STATE_NAME}:
+                raise ReleaseManagerError("recovery start release root is not isolated")
+            manifest, manifest_bytes, _ = _validate_staging_bundle(
+                manifest_path,
+                self._staging_uid(),
+            )
+            if (
+                manifest.mode != "production"
+                or any(image.changed for image in manifest.images.values())
+                or manifest.migration_from != manifest.migration_target
+                or manifest.migration_compatibility is not MigrationCompatibility.NONE
+            ):
+                raise ReleaseManagerError(
+                    "recovery start requires a production no-delta manifest"
+                )
+            topology = self._production_topology()
+            refs = self._root_env_refs()
+            if refs != {name: manifest.images[name].ref for name in _IMAGE_NAMES}:
+                raise ReleaseManagerError("recovery start root env does not match manifest")
+            self._validate_git(manifest)
+            self._validate_migration_direction(manifest)
+            gate_kind, _ = self._validate_release_evidence(
+                manifest,
+                manifest_path.parent,
+            )
+            if gate_kind != "release":
+                raise ReleaseManagerError("recovery start requires release evidence")
+            if self._validate_data_evidence(manifest, manifest_path.parent) is not None:
+                raise ReleaseManagerError("recovery start cannot replace data images")
+            self._validate_backup_evidence(manifest, manifest_path.parent)
+            self._target_images(manifest, manifest_path.parent)
+            snapshot = self._validate_recovery_snapshot(
+                snapshot_manifest_path,
+                snapshot_manifest_sha256,
+                manifest,
+            )
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+            runtime_secrets_target = self._validate_runtime_secrets_target(
+                runtime_secrets_target
+            )
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            expected: dict[str, object] = {
+                "schema_version": 1,
+                "status": "running",
+                "phase": "validated",
+                "release_id": manifest.release_id,
+                "commit": manifest.commit,
+                "manifest_sha256": manifest_sha256,
+                "production_topology": topology,
+                "runtime_secrets_target": runtime_secrets_target,
+                "migration_head": manifest.migration_target,
+                "snapshot_id": snapshot["snapshot_id"],
+                "snapshot_manifest_sha256": snapshot["manifest_sha256"],
+                "snapshot_database_sha256": snapshot["database_sha256"],
+                "recovery_crypto_generation_id": snapshot[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": snapshot[
+                    "backup_passphrase_generation_id"
+                ],
+                "restore_receipt_sha256": None,
+                "live_database_fingerprint_sha256": None,
+                "crypto_probe_status": None,
+                "crypto_probe_sha256": None,
+                "gap_fence_sha256": None,
+                "recovery_watermark_sha256": None,
+                "started_at": now,
+                "updated_at": now,
+                "failure_type": None,
+            }
+            state = self._read_recovery_state()
+            if state is None:
+                if entries:
+                    raise ReleaseManagerError("recovery start state is unavailable")
+                self._write_recovery_state(expected)
+                state = expected
+            else:
+                stable = set(_RECOVERY_STATE_FIELDS) - {
+                    "status",
+                    "phase",
+                    "started_at",
+                    "updated_at",
+                    "failure_type",
+                }
+                if any(state[field] != expected[field] for field in stable):
+                    raise ReleaseManagerError("recovery start state has drifted")
+                if state["status"] != "running":
+                    raise ReleaseManagerError("recovery start state requires manual recovery")
+
+            phase = cast(str, state["phase"])
+            if phase not in {"validated", "data_starting", "data_started"}:
+                raise ReleaseManagerError("recovery data start order is invalid")
+            state = self._checkpoint_recovery_state(
+                state,
+                status="running",
+                phase="data_starting",
+            )
+            try:
+                self._contain_recovery_consumers()
+                self._run(
+                    self._compose()
+                    + [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--wait",
+                        "--wait-timeout",
+                        "120",
+                        "postgres",
+                        "redis",
+                        "redis-auth",
+                        "redis-control",
+                    ],
+                    "production recovery data start",
+                )
+            except Exception as exc:
+                raise self._record_recovery_failure(state, exc) from exc
+            self._assert_recovery_consumers_stopped()
+            self._current_runtime(
+                refs,
+                ("postgres", "redis", "redis-auth", "redis-control"),
+            )
+            return self._checkpoint_recovery_state(
+                state,
+                status="running",
+                phase="data_started",
+            )
+        except ReleaseManagerError as exc:
+            try:
+                current_recovery = self._read_recovery_state()
+            except (ReleaseManagerError, OSError):
+                current_recovery = None
+            if current_recovery is not None and current_recovery.get("status") in {
+                "running",
+                "succeeded",
+            }:
+                raise self._record_recovery_failure(current_recovery, exc) from exc
+            raise
+        except ReleaseStoreError as exc:
+            raise ReleaseManagerError("recovery start state is unavailable") from exc
+        except OSError as exc:
+            raise ReleaseManagerError("recovery start evidence is unavailable") from exc
+
+    def observe_recovery(
+        self,
+        manifest_path: Path,
+        *,
+        snapshot_manifest_path: Path,
+        snapshot_manifest_sha256: str,
+        output_path: Path,
+        runtime_secrets_target: str,
+        confirmed_recovered_host: bool,
+    ) -> dict[str, object]:
+        """在持久围栏内生成无 PII 的实际恢复回执待批模板。"""
+
+        if self.mode != "production" or not confirmed_recovered_host:
+            raise ReleaseManagerError(
+                "recovery observation requires explicit recovered-host confirmation"
+            )
+        try:
+            ReleaseStore._validate_directory(self.release_root)
+            recovery = self._read_recovery_state()
+            if (
+                recovery is None
+                or recovery["status"] != "running"
+                or recovery["phase"] != "data_started"
+            ):
+                raise ReleaseManagerError("recovery observation requires data_started")
+            manifest, manifest_bytes, _ = _validate_staging_bundle(
+                manifest_path,
+                self._staging_uid(),
+            )
+            topology = self._production_topology()
+            refs = self._root_env_refs()
+            runtime_secrets_target = self._validate_runtime_secrets_target(
+                runtime_secrets_target
+            )
+            if (
+                manifest.mode != "production"
+                or any(image.changed for image in manifest.images.values())
+                or manifest.migration_from != manifest.migration_target
+                or manifest.migration_compatibility is not MigrationCompatibility.NONE
+                or hashlib.sha256(manifest_bytes).hexdigest()
+                != recovery["manifest_sha256"]
+                or manifest.release_id != recovery["release_id"]
+                or manifest.commit != recovery["commit"]
+                or manifest.migration_target != recovery["migration_head"]
+                or topology != recovery["production_topology"]
+                or runtime_secrets_target != recovery["runtime_secrets_target"]
+                or refs != {name: manifest.images[name].ref for name in _IMAGE_NAMES}
+            ):
+                raise ReleaseManagerError("recovery observation binding has drifted")
+            self._validate_git(manifest)
+            self._assert_recovery_consumers_stopped()
+            _, image_ids, _ = self._current_runtime(refs, _RECOVERY_DATA_SERVICES)
+            if any(
+                not hmac.compare_digest(manifest.images[name].image_id, image_id)
+                for name, image_id in image_ids.items()
+            ):
+                raise ReleaseManagerError("recovery observation data images have drifted")
+            if self._observed_migration_head() != manifest.migration_target:
+                raise ReleaseManagerError("recovery observation migration has drifted")
+            snapshot = self._validate_recovery_snapshot(
+                snapshot_manifest_path,
+                snapshot_manifest_sha256,
+                manifest,
+            )
+            expected_snapshot = {
+                "snapshot_id": recovery["snapshot_id"],
+                "manifest_sha256": recovery["snapshot_manifest_sha256"],
+                "database_sha256": recovery["snapshot_database_sha256"],
+                "recovery_crypto_generation_id": recovery[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": recovery[
+                    "backup_passphrase_generation_id"
+                ],
+            }
+            if any(snapshot[field] != value for field, value in expected_snapshot.items()):
+                raise ReleaseManagerError("recovery observation snapshot has drifted")
+            live_fingerprint = self._recovery_live_database_fingerprint()
+            if not hmac.compare_digest(
+                self._recovery_live_database_fingerprint(),
+                live_fingerprint,
+            ):
+                raise ReleaseManagerError("recovery live database fingerprint is not stable")
+            crypto_probe_status, crypto_probe_digest = self._recovery_crypto_probe()
+            self._assert_recovery_consumers_stopped()
+            self._validate_recovery_evidence_path(
+                output_path,
+                "recovery restore receipt output",
+            )
+            try:
+                output_path.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise ReleaseManagerError("recovery restore receipt output already exists")
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            template: dict[str, object] = {
+                "schema_version": 1,
+                "record_type": "production_recovery_restore_receipt",
+                "status": "pending_approval",
+                "snapshot_id": snapshot["snapshot_id"],
+                "snapshot_manifest_sha256": snapshot["manifest_sha256"],
+                "snapshot_database_sha256": snapshot["database_sha256"],
+                "git_commit": manifest.commit,
+                "migration_head": manifest.migration_target,
+                "database": "sms",
+                "recovery_crypto_generation_id": snapshot[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": snapshot[
+                    "backup_passphrase_generation_id"
+                ],
+                "live_database_fingerprint_sha256": live_fingerprint,
+                "crypto_probe_status": crypto_probe_status,
+                "crypto_probe_sha256": crypto_probe_digest,
+                "restored_at": now,
+                "approved_by": [],
+                "approved_at": None,
+            }
+            ReleaseStore._atomic_write(
+                output_path,
+                (
+                    json.dumps(template, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                ).encode(),
+            )
+            self._checkpoint_recovery_state(
+                {
+                    **recovery,
+                    "live_database_fingerprint_sha256": live_fingerprint,
+                    "crypto_probe_status": crypto_probe_status,
+                    "crypto_probe_sha256": crypto_probe_digest,
+                },
+                status="running",
+                phase="observed",
+            )
+            return template
+        except ReleaseManagerError as exc:
+            try:
+                current_recovery = self._read_recovery_state()
+            except (ReleaseManagerError, OSError):
+                current_recovery = None
+            if current_recovery is not None and current_recovery.get("status") in {
+                "running",
+                "succeeded",
+            }:
+                raise self._record_recovery_failure(current_recovery, exc) from exc
+            raise
+        except ReleaseStoreError as exc:
+            raise ReleaseManagerError("recovery observation state is unavailable") from exc
+        except OSError as exc:
+            raise ReleaseManagerError("recovery observation evidence is unavailable") from exc
+
+    def adopt_recovery(
+        self,
+        manifest_path: Path,
+        *,
+        snapshot_manifest_path: Path,
+        snapshot_manifest_sha256: str,
+        restore_receipt_path: Path,
+        restore_receipt_sha256: str,
+        gap_fence_path: Path,
+        gap_fence_sha256: str,
+        runtime_secrets_target: str,
+        confirmed_recovered_host: bool,
+    ) -> dict[str, object]:
+        """在数据层恢复完成且消费面仍关闭时封存 recovery baseline。"""
+
+        if self.mode != "production" or not confirmed_recovered_host:
+            raise ReleaseManagerError(
+                "recovery baseline adoption requires explicit recovered-host confirmation"
+            )
+        try:
+            ReleaseStore._validate_directory(self.release_root)
+            if self._read_bootstrap_state() is not None:
+                raise ReleaseManagerError("recovery adoption refuses an initialized release host")
+            recovery = self._read_recovery_state()
+            if (
+                recovery is None
+                or recovery["status"] != "running"
+                or recovery["phase"] not in {"observed", "adopted"}
+            ):
+                raise ReleaseManagerError("recovery adoption requires observed evidence")
+            manifest, manifest_bytes, staging_files = _validate_staging_bundle(
+                manifest_path,
+                self._staging_uid(),
+            )
+            manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+            if (
+                manifest.mode != "production"
+                or any(image.changed for image in manifest.images.values())
+                or manifest.migration_from != manifest.migration_target
+                or manifest.migration_compatibility is not MigrationCompatibility.NONE
+            ):
+                raise ReleaseManagerError(
+                    "recovery baseline adoption requires a production no-delta manifest"
+                )
+            topology = self._production_topology()
+            refs = self._root_env_refs()
+            runtime_secrets_target = self._validate_runtime_secrets_target(
+                runtime_secrets_target
+            )
+            target_refs = {name: manifest.images[name].ref for name in _IMAGE_NAMES}
+            if refs != target_refs:
+                raise ReleaseManagerError("recovery baseline root env does not match manifest")
+            self._validate_git(manifest)
+            self._validate_migration_direction(manifest)
+            gate_kind, release_scan_performed = self._validate_release_evidence(
+                manifest,
+                manifest_path.parent,
+            )
+            if gate_kind != "release":
+                raise ReleaseManagerError("recovery baseline requires release evidence")
+            if self._validate_data_evidence(manifest, manifest_path.parent) is not None:
+                raise ReleaseManagerError("recovery baseline cannot replace data images")
+            self._validate_backup_evidence(manifest, manifest_path.parent)
+            target_ids = self._target_images(manifest, manifest_path.parent)
+            self._assert_recovery_consumers_stopped()
+            _, data_image_ids, _ = self._current_runtime(refs, _RECOVERY_DATA_SERVICES)
+            if any(
+                not hmac.compare_digest(target_ids[name], image_id)
+                for name, image_id in data_image_ids.items()
+            ):
+                raise ReleaseManagerError("recovery data image IDs do not match manifest")
+            migration_head = self._observed_migration_head()
+            if migration_head != manifest.migration_target:
+                raise ReleaseManagerError("recovery runtime migration has drifted")
+            snapshot = self._validate_recovery_snapshot(
+                snapshot_manifest_path,
+                snapshot_manifest_sha256,
+                manifest,
+            )
+            live_fingerprint = self._recovery_live_database_fingerprint()
+            if not hmac.compare_digest(
+                self._recovery_live_database_fingerprint(),
+                live_fingerprint,
+            ):
+                raise ReleaseManagerError("recovery live database fingerprint is not stable")
+            crypto_probe_status, crypto_probe_digest = self._recovery_crypto_probe()
+            self._assert_recovery_consumers_stopped()
+            restore_digest = self._validate_recovery_restore_receipt(
+                restore_receipt_path,
+                restore_receipt_sha256,
+                manifest,
+                snapshot,
+                live_fingerprint,
+                crypto_probe_status,
+                crypto_probe_digest,
+                cast(str, recovery["started_at"]),
+            )
+            gap_digest = self._validate_gap_fence_evidence(
+                gap_fence_path,
+                gap_fence_sha256,
+                manifest,
+                snapshot,
+                cast(str, recovery["started_at"]),
+            )
+            entries = {entry.name for entry in os.scandir(self.release_root)}
+            if entries not in (
+                {_RECOVERY_STATE_NAME},
+                {_RECOVERY_STATE_NAME, manifest.release_id},
+            ):
+                raise ReleaseManagerError("recovery baseline release root is not isolated")
+
+            expected_recovery = {
+                "release_id": manifest.release_id,
+                "commit": manifest.commit,
+                "manifest_sha256": manifest_sha256,
+                "production_topology": topology,
+                "runtime_secrets_target": runtime_secrets_target,
+                "migration_head": migration_head,
+                "snapshot_id": snapshot["snapshot_id"],
+                "snapshot_manifest_sha256": snapshot["manifest_sha256"],
+                "snapshot_database_sha256": snapshot["database_sha256"],
+                "recovery_crypto_generation_id": snapshot[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": snapshot[
+                    "backup_passphrase_generation_id"
+                ],
+                "live_database_fingerprint_sha256": live_fingerprint,
+                "crypto_probe_status": crypto_probe_status,
+                "crypto_probe_sha256": crypto_probe_digest,
+            }
+            if any(recovery[field] != value for field, value in expected_recovery.items()):
+                raise ReleaseManagerError("recovery adoption state binding has drifted")
+
+            first_watermark = self._recovery_watermark()
+            second_watermark = self._recovery_watermark()
+            if first_watermark != second_watermark:
+                raise ReleaseManagerError("recovery sending watermark is not stable")
+            watermark_receipt = {
+                "schema_version": 1,
+                "captured_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "values": first_watermark,
+            }
+            watermark_bytes = (
+                json.dumps(watermark_receipt, sort_keys=True, separators=(",", ":"))
+                + "\n"
+            ).encode()
+            watermark_digest = hashlib.sha256(watermark_bytes).hexdigest()
+
+            metadata: dict[str, object] = {
+                "production_topology": topology,
+                "runtime_secrets_target": runtime_secrets_target,
+                "release_kind": "recovery_baseline",
+                "release_gate_kind": gate_kind,
+                "release_scan_performed": release_scan_performed,
+                "control_smoke_only": False,
+                "snapshot_id": snapshot["snapshot_id"],
+                "snapshot_manifest_sha256": snapshot["manifest_sha256"],
+                "snapshot_database_sha256": snapshot["database_sha256"],
+                "recovery_crypto_generation_id": snapshot[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": snapshot[
+                    "backup_passphrase_generation_id"
+                ],
+                "restore_receipt_sha256": restore_digest,
+                "live_database_fingerprint_sha256": live_fingerprint,
+                "gap_fence_sha256": gap_digest,
+                "recovery_migration_head": migration_head,
+                "recovery_watermark_sha256": watermark_digest,
+            }
+            store = ReleaseStore(self.release_root, manifest.release_id)
+            self._freeze_bootstrap_bundle(
+                manifest_path,
+                manifest_bytes,
+                staging_files,
+                store,
+            )
+            artifacts = store.release_dir / "artifacts"
+            _copy_atomic(
+                snapshot_manifest_path,
+                artifacts / "recovery-snapshot-manifest.json",
+            )
+            _copy_atomic(
+                restore_receipt_path,
+                artifacts / "recovery-restore-receipt.json",
+            )
+            _copy_atomic(gap_fence_path, artifacts / "recovery-gap-fence.json")
+            ReleaseStore._atomic_write(
+                artifacts / "recovery-watermark.json",
+                watermark_bytes,
+            )
+            state = store.read_state()
+            for key, value in metadata.items():
+                if key in state and state[key] != value:
+                    raise ReleaseManagerError("recovery baseline state metadata has drifted")
+            state_value = state.get("state")
+            if state_value not in {ReleaseState.STAGED.value, ReleaseState.PREPARED.value}:
+                raise ReleaseManagerError("recovery baseline state requires manual recovery")
+
+            if state_value == ReleaseState.STAGED.value:
+                store.checkpoint(ReleaseState.STAGED, **metadata)
+            if (
+                self._validate_git(manifest) != manifest.commit
+                or self._root_env_refs() != refs
+                or self._production_topology() != topology
+                or self._observed_migration_head() != migration_head
+                or self._validate_recovery_snapshot(
+                    snapshot_manifest_path,
+                    snapshot_manifest_sha256,
+                    manifest,
+                )
+                != snapshot
+                or self._validate_gap_fence_evidence(
+                    gap_fence_path,
+                    gap_fence_sha256,
+                    manifest,
+                    snapshot,
+                    cast(str, recovery["started_at"]),
+                )
+                != gap_digest
+                or self._validate_recovery_restore_receipt(
+                    restore_receipt_path,
+                    restore_receipt_sha256,
+                    manifest,
+                    snapshot,
+                    live_fingerprint,
+                    crypto_probe_status,
+                    crypto_probe_digest,
+                    cast(str, recovery["started_at"]),
+                )
+                != restore_digest
+                or self._recovery_crypto_probe()
+                != (crypto_probe_status, crypto_probe_digest)
+                or not hmac.compare_digest(
+                    self._recovery_live_database_fingerprint(),
+                    live_fingerprint,
+                )
+                or self._recovery_watermark() != first_watermark
+            ):
+                raise ReleaseManagerError("recovery baseline evidence or runtime has drifted")
+            self._assert_recovery_consumers_stopped()
+            _, final_data_image_ids, _ = self._current_runtime(
+                refs,
+                _RECOVERY_DATA_SERVICES,
+            )
+            if final_data_image_ids != data_image_ids:
+                raise ReleaseManagerError("recovery data runtime has drifted")
+            if state_value == ReleaseState.STAGED.value:
+                store.transition(
+                    ReleaseState.STAGED,
+                    ReleaseState.PREPARED,
+                    prepared_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    **metadata,
+                )
+            return self._checkpoint_recovery_state(
+                {
+                    **recovery,
+                    "gap_fence_sha256": gap_digest,
+                    "recovery_watermark_sha256": watermark_digest,
+                    "restore_receipt_sha256": restore_digest,
+                    "live_database_fingerprint_sha256": live_fingerprint,
+                },
+                status="running",
+                phase="adopted",
+            )
+        except ReleaseManagerError as exc:
+            try:
+                current_recovery = self._read_recovery_state()
+            except (ReleaseManagerError, OSError):
+                current_recovery = None
+            if current_recovery is not None and current_recovery.get("status") in {
+                "running",
+                "succeeded",
+            }:
+                candidate_store = ReleaseStore(
+                    self.release_root,
+                    cast(str, current_recovery["release_id"]),
+                )
+                failure_store_optional: ReleaseStore | None = candidate_store
+                try:
+                    candidate_store.read_state()
+                except ReleaseStoreError:
+                    failure_store_optional = None
+                raise self._record_recovery_failure(
+                    current_recovery,
+                    exc,
+                    store=failure_store_optional,
+                ) from exc
+            raise
+        except ReleaseStoreError as exc:
+            raise ReleaseManagerError("recovery baseline state is unavailable") from exc
+        except OSError as exc:
+            raise ReleaseManagerError("recovery baseline evidence is unavailable") from exc
+
+    def resume_recovery(
+        self,
+        *,
+        stage: Literal["api", "callback", "workers", "outbox", "beat", "web"],
+        runtime_secrets_target: str,
+        confirmed_recovered_host: bool,
+    ) -> dict[str, object]:
+        """按固定顺序恢复服务；最后健康封存前 recovery 围栏始终有效。"""
+
+        if self.mode != "production" or not confirmed_recovered_host:
+            raise ReleaseManagerError(
+                "recovery resume requires explicit recovered-host confirmation"
+            )
+        try:
+            ReleaseStore._validate_directory(self.release_root)
+            recovery = self._read_recovery_state()
+            if recovery is None:
+                raise ReleaseManagerError("recovery resume requires a persistent fence")
+            if recovery["status"] in {"failed", "recovery_required"}:
+                raise ReleaseManagerError("recovery resume state requires manual recovery")
+            store = ReleaseStore(self.release_root, cast(str, recovery["release_id"]))
+            manifest = self._stored_manifest(store)
+            manifest_raw = _read_safe_bytes(
+                store.release_dir / "manifest.json",
+                expected_uid=os.geteuid(),
+                expected_mode=0o600,
+                maximum=_MAX_JSON_BYTES,
+            )
+            topology = self._production_topology()
+            refs = self._root_env_refs()
+            runtime_secrets_target = self._validate_runtime_secrets_target(
+                runtime_secrets_target
+            )
+            if (
+                manifest.mode != "production"
+                or manifest.commit != recovery["commit"]
+                or not hmac.compare_digest(
+                    hashlib.sha256(manifest_raw).hexdigest(),
+                    cast(str, recovery["manifest_sha256"]),
+                )
+                or topology != recovery["production_topology"]
+                or runtime_secrets_target != recovery["runtime_secrets_target"]
+                or refs != {name: manifest.images[name].ref for name in _IMAGE_NAMES}
+                or manifest.migration_target != recovery["migration_head"]
+            ):
+                raise ReleaseManagerError("recovery resume binding has drifted")
+            self._validate_git(manifest)
+            if self._observed_migration_head() != manifest.migration_target:
+                raise ReleaseManagerError("recovery resume migration has drifted")
+            live_fingerprint = self._recovery_live_database_fingerprint()
+            if not hmac.compare_digest(
+                live_fingerprint,
+                cast(str, recovery["live_database_fingerprint_sha256"]),
+            ):
+                raise ReleaseManagerError("recovery resumed database has drifted")
+
+            release_state = store.read_state()
+            metadata_fields = (
+                "production_topology",
+                "runtime_secrets_target",
+                "snapshot_id",
+                "snapshot_manifest_sha256",
+                "snapshot_database_sha256",
+                "recovery_crypto_generation_id",
+                "backup_passphrase_generation_id",
+                "restore_receipt_sha256",
+                "live_database_fingerprint_sha256",
+                "gap_fence_sha256",
+                "recovery_migration_head",
+                "recovery_watermark_sha256",
+            )
+            recovery_to_release = {
+                "production_topology": recovery["production_topology"],
+                "runtime_secrets_target": recovery["runtime_secrets_target"],
+                "snapshot_id": recovery["snapshot_id"],
+                "snapshot_manifest_sha256": recovery["snapshot_manifest_sha256"],
+                "snapshot_database_sha256": recovery["snapshot_database_sha256"],
+                "recovery_crypto_generation_id": recovery[
+                    "recovery_crypto_generation_id"
+                ],
+                "backup_passphrase_generation_id": recovery[
+                    "backup_passphrase_generation_id"
+                ],
+                "restore_receipt_sha256": recovery["restore_receipt_sha256"],
+                "live_database_fingerprint_sha256": recovery[
+                    "live_database_fingerprint_sha256"
+                ],
+                "gap_fence_sha256": recovery["gap_fence_sha256"],
+                "recovery_migration_head": recovery["migration_head"],
+                "recovery_watermark_sha256": recovery[
+                    "recovery_watermark_sha256"
+                ],
+            }
+            if any(
+                release_state.get(field) != recovery_to_release[field]
+                for field in metadata_fields
+            ):
+                raise ReleaseManagerError("recovery resume release metadata has drifted")
+
+            stage_names = [item[0] for item in _RECOVERY_RESUME_STAGES]
+            requested_index = stage_names.index(stage)
+            completed_phases = ["adopted", *[item[2] for item in _RECOVERY_RESUME_STAGES]]
+            phase = cast(str, recovery["phase"])
+            finishing_succeeded = recovery["status"] == "succeeded"
+            if recovery["status"] == "succeeded":
+                if phase != "succeeded" or stage != "web":
+                    raise ReleaseManagerError("recovery resume order is invalid")
+                completed_index = len(_RECOVERY_RESUME_STAGES) - 1
+            else:
+                if recovery["status"] != "running" or phase not in completed_phases[:-1]:
+                    raise ReleaseManagerError("recovery resume order is invalid")
+                completed_index = completed_phases.index(phase)
+                if requested_index + 1 < completed_index:
+                    raise ReleaseManagerError("recovery resume order is invalid")
+                if requested_index + 1 > completed_index + 1:
+                    raise ReleaseManagerError("recovery resume order is invalid")
+
+            authorized_services: list[str] = []
+            for _, services, _ in _RECOVERY_RESUME_STAGES[:completed_index]:
+                authorized_services.extend(services)
+            unauthorized = tuple(
+                service
+                for service in _BOOTSTRAP_CONTAINMENT_SERVICES
+                if service not in authorized_services
+                and not (finishing_succeeded and service == "web")
+            )
+            self._assert_recovery_services_stopped(unauthorized)
+            current_services = (*_RECOVERY_DATA_SERVICES, *authorized_services)
+            _, observed_images, _ = self._current_runtime(refs, current_services)
+            if any(
+                not hmac.compare_digest(manifest.images[name].image_id, image_id)
+                for name, image_id in observed_images.items()
+            ):
+                raise ReleaseManagerError("recovery resumed runtime image IDs have drifted")
+
+            already_completed = (
+                not finishing_succeeded and requested_index + 1 == completed_index
+            )
+            if already_completed:
+                return recovery
+            if stage == "workers":
+                stored_watermark = self._stored_recovery_watermark(
+                    store,
+                    cast(str, recovery["recovery_watermark_sha256"]),
+                )
+                if self._recovery_watermark() != stored_watermark:
+                    raise ReleaseManagerError(
+                        "recovery sending watermark changed before workers"
+                    )
+
+            _, stage_services, next_phase = _RECOVERY_RESUME_STAGES[requested_index]
+            try:
+                self._run(
+                    self._compose()
+                    + [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--wait",
+                        "--wait-timeout",
+                        "120",
+                        *stage_services,
+                    ],
+                    f"production recovery {stage} resume",
+                )
+                authorized_after = [*authorized_services, *stage_services]
+                unauthorized_after = tuple(
+                    service
+                    for service in _BOOTSTRAP_CONTAINMENT_SERVICES
+                    if service not in authorized_after
+                )
+                self._assert_recovery_services_stopped(unauthorized_after)
+                container_ids, image_ids, service_container_ids = self._current_runtime(
+                    refs,
+                    (*_RECOVERY_DATA_SERVICES, *authorized_after),
+                )
+                if any(
+                    not hmac.compare_digest(manifest.images[name].image_id, image_id)
+                    for name, image_id in image_ids.items()
+                ):
+                    raise ReleaseManagerError(
+                        "recovery resumed runtime image IDs do not match manifest"
+                    )
+                if stage != "web":
+                    return self._checkpoint_recovery_state(
+                        recovery,
+                        status="running",
+                        phase=next_phase,
+                    )
+
+                state_value = store.read_state().get("state")
+                if state_value == ReleaseState.PREPARED.value:
+                    if finishing_succeeded:
+                        raise ReleaseManagerError(
+                            "recovery baseline finalization requires manual recovery"
+                        )
+                    self._write_snapshot(
+                        store,
+                        current_commit=manifest.commit,
+                        current_refs=refs,
+                        container_ids=container_ids,
+                        image_ids=image_ids,
+                        migration_head=manifest.migration_target,
+                        manifest=manifest,
+                        service_container_ids=service_container_ids,
+                        target_image_ids={
+                            name: manifest.images[name].image_id for name in _IMAGE_NAMES
+                        },
+                    )
+                    store.transition(
+                        ReleaseState.PREPARED,
+                        ReleaseState.ACTIVATING,
+                        recovery_sealing_at=datetime.now(UTC)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                    )
+                    state_value = ReleaseState.ACTIVATING.value
+                elif state_value not in {
+                    ReleaseState.ACTIVATING.value,
+                    ReleaseState.SUCCEEDED.value,
+                }:
+                    raise ReleaseManagerError(
+                        "recovery baseline finalization requires manual recovery"
+                    )
+                self._verify_final_runtime(store, manifest)
+                if recovery["status"] != "succeeded":
+                    recovery = self._checkpoint_recovery_state(
+                        recovery,
+                        status="succeeded",
+                        phase="succeeded",
+                    )
+                if state_value == ReleaseState.ACTIVATING.value:
+                    store.transition(
+                        ReleaseState.ACTIVATING,
+                        ReleaseState.SUCCEEDED,
+                        recovery_adopted_at=datetime.now(UTC)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        verified_migration_head=manifest.migration_target,
+                    )
+                now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                baseline = {
+                    "schema_version": 1,
+                    "status": "succeeded",
+                    "release_id": manifest.release_id,
+                    "commit": manifest.commit,
+                    "manifest_sha256": recovery["manifest_sha256"],
+                    "production_topology": topology,
+                    "phase": "recovery_adopted",
+                    "started_at": recovery["started_at"],
+                    "updated_at": now,
+                    "failure_type": None,
+                }
+                self._write_bootstrap_state(baseline)
+                self.assert_production_start_allowed()
+                return recovery
+            except Exception as exc:
+                raise self._record_recovery_failure(
+                    recovery,
+                    exc,
+                    store=store,
+                ) from exc
+        except ReleaseManagerError as exc:
+            try:
+                current_recovery = self._read_recovery_state()
+            except (ReleaseManagerError, OSError):
+                current_recovery = None
+            if current_recovery is not None and current_recovery.get("status") in {
+                "running",
+                "succeeded",
+            }:
+                failure_store = ReleaseStore(
+                    self.release_root,
+                    cast(str, current_recovery["release_id"]),
+                )
+                raise self._record_recovery_failure(
+                    current_recovery,
+                    exc,
+                    store=failure_store,
+                ) from exc
+            raise
+        except ReleaseStoreError as exc:
+            raise ReleaseManagerError("recovery resume state is unavailable") from exc
+        except OSError as exc:
+            raise ReleaseManagerError("recovery resume evidence is unavailable") from exc
+
+    def _freeze_bootstrap_bundle(
+        self,
+        manifest_path: Path,
+        manifest_bytes: bytes,
+        staging_files: Sequence[Path],
+        store: ReleaseStore,
+    ) -> None:
+        """在任何生产变更前把已解析闭包复制进受控 release store。"""
+
+        frozen: dict[str, bytes] = {}
+        for path in staging_files:
+            frozen[path.name] = _read_safe_bytes(
+                path,
+                expected_uid=self._staging_uid(),
+                expected_mode=0o600,
+                maximum=_MAX_JSON_BYTES,
+            )
+        if frozen.get(manifest_path.name) != manifest_bytes:
+            raise ReleaseManagerError(
+                "production bootstrap manifest changed before it could be frozen"
+            )
+        store.create(manifest_bytes)
+        artifacts = store.release_dir / "artifacts"
+        for name, payload in frozen.items():
+            if name == manifest_path.name:
+                continue
+            ReleaseStore._atomic_write(artifacts / name, payload)
+
+    def _checkpoint_bootstrap(
+        self,
+        state: Mapping[str, object],
+        *,
+        status: Literal["running", "succeeded", "failed"],
+        phase: str,
+        failure_type: str | None = None,
+    ) -> dict[str, object]:
+        updated = {
+            **state,
+            "status": status,
+            "phase": phase,
+            "failure_type": failure_type,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
+        self._write_bootstrap_state(updated)
+        return updated
+
+    def _contain_failed_bootstrap(self, compose: Sequence[str]) -> None:
+        """失败首装必须停止入口与全部消费者，同时保留数据服务和卷供取证。"""
+
+        self._run(
+            [*compose, "stop", *_BOOTSTRAP_CONTAINMENT_SERVICES],
+            "production bootstrap containment stop",
+        )
+        for service in _BOOTSTRAP_CONTAINMENT_SERVICES:
+            observed = self._run(
+                [*compose, "ps", "-q", service],
+                "production bootstrap containment verification",
+            )
+            if observed.stdout.strip():
+                raise ReleaseManagerError(
+                    "production bootstrap containment could not be verified"
+                )
+
+    def bootstrap(self, manifest_path: Path, *, confirmed_empty_host: bool) -> dict[str, object]:
+        """从已审计基线清单启动空生产主机，并固化为首个 succeeded release。"""
+
+        if self.mode != "production" or not confirmed_empty_host:
+            raise ReleaseManagerError(
+                "production bootstrap requires explicit empty-host confirmation"
+            )
+        manifest, manifest_bytes, staging_files = _validate_staging_bundle(
+            manifest_path,
+            self._staging_uid(),
+        )
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        if manifest.mode != "production":
+            raise ReleaseManagerError("production bootstrap manifest mode is invalid")
+        if (
+            any(image.changed for image in manifest.images.values())
+            or manifest.migration_from != manifest.migration_target
+            or manifest.migration_compatibility is not MigrationCompatibility.NONE
+        ):
+            raise ReleaseManagerError("production bootstrap requires a no-delta baseline manifest")
+        production_topology = self._production_topology()
+
+        ReleaseStore._ensure_directory(self.release_root)
+        existing = self._read_bootstrap_state()
+        if existing is not None:
+            if (
+                existing["status"] != "succeeded"
+                or existing["release_id"] != manifest.release_id
+                or existing["commit"] != manifest.commit
+                or existing["manifest_sha256"] != manifest_sha256
+                or existing["production_topology"] != production_topology
+            ):
+                raise ReleaseManagerError("production bootstrap requires manual recovery")
+            entries = {entry.name for entry in os.scandir(self.release_root)}
+            if entries != {_BOOTSTRAP_STATE_NAME, manifest.release_id}:
+                raise ReleaseManagerError("production bootstrap state directory drifted")
+            if self.status(manifest.release_id).get("state") != ReleaseState.SUCCEEDED.value:
+                raise ReleaseManagerError("production bootstrap baseline is not succeeded")
+            return cast(dict[str, object], existing)
+
+        with os.scandir(self.release_root) as directory_entries:
+            release_root_is_empty = next(directory_entries, None) is None
+        if not release_root_is_empty:
+            raise ReleaseManagerError("production bootstrap release root is not empty")
+        self._assert_empty_production_storage_sources()
+        current_refs = self._root_env_refs()
+        target_refs = {name: manifest.images[name].ref for name in _IMAGE_NAMES}
+        if current_refs != target_refs:
+            raise ReleaseManagerError("production bootstrap root env is not the target baseline")
+        self._validate_git(manifest)
+        self._validate_migration_direction(manifest)
+        compose = self._compose()
+        containers = self._run(
+            compose + ["ps", "--all", "-q"],
+            "production bootstrap container inventory",
+        )
+        volumes = self._run(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                "name=sms-platform_",
+            ],
+            "production bootstrap volume inventory",
+        )
+        if containers.stdout.strip() or volumes.stdout.strip():
+            raise ReleaseManagerError("production bootstrap host is not empty")
+
+        store = ReleaseStore(self.release_root, manifest.release_id)
+        self._freeze_bootstrap_bundle(
+            manifest_path,
+            manifest_bytes,
+            staging_files,
+            store,
+        )
+        store.checkpoint(
+            ReleaseState.STAGED,
+            production_topology=production_topology,
+            release_kind="bootstrap",
+        )
+
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        state: dict[str, object] = {
+            "schema_version": 1,
+            "status": "running",
+            "release_id": manifest.release_id,
+            "commit": manifest.commit,
+            "manifest_sha256": manifest_sha256,
+            "production_topology": production_topology,
+            "phase": "validated",
+            "started_at": now,
+            "updated_at": now,
+            "failure_type": None,
+        }
+        self._write_bootstrap_state(state)
+        self._bootstrap_execution_release_id = manifest.release_id
+        try:
+            artifacts = store.release_dir / "artifacts"
+            gate_kind, _ = self._validate_release_evidence(manifest, artifacts)
+            if gate_kind != "release":
+                raise ReleaseManagerError(
+                    "production bootstrap requires release evidence"
+                )
+            if self._validate_data_evidence(manifest, artifacts) is not None:
+                raise ReleaseManagerError(
+                    "production bootstrap cannot replace data images"
+                )
+            self._validate_backup_evidence(manifest, artifacts)
+            self._target_images(manifest, artifacts)
+            if self._production_topology() != production_topology:
+                raise ReleaseManagerError("production bootstrap topology drifted")
+            if self._root_env_refs() != target_refs:
+                raise ReleaseManagerError("production bootstrap root env drifted")
+            commands = (
+                ("compose_config", compose + ["config", "--quiet"]),
+                (
+                    "data_services",
+                    compose
+                    + [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--wait",
+                        "--wait-timeout",
+                        "120",
+                        "postgres",
+                        "redis",
+                        "redis-auth",
+                        "redis-control",
+                    ],
+                ),
+                ("migration", compose + ["run", "--rm", "migrate"]),
+                (
+                    "application_services",
+                    compose
+                    + [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--wait",
+                        "--wait-timeout",
+                        "120",
+                        *_BACKEND_SERVICES,
+                        "web",
+                    ],
+                ),
+            )
+            for phase, command in commands:
+                if self._stop_signal is not None:
+                    raise _ReleaseInterrupted("production bootstrap interrupted")
+                state = self._checkpoint_bootstrap(state, status="running", phase=phase)
+                self._run(command, f"production bootstrap {phase}")
+            if self._stop_signal is not None:
+                raise _ReleaseInterrupted("production bootstrap interrupted")
+            state = self._checkpoint_bootstrap(state, status="running", phase="seal_release")
+            if self._production_topology() != production_topology:
+                raise ReleaseManagerError("production bootstrap topology drifted")
+            self._resume_staged(store, manifest)
+            self.activate(manifest.release_id)
+            return self._checkpoint_bootstrap(state, status="succeeded", phase="complete")
+        except BaseException as exc:
+            containment_failed = False
+            try:
+                self._contain_failed_bootstrap(compose)
+            except BaseException:
+                containment_failed = True
+            with suppress(Exception):
+                self._checkpoint_bootstrap(
+                    state,
+                    status="failed",
+                    phase=("containment_failed" if containment_failed else "contained"),
+                    failure_type=(
+                        "BootstrapContainmentFailed"
+                        if containment_failed
+                        else type(exc).__name__
+                    ),
+                )
+            if not isinstance(exc, Exception):
+                raise
+            raise ReleaseManagerError(
+                f"production bootstrap failed ({type(exc).__name__})"
+            ) from exc
+        finally:
+            self._bootstrap_execution_release_id = None
 
     @staticmethod
     def _render_env_refs(original: bytes, refs: Mapping[str, str]) -> bytes:
@@ -1592,6 +4402,7 @@ class ReleaseManager:
     def configure_activation(self, release_id: str) -> tuple[ReleaseStep, ...]:
         """原子写入四镜像目标引用并验证 Compose 配置，不改变容器。"""
 
+        self._assert_bootstrap_mutation_allowed(release_id)
         store = ReleaseStore(self.release_root, release_id)
         env_path = self.root / ".env"
         try:
@@ -2084,6 +4895,60 @@ class ReleaseManager:
             raise ReleaseManagerError("compensation configuration failed")
         store.record_observation("compensation_config", {"completed": True})
 
+    def _verify_compensation_result(
+        self,
+        store: ReleaseStore,
+        manifest: ReleaseManifest,
+        keep_data: set[str],
+        migration_state: str,
+    ) -> None:
+        """补偿终态必须由 env、容器与 migration 三方观察共同证明。"""
+
+        snapshot = self._read_snapshot(store)
+        expected_refs = cast(dict[str, str], snapshot["current_refs"]).copy()
+        for name in keep_data:
+            expected_refs[name] = manifest.images[name].ref
+        if self._root_env_refs() != expected_refs:
+            raise ReleaseManagerError("compensation env verification failed")
+
+        recreation = {
+            ReleaseStepKind.RECREATE_POSTGRES,
+            ReleaseStepKind.RECREATE_REDIS,
+            ReleaseStepKind.RECREATE_BACKEND,
+            ReleaseStepKind.RECREATE_WEB,
+        }
+        for step in build_activation_plan(manifest):
+            if step.kind not in recreation:
+                continue
+            observed, healthy = self._observe_step_runtime_status(store, manifest, step)
+            image_name = _service_image_name(step.services[0])
+            if not manifest.images[image_name].changed:
+                allowed = {"original", "target"}
+            elif image_name in keep_data:
+                allowed = {"target"}
+            else:
+                allowed = {"original"}
+            if observed not in allowed or not healthy:
+                raise ReleaseManagerError("compensation runtime verification failed")
+
+        observed_migration = self._observe_migration_state(store, manifest)
+        expected_migration = (
+            "target"
+            if manifest.migration_from == manifest.migration_target
+            or migration_state == "target"
+            else "original"
+        )
+        if observed_migration != expected_migration:
+            raise ReleaseManagerError("compensation migration verification failed")
+        store.record_observation(
+            "compensation_final",
+            {
+                "completed": True,
+                "migration": expected_migration,
+                "retained_data": sorted(keep_data),
+            },
+        )
+
     def _preflight_activation(
         self,
         store: ReleaseStore,
@@ -2092,6 +4957,7 @@ class ReleaseManager:
         snapshot = self._read_snapshot(store)
         store.record_intent("activation_preflight", {"source": "runtime"})
         commit = self._validate_git(manifest)
+        self._validate_migration_direction(manifest)
         refs = self._current_refs(manifest)
         container_ids, image_ids, service_container_ids = self._current_runtime(refs)
         migration_head = self._migration_head(manifest)
@@ -2209,7 +5075,7 @@ class ReleaseManager:
             raise ReleaseManagerError("release resume ended in recovery_required")
 
         plan = build_activation_plan(manifest)
-        commands = activation_commands(self.root, plan)
+        commands = activation_commands(self.root, plan, compose=self._compose())
         completed = self._completed_steps(store)
         recreation = {
             ReleaseStepKind.RECREATE_POSTGRES,
@@ -2289,7 +5155,11 @@ class ReleaseManager:
             ReleaseState.ACTIVATING,
             next_step="finalize",
         )
-        store.transition(ReleaseState.ACTIVATING, ReleaseState.SUCCEEDED)
+        store.transition(
+            ReleaseState.ACTIVATING,
+            ReleaseState.SUCCEEDED,
+            verified_migration_head=manifest.migration_target,
+        )
 
     def _resume_staged(self, store: ReleaseStore, manifest: ReleaseManifest) -> None:
         self._ensure_not_stopped(
@@ -2301,8 +5171,12 @@ class ReleaseManager:
             self._active_store = store
             artifacts = store.release_dir / "artifacts"
             current_commit = self._validate_git(manifest)
+            self._validate_migration_direction(manifest)
             current_refs = self._current_refs(manifest)
-            self._validate_release_evidence(manifest, artifacts)
+            release_gate_kind, release_scan_performed = self._validate_release_evidence(
+                manifest,
+                artifacts,
+            )
             data_evidence = self._validate_data_evidence(manifest, artifacts)
             self._validate_backup_evidence(manifest, artifacts)
             target_ids = self._target_images(manifest, artifacts)
@@ -2320,7 +5194,19 @@ class ReleaseManager:
                 service_container_ids=service_container_ids,
                 target_image_ids=target_ids,
             )
-            store.transition(ReleaseState.STAGED, ReleaseState.PREPARED)
+            prepared_fields: dict[str, object] = {
+                "prepared_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "release_gate_kind": release_gate_kind,
+                "control_smoke_only": release_gate_kind == "release_control_smoke",
+                "release_scan_performed": release_scan_performed,
+            }
+            if self.mode == "production":
+                prepared_fields["production_topology"] = self._production_topology()
+            store.transition(
+                ReleaseState.STAGED,
+                ReleaseState.PREPARED,
+                **prepared_fields,
+            )
         except _ReleaseInterrupted:
             raise
         except Exception as exc:
@@ -2379,6 +5265,12 @@ class ReleaseManager:
             )
             if later_stateless_failure and kind in completed
         }
+        if migration_state == "target":
+            keep_data.update(
+                name
+                for name in ("postgres", "redis")
+                if manifest.images[name].changed
+            )
         residual = [f"image:{name}" for name in ("postgres", "redis") if name in keep_data]
         if migration_state == "target":
             if manifest.migration_compatibility is not MigrationCompatibility.EXPAND:
@@ -2429,7 +5321,11 @@ class ReleaseManager:
                 if kind.value in compensated:
                     continue
                 step = plan_by_kind[kind]
-                command = activation_commands(self.root, [step])[0]
+                command = activation_commands(
+                    self.root,
+                    [step],
+                    compose=self._compose(),
+                )[0]
                 self._ensure_not_stopped(
                     store,
                     ReleaseState.ROLLING_BACK,
@@ -2442,6 +5338,12 @@ class ReleaseManager:
                 if result.returncode != 0:
                     raise ReleaseManagerError("service compensation failed")
                 store.record_observation("compensate", {"completed": True, "group": kind.value})
+            self._verify_compensation_result(
+                store,
+                manifest,
+                keep_data,
+                migration_state,
+            )
             store.transition(
                 ReleaseState.ROLLING_BACK,
                 ReleaseState.ROLLED_BACK,
@@ -2460,11 +5362,163 @@ class ReleaseManager:
             raise ReleaseManagerError("release activation ended in recovery_required") from exc
         raise ReleaseManagerError("release activation ended in rolled_back")
 
+    def _record_rollback_runtime_effects(
+        self,
+        store: ReleaseStore,
+        manifest: ReleaseManifest,
+        *,
+        already_rolling_back: bool,
+    ) -> None:
+        """显式回退前以运行态补齐已生效但尚未落 observation 的步骤。"""
+
+        current = (
+            ReleaseState.ROLLING_BACK
+            if already_rolling_back
+            else ReleaseState.ACTIVATING
+        )
+
+        def fail_closed() -> NoReturn:
+            store.transition(
+                current,
+                ReleaseState.RECOVERY_REQUIRED,
+                failure_type="rollback_runtime_ambiguity",
+            )
+            raise ReleaseManagerError(
+                "release rollback runtime is ambiguous; manual recovery required"
+            )
+
+        events = self._read_events(store)
+        plan = build_activation_plan(manifest)
+        plan_by_kind = {step.kind: step for step in plan}
+        recreation = {
+            ReleaseStepKind.RECREATE_POSTGRES,
+            ReleaseStepKind.RECREATE_REDIS,
+            ReleaseStepKind.RECREATE_BACKEND,
+            ReleaseStepKind.RECREATE_WEB,
+        }
+        side_effects = recreation | {
+            ReleaseStepKind.QUIESCE_BACKEND,
+            ReleaseStepKind.RUN_MIGRATE,
+        }
+        pending_activation: set[ReleaseStepKind] = set()
+        pending_compensation: set[ReleaseStepKind] = set()
+        for event in events:
+            try:
+                event_step = ReleaseStepKind(cast(str, event["step"]))
+            except (TypeError, ValueError):
+                event_step = None
+            if event_step in side_effects:
+                if event["kind"] == "intent":
+                    pending_activation.add(event_step)
+                elif event["details"].get("completed") is True:
+                    pending_activation.discard(event_step)
+            if event["step"] != "compensate":
+                continue
+            group = event["details"].get("group")
+            try:
+                compensation_kind = ReleaseStepKind(cast(str, group))
+            except (TypeError, ValueError):
+                fail_closed()
+            if compensation_kind not in recreation:
+                fail_closed()
+            if event["kind"] == "intent":
+                pending_compensation.add(compensation_kind)
+            elif event["details"].get("completed") is True:
+                pending_compensation.discard(compensation_kind)
+
+        for kind in sorted(pending_compensation, key=lambda value: value.value):
+            step = plan_by_kind.get(kind)
+            if step is None:
+                fail_closed()
+            try:
+                observed, healthy = self._observe_step_runtime_status(
+                    store,
+                    manifest,
+                    step,
+                )
+            except Exception:
+                fail_closed()
+            image_name = _service_image_name(step.services[0])
+            if not manifest.images[image_name].changed:
+                if observed not in {"original", "target"} or not healthy:
+                    fail_closed()
+                store.record_observation(
+                    "compensate",
+                    {
+                        "completed": True,
+                        "group": kind.value,
+                        "recovered": True,
+                    },
+                )
+                continue
+            if observed == "original" and healthy:
+                store.record_observation(
+                    "compensate",
+                    {
+                        "completed": True,
+                        "group": kind.value,
+                        "recovered": True,
+                    },
+                )
+                continue
+            if observed == "target":
+                continue
+            fail_closed()
+
+        for kind in sorted(pending_activation, key=lambda value: value.value):
+            if kind is ReleaseStepKind.RUN_MIGRATE:
+                continue
+            if kind is ReleaseStepKind.QUIESCE_BACKEND:
+                step = plan_by_kind.get(ReleaseStepKind.RECREATE_BACKEND)
+            else:
+                step = plan_by_kind.get(kind)
+            if step is None:
+                fail_closed()
+            try:
+                observed, healthy = self._observe_step_runtime_status(
+                    store,
+                    manifest,
+                    step,
+                )
+            except Exception:
+                fail_closed()
+            if kind is ReleaseStepKind.QUIESCE_BACKEND:
+                if observed == "stopped":
+                    store.record_observation(
+                        kind.value,
+                        {
+                            "completed": True,
+                            "recovered": True,
+                            "services": list(step.services),
+                        },
+                    )
+                elif observed not in {"original", "target"} or not healthy:
+                    fail_closed()
+                continue
+            image_name = _service_image_name(step.services[0])
+            if not manifest.images[image_name].changed:
+                if observed not in {"original", "target"} or not healthy:
+                    fail_closed()
+                continue
+            if observed == "target":
+                store.record_observation(
+                    kind.value,
+                    {
+                        "completed": True,
+                        "recovered": True,
+                        "services": list(step.services),
+                    },
+                )
+            elif observed != "original" or not healthy:
+                fail_closed()
+
     def activate(self, release_id: str) -> None:
+        self._assert_bootstrap_mutation_allowed(release_id)
         store = ReleaseStore(self.release_root, release_id)
         state = store.read_state()
         if state.get("state") != ReleaseState.PREPARED.value:
             raise ReleaseManagerError("release is not prepared for activation")
+        self._assert_production_topology(state)
         manifest = self._stored_manifest(store)
         self._ensure_not_stopped(
             store,
@@ -2494,7 +5548,7 @@ class ReleaseManager:
                 _ActivationStepError(ReleaseStepKind.VERIFY),
             )
             raise ReleaseManagerError("release activation failed") from exc
-        commands = activation_commands(self.root, plan)
+        commands = activation_commands(self.root, plan, compose=self._compose())
         for step, command in zip(plan, commands, strict=True):
             self._ensure_not_stopped(
                 store,
@@ -2510,7 +5564,11 @@ class ReleaseManager:
             ReleaseState.ACTIVATING,
             next_step="finalize",
         )
-        store.transition(ReleaseState.ACTIVATING, ReleaseState.SUCCEEDED)
+        store.transition(
+            ReleaseState.ACTIVATING,
+            ReleaseState.SUCCEEDED,
+            verified_migration_head=manifest.migration_target,
+        )
 
     def status(self, release_id: str) -> dict[str, object]:
         try:
@@ -2519,12 +5577,15 @@ class ReleaseManager:
             raise ReleaseManagerError("release status is unavailable") from exc
 
     def resume(self, release_id: str) -> None:
+        self._assert_bootstrap_mutation_allowed(release_id)
         store = ReleaseStore(self.release_root, release_id)
-        state_value = store.read_state().get("state")
+        state = store.read_state()
+        state_value = state.get("state")
         if state_value in {
             ReleaseState.SUCCEEDED.value,
             ReleaseState.ROLLED_BACK.value,
         }:
+            self._assert_production_topology(state)
             return
         if state_value == ReleaseState.RECOVERY_REQUIRED.value:
             raise ReleaseManagerError("recovery_required release refuses automatic resume")
@@ -2532,6 +5593,8 @@ class ReleaseManager:
             raise ReleaseManagerError("failed release cannot be resumed")
         manifest = self._stored_manifest(store)
         if state_value == ReleaseState.STAGED.value:
+            if self.mode == "production":
+                self._validate_staged_production_release(store, manifest, state)
             self._resume_staged(store, manifest)
             self.activate(release_id)
             return
@@ -2541,6 +5604,7 @@ class ReleaseManager:
             ReleaseState.ROLLING_BACK.value,
         }:
             raise ReleaseManagerError("release state is unknown")
+        self._assert_production_topology(state)
         current = ReleaseState(state_value)
         self._ensure_not_stopped(store, current, next_step="reconcile")
         observed = self._observe_release_runtime(store, manifest)
@@ -2571,7 +5635,11 @@ class ReleaseManager:
                         manifest,
                         _ActivationStepError(ReleaseStepKind.VERIFY, ambiguous=True),
                     )
-                store.transition(ReleaseState.ACTIVATING, ReleaseState.SUCCEEDED)
+                store.transition(
+                    ReleaseState.ACTIVATING,
+                    ReleaseState.SUCCEEDED,
+                    verified_migration_head=manifest.migration_target,
+                )
                 return
             if current is ReleaseState.ROLLING_BACK:
                 store.transition(
@@ -2592,19 +5660,25 @@ class ReleaseManager:
         raise ReleaseManagerError("release reconciliation decision is invalid")
 
     def rollback(self, release_id: str) -> None:
+        self._assert_bootstrap_mutation_allowed(release_id)
         store = ReleaseStore(self.release_root, release_id)
         state = store.read_state()
         state_value = state.get("state")
         if state_value in {
             ReleaseState.STAGED.value,
             ReleaseState.FAILED.value,
-            ReleaseState.ROLLED_BACK.value,
         }:
             return
+        if state_value == ReleaseState.ROLLED_BACK.value:
+            self._assert_production_topology(state)
+            return
+        self._assert_production_topology(state)
         if state_value == ReleaseState.RECOVERY_REQUIRED.value:
             raise ReleaseManagerError("recovery_required release refuses automatic rollback")
         if state_value == ReleaseState.SUCCEEDED.value:
-            raise ReleaseManagerError("succeeded release requires an explicit new release")
+            raise ReleaseManagerError(
+                "succeeded release requires a forward rollback candidate"
+            )
         manifest = self._stored_manifest(store)
         already_rolling_back = state_value == ReleaseState.ROLLING_BACK.value
         if state_value == ReleaseState.PREPARED.value:
@@ -2620,6 +5694,11 @@ class ReleaseManager:
             ReleaseState.ROLLING_BACK.value,
         }:
             raise ReleaseManagerError("release state is unknown")
+        self._record_rollback_runtime_effects(
+            store,
+            manifest,
+            already_rolling_back=already_rolling_back,
+        )
         failure_name = state.get("failure_step")
         try:
             failure_kind = (
@@ -2645,6 +5724,59 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action", required=True)
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--manifest", required=True, type=Path)
+    bootstrap = subparsers.add_parser("bootstrap")
+    bootstrap.add_argument("--manifest", required=True, type=Path)
+    bootstrap.add_argument(
+        "--confirm-empty-host",
+        action="store_true",
+        help="confirm that the fixed production Compose project and volumes are empty",
+    )
+    recovery_start = subparsers.add_parser("start-recovery")
+    recovery_start.add_argument("--manifest", required=True, type=Path)
+    recovery_start.add_argument("--snapshot-manifest", required=True, type=Path)
+    recovery_start.add_argument("--snapshot-manifest-sha256", required=True)
+    recovery_start.add_argument("--runtime-secrets-target", required=True)
+    recovery_start.add_argument(
+        "--confirm-recovered-host",
+        action="store_true",
+        help="confirm that this non-empty host is the fenced recovery target",
+    )
+    recovery_observe = subparsers.add_parser("observe-recovery")
+    recovery_observe.add_argument("--manifest", required=True, type=Path)
+    recovery_observe.add_argument("--snapshot-manifest", required=True, type=Path)
+    recovery_observe.add_argument("--snapshot-manifest-sha256", required=True)
+    recovery_observe.add_argument("--output", required=True, type=Path)
+    recovery_observe.add_argument("--runtime-secrets-target", required=True)
+    recovery_observe.add_argument("--confirm-recovered-host", action="store_true")
+    recovery_adopt = subparsers.add_parser("adopt-recovery")
+    recovery_adopt.add_argument("--manifest", required=True, type=Path)
+    recovery_adopt.add_argument("--snapshot-manifest", required=True, type=Path)
+    recovery_adopt.add_argument("--snapshot-manifest-sha256", required=True)
+    recovery_adopt.add_argument("--restore-receipt", required=True, type=Path)
+    recovery_adopt.add_argument("--restore-receipt-sha256", required=True)
+    recovery_adopt.add_argument("--gap-fence-evidence", required=True, type=Path)
+    recovery_adopt.add_argument("--gap-fence-sha256", required=True)
+    recovery_adopt.add_argument("--runtime-secrets-target", required=True)
+    recovery_adopt.add_argument(
+        "--confirm-recovered-host",
+        action="store_true",
+        help="confirm that this non-empty host was restored and fenced under an approved change",
+    )
+    recovery_resume = subparsers.add_parser("resume-recovery")
+    recovery_resume.add_argument(
+        "--stage",
+        choices=("api", "callback", "workers", "outbox", "beat", "web"),
+        required=True,
+    )
+    recovery_resume.add_argument("--runtime-secrets-target", required=True)
+    recovery_resume.add_argument(
+        "--confirm-recovered-host",
+        action="store_true",
+    )
+    forward = subparsers.add_parser("prepare-forward-rollback")
+    forward.add_argument("--source-release-id", required=True)
+    forward.add_argument("--manifest", required=True, type=Path)
+    subparsers.add_parser("start-gate")
     for action in ("activate", "status", "resume", "rollback"):
         command = subparsers.add_parser(action)
         command.add_argument("--release-id", required=True)
@@ -2673,8 +5805,80 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         for signum in managed_signals:
             signal.signal(signum, manager.request_stop)
-        if arguments.action == "prepare":
+        if arguments.action == "start-gate":
+            manager.assert_production_start_allowed()
+        elif arguments.action == "prepare":
             manager.prepare(arguments.manifest)
+        elif arguments.action == "bootstrap":
+            print(
+                json.dumps(
+                    manager.bootstrap(
+                        arguments.manifest,
+                        confirmed_empty_host=arguments.confirm_empty_host,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif arguments.action == "start-recovery":
+            print(
+                json.dumps(
+                    manager.start_recovery(
+                        arguments.manifest,
+                        snapshot_manifest_path=arguments.snapshot_manifest,
+                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                        runtime_secrets_target=arguments.runtime_secrets_target,
+                        confirmed_recovered_host=arguments.confirm_recovered_host,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif arguments.action == "observe-recovery":
+            print(
+                json.dumps(
+                    manager.observe_recovery(
+                        arguments.manifest,
+                        snapshot_manifest_path=arguments.snapshot_manifest,
+                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                        output_path=arguments.output,
+                        runtime_secrets_target=arguments.runtime_secrets_target,
+                        confirmed_recovered_host=arguments.confirm_recovered_host,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif arguments.action == "adopt-recovery":
+            print(
+                json.dumps(
+                    manager.adopt_recovery(
+                        arguments.manifest,
+                        snapshot_manifest_path=arguments.snapshot_manifest,
+                        snapshot_manifest_sha256=arguments.snapshot_manifest_sha256,
+                        restore_receipt_path=arguments.restore_receipt,
+                        restore_receipt_sha256=arguments.restore_receipt_sha256,
+                        gap_fence_path=arguments.gap_fence_evidence,
+                        gap_fence_sha256=arguments.gap_fence_sha256,
+                        runtime_secrets_target=arguments.runtime_secrets_target,
+                        confirmed_recovered_host=arguments.confirm_recovered_host,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif arguments.action == "resume-recovery":
+            print(
+                json.dumps(
+                    manager.resume_recovery(
+                        stage=arguments.stage,
+                        runtime_secrets_target=arguments.runtime_secrets_target,
+                        confirmed_recovered_host=arguments.confirm_recovered_host,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif arguments.action == "prepare-forward-rollback":
+            manager.prepare_forward_rollback(
+                arguments.source_release_id,
+                arguments.manifest,
+            )
         elif arguments.action == "status":
             print(json.dumps(manager.status(arguments.release_id), sort_keys=True))
         else:

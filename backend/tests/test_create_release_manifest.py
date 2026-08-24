@@ -94,7 +94,50 @@ def test_creates_self_validated_production_manifest(tmp_path: Path) -> None:
     assert output.stat().st_mode & 0o777 == 0o600
 
 
-def test_requires_data_and_backup_evidence_only_for_changed_data_images(
+def test_creates_no_delta_bootstrap_baseline_only_when_explicit(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "release"
+    bundle.mkdir(mode=0o700)
+    release_report = _release_report(bundle / "release-gate.json")
+    output = bundle / "manifest.json"
+
+    with pytest.raises(ManifestCreationError, match="changed images"):
+        create_manifest(
+            release_report=release_report,
+            output=output,
+            release_id="release-bootstrap",
+            migration_from="0032_async_import_runtime",
+            migration_target="0032_async_import_runtime",
+            changed=frozenset(),
+        )
+
+    create_manifest(
+        release_report=release_report,
+        output=output,
+        release_id="release-bootstrap",
+        migration_from="0032_async_import_runtime",
+        migration_target="0032_async_import_runtime",
+        changed=frozenset(),
+        baseline=True,
+    )
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert not any(image["changed"] for image in manifest["images"].values())
+    assert manifest["migration"]["compatibility"] == "none"
+
+    with pytest.raises(ManifestCreationError, match="no image or migration delta"):
+        create_manifest(
+            release_report=release_report,
+            output=output,
+            release_id="release-invalid-bootstrap",
+            migration_from="0031_previous",
+            migration_target="0032_async_import_runtime",
+            changed=frozenset(),
+            baseline=True,
+        )
+
+
+def test_requires_data_for_changed_data_images_and_backup_for_postgres_change(
     tmp_path: Path,
 ) -> None:
     bundle = tmp_path / "release"
@@ -132,6 +175,55 @@ def test_requires_data_and_backup_evidence_only_for_changed_data_images(
         "record": "backup-change.json",
         "restore_report": "restore-report.json",
     }
+
+
+def test_migration_only_requires_backup_pair_and_no_migration_forbids_it(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "release"
+    bundle.mkdir(mode=0o700)
+    release_report = _release_report(bundle / "release-gate.json")
+    backup = _private_json(bundle / "backup-change.json", {"passed": True})
+    restore = _private_json(bundle / "restore-report.json", {"passed": True})
+
+    with pytest.raises(ManifestCreationError, match="PostgreSQL or migration"):
+        create_manifest(
+            release_report=release_report,
+            output=bundle / "manifest.json",
+            release_id="release-20260728",
+            migration_from="0031_previous",
+            migration_target="0032_async_import_runtime",
+            changed=frozenset({"api"}),
+        )
+
+    create_manifest(
+        release_report=release_report,
+        output=bundle / "manifest.json",
+        release_id="release-20260728",
+        migration_from="0031_previous",
+        migration_target="0032_async_import_runtime",
+        changed=frozenset({"api"}),
+        backup_record=backup,
+        restore_report=restore,
+    )
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["images"]["postgres"]["changed"] is False
+    assert manifest["evidence"]["backup_restore_change"] == {
+        "record": backup.name,
+        "restore_report": restore.name,
+    }
+
+    with pytest.raises(ManifestCreationError, match="PostgreSQL or migration"):
+        create_manifest(
+            release_report=release_report,
+            output=bundle / "manifest.json",
+            release_id="release-20260729",
+            migration_from="0032_async_import_runtime",
+            migration_target="0032_async_import_runtime",
+            changed=frozenset({"api"}),
+            backup_record=backup,
+            restore_report=restore,
+        )
 
 
 def test_rejects_candidate_report_without_final_promotion_binding(

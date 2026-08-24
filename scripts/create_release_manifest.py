@@ -136,14 +136,17 @@ def create_manifest(
     migration_from: str,
     migration_target: str,
     changed: frozenset[str],
+    baseline: bool = False,
     data_images: Path | None = None,
     backup_record: Path | None = None,
     restore_report: Path | None = None,
 ) -> None:
     """读取最终证据，原子生成通过现有 exact-field 契约的清单。"""
 
-    if not changed or not changed.issubset(_IMAGES):
+    if not changed.issubset(_IMAGES) or (not changed and not baseline):
         raise ManifestCreationError("changed images are invalid")
+    if baseline and (changed or migration_from != migration_target):
+        raise ManifestCreationError("baseline manifest must have no image or migration delta")
     if not output.is_absolute() or output.name != "manifest.json":
         raise ManifestCreationError("output must be an absolute manifest.json path")
     if output.parent != release_report.parent:
@@ -223,8 +226,11 @@ def create_manifest(
     backup_pair = (backup_record is not None, restore_report is not None)
     if backup_pair not in {(False, False), (True, True)}:
         raise ManifestCreationError("backup evidence must be provided as a pair")
-    if ("postgres" in changed) is not all(backup_pair):
-        raise ManifestCreationError("backup evidence does not match PostgreSQL change")
+    backup_required = "postgres" in changed or migration_from != migration_target
+    if backup_required is not all(backup_pair):
+        raise ManifestCreationError(
+            "backup evidence does not match PostgreSQL or migration change"
+        )
     backup_evidence = (
         None
         if not all(backup_pair)
@@ -292,7 +298,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--migration-from", required=True)
     parser.add_argument("--migration-target", required=True)
-    parser.add_argument("--changed", action="append", choices=_IMAGES, required=True)
+    release_kind = parser.add_mutually_exclusive_group(required=True)
+    release_kind.add_argument("--changed", action="append", choices=_IMAGES)
+    release_kind.add_argument("--baseline", action="store_true")
     parser.add_argument("--data-images", type=Path)
     parser.add_argument("--backup-record", type=Path)
     parser.add_argument("--restore-report", type=Path)
@@ -308,7 +316,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_id=args.release_id,
             migration_from=args.migration_from,
             migration_target=args.migration_target,
-            changed=frozenset(args.changed),
+            changed=frozenset(args.changed or ()),
+            baseline=args.baseline,
             data_images=args.data_images,
             backup_record=args.backup_record,
             restore_report=args.restore_report,

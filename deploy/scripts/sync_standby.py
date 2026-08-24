@@ -5,22 +5,31 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
+import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from failover_common import (
+    BACKUP_PASSPHRASE_GENERATION_ID_FILE,
+    RECOVERY_CRYPTO_GENERATION_ID_FILE,
     CommandRunner,
+    DeadlineExceeded,
     atomic_write_json,
+    read_root_generation_id_file,
     sha256_file,
+    validate_generation_id,
     validate_passphrase_file,
     validate_remote,
 )
@@ -33,6 +42,9 @@ PRODUCTION_FLAGS = {
     "AUTH_MOCK": "0",
     "VENDOR_MOCK": "0",
 }
+BACKUP_CAPACITY_PERCENT = 70
+BACKUP_SIZE_NUMERATOR = 3
+BACKUP_SIZE_DENOMINATOR = 2
 
 
 class Runner(Protocol):
@@ -43,6 +55,7 @@ class Runner(Protocol):
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         input_bytes: bytes | None = None,
+        timeout: float | None = None,
     ) -> bytes: ...
 
     def pipeline_to_file(
@@ -53,6 +66,7 @@ class Runner(Protocol):
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> None: ...
 
 
@@ -79,6 +93,9 @@ class SyncConfig:
     passphrase_file: Path
     database: str
     build_only: bool
+    recovery_crypto_generation_id_file: Path = RECOVERY_CRYPTO_GENERATION_ID_FILE
+    backup_passphrase_generation_id_file: Path = BACKUP_PASSPHRASE_GENERATION_ID_FILE
+    max_backup_seconds: float = 14400
     target: StandbyTarget | None = None
 
 
@@ -89,19 +106,67 @@ class SyncResult:
     transferred: bool
 
 
+class BackupCapacityExceeded(RuntimeError):
+    """目标文件系统无法在 70% 水位内容纳保守估算快照。"""
+
+    def __init__(self) -> None:
+        super().__init__("backup capacity gate failed")
+
+
+class BackupCleanupFailure(RuntimeError):
+    """失败快照未能从本地 incoming 区确认清除。"""
+
+    def __init__(self) -> None:
+        super().__init__("backup staging cleanup failed")
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def validate_environment_file(path: Path) -> dict[str, str]:
-    """确认生产 env 只有非秘密值，凭据键只能是 /run/secrets 文件路径。"""
+def _filesystem_capacity(path: Path) -> tuple[int, int]:
+    """读取将承载 output root 的文件系统总量与当前已用字节。"""
 
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("environment file must be a regular non-symlink file")
-    if stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise ValueError("environment file permissions must be 0600")
+    anchor = path
+    while not anchor.exists():
+        parent = anchor.parent
+        if parent == anchor:
+            raise ValueError("backup output filesystem unavailable")
+        anchor = parent
+    values = os.statvfs(anchor)
+    block_size = values.f_frsize
+    total = values.f_blocks * block_size
+    free = values.f_bfree * block_size
+    if block_size <= 0 or total <= 0 or free < 0 or free > total:
+        raise ValueError("invalid backup filesystem capacity")
+    return total, total - free
+
+
+def _read_environment_file(path: Path) -> tuple[dict[str, str], bytes]:
+    """以单次、禁止跟随符号链接的读取固定生产 env 代际。"""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("environment file must be a regular non-symlink file") from error
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("environment file must be a regular non-symlink file")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise ValueError("environment file permissions must be 0600")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            content = source.read()
+    finally:
+        os.close(fd)
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("environment file must be valid UTF-8") from error
     values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -118,6 +183,13 @@ def validate_environment_file(path: Path) -> dict[str, str]:
     for key, expected in PRODUCTION_FLAGS.items():
         if values.get(key) != expected:
             raise ValueError(f"production environment requires {key}={expected}")
+    return values, content
+
+
+def validate_environment_file(path: Path) -> dict[str, str]:
+    """确认生产 env 只有非秘密值，凭据键只能是 /run/secrets 文件路径。"""
+
+    values, _ = _read_environment_file(path)
     return values
 
 
@@ -129,32 +201,135 @@ def _write_text_0600(path: Path, value: str) -> None:
         os.fsync(output.fileno())
 
 
+def _write_bytes_0600(path: Path, value: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(value)
+        output.flush()
+        os.fsync(output.fileno())
+
+
 class SyncService:
     """创建本地原子快照，并可在校验后发布到冷备节点。"""
 
-    def __init__(self, runner: Runner, *, clock: Callable[[], datetime] = utc_now) -> None:
+    def __init__(
+        self,
+        runner: Runner,
+        *,
+        clock: Callable[[], datetime] = utc_now,
+        timer: Callable[[], float] = time.monotonic,
+        capacity_reader: Callable[[Path], tuple[int, int]] = _filesystem_capacity,
+        generation_reader: Callable[[Path], str] = read_root_generation_id_file,
+    ) -> None:
         self.runner = runner
         self.clock = clock
+        self.timer = timer
+        self.capacity_reader = capacity_reader
+        self.generation_reader = generation_reader
 
     @staticmethod
     def _compose(config: SyncConfig) -> list[str]:
         return ["docker", "compose", "-f", str(config.compose_file)]
 
-    def _assert_inputs(self, config: SyncConfig) -> tuple[Path, StandbyTarget | None]:
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - self.timer()
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise DeadlineExceeded
+        return remaining
+
+    def _run_command(
+        self,
+        command: Sequence[str],
+        config: SyncConfig,
+        deadline: float,
+    ) -> bytes:
+        try:
+            output = self.runner.run(
+                list(command),
+                cwd=config.repository_root,
+                timeout=self._remaining(deadline),
+            )
+        except BaseException:
+            self._remaining(deadline)
+            raise
+        self._remaining(deadline)
+        return output
+
+    def _pipeline_to_file(
+        self,
+        producer: Sequence[str],
+        consumer: Sequence[str],
+        output_path: Path,
+        config: SyncConfig,
+        deadline: float,
+    ) -> None:
+        try:
+            self.runner.pipeline_to_file(
+                list(producer),
+                list(consumer),
+                output_path,
+                cwd=config.repository_root,
+                timeout=self._remaining(deadline),
+            )
+        except BaseException:
+            self._remaining(deadline)
+            raise
+        self._remaining(deadline)
+
+    def _sha256(self, path: Path, deadline: float) -> str:
+        return sha256_file(path, deadline=deadline, timer=self.timer)
+
+    def _assert_inputs(
+        self, config: SyncConfig
+    ) -> tuple[Path, StandbyTarget | None, bytes, str, str]:
         root = config.repository_root.resolve(strict=True)
         if not config.compose_file.is_file():
             raise ValueError("compose file unavailable")
-        validate_environment_file(config.environment_file)
+        _, environment_bytes = _read_environment_file(config.environment_file)
         passphrase = validate_passphrase_file(config.passphrase_file, root)
+        recovery_crypto_generation_id, backup_passphrase_generation_id = (
+            self._read_generation_ids(config)
+        )
         if DATABASE_PATTERN.fullmatch(config.database) is None:
             raise ValueError("invalid source database name")
         if config.build_only:
             if config.target is not None:
                 raise ValueError("build-only mode must not define a standby target")
-            return passphrase, None
+            return (
+                passphrase,
+                None,
+                environment_bytes,
+                recovery_crypto_generation_id,
+                backup_passphrase_generation_id,
+            )
         if config.target is None:
             raise ValueError("standby target is required")
-        return passphrase, config.target.validated()
+        return (
+            passphrase,
+            config.target.validated(),
+            environment_bytes,
+            recovery_crypto_generation_id,
+            backup_passphrase_generation_id,
+        )
+
+    def _read_generation_ids(self, config: SyncConfig) -> tuple[str, str]:
+        if (
+            config.recovery_crypto_generation_id_file
+            != RECOVERY_CRYPTO_GENERATION_ID_FILE
+            or config.backup_passphrase_generation_id_file
+            != BACKUP_PASSPHRASE_GENERATION_ID_FILE
+        ):
+            raise ValueError("generation id file paths are fixed")
+        recovery_crypto_generation_id = validate_generation_id(
+            self.generation_reader(config.recovery_crypto_generation_id_file)
+        )
+        backup_passphrase_generation_id = validate_generation_id(
+            self.generation_reader(config.backup_passphrase_generation_id_file)
+        )
+        return (
+            recovery_crypto_generation_id,
+            backup_passphrase_generation_id,
+        )
 
     @staticmethod
     def _snapshot_id(moment: datetime, commit: str) -> str:
@@ -162,37 +337,73 @@ class SyncService:
             raise ValueError("snapshot clock must be timezone-aware")
         return f"{moment.astimezone(UTC):%Y%m%dT%H%M%SZ}_{commit[:12]}"
 
-    def _publish_local(self, config: SyncConfig, staging: Path, snapshot_id: str) -> Path:
+    def _publish_local(
+        self,
+        config: SyncConfig,
+        staging: Path,
+        snapshot_id: str,
+        deadline: float,
+    ) -> Path:
         snapshots = config.output_dir / "snapshots"
         snapshots.mkdir(parents=True, exist_ok=True, mode=0o700)
         destination = snapshots / snapshot_id
-        if destination.exists():
+        if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"snapshot already exists: {snapshot_id}")
-        os.replace(staging, destination)
+        current = config.output_dir / "current"
+        if current.exists() and not current.is_symlink():
+            raise ValueError("backup current pointer must be a symlink")
+        previous_target = current.readlink() if current.is_symlink() else None
         next_link = config.output_dir / ".current.next"
         next_link.unlink(missing_ok=True)
-        next_link.symlink_to(Path("snapshots") / snapshot_id)
-        os.replace(next_link, config.output_dir / "current")
-        return destination
+        destination_created = False
+        current_replaced = False
+        try:
+            self._remaining(deadline)
+            os.replace(staging, destination)
+            destination_created = True
+            self._remaining(deadline)
+            next_link.symlink_to(Path("snapshots") / snapshot_id)
+            self._remaining(deadline)
+            os.replace(next_link, current)
+            current_replaced = True
+            self._remaining(deadline)
+            return destination
+        except BaseException:
+            next_link.unlink(missing_ok=True)
+            if current_replaced:
+                if previous_target is None:
+                    current.unlink(missing_ok=True)
+                else:
+                    rollback = config.output_dir / ".current.rollback"
+                    rollback.unlink(missing_ok=True)
+                    rollback.symlink_to(previous_target)
+                    os.replace(rollback, current)
+            if destination_created:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
 
     def _publish_remote(
         self,
         snapshot_dir: Path,
         snapshot_id: str,
         target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
     ) -> None:
         endpoint = f"{target.user}@{target.host}"
         ssh = ["ssh", "-p", str(target.port), endpoint]
         incoming = f"{target.root}/.incoming/{snapshot_id}"
-        self.runner.run(
+        self._run_command(
             ssh
             + [
                 "set -eu; "
                 f"mkdir -p {shlex.quote(target.root + '/.incoming')} "
                 f"{shlex.quote(target.root + '/snapshots')}"
-            ]
+            ],
+            config,
+            deadline,
         )
-        self.runner.run(
+        self._run_command(
             [
                 "rsync",
                 "-a",
@@ -200,7 +411,9 @@ class SyncService:
                 "--",
                 f"{snapshot_dir}/",
                 f"{endpoint}:{incoming}/",
-            ]
+            ],
+            config,
+            deadline,
         )
         remote = (
             "set -eu; "
@@ -213,33 +426,114 @@ class SyncService:
             f"ln -sfn {shlex.quote('snapshots/' + snapshot_id)} current.next; "
             "mv -f current.next current"
         )
-        self.runner.run(ssh + [remote])
+        self._run_command(ssh + [remote], config, deadline)
 
     def run(self, config: SyncConfig) -> SyncResult:
-        passphrase, target = self._assert_inputs(config)
-        config.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        lock_path = config.output_dir / ".sync.lock"
-        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        staging: Path | None = None
+        started = self.timer()
+        if not math.isfinite(started):
+            raise ValueError("invalid monotonic clock")
+        if (
+            not math.isfinite(config.max_backup_seconds)
+            or not 60 <= config.max_backup_seconds <= 14400
+        ):
+            raise ValueError("max backup seconds must be between 60 and 14400")
+        deadline = started + config.max_backup_seconds
         try:
+            (
+                passphrase,
+                target,
+                environment_bytes,
+                recovery_crypto_generation_id,
+                backup_passphrase_generation_id,
+            ) = self._assert_inputs(config)
+        except BaseException:
+            self._remaining(deadline)
+            raise
+        self._remaining(deadline)
+
+        compose = self._compose(config)
+        database_size_text = self._run_command(
+            compose
+            + [
+                "exec",
+                "-T",
+                "postgres",
+                "psql",
+                "-X",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-U",
+                "sms_owner",
+                "-d",
+                config.database,
+                "-Atc",
+                "SELECT pg_database_size(current_database())",
+            ],
+            config,
+            deadline,
+        ).decode("utf-8", errors="strict").strip()
+        if not database_size_text.isdecimal() or int(database_size_text) <= 0:
+            raise ValueError("invalid source database size")
+        database_size = int(database_size_text)
+        try:
+            total_bytes, current_used_bytes = self.capacity_reader(config.output_dir)
+        except BaseException:
+            self._remaining(deadline)
+            raise
+        self._remaining(deadline)
+        if (
+            total_bytes <= 0
+            or current_used_bytes < 0
+            or current_used_bytes > total_bytes
+        ):
+            raise ValueError("invalid backup filesystem capacity")
+        estimated_bytes = (
+            database_size * BACKUP_SIZE_NUMERATOR + BACKUP_SIZE_DENOMINATOR - 1
+        ) // BACKUP_SIZE_DENOMINATOR
+        capacity_limit = total_bytes * BACKUP_CAPACITY_PERCENT // 100
+        if current_used_bytes + estimated_bytes > capacity_limit:
+            raise BackupCapacityExceeded
+
+        lock_fd: int | None = None
+        staging: Path | None = None
+        failure: BaseException | None = None
+        try:
+            config.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._remaining(deadline)
+            lock_path = config.output_dir / ".sync.lock"
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            status = self.runner.run(
+            self._remaining(deadline)
+            status = self._run_command(
                 ["git", "status", "--porcelain", "--untracked-files=no"],
-                cwd=config.repository_root,
+                config,
+                deadline,
             )
             if status.strip():
                 raise ValueError("每日同步要求 tracked 工作树干净")
-            commit = self.runner.run(
-                ["git", "rev-parse", "HEAD"], cwd=config.repository_root
+            commit = self._run_command(
+                ["git", "rev-parse", "HEAD"],
+                config,
+                deadline,
             ).decode().strip()
             if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
                 raise ValueError("invalid Git commit")
-            snapshot_id = self._snapshot_id(self.clock(), commit)
+            # RPO 以 pg_dump 开始前固化的一致性点计时；不能用耗时导出完成后的
+            # 时刻掩盖真实数据缺口。
+            try:
+                snapshot_moment = self.clock()
+            except BaseException:
+                self._remaining(deadline)
+                raise
+            self._remaining(deadline)
+            snapshot_id = self._snapshot_id(snapshot_moment, commit)
             staging = config.output_dir / ".incoming" / snapshot_id
             staging.mkdir(parents=True, mode=0o700)
+            self._remaining(deadline)
+            environment_sha256 = hashlib.sha256(environment_bytes).hexdigest()
+            self._remaining(deadline)
 
-            compose = self._compose(config)
-            alembic = self.runner.run(
+            alembic = self._run_command(
                 compose
                 + [
                     "exec",
@@ -253,10 +547,11 @@ class SyncService:
                     "-Atc",
                     "SELECT version_num FROM alembic_version",
                 ],
-                cwd=config.repository_root,
+                config,
+                deadline,
             ).decode().strip()
             backup = staging / f"sms_{snapshot_id}.dump.enc"
-            self.runner.pipeline_to_file(
+            self._pipeline_to_file(
                 compose
                 + [
                     "exec",
@@ -283,74 +578,149 @@ class SyncService:
                     f"file:{passphrase}",
                 ],
                 backup,
-                cwd=config.repository_root,
+                config,
+                deadline,
             )
 
             archive = staging / f"repository_{snapshot_id}.tar.gz"
-            self.runner.run(
+            self._run_command(
                 [
                     "git",
                     "archive",
                     "--format=tar.gz",
                     f"--output={archive}",
-                    "HEAD",
+                    commit,
                 ],
-                cwd=config.repository_root,
+                config,
+                deadline,
             )
             if not archive.is_file():
                 raise RuntimeError("git archive was not created")
             archive.chmod(0o600)
+            self._remaining(deadline)
             environment = staging / "production.env"
-            shutil.copyfile(config.environment_file, environment)
-            environment.chmod(0o600)
+            _write_bytes_0600(environment, environment_bytes)
+            self._remaining(deadline)
+
+            final_status = self._run_command(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                config,
+                deadline,
+            )
+            final_commit = self._run_command(
+                ["git", "rev-parse", "HEAD"],
+                config,
+                deadline,
+            ).decode().strip()
+            final_alembic = self._run_command(
+                compose
+                + [
+                    "exec",
+                    "-T",
+                    "postgres",
+                    "psql",
+                    "-U",
+                    "sms_owner",
+                    "-d",
+                    config.database,
+                    "-Atc",
+                    "SELECT version_num FROM alembic_version",
+                ],
+                config,
+                deadline,
+            ).decode().strip()
+            try:
+                (
+                    final_recovery_crypto_generation_id,
+                    final_backup_passphrase_generation_id,
+                ) = self._read_generation_ids(config)
+            except BaseException:
+                self._remaining(deadline)
+                raise
+            self._remaining(deadline)
+            if (
+                final_status.strip()
+                or final_commit != commit
+                or final_alembic != alembic
+                or not secrets.compare_digest(
+                    final_recovery_crypto_generation_id,
+                    recovery_crypto_generation_id,
+                )
+                or not secrets.compare_digest(
+                    final_backup_passphrase_generation_id,
+                    backup_passphrase_generation_id,
+                )
+                or self._sha256(config.environment_file, deadline)
+                != environment_sha256
+                or self._sha256(environment, deadline) != environment_sha256
+            ):
+                raise RuntimeError("backup source generation changed during snapshot")
 
             files = {
                 "database": {
                     "name": backup.name,
-                    "sha256": sha256_file(backup),
+                    "sha256": self._sha256(backup, deadline),
                     "size": backup.stat().st_size,
                 },
                 "repository_archive": {
                     "name": archive.name,
-                    "sha256": sha256_file(archive),
+                    "sha256": self._sha256(archive, deadline),
                     "size": archive.stat().st_size,
                 },
                 "environment": {
                     "name": environment.name,
-                    "sha256": sha256_file(environment),
+                    "sha256": environment_sha256,
                     "size": environment.stat().st_size,
                 },
             }
+            self._remaining(deadline)
             manifest = staging / "manifest.json"
             atomic_write_json(
                 manifest,
                 {
                     "schema_version": 1,
                     "snapshot_id": snapshot_id,
-                    "created_at": self.clock().astimezone(UTC).isoformat(),
+                    "created_at": snapshot_moment.astimezone(UTC).isoformat(),
                     "git_commit": commit,
                     "alembic_version": alembic,
                     "database": config.database,
                     "secrets_included": False,
+                    "recovery_crypto_generation_id": recovery_crypto_generation_id,
+                    "backup_passphrase_generation_id": backup_passphrase_generation_id,
                     "files": files,
                 },
             )
+            self._remaining(deadline)
             checksum_lines = [
-                f"{sha256_file(staging / str(item['name']))}  {item['name']}"
+                f"{self._sha256(staging / str(item['name']), deadline)}  {item['name']}"
                 for item in files.values()
             ]
-            checksum_lines.append(f"{sha256_file(manifest)}  {manifest.name}")
+            checksum_lines.append(f"{self._sha256(manifest, deadline)}  {manifest.name}")
             _write_text_0600(staging / "SHA256SUMS", "\n".join(checksum_lines) + "\n")
+            self._remaining(deadline)
 
-            snapshot_dir = self._publish_local(config, staging, snapshot_id)
-            staging = None
             if target is not None:
-                self._publish_remote(snapshot_dir, snapshot_id, target)
+                self._publish_remote(staging, snapshot_id, target, config, deadline)
+            snapshot_dir = self._publish_local(config, staging, snapshot_id, deadline)
+            staging = None
             return SyncResult(snapshot_id, snapshot_dir, target is not None)
+        except BaseException as error:
+            failure = error
+            raise
         finally:
+            cleanup_failure: BackupCleanupFailure | None = None
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
-            os.close(lock_fd)
+                if staging.exists():
+                    cleanup_failure = BackupCleanupFailure()
+                    if failure is not None:
+                        cleanup_failure.add_note(
+                            "backup failed before staging cleanup also failed"
+                        )
+            if lock_fd is not None:
+                os.close(lock_fd)
+            if cleanup_failure is not None:
+                raise cleanup_failure
 
 
 def _config_from_args(args: argparse.Namespace) -> SyncConfig:
@@ -374,6 +744,7 @@ def _config_from_args(args: argparse.Namespace) -> SyncConfig:
         passphrase_file=Path(passphrase_value),
         database=args.database,
         build_only=args.build_only,
+        max_backup_seconds=args.max_backup_seconds,
         target=target,
     )
 
@@ -384,6 +755,7 @@ def main() -> int:
     parser.add_argument("--environment-file", default=".env")
     parser.add_argument("--output-dir", default="var/backups/standby-sync")
     parser.add_argument("--database", default="sms")
+    parser.add_argument("--max-backup-seconds", type=float, default=14400)
     args = parser.parse_args()
     try:
         result = SyncService(CommandRunner()).run(_config_from_args(args))
