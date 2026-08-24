@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 系统参数重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:640px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.plain-danger{background:none;border-color:rgba(228,106,79,.45);color:#ef9b89}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{background:none;color:#ef9b89}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 页签（维持现有自定义 tablist） ═══════════ */
+.tabs{display:flex;gap:22px;border-bottom:1px solid var(--hair-2);margin-top:-4px}
+.tabs b{position:relative;padding:12px 2px;font-size:12px;font-weight:600;color:var(--tx-3)}
+.tabs b.on{color:var(--verdi-l)}
+.tabs b.on::after{content:"";position:absolute;right:0;bottom:-1px;left:0;height:2px;background:var(--verdi)}
+
+/* ═══════════ 检索条（单卡片单行，并入 reply-* 共享组） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 规则条（常驻 slim 双格） ═══════════ */
+.rules-strip{display:flex;gap:26px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.rules-strip>div{display:flex;gap:8px;align-items:baseline;min-width:0}
+.rules-strip span{flex:none;font-size:10.5px;color:var(--tx-3)}
+.rules-strip p{font-size:11px;color:var(--tx-2)}
+
+/* ═══════════ 参数区：分组小节 + 双列网格 ═══════════ */
+.group{display:grid;gap:0;background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.group-head{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+.group-head strong{font-size:12.5px;color:var(--tx-hi);font-weight:600}
+.group-head span{color:var(--tx-3);font:9px/1 var(--mono);letter-spacing:.08em}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--hair-2)}
+.item{display:grid;align-content:start;gap:9px;min-width:0;padding:14px 16px;background:var(--panel)}
+.item header{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.item code{color:var(--tx);font:11px/1.4 var(--mono);overflow-wrap:anywhere}
+.item>p{min-height:36px;color:var(--tx-2);font-size:11.5px;line-height:1.55}
+.badge{padding:4px 6px;border:1px solid rgba(216,163,92,.45);color:var(--amber);font:8px/1 var(--mono);border-radius:4px}
+.badge.secret{border-color:rgba(228,106,79,.5);color:#ef9b89}
+.input{display:flex;align-items:center;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx)}
+.input.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.input .caret{margin-left:auto;color:var(--tx-3);font-size:10px}
+.range{font-size:10px;color:var(--tx-3)}
+.secret-line{display:flex;align-items:center;justify-content:space-between}
+.secret-line small{color:var(--tx-3);font-size:10px}
+.item-meta{display:flex;align-items:center;justify-content:space-between;min-height:18px}
+.item-meta small{color:var(--tx-3);font-size:10px}
+
+/* ═══════════ 保存栏（sticky 底栏） ═══════════ */
+.savebar{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid var(--hair);border-radius:10px;background:rgba(24,35,30,.94)}
+.savebar span{color:var(--tx-3);font:10px/1 var(--mono)}
+.savebar span b{color:var(--amber);font-weight:400}
+
+/* ═══════════ 认证源面板 ═══════════ */
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 16px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+.panel-head strong{font-size:13px;color:var(--tx-hi)}
+.panel-head>span{color:var(--tx-3);font-size:10.5px}
+.local-row{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--hair-2)}
+.mark{display:grid;place-items:center;flex:0 0 46px;height:38px;border:1px solid var(--hair);background:var(--sink);color:var(--tx-3);font:10px/1 var(--mono);letter-spacing:.08em;border-radius:7px}
+.mark.local{border-color:rgba(47,161,132,.45);color:#71c4ad}
+.mark.ad{border-color:rgba(216,163,92,.45);color:var(--amber)}
+.local-row p,.ad-head p{margin:4px 0 0;color:var(--tx-2);font-size:11px}
+.fixed-state{display:grid;justify-items:end;gap:5px;margin-left:auto}
+.fixed-state small{color:var(--tx-3);font-size:10px}
+.tag{display:inline-flex;align-items:center;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.verdi{background:rgba(47,161,132,.12);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.tag.gray{background:rgba(255,255,255,.04);color:var(--tx-2);border:1px solid var(--hair)}
+.ad-work{padding:16px;display:grid;gap:14px}
+.ad-head{display:flex;align-items:center;gap:14px}
+.ad-head strong{font-size:13.5px;color:var(--tx-hi)}
+.ver-state{display:grid;justify-items:end;gap:4px;margin-left:auto;color:var(--tx-3);font:10px/1.3 var(--mono)}
+.ready-line{display:flex;flex-wrap:wrap;gap:8px}
+.ready-line span{display:inline-flex;align-items:center;gap:7px;padding:6px 9px;border:1px solid var(--hair);background:var(--sink);color:var(--tx-3);font:9px/1 var(--mono);border-radius:6px}
+.ready-line i{width:6px;height:6px;border-radius:50%;background:var(--tx-3)}
+.ready-line .ok{color:#71c4ad}.ready-line .ok i{background:var(--verdi-l)}
+.ready-line .warn{color:var(--amber)}.ready-line .warn i{background:var(--amber)}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;padding:14px;border:1px solid var(--hair);border-radius:10px;background:var(--sink)}
+.form-grid .fld small{font-size:10px;color:var(--tx-3)}
+.ad-actions{display:flex;flex-wrap:wrap;gap:8px}
+.mapping{border-top:1px solid var(--hair-2);padding-top:13px;display:grid;gap:10px}
+.mapping>header{display:flex;align-items:center;justify-content:space-between}
+.mapping>header p{margin-top:4px;color:var(--tx-2);font-size:11px}
+.mapping-row{display:grid;grid-template-columns:minmax(0,1fr) 150px 150px auto;gap:8px;align-items:center}
+.mapping-foot{display:flex;justify-content:flex-end}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+
+@media (max-width:1100px){ .screen{min-width:0} .grid{grid-template-columns:1fr} .form-grid{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 系统参数重设计原型</b>
+  <span>v1 评审稿 · 拟新增 docs/ui-design.md §8c · 路由 /configs（admin；viewer 仅运行参数与认证源只读）</span>
+  <em>2026-08-24 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>检索条单行化</b>：旧 config-toolbar（340px 搜索框 + 右侧计数）改为方案 A 单行检索条——关键词 220px + 分组 seg（全部 / 运行调度 / 发送策略 / 安全控制 / 告警通知 / 生命周期，按实际出现的分组动态生成），点选即过滤；条底说明「接口全量返回 · 前端过滤」。不新增查询参数。<span class="need calc">前端</span></li>
+  <li><b>调度生效规则由 warning alert 改为常驻规则条</b>：与用户页用户名 / 密码规则条同一 slim 语言；第一格保留「BEAT RESTART 参数由 beat 与 API 在启动时读取，修改后需重启两个容器，不动态热更」（AGENTS #34 界面提示义务），第二格写敏感值规则（不回显、留空保持原值、清除即置空）。<span class="need calc">前端</span></li>
+  <li><b>撤下页头「N 项受控运行参数」计数块</b>：与全站「页头不放页级计数」口径一致；总数沉到保存栏左侧「共 N 项受控参数 · M 项待保存」，待保存数以琥珀色数据字呈现。<span class="need calc">前端</span></li>
+  <li><b>参数区分组小节与卡片收紧</b>：分组标题行改 panel-2 底 + mono 计数；.config-item 卡片、BEAT RESTART / SENSITIVE 徽章、范围提示、格式提示、重置默认值与最近更新行全部保留（既有 testid 不改名）。<span class="need calc">前端</span></li>
+  <li><b>beat 参数保存确认拆后果正文与审计细字</b>：正文如实告知「保存后必须重启 beat 与 API 容器才会生效，运行中不热更」，审计细字写明逐键留痕；保存成功 toast 统一「系统参数已更新 · 本次操作已记入审计」。<span class="need ok">现有</span></li>
+  <li><b>认证源面板化</b>：本地源行与 AD 工作台脱离 el-card，结构与 testid 不变——「保存草稿 → 测试连接 → 启用配置」状态机、Bind Secret / CA 就绪 chips、编辑即失效旧测试资格、高级属性映射折叠、目录组角色映射全部保留；「禁用 AD」确认同样拆后果正文（登录页不再显示 AD、已登录会话不受影响、配置与映射保留）与审计细字。<span class="need ok">现有</span></li>
+  <li><b>真实联调页签不动</b>：VendorTestConsole 为独立受控组件，安全状态机界面已被可达性契约锁定，本次重构不触碰。<span class="need ok">现有</span></li>
+  <li><b>行为与 testid 全量保留</b>：config-search / config-&lt;key&gt; / config-reset-&lt;key&gt; / local-provider / ad-server / save-ad-draft / test-ad / activate-ad / disable-ad / mapping-* / save-role-mappings 与页签键盘左右切换均不变。<span class="need calc">前端</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：运行参数默认屏 ════════════════ -->
+<div class="stage-label">SCREEN A · 运行参数默认屏（单行检索条 + 常驻规则条 + 分组参数网格 + sticky 保存栏）</div>
+<div class="variant-caption">分组 seg 点选即过滤；规则条常驻调度与敏感值两格；保存栏左计数右主按钮，演示 2 项待保存的脏态。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">POLICY REGISTRY / 策略注册表</div>
+      <h1>系统参数</h1>
+      <div class="sub">运行参数、认证源与真实联调统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART 的项需重启容器生效，敏感值不回显。安全日报邮件配置请进入独立的「安全日报」页面。</div>
+    </div>
+  </div>
+
+  <div class="tabs"><b class="on">运行参数</b><b>认证源</b><b>真实联调</b></div>
+
+  <div class="search-bar">
+    <label class="fld"><span>关键词</span>
+      <div class="kw-input">参数名、说明或分组</div>
+    </label>
+    <label class="fld"><span>分组</span>
+      <div class="seg"><b class="on">全部</b><b>运行调度</b><b>发送策略</b><b>安全控制</b><b>告警通知</b><b>生命周期</b></div>
+    </label>
+    <p class="privacy-note">接口全量返回，关键词与分组均为前端过滤；改动逐键写入审计日志，敏感值不回显。</p>
+  </div>
+
+  <div class="rules-strip">
+    <div><span>调度生效规则</span><p>标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。</p></div>
+    <div><span>敏感值规则</span><p>SENSITIVE 项已配置值不回显；留空保持原值，「清除配置」即将其置空。</p></div>
+  </div>
+
+  <div class="group">
+    <div class="group-head"><strong>运行调度</strong><span>2 PARAMETERS</span></div>
+    <div class="grid">
+      <div class="item">
+        <header><code>vendor_qps</code></header>
+        <p>厂商发送 QPS 上限，令牌桶单桶容量，每秒整补。</p>
+        <div class="input mono">5<span class="caret">▾</span></div>
+        <span class="range">范围 1 – 1000 · 默认 5</span>
+        <div class="item-meta"><small></small></div>
+      </div>
+      <div class="item">
+        <header><code>report_poll_seconds</code><span class="badge">BEAT RESTART</span></header>
+        <p>GetReport 轮询间隔（秒），beat 启动时读取。</p>
+        <div class="input mono">90<span class="caret">▾</span></div>
+        <span class="range">范围 10 – 3600 · 默认 60</span>
+        <div class="item-meta"><small></small><span class="btn link">重置默认值</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head"><strong>告警通知</strong><span>1 PARAMETER</span></div>
+    <div class="grid">
+      <div class="item">
+        <header><code>alert_wecom_webhook</code><span class="badge secret">SENSITIVE</span></header>
+        <p>企微告警 Webhook；留空则告警只落 alert_log 与日志，不外呼。</p>
+        <div class="input mono">••••••••••</div>
+        <div class="secret-line"><small>已配置，值不回显</small><span class="btn link danger">清除配置</span></div>
+        <div class="item-meta"><small>最近由 admin01 更新 · 2026-07-12 08:00:00</small></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="savebar"><span>共 47 项受控参数 · <b>2 项待保存</b></span><span class="btn primary">保存变更</span></div>
+</div></div>
+
+<!-- ════════════════ 屏 B：beat 参数保存确认 + toast ════════════════ -->
+<div class="stage-label">SCREEN B · 调度参数保存确认（含成功 toast 样例）</div>
+<div class="variant-caption">待保存项含 BEAT RESTART 参数时二次确认：后果正文（重启两容器才生效、不热更）与审计细字分段；确认后 PUT /admin/configs 并 toast 留痕。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">系统参数已更新 · 本次操作已记入审计</div>
+  <div class="tabs"><b class="on">运行参数</b><b>认证源</b><b>真实联调</b></div>
+
+  <div class="group dim" style="position:relative">
+    <div class="group-head"><strong>运行调度</strong><span>2 PARAMETERS</span></div>
+    <div class="grid">
+      <div class="item">
+        <header><code>report_poll_seconds</code><span class="badge">BEAT RESTART</span></header>
+        <p>GetReport 轮询间隔（秒），beat 启动时读取。</p>
+        <div class="input mono">90<span class="caret">▾</span></div>
+        <span class="range">范围 10 – 3600 · 默认 60</span>
+        <div class="item-meta"><small></small><span class="btn link">重置默认值</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal">
+    <h3>确认调度参数变更</h3>
+    <p>待保存项包含 beat 调度参数；保存后必须<b>重启 beat 与 API 容器</b>才会生效，运行中不会动态热更。</p>
+    <p class="audit-hint">每个变更键的旧值与新值将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn primary">保存变更</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：认证源（AD 工作台） ════════════════ -->
+<div class="stage-label">SCREEN C · 认证源（本地源行 + AD 工作台 + 目录组角色映射）</div>
+<div class="variant-caption">面板化后的 AD 工作台：版本状态右上 mono、就绪 chips 横排、表单双列 sink 底；「保存草稿 → 测试连接 → 启用配置」状态机与 testid 全部不变。演示草稿已修改、旧测试资格失效态。</div>
+<div class="viewport"><div class="screen">
+  <div class="tabs"><b>运行参数</b><b class="on">认证源</b><b>真实联调</b></div>
+
+  <div class="panel">
+    <div class="panel-head"><strong>认证源</strong><span>登录时由用户明确选择，不自动回退</span></div>
+
+    <div class="local-row">
+      <div class="mark local">LOCAL</div>
+      <div><strong>本地账号</strong><p>管理员创建和维护；临时密码首次登录必须修改。</p></div>
+      <div class="fixed-state"><span class="tag verdi">始终启用</span><small>系统内置，不可修改</small></div>
+    </div>
+
+    <div class="ad-work">
+      <div class="ad-head">
+        <div class="mark ad">AD</div>
+        <div><strong>企业 AD</strong><p>AD 当前已禁用</p></div>
+        <div class="ver-state"><span>草稿版本 v4</span><span>生效版本 v3</span></div>
+      </div>
+
+      <div class="ready-line">
+        <span class="ok"><i></i>Bind Secret 已就绪</span>
+        <span class="ok"><i></i>CA 证书已就绪</span>
+        <span class="warn"><i></i>配置已修改，需保存并重新测试</span>
+      </div>
+
+      <div class="form-grid">
+        <label class="fld"><span>LDAP 服务地址</span><div class="input mono">ldaps://ad.example.com:636</div></label>
+        <label class="fld"><span>Base DN</span><div class="input mono">DC=example,DC=com</div></label>
+        <label class="fld"><span>Bind DN</span><div class="input mono">CN=sms-bind,OU=Service,…</div><small>Bind 密码只从 Docker secret 读取，本页不录入、不回显。</small></label>
+        <label class="fld"><span>用户搜索过滤器</span><div class="input mono">(sAMAccountName={username})</div></label>
+      </div>
+
+      <div class="ad-actions">
+        <span class="btn">保存草稿</span>
+        <span class="btn" disabled>测试连接</span>
+        <span class="btn primary" disabled>启用配置</span>
+      </div>
+
+      <div class="mapping">
+        <header><div><strong>目录组角色映射</strong><p>AD 账号未人工覆盖时，按最近同步的目录组计算平台角色。</p></div><span class="btn">添加映射</span></header>
+        <div class="mapping-row">
+          <div class="input mono">CN=SMS-Operators,OU=Groups,DC=example,DC=com</div>
+          <div class="input">客服部</div>
+          <div class="input">操作员 ▾</div>
+          <span class="btn link danger">移除</span>
+        </div>
+        <div class="mapping-foot"><span class="btn primary">保存角色映射</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：禁用 AD 确认 + toast ════════════════ -->
+<div class="stage-label">SCREEN D · 禁用 AD 确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认拆后果正文（登录页不再显示 AD、已登录会话不受影响、配置与映射保留）与审计细字；确认后 toast 如实告知留痕。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计</div>
+  <div class="tabs"><b>运行参数</b><b class="on">认证源</b><b>真实联调</b></div>
+
+  <div class="panel dim" style="position:relative">
+    <div class="panel-head"><strong>认证源</strong><span>登录时由用户明确选择，不自动回退</span></div>
+    <div class="ad-work">
+      <div class="ad-head">
+        <div class="mark ad">AD</div>
+        <div><strong>企业 AD</strong><p>AD 当前已启用</p></div>
+        <div class="ver-state"><span>草稿版本 v3</span><span>生效版本 v3</span></div>
+      </div>
+      <div class="ready-line">
+        <span class="ok"><i></i>Bind Secret 已就绪</span>
+        <span class="ok"><i></i>CA 证书已就绪</span>
+        <span class="ok"><i></i>当前草稿测试通过</span>
+      </div>
+      <div class="ad-actions">
+        <span class="btn">保存草稿</span><span class="btn">测试连接</span>
+        <span class="btn primary" disabled>启用配置</span>
+        <span class="btn plain-danger">禁用 AD</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal">
+    <h3>确认禁用 AD</h3>
+    <p>禁用后登录页不再显示 AD，<b>已登录会话不受影响</b>；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。</p>
+    <p class="audit-hint">禁用行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">禁用 AD</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 E：检索空态 ════════════════ -->
+<div class="stage-label">SCREEN E · 空态（关键词 + 分组筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路，引导清空搜索或切换分组。</div>
+<div class="viewport"><div class="screen">
+  <div class="search-bar">
+    <label class="fld"><span>关键词</span><div class="kw-input" style="color:var(--tx)">不存在的参数</div></label>
+    <label class="fld"><span>分组</span><div class="seg"><b class="on">全部</b><b>运行调度</b><b>发送策略</b></div></label>
+  </div>
+  <div class="empty">
+    <div><b>没有匹配的系统参数</b>
+    <span>换个关键字或分组试试，也可清空搜索查看全部参数。</span></div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>参数清单 <code>GET /api/v1/web/admin/configs</code> 返回 <code>ConfigItem[]</code>（key / value / value_type / description / group / sensitive / configured / beat_restart_required / updated_by / updated_at / default / min_value / max_value）；分组 seg 由 group 字段前端聚合，关键词前端匹配 key / description / group，不新增查询参数。<span class="need ok">现有</span></li>
+  <li>保存 <code>PUT /admin/configs</code> 体 <code>{items:[{key,value}]}</code>：非敏感项仅在值变化时提交，敏感项仅在显式编辑或清除时提交；beat 参数二次确认后提交；变更逐键写审计（config_update）。<span class="need ok">现有</span></li>
+  <li>认证源 <code>GET /admin/auth-providers/ad</code>、<code>PUT /draft</code>、<code>POST /test</code>、<code>POST /activate</code>、<code>POST /disable</code>：草稿保存即递增 draft_version 并使旧测试资格失效；启用要求当前草稿 tested；bind 密码不录入、不回显（无 bind_password 字段）。<span class="need ok">现有</span></li>
+  <li>角色映射 <code>GET / PUT /admin/auth-providers/ad/role-mappings</code>：全量替换语义，提交前 trim 并丢弃空组行。<span class="need ok">现有</span></li>
+  <li>错误如实展示：409 PROVIDER_CONFIG_UNTESTED / PROVIDER_CONFIG_STALE、422 INVALID_PROVIDER_CONFIG、503 AUTH_PROVIDER_UNAVAILABLE 直接透出服务端 message，页面不另造文案。<span class="need ok">现有</span></li>
+  <li>零契约变更：不新增端点与字段、不服务端化过滤、不动真实联调控制台；页签结构（运行参数 / 认证源 / 真实联调，viewer 无第三个）与路由守卫维持现状。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>

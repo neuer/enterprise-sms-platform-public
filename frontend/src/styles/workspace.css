@@ -256,18 +256,21 @@ button:focus-visible {
 
 .reply-heading,
 .blacklist-heading,
-.user-heading {
+.user-heading,
+.config-heading {
   align-items: end;
 }
 
-/* 黑名单/敏感词/用户与角色检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/sensitive-filter-bar/
-   user-filter-bar/blacklist-fld/sensitive-fld/user-fld/blacklist-seg/sensitive-policy-seg/user-seg/
-   blacklist-filter-go/sensitive-filter-go/user-filter-go/blacklist-privacy/sensitive-filter-note/
-   user-privacy 共用 reply-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色/系统参数检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/
+   sensitive-filter-bar/user-filter-bar/config-filter-bar/blacklist-fld/sensitive-fld/user-fld/config-fld/
+   blacklist-seg/sensitive-policy-seg/user-seg/config-seg/blacklist-filter-go/sensitive-filter-go/
+   user-filter-go/blacklist-privacy/sensitive-filter-note/user-privacy/config-privacy 共用 reply-* 规则，
+   按页复制即缺陷。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
 .sensitive-filter-bar,
-.user-filter-bar {
+.user-filter-bar,
+.config-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -282,7 +285,8 @@ button:focus-visible {
 .reply-fld,
 .blacklist-fld,
 .sensitive-fld,
-.user-fld {
+.user-fld,
+.config-fld {
   display: grid;
   gap: 5px;
 }
@@ -290,7 +294,8 @@ button:focus-visible {
 .reply-fld > span,
 .blacklist-fld > span,
 .sensitive-fld > span,
-.user-fld > span {
+.user-fld > span,
+.config-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -322,7 +327,8 @@ button:focus-visible {
 .reply-seg,
 .blacklist-seg,
 .sensitive-policy-seg,
-.user-seg {
+.user-seg,
+.config-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -333,7 +339,8 @@ button:focus-visible {
 .reply-seg button,
 .blacklist-seg button,
 .sensitive-policy-seg button,
-.user-seg button {
+.user-seg button,
+.config-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -350,7 +357,8 @@ button:focus-visible {
 .reply-seg button.on,
 .blacklist-seg button.on,
 .sensitive-policy-seg button.on,
-.user-seg button.on {
+.user-seg button.on,
+.config-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
@@ -368,7 +376,8 @@ button:focus-visible {
 .reply-privacy,
 .blacklist-privacy,
 .sensitive-filter-note,
-.user-privacy {
+.user-privacy,
+.config-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -380,7 +389,8 @@ button:focus-visible {
 .reply-privacy code,
 .blacklist-privacy code,
 .sensitive-filter-note code,
-.user-privacy code {
+.user-privacy code,
+.config-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -498,14 +508,16 @@ button:focus-visible {
   .reply-heading,
   .blacklist-heading,
   .sensitive-heading,
-  .user-heading {
+  .user-heading,
+  .config-heading {
     align-items: start;
   }
 
   .reply-filter-bar,
   .blacklist-filter-bar,
   .sensitive-filter-bar,
-  .user-filter-bar {
+  .user-filter-bar,
+  .config-filter-bar {
     align-items: flex-start;
   }
 
@@ -513,7 +525,8 @@ button:focus-visible {
   .reply-filter-dates,
   .blacklist-keyword,
   .sensitive-keyword,
-  .user-keyword {
+  .user-keyword,
+  .config-keyword {
     width: 100%;
   }
 
@@ -3749,7 +3762,8 @@ main {
 .template-keyword,
 .sign-keyword,
 .blacklist-keyword,
-.user-keyword {
+.user-keyword,
+.config-keyword {
   width: 220px;
 }
 
@@ -4184,9 +4198,10 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单/敏感词/用户与角色抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
+/* 黑名单/敏感词/用户与角色/系统参数抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
    user-drawer-head/blacklist-drawer-title/sensitive-drawer-title/user-drawer-title/blacklist-delete-dialog/
-   sensitive-delete-dialog/user-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/user-confirm-audit/
+   sensitive-delete-dialog/user-confirm-dialog/config-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/
+   user-confirm-audit/config-confirm-audit/
    blacklist-form/blacklist-editor-foot/sensitive-editor-foot/user-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
 .sign-drawer-head,
 .blacklist-drawer-head,
@@ -4269,14 +4284,16 @@ main {
 .sign-delete-dialog p,
 .blacklist-delete-dialog p,
 .sensitive-delete-dialog p,
-.user-confirm-dialog p {
+.user-confirm-dialog p,
+.config-confirm-dialog p {
   margin: 0;
 }
 
 .sign-delete-audit,
 .blacklist-delete-audit,
 .sensitive-delete-audit,
-.user-confirm-audit {
+.user-confirm-audit,
+.config-confirm-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -5622,8 +5639,10 @@ main {
 
 /* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
    检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
-   本区只保留规则条、台账单元格与移动端卡片的页级专属样式。 */
-.user-rules {
+   本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
+   config-rules 与 user-rules 同构（系统参数页调度/敏感值规则条），共用本组规则。 */
+.user-rules,
+.config-rules {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 28px;
@@ -5634,21 +5653,24 @@ main {
   border-radius: 12px;
 }
 
-.user-rules > div {
+.user-rules > div,
+.config-rules > div {
   display: flex;
   gap: 8px;
   align-items: baseline;
   min-width: 0;
 }
 
-.user-rules span {
+.user-rules span,
+.config-rules span {
   flex: none;
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
 }
 
-.user-rules p {
+.user-rules p,
+.config-rules p {
   margin: 0;
   color: var(--tx-2);
   font-size: 11px;
@@ -5927,11 +5949,9 @@ main {
   .break-glass .el-button { grid-column: 1 / -1; width: 100%; }
 }
 
-/* 审计与参数：不可变账本和分组策略面板。 */
-.config-heading { align-items: flex-end; }
-.config-heading-note { display: grid; min-width: 150px; padding: 13px 16px; border: 1px solid var(--line); background: var(--surface); text-align: right; }
-.config-heading-note strong { font: 24px/1 var(--mono); }
-.config-heading-note span { margin-top: 5px; color: var(--muted); font-size: 10px; }
+/* 审计与参数：不可变账本和分组策略面板。
+   检索条并入 reply-* 共享组、确认框并入 sign-* 共享组、规则条与 user-rules 同组，按页复制即缺陷；
+   本区只保留页签、分组参数网格、保存栏与认证源面板的页级专属样式。 */
 .config-tabs { display: flex; gap: 22px; min-height: 46px; margin-top: -8px; border-bottom: 1px solid var(--line-2); }
 .config-tabs button { position: relative; min-height: 44px; padding: 0 2px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: 600 12px/1.2 inherit; }
 .config-tabs button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: transparent; content: ""; transform: scaleX(.25); transition: background-color 140ms cubic-bezier(.25, 1, .5, 1), transform 140ms cubic-bezier(.25, 1, .5, 1); }
@@ -5939,23 +5959,22 @@ main {
 .config-tabs button.active { color: var(--verdi); }
 .config-tabs button.active::after { background: var(--verdi); transform: scaleX(1); }
 .config-tabs button:focus-visible { outline: 2px solid var(--verdi); outline-offset: 3px; }
-.config-runtime-panel { min-width: 0; }
-.provider-config-card { margin-top: 18px; }
-.provider-config-card > .el-card__header { padding: 15px 18px; }
-.provider-config-card > .el-card__body { padding: 0; }
-.provider-section-title,
-.provider-section-title > div,
+.config-runtime-panel { min-width: 0; padding-top: 18px; }
+.config-runtime-panel > .el-alert { margin-bottom: 14px; }
+.provider-panel { margin-top: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.provider-panel-head,
+.provider-panel-head > div,
 .provider-local-row,
 .provider-ad-header,
 .provider-readiness,
 .provider-actions,
 .role-mapping-panel > header,
 .role-mapping-row { display: flex; align-items: center; }
-.provider-section-title { justify-content: space-between; gap: 16px; }
-.provider-section-title > div { gap: 12px; }
-.provider-section-title .eyebrow { margin: 0; }
-.provider-section-title strong { font-size: 16px; }
-.provider-section-title > span { color: var(--muted); font-size: 11px; }
+.provider-panel-head { justify-content: space-between; gap: 16px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+.provider-panel-head > div { gap: 12px; }
+.provider-panel-head .eyebrow { margin: 0; }
+.provider-panel-head strong { font-size: 16px; }
+.provider-panel-head > span { color: var(--muted); font-size: 11px; }
 .provider-local-row { gap: 14px; padding: 16px 18px; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
 .provider-local-row > div:nth-child(2) { min-width: 0; }
 .provider-local-row strong,
@@ -5996,19 +6015,14 @@ main {
 .role-mapping-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 150px auto; gap: 8px; }
 .role-mapping-empty { margin: 14px 0 0; padding: 14px; border: 1px dashed var(--line); color: var(--muted); font-size: 11px; text-align: center; }
 .role-mapping-panel footer { display: flex; justify-content: flex-end; margin-top: 12px; }
-.config-restart-alert { margin-top: 16px; }
-.config-toolbar { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
-.config-toolbar .el-input { max-width: 340px; }
-.config-toolbar > span { flex: 0 0 auto; color: var(--muted); font: 10px/1 var(--mono); }
 .config-range-hint { color: var(--muted); font-size: 10px; }
 .config-item-meta { display: flex; align-items: center; justify-content: space-between; min-height: 18px; }
 .config-item-meta > small { color: var(--muted); font-size: 10px; }
-.config-groups { display: grid; gap: 16px; margin-top: 16px; padding-bottom: 74px; }
-.config-group-card > .el-card__header { padding: 14px 18px; }
-.config-group-title { display: flex; align-items: center; justify-content: space-between; }
+.config-groups { display: grid; gap: 16px; padding-bottom: 74px; }
+.config-group { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.config-group-title { display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; background: var(--surface-soft); border-bottom: 1px solid var(--line); }
 .config-group-title span { color: var(--muted); font: 9px/1 var(--mono); letter-spacing: .08em; }
 .config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); }
-.config-group-card > .el-card__body { padding: 0; }
 .config-item { display: grid; align-content: start; gap: 10px; min-width: 0; padding: 16px 18px; background: var(--surface); }
 .config-item header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .config-item code { color: var(--ink); font: 11px/1.4 var(--mono); overflow-wrap: anywhere; }
@@ -6019,8 +6033,10 @@ main {
 .secret-badge { padding: 4px 6px; border: 1px solid color-mix(in srgb, var(--amber), transparent 45%); color: var(--amber); font: 8px/1 var(--mono); }
 .secret-badge { border-color: color-mix(in srgb, var(--red), transparent 55%); color: var(--red); }
 .secret-control { display: flex; align-items: center; justify-content: space-between; }
-.config-savebar { position: sticky; z-index: 8; bottom: 14px; display: flex; align-items: center; justify-content: space-between; margin-top: -58px; padding: 12px 14px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 10px 30px rgb(15 31 24 / 10%); backdrop-filter: blur(12px); }
+.config-savebar { position: sticky; z-index: 8; bottom: 14px; display: flex; align-items: center; justify-content: space-between; margin-top: -58px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 10px 30px rgb(15 31 24 / 10%); backdrop-filter: blur(12px); }
 .config-savebar span { color: var(--muted); font: 10px/1 var(--mono); }
+.config-savebar span b { color: var(--muted); font-weight: 400; }
+.config-savebar span b.is-pending { color: var(--amber); }
 
 /* 真实运营商受控联调：以单机安全状态机组织操作，不呈现任何凭据或号码明文。 */
 .vendor-test-console { min-width: 0; margin-top: 18px; }
@@ -6139,11 +6155,10 @@ main {
 
 @media (max-width: 760px) {
   .config-heading { align-items: stretch; }
-  .config-heading-note { text-align: left; }
   .config-tabs { gap: 18px; overflow-x: auto; }
   .config-tabs button { flex: 0 0 auto; }
-  .provider-section-title { align-items: flex-start; }
-  .provider-section-title > span { max-width: 140px; text-align: right; }
+  .provider-panel-head { align-items: flex-start; }
+  .provider-panel-head > span { max-width: 140px; text-align: right; }
   .provider-local-row { align-items: flex-start; }
   .provider-fixed-state { flex: 0 0 auto; }
   .provider-ad-header { align-items: flex-start; }
