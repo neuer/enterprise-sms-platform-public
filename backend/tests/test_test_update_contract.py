@@ -806,6 +806,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/blacklist-redesign-prototype.html",
             "docs/previews/blacklist-redesign-shots.md",
             "docs/previews/blacklist-redesign-shots/full.png",
+            "docs/previews/callback-redesign-prototype.html",
             "docs/previews/configs-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/filter-bar-single-row-prototype.html",
@@ -1063,6 +1064,26 @@ def test_users_preview_keeps_user_view_high_risk() -> None:
     assert change.runtime_changed is True
     assert change.risk == "high-risk"
     assert change.high_risk_paths == ("frontend/src/views/UserView.vue",)
+    assert change.migration_changed is False
+
+
+def test_callbacks_preview_keeps_callback_view_high_risk() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/callback-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/CallbackView.vue",
+            "frontend/tests/callback-view.test.ts",
+            "frontend/tests/filter-layout-contract.test.ts",
+            "frontend/tests/qingluan-screen-fidelity.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/CallbackView.vue",)
     assert change.migration_changed is False
 
 

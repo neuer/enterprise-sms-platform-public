@@ -220,6 +220,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/blacklist-redesign-prototype.html",
         "docs/previews/blacklist-redesign-shots.md",
         "docs/previews/blacklist-redesign-shots/full.png",
+        "docs/previews/callback-redesign-prototype.html",
         "docs/previews/configs-redesign-prototype.html",
         "docs/previews/dashboard-redesign-prototype.html",
         "docs/previews/filter-bar-single-row-prototype.html",
