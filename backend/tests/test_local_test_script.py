@@ -36,6 +36,7 @@ SECRET_NAMES = {
     "redis_broker_password",
     "redis_auth_password",
     "redis_control_password",
+    "redis_tls_server_key",
 }
 PORT_OVERRIDE_NAMES = {"WEB_PORT", "API_PORT", "MOCK_VENDOR_PORT"}
 

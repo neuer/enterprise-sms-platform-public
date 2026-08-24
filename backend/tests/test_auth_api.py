@@ -426,6 +426,9 @@ def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
         auth_mock=False,
         vendor_mock=False,
         redis_ha_mode="managed",
+        redis_broker_host="broker.redis.example",
+        redis_auth_host="auth.redis.example",
+        redis_control_host="control.redis.example",
         vendor_base_url="https://vendor.example.test",
         ldap_ca_certs_file=ca_file,
     )

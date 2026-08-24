@@ -163,6 +163,8 @@ ensure_dev_secrets() {
   create_random_secret redis_broker_password 32
   create_random_secret redis_auth_password 32
   create_random_secret redis_control_password 32
+  # 开发栈不启用 Redis TLS；仍生成有界占位值以保持 25 件 canonical inventory 一致。
+  create_random_secret redis_tls_server_key 32
 }
 
 compose() {
