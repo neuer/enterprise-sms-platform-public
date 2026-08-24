@@ -90,9 +90,12 @@ def test_compose_and_secret_runbook_cover_exact_production_secrets() -> None:
         (DEPLOY / "docker-compose.redis-tls.yml").read_text(encoding="utf-8")
     )
     compose_secrets = {**compose["secrets"], **redis_tls["secrets"]}
-    assert set(compose_secrets) == (
-        PRODUCTION_SECRETS - REDIS_SECRET_NAMES
-    ) | COMPOSE_INTERNAL_SECRET_ALIASES | COMPOSE_DIRECT_REDIS_SECRETS
+    assert (
+        set(compose_secrets)
+        == (PRODUCTION_SECRETS - REDIS_SECRET_NAMES)
+        | COMPOSE_INTERNAL_SECRET_ALIASES
+        | COMPOSE_DIRECT_REDIS_SECRETS
+    )
     assert {Path(item["file"]).name for item in compose_secrets.values()} == PRODUCTION_SECRETS
 
     runbook = read_required("secrets.md")
@@ -157,7 +160,8 @@ def test_deployment_index_documents_systemd_install_recovery_and_rollback() -> N
 
     for token in (
         "/etc/sms-platform/compose.env",
-        "install -m 0600",
+        "install_production_host_assets.py apply",
+        "mode 为 `0600`",
         "/usr/local/sbin/sms-compose",
         "/usr/local/sbin/sms-storage-preflight",
         "sms-storage-preflight.service",
@@ -181,9 +185,7 @@ def test_deployment_index_documents_systemd_install_recovery_and_rollback() -> N
         "开发测试服务器要启用", maxsplit=1
     )[0]
     assert "systemctl enable --now sms-platform.service" not in installation
-    bootstrap_handoff = index.split(
-        "全新主机先用上述 `release bootstrap", maxsplit=1
-    )[1]
+    bootstrap_handoff = index.split("全新主机先用上述 `release bootstrap", maxsplit=1)[1]
     assert "systemctl enable --now sms-platform.service" in bootstrap_handoff
     assert "全新主机禁止用普通 `up`" in index
     assert "release bootstrap" in index
@@ -403,9 +405,9 @@ def test_production_runbooks_never_use_raw_compose_entrypoint() -> None:
     assert "docker compose -f deploy/docker-compose.yml" not in handover
     assert "sudo /usr/local/sbin/sms-compose" in handover
 
-    usage_recovery = (
-        ROOT / "docs" / "runbooks" / "usage-ledger-recovery.md"
-    ).read_text(encoding="utf-8")
+    usage_recovery = (ROOT / "docs" / "runbooks" / "usage-ledger-recovery.md").read_text(
+        encoding="utf-8"
+    )
     assert "sms-compose exec" not in usage_recovery
     assert "生产手工解释和" in usage_recovery
     assert "当前均为 **No-Go**" in usage_recovery
@@ -452,9 +454,9 @@ def test_generation_ids_are_not_documented_as_crypto_provenance() -> None:
         "backup": read_required("backup-restore.md"),
         "failover": read_required("failover.md"),
         "handover": (ROOT / "HANDOVER.md").read_text(encoding="utf-8"),
-        "baseline": (
-            ROOT / "docs" / "runbooks" / "production-phase0-baseline.md"
-        ).read_text(encoding="utf-8"),
+        "baseline": (ROOT / "docs" / "runbooks" / "production-phase0-baseline.md").read_text(
+            encoding="utf-8"
+        ),
     }
     for document in documents.values():
         assert "generation ID" in document
@@ -588,6 +590,59 @@ def test_phase0_production_baseline_records_decisions_and_evidence_boundaries() 
         "不能证明",
     ):
         assert boundary in runbook
+
+
+def test_production_resource_freeze_closes_host_resource_and_raci_inputs() -> None:
+    path = ROOT / "docs/runbooks/production-resource-responsibility-freeze.md"
+    assert path.is_file(), "缺少生产资源与责任冻结及宿主初始化手册"
+    runbook = path.read_text(encoding="utf-8")
+
+    for token in (
+        "Ubuntu Server 24.04.4 LTS",
+        "Ubuntu GA `linux-generic` 6.8",
+        "`/usr/bin/python3` 精确 Python 3.12",
+        "12 vCPU / 48 GiB",
+        "1050 GiB",
+        "OS | 100 GiB",
+        "Docker | 250 GiB",
+        "PostgreSQL | 400 GiB",
+        "Redis | 100 GiB",
+        "Runtime | 200 GiB",
+        "ftype=1",
+        "不得按 `/dev/sdX`",
+        "不由任何应用\n初始化脚本自动执行",
+        "内部 Registry",
+        "内网只读 Git",
+        "25 个 `root:root 0600`",
+        "企业微信与公司邮件",
+        "REV",
+        "另一名自然人",
+        "RF-20",
+        "RF-22",
+        "draft / external-verification-required",
+        "Asia/Shanghai",
+        "ENG-01",
+        "ENG-06",
+        "dedicated live production restore",
+    ):
+        assert token in runbook
+
+    assert "production_host_preflight.py" in runbook
+    assert "install_production_host_assets.py" in runbook
+    assert (
+        "sudo /usr/bin/python3 "
+        "/opt/sms-platform/deploy/scripts/production_host_preflight.py base" in runbook
+    )
+    assert (
+        "sudo /usr/bin/python3 "
+        "/opt/sms-platform/deploy/scripts/storage_preflight.py --mode startup" in runbook
+    )
+    assert "mkfs -f" in runbook and "不使用" in runbook
+    docker_convenience = "get." + "docker.com"
+    assert docker_convenience in runbook and "不要使用" in runbook
+    assert "脚本永久安装 `latest`" in runbook
+    assert "生产不得直连 GitHub" in runbook
+    assert "当前仓库字节禁止在生产启用" in runbook
 
 
 def test_phase0_prd_locks_retention_cutover_and_environment_isolation() -> None:
@@ -824,8 +879,7 @@ def test_public_handover_redacts_evidence_and_acceptance_stays_live() -> None:
 
 def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     documents = {
-        name: (ROOT / name).read_text(encoding="utf-8")
-        for name in ("PROGRESS.md", "HANDOVER.md")
+        name: (ROOT / name).read_text(encoding="utf-8") for name in ("PROGRESS.md", "HANDOVER.md")
     }
     stale_phrases = (
         "本次文档合并后的新 HEAD 仍须",
@@ -836,10 +890,7 @@ def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     for name, document in documents.items():
         for phrase in stale_phrases:
             assert phrase not in document, f"{name} 仍包含已完成门禁的旧续跑提示"
-    assert (
-        "最终不可变证据归档到生产变更单与 release manifest"
-        in documents["HANDOVER.md"]
-    )
+    assert "最终不可变证据归档到生产变更单与 release manifest" in documents["HANDOVER.md"]
     assert "`MAINTENANCE.md` 为准" in documents["PROGRESS.md"]
 
 
@@ -863,9 +914,7 @@ def test_deployment_index_assigns_hsts_to_the_external_tls_terminator() -> None:
 def test_test_secure_access_runbooks_define_the_phone_operator_boundary() -> None:
     index = read_required("README.md")
     egress = read_required("vendor-egress.md")
-    controlled = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(
-        encoding="utf-8"
-    )
+    controlled = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
     manual = (ROOT / "docs/TEST-MANUAL.md").read_text(encoding="utf-8")
     combined = "\n".join((index, egress, controlled, manual))
 
