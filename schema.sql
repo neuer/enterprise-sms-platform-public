@@ -1,5 +1,11 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.66  2026-08-24
+-- v1.6.66：sms_send+realtime 允许 system-reconcile/raw_replay 系统审计；
+--          人工终态不得更新 system_replay_audit_state
+-- v1.6.65  2026-08-24
+-- v1.6.65：raw_vendor_log 增加 system_replay_audit_state，系统重放终态与
+--          审计补写分离；processing lease 续租以 RAW_LEASE_SECONDS 为唯一合同
 -- v1.6.64  2026-08-24
 -- v1.6.64：raw_vendor_log 增加 processing_lease_id/epoch/expires_at，
 --          初始 poll、自动/人工重放与 parser 重评估共用 fencing；
@@ -727,6 +733,10 @@ CREATE TABLE raw_vendor_log (
     -- automatic=自动重放可认领；manual=仅人工；never=禁止普通重放。
     -- 默认 manual：无法判定的历史行不得默认进入 automatic
     replay_eligibility VARCHAR(16) NOT NULL DEFAULT 'manual',
+    -- NULL=轮询/人工路径不欠系统审计；pending=系统重放已写终态待补审计；
+    -- completed=该 lease epoch 的系统审计已落库
+    system_replay_audit_state VARCHAR(16)
+                   CHECK (system_replay_audit_state IN ('pending','completed')),
     fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_raw_vendor_http_status CHECK (http_status BETWEEN 100 AND 599),
     CONSTRAINT ck_raw_vendor_content_encoding
@@ -755,6 +765,8 @@ CREATE INDEX idx_raw_processing_lease_epoch ON raw_vendor_log(processing_lease_e
     WHERE processed = FALSE AND processing_lease_id IS NOT NULL;
 CREATE INDEX idx_raw_auto_replay ON raw_vendor_log(replay_attempts, id)
     WHERE processed = FALSE AND replay_eligibility = 'automatic';
+CREATE INDEX idx_raw_system_replay_audit_pending ON raw_vendor_log(id)
+    WHERE processed = TRUE AND system_replay_audit_state = 'pending';
 CREATE INDEX idx_raw_fetched ON raw_vendor_log(fetched_at);
 -- GIN 索引支持 uncertain 分片按无PII customId 元数据比对
 CREATE INDEX idx_raw_custom_ids ON raw_vendor_log USING GIN (custom_ids);
@@ -1958,6 +1970,11 @@ CREATE INDEX idx_audit_actor_account ON audit_log(actor_account_id, created_at D
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id, created_at DESC);
 CREATE INDEX idx_audit_action ON audit_log(action, created_at);
 CREATE INDEX idx_audit_time   ON audit_log(created_at);
+CREATE UNIQUE INDEX idx_audit_raw_replay_system_epoch
+    ON audit_log (object_id, ((after_val->>'lease_epoch')))
+    WHERE action = 'raw_replay'
+      AND actor_subject_kind = 'system'
+      AND object_type = 'raw_vendor_log';
 
 -- 仅 sms_owner 可读；业务角色只提交绑定 txid/session_user 的 HMAC，不能读取 key。
 CREATE TABLE audit_context_signing_key (
@@ -2137,6 +2154,7 @@ BEGIN
            AND NEW.action IN ('template_sync','sign_sync'))
           OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
             'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
+          OR (NEW.actor='system-reconcile' AND NEW.action='raw_replay')
           OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
               AND NEW.action='usage_projection_rebuild')))
       OR (context_domain='bulk' AND session_user='sms_send' AND (
@@ -2404,7 +2422,8 @@ GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
 GRANT SELECT (queue, state)
     ON outbox_event TO sms_metrics;
-GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expires_at)
+GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expires_at,
+              system_replay_audit_state)
     ON raw_vendor_log TO sms_metrics;
 
 -- 新表/序列默认不向任何运行身份授权；迁移必须显式更新本矩阵。

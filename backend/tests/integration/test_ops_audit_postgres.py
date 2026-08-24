@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -34,7 +35,11 @@ from app.services.raw_parse import (
     RAW_PARSER_VERSION,
     RawParseDisposition,
 )
-from app.services.raw_replay import RawReplayConflict, RawReplayService
+from app.services.raw_replay import (
+    RawReplayConflict,
+    RawReplayService,
+    RawReplaySystemAuditIncomplete,
+)
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -42,6 +47,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 PRINCIPAL_KEY = bytes.fromhex("11" * 32)
+SYSTEM_REALTIME_KEY = bytes.fromhex("22" * 32)
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _system_audit_function_sql() -> str:
+    """从 schema.sql 取出当前触发器函数，供快照库尚未升到 0078 时安装。"""
+
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    start = schema.index("CREATE OR REPLACE FUNCTION enforce_live_audit_principal()")
+    end = schema.index("REVOKE ALL ON FUNCTION enforce_live_audit_principal()")
+    return schema[start:end].rstrip().rstrip(";")
 
 
 @pytest.fixture
@@ -96,6 +112,66 @@ async def accept_runtime(
 def _repository(accept_url: URL) -> SqlOpsRepository:
     return SqlOpsRepository(
         cast(Any, SimpleNamespace(database_url=accept_url)),
+        redis=object(),
+    )
+
+
+@pytest.fixture
+async def send_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[AsyncEngine, URL]]:
+    owner_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    password = uuid4().hex
+    owner = create_async_engine(owner_url)
+    database = owner_url.database
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(f"ALTER ROLE sms_send WITH LOGIN PASSWORD '{password}'")
+        )
+        if database:
+            await connection.execute(
+                text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_send')
+            )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO audit_context_signing_key(key_kind,key_material,updated_at)
+                VALUES ('system:realtime',:key,now())
+                ON CONFLICT (key_kind) DO UPDATE
+                  SET key_material=EXCLUDED.key_material,updated_at=now()
+                """
+            ),
+            {"key": SYSTEM_REALTIME_KEY},
+        )
+        await connection.exec_driver_sql(_system_audit_function_sql())
+        await connection.execute(text("GRANT INSERT ON audit_log TO sms_send"))
+        await connection.execute(
+            text("GRANT USAGE, SELECT ON SEQUENCE audit_log_id_seq TO sms_send")
+        )
+    monkeypatch.setattr(
+        "app.core.runtime_resources._audit_context_key",
+        lambda name: (
+            SYSTEM_REALTIME_KEY
+            if name == "audit_system_realtime_context_key"
+            else PRINCIPAL_KEY
+            if name == "audit_context_key"
+            else None
+        ),
+    )
+    send_url = owner_url.set(username="sms_send", password=password)
+    try:
+        yield owner, send_url
+    finally:
+        await close_runtime_resources()
+        await owner.dispose()
+
+
+def _send_repository(send_url: URL) -> SqlOpsRepository:
+    return SqlOpsRepository(
+        cast(
+            Any,
+            SimpleNamespace(database_url=send_url, audit_producer_domain="realtime"),
+        ),
         redis=object(),
     )
 
@@ -183,7 +259,7 @@ async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
             await connection.execute(
                 text(
                     """
-                    SELECT processed,item_count,replay_attempts
+                    SELECT processed,item_count,replay_attempts,system_replay_audit_state
                     FROM raw_vendor_log WHERE id=:raw_id
                     """
                 ),
@@ -216,6 +292,7 @@ async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
         "processed": bool(raw["processed"]),
         "item_count": int(raw["item_count"]),
         "replay_attempts": int(raw["replay_attempts"]),
+        "system_replay_audit_state": raw["system_replay_audit_state"],
         "report_events": int(events),
         "audits": list(audits),
     }
@@ -244,7 +321,7 @@ class _RecordingIngest:
         self.owner = owner
         self.calls: list[tuple[int, object]] = []
 
-    async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
+    async def process_existing(self, raw_id: int, data: object, **kwargs: object) -> int:
         self.calls.append((raw_id, data))
         count = len(data) if isinstance(data, list) else 0
         event_key = hashlib.sha256(f"replay-effect:{raw_id}".encode()).hexdigest()
@@ -256,11 +333,19 @@ class _RecordingIngest:
                     SET processed=TRUE,item_count=:item_count,error=NULL,
                       processing_started_at=NULL,
                       parse_state='processed',replay_eligibility='never',
-                      processing_lease_id=NULL,processing_lease_expires_at=NULL
+                      processing_lease_id=NULL,processing_lease_expires_at=NULL,
+                      system_replay_audit_state=CASE
+                        WHEN :system_audit_intent THEN 'pending'
+                        ELSE system_replay_audit_state
+                      END
                     WHERE id=:raw_id
                     """
                 ),
-                {"raw_id": raw_id, "item_count": count},
+                {
+                    "raw_id": raw_id,
+                    "item_count": count,
+                    "system_audit_intent": bool(kwargs.get("system_audit_intent")),
+                },
             )
             await connection.execute(
                 text(
@@ -1165,3 +1250,180 @@ async def test_sms_accept_reevaluate_expected_state_miss_does_not_audit(
         assert int(audits) == 0
     finally:
         await _cleanup(owner, raw_id=raw_id, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_send_system_raw_replay_audit_rewrites_after_trigger_or_connection_failure(
+    send_runtime: tuple[AsyncEngine, URL],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, send_url = send_runtime
+    items = [{"customId": "safe-system-1"}, {"customId": "safe-system-2"}]
+    raw = json.dumps({"code": 0, "msg": "ok", "data": items}).encode()
+    crypto = _ReplayCrypto(raw)
+    ingest = _RecordingIngest(owner)
+    repository = _send_repository(send_url)
+    service = RawReplayService(repository, crypto, ingest, _ForbiddenIngest())
+    raw_id: int | None = None
+    attempts = {"n": 0}
+
+    async def flaky_bind(
+        connection: object,
+        *,
+        actor_name: str,
+        action: str,
+        producer_domain: str | None = None,
+    ) -> None:
+        from app.core.runtime_resources import bind_connection_system_audit as real_bind
+
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("synthetic system audit context failure")
+        await real_bind(
+            connection,
+            actor_name=actor_name,
+            action=action,
+            producer_domain=producer_domain,
+        )
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_system_audit",
+        flaky_bind,
+    )
+    async with owner.begin() as connection:
+        raw_id = int(
+            (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO raw_vendor_log(
+                          source,payload_enc,payload_sha256,processed,item_count,
+                          parse_state,replay_eligibility
+                        ) VALUES (
+                          'report',:payload_enc,:sha,FALSE,0,
+                          'unattempted','automatic'
+                        ) RETURNING id
+                        """
+                    ),
+                    {
+                        "payload_enc": b"ciphertext-only",
+                        "sha": hashlib.sha256(raw).hexdigest(),
+                    },
+                )
+            ).scalar_one()
+        )
+    try:
+        with correlation_scope(), pytest.raises(RawReplaySystemAuditIncomplete):
+            await service.replay(
+                raw_id,
+                actor="system-reconcile",
+                ip="127.0.0.1",
+                system_producer=True,
+            )
+        after_fail = await _raw_effects(owner, raw_id)
+        assert after_fail["processed"] is True
+        assert after_fail["item_count"] == 2
+        assert after_fail["system_replay_audit_state"] == "pending"
+        assert after_fail["report_events"] == 1
+        assert after_fail["audits"] == []
+        assert len(ingest.calls) == 1
+        assert len(crypto.calls) == 1
+
+        with correlation_scope():
+            retried = await service.replay(
+                raw_id,
+                actor="system-reconcile",
+                ip="127.0.0.1",
+                system_producer=True,
+            )
+        after_retry = await _raw_effects(owner, raw_id)
+        assert retried == 2
+        assert after_retry["processed"] is True
+        assert after_retry["system_replay_audit_state"] == "completed"
+        assert after_retry["replay_attempts"] == after_fail["replay_attempts"]
+        assert len(ingest.calls) == 1
+        assert len(crypto.calls) == 1
+        assert len(after_retry["audits"]) == 1
+        audit = after_retry["audits"][0]
+        assert str(audit["actor"]) == "system-reconcile"
+        assert str(audit["actor_subject_kind"]) == "system"
+        assert audit["actor_account_id"] is None
+        assert audit["after_val"]["source"] == "report"
+        assert int(audit["after_val"]["items"]) == 2
+        assert int(audit["after_val"]["lease_epoch"]) == 1
+        assert audit["after_val"]["producer_domain"] == "realtime"
+        assert "phone" not in json.dumps(audit["after_val"])
+
+        with correlation_scope():
+            await repository.audit_raw_replay(
+                raw_id,
+                source="report",
+                items=2,
+                actor="system-reconcile",
+                ip="127.0.0.1",
+                system_producer=True,
+                lease_epoch=1,
+            )
+        after_unique = await _raw_effects(owner, raw_id)
+        assert len(after_unique["audits"]) == 1
+    finally:
+        await _cleanup(owner, raw_id=raw_id)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_human_mark_processed_does_not_touch_system_audit_column(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    from uuid import UUID
+
+    from app.services.raw_lease import RawProcessingLease
+    from app.services.report_repository import SqlReportRepository
+
+    owner, accept_url = accept_runtime
+    reports = SqlReportRepository(
+        cast(
+            Any,
+            SimpleNamespace(
+                database_url=accept_url,
+                database_url_for=lambda _role: accept_url,
+            ),
+        )
+    )
+    raw_id: int | None = None
+    lease_id = UUID(int=441)
+    try:
+        async with owner.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,processed,item_count,
+                              parse_state,replay_eligibility,
+                              processing_lease_id,processing_lease_epoch,
+                              processing_lease_expires_at
+                            ) VALUES (
+                              'report',:payload_enc,:sha,FALSE,0,
+                              'unattempted','automatic',
+                              :lease_id,1,now()+interval '15 minutes'
+                            ) RETURNING id
+                            """
+                        ),
+                        {
+                            "payload_enc": b"ciphertext-only",
+                            "sha": "c" * 64,
+                            "lease_id": str(lease_id),
+                        },
+                    )
+                ).scalar_one()
+            )
+        lease = RawProcessingLease(raw_id, lease_id, 1)
+        reports.remember_lease(lease)
+        await reports.mark_processed(raw_id, lease=lease)
+        effects = await _raw_effects(owner, raw_id)
+        assert effects["processed"] is True
+        assert effects["system_replay_audit_state"] is None
+        assert effects["audits"] == []
+    finally:
+        await _cleanup(owner, raw_id=raw_id)

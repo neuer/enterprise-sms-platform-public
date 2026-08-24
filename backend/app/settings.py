@@ -46,6 +46,9 @@ RAW_SPILL_RECOVER_CONCURRENCY_DEFAULT = 2
 RAW_SPILL_RECOVER_FILE_RSS_BYTES = 2 * RAW_SPILL_RECOVERY_CAPTURE_BYTES
 RAW_SPILL_RECOVER_MAX_FILES_DEFAULT = 8
 RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT = 8.0
+RAW_SPILL_RECLAIM_MAX_FILES_DEFAULT = 16
+RAW_SPILL_RECLAIM_MAX_SECONDS_DEFAULT = 2.0
+RAW_SPILL_RECLAIM_MAX_HEADER_BYTES_DEFAULT = 64 * 1024
 
 DatabaseRole = Literal[
     "auth",
@@ -108,7 +111,7 @@ class Settings(BaseSettings):
     db_export_password_file: Path = Path("/run/secrets/db_export_password")
     db_scheduler_password_file: Path = Path("/run/secrets/db_scheduler_password")
     db_metrics_password_file: Path = Path("/run/secrets/db_metrics_password")
-    redis_ha_mode: Literal["standalone", "managed"] = "standalone"
+    redis_ha_mode: Literal["standalone", "isolated-standalone", "managed"] = "standalone"
     redis_broker_host: str = "redis"
     redis_broker_port: int = 6379
     redis_broker_db: int = 0
@@ -156,6 +159,9 @@ class Settings(BaseSettings):
     raw_spill_recover_max_files: int = RAW_SPILL_RECOVER_MAX_FILES_DEFAULT
     raw_spill_recover_max_plaintext_bytes: int = RAW_SPILL_RECOVERY_CAPTURE_BYTES
     raw_spill_recover_max_seconds: float = RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT
+    raw_spill_reclaim_max_files: int = RAW_SPILL_RECLAIM_MAX_FILES_DEFAULT
+    raw_spill_reclaim_max_seconds: float = RAW_SPILL_RECLAIM_MAX_SECONDS_DEFAULT
+    raw_spill_reclaim_max_header_bytes: int = RAW_SPILL_RECLAIM_MAX_HEADER_BYTES_DEFAULT
     raw_spill_max_cipherq_files: int = 64
     raw_spill_max_cipherq_bytes: int = RAW_SPILL_MIN_TOTAL_BYTES
     raw_spill_cipherq_retention_s: float = 86400.0
@@ -240,9 +246,9 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "production requires DEBUG=0, AUTH_MOCK=0 and VENDOR_MOCK=0"
                 )
-            if self.redis_ha_mode != "managed":
+            if self.redis_ha_mode not in {"isolated-standalone", "managed"}:
                 raise ValueError(
-                    "production requires managed Redis endpoints for every failure domain"
+                    "production requires REDIS_HA_MODE=managed or isolated-standalone"
                 )
             if self.jwt_accept_legacy:
                 raise ValueError("production forbids JWT_ACCEPT_LEGACY")
@@ -338,18 +344,38 @@ class Settings(BaseSettings):
             self.redis_auth_db,
             self.redis_control_db,
         )
+        redis_password_files = (
+            self.redis_broker_password_file,
+            self.redis_auth_password_file,
+            self.redis_control_password_file,
+        )
         if any(
             re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", host.casefold())
             is None
             for host in redis_hosts
         ):
             raise ValueError("Redis hosts must be DNS names without credentials")
-        if len({host.casefold() for host in redis_hosts}) != 3:
-            raise ValueError("Redis broker, auth and control hosts must be distinct")
         if any(not 1 <= value <= 65_535 for value in redis_ports):
             raise ValueError("Redis ports must be between 1 and 65535")
+        redis_endpoints = {
+            (host.casefold(), port)
+            for host, port in zip(redis_hosts, redis_ports, strict=True)
+        }
+        if len(redis_endpoints) != 3:
+            raise ValueError("Redis broker, auth and control endpoints must be distinct")
+        if self.is_production and self.redis_ha_mode == "managed" and any(
+            host.casefold() in {"redis", "redis-auth", "redis-control", "localhost"}
+            for host in redis_hosts
+        ):
+            raise ValueError(
+                "managed Redis endpoints must be explicit external service names"
+            )
         if any(not 0 <= value <= 15 for value in redis_databases):
             raise ValueError("Redis database numbers must be between 0 and 15")
+        if len({path.resolve(strict=False) for path in redis_password_files}) != 3:
+            raise ValueError(
+                "Redis broker, auth and control credential files must be distinct"
+            )
         pool_sizes = (
             self.db_api_pool_size,
             self.db_worker_pool_size,
@@ -440,6 +466,16 @@ class Settings(BaseSettings):
             )
         if not 0.1 <= self.raw_spill_recover_max_seconds <= 60:
             raise ValueError("RAW_SPILL_RECOVER_MAX_SECONDS must be between 0.1 and 60")
+        if not 1 <= self.raw_spill_reclaim_max_files <= self.raw_spill_max_pending_files:
+            raise ValueError(
+                "RAW_SPILL_RECLAIM_MAX_FILES must be between 1 and RAW_SPILL_MAX_PENDING_FILES"
+            )
+        if not 0.1 <= self.raw_spill_reclaim_max_seconds <= 15:
+            raise ValueError("RAW_SPILL_RECLAIM_MAX_SECONDS must be between 0.1 and 15")
+        if not 768 <= self.raw_spill_reclaim_max_header_bytes <= 1024 * 1024:
+            raise ValueError(
+                "RAW_SPILL_RECLAIM_MAX_HEADER_BYTES must be between 768 and 1MiB"
+            )
         if not 1 <= self.raw_spill_max_cipherq_files <= 4096:
             raise ValueError("RAW_SPILL_MAX_CIPHERQ_FILES must be between 1 and 4096")
         if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_cipherq_bytes <= max_spill_bytes:

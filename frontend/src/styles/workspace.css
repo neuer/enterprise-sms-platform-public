@@ -257,21 +257,19 @@ button:focus-visible {
 .reply-heading,
 .blacklist-heading,
 .user-heading,
-.config-heading {
+.config-heading,
+.callback-heading {
   align-items: end;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数/运维中心检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/
-   sensitive-filter-bar/user-filter-bar/config-filter-bar/ops-filter-bar/blacklist-fld/sensitive-fld/user-fld/config-fld/ops-fld/
-   blacklist-seg/sensitive-policy-seg/user-seg/config-seg/ops-seg/blacklist-filter-go/sensitive-filter-go/
-   user-filter-go/ops-filter-go/blacklist-privacy/sensitive-filter-note/user-privacy/config-privacy/ops-privacy 共用 reply-* 规则，
-   按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务共享选择器：ops-* 与 callback-* 均并入同一组，按页复制即缺陷。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
 .sensitive-filter-bar,
 .user-filter-bar,
 .config-filter-bar,
-.ops-filter-bar {
+.ops-filter-bar,
+.callback-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -288,7 +286,8 @@ button:focus-visible {
 .sensitive-fld,
 .user-fld,
 .config-fld,
-.ops-fld {
+.ops-fld,
+.callback-fld {
   display: grid;
   gap: 5px;
 }
@@ -298,7 +297,8 @@ button:focus-visible {
 .sensitive-fld > span,
 .user-fld > span,
 .config-fld > span,
-.ops-fld > span {
+.ops-fld > span,
+.callback-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -339,7 +339,8 @@ button:focus-visible {
 .sensitive-policy-seg,
 .user-seg,
 .config-seg,
-.ops-seg {
+.ops-seg,
+.callback-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -352,7 +353,8 @@ button:focus-visible {
 .sensitive-policy-seg button,
 .user-seg button,
 .config-seg button,
-.ops-seg button {
+.ops-seg button,
+.callback-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -371,7 +373,8 @@ button:focus-visible {
 .sensitive-policy-seg button.on,
 .user-seg button.on,
 .config-seg button.on,
-.ops-seg button.on {
+.ops-seg button.on,
+.callback-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
@@ -380,7 +383,8 @@ button:focus-visible {
 .blacklist-filter-go,
 .sensitive-filter-go,
 .user-filter-go,
-.ops-filter-go {
+.ops-filter-go,
+.callback-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -392,7 +396,8 @@ button:focus-visible {
 .sensitive-filter-note,
 .user-privacy,
 .config-privacy,
-.ops-privacy {
+.ops-privacy,
+.callback-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -406,7 +411,8 @@ button:focus-visible {
 .sensitive-filter-note code,
 .user-privacy code,
 .config-privacy code,
-.ops-privacy code {
+.ops-privacy code,
+.callback-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -420,7 +426,8 @@ button:focus-visible {
 .blacklist-results,
 .sensitive-results,
 .user-results,
-.ops-results {
+.ops-results,
+.callback-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -500,7 +507,8 @@ button:focus-visible {
 .blacklist-pagination,
 .sensitive-pagination,
 .user-pagination,
-.ops-pagination {
+.ops-pagination,
+.callback-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -528,7 +536,8 @@ button:focus-visible {
   .sensitive-heading,
   .user-heading,
   .config-heading,
-  .ops-heading {
+.ops-heading,
+.callback-heading {
     align-items: start;
   }
 
@@ -537,7 +546,8 @@ button:focus-visible {
   .sensitive-filter-bar,
   .user-filter-bar,
   .config-filter-bar,
-  .ops-filter-bar {
+.ops-filter-bar,
+.callback-filter-bar {
     align-items: flex-start;
   }
 
@@ -547,9 +557,11 @@ button:focus-visible {
   .sensitive-keyword,
   .user-keyword,
   .config-keyword,
-  .ops-keyword,
-  .ops-phone,
-  .ops-dates {
+.ops-keyword,
+.ops-phone,
+.ops-dates,
+.callback-keyword,
+.callback-app-select {
     width: 100%;
   }
 
@@ -562,7 +574,8 @@ button:focus-visible {
   .blacklist-filter-go,
   .sensitive-filter-go,
   .user-filter-go,
-  .ops-filter-go {
+.ops-filter-go,
+.callback-filter-go {
     width: 100%;
     margin-left: 0;
   }
@@ -571,7 +584,8 @@ button:focus-visible {
   .blacklist-filter-go .el-button,
   .sensitive-filter-go .el-button,
   .user-filter-go .el-button,
-  .ops-filter-go .el-button {
+.ops-filter-go .el-button,
+.callback-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -582,7 +596,8 @@ button:focus-visible {
   .blacklist-pagination,
   .sensitive-pagination,
   .user-pagination,
-  .ops-pagination {
+.ops-pagination,
+.callback-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -619,10 +634,8 @@ button:focus-visible {
   }
 }
 
-.callback-heading {
-  align-items: end;
-}
-
+/* 回调任务：检索条/规则条/结果面板/分页/空态/抽屉骨架/确认框已并入 reply-*、user-rules 与
+   sign-* 共享组，按页复制即缺陷；本区只保留 dead 脉冲、账本单元格与移动端卡片。 */
 .callback-pulse {
   display: grid;
   grid-template-columns: auto auto;
@@ -651,40 +664,14 @@ button:focus-visible {
   color: var(--el-color-danger);
 }
 
-.callback-filter-card {
-  margin-bottom: 14px;
+.callback-app-select {
+  width: 168px;
 }
 
-.callback-filter {
-  justify-content: flex-start;
-}
-
-.callback-filter label {
-  font-weight: 600;
-}
-
-.callback-filter span {
-  margin-left: auto;
-  color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-}
-
-.callback-filter .el-select {
-  width: 180px;
-}
-
-.callback-filter .el-input {
-  width: 200px;
-}
-
-.callback-table-card .el-card__body {
-  padding: 0;
-}
-
-.callback-table-card .el-alert {
-  width: auto;
-  margin: 14px;
+.callback-state {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
 }
 
 .callback-table strong,
@@ -707,7 +694,6 @@ button:focus-visible {
   font-size: 11px;
 }
 
-.callback-correlation,
 .callback-table code {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -718,25 +704,15 @@ button:focus-visible {
   color: var(--el-color-danger);
 }
 
-.callback-pagination {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: 58px;
-  padding: 8px 16px;
-  color: var(--tx-3);
-  border-top: 1px solid var(--line);
+.callback-fact-grid dd {
+  overflow-wrap: anywhere;
 }
 
 .callback-mobile-list {
   display: none;
 }
 
-@media (max-width: 680px) {
-  .callback-heading {
-    align-items: start;
-  }
-
+@media (max-width: 760px) {
   .callback-pulse {
     width: 100%;
     padding: 8px 0 0;
@@ -744,36 +720,30 @@ button:focus-visible {
     border-left: 0;
   }
 
-  .callback-filter span {
-    width: 100%;
-    margin-left: 0;
-  }
-
-  .callback-filter .el-select,
-  .callback-filter .el-input {
-    width: 100%;
-  }
-
   .callback-table {
     display: none;
   }
 
   .callback-mobile-list {
-    display: block;
-    padding: 4px 14px;
+    display: grid;
+    gap: 10px;
+    padding: 12px 8px;
   }
 
   .callback-mobile-list article {
-    padding: 14px 0;
-    border-bottom: 1px solid var(--line);
+    min-width: 0;
+    padding: 14px;
+    background: var(--panel-2);
+    border: 1px solid var(--hair);
+    border-radius: 10px;
   }
 
   .callback-mobile-list header,
   .callback-mobile-list footer {
     display: flex;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
+    justify-content: space-between;
   }
 
   .callback-mobile-list header small,
@@ -784,23 +754,24 @@ button:focus-visible {
   }
 
   .callback-mobile-list p {
+    margin: 12px 0 0;
     color: var(--tx-2);
   }
 
   .callback-mobile-list dl {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
     margin: 10px 0;
-    background: var(--paper);
+    overflow: hidden;
+    background: var(--hair-2);
+    border-radius: 8px;
   }
 
   .callback-mobile-list dl div {
-    padding: 7px;
-    border-right: 1px solid var(--line);
-  }
-
-  .callback-mobile-list dl div:last-child {
-    border-right: 0;
+    min-width: 0;
+    padding: 7px 9px;
+    background: var(--panel);
   }
 
   .callback-mobile-list dt {
@@ -813,6 +784,23 @@ button:focus-visible {
     overflow-wrap: anywhere;
     font-family: "IBM Plex Mono", monospace;
     font-size: 10px;
+  }
+
+  .callback-mobile-list footer {
+    align-items: flex-end;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hair-2);
+  }
+
+  .callback-mobile-list footer > span:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .callback-mobile-list footer .el-button + .el-button {
+    margin-left: 8px;
   }
 }
 
@@ -3791,7 +3779,8 @@ main {
 .blacklist-keyword,
 .user-keyword,
 .config-keyword,
-.ops-keyword {
+.ops-keyword,
+.callback-keyword {
   width: 220px;
 }
 
@@ -4226,15 +4215,12 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数/运维中心抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
-   user-drawer-head/blacklist-drawer-title/sensitive-drawer-title/user-drawer-title/blacklist-delete-dialog/
-   sensitive-delete-dialog/user-confirm-dialog/config-confirm-dialog/ops-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/
-   user-confirm-audit/config-confirm-audit/ops-confirm-audit/
-   blacklist-form/blacklist-editor-foot/sensitive-editor-foot/user-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务共享选择器：ops-* 与 callback-* 均并入同一组，按页复制即缺陷。 */
 .sign-drawer-head,
 .blacklist-drawer-head,
 .sensitive-drawer-head,
-.user-drawer-head {
+.user-drawer-head,
+.callback-drawer-head {
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -4244,7 +4230,8 @@ main {
 .sign-drawer-title,
 .blacklist-drawer-title,
 .sensitive-drawer-title,
-.user-drawer-title {
+.user-drawer-title,
+.callback-drawer-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -4256,7 +4243,8 @@ main {
 .sign-drawer-head code,
 .blacklist-drawer-head code,
 .sensitive-drawer-head code,
-.user-drawer-head code {
+.user-drawer-head code,
+.callback-drawer-head code {
   display: block;
   color: var(--tx-3);
   font: 11px var(--mono);
@@ -4284,19 +4272,22 @@ main {
   line-height: 1.8;
 }
 
-.sign-fact-grid {
+.sign-fact-grid,
+.callback-fact-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 7px 18px;
   margin: 16px 0 0;
 }
 
-.sign-fact-grid dt {
+.sign-fact-grid dt,
+.callback-fact-grid dt {
   color: var(--tx-3);
   font-size: 10.5px;
 }
 
-.sign-fact-grid dd {
+.sign-fact-grid dd,
+.callback-fact-grid dd {
   margin: 1px 0 0;
   color: var(--tx);
   font-size: 12px;
@@ -4314,7 +4305,8 @@ main {
 .sensitive-delete-dialog p,
 .user-confirm-dialog p,
 .config-confirm-dialog p,
-.ops-confirm-dialog p {
+.ops-confirm-dialog p,
+.callback-confirm-dialog p {
   margin: 0;
 }
 
@@ -4323,7 +4315,8 @@ main {
 .sensitive-delete-audit,
 .user-confirm-audit,
 .config-confirm-audit,
-.ops-confirm-audit {
+.ops-confirm-audit,
+.callback-confirm-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -4408,7 +4401,8 @@ main {
 .sign-editor-foot,
 .blacklist-editor-foot,
 .sensitive-editor-foot,
-.user-editor-foot {
+.user-editor-foot,
+.callback-editor-foot {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -4418,7 +4412,8 @@ main {
 .sign-editor-foot small,
 .blacklist-editor-foot small,
 .sensitive-editor-foot small,
-.user-editor-foot small {
+.user-editor-foot small,
+.callback-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
   font-size: 10px;
@@ -5670,10 +5665,11 @@ main {
 /* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
    检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
    本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
-   config-rules（系统参数页调度/敏感值规则条）与 ops-rules（运维中心守卫/PII 边界规则条）与 user-rules 同构，共用本组规则。 */
+   config-rules / ops-rules / callback-rules 与 user-rules 同构，共用本组规则。 */
 .user-rules,
 .config-rules,
-.ops-rules {
+.ops-rules,
+.callback-rules {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 28px;
@@ -5686,7 +5682,8 @@ main {
 
 .user-rules > div,
 .config-rules > div,
-.ops-rules > div {
+.ops-rules > div,
+.callback-rules > div {
   display: flex;
   gap: 8px;
   align-items: baseline;
@@ -5695,7 +5692,8 @@ main {
 
 .user-rules span,
 .config-rules span,
-.ops-rules span {
+.ops-rules span,
+.callback-rules span {
   flex: none;
   color: var(--tx-3);
   font-size: 10.5px;
@@ -5704,7 +5702,8 @@ main {
 
 .user-rules p,
 .config-rules p,
-.ops-rules p {
+.ops-rules p,
+.callback-rules p {
   margin: 0;
   color: var(--tx-2);
   font-size: 11px;
@@ -5712,7 +5711,8 @@ main {
 }
 
 .user-alert,
-.ops-alert { margin-bottom: 14px; }
+.ops-alert,
+.callback-alert { margin-bottom: 14px; }
 
 .user-name {
   display: block;
@@ -5804,7 +5804,8 @@ main {
 
 .user-row-actions .el-button + .el-button { margin-left: 0; }
 
-.user-empty-action {
+.user-empty-action,
+.callback-empty-action {
   display: grid;
   justify-items: center;
   gap: 12px;
@@ -5812,7 +5813,8 @@ main {
   align-content: center;
 }
 
-.role-subject {
+.role-subject,
+.callback-subject {
   display: grid;
   gap: 2px;
   margin: -4px 0 18px;
@@ -5822,18 +5824,21 @@ main {
   border-radius: 8px;
 }
 
-.role-subject span {
+.role-subject span,
+.callback-subject span {
   color: var(--tx-hi);
   font-size: 13px;
   font-weight: 600;
 }
 
-.role-subject code {
+.role-subject code,
+.callback-subject code {
   color: var(--tx-2);
   font: 11px var(--mono);
 }
 
-.role-subject small {
+.role-subject small,
+.callback-subject small {
   color: var(--tx-3);
   font-size: 10.5px;
 }
@@ -5890,7 +5895,8 @@ main {
   .user-heading { align-items: stretch; }
   .user-rules > div,
   .config-rules > div,
-  .ops-rules > div { width: 100%; }
+  .ops-rules > div,
+  .callback-rules > div { width: 100%; }
   .user-table { display: none; }
   .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
   .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
@@ -5938,7 +5944,6 @@ main {
 .queue-status-grid small { color: var(--muted); }
 .break-glass { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; margin-top: 18px; padding: 16px; border: 1px solid color-mix(in srgb, var(--red), transparent 60%); background: color-mix(in srgb, var(--red), var(--surface) 96%); }
 .break-glass p { margin: 0; color: var(--ink-soft); font-size: 12px; }
-.ops-panel > .callback-filter-card { margin-top: 0; }
 .outbox-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; margin-bottom: 16px; border: 1px solid var(--line); background: var(--line); }
 .outbox-stats article { display: grid; gap: 8px; padding: 12px 14px; background: var(--surface-soft); }
 .outbox-stats span { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; }

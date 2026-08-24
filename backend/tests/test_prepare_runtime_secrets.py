@@ -4,6 +4,7 @@ import base64
 import fcntl
 import hashlib
 import importlib.util
+import json
 import os
 import stat
 from pathlib import Path
@@ -41,8 +42,11 @@ SECRET_NAMES = frozenset(
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
+        "redis_tls_server_key",
     }
 )
+PKCS8_PEM_BEGIN = b"-----" + b"BEGIN " + b"PRIVATE " + b"KEY-----\n"
+PKCS8_PEM_END = b"-----" + b"END " + b"PRIVATE " + b"KEY-----\n"
 
 
 def load_module() -> ModuleType:
@@ -82,15 +86,33 @@ def make_source(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
             serialization.PublicFormat.Raw,
         )
     )
+    values["redis_tls_server_key"] = (
+        PKCS8_PEM_BEGIN
+        + b"ZmFrZS10ZXN0LWtleS1uZXZlci11c2UtaW4tcHJvZHVjdGlvbg==\n"
+        + PKCS8_PEM_END
+    )
     for name, value in values.items():
         path = source / name
         path.write_bytes(value)
         path.chmod(0o600)
+    tls_root = tmp_path / "redis-tls"
+    tls_root.mkdir(mode=0o755, exist_ok=True)
+    ca, certificate = redis_tls_public_paths(source)
+    ca.write_bytes(b"fixture Redis CA certificate\n")
+    certificate.write_bytes(b"fixture Redis three-SAN server certificate\n")
+    ca.chmod(0o644)
+    certificate.chmod(0o644)
     return source, values
+
+
+def redis_tls_public_paths(source: Path) -> tuple[Path, Path]:
+    tls_root = source.parent / "redis-tls"
+    return tls_root / "ca.pem", tls_root / "server.pem"
 
 
 def prepare_portably(module: ModuleType, source: Path, runtime: Path) -> None:
     uid, gid = os.getuid(), os.getgid()
+    ca, certificate = redis_tls_public_paths(source)
     module.prepare(
         source_dir=source,
         runtime_root=runtime,
@@ -99,6 +121,9 @@ def prepare_portably(module: ModuleType, source: Path, runtime: Path) -> None:
         postgres_owner=(uid, gid),
         migrate_owner=(uid, gid),
         require_root=False,
+        redis_tls_ca_path=ca,
+        redis_tls_certificate_path=certificate,
+        redis_tls_public_owner=(uid, gid),
     )
 
 
@@ -169,12 +194,39 @@ def test_prepare_creates_service_specific_0400_copies(
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
+        "redis_tls_server_key",
     }
+    assert not (current / "backend" / "redis_tls_server_key").exists()
     files = [path for path in current.rglob("*") if path.is_file()]
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o400 for path in files)
     expected_owner = (os.getuid(), os.getgid())
     assert all((path.stat().st_uid, path.stat().st_gid) == expected_owner for path in files)
     assert not any(path.is_symlink() for path in files)
+
+
+def test_production_generation_binds_only_public_redis_tls_fingerprints(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, values = make_source(tmp_path)
+    runtime = tmp_path / "runtime"
+    prepare_portably(module, source, runtime)
+    current = (runtime / "current").resolve(strict=True)
+    metadata_path = current / module.REDIS_TLS_PUBLIC_METADATA_NAME
+    ca, certificate = redis_tls_public_paths(source)
+
+    metadata = json.loads(metadata_path.read_text(encoding="ascii"))
+
+    assert metadata == {
+        "schema_version": 1,
+        "ca_sha256": hashlib.sha256(ca.read_bytes()).hexdigest(),
+        "server_certificate_sha256": hashlib.sha256(
+            certificate.read_bytes()
+        ).hexdigest(),
+    }
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o400
+    serialized = metadata_path.read_bytes()
+    assert values["redis_tls_server_key"] not in serialized
+    assert hashlib.sha256(values["redis_tls_server_key"]).hexdigest().encode() not in serialized
 
 
 def test_prepare_rejects_symlinked_source_directory(module: ModuleType, tmp_path: Path) -> None:
@@ -234,6 +286,235 @@ def test_prepare_rejects_reused_audit_keys_across_producer_domains(
 
     with pytest.raises(module.RuntimeSecretsError, match="pairwise independent"):
         prepare_portably(module, source, tmp_path / "runtime")
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "second_suffix", "message"),
+    (
+        (
+            "redis_broker_password",
+            "redis_auth_password",
+            b"\r\n",
+            "Redis ACL passwords",
+        ),
+        (
+            "db_owner_password",
+            "db_metrics_password",
+            b"\n",
+            "database role passwords",
+        ),
+    ),
+)
+def test_production_rejects_effectively_reused_service_passwords_before_generation(
+    module: ModuleType,
+    tmp_path: Path,
+    first: str,
+    second: str,
+    second_suffix: bytes,
+    message: str,
+) -> None:
+    source, values = make_source(tmp_path)
+    (source / second).write_bytes(values[first] + second_suffix)
+    (source / second).chmod(0o600)
+    runtime = tmp_path / "runtime"
+
+    with pytest.raises(module.RuntimeSecretsError, match=message):
+        prepare_portably(module, source, runtime)
+
+    assert not (runtime / "current").exists()
+    assert not (runtime / "generations").exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    (
+        ("redis_broker_password", b"A" * 31, "Redis ACL passwords"),
+        (
+            "redis_auth_password",
+            b"A" * 40 + b"\nuser default on nopass ~* &* +@all",
+            "Redis ACL passwords",
+        ),
+        ("db_owner_password", b"B" * 40 + b"\n", "database role passwords"),
+        ("db_send_password", b"unsafe password value" * 3, "database role passwords"),
+    ),
+)
+def test_production_rejects_service_passwords_outside_single_line_contract(
+    module: ModuleType,
+    tmp_path: Path,
+    name: str,
+    value: bytes,
+    message: str,
+) -> None:
+    source, _ = make_source(tmp_path)
+    target = source / name
+    target.write_bytes(value)
+    target.chmod(0o600)
+
+    with pytest.raises(module.RuntimeSecretsError, match=message):
+        prepare_portably(module, source, tmp_path / "runtime")
+
+
+def test_production_rejects_non_pem_redis_tls_server_key(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, _ = make_source(tmp_path)
+    key = source / "redis_tls_server_key"
+    key.write_bytes(b"not-a-private-key")
+    key.chmod(0o600)
+
+    with pytest.raises(module.RuntimeSecretsError, match="PKCS#8 PEM"):
+        prepare_portably(module, source, tmp_path / "runtime")
+
+
+@pytest.mark.parametrize(
+    ("target_name", "defect"),
+    (
+        ("ca.pem", "missing"),
+        ("ca.pem", "mode"),
+        ("server.pem", "symlink"),
+    ),
+)
+def test_production_rejects_unsafe_redis_tls_public_material_before_generation(
+    module: ModuleType,
+    tmp_path: Path,
+    target_name: str,
+    defect: str,
+) -> None:
+    source, _ = make_source(tmp_path)
+    target = source.parent / "redis-tls" / target_name
+    if defect == "missing":
+        target.unlink()
+    elif defect == "mode":
+        target.chmod(0o600)
+    else:
+        other = source.parent / "redis-tls" / "ca.pem"
+        target.unlink()
+        target.symlink_to(other)
+    runtime = tmp_path / "runtime"
+
+    with pytest.raises(module.RuntimeSecretsError, match="Redis TLS"):
+        prepare_portably(module, source, runtime)
+
+    assert not (runtime / "current").exists()
+    assert not (runtime / "generations").exists()
+
+
+def test_development_prepare_does_not_require_redis_tls_public_material(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, _ = make_source(tmp_path)
+    for path in redis_tls_public_paths(source):
+        path.unlink()
+    uid, gid = os.getuid(), os.getgid()
+
+    module.prepare(
+        source_dir=source,
+        runtime_root=tmp_path / "development-runtime",
+        mode="development",
+        backend_owner=(uid, gid),
+        postgres_owner=(uid, gid),
+        migrate_owner=(uid, gid),
+        redis_owner=(uid, gid),
+        require_root=False,
+    )
+
+    current = (tmp_path / "development-runtime" / "current").resolve(strict=True)
+    assert not (current / module.REDIS_TLS_PUBLIC_METADATA_NAME).exists()
+
+
+def verify_redis_tls_rotation_portably(
+    module: ModuleType,
+    *,
+    source: Path,
+    runtime: Path,
+    baseline_target: str,
+) -> None:
+    uid, gid = os.getuid(), os.getgid()
+    ca, certificate = redis_tls_public_paths(source)
+    module.verify_ordinary_redis_tls_rotation(
+        source_dir=source,
+        runtime_root=runtime,
+        baseline_target=baseline_target,
+        ca_path=ca,
+        certificate_path=certificate,
+        expected_redis_owner=(uid, gid),
+        expected_metadata_owner=(uid, gid),
+        require_root=False,
+    )
+
+
+def test_ordinary_redis_tls_rotation_accepts_only_unchanged_complete_tuple(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, _ = make_source(tmp_path)
+    runtime = tmp_path / "runtime"
+    prepare_portably(module, source, runtime)
+    baseline_target = os.readlink(runtime / "current")
+    prepare_portably(module, source, runtime)
+
+    verify_redis_tls_rotation_portably(
+        module,
+        source=source,
+        runtime=runtime,
+        baseline_target=baseline_target,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "host-ca",
+        "host-certificate",
+        "source-key",
+        "baseline-metadata-missing",
+        "current-metadata-missing",
+        "baseline-key-changed",
+    ),
+)
+def test_ordinary_redis_tls_rotation_requires_full_stop_for_any_tuple_change(
+    module: ModuleType,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    source, _ = make_source(tmp_path)
+    runtime = tmp_path / "runtime"
+    prepare_portably(module, source, runtime)
+    baseline_target = os.readlink(runtime / "current")
+    prepare_portably(module, source, runtime)
+    current_target = os.readlink(runtime / "current")
+    ca, certificate = redis_tls_public_paths(source)
+    if mutation == "host-ca":
+        ca.write_bytes(b"replacement Redis CA certificate\n")
+    elif mutation == "host-certificate":
+        certificate.write_bytes(b"replacement Redis server certificate\n")
+    elif mutation == "source-key":
+        key = source / "redis_tls_server_key"
+        key.write_bytes(
+            PKCS8_PEM_BEGIN
+            + b"cmVwbGFjZW1lbnQtdGVzdC1rZXktbmV2ZXItdXNlLWluLXByb2Q=\n"
+            + PKCS8_PEM_END
+        )
+        key.chmod(0o600)
+    elif mutation.endswith("metadata-missing"):
+        target = baseline_target if mutation.startswith("baseline") else current_target
+        (runtime / target / module.REDIS_TLS_PUBLIC_METADATA_NAME).unlink()
+    else:
+        key = runtime / baseline_target / "redis" / "redis_tls_server_key"
+        key.chmod(0o600)
+        key.write_bytes(
+            PKCS8_PEM_BEGIN
+            + b"dGFtcGVyZWQtcnVudGltZS1rZXktbmV2ZXItdXNlLWluLXByb2Q=\n"
+            + PKCS8_PEM_END
+        )
+        key.chmod(0o400)
+
+    with pytest.raises(module.RuntimeSecretsError, match="full-stop three-domain"):
+        verify_redis_tls_rotation_portably(
+            module,
+            source=source,
+            runtime=runtime,
+            baseline_target=baseline_target,
+        )
 
 
 def test_production_rejects_but_development_ignores_dev_apikeys(

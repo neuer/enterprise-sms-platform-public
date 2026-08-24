@@ -75,6 +75,7 @@ class FakeRepository:
         *,
         custom_ids: list[str],
         item_count: int,
+        **_: object,
     ) -> None:
         self.events.append(("metadata", (raw_id, custom_ids, item_count)))
 
@@ -92,7 +93,7 @@ class FakeRepository:
     async def persist_unmatched(self, raw_id: int, report: Any) -> None:
         self.events.append(("unmatched", report))
 
-    async def mark_processed(self, raw_id: int) -> None:
+    async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
     async def mark_error(self, raw_id: int, error: str) -> None:
@@ -665,3 +666,36 @@ async def test_spill_write_failure_degrades_to_alert_and_db_persist_continues() 
     ]
     assert len(spill_alerts) == 1
     assert spill_alerts[0]["level"] == "crit"
+
+
+@pytest.mark.asyncio
+async def test_lease_heartbeat_loss_stops_large_item_writes_without_burning_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import asynccontextmanager
+    from uuid import UUID
+
+    from app.services.raw_lease import RawLeaseLost, RawProcessingLease
+
+    class LostBeat:
+        def raise_if_lost(self) -> None:
+            raise RawLeaseLost("heartbeat lost")
+
+    @asynccontextmanager
+    async def fake_bind(*_args: object, **_kwargs: object):
+        yield LostBeat()
+
+    monkeypatch.setattr(report_ingest_module, "bind_raw_lease_heartbeat", fake_bind)
+    repository = FakeRepository()
+    items = [report() for _ in range(64)]
+    lease = RawProcessingLease(12, UUID(int=12), 1)
+    with pytest.raises(RawLeaseLost, match="heartbeat lost"):
+        await ReportIngestService(None, repository, crypto()).process_existing(
+            12,
+            items,
+            lease=lease,
+        )
+    names = [event[0] for event in repository.events]
+    assert "apply" not in names
+    assert "processed" not in names
+    assert "error" not in names

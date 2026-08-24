@@ -121,15 +121,25 @@
 
 ## D021 部署文档按安全、数据库与网络职责分册
 
-- 决策：`deploy/README.md` 只做生产上线索引；八件 secrets、流式加密备份恢复、厂商主备出口 IP 分别使用独立手册，并提供内网 Prometheus scrape 样例。T4.9a 冷备同步与演练脚本不提前混入本任务。
+- 决策：`deploy/README.md` 只做生产上线索引；当前 25 件 canonical secrets、流式加密备份恢复、厂商主备出口 IP 分别使用独立手册，并提供内网 Prometheus scrape 样例。T4.9a 冷备同步与演练脚本不提前混入本任务。
 - 原因：四类操作属于不同审批人与权限边界，单一长文档容易让 DBA 接触厂商密钥或让网络人员接触 owner 凭据。分册也允许机判每个安全红线，避免示例命令把明文 dump 或密码带入磁盘/历史。
 - 影响：deploy 文档索引、secrets/backup/vendor 手册、Prometheus 配置样例、T4.9 文档契约测试与后续 T4.9a 引用。
 
 ## D022 冷备脚本不自动同步 secrets 或启动备机
 
-- 决策：每日脚本只同步流式加密数据库快照、SHA-256/无 PII manifest、当前 Git 配置包和无密钥 `.env`；八件 secrets 首次与轮换均由密钥系统在主备分别手工落盘并双人复核。远端快照校验后原子发布，但脚本不启动任何备机服务。
+- 决策：后续获批的每日冷备流程只能同步生命周期账本已标记可用的流式加密数据库快照、
+  SHA-256/无 PII manifest、精确内部 Git 配置包和无密钥 `.env`；当前 25 件 canonical secrets
+  不随脚本传输。快照只记录不含值的 recovery-crypto generation ID（数据 AES/HMAC、四个审计
+  keyring 及需要读取历史告警配置时的 alert keypair）和独立 backup-passphrase generation ID；
+  ID 不是材料摘要、MAC 或密码学绑定，材料对应关系必须由离机 escrow 的原子不可变整包、保留
+  记录与双人见证证明。厂商、DB/Redis 密码、JWT、LDAP 等使用恢复时当前获批
+  generation，不得为恢复复活已吊销的整套旧 25-secret generation。远端快照校验后原子发布，
+  但流程不启动任何备机服务；Phase 0 尚未授权该冷备同步流程。
 - 原因：自动 rsync secrets 会把主机信任与 SSH 账户扩大为全部生产凭据的复制通道；自动启动又可能产生双 beat、双报告轮询和重复下发。冷备恢复与流量切换必须在确认主节点冻结、厂商白名单和变更审批后分步执行。
-- 影响：sync/restore Python 脚本、failover 手册、密钥轮换流程、RPO≤24h 自动化与 RTO≤30min HANDOVER 演练。
+- 影响：sync/restore Python 脚本、failover 手册、密钥轮换流程与 RPO 自动化。该处的历史
+  `RTO≤30min` 已由生产 Phase 0 决策替换为短信发送能力 business-RTO≤12h、平台数据
+  RPO≤24h；business-RTO 可在完成发送围栏后由旧系统受控切回停止，新平台恢复耗时另记；冷备未建成前
+  不得继续把 30 分钟作为首发门禁或已具备能力。
 
 ## D023 PostgreSQL 错误日志保留错误类型但禁止回显语句与 DETAIL
 
@@ -314,20 +324,23 @@
   与恢复手册改用 `/readyz`。Web 改用非特权 8080，并显式代理三个健康路径。新增服务必须
   登记相同运行边界，不能通过恢复 root、可写根或 capability 解决启动问题。
 
-## D044 生命周期维护脱离发布，备份只有经随机恢复验证后才可用
+## D044 生命周期维护脱离发布，生产备份与隔离恢复证据分域
 
 - 决策：分区维护除 migrate 后执行外，增加每日 root systemd timer，经受控
   `sms-compose partition-maintenance` 入口使用 sms_owner、事务 advisory lock、固定 public
-  schema/分区名/RANGE bound、dry-run、三次退避和安全审计维护窗口。每日生成本地流式加密
-  快照并验证逐文件 SHA-256；每周从完整性已验证快照随机选择一份恢复到临时
-  `sms_drill_*` 数据库，验证迁移、关键结构、运行角色权限和只读业务查询后立即销毁。
-- 可用性：新快照默认不可用。只有恢复演练及 RTO 通过才在 0600 原子生命周期账本标记
-  `available=true`；任一演练失败立即撤销。账本持续记录最后备份/演练、备份与演练年龄、
-  恢复耗时、数据缺口和保留边界；每小时失效检查和所有 service 失败仅向 journal 输出固定
-  操作与异常类型，不记录路径、手机号、密钥或命令错误。
+  schema/分区名/RANGE bound、dry-run、三次退避和安全审计维护窗口。生产每日生成本地流式
+  加密快照并验证逐文件 SHA-256；生产每小时 `backup-status` 只证明最新备份完整性与 RPO。
+  生产快照 full restore 仅在从预生产资源池按需创建、具有独立 PostgreSQL/VMDK
+  和 marker 的一次性空白隔离恢复机执行；共享应用预生产不安装生产恢复材料，
+  不承担生产快照恢复演练。恢复对已绑定的合格快照执行，
+  验证迁移、关键结构、运行角色权限和只读业务查询后立即销毁临时 `sms_drill_*` 数据库。
+- 可用性：生产账本的完整性结果不标记恢复可用；隔离恢复主机以同一 snapshot ID/manifest digest
+  形成 `scope=preproduction_restore` 报告。生产备份证据和隔离恢复报告必须配对，且数据库恢复
+  耗时不能冒充从 `outage_start` 计算的 business-RTO。每小时检查和所有 service 失败只向
+  journal 输出固定操作与异常类型，不记录路径、手机号、密钥或命令错误。
 - 原因：发布触发的分区预建会在长期无发布时失效，文件哈希也不能证明数据库可恢复。
-  独立 timer 消除对发布频率的依赖，随机恢复与 fail-closed 可用性把 RPO/RTO 从手册声明
-  变成持续机器证据。
+  独立 timer 消除对发布频率的依赖；分域证据避免在生产 Runtime/PostgreSQL VMDK 上做 full
+  restore，也避免把同机文件/哈希误报成灾备或业务 RTO 证据。
 - 影响：受控 Compose 包装器、分区维护脚本、加密同步/恢复脚本、systemd assets、DBA、
   备份恢复与故障切换手册。`current` 只代表最新密文，不再被解释为可恢复快照。
 
@@ -476,11 +489,17 @@
 
 ## D050 Redis 故障域采用三个独立托管端点
 
+- 状态：托管三端点仍是目标态，但生产 Phase 0 已以风险接受方式延期；Phase 0 使用同一生产
+  VM 内三个 `isolated-standalone` TLS/AOF/ACL 容器，并明确接受整 VM 共同故障域。只有未来
+  取得三套托管服务和外部切换证据后，才能恢复本节的 `managed` 声明。
+
 - 决策：生产把 Celery broker、认证/会话/step-up、配额/频控/幂等/业务锁拆为 broker、auth、control 三个不同托管高可用端点；不在应用层用数据库编号模拟隔离。
 - 身份：三个端点分别使用 `sms_broker`、`sms_auth`、`sms_control` ACL 用户和独立 Docker secret，关闭 default 用户与危险管理命令。
 - 最小挂载：API 只获得 auth/control，worker 只获得 broker/control，outbox-dispatcher只获得 broker；因此 API 容器被攻陷不能操纵 Celery，callback worker 不能读取或删除会话撤销/step-up。
 - 故障语义：auth 不可用时认证与会话校验 fail closed；broker 故障由 PostgreSQL Outbox 保存事实；control 数据只作为 PostgreSQL 用量事实与业务事实的可重建投影。
-- 取舍：development/test Compose 仍提供三个单节点实例以保持本地可复现，生产由 `REDIS_HA_MODE=managed` 强制使用托管高可用端点；不在本仓库自行维护 Sentinel 仲裁。
+- 取舍：development/test Compose 仍提供三个单节点实例以保持本地可复现；Phase 0 生产显式
+  使用 `REDIS_HA_MODE=isolated-standalone`，不得伪装为 managed。目标态才使用
+  `REDIS_HA_MODE=managed` 的三个托管高可用端点；不在本仓库自行维护 Sentinel 仲裁。
 
 ## D051 公有快照首次切换使用可恢复的职责拓扑 bootstrap
 
@@ -526,7 +545,7 @@
   已安装的兼容资产只为保留既有运行态恢复能力，不构成新的可执行授权。
 - 迁移边界：无共同历史的测试服务器基线必须另立变更单，在不属于公开工作区的隔离临时
   证据仓库和受控维护窗口中完成。评审必须覆盖逐文件公开快照验真、PostgreSQL/volume
-  保留与回退、24 件 secrets、三域 Redis、七职责数据库角色和证据清理；最终服务器
+  保留与回退、25 件 secrets、三域 Redis、七职责数据库角色和证据清理；最终服务器
   HEAD/origin 直接绑定公开 commit，任何私有 URL、ref、commit 或对象不得回流公开工作区。
 - 原因：即使最小 pack 不含完整提交历史，把私有来源 commit/tree 对象导入公开工作区仍会
   扩大误推送、对象残留和后续开发误用风险，也与 `PUBLICATION.md` 的无私有对象边界冲突。
@@ -1084,16 +1103,24 @@
 - 决策：修订 D086/D089 中「认证失败写 `.headerq` 并删除原文件」。分类必须区分
   `key_unavailable` / `transient_io` / `auth_failed` / `corrupt` / `provably_empty`。
   缺历史 Key 与暂态 I/O 保留原密文、告警、稍后重试，cipherq 容量淘汰不得驱逐它们。
-  真实 bit-flip / 已证明认证失败把原字节原子迁入 `{source}-{token}.cq`，并先
+  真实 bit-flip / 已证明认证失败把原字节原子迁入 `{source}-{artifact_id}.cq`，并先
   fsync 无 PII 的 `{source}-{token}.cq.man`（state=pending→sealed）。ENOSPC 写
   manifest 时源文件不动；kill -9 后重入封印或重试改名，禁止出现「源已删且无
   dest/manifest」。仅可证明为空的 header-only / 截断空头超龄后删除。`.cq` 不占
   活动 32 文件/512MiB 配额，独立文件数/字节/保留期（默认 64 个、至少一次
-  64MiB 预留、86400s）。Key 归还后 `iter_recoverable` 可从封印 `.cq` 完整恢复。
-  Report/Reply 共享同一 Volume。日志/告警/manifest 不得含手机号、短信正文、
-  Token 机密、Key、密文或不受控完整路径。无数据库迁移。
+  64MiB 预留、86400s）。每次捕获使用独立 `artifact_id` 命名 `.spill`/`.cq`，
+  禁止用 `payload_sha256` 覆盖或孤立旧密文；dest 已存在时仅同一 artifact
+  幂等，否则换新路径。恢复以 `.cq → .cq.wip` 原子认领并原位读取，禁止改回
+  `src_name` 后删除旧 manifest。无 manifest 的 `.cq` 可盘点恢复；无 `.cq` 的
+  manifest 记确定终态并告警后删除。`reclaim_idle` 锁内只认证 header，并受
+  文件数/header 字节/时间预算；完整 payload SHA 只在单文件恢复阶段核对。
+  同步 reclaim 经 `asyncio.to_thread` 离开 Event Loop。Key 归还后
+  `iter_recoverable` 可从封印 `.cq` 完整恢复。Report/Reply 共享同一 Volume。
+  日志/告警/manifest 不得含手机号、短信正文、Token 机密、Key、密文或不受控
+  完整路径。无数据库迁移。
 - 原因：#439 第六轮确认当前隔离把缺 Key、暂态 I/O 与真实认证失败合并，并在
-  保存可恢复密文前 unlink，滚动部署或 EIO 会永久丢掉拉走即消费事实。
+  保存可恢复密文前 unlink；第七轮确认相同正文会覆盖 `.cq` 或产生无
+  manifest 孤儿，且 reclaim 在全局锁内全量哈希 payload。
 - 影响：`raw_spill`/`crypto`/`settings`/`report_ingest`/`reply_ingest`、vendor-api
   恢复句。未改 Vue、OpenAPI、Alembic、D082/D085 预留与内部帧。
 
@@ -1104,15 +1131,48 @@
   Python 生成 UUID，epoch 自增（persist 从 1 起），租约 15 分钟。超时扫描与
   接管只认 lease 过期或空租约，不再把 `processing_started_at` 当作所有权。
   `update_metadata` / `mark_processed` / `mark_error` / `mark_replay_error`
-  必须带 expected lease CAS；miss 只写无 PII 的 `worker_lease_event(task_kind='raw',
-  event_type='fencing_miss')`，不得覆盖现态。成功终态清空 lease_id/expires_at，
+  必须带 expected lease CAS（只认 lease_id+epoch，不以刚过期时刻无条件拒绝仍
+  未被接管的所有者）。当前所有者按 `RAW_LEASE_SECONDS` 续租；heartbeat miss
+  先提交无 PII 的 `heartbeat_lost` 再失败关闭。成功终态清空 lease_id/expires_at，
   不回退 epoch。parser reevaluate 与审计同事务，遇活租约失败关闭。CHECK
   `ck_raw_vendor_processed_consistency` 拒绝
-  processed/parse_state/replay_eligibility 矛盾组合。
+  processed/parse_state/replay_eligibility 矛盾组合。Spill 仅落库的完整 raw
+  不创建无人处理的活动租约。
 - 原因：#475/#441 第六轮确认仅 `processing_started_at` 无法阻止过期处理器覆盖
-  接管后的终态，且 reevaluate 资格变更与审计分事务。
-- 影响：schema v1.6.64、0076、`raw_lease`、ops/report/reply 仓储、raw 重放与
-  ingest 共享解析路径。不削弱 uncertain 禁重发、PII 加密和资格 never 粘滞。
+  接管后的终态，且 reevaluate 资格变更与审计分事务；第七轮确认固定 15 分钟
+  无续租会让合法长批次失去写入资格。
+- 影响：schema v1.6.64/v1.6.65、0076/0077、`raw_lease`、ops/report/reply 仓储、
+  raw 重放与 ingest 共享解析路径。不削弱 uncertain 禁重发、PII 加密和资格
+  never 粘滞。
+
+## D092 系统 Raw 重放审计意图与补写
+
+- 决策：系统 reconcile 在 `mark_processed` 同事务写入
+  `system_replay_audit_state='pending'`；完整系统审计在随后独立事务写入，
+  成功后把该列置 `completed`。同一 raw + lease epoch 最多一条成功系统
+  `raw_replay` 审计。审计失败不得回滚业务终态，也不得再次投影；后续任务只
+  补审计。轮询/人工路径保持 NULL，避免把成功 poll 误报成审计缺口。
+- 原因：#441 第七轮确认系统重放先提交 processed 再独立审计，失败后扫描只
+  认 processed=false，缺口会永久化。
+- 影响：0077、`raw_replay`/`ops_repository`/`reconcile`、metrics pending 计数。
+  人类 replay/reevaluate 原子与补审计行为不回退。审计载荷仅 source/items/
+  lease_epoch/producer_domain。0078 把 `system-reconcile`/`raw_replay` 加入
+  `sms_send` + realtime 触发器白名单；人工/轮询终态 SQL 不再 SET
+  `system_replay_audit_state`，避免 `sms_accept` 无列权失败。
+
+## D093 系统 Raw 重放审计必须通过角色白名单
+
+- 决策：reconcile 跑在 realtime worker，数据库角色是 `sms_send`，生产者域是
+  `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_send` 对 `audit_log`
+  只有 INSERT、没有 SELECT。补写必须 `INSERT VALUES`；重复写入只在独立
+  savepoint 内吞 `unique_violation`。禁止 `WHERE NOT EXISTS`、`EXISTS` 或
+  `ON CONFLICT`，这些语句都会触发表级读权限检查。
+  `sms_accept` 不得获得 `system_replay_audit_state` 列 UPDATE。补审计失败保持
+  pending，不得重投影。
+- 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`；
+  随后 CI 证实 `INSERT … SELECT WHERE NOT EXISTS` 会被 `sms_send` 缺 SELECT
+  权限拒绝，缺口仍会永久化。
+- 影响：0078、`enforce_live_audit_principal`、终态 SQL 分流、系统审计写入语句。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 

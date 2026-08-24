@@ -16,6 +16,12 @@ def load_compose() -> dict[str, Any]:
     return cast(dict[str, Any], document)
 
 
+def load_deploy_yaml(name: str) -> dict[str, Any]:
+    document = yaml.safe_load((ROOT / "deploy" / name).read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return cast(dict[str, Any], document)
+
+
 def test_container_build_files_use_locked_runtime_bases() -> None:
     backend = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     frontend = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
@@ -518,6 +524,144 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     assert "mkdir -p /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill" in dockerfile
     assert "chown -R sms:sms /var/lib/sms" in dockerfile
+
+
+def test_production_storage_overlay_binds_all_named_volumes_to_fixed_vmdk_paths() -> None:
+    overlay = load_deploy_yaml("docker-compose.production-storage.yml")
+
+    assert overlay == {
+        "volumes": {
+            "pgdata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/postgres/pgdata",
+                },
+            },
+            "redisdata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/redis/broker",
+                },
+            },
+            "redisauthdata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/redis/auth",
+                },
+            },
+            "rediscontroldata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/redis/control",
+                },
+            },
+            "importdata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/runtime/imports",
+                },
+            },
+            "exportdata": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/runtime/exports",
+                },
+            },
+            "rawspill": {
+                "driver": "local",
+                "driver_opts": {
+                    "type": "none",
+                    "o": "bind",
+                    "device": "/var/lib/sms-platform/runtime/raw-spill",
+                },
+            },
+        }
+    }
+
+
+def test_isolated_redis_tls_overlay_fixes_server_and_client_identity_contract() -> None:
+    overlay = load_deploy_yaml("docker-compose.redis-tls.yml")
+    services = overlay["services"]
+    expected_environment = {
+        "REDIS_HA_MODE": "isolated-standalone",
+        "REDIS_BROKER_HOST": "redis",
+        "REDIS_BROKER_PORT": "6379",
+        "REDIS_AUTH_HOST": "redis-auth",
+        "REDIS_AUTH_PORT": "6379",
+        "REDIS_CONTROL_HOST": "redis-control",
+        "REDIS_CONTROL_PORT": "6379",
+        "REDIS_CA_CERTS_FILE": "/etc/sms-platform/redis-tls/ca.pem",
+    }
+    server_mounts = {
+        "/etc/sms-platform/redis-tls/ca.pem:/run/redis-tls/ca.pem:ro",
+        "/etc/sms-platform/redis-tls/server.pem:/run/redis-tls/server.pem:ro",
+    }
+    for name in ("redis", "redis-auth", "redis-control"):
+        service = services[name]
+        assert service["environment"] == {"REDIS_TLS_REQUIRED": "1"}
+        assert service["secrets"] == [
+            {"source": "redis_tls_server_key", "target": "redis_tls_server_key"}
+        ]
+        assert set(service["volumes"]) == server_mounts
+        assert "ports" not in service
+
+    for name in (
+        "migrate",
+        "api",
+        "worker-realtime",
+        "worker-bulk",
+        "worker-callback",
+        "beat",
+        "outbox-dispatcher",
+    ):
+        service = services[name]
+        assert service["environment"] == expected_environment
+        assert service["volumes"] == [
+            {
+                "type": "bind",
+                "source": "/etc/sms-platform/redis-tls/ca.pem",
+                "target": "/etc/sms-platform/redis-tls/ca.pem",
+                "read_only": True,
+            }
+        ]
+    assert overlay["secrets"] == {
+        "redis_tls_server_key": {
+            "file": (
+                "${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}"
+                "/redis/redis_tls_server_key"
+            )
+        }
+    }
+
+
+def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> None:
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "--appendonly yes",
+        "--appendfsync everysec",
+        "--maxmemory-policy noeviction",
+        "maxmemory='384mb'",
+        "maxmemory='192mb'",
+        "--port 0",
+        "--tls-port 6379",
+        "--tls-auth-clients no",
+    ):
+        assert token in entrypoint
 
 
 def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> None:

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
@@ -17,7 +18,7 @@ from app.services.ops import (
     RawLogQuery,
     UnmatchedQuery,
 )
-from app.services.ops_repository import SqlOpsRepository
+from app.services.ops_repository import SqlOpsRepository, _is_unique_violation
 from app.services.raw_parse import (
     ELIGIBILITY_AUTOMATIC,
     ELIGIBILITY_NEVER,
@@ -58,10 +59,21 @@ class FakeResult:
         return [row["id"] for row in self.rows]
 
 
+class _NestedBegin:
+    async def __aenter__(self) -> _NestedBegin:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
         self.results = results
         self.calls: list[tuple[str, Any]] = []
+
+    def begin_nested(self) -> _NestedBegin:
+        return _NestedBegin()
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
         self.calls.append((str(statement), params))
@@ -141,11 +153,12 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "processing_lease_id" in normalized_sql
     assert "processing_lease_epoch=processing_lease_epoch+1" in normalized_sql
     assert "processing_lease_expires_at" in normalized_sql
-    assert "interval '15 minutes'" in normalized_sql
+    assert "make_interval(secs => :lease_seconds)" in normalized_sql
     assert "RETURNING" in normalized_sql
     assert "item_count" in normalized_sql
     assert params["raw_id"] == 9
     assert params["lease_id"]
+    assert params["lease_seconds"] == 15 * 60
 
 
 @pytest.mark.asyncio
@@ -370,6 +383,20 @@ def test_human_raw_replay_audit_source_does_not_use_legacy_unattributed_insert()
     assert "bind_connection_audit_subject" in source
     assert "insert_audit" in source
     assert ":actor,'admin',CAST(:ip AS inet),'raw_replay'" not in source
+    assert "ON CONFLICT" not in source
+    assert "WHERE NOT EXISTS" not in source
+    assert "SELECT 1 FROM audit_log" not in source
+    assert "_is_unique_violation" in source
+
+
+def test_system_raw_replay_audit_only_treats_unique_violation_as_idempotent() -> None:
+    unique = IntegrityError("dup", {}, None)
+    unique.orig = type("Orig", (), {"sqlstate": "23505"})()
+    check = IntegrityError("check", {}, None)
+    check.orig = type("Orig", (), {"sqlstate": "23514"})()
+    assert _is_unique_violation(unique) is True
+    assert _is_unique_violation(check) is False
+    assert _is_unique_violation(RuntimeError("no")) is False
 
 
 @pytest.mark.asyncio
@@ -380,14 +407,27 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
 
     bound: list[dict[str, object]] = []
 
-    async def fake_bind(connection: object, *, actor_name: str, action: str) -> None:
-        bound.append({"actor_name": actor_name, "action": action, "connection": connection})
+    async def fake_bind(
+        connection: object,
+        *,
+        actor_name: str,
+        action: str,
+        producer_domain: str | None = None,
+    ) -> None:
+        bound.append(
+            {
+                "actor_name": actor_name,
+                "action": action,
+                "producer_domain": producer_domain,
+                "connection": connection,
+            }
+        )
 
     monkeypatch.setattr(
         "app.services.ops_repository.bind_connection_system_audit",
         fake_bind,
     )
-    repo, connection = repository([FakeResult()])
+    repo, connection = repository([FakeResult(), FakeResult()])
 
     await repo.audit_raw_replay(
         9,
@@ -396,21 +436,38 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
         actor="system-reconcile",
         ip="127.0.0.1",
         system_producer=True,
+        lease_epoch=3,
     )
 
     assert bound == [
         {
             "actor_name": "system-reconcile",
             "action": "raw_replay",
+            "producer_domain": "realtime",
             "connection": connection,
         }
     ]
     sql, params = connection.calls[0]
+    assert "INSERT INTO audit_log" in sql
+    assert "VALUES" in sql
+    assert "ON CONFLICT" not in sql
+    assert "WHERE NOT EXISTS" not in sql
+    assert "FROM audit_log" not in sql
     assert "actor_subject_kind" in sql
     assert "'system'" in sql
+    assert "lease_epoch" in sql
+    assert "producer_domain" in sql
     assert params["actor"] == "system-reconcile"
     assert params["raw_id"] == 9
+    assert params["lease_epoch"] == 3
+    assert params["producer_domain"] == "realtime"
     assert "ip" not in params
+    assert "phone" not in sql.lower()
+    update_sql, update_params = connection.calls[1]
+    assert "system_replay_audit_state=:completed" in update_sql
+    assert "FROM audit_log" not in update_sql
+    assert update_params["raw_id"] == 9
+    assert "lease_epoch" not in update_params
 
 
 @pytest.mark.asyncio

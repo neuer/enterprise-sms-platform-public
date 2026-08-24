@@ -393,8 +393,9 @@ def test_keyring_try_all_versions_does_not_trust_header_hint(tmp_path: Path) -> 
         ).recover_spills()
     )
     assert recovered == 1
-    _write_spill(store, payload=b"hint", digest="8" * 64, service=rotated, key_version=2)
-    target = tmp_path / f"report-{'8' * 64}.spill"
+    target = _write_spill(
+        store, payload=b"hint", digest="8" * 64, service=rotated, key_version=2
+    )
     _flip_header_field(target, "key_version", 1)
     repository = FakeRepository()
     recovered_fail = asyncio.run(

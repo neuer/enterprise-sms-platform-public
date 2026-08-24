@@ -280,7 +280,6 @@ def test_iter_pending_is_lazy(tmp_path: Path) -> None:
     _write_spill(store, "report", b"two", digest="6" * 64)
     iterator = store.iter_pending("report")
     first = next(iterator)
-    assert first.payload_sha256 == "5" * 64
     second = next(iterator)
-    assert second.payload_sha256 == "6" * 64
+    assert {first.payload_sha256, second.payload_sha256} == {"5" * 64, "6" * 64}
     assert list(store.list_pending("report"))

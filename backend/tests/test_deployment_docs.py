@@ -33,12 +33,15 @@ PRODUCTION_SECRETS = {
     "redis_broker_password",
     "redis_auth_password",
     "redis_control_password",
+    "redis_tls_server_key",
 }
 REDIS_SECRET_NAMES = {
     "redis_broker_password",
     "redis_auth_password",
     "redis_control_password",
+    "redis_tls_server_key",
 }
+COMPOSE_DIRECT_REDIS_SECRETS = {"redis_tls_server_key"}
 COMPOSE_INTERNAL_SECRET_ALIASES = {
     "migrate_audit_context_key",
     "migrate_audit_system_api_context_key",
@@ -83,17 +86,21 @@ def read_required(name: str) -> str:
 
 def test_compose_and_secret_runbook_cover_exact_production_secrets() -> None:
     compose = yaml.safe_load((DEPLOY / "docker-compose.yml").read_text(encoding="utf-8"))
-    compose_secrets = compose["secrets"]
+    redis_tls = yaml.safe_load(
+        (DEPLOY / "docker-compose.redis-tls.yml").read_text(encoding="utf-8")
+    )
+    compose_secrets = {**compose["secrets"], **redis_tls["secrets"]}
     assert set(compose_secrets) == (
         PRODUCTION_SECRETS - REDIS_SECRET_NAMES
-    ) | COMPOSE_INTERNAL_SECRET_ALIASES
+    ) | COMPOSE_INTERNAL_SECRET_ALIASES | COMPOSE_DIRECT_REDIS_SECRETS
     assert {Path(item["file"]).name for item in compose_secrets.values()} == PRODUCTION_SECRETS
 
     runbook = read_required("secrets.md")
     for name in PRODUCTION_SECRETS:
         assert f"`{name}`" in runbook
     assert "0600" in runbook
-    assert "test ! -e /run/secrets/db_owner_password" in runbook
+    assert "生产通用 `sms-compose exec` 已失败关闭" in runbook
+    assert "sms-compose config --quiet" in runbook
     assert "按职责最小挂载" in runbook
     assert "beat | `db_scheduler_password`" in runbook
     assert "DEBUG=0" in runbook
@@ -107,7 +114,7 @@ def test_secret_runbook_documents_canonical_and_runtime_copy_boundaries() -> Non
     runbook = read_required("secrets.md")
 
     for token in (
-        "24 个",
+        "25 个",
         "0700",
         "0600",
         "/run/sms-platform/secrets/current",
@@ -128,7 +135,20 @@ def test_secret_runbook_documents_canonical_and_runtime_copy_boundaries() -> Non
     assert "postgres" in runbook and "migrate" in runbook
     assert "db_owner_password" in runbook and "db_accept_password" in runbook
     redis_runbook = read_required("redis-ha.md")
-    for token in ("broker", "auth", "control", "fail closed", "AOF", "replication lag"):
+    for token in (
+        "broker",
+        "auth",
+        "control",
+        "fail closed",
+        "AOF",
+        "replication lag",
+        "整 VM 恢复",
+        "没有 replica",
+        "PostgreSQL Outbox",
+        "usage ledger",
+        "相同数值 UID/GID `999:1000`",
+        "不得宣称独立 Unix 用户",
+    ):
         assert token in redis_runbook
 
 
@@ -139,6 +159,11 @@ def test_deployment_index_documents_systemd_install_recovery_and_rollback() -> N
         "/etc/sms-platform/compose.env",
         "install -m 0600",
         "/usr/local/sbin/sms-compose",
+        "/usr/local/sbin/sms-storage-preflight",
+        "sms-storage-preflight.service",
+        "10-sms-platform-storage.conf",
+        "10-storage-preflight.conf",
+        "systemctl start sms-storage-preflight.service",
         "/etc/systemd/system/sms-platform.service",
         "systemd-analyze verify",
         "systemctl daemon-reload",
@@ -152,9 +177,21 @@ def test_deployment_index_documents_systemd_install_recovery_and_rollback() -> N
         "回退",
     ):
         assert token in index
-    assert "sudo /usr/local/sbin/sms-compose up -d --remove-orphans" in index
+    installation = index.split("下列安装必须", maxsplit=1)[1].split(
+        "开发测试服务器要启用", maxsplit=1
+    )[0]
+    assert "systemctl enable --now sms-platform.service" not in installation
+    bootstrap_handoff = index.split(
+        "全新主机先用上述 `release bootstrap", maxsplit=1
+    )[1]
+    assert "systemctl enable --now sms-platform.service" in bootstrap_handoff
+    assert "全新主机禁止用普通 `up`" in index
+    assert "release bootstrap" in index
+    assert "生产 succeeded release 的常规回退只能构建新 commit、新 digest" in index
+    assert "不得在生产中通过恢复旧 Compose" in index
     assert "明文 HTTP 上游默认绑定回环" in index
-    assert "公开入口只允许经审批的 `18443`" in index
+    assert "`18443` 也不对互联网公开" in index
+    assert "只接受获批公司 VPN 网段" in index
     assert "80/443/8080/8443" in index
 
 
@@ -366,40 +403,74 @@ def test_production_runbooks_never_use_raw_compose_entrypoint() -> None:
     assert "docker compose -f deploy/docker-compose.yml" not in handover
     assert "sudo /usr/local/sbin/sms-compose" in handover
 
+    usage_recovery = (
+        ROOT / "docs" / "runbooks" / "usage-ledger-recovery.md"
+    ).read_text(encoding="utf-8")
+    assert "sms-compose exec" not in usage_recovery
+    assert "生产手工解释和" in usage_recovery
+    assert "当前均为 **No-Go**" in usage_recovery
+    assert "只用于隔离的 development/test" in usage_recovery
+
 
 def test_backup_runbook_streams_encryption_and_verifies_isolated_restore() -> None:
     runbook = read_required("backup-restore.md")
     required = (
+        "sms-backup.service",
+        "sms-lifecycle-status.service",
         "pg_dump",
-        "--format=custom",
-        "| openssl enc",
-        "-aes-256-cbc",
-        "-pbkdf2",
-        "sha256",
-        "chmod 600",
+        "PBKDF2 + AES-256-CBC",
+        "snapshot manifest",
+        "release start-recovery",
+        "restore_drill.py",
         "pg_restore",
-        "sms_restore",
-        "alembic_version",
+        "snapshot manifest SHA-256",
+        "database SHA-256",
         "audit_log",
-        "UPDATE",
-        "DELETE",
+        "只增不可修改/删除",
+        "historical_ciphertext_validation",
+        "crypto_probe_receipts.pre_migration",
+        "post_migration",
+        "counts.encrypted_columns=17",
+        "counts.encrypted_rows=0",
+        "app.callback_secret_enc",
+        "vendor_test_recipient.phone_enc",
+        "not_applicable_empty",
+        "performed",
     )
     for token in required:
         assert token in runbook
     assert "明文 dump" in runbook and "禁止" in runbook
     assert "BACKUP_PASSPHRASE_FILE" in runbook
     assert "--password" not in runbook
-    for line in runbook.splitlines():
-        if "pg_dump" in line and not line.lstrip().startswith("#"):
-            assert not re.search(r"pg_dump[^|]*>\s*[^|]+\.dump\b", line)
+    assert "sudo /usr/local/sbin/sms-compose exec" not in runbook
+    assert not re.search(r"^\s*pg_restore\b", runbook, flags=re.MULTILINE)
 
 
-def test_vendor_runbook_requires_primary_and_standby_written_confirmation() -> None:
+def test_generation_ids_are_not_documented_as_crypto_provenance() -> None:
+    documents = {
+        "README": read_required("README.md"),
+        "backup": read_required("backup-restore.md"),
+        "failover": read_required("failover.md"),
+        "handover": (ROOT / "HANDOVER.md").read_text(encoding="utf-8"),
+        "baseline": (
+            ROOT / "docs" / "runbooks" / "production-phase0-baseline.md"
+        ).read_text(encoding="utf-8"),
+    }
+    for document in documents.values():
+        assert "generation ID" in document
+        assert "密码学绑定" in document
+        assert "escrow" in document
+        assert "双人" in document or "两名真实人员" in document
+        assert "provenance" in document
+    assert "manifest 绑定的 recovery bundle" not in documents["README"]
+    assert "manifest 绑定的 data AES" not in documents["handover"]
+
+
+def test_vendor_runbook_requires_primary_confirmation_and_defers_standby() -> None:
     runbook = read_required("vendor-egress.md")
     for token in (
         "主出口 IP",
         "备出口 IP",
-        "同一",
         "书面",
         "QPS",
         "单次号码上限",
@@ -410,6 +481,8 @@ def test_vendor_runbook_requires_primary_and_standby_written_confirmation() -> N
     ):
         assert token in runbook
     assert "禁止" in runbook and "工单" in runbook
+    assert "备出口暂非首发硬门禁" in runbook
+    assert "启用前" in runbook
 
 
 def test_failover_runbook_closes_daily_sync_and_manual_cutover_safety() -> None:
@@ -417,12 +490,17 @@ def test_failover_runbook_closes_daily_sync_and_manual_cutover_safety() -> None:
     for token in (
         "sync_standby.py",
         "restore_drill.py",
+        "不授权启用",
+        "available=true",
+        "lifecycle-state.json",
+        "sms-restore-drill.timer",
         "每日",
         "RPO≤24h",
         "systemd",
         "cron",
         "secrets",
-        "双人复核",
+        "当前获批",
+        "两名真实人员",
         "双 beat",
         "双拉取",
         "DNS",
@@ -443,11 +521,147 @@ def test_failover_runbook_closes_daily_sync_and_manual_cutover_safety() -> None:
         "uncertain",
         "回切",
         "[HANDOVER]",
-        "RTO≤30min",
+        "RTO≤12h",
+        "≤43200s",
+        "35 天",
+        "旧系统",
+        "冷备节点和备出口暂非首发硬门禁",
+        "企业微信与公司邮件",
+        "gap fence",
+        "稳定 `biz_id`",
+        "厂商确认已受理/发送的永不重发",
+        "旧系统使用不同服务商",
+        "旧系统继续只轮询其旧服务商",
+        "两者可并行但不得交叉凭据",
     ):
         assert token in runbook
-    assert "不启动" in runbook and "不传输" in runbook
+    assert "--output-dir /var/lib/sms/standby-sync" not in runbook
+    assert "30 2 * * *" not in runbook
+    assert "live 恢复当前为 No-Go" in runbook
+    assert "手改 `/run`/release state" in runbook
+    assert "不启动" in runbook and "禁止传输" in runbook
     assert "禁止自动重发" in runbook
+    assert "RTO≤30min" not in runbook
+
+
+def test_phase0_production_baseline_records_decisions_and_evidence_boundaries() -> None:
+    path = ROOT / "docs/runbooks/production-phase0-baseline.md"
+    assert path.is_file(), "缺少生产 Phase 0 决策基线与首发 runbook"
+    runbook = path.read_text(encoding="utf-8")
+
+    for token in (
+        "RTO≤12h",
+        "RPO≤24h",
+        "旧短信系统",
+        "不同服务商",
+        "长期并行",
+        "1–2 个低风险 `notice`",
+        "至少 3 天",
+        "VPN",
+        "固定出口",
+        "isolated-standalone",
+        "单 VM 共同故障域",
+        "12 个月",
+        "36 个月",
+        "90 天",
+        "7 天",
+        "35 天",
+        "企业微信 + 公司邮件",
+        "生产与测试",
+        "25 件 canonical secrets",
+        "redis_tls_server_key",
+        "只复制到 `current/redis`",
+        "不得进入 backend",
+        "内部 Registry",
+        "预生产",
+        "No-Go",
+        "[HANDOVER]",
+    ):
+        assert token in runbook
+
+    for boundary in (
+        "不是部署授权",
+        "文档契约测试只检查文字没有漂移",
+        "不能计作平台",
+        "预生产通过不等于生产已部署",
+        "禁止把 standalone 伪报为 managed",
+        "不能证明",
+    ):
+        assert boundary in runbook
+
+
+def test_phase0_prd_locks_retention_cutover_and_environment_isolation() -> None:
+    prd = (ROOT / "PRD.md").read_text(encoding="utf-8")
+
+    for token in (
+        "业务消息、回复及号码明细 12 个月",
+        "审计 36 个月",
+        "raw 密文与 unmatched 报告 90 天",
+        "导出密文 7 天",
+        "数据库加密备份 35 天",
+        "25 件 canonical secrets",
+        "redis_tls_server_key",
+        "只进入 `current/redis`",
+        "不得挂载到 backend",
+        "生产从空库初始化",
+        "不同服务商、不同凭据和不同数据域",
+        "1–2 个低风险 `notice`",
+        "至少 3 天",
+        "企业微信与公司邮件",
+        "冷备节点与备出口暂非首发硬门禁",
+        "短信发送能力业务 RTO ≤ 12h、平台数据 RPO ≤ 24h",
+        "发布 No-Go",
+        "docs/runbooks/production-phase0-baseline.md",
+    ):
+        assert token in prd
+
+
+def test_phase0_redis_decision_cannot_masquerade_as_current_managed_ha() -> None:
+    runbook = read_required("redis-ha.md")
+
+    for token in (
+        "REDIS_HA_MODE=managed",
+        "REDIS_HA_MODE=isolated-standalone",
+        "isolated-standalone",
+        "单 VM 共同故障域",
+        "No-Go",
+        "第 25 件 canonical secret",
+        "redis_tls_server_key",
+        "不得进入 backend",
+        "rediss://",
+        "禁止把三个 DNS 名解析到同一 Redis 集群",
+        "文档契约测试只证明风险和决策被记录",
+        "整台生产 VM 丢失",
+    ):
+        assert token in runbook
+    assert "不得把此单机形态写成 `managed`" in runbook
+
+
+def test_phase0_threat_model_covers_new_trust_boundaries_and_residual_risks() -> None:
+    path = ROOT / "docs/threat-model.md"
+    assert path.is_file(), "缺少 docs/threat-model.md"
+    threat_model = path.read_text(encoding="utf-8")
+
+    for token in (
+        "测试污染生产",
+        "制品供应链替换",
+        "VPN 内部横向移动",
+        "单生产 VM 故障",
+        "新旧系统路由错误",
+        "告警静默",
+        "无 KMS 的密钥窃取",
+        "保留期失效",
+        "备份勒索/篡改",
+        "submitted/uncertain 禁止自动重发",
+        "25 件 canonical secrets",
+        "redis_tls_server_key",
+        "只进入 `current/redis`",
+        "不进 backend",
+        "No-Go 与证据边界",
+        "同园区双机房不是异地灾备",
+        "[HANDOVER]",
+    ):
+        assert token in threat_model
 
 
 def test_prometheus_example_is_internal_and_covers_metric_checklist() -> None:
@@ -459,13 +673,15 @@ def test_prometheus_example_is_internal_and_covers_metric_checklist() -> None:
     assert job["scrape_interval"] == "15s"
     assert job["scrape_timeout"] == "3s"
     assert job["authorization"]["credentials_file"] == (
-        "/run/secrets/metrics_scrape_token"
+        "/etc/prometheus/secrets/metrics_scrape_token"
     )
-    assert job["static_configs"][0]["targets"] == ["api:8000"]
+    assert job["static_configs"][0]["targets"] == ["172.31.250.2:8000"]
 
     index = read_required("README.md")
-    assert "监控网段" in index and "公网" in index
+    assert "生产 VM 宿主" in index and "公网" in index
     assert "METRICS_ALLOWED_CIDRS" in index
+    assert "172.31.250.1/32" in index
+    assert "VMware/宿主外" in index
     assert "开发测试阶段不执行生产监控/故障切换验收" in index
     assert "up == 0" in index
     for family in METRIC_FAMILIES:
@@ -598,7 +814,7 @@ def test_public_handover_redacts_evidence_and_acceptance_stays_live() -> None:
     for token in (
         "外部 TLS",
         "真实 AD",
-        "生产 24 件 secrets",
+        "25 件生产运行 secret",
         "24 小时",
         "RTO",
         "真人 UAT",

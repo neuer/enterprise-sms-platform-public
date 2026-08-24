@@ -1,11 +1,14 @@
 {
   "schema_version": 1,
-  "environment_file": "/etc/sms-platform/production.env",
-  "output_root": "/var/lib/sms-platform/backups",
+  "environment_file": "/opt/sms-platform/.env",
+  "output_root": "/var/lib/sms-platform/runtime/backups",
+  "recovery_crypto_generation_id_file": "/etc/sms-platform/recovery-crypto-generation-id",
+  "backup_passphrase_generation_id_file": "/etc/sms-platform/backup-secrets/generation-id",
   "database": "sms",
   "retention_days": 35,
   "minimum_snapshots": 2,
+  "max_backup_seconds": 14400,
   "max_backup_age_hours": 24,
-  "max_restore_age_hours": 168,
-  "max_restore_seconds": 1800
+  "max_restore_age_hours": 192,
+  "max_restore_seconds": 43200
 }

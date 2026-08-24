@@ -37,7 +37,7 @@ def _bootstrap(
     secret_factory: Callable[[], str] | None = None,
 ) -> module.PublicCutoverBootstrap:
     root = _old_root(tmp_path)
-    counter = iter(f"generated-{index:02d}-{'x' * 48}" for index in range(11))
+    counter = iter(f"generated-{index:02d}-{'x' * 48}" for index in range(12))
     return module.PublicCutoverBootstrap(
         root=root,
         runtime_root=tmp_path / "runtime",
@@ -68,7 +68,7 @@ def test_secret_transition_generates_crypto_keys_and_keeps_backup(
     assert module._NEW_SECRET_NAMES - module._OLD_SECRET_NAMES == (
         module._GENERATED_SECRET_NAMES
     )
-    assert len(module._GENERATED_SECRET_NAMES) == 17
+    assert len(module._GENERATED_SECRET_NAMES) == 18
     assert len((active / "audit_context_key").read_text().strip()) == 44
     for domain in ("api", "realtime", "bulk"):
         assert len(

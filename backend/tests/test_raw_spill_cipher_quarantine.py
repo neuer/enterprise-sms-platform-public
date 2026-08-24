@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.services.crypto import CryptoService
 from app.services.raw_spill import (
     CIPHERQ_MANIFEST_SUFFIX,
@@ -267,7 +269,10 @@ def test_bit_flip_enters_cipherq_with_original_bytes(tmp_path: Path) -> None:
     path.write_bytes(flipped)
     expected = hashlib.sha256(flipped).hexdigest()
     result = store.reclaim_idle("report", crypto_v1())
-    assert result.auth_failed >= 1
+    assert result.auth_failed == 0
+    assert leftover_names(tmp_path, ".spill")
+    recovered, _repository, _alerts = recover_report(store, crypto_v1())
+    assert recovered == 0
     assert leftover_names(tmp_path, ".spill") == []
     cq_names = leftover_names(tmp_path, ".cq")
     assert len(cq_names) == 1
@@ -446,3 +451,175 @@ def test_report_and_reply_share_volume_across_key_rotation(tmp_path: Path) -> No
     assert reply_n == 1
     assert report_repo.events[0]["payload_sha256"] == report_digest
     assert reply_repo.events[0]["payload_sha256"] == reply_digest
+
+
+def test_same_body_different_http_isolates_independently(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    body = b'{"code":0,"data":[]}'
+    first = store.write(
+        source="report",
+        payload_sha256=hashlib.sha256(body).hexdigest(),
+        key_version=1,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=body,
+        crypto=crypto_v1(),
+    )
+    second = store.write(
+        source="report",
+        payload_sha256=hashlib.sha256(body).hexdigest(),
+        key_version=1,
+        http_status=500,
+        content_encoding="identity",
+        payload_enc=body,
+        crypto=crypto_v1(),
+    )
+    assert first != second
+    store.reclaim_idle("report", crypto_v2_only())
+    assert len(leftover_names(tmp_path, ".cq")) == 2
+    recovered, repository, alerts = recover_report(store, crypto_v1())
+    assert recovered == 2
+    assert {item["http_status"] for item in repository.events} == {200, 500}
+    for item in alerts.events:
+        assert_clean_blob(json.dumps(item, ensure_ascii=False), tmp_path)
+
+
+def test_same_body_different_key_version_does_not_overwrite(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    body = b'{"code":0,"data":[]}'
+    first = write_spill(store, payload=body, service=crypto_v1())
+    second = write_spill(store, payload=body, service=crypto_v2_only())
+    assert first != second
+    key = b64_key(b"t")
+    ring = json.dumps({"active_version": 3, "keys": {"3": key}})
+    v3 = CryptoService.from_secret_values(ring, ring)
+    store.reclaim_idle("report", v3)
+    names = leftover_names(tmp_path, ".cq")
+    assert len(names) == 2
+    first_cq = tmp_path / names[0]
+    second_cq = tmp_path / names[1]
+    assert first_cq.read_bytes() != second_cq.read_bytes() or first_cq.stat().st_mtime_ns != (
+        second_cq.stat().st_mtime_ns
+    )
+    assert leftover_names(tmp_path, ".spill") == []
+
+
+def test_restore_does_not_drop_manifest_when_target_exists(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    write_spill(store, payload=b"keep-old")
+    store.reclaim_idle("report", crypto_v2_only())
+    man = next(tmp_path.glob(f"*{CIPHERQ_MANIFEST_SUFFIX}"))
+    entry = store._parse_cipherq_manifest(man)
+    assert entry is not None
+    activity = tmp_path / entry.src_name
+    activity.write_bytes(b"newer-same-name")
+    restored = store._restore_cipherq_locked(entry)
+    assert man.exists()
+    assert activity.exists()
+    assert activity.read_bytes() == b"newer-same-name"
+    assert leftover_names(tmp_path, ".cq") or leftover_names(tmp_path, ".wip")
+    assert restored is None or restored.name.endswith(".cq.wip")
+
+
+def test_orphan_cq_without_manifest_is_recoverable(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    path = write_spill(store, payload=b'{"code":0,"data":[{"ok":true}]}')
+    data = path.read_bytes()
+    digest = hashlib.sha256(b'{"code":0,"data":[{"ok":true}]}').hexdigest()
+    path.unlink()
+    orphan = tmp_path / "report-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.cq"
+    orphan.write_bytes(data)
+    recovered, repository, _alerts = recover_report(store, crypto_v1())
+    assert recovered == 1
+    assert repository.events[0]["payload_sha256"] == digest
+    assert leftover_names(tmp_path, ".cq") == []
+
+
+def test_manifest_without_cq_is_terminal_and_alerted(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    write_spill(store, payload=b"gone-body")
+    store.reclaim_idle("report", crypto_v2_only())
+    for name in leftover_names(tmp_path, ".cq"):
+        (tmp_path / name).unlink()
+    recovered, _repository, alerts = recover_report(store, crypto_v1())
+    assert recovered == 0
+    assert store.last_reclaim.cipherq_manifest_only >= 1
+    assert any(
+        item["alert_type"] == "vendor_raw_cipherq_manifest_only" for item in alerts.events
+    )
+    assert leftover_names(tmp_path, ".man") == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cipherq_claim_single_winner(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    write_spill(store, payload=b'{"code":0,"data":[{"once":true}]}')
+    store.reclaim_idle("report", crypto_v2_only())
+    first_repo = FakeRepository()
+    second_repo = FakeRepository()
+    first = ReportIngestService(
+        None,  # type: ignore[arg-type]
+        first_repo,
+        crypto_v1(),
+        alerts=FakeAlerts(),
+        spill=store,
+    )
+    second = ReportIngestService(
+        None,  # type: ignore[arg-type]
+        second_repo,
+        crypto_v1(),
+        alerts=FakeAlerts(),
+        spill=store,
+    )
+    recovered = await asyncio.gather(first.recover_spills(), second.recover_spills())
+    assert sum(recovered) == 1
+    assert len(first_repo.events) + len(second_repo.events) == 1
+
+
+def test_repeated_empty_envelopes_do_not_collide(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path)
+    body = b'{"code":0,"data":[]}'
+    first = write_spill(store, payload=body)
+    second = write_spill(store, payload=body)
+    assert first != second
+    assert first.exists() and second.exists()
+    assert store.pending_count() == 2
+
+
+def test_cipherq_metrics_match_directory_bytes(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    write_spill(store, payload=b"metric-one")
+    write_spill(store, payload=b"metric-two")
+    store.reclaim_idle("report", crypto_v2_only())
+    payloads = [
+        path
+        for path in tmp_path.iterdir()
+        if path.name.endswith(".cq") or path.name.endswith(".cq.wip")
+    ]
+    stats = store.artifact_stats()
+    assert stats.cipherq_count == len(payloads)
+    assert stats.cipherq_bytes == sum(path.stat().st_size for path in payloads)
+
+
+def test_legacy_nine_key_manifest_still_parses(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path)
+    token = "b" * 32
+    dest = tmp_path / f"report-{token}.cq"
+    dest.write_bytes(b"sealed")
+    man = tmp_path / f"report-{token}{CIPHERQ_MANIFEST_SUFFIX}"
+    document = {
+        "isolated_at": "2026-08-24T13:00:00+08:00",
+        "kind": "spill",
+        "reason": "auth_failed",
+        "sha256": "c" * 64,
+        "size_bytes": 6,
+        "source": "report",
+        "src_name": "report-old.spill",
+        "state": CIPHERQ_STATE_SEALED,
+        "token": token,
+        "artifact_id": token,
+    }
+    man.write_text(json.dumps(document, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+    parsed = store._parse_cipherq_manifest(man)
+    assert parsed is not None
+    assert parsed.token == token

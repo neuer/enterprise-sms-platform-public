@@ -2,7 +2,7 @@
 
 ## 硬性边界
 
-所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 24 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
+所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 25 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
 
 生产根目录 `.env` 必须显式且唯一设置 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，不得通过 shell 或 `.env` 激活任何 `COMPOSE_PROFILES`/`dev` profile。production 的启动与轮换会 fail-closed 校验这些明确的非密钥键。唯一生产 Compose 入口是 `sudo /usr/local/sbin/sms-compose ...`；动作必须是第一个参数，包装器拒绝 `--profile`、额外 `--env-file` 等全局参数作为首参，固定注入项目根 `.env` 与 Compose 文件，禁止绕过包装器直接运行 Compose。production `up` 只允许文档化的安全选项和固定生产服务，拒绝 `mock-vendor`、未知服务、`--scale`、构建、拉取及其他参数；development Mock 路径不受此生产参数白名单限制。
 
@@ -19,11 +19,11 @@
 | `current/backend/` | UID 10001 | 厂商两项、AES/HMAC、主体与 API/realtime/bulk 四个审计 HMAC、企微公私钥对、JWT、LDAP、metrics 抓取 token、七个 `db_<role>_password`、三个 Redis ACL 密码 | 由 Compose 按职责最小挂载；企微私钥只挂 callback，自治审计 key 只挂对应生产者域 |
 | `current/postgres/` | UID 70 | `db_owner_password`、七个 `db_<role>_password` | postgres 只消费 owner；db-role-provision 消费全部 DB 密码 |
 | `current/migrate/` | UID 10001 | `db_owner_password`、`audit_context_key`、三个 `audit_system_<domain>_context_key` | migrate 将四个审计 key 写入 owner-only 验证表 |
-| `current/redis/` | UID 999/GID 1000 | 三个 Redis ACL 密码 | redis broker、redis-auth、redis-control |
+| `current/redis/` | UID 999/GID 1000 | 三个 Redis ACL 密码、Redis TLS 服务端私钥 | redis broker、redis-auth、redis-control；TLS 私钥绝不复制到 backend |
 
 generation 与四个服务目录均只允许 root 遍历。Compose 的 source 可以使用内部别名，但容器内 target 始终保持 `/run/secrets/<权威名称>`；运行态后端绝不能看到 `db_owner_password`，API 绝不能看到 broker 密码，worker-callback 绝不能看到 auth 密码。旧 generation 至少保留到新容器健康确认，只有受控清理才可删除。
 
-## 24 件清单与挂载矩阵
+## 25 件清单与挂载矩阵
 
 | secret 名 | 内容格式与生产来源 | Compose 挂载服务 | 轮换后动作 |
 |---|---|---|---|
@@ -51,6 +51,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `redis_broker_password` | 独立 32–128 字符高熵 ACL 密码 | redis broker、worker、beat、outbox-dispatcher | 原子替换后用 `rotate backend` 同窗重建 broker 与消费者 |
 | `redis_auth_password` | 与 broker/control 不同的高熵 ACL 密码 | redis-auth、仅 api | 原子替换后重建 redis-auth 与 api；旧密码不得回退到其他域 |
 | `redis_control_password` | 与 broker/auth 不同的高熵 ACL 密码 | redis-control、api、worker、beat | 原子替换后重建 redis-control 与消费者；从 PostgreSQL 事实重建投影 |
+| `redis_tls_server_key` | 内部 PKI 为 `redis`、`redis-auth`、`redis-control` 三个 SAN 签发证书所对应的无口令 PKCS#8 PEM 私钥 | 仅三个 Redis 服务端；客户端只挂 CA | 与 `/etc/sms-platform/redis-tls/server.pem` 同窗更新；先在预生产验证证书链、三个主机名和私钥配对，再重建三个 Redis，绝不复制到 backend runtime 目录 |
 
 Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor 只保存非敏感运行配置，不得重新加入共享 secrets。
 
@@ -74,10 +75,27 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 install -d -m 0700 deploy/secrets
 umask 077
 install -m 0600 /secure/staging/vendor_secret_name deploy/secrets/vendor_secret_name
-# 其余 21 项逐一 install；完成后立即安全删除仓库外暂存副本
+# 其余 24 项逐一 install；完成后立即安全删除仓库外暂存副本
 ```
 
-禁止使用 `echo "$SECRET"`、命令行参数、shell history 或剪贴板落盘。两个数据密钥必须独立生成，禁止复用；八个数据库密码必须全部不同。
+禁止使用 `echo "$SECRET"`、命令行参数、shell history 或剪贴板落盘。两个数据密钥必须独立生成，禁止复用；八个数据库密码必须全部不同。八个数据库密码和三个 Redis ACL 密码都必须是**无换行单行**，并逐字匹配 `[A-Za-z0-9_+/=-]{32,128}`；禁止空格、引号、反斜杠、控制字符和 shell 片段。运行密钥预处理器会对两个职责组分别执行两两不等校验。
+
+## 恢复密码学代次与备份口令
+
+备份口令不属于 25 件运行 secrets，固定存放在
+`/etc/sms-platform/backup-secrets/sms-backup-passphrase`（父目录 `root:root 0700`、文件
+`root:root 0600`）。另有两个**不含 secret 值**、但同样按 `root:root 0600` 防篡改的单行 ID：
+
+- `/etc/sms-platform/recovery-crypto-generation-id`：绑定 `data_aes_key`、`data_hmac_key`、主体与
+  三个自治审计 keyring，以及需要读取历史告警配置时的 alert X25519 keypair；
+- `/etc/sms-platform/backup-secrets/generation-id`：绑定备份口令代次。
+
+每个 snapshot manifest 必须同时记录这两个 ID，不记录值、长度、摘要或派生信息。对应的
+recovery-crypto bundle 和备份口令由生产主机之外的受控保管介质按 ID escrow，并在预生产做
+取回演练。只要 35 天保留期内仍有 snapshot 引用某 ID，就不得销毁该代次；若轮换，旧代次须
+保留到所有引用快照过期并完成销毁读回。灾后恢复只取回 manifest 绑定的上述密码学材料；厂商、
+DB/Redis 密码、JWT、LDAP、metrics 与 Redis TLS 使用恢复时当前获批 generation，禁止复活整套
+已吊销的旧 25 件凭据。旧 JWT 会话一律失效，告警/外部凭据按变更单重新验收。
 
 ## 上线前只读检查
 
@@ -86,21 +104,19 @@ install -m 0600 /secure/staging/vendor_secret_name deploy/secrets/vendor_secret_
 ```bash
 find deploy/secrets -maxdepth 1 -type f ! -perm 0600 -print
 sudo /usr/local/sbin/sms-compose config --quiet
-sudo /usr/local/sbin/sms-compose exec -T api \
-  test ! -e /run/secrets/db_owner_password
-sudo /usr/local/sbin/sms-compose exec -T worker-realtime \
-  test ! -e /run/secrets/db_owner_password
-sudo /usr/local/sbin/sms-compose exec -T beat \
-  test ! -e /run/secrets/db_owner_password
 ```
 
-第一条必须无输出，其余命令必须退出 0。再用 `stat` 点名核对权威源 `0700/0600` 与 `current` 三目录的 owner/`0400`，不得用会打印内容、长度、摘要或哈希的校验方式。
+第一条必须无输出，`config --quiet` 必须退出 0。再用 `stat` 点名核对权威源
+`0700/0600` 与 `current` 各目录的 owner/`0400`，不得用会打印内容、长度、摘要或
+哈希的校验方式。生产通用 `sms-compose exec` 已失败关闭，不得为手工查看容器密钥
+挂载而放开；最小挂载矩阵由同 commit 的 Compose 展开/契约测试、运行密钥预处理器
+与正式 release/bootstrap 证据共同验收。
 
 ## 轮换通用流程
 
 1. 创建变更单，写 secret 名、影响服务、窗口与回退人，不写 secret 值。
 2. 对需要先改上游的凭据（DB、LDAP、厂商）先完成双值/维护窗协调。
 3. 以 `0600` 临时文件写新值，`mv` 原子替换权威源；不修改 Compose secret 名。数据库密码必须先按 `dba.md` 修改数据库角色，再替换权威源文件。
-4. 非数据库后端凭据执行 `sudo /usr/local/sbin/sms-compose rotate backend`；包装器在共享 lifecycle flock 内覆盖完整轮换，记录严格校验的旧 generation metadata，准备新 generation，并以固定 120 秒上限强制重建和等待全部后端服务。新服务失败时会原子回切旧 generation、再次强制重建并等待旧服务恢复，最终仍失败退出；恢复失败会明确报错。成功和失败路径都保留旧 generation，因为 PostgreSQL 未重建且仍可能引用它。数据库凭据严格使用 `dba.md` 的受控服务集合。成功后检查 `/livez`、`/readyz`、`/metrics`、登录/厂商/数据库只读探针与结构化日志。
+4. 非数据库、非 Redis TLS 的后端凭据执行 `sudo /usr/local/sbin/sms-compose rotate backend`；包装器在共享 lifecycle flock 内覆盖完整轮换，记录严格校验的旧 generation metadata，准备新 generation，并以固定 120 秒上限强制重建和等待全部后端服务。新服务失败时会原子回切旧 generation、再次强制重建并等待旧服务恢复，最终仍失败退出；恢复失败会明确报错。成功和失败路径都保留旧 generation，因为 PostgreSQL 未重建且仍可能引用它。数据库凭据严格使用 `dba.md` 的受控服务集合。`rotate backend` 必须拒绝 CA、server certificate 或 `redis_tls_server_key` 任一变化；TLS 轮换只允许按 `redis-ha.md` 停全栈、整套替换/预检、失败整套恢复，禁止依赖只回退私钥 generation 的自动恢复。成功后检查 `/livez`、`/readyz`、`/metrics`、登录/厂商/数据库只读探针与结构化日志。
 5. 确认新值稳定后按上游流程吊销旧值；数据 keyring 旧版本须待重加密完成后才能删除。
 6. 归档时间、执行人和验证结果，不归档内容；包装器失败恢复完成后仍须按变更单恢复旧权威文件，并再次验证同一服务集合。只有全栈停止或全部容器重建，并确认 `docker compose ps --all -q` 无容器且无挂载引用后，才允许受控清理旧 generation；不得因代码回退删除数据库卷、权威运行 secret 或仍被容器使用的 generation。

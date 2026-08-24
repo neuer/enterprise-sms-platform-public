@@ -573,6 +573,8 @@ def test_ci_and_test_update_share_backend_critical_paths(
         "frontend/src/views/PasswordChangeView.vue",
         "frontend/src/views/AppManagementView.vue",
         "frontend/src/views/ApprovalView.vue",
+        "frontend/src/components/DailyPasswordChangeDialog.vue",
+        "frontend/src/components/ApprovalList.vue",
     ],
 )
 def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> None:
@@ -591,8 +593,6 @@ def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> 
         "deploy/redis.Dockerfile",
         "deploy/initdb/01-create-app-role.sh",
         "deploy/systemd/sms-platform.service",
-        "deploy/scripts/release_manager.py",
-        "deploy/scripts/prepare_runtime_secrets.py",
         "deploy/scripts/vendor_runtime_reset.py",
         "deploy/unknown-runtime.conf",
     ],
@@ -763,6 +763,43 @@ def test_test_update_config_example_is_safe_non_runtime_input() -> None:
     assert change.risk == "none"
 
 
+def test_phase0_production_control_paths_are_safe_non_runtime_inputs() -> None:
+    change = classify_changed_paths(
+        [
+            "deploy/docker-compose.production-storage.yml",
+            "deploy/docker-compose.redis-tls.yml",
+            "deploy/lifecycle.server.example.json",
+            "deploy/scripts/continuity_manager.py",
+            "deploy/scripts/failover_common.py",
+            "deploy/scripts/host_python_preflight.py",
+            "deploy/scripts/lifecycle_manager.py",
+            "deploy/scripts/prepare_runtime_secrets.py",
+            "deploy/scripts/redis_tls_preflight.py",
+            "deploy/scripts/redis_tls_rotation_guard.py",
+            "deploy/scripts/release_manager.py",
+            "deploy/scripts/release_manifest.py",
+            "deploy/scripts/restore_drill.py",
+            "deploy/scripts/storage_preflight.py",
+            "deploy/scripts/sync_standby.py",
+            "deploy/scripts/volume_contract_preflight.py",
+            "deploy/systemd/docker.service.d/10-sms-platform-storage.conf",
+            "deploy/systemd/lifecycle.env.example",
+            "deploy/systemd/sms-backup.service",
+            "deploy/systemd/sms-backup.timer",
+            "deploy/systemd/sms-lifecycle-status.service",
+            "deploy/systemd/sms-partition-maintenance.service",
+            "deploy/systemd/sms-platform.service.d/10-storage-preflight.conf",
+            "deploy/systemd/sms-restore-drill.service",
+            "deploy/systemd/sms-restore-drill.timer",
+            "deploy/systemd/sms-storage-preflight.service",
+        ]
+    )
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
 def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
     change = classify_changed_paths(
         [
@@ -784,8 +821,11 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
     change = classify_changed_paths(
         [
             "deploy/README.md",
+            "deploy/backup-restore.md",
+            "deploy/failover.md",
             "deploy/prometheus.example.yml",
             "deploy/redis-ha.md",
+            "deploy/storage.md",
             "deploy/vendor-egress.md",
             "docs/DECISIONS.md",
             "docs/LOCAL_TESTING.md",
@@ -795,10 +835,14 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/api-test-playground.md",
             "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
+            "docs/runbooks/production-phase0-baseline.md",
             "docs/runbooks/test-fast-update.md",
             "docs/runbooks/usage-ledger-recovery.md",
             "docs/runbooks/worker-fencing-recovery.md",
+            "docs/sms-ui-prototype.html",
+            "docs/threat-model.md",
             "docs/vendor-api.md",
+            "HANDOVER.md",
             "SECURITY.md",
             "docs/previews/approval-redesign-prototype.html",
             "docs/previews/batch-density-prototype.html",
@@ -806,6 +850,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/blacklist-redesign-prototype.html",
             "docs/previews/blacklist-redesign-shots.md",
             "docs/previews/blacklist-redesign-shots/full.png",
+            "docs/previews/callback-redesign-prototype.html",
             "docs/previews/configs-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/filter-bar-single-row-prototype.html",
@@ -1084,6 +1129,26 @@ def test_ops_preview_keeps_ops_view_high_risk() -> None:
     assert change.runtime_changed is True
     assert change.risk == "high-risk"
     assert change.high_risk_paths == ("frontend/src/views/OpsView.vue",)
+    assert change.migration_changed is False
+
+
+def test_callbacks_preview_keeps_callback_view_high_risk() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/callback-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/CallbackView.vue",
+            "frontend/tests/callback-view.test.ts",
+            "frontend/tests/filter-layout-contract.test.ts",
+            "frontend/tests/qingluan-screen-fidelity.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/CallbackView.vue",)
     assert change.migration_changed is False
 
 
@@ -1537,7 +1602,7 @@ def test_public_cutover_keeps_retired_static_paths_as_deletion_tombstones() -> N
 
 def test_public_cutover_does_not_weaken_normal_or_unknown_path_rejection() -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths(["deploy/scripts/release_manager.py"])
+        classify_changed_paths(["deploy/scripts/vendor_runtime_reset.py"])
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_public_cutover_paths(["scripts/future_runtime.py"])
 

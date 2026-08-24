@@ -28,6 +28,12 @@ def fake_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     (platform_root / "deploy" / "scripts").mkdir(parents=True)
     (platform_root / "deploy" / "secrets").mkdir()
     (platform_root / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (platform_root / "deploy" / "docker-compose.production-storage.yml").write_text(
+        "volumes: {}\n", encoding="utf-8"
+    )
+    (platform_root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+        "services: {}\n", encoding="utf-8"
+    )
     preprocessor = platform_root / "deploy" / "scripts" / "prepare_runtime_secrets.py"
     preprocessor.write_text(
         """from __future__ import annotations
@@ -65,6 +71,31 @@ raise SystemExit(int(os.environ.get("FAKE_PYTHON_EXIT", "0")))
         ),
         encoding="utf-8",
     )
+    for script_name, exit_variable in (
+        ("storage_preflight.py", "FAKE_STORAGE_PREFLIGHT_EXIT"),
+        ("redis_tls_preflight.py", "FAKE_REDIS_TLS_PREFLIGHT_EXIT"),
+        ("volume_contract_preflight.py", "FAKE_VOLUME_PREFLIGHT_EXIT"),
+    ):
+        (platform_root / "deploy" / "scripts" / script_name).write_text(
+            "from __future__ import annotations\n"
+            "import os\n"
+            f"raise SystemExit(int(os.environ.get('{exit_variable}', '0')))\n",
+            encoding="utf-8",
+        )
+    redis_tls_rotation_guard = (
+        platform_root / "deploy" / "scripts" / "redis_tls_rotation_guard.py"
+    )
+    redis_tls_rotation_guard.write_text(
+        "from __future__ import annotations\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "arguments = ['python3', __file__, *sys.argv[1:]]\n"
+        "with Path(os.environ['COMMAND_LOG']).open('a', encoding='utf-8') as stream:\n"
+        "    stream.write('|'.join(arguments) + '\\n')\n"
+        "raise SystemExit(int(os.environ.get('FAKE_REDIS_TLS_ROTATION_GUARD_EXIT', '0')))\n",
+        encoding="utf-8",
+    )
     transport_verifier = platform_root / "scripts" / "verify_web_transport.py"
     transport_verifier.parent.mkdir()
     transport_verifier.write_text(
@@ -93,6 +124,25 @@ if os.environ.get("FAKE_RELEASE_ENTERED_FILE"):
     while not Path(os.environ["FAKE_RELEASE_RELEASE_FILE"]).exists():
         time.sleep(0.05)
 raise SystemExit(int(os.environ.get("FAKE_RELEASE_EXIT", "0")))
+""",
+        encoding="utf-8",
+    )
+    continuity_manager = (
+        platform_root / "deploy" / "scripts" / "continuity_manager.py"
+    )
+    continuity_manager.write_text(
+        """from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+arguments = ["python3", __file__, *sys.argv[1:]]
+exit_status = int(os.environ.get("FAKE_CONTINUITY_EXIT", "0"))
+if exit_status != 0 or os.environ.get("FAKE_CONTINUITY_LOG") == "1":
+    with Path(os.environ["COMMAND_LOG"]).open("a", encoding="utf-8") as stream:
+        stream.write("|".join(arguments) + "\\n")
+raise SystemExit(exit_status)
 """,
         encoding="utf-8",
     )
@@ -130,6 +180,12 @@ raise SystemExit(int(os.environ.get("FAKE_RESET_EXIT", "0")))
     log = tmp_path / "commands.log"
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
+    write_executable(
+        fake_bin / "stat",
+        """#!/bin/sh
+printf '%s\n' "${FAKE_STAT_OUTPUT:-0:0:600:regular file}"
+""",
+    )
     write_executable(
         fake_bin / "flock",
         """#!/bin/sh
@@ -194,6 +250,14 @@ exit 0
         "WEB_BIND_IP",
         "SMS_EXTERNAL_TLS_MODE",
         "SMS_TRUSTED_PROXY_CIDRS",
+        "REDIS_HA_MODE",
+        "COMPOSE_FILE",
+        "COMPOSE_PROJECT_NAME",
+        "SMS_API_IMAGE",
+        "SMS_WEB_IMAGE",
+        "SMS_POSTGRES_IMAGE",
+        "SMS_REDIS_IMAGE",
+        "METRICS_ALLOWED_CIDRS",
     ):
         environment.pop(name, None)
     return platform_root, log, environment
@@ -286,8 +350,13 @@ def command_lines(log: Path) -> list[str]:
     return log.read_text(encoding="utf-8").splitlines()
 
 
-def compose_prefix(platform_root: Path) -> list[str]:
-    return [
+def compose_prefix(
+    platform_root: Path,
+    *,
+    production: bool = False,
+    redis_ha_mode: str = "isolated-standalone",
+) -> list[str]:
+    command = [
         "docker",
         "compose",
         "--env-file",
@@ -295,6 +364,21 @@ def compose_prefix(platform_root: Path) -> list[str]:
         "-f",
         str(platform_root / "deploy" / "docker-compose.yml"),
     ]
+    if production:
+        command.extend(
+            [
+                "-f",
+                str(platform_root / "deploy" / "docker-compose.production-storage.yml"),
+            ]
+        )
+        if redis_ha_mode == "isolated-standalone":
+            command.extend(
+                [
+                    "-f",
+                    str(platform_root / "deploy" / "docker-compose.redis-tls.yml"),
+                ]
+            )
+    return command
 
 
 def expected_line(arguments: list[str], *, runtime: Path | None = None) -> str:
@@ -351,6 +435,34 @@ def expected_preprocessor(platform_root: Path, runtime: Path, command: str, *arg
     )
 
 
+def expected_redis_tls_rotation_guard(
+    platform_root: Path,
+    runtime: Path,
+    baseline_target: str,
+) -> str:
+    return expected_line(
+        [
+            "python3",
+            str(platform_root / "deploy" / "scripts" / "redis_tls_rotation_guard.py"),
+            "--source-dir",
+            str(platform_root / "deploy" / "secrets"),
+            "--runtime-root",
+            str(runtime),
+            "--baseline-target",
+            baseline_target,
+        ]
+    )
+
+
+def seed_runtime_generation(
+    runtime: Path,
+    target: str = "generations/generation-00000000000000000000000000000000",
+) -> str:
+    (runtime / target).mkdir(parents=True)
+    (runtime / "current").symlink_to(target)
+    return target
+
+
 def expected_release_manager(
     platform_root: Path,
     mode: str,
@@ -383,6 +495,8 @@ def write_non_secret_env(
     web_bind_ip: str | None = None,
     external_tls_mode: str | None = None,
     trusted_proxy_cidrs: str | None = None,
+    redis_ha_mode: str | None = "isolated-standalone",
+    metrics_allowed_cidrs: str | None = "172.31.250.1/32",
 ) -> None:
     lines = [
         f"ENVIRONMENT={environment}",
@@ -390,6 +504,10 @@ def write_non_secret_env(
         f"AUTH_MOCK={auth_mock}",
         f"VENDOR_MOCK={vendor_mock}",
     ]
+    if redis_ha_mode is not None:
+        lines.append(f"REDIS_HA_MODE={redis_ha_mode}")
+    if metrics_allowed_cidrs is not None:
+        lines.append(f"METRICS_ALLOWED_CIDRS={metrics_allowed_cidrs}")
     if compose_profiles is not None:
         lines.append(f"COMPOSE_PROFILES={compose_profiles}")
     if web_bind_ip is not None:
@@ -442,14 +560,17 @@ def test_usage_lists_only_explicitly_allowed_actions() -> None:
     source = WRAPPER.read_text(encoding="utf-8")
 
     assert "<compose-command>" not in source
-    assert "config|ps|logs|exec" in source
+    assert "config|ps|logs" in source
+    assert "generic exec is forbidden in production mode" in source
     assert "run --rm migrate" in source
     assert "partition-maintenance [--dry-run]" in source
     assert "production up options" in source
     assert "production up services" in source
     assert "command -v flock" not in source
     assert "run_with_lifecycle_lock.py" in source
-    assert "release prepare|activate|status|resume|rollback" in source
+    assert "release prepare|bootstrap|start-recovery" in source
+    assert "prepare-forward-rollback|activate|status|resume|rollback" in source
+    assert "activate|status|resume|rollback" in source
     assert "init-admin --show-temporary-password" in source
 
 
@@ -598,6 +719,80 @@ def test_init_admin_production_reuses_fail_closed_launch_validation(
     )
 
     assert returncode == 1
+    assert command_lines(log) == []
+
+
+def test_production_continuity_gate_blocks_up_before_secrets_or_docker(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_CONTINUITY_EXIT": "1",
+        },
+    )
+
+    assert result.returncode == 1
+    lines = command_lines(log)
+    assert len(lines) == 1
+    assert "continuity_manager.py|--root" in lines[0]
+    assert lines[0].endswith("|--mode|production|gate")
+    assert not any(line.startswith("docker|") for line in lines)
+    assert not any("prepare_runtime_secrets.py" in line for line in lines)
+
+
+def test_production_continuity_bad_evidence_and_init_admin_gate_call_zero_docker(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+    digest = "a" * 64
+
+    engage = run_wrapper(
+        fake_environment,
+        "continuity",
+        "engage",
+        "--evidence",
+        "/tmp/continuity-engage.json",
+        "--evidence-sha256",
+        digest,
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_CONTINUITY_EXIT": "1",
+        },
+    )
+    init_admin = run_wrapper_with_tty(
+        fake_environment,
+        "init-admin",
+        "--show-temporary-password",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_CONTINUITY_EXIT": "1",
+        },
+    )
+
+    assert engage.returncode == 1
+    assert init_admin == 1
+    lines = command_lines(log)
+    assert any("|engage|--evidence|/tmp/continuity-engage.json|" in line for line in lines)
+    assert not any(line.startswith("docker|") for line in lines)
+    assert not any("prepare_runtime_secrets.py" in line for line in lines)
+
+
+def test_continuity_control_is_production_only(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    _, log, _ = fake_environment
+
+    result = run_wrapper(fake_environment, "continuity", "status")
+
+    assert result.returncode == 2
     assert command_lines(log) == []
 
 
@@ -876,6 +1071,195 @@ def test_production_release_mutations_validate_launch_before_any_tool_call(
     assert command_lines(log) == []
 
 
+def test_production_bootstrap_is_locked_prepares_secrets_and_preserves_confirmation(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    manifest = tmp_path / "staging" / "manifest.json"
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "release",
+        "bootstrap",
+        "--manifest",
+        str(manifest),
+        "--confirm-empty-host",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert command_lines(log) == [
+        expected_prepare(platform_root, runtime, mode="production"),
+        expected_release_manager(
+            platform_root,
+            "production",
+            "bootstrap",
+            "--manifest",
+            str(manifest),
+            "--confirm-empty-host",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "argument_kind", "prepares_secrets"),
+    (
+        ("start-recovery", "start", True),
+        ("observe-recovery", "observe", False),
+        ("adopt-recovery", "adopt", False),
+        ("resume-recovery", "resume", False),
+    ),
+)
+def test_production_recovery_actions_are_locked_and_forward_exact_bindings(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+    subcommand: str,
+    argument_kind: str,
+    prepares_secrets: bool,
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    manifest = tmp_path / "staging" / "manifest.json"
+    snapshot = tmp_path / "snapshot" / "manifest.json"
+    receipt = tmp_path / "evidence" / "restore-receipt.json"
+    gap_fence = tmp_path / "evidence" / "gap-fence.json"
+    output = tmp_path / "evidence" / "pending-receipt.json"
+    digest = "a" * 64
+    arguments: tuple[str, ...]
+    if argument_kind == "start":
+        arguments = (
+            "--manifest",
+            str(manifest),
+            "--snapshot-manifest",
+            str(snapshot),
+            "--snapshot-manifest-sha256",
+            digest,
+            "--confirm-recovered-host",
+        )
+    elif argument_kind == "observe":
+        arguments = (
+            "--manifest",
+            str(manifest),
+            "--snapshot-manifest",
+            str(snapshot),
+            "--snapshot-manifest-sha256",
+            digest,
+            "--output",
+            str(output),
+            "--confirm-recovered-host",
+        )
+    elif argument_kind == "adopt":
+        arguments = (
+            "--manifest",
+            str(manifest),
+            "--snapshot-manifest",
+            str(snapshot),
+            "--snapshot-manifest-sha256",
+            digest,
+            "--restore-receipt",
+            str(receipt),
+            "--restore-receipt-sha256",
+            digest,
+            "--gap-fence-evidence",
+            str(gap_fence),
+            "--gap-fence-sha256",
+            digest,
+            "--confirm-recovered-host",
+        )
+    else:
+        arguments = ("--stage", "workers", "--confirm-recovered-host")
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "release",
+        subcommand,
+        *arguments,
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    runtime_target = "generations/generation-00000000000000000000000000000000"
+    expected = []
+    if prepares_secrets:
+        expected.append(expected_prepare(platform_root, runtime, mode="production"))
+    expected.extend(
+        [
+            expected_preprocessor(platform_root, runtime, "current-target"),
+            expected_release_manager(
+                platform_root,
+                "production",
+                subcommand,
+                *arguments,
+                "--runtime-secrets-target",
+                runtime_target,
+            ),
+        ]
+    )
+    assert command_lines(log) == expected
+
+
+def test_production_forward_rollback_candidate_is_locked_without_reseeding_secrets(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, _ = fake_environment
+    manifest = tmp_path / "staging" / "manifest.json"
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "release",
+        "prepare-forward-rollback",
+        "--source-release-id",
+        "release-20260714",
+        "--manifest",
+        str(manifest),
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert command_lines(log) == [
+        expected_release_manager(
+            platform_root,
+            "production",
+            "prepare-forward-rollback",
+            "--source-release-id",
+            "release-20260714",
+            "--manifest",
+            str(manifest),
+        )
+    ]
+
+
+@pytest.mark.parametrize("subcommand", ("bootstrap", "prepare-forward-rollback"))
+def test_new_production_release_actions_are_unavailable_in_development(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+    subcommand: str,
+) -> None:
+    _, log, _ = fake_environment
+    manifest = tmp_path / "staging" / "manifest.json"
+    arguments = (
+        ("--manifest", str(manifest), "--confirm-empty-host")
+        if subcommand == "bootstrap"
+        else (
+            "--source-release-id",
+            "release-20260714",
+            "--manifest",
+            str(manifest),
+        )
+    )
+
+    result = run_wrapper(fake_environment, "release", subcommand, *arguments)
+
+    assert result.returncode == 2
+    assert command_lines(log) == []
+
+
 def test_release_activation_contends_with_existing_lifecycle_lock_before_tools(
     fake_environment: tuple[Path, Path, dict[str, str]],
 ) -> None:
@@ -959,6 +1343,35 @@ def test_production_up_rejects_unsafe_root_env_before_any_tool_call(
         "up",
         "-d",
         extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        "0:0:644:regular file",
+        "501:20:600:regular file",
+        "0:0:600:symbolic link",
+    ),
+)
+def test_production_rejects_unsafe_root_env_metadata_before_any_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    metadata: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_STAT_OUTPUT": metadata,
+        },
     )
 
     assert result.returncode != 0
@@ -1055,12 +1468,326 @@ def test_production_up_accepts_only_safe_non_secret_settings(
     )
 
     assert result.returncode == 0
-    prefix = compose_prefix(platform_root)
+    prefix = compose_prefix(platform_root, production=True)
     assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line([*prefix, "up", "-d", "--remove-orphans"], runtime=runtime),
     ]
+
+
+def test_production_existing_generation_runs_redis_tls_guard_before_compose(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    baseline = seed_runtime_generation(runtime)
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    prefix = compose_prefix(platform_root, production=True)
+    assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
+        expected_preprocessor(platform_root, runtime, "current-target"),
+        expected_prepare(platform_root, runtime, mode="production"),
+        expected_redis_tls_rotation_guard(platform_root, runtime, baseline),
+        expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_line([*prefix, "up", "-d"], runtime=runtime),
+    ]
+
+
+def test_production_redis_tls_guard_failure_reactivates_baseline_without_docker(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    baseline = seed_runtime_generation(runtime)
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_REDIS_TLS_ROTATION_GUARD_EXIT": "41",
+        },
+    )
+
+    assert result.returncode == 41
+    assert "previous generation reactivated" in result.stderr
+    lines = command_lines(log)
+    assert lines == [
+        expected_release_manager(platform_root, "production", "start-gate"),
+        expected_preprocessor(platform_root, runtime, "current-target"),
+        expected_prepare(platform_root, runtime, mode="production"),
+        expected_redis_tls_rotation_guard(platform_root, runtime, baseline),
+        expected_preprocessor(
+            platform_root,
+            runtime,
+            "activate",
+            "--target",
+            baseline,
+        ),
+    ]
+    assert not any(line.startswith("docker|") for line in lines)
+
+
+def test_production_empty_generation_root_is_explicit_full_stop_path(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    (runtime / "generations").mkdir()
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = command_lines(log)
+    assert expected_prepare(platform_root, runtime, mode="production") in lines
+    assert not any("redis_tls_rotation_guard.py" in line for line in lines)
+
+
+def test_production_orphan_generation_without_current_fails_before_prepare_or_docker(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    (runtime / "generations" / "generation-orphan").mkdir(parents=True)
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert "without a valid current pointer" in result.stderr
+    lines = command_lines(log)
+    assert lines == [expected_release_manager(platform_root, "production", "start-gate")]
+    assert not any("prepare_runtime_secrets.py|prepare" in line for line in lines)
+    assert not any(line.startswith("docker|") for line in lines)
+
+
+def test_development_existing_generation_does_not_invoke_production_tls_guard(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    seed_runtime_generation(runtime)
+
+    result = run_wrapper(fake_environment, "up", "-d")
+
+    assert result.returncode == 0, result.stderr
+    lines = command_lines(log)
+    assert lines[0] == expected_prepare(platform_root, runtime)
+    assert not any("current-target" in line for line in lines)
+    assert not any("redis_tls_rotation_guard.py" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "failure_variable",
+    (
+        "FAKE_STORAGE_PREFLIGHT_EXIT",
+        "FAKE_REDIS_TLS_PREFLIGHT_EXIT",
+        "FAKE_VOLUME_PREFLIGHT_EXIT",
+    ),
+)
+def test_production_infrastructure_preflight_failure_prevents_any_mutation(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    failure_variable: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            failure_variable: "23",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "preflight failed" in result.stderr
+    assert command_lines(log) == []
+
+
+def test_phase0_production_rejects_unimplemented_managed_mode_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root, redis_ha_mode="managed")
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            "FAKE_REDIS_TLS_PREFLIGHT_EXIT": "23",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "REDIS_HA_MODE is invalid" in result.stderr
+    assert command_lines(log) == []
+
+
+@pytest.mark.parametrize(
+    "redis_ha_mode", (None, "standalone", "managed", "unknown", " managed")
+)
+def test_production_rejects_missing_or_invalid_redis_topology_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    redis_ha_mode: str | None,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root, redis_ha_mode=redis_ha_mode)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+def test_production_rejects_duplicate_redis_topology_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+    with (platform_root / ".env").open("a", encoding="utf-8") as stream:
+        stream.write("REDIS_HA_MODE=managed\n")
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+@pytest.mark.parametrize("name", ("REDIS_HA_MODE", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME"))
+def test_production_rejects_shell_topology_override_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    name: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={
+            "SMS_SECRETS_MODE": "production",
+            name: "isolated-standalone" if name == "REDIS_HA_MODE" else "override",
+        },
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "SMS_API_IMAGE",
+        "SMS_WEB_IMAGE",
+        "SMS_POSTGRES_IMAGE",
+        "SMS_REDIS_IMAGE",
+        "METRICS_ALLOWED_CIDRS",
+    ),
+)
+@pytest.mark.parametrize("value", ("", "registry.example.invalid/sms:unsealed"))
+def test_production_rejects_shell_image_or_metrics_override_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    name: str,
+    value: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production", name: value},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+@pytest.mark.parametrize(
+    "metrics_allowed_cidrs",
+    (None, "172.31.250.0/24", "172.16.0.0/12", " 172.31.250.1/32"),
+)
+def test_production_requires_exact_metrics_source_in_root_env_before_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    metrics_allowed_cidrs: str | None,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(
+        platform_root,
+        metrics_allowed_cidrs=metrics_allowed_cidrs,
+    )
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode != 0
+    assert command_lines(log) == []
+
+
+def test_development_allows_shell_image_and_metrics_overrides(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    _, log, _ = fake_environment
+
+    result = run_wrapper(
+        fake_environment,
+        "ps",
+        extra_environment={
+            "SMS_API_IMAGE": "sms-api:development",
+            "SMS_WEB_IMAGE": "sms-web:development",
+            "SMS_POSTGRES_IMAGE": "postgres:development",
+            "SMS_REDIS_IMAGE": "redis:development",
+            "METRICS_ALLOWED_CIDRS": "172.16.0.0/12",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(command_lines(log)) == 1
 
 
 @pytest.mark.parametrize(
@@ -1104,8 +1831,9 @@ def test_production_external_tls_bind_requires_private_address_and_proxy_acl(
     )
 
     assert result.returncode == 0
-    prefix = compose_prefix(platform_root)
+    prefix = compose_prefix(platform_root, production=True)
     assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line([*prefix, "up", "-d"], runtime=runtime),
@@ -1191,8 +1919,9 @@ def test_production_up_allows_dba_fixed_service_recreate(
     )
 
     assert result.returncode == 0
-    prefix = compose_prefix(platform_root)
+    prefix = compose_prefix(platform_root, production=True)
     assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line([*prefix, "up", *arguments], runtime=runtime),
@@ -1609,6 +2338,26 @@ def test_down_cleans_only_after_compose_succeeds(
     ]
 
 
+@pytest.mark.parametrize("argument", ("-v", "--volumes"))
+def test_production_down_refuses_persistent_volume_removal(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    argument: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "down",
+        argument,
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 2
+    assert "retain persistent volumes" in result.stderr
+    assert command_lines(log) == []
+
+
 @pytest.mark.parametrize("argument", ["--help", "--dry-run", "--timeout", "unknown"])
 def test_down_rejects_unapproved_argument_without_compose_or_cleanup(
     fake_environment: tuple[Path, Path, dict[str, str]], argument: str
@@ -1696,6 +2445,24 @@ def test_production_rejects_cp_before_any_tool_call(
     assert command_lines(log) == []
 
 
+def test_production_rejects_generic_exec_before_any_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    _, log, _ = fake_environment
+
+    result = run_wrapper(
+        fake_environment,
+        "exec",
+        "api",
+        "sh",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 2
+    assert "generic exec is forbidden" in result.stderr
+    assert command_lines(log) == []
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -1734,7 +2501,7 @@ def test_production_run_rm_migrate_validates_prepares_and_uses_fixed_command(
 ) -> None:
     platform_root, log, environment = fake_environment
     runtime = Path(environment["SMS_RUNTIME_ROOT"])
-    prefix = compose_prefix(platform_root)
+    prefix = compose_prefix(platform_root, production=True)
     write_non_secret_env(platform_root)
 
     result = run_wrapper(
@@ -1747,6 +2514,7 @@ def test_production_run_rm_migrate_validates_prepares_and_uses_fixed_command(
 
     assert result.returncode == 0
     assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line([*prefix, "run", "--rm", "migrate"], runtime=runtime),
@@ -1778,7 +2546,7 @@ def test_production_partition_maintenance_is_locked_and_uses_fixed_owner_command
 ) -> None:
     platform_root, log, environment = fake_environment
     runtime = Path(environment["SMS_RUNTIME_ROOT"])
-    prefix = compose_prefix(platform_root)
+    prefix = compose_prefix(platform_root, production=True)
     write_non_secret_env(platform_root)
     arguments = ["partition-maintenance"]
     if dry_run:
@@ -1805,6 +2573,7 @@ def test_production_partition_maintenance_is_locked_and_uses_fixed_owner_command
     if dry_run:
         owner_command.append("--dry-run")
     assert command_lines(log) == [
+        expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_line(owner_command, runtime=runtime),

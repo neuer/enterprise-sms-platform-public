@@ -184,6 +184,15 @@ class SqlMetricsRepository:
                     (str(row["replay_eligibility"]), max(0, int(row["count"])))
                     for row in eligibility_result.mappings()
                 )
+                pending_audit = await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*)
+                        FROM raw_vendor_log
+                        WHERE system_replay_audit_state='pending'
+                        """
+                    )
+                )
 
                 return MetricsFacts(
                     send_rates=send_rates,
@@ -216,4 +225,5 @@ class SqlMetricsRepository:
                     worker_lease_events=lease_events,
                     queue_depths=queue_depths,
                     raw_replay_eligibility=raw_replay_eligibility,
+                    system_replay_audit_pending=max(0, int(pending_audit or 0)),
                 )

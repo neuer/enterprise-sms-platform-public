@@ -12,7 +12,12 @@ from app.services.alert_repository import SqlAlertService
 from app.services.crypto import CryptoService
 from app.services.ops_repository import SqlOpsRepository
 from app.services.queue import CeleryQueuePublisher
-from app.services.raw_replay import RawReplayConflict, RawReplayNotFound, RawReplayService
+from app.services.raw_replay import (
+    RawReplayConflict,
+    RawReplayNotFound,
+    RawReplayService,
+    RawReplaySystemAuditIncomplete,
+)
 from app.services.reconcile import RecoveryReconciler
 from app.services.reconcile_repository import SqlRecoveryRepository
 from app.services.reply_ingest import ReplyIngestService
@@ -156,6 +161,9 @@ async def _replay_stale_raw(settings: Settings) -> int:
             continue
         except RawReplayNotFound:
             continue
+        except RawReplaySystemAuditIncomplete as error:
+            await _emit_system_audit_gap(alerts, error)
+            continue
         except RawReplayConflict:
             pass
         except Exception:
@@ -173,7 +181,35 @@ async def _replay_stale_raw(settings: Settings) -> int:
                 )
         except Exception:
             continue
+    for raw_id in await ops.list_pending_system_replay_audit_ids():
+        try:
+            await replay.replay(
+                raw_id,
+                actor="system-reconcile",
+                ip="127.0.0.1",
+                system_producer=True,
+            )
+        except RawReplaySystemAuditIncomplete as error:
+            await _emit_system_audit_gap(alerts, error)
+        except RawReplayConflict:
+            continue
+        except RawReplayNotFound:
+            continue
     return replayed
+
+
+async def _emit_system_audit_gap(
+    alerts: SqlAlertService, error: RawReplaySystemAuditIncomplete
+) -> None:
+    """系统审计缺口独立 crit 告警，不得被通用 Exception 吞掉。"""
+
+    await alerts.emit(
+        alert_type="raw_system_audit_gap",
+        level="crit",
+        title="系统 raw 重放业务已完成但审计未写入，已停止重投影并等待补写",
+        detail={"raw_id": error.raw_id, "lease_epoch": error.lease_epoch},
+        dedup_key=f"raw_system_audit_gap:{error.raw_id}:{error.lease_epoch}",
+    )
 
 
 @celery_app.task(name="app.tasks.reconcile")  # type: ignore[untyped-decorator]

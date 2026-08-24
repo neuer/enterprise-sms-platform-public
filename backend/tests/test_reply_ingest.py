@@ -74,7 +74,7 @@ class FakeRepository:
     async def store_reply(self, raw_id: int, reply: Any) -> None:
         self.events.append(("store", reply))
 
-    async def mark_processed(self, raw_id: int) -> None:
+    async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
     async def mark_error(self, raw_id: int, error: str) -> None:

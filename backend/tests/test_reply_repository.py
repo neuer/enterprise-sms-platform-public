@@ -171,6 +171,8 @@ async def test_raw_processed_and_error_flags_are_explicit() -> None:
     assert "processing_started_at=NULL" in connection.calls[0][0]
     assert "processing_started_at=NULL" in connection.calls[1][0]
     assert "processing_lease_id" in connection.calls[0][0]
+    assert "system_replay_audit_state" not in connection.calls[0][0]
+    assert "system_replay_audit_state" not in connection.calls[1][0]
     assert connection.calls[0][1] == {
         "id": 19,
         "processed": True,

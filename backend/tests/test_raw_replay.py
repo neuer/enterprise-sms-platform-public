@@ -14,6 +14,7 @@ from app.services.raw_replay import (
     RawReplayConflict,
     RawReplayRecord,
     RawReplayService,
+    RawReplaySystemAuditIncomplete,
 )
 from app.services.report_ingest import ReportApplyResult, ReportIngestService
 
@@ -94,6 +95,7 @@ class FakeRepository:
         ip: str,
         system_producer: bool = False,
         principal: SecurityPrincipal | None = None,
+        lease_epoch: int | None = None,
     ) -> None:
         self.audits.append(
             {
@@ -104,6 +106,7 @@ class FakeRepository:
                 "ip": ip,
                 "system_producer": system_producer,
                 "account_id": None if principal is None else principal.account_id,
+                "lease_epoch": lease_epoch,
             }
         )
 
@@ -147,7 +150,7 @@ class FakeReportRepository:
     async def persist_unmatched(self, raw_id: int, report: object) -> None:
         self.events.append(("unmatched", report))
 
-    async def mark_processed(self, raw_id: int) -> None:
+    async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
     async def mark_error(self, raw_id: int, error: str) -> None:
@@ -183,6 +186,7 @@ async def test_raw_replay_verifies_hash_routes_existing_payload_and_audits_metad
             "ip": "10.0.0.8",
             "system_producer": False,
             "account_id": 1,
+            "lease_epoch": None,
         }
     ]
     assert "payload" not in str(repository.audits).lower()
@@ -214,6 +218,7 @@ async def test_system_replay_requests_system_audit_producer() -> None:
             "ip": "127.0.0.1",
             "system_producer": True,
             "account_id": None,
+            "lease_epoch": 0,
         }
     ]
 
@@ -269,6 +274,7 @@ async def test_raw_replay_processes_vendor_local_report_time_without_refetching(
             "ip": "10.0.0.8",
             "system_producer": False,
             "account_id": 1,
+            "lease_epoch": None,
         }
     ]
 
@@ -441,5 +447,97 @@ async def test_processed_raw_retries_missing_human_audit_without_reprocessing() 
             "ip": "10.0.0.8",
             "system_producer": False,
             "account_id": 1,
+            "lease_epoch": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_processed_raw_retries_missing_system_audit_without_reprocessing() -> None:
+    raw = payload([{"customId": "safe-custom-id"}])
+    repository = FakeRepository(
+        RawReplayRecord(
+            9,
+            "report",
+            b"ciphertext",
+            hashlib.sha256(raw).hexdigest(),
+            2,
+            True,
+            item_count=3,
+            system_replay_audit_state="pending",
+            lease_epoch=4,
+        ),
+        claimed=False,
+    )
+    events: list[tuple[str, object]] = []
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        FakeProcessor("report", events),
+        FakeProcessor("reply", events),
+    )
+
+    count = await service.replay(
+        9,
+        actor="system-reconcile",
+        ip="127.0.0.1",
+        system_producer=True,
+    )
+
+    assert count == 3
+    assert events == []
+    assert repository.audits == [
+        {
+            "raw_id": 9,
+            "source": "report",
+            "items": 3,
+            "actor": "system-reconcile",
+            "ip": "127.0.0.1",
+            "system_producer": True,
+            "account_id": None,
+            "lease_epoch": 4,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_audit_failure_does_not_reprocess_and_raises_incomplete() -> None:
+    raw = payload([{"customId": "safe-custom-id"}])
+    repository = FakeRepository(
+        RawReplayRecord(
+            9,
+            "report",
+            b"ciphertext",
+            hashlib.sha256(raw).hexdigest(),
+            2,
+            True,
+            item_count=2,
+            system_replay_audit_state="pending",
+            lease_epoch=1,
+        ),
+        claimed=False,
+    )
+
+    async def fail_audit(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("audit trigger unavailable")
+
+    repository.audit_raw_replay = fail_audit  # type: ignore[method-assign]
+    events: list[tuple[str, object]] = []
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        FakeProcessor("report", events),
+        FakeProcessor("reply", events),
+    )
+
+    with pytest.raises(RawReplaySystemAuditIncomplete) as raised:
+        await service.replay(
+            9,
+            actor="system-reconcile",
+            ip="127.0.0.1",
+            system_producer=True,
+        )
+
+    assert raised.value.raw_id == 9
+    assert raised.value.lease_epoch == 1
+    assert events == []
