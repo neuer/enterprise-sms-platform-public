@@ -806,6 +806,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/blacklist-redesign-prototype.html",
             "docs/previews/blacklist-redesign-shots.md",
             "docs/previews/blacklist-redesign-shots/full.png",
+            "docs/previews/callback-redesign-prototype.html",
             "docs/previews/configs-redesign-prototype.html",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/filter-bar-single-row-prototype.html",
@@ -1050,6 +1051,25 @@ def test_users_preview_does_not_block_web_only_update() -> None:
             "frontend/src/styles/workspace.css",
             "frontend/src/views/UserView.vue",
             "frontend/tests/user-view.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "web-only"
+    assert change.migration_changed is False
+
+
+def test_callbacks_preview_does_not_block_web_only_update() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/callback-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/CallbackView.vue",
+            "frontend/tests/callback-view.test.ts",
+            "frontend/tests/filter-layout-contract.test.ts",
+            "frontend/tests/qingluan-screen-fidelity.test.ts",
         ]
     )
 
