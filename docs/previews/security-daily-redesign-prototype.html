@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 安全日报重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:620px}
+.head-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.plain-primary{border-color:rgba(47,161,132,.45);color:var(--verdi-l)}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.warn{background:none;color:var(--amber)}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 概览卡（页级专属：运行状态 + 事实格） ═══════════ */
+.daily-overview{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,2fr);gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.daily-state{display:grid;gap:8px;align-content:center;justify-items:start;padding:20px;background:linear-gradient(145deg,#162b23,#13221c)}
+.daily-state .sec-label{font:10px var(--mono);letter-spacing:.08em;color:var(--tx-3)}
+.daily-state strong{color:var(--tx-hi);font-size:18px;font-weight:600}
+.daily-state p{color:var(--tx-2);font-size:12px;line-height:1.6}
+.daily-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--hair)}
+.daily-facts>div{min-width:0;padding:13px 15px;background:var(--panel)}
+.daily-facts dt{font-size:10px;color:var(--tx-3)}
+.daily-facts dd{margin:5px 0 0;font:12px var(--mono);color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ═══════════ 检索条（单卡片单行） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.date-pair{display:flex;gap:8px}
+.date-input{display:flex;align-items:center;width:148px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3);font-family:var(--mono)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 12px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.search-bar .go{height:34px;display:inline-flex;align-items:center;gap:10px;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 规则条（常驻） ═══════════ */
+.rules-strip{display:flex;gap:26px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.rules-strip>div{display:flex;gap:8px;align-items:baseline;min-width:0}
+.rules-strip span{flex:none;font-size:10.5px;color:var(--tx-3)}
+.rules-strip p{font-size:11px;color:var(--tx-2)}
+
+/* ═══════════ 结果面板：日报台账 ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:9px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t-time{font:11.5px var(--mono);color:var(--tx);white-space:nowrap}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:3px}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.verdi{background:rgba(47,161,132,.12);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.tag.amb{background:rgba(216,163,92,.13);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.tag.slate{background:rgba(69,116,163,.14);color:#8fb4dd;border:1px solid rgba(69,116,163,.4)}
+.tag.verm{background:rgba(228,106,79,.12);color:#ef9b89;border:1px solid rgba(228,106,79,.35)}
+.tag.grey{background:rgba(139,151,143,.12);color:var(--tx-2);border:1px solid var(--hair)}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{margin-left:auto;display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:440px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+.empty-trio .empty{display:grid;align-content:center}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-trio{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 安全日报重设计原型</b>
+  <span>v1 评审稿 · 拟新增 docs/ui-design.md §8e · 路由 /security-daily（admin 专属）</span>
+  <em>2026-08-24 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>页头副文写明机制事实</b>：固定 08:00（北京时间）汇总前一自然日、页面只展示脱敏结构化证据、Resend Key 保存后不回显；右侧操作保留 配置邮件 / 立即生成 / 刷新 三枚，页头不放页级计数。<span class="need calc">前端</span></li>
+  <li><b>概览卡保留</b>：运行状态卡（状态 tag + 机制说明 + 下次调度）与八格事实格（调度 / 收件人数只展示数量 / 发件域名 / 最近日报状态 / 最近成功生成 / 最近成功投递 / 最近失败 / Beat 配置）维持现有信息与视觉，为页级专属样式。<span class="need ok">现有</span></li>
+  <li><b>五个筛选器收进方案 A 单行检索条</b>：报告日期起止两枚 date 输入经「查询」按钮生效（先校验起止先后）；安全状态 seg（全部/正常/关注/高风险）、生成状态 seg（全部/生成中/已生成/生成失败/数据不可用）、投递状态 seg（全部/未投递/等待 mailer/投递中/已投递/投递失败）点选即重查，直接映射现有 <code>status</code> / <code>generation_status</code> / <code>delivery_status</code> 参数；条底细字写明服务端分页过滤与脱敏边界。el-card 外壳与卡头筛选区退役，结果面板化并入 reply-results 共享组。<span class="need calc">前端</span></li>
+  <li><b>常驻规则条 slim 三格</b>：脱敏边界（只展示脱敏结构化证据，手机号与密钥永不进入界面）、配置例外（Resend Key 明文仅存专用配置并同步独立 mailer，审计只记 configured 状态与数量，Key 不回显）、投递语义（独立 mailer 投递并回写状态、查询时惰性同步、失败可重试、同日重复投递有幂等保护），与 user-rules 同组常驻。<span class="need calc">前端</span></li>
+  <li><b>底栏合并口径与分页</b>：「共 N 条 · 每页 20」+ 分页并入 reply-pagination 共享组；原 total &gt; 20 才渲染分页的限制退役，与回调任务、用户与角色同语言。<span class="need calc">前端</span></li>
+  <li><b>三处确认拆后果正文与审计细字</b>：「立即生成」（新增一条记录不覆盖历史、生成后立即投递、处理中投递会拒绝重生成）与「手动投递 / 重试投递」（邮件正文只来自已脱敏结构化报告、状态由独立 mailer 回写）改 h() VNode 确认框；成功 toast 统一带「本次操作已记入审计」，配置保存同样带上。<span class="need calc">前端</span></li>
+  <li><b>空态两行规约三变体 + 错误条带重新加载</b>：未启用（引导配置邮件）/ 配置不完整（区分投递器与收件人）/ 筛选无结果（带清除筛选）；列表加载失败 el-alert 内联重试。配置邮件 dialog 与纯文本预览 dialog 维持现状。<span class="need calc">前端</span></li>
+  <li><b>行为与既有 testid 保留</b>：行点击与「查看详情」开抽屉、「处理失败」入口、抽屉全部区块、配置校验与清空 Key 语义不变；新增三组 seg、日期、查询/重置与清除筛选 testid；移动端断点对齐 760px。<span class="need calc">前端</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认列表（admin 视角 · 概览卡 + 单行检索条 + 常驻规则条 + 日报台账） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认列表（admin 视角 · 概览卡 + 单行检索条 + 常驻规则条 + 日报台账全量要素）</div>
+<div class="variant-caption">三组状态 seg 点选即重查，报告日期起止经「查询」生效；规则条常驻；末两行演示生成失败与数据不可用叠加态。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">SECURITY DAILY / 安全日报</div>
+      <h1>服务器安全日报</h1>
+      <div class="sub">固定 08:00（北京时间）汇总前一自然日；页面只展示脱敏结构化证据，手机号与密钥永不进入界面，Resend Key 保存后不回显。写操作全部写入审计。</div>
+    </div>
+    <div class="head-actions">
+      <span class="btn">配置邮件</span><span class="btn">立即生成</span><span class="btn plain-primary">刷新</span>
+    </div>
+  </div>
+
+  <div class="daily-overview">
+    <div class="daily-state">
+      <span class="sec-label">安全日报运行状态</span>
+      <strong>日报已启用</strong>
+      <span class="tag verdi">配置完整</span>
+      <p>汇总前一自然日（北京时间） · 当前配置完整，按固定时间生成并交由独立投递器发送。 下次 2026-08-25 08:00:00</p>
+    </div>
+    <dl class="daily-facts">
+      <div><dt>调度</dt><dd>08:00 · Asia/Shanghai</dd></div>
+      <div><dt>收件人数</dt><dd>2 人（只展示数量）</dd></div>
+      <div><dt>发件域名</dt><dd>reports.example.com / security-daily@reports.example.com</dd></div>
+      <div><dt>最近日报状态</dt><dd>投递失败</dd></div>
+      <div><dt>最近成功生成</dt><dd>2026-08-24 08:00:00</dd></div>
+      <div><dt>最近成功投递</dt><dd>2026-08-23 08:02:11</dd></div>
+      <div><dt>最近失败</dt><dd>mailer 暂不可用</dd></div>
+      <div><dt>Beat 配置</dt><dd>修改后需重启 beat</dd></div>
+    </dl>
+  </div>
+
+  <div class="search-bar">
+    <div class="fld"><span>报告日期</span>
+      <div class="date-pair">
+        <div class="date-input">起始日期</div>
+        <div class="date-input">结束日期</div>
+      </div>
+    </div>
+    <div class="fld"><span>安全状态</span>
+      <div class="seg"><b class="on">全部</b><b>正常</b><b>关注</b><b>高风险</b></div>
+    </div>
+    <div class="fld"><span>生成状态</span>
+      <div class="seg"><b class="on">全部</b><b>生成中</b><b>已生成</b><b>生成失败</b><b>数据不可用</b></div>
+    </div>
+    <div class="fld"><span>投递状态</span>
+      <div class="seg"><b class="on">全部</b><b>未投递</b><b>等待 mailer</b><b>投递中</b><b>已投递</b><b>投递失败</b></div>
+    </div>
+    <span class="go"><span class="btn primary">查询</span><span class="btn">重置</span></span>
+    <p class="privacy-note">安全 / 生成 / 投递状态点选即重查，报告日期经「查询」生效；筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。页面只展示脱敏结构化证据，手机号与密钥不进入本页。</p>
+  </div>
+
+  <div class="rules-strip">
+    <div><span>脱敏边界</span><p>页面只展示脱敏结构化证据，手机号与密钥永不进入界面；详情与预览同样只是只读投影。</p></div>
+    <div><span>配置例外</span><p>Resend Key 明文仅存专用配置并同步独立 mailer，审计只记 configured 状态与收件人数量；Key 保存后不回显。</p></div>
+    <div><span>投递语义</span><p>投递由独立 mailer 执行并回写状态，页面查询时惰性同步；投递失败可重试，同日重复投递有幂等保护。</p></div>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr><th>记录</th><th>报告日期</th><th>安全状态</th><th>生成方式</th><th>生成</th><th>投递</th><th>收件人数</th><th>生成时间</th><th>投递时间</th><th>重试</th><th>最新错误</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">5</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-23</span></td>
+          <td><span class="tag verdi">正常</span></td>
+          <td><span class="tag grey">自动</span></td>
+          <td><span class="tag verdi">已生成</span></td>
+          <td><span class="tag grey">未投递</span></td>
+          <td><span class="mono">1</span></td>
+          <td><span class="t-time">2026-08-24 08:00:00</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="mono">0</span></td>
+          <td>—</td>
+          <td><span class="btn link">查看详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">4</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-22</span></td>
+          <td><span class="tag amb">关注</span></td>
+          <td><span class="tag amb">手动</span></td>
+          <td><span class="tag verdi">已生成</span></td>
+          <td><span class="tag verdi">已投递</span></td>
+          <td><span class="mono">2</span></td>
+          <td><span class="t-time">2026-08-23 15:26:40</span></td>
+          <td><span class="t-time">2026-08-23 15:27:02</span></td>
+          <td><span class="mono">0</span></td>
+          <td>—</td>
+          <td><span class="btn link">查看详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">3</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-21</span></td>
+          <td><span class="tag verm">高风险</span></td>
+          <td><span class="tag grey">自动</span></td>
+          <td><span class="tag verdi">已生成</span></td>
+          <td><span class="tag verm">投递失败</span></td>
+          <td><span class="mono">2</span></td>
+          <td><span class="t-time">2026-08-22 08:00:00</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="mono">1</span></td>
+          <td>mailer 暂不可用</td>
+          <td><span class="btn link">查看详情</span><span class="btn link warn">处理失败</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">2</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-20</span></td>
+          <td><span class="tag verdi">正常</span></td>
+          <td><span class="tag grey">自动</span></td>
+          <td><span class="tag verm">生成失败</span></td>
+          <td><span class="tag grey">未投递</span></td>
+          <td><span class="mono">0</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="mono">0</span></td>
+          <td>数据源不可用</td>
+          <td><span class="btn link">查看详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">1</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-19</span></td>
+          <td><span class="tag verm">高风险</span></td>
+          <td><span class="tag grey">自动</span></td>
+          <td><span class="tag grey">数据不可用</span></td>
+          <td><span class="tag amb">等待 mailer</span></td>
+          <td><span class="mono">0</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="t-time">—</span></td>
+          <td><span class="mono">0</span></td>
+          <td>—</td>
+          <td><span class="btn link">查看详情</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 5 条 · 每页 20</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：立即生成确认 + 成功 toast ════════════════ -->
+<div class="stage-label">SCREEN B · 立即生成确认（含成功 toast 样例）</div>
+<div class="variant-caption">二次确认拆后果正文（新增记录不覆盖历史、生成后立即投递、处理中投递拒绝重生成）与审计细字；确认后重查列表并打开新记录详情，toast 如实告知留痕。手动投递 / 重试投递同款确认：邮件正文只来自已脱敏结构化报告，投递状态由独立 mailer 回写。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">安全日报已重新生成并提交邮件投递 · 本次操作已记入审计</div>
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">SECURITY DAILY / 安全日报</div>
+      <h1>服务器安全日报</h1>
+    </div>
+    <div class="head-actions">
+      <span class="btn">配置邮件</span><span class="btn">立即生成</span><span class="btn plain-primary">刷新</span>
+    </div>
+  </div>
+
+  <div class="result-panel dim">
+    <table>
+      <thead><tr><th>记录</th><th>报告日期</th><th>安全状态</th><th>生成</th><th>投递</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">5</span></td>
+          <td><span class="mono" style="font-size:11.5px">2026-08-23</span></td>
+          <td><span class="tag verdi">正常</span></td>
+          <td><span class="tag verdi">已生成</span></td>
+          <td><span class="tag grey">未投递</span></td>
+          <td><span class="btn link">查看详情</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal">
+    <h3>确认立即生成</h3>
+    <p>将汇总<b>前一自然日（北京时间）</b>的脱敏结构化证据并新增一条日报记录，不覆盖历史记录；生成完成后立即提交邮件投递，该日已有处理中的投递请求时将被拒绝。</p>
+    <p class="audit-hint">立即生成行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">立即生成并投递</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：空态（三变体） ════════════════ -->
+<div class="stage-label">SCREEN C · 空态（左：未启用 · 中：配置不完整 · 右：筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；未启用与配置不完整如实说明生成前提，筛选态引导清除筛选。</div>
+<div class="viewport"><div class="screen">
+  <div class="empty-trio">
+    <div class="empty">
+      <div><b>安全日报尚未启用</b>
+      <span>启用后才会按固定时间生成日报；可在「配置邮件」中完成启用与收件人配置。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>安全日报配置不完整</b>
+      <span>请先完成安全日报配置，系统才会按固定时间生成日报。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合筛选条件的安全日报</b>
+      <span>调整报告日期或状态筛选后重新查询，也可清除筛选查看全部记录。</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>概览 <code>GET /api/v1/web/admin/security-daily/overview</code> 与列表 <code>GET .../reports</code> 参数 <code>date_from / date_to / status / generation_status / delivery_status / page / page_size</code> 全部沿用；三组 seg 直接映射现有枚举参数，报告日期经「查询」按钮生效并先校验起止先后，不新增查询参数。<span class="need ok">现有</span></li>
+  <li>详情 <code>GET .../reports/{id}</code>、纯文本预览 <code>GET .../reports/{id}/preview</code>、配置 <code>GET / PUT .../config</code>、立即生成 <code>POST .../generate</code>（新增一条记录不覆盖历史；该日存在处理中投递请求时 409 拒绝重生成）、手动投递 <code>POST .../reports/{id}/send</code> 与重试 <code>POST .../reports/{id}/retry</code>（同日重复投递幂等）全部维持现状；四个写操作均有 <code>@audited</code> 留痕。<span class="need ok">现有</span></li>
+  <li>页面只展示脱敏结构化证据与收件人数量；Resend Key 为明确产品例外——明文仅存专用 sys_config 并同步独立 mailer 的 resend.json，界面不回显，审计只记 configured 状态与数量。<span class="need ok">现有</span></li>
+  <li>零契约变更：不新增端点、不新增字段、不加导出；页面 admin 专属（路由 /security-daily），路由守卫与导航维持现状。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>
