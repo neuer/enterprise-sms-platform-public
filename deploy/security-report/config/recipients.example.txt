@@ -1,2 +1,0 @@
-# 每行一个安全日报收件地址，最多 3 个。
-security-owner@example.com

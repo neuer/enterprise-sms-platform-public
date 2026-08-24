@@ -141,17 +141,6 @@ def _validate_api_key(value: str) -> str:
     return normalized
 
 
-def read_api_key(path: str | Path) -> str:
-    """兼容旧的一次性 CLI；正式 mailer 配置使用 JSON 文件。"""
-
-    secret_path = Path(path)
-    try:
-        value = secret_path.read_text(encoding="utf-8").rstrip("\r\n")
-    except (OSError, UnicodeError) as exc:
-        raise ResendConfigurationError("Resend API key file is unavailable") from exc
-    return _validate_api_key(value)
-
-
 def _validate_recipients(recipients: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(recipient.strip() for recipient in recipients)
     if not 1 <= len(normalized) <= MAX_RECIPIENTS:
@@ -168,22 +157,6 @@ def _validate_recipients(recipients: Sequence[str]) -> tuple[str, ...]:
     if len({recipient.casefold() for recipient in normalized}) != len(normalized):
         raise ResendConfigurationError("recipient addresses must be unique")
     return normalized
-
-
-def read_recipients(path: str | Path) -> tuple[str, ...]:
-    """从独立只读配置读取收件人；每行一个，井号行为注释。"""
-
-    recipients_path = Path(path)
-    try:
-        lines = recipients_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise ResendConfigurationError("recipient file is unavailable") from exc
-    recipients = [
-        line.strip()
-        for line in lines
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    return _validate_recipients(recipients)
 
 
 def read_mailer_configuration(path: str | Path) -> MailerConfiguration:
@@ -488,18 +461,12 @@ def serve_control(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate or send a redacted security daily report through Resend"
+        description="Serve redacted security daily report delivery through Resend"
     )
-    parser.add_argument("--input", type=Path)
     parser.add_argument(
         "--config-file",
         type=Path,
         default=Path("/run/config/resend.json"),
-    )
-    parser.add_argument(
-        "--send",
-        action="store_true",
-        help="perform the external delivery; default only validates inputs",
     )
     parser.add_argument(
         "--control-dir",
@@ -521,40 +488,17 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.serve or args.once:
-        try:
-            return serve_control(
-                args.control_dir,
-                config_file=args.config_file,
-                once=bool(args.once),
-            )
-        except (ResendConfigurationError, ResendDeliveryError) as exc:
-            print(f"security report control failed: {exc}", file=sys.stderr)
-            return 2
-    if args.input is None:
-        _parser().error("--input is required unless --serve or --once is used")
+    if not args.serve and not args.once:
+        _parser().error("--serve or --once is required")
     try:
-        report = renderer.load_report(args.input)
-        configuration = read_mailer_configuration(args.config_file)
-        if not args.send:
-            print(
-                "security report validated "
-                f"report_date={report.report_date} recipients={len(configuration.recipients)}"
-            )
-            return 0
-        receipt = ResendClient(api_key=configuration.api_key).send(
-            report,
-            recipients=configuration.recipients,
+        return serve_control(
+            args.control_dir,
+            config_file=args.config_file,
+            once=bool(args.once),
         )
-    except (
-        renderer.ReportValidationError,
-        ResendConfigurationError,
-        ResendDeliveryError,
-    ) as exc:
-        print(f"security report delivery failed: {exc}", file=sys.stderr)
+    except (ResendConfigurationError, ResendDeliveryError) as exc:
+        print(f"security report control failed: {exc}", file=sys.stderr)
         return 2
-    print(f"security report accepted report_date={receipt.report_date}")
-    return 0
 
 
 if __name__ == "__main__":

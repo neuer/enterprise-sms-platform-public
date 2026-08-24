@@ -103,7 +103,6 @@ def test_sensitive_local_paths_are_never_publishable_git_paths() -> None:
         ".env",
         ".env.production",
         "deploy/secrets/token",
-        "deploy/security-report/config/recipients.txt",
         "certificates/client.key",
     ):
         assert module._is_forbidden_tracked_path(path)

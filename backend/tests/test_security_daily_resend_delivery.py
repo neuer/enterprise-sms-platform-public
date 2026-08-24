@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
-import stat
 import sys
 import time
 from collections.abc import Callable
@@ -18,7 +16,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "deploy" / "scripts"
 SENDER_SCRIPT = SCRIPTS / "send_security_daily_report_resend.py"
-INSTALLER_SCRIPT = SCRIPTS / "install_resend_api_key.py"
 SAMPLE = ROOT / "deploy" / "templates" / "security_daily_report.sample.json"
 COMPANION_COMPOSE = ROOT / "deploy" / "security-report" / "docker-compose.yml"
 COMPANION_DOCKERFILE = ROOT / "deploy" / "security-report" / "Dockerfile"
@@ -32,19 +29,6 @@ def _module() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "send_security_daily_report_resend",
         SENDER_SCRIPT,
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _installer_module() -> ModuleType:
-    assert INSTALLER_SCRIPT.is_file(), "Resend Key 安装器尚未实现"
-    spec = importlib.util.spec_from_file_location(
-        "install_resend_api_key",
-        INSTALLER_SCRIPT,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -67,49 +51,6 @@ class FakeTransport:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
-
-
-def test_secret_reader_strips_only_newline_and_rejects_unsafe_files(
-    tmp_path: Path,
-) -> None:
-    module = _module()
-    secret_file = tmp_path / "resend_api_key"
-    secret_file.write_text("re_test_value\r\n", encoding="utf-8")
-
-    assert module.read_api_key(secret_file) == "re_test_value"
-
-    secret_file.write_text("re_test value\n", encoding="utf-8")
-    with pytest.raises(module.ResendConfigurationError, match="invalid"):
-        module.read_api_key(secret_file)
-
-    secret_file.write_text("\n", encoding="utf-8")
-    with pytest.raises(module.ResendConfigurationError, match="empty"):
-        module.read_api_key(secret_file)
-
-    with pytest.raises(module.ResendConfigurationError, match="unavailable"):
-        module.read_api_key(tmp_path / "missing")
-
-
-def test_key_installer_is_atomic_private_and_rejects_symlink(
-    tmp_path: Path,
-) -> None:
-    module = _installer_module()
-    destination = tmp_path / "resend_api_key"
-
-    module.install_key(destination, io.BytesIO(b"re_first_value\n"))
-
-    assert destination.read_bytes() == b"re_first_value\n"
-    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
-
-    module.install_key(destination, io.BytesIO(b"re_rotated_value\r\n"))
-
-    assert destination.read_bytes() == b"re_rotated_value\n"
-    assert not list(tmp_path.glob(".resend_api_key.*.tmp"))
-
-    destination.unlink()
-    destination.symlink_to(tmp_path / "outside")
-    with pytest.raises(module.ResendKeyInstallError, match="symlink"):
-        module.install_key(destination, io.BytesIO(b"re_never_written\n"))
 
 
 def test_delivery_uses_exact_endpoint_safe_headers_and_rendered_variants() -> None:
@@ -261,22 +202,6 @@ def test_recipient_validation_fails_closed(recipients: tuple[str, ...]) -> None:
 
     with pytest.raises(module.ResendConfigurationError, match="recipient"):
         client.send(report, recipients=recipients)
-
-
-def test_recipient_file_is_bounded_and_does_not_accept_comments_as_addresses(
-    tmp_path: Path,
-) -> None:
-    module = _module()
-    recipients_file = tmp_path / "recipients"
-    recipients_file.write_text(
-        "# security owners\nlin.tong@example.com\nops@example.com\n",
-        encoding="utf-8",
-    )
-
-    assert module.read_recipients(recipients_file) == (
-        "lin.tong@example.com",
-        "ops@example.com",
-    )
 
 
 def test_default_https_transport_is_fixed_to_resend_without_proxy_or_redirect(
@@ -439,27 +364,27 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
     assert "pip install" not in dockerfile
 
 
-def test_docker_build_context_excludes_report_secrets_and_runtime_data() -> None:
+def test_docker_build_context_excludes_active_mailer_config_and_runtime_data() -> None:
     patterns = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    config_ignore = (
-        ROOT / "deploy" / "security-report" / "config" / ".gitignore"
-    ).read_text(encoding="utf-8").splitlines()
 
-    assert "deploy/security-report/secrets/" in patterns
-    assert "deploy/security-report/runtime/" in patterns
-    assert "deploy/security-report/config/recipients.txt" in patterns
     assert "deploy/security-report-config/" in patterns
-    assert "recipients.txt" in config_ignore
+    assert "deploy/security-report-control/" in patterns
+    assert "deploy/security-report-nginx/" in patterns
+
+    legacy_dirs = (
+        ROOT / "deploy" / "security-report" / "config",
+        ROOT / "deploy" / "security-report" / "runtime",
+        ROOT / "deploy" / "security-report" / "secrets",
+    )
+    assert all(not path.exists() for path in legacy_dirs)
 
 
 def test_repo_examples_never_contain_real_recipient_or_api_key() -> None:
     checked_paths = [
         SENDER_SCRIPT,
-        INSTALLER_SCRIPT,
         COMPANION_COMPOSE,
         COMPANION_DOCKERFILE,
         ROOT / "deploy" / "security-report" / "README.md",
-        ROOT / "deploy" / "security-report" / "config" / "recipients.example.txt",
     ]
     for path in checked_paths:
         content = path.read_text(encoding="utf-8")
