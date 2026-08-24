@@ -920,6 +920,8 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     assert "processing_lease_epoch" in connection.calls[0][0]
     assert "parse_state" in connection.calls[0][0]
     assert "replay_eligibility" in connection.calls[0][0]
+    assert "system_replay_audit_state" not in connection.calls[0][0]
+    assert "system_replay_audit_state" not in connection.calls[1][0]
     assert connection.calls[0][1] == {
         "id": 4,
         "processed": True,
@@ -928,7 +930,6 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "replay_eligibility": "never",
         "lease_id": str(processed_lease.lease_id),
         "epoch": 1,
-        "system_replay_audit_state": None,
     }
     assert connection.calls[1][1] == {
         "id": 5,
@@ -938,7 +939,6 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "replay_eligibility": "manual",
         "lease_id": str(error_lease.lease_id),
         "epoch": 2,
-        "system_replay_audit_state": None,
     }
 
     connection = FakeConnection(
@@ -971,6 +971,34 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     assert connection.calls[2][1] == {"batch_id": 2, "hours": 48}
     assert "sms_batch" in connection.calls[4][0] and "FOR UPDATE" in connection.calls[4][0]
     assert "UPDATE sms_message" in connection.calls[5][0]
+
+
+@pytest.mark.asyncio
+async def test_report_terminal_system_audit_intent_sets_pending_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SqlReportRepository()
+    connection = FakeConnection([FakeResult(rowcount=1)])
+    bind_engine(monkeypatch, repository, connection)
+    from uuid import UUID
+
+    from app.services.raw_lease import RawProcessingLease
+
+    lease = RawProcessingLease(8, UUID(int=8), 4)
+    repository.remember_lease(lease)
+    await repository.mark_processed(8, system_audit_intent=True)
+    sql, params = connection.calls[0]
+    assert "system_replay_audit_state=:system_replay_audit_state" in sql
+    assert params == {
+        "id": 8,
+        "processed": True,
+        "error": None,
+        "parse_state": "processed",
+        "replay_eligibility": "never",
+        "lease_id": str(lease.lease_id),
+        "epoch": 4,
+        "system_replay_audit_state": "pending",
+    }
 
 
 @pytest.mark.asyncio

@@ -477,7 +477,6 @@ class SqlOpsRepository:
                     "replay_eligibility": columns["replay_eligibility"],
                     "lease_id": str(token.lease_id),
                     "epoch": token.epoch,
-                    "system_replay_audit_state": None,
                 },
                 lease=token,
             )
@@ -704,6 +703,7 @@ class SqlOpsRepository:
                         connection,
                         actor_name=actor,
                         action="raw_replay",
+                        producer_domain=producer_domain,
                     )
                     async with connection.begin_nested():
                         with suppress(IntegrityError):

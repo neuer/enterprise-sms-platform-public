@@ -559,6 +559,27 @@ def test_system_replay_audit_state_is_in_schema_and_followup_migration() -> None
     assert "REVOKE UPDATE ON raw_vendor_log" not in source
 
 
+def test_system_raw_replay_audit_producer_is_whitelisted() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0078_system_raw_replay_audit_producer.py"
+    assert "NEW.actor='system-reconcile' AND NEW.action='raw_replay'" in schema
+    assert "GRANT UPDATE (system_replay_audit_state)" not in schema
+    assert revision.is_file()
+
+    spec = importlib.util.spec_from_file_location(
+        "system_raw_replay_audit_producer_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0078_system_raw_replay_audit_producer"
+    assert module.down_revision == "0077_raw_system_replay_audit"
+    source = revision.read_text(encoding="utf-8")
+    assert "system-reconcile" in source
+    assert "raw_replay" in source
+
+
 def test_correlation_audit_guard_preserves_immutable_legacy_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

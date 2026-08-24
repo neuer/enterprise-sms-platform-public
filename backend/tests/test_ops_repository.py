@@ -392,8 +392,21 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
 
     bound: list[dict[str, object]] = []
 
-    async def fake_bind(connection: object, *, actor_name: str, action: str) -> None:
-        bound.append({"actor_name": actor_name, "action": action, "connection": connection})
+    async def fake_bind(
+        connection: object,
+        *,
+        actor_name: str,
+        action: str,
+        producer_domain: str | None = None,
+    ) -> None:
+        bound.append(
+            {
+                "actor_name": actor_name,
+                "action": action,
+                "producer_domain": producer_domain,
+                "connection": connection,
+            }
+        )
 
     monkeypatch.setattr(
         "app.services.ops_repository.bind_connection_system_audit",
@@ -415,6 +428,7 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
         {
             "actor_name": "system-reconcile",
             "action": "raw_replay",
+            "producer_domain": "realtime",
             "connection": connection,
         }
     ]

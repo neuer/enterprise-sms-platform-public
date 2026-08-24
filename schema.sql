@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.66  2026-08-24
+-- v1.6.66：sms_send+realtime 允许 system-reconcile/raw_replay 系统审计；
+--          人工终态不得更新 system_replay_audit_state
 -- v1.6.65  2026-08-24
 -- v1.6.65：raw_vendor_log 增加 system_replay_audit_state，系统重放终态与
 --          审计补写分离；processing lease 续租以 RAW_LEASE_SECONDS 为唯一合同
@@ -2151,6 +2154,7 @@ BEGIN
            AND NEW.action IN ('template_sync','sign_sync'))
           OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
             'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
+          OR (NEW.actor='system-reconcile' AND NEW.action='raw_replay')
           OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
               AND NEW.action='usage_projection_rebuild')))
       OR (context_domain='bulk' AND session_user='sms_send' AND (

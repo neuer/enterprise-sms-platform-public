@@ -84,15 +84,32 @@ SET processed=:processed,error=:error,processing_started_at=NULL,
   parse_state=:parse_state,
   replay_eligibility=:replay_eligibility,
   processing_lease_id=NULL,
-  processing_lease_expires_at=NULL,
-  system_replay_audit_state=COALESCE(
-    CAST(:system_replay_audit_state AS varchar),
-    system_replay_audit_state
-  )
+  processing_lease_expires_at=NULL
 WHERE id=:id
   AND processing_lease_id=CAST(:lease_id AS uuid)
   AND processing_lease_epoch=:epoch
 """
+
+FENCED_TERMINAL_SYSTEM_AUDIT_SQL = """
+UPDATE raw_vendor_log
+SET processed=:processed,error=:error,processing_started_at=NULL,
+  parse_state=:parse_state,
+  replay_eligibility=:replay_eligibility,
+  processing_lease_id=NULL,
+  processing_lease_expires_at=NULL,
+  system_replay_audit_state=:system_replay_audit_state
+WHERE id=:id
+  AND processing_lease_id=CAST(:lease_id AS uuid)
+  AND processing_lease_epoch=:epoch
+"""
+
+
+def fenced_terminal_sql(*, system_audit_intent: bool = False) -> str:
+    """人工/轮询终态不得 SET system_replay_audit_state，避免 sms_accept 无列权失败。"""
+
+    if system_audit_intent:
+        return FENCED_TERMINAL_SYSTEM_AUDIT_SQL
+    return FENCED_TERMINAL_SQL
 
 FENCED_METADATA_SQL = """
 UPDATE raw_vendor_log

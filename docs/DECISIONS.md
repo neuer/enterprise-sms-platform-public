@@ -1156,7 +1156,18 @@
   认 processed=false，缺口会永久化。
 - 影响：0077、`raw_replay`/`ops_repository`/`reconcile`、metrics pending 计数。
   人类 replay/reevaluate 原子与补审计行为不回退。审计载荷仅 source/items/
-  lease_epoch/producer_domain。
+  lease_epoch/producer_domain。0078 把 `system-reconcile`/`raw_replay` 加入
+  `sms_send` + realtime 触发器白名单；人工/轮询终态 SQL 不再 SET
+  `system_replay_audit_state`，避免 `sms_accept` 无列权失败。
+
+## D093 系统 Raw 重放审计必须通过角色白名单
+
+- 决策：reconcile 跑在 realtime worker，数据库角色是 `sms_send`，生产者域是
+  `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_accept` 不得获得
+  `system_replay_audit_state` 列 UPDATE。补审计失败保持 pending，不得重投影。
+- 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`，
+  缺口会永久化。
+- 影响：0078、`enforce_live_audit_principal`、终态 SQL 分流。
 
 ## D076 Refresh 轮换 5 秒有界 grace 与跨标签页 Web Lock
 

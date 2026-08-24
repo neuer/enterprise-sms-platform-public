@@ -22,6 +22,10 @@ from app.services.raw_spill import (
 from app.services.report_ingest import ReportIngestService
 
 
+def _block_current_thread(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def crypto() -> CryptoService:
     key = base64.b64encode(b"r" * 32).decode()
     return CryptoService.from_secret_values(key, key)
@@ -190,3 +194,74 @@ def test_one_inspect_per_artifact_under_budget(tmp_path: Path) -> None:
     store.reclaim_idle("report", crypto())
     assert len(seen) == len(set(seen))
     assert 1 <= len(seen) <= 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reclaim_serializes_one_inspect_per_artifact(
+    tmp_path: Path,
+) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    _write_spill(store, b"shared-artifact")
+    payload_reads: list[str] = []
+    original_probe = store._probe_payload_read
+
+    def tracked(name: str) -> None:
+        payload_reads.append(name)
+        original_probe(name)
+
+    store._probe_payload_read = tracked  # type: ignore[method-assign]
+    await asyncio.gather(
+        asyncio.to_thread(store.reclaim_idle, "report", crypto()),
+        asyncio.to_thread(store.reclaim_idle, "report", crypto()),
+    )
+    assert payload_reads == []
+
+
+def test_faulty_backlog_does_not_block_other_artifacts(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    good = _write_spill(store, b"good-body")
+    broken = tmp_path / "report-ffffffffffffffffffffffffffffffff.spill"
+    broken.write_bytes(b"not-a-spill")
+    store.reclaim_idle("report", crypto())
+    names = {path.name for path in tmp_path.iterdir()}
+    assert good.name in names or any(name.endswith(".cq") for name in names)
+    isolated = any(
+        "ffffffff" in name or name.endswith((".cq", ".headerq")) for name in names
+    )
+    assert isolated
+
+
+@pytest.mark.asyncio
+async def test_blocked_event_loop_loses_lock_while_to_thread_keeps_heartbeat() -> None:
+    class FakeRedisLock:
+        def __init__(self) -> None:
+            self.extends = 0
+
+        async def acquire(self, blocking: bool = False) -> bool:
+            del blocking
+            return True
+
+        async def extend(self, ttl: int, replace_ttl: bool = True) -> bool:
+            del ttl, replace_ttl
+            self.extends += 1
+            return True
+
+        async def release(self) -> None:
+            return None
+
+    blocked = FakeRedisLock()
+    threaded = FakeRedisLock()
+    blocked_lock = HeartbeatLock(blocked, ttl_s=90, beat_s=30)
+    threaded_lock = HeartbeatLock(threaded, ttl_s=90, beat_s=30)
+    blocked_lock._beat_s = 0.05
+    threaded_lock._beat_s = 0.05
+    assert await blocked_lock.acquire()
+    _block_current_thread(0.2)
+    assert blocked.extends == 0
+    await blocked_lock.release()
+
+    assert await threaded_lock.acquire()
+    await asyncio.to_thread(time.sleep, 0.2)
+    await asyncio.sleep(0.12)
+    assert threaded.extends >= 1
+    await threaded_lock.release()

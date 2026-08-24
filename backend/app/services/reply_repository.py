@@ -9,7 +9,6 @@ from sqlalchemy import text
 from app.core.runtime_resources import database_engine
 from app.services.raw_lease import (
     FENCED_METADATA_SQL,
-    FENCED_TERMINAL_SQL,
     PERSIST_LEASE_COLUMNS,
     PERSIST_LEASE_VALUES,
     PERSIST_STARTED_AT_SQL,
@@ -17,6 +16,7 @@ from app.services.raw_lease import (
     SYSTEM_REPLAY_AUDIT_PENDING,
     RawProcessingLease,
     commit_fenced_raw_update,
+    fenced_terminal_sql,
     new_lease_id,
     renew_raw_lease,
     require_lease,
@@ -239,9 +239,7 @@ class SqlReplyRepository:
             parse_state=PARSE_PROCESSED,
             replay_eligibility=ELIGIBILITY_NEVER,
             lease=lease,
-            system_replay_audit_state=(
-                SYSTEM_REPLAY_AUDIT_PENDING if system_audit_intent else None
-            ),
+            system_audit_intent=system_audit_intent,
         )
 
     async def mark_error(
@@ -267,24 +265,27 @@ class SqlReplyRepository:
         parse_state: str,
         replay_eligibility: str,
         lease: RawProcessingLease | None = None,
-        system_replay_audit_state: str | None = None,
+        system_audit_intent: bool = False,
     ) -> None:
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
+        params: dict[str, Any] = {
+            "id": raw_id,
+            "processed": processed,
+            "error": error,
+            "parse_state": parse_state,
+            "replay_eligibility": replay_eligibility,
+            "lease_id": str(token.lease_id),
+            "epoch": token.epoch,
+        }
+        if system_audit_intent:
+            params["system_replay_audit_state"] = SYSTEM_REPLAY_AUDIT_PENDING
         try:
             await commit_fenced_raw_update(
                 engine,
-                FENCED_TERMINAL_SQL + " AND source='reply'",
-                {
-                    "id": raw_id,
-                    "processed": processed,
-                    "error": error,
-                    "parse_state": parse_state,
-                    "replay_eligibility": replay_eligibility,
-                    "lease_id": str(token.lease_id),
-                    "epoch": token.epoch,
-                    "system_replay_audit_state": system_replay_audit_state,
-                },
+                fenced_terminal_sql(system_audit_intent=system_audit_intent)
+                + " AND source='reply'",
+                params,
                 lease=token,
             )
         finally:
