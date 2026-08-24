@@ -12,6 +12,11 @@
 当前精确 SHA 的受控入口，任何文档与可执行门禁不一致都必须先修复，不得靠手工命令或
 伪造环境变量绕过。
 
+Phase 0 之后的 OS、VMware、磁盘、网络、制品、PKI、secret、监控和 RACI 申请/验收统一见
+[生产资源与责任冻结及宿主初始化手册](production-resource-responsibility-freeze.md)。其中
+Ubuntu Server 24.04.4 LTS amd64 是 Phase 0 后新增的建议冻结项，只有外部审批和目标主机读回
+完成后才是生产事实。
+
 ## 已确认基线
 
 | 领域 | Phase 0 决策 | 不能据此宣称 |
@@ -65,7 +70,8 @@ VPN ─▶ 企业 TLS/入口 ─────────────────
 4. 全新空主机只执行一次 `release bootstrap --manifest ... --confirm-empty-host` 建立首个
    succeeded 基线；后续使用 `release prepare/activate/status`。已成功发布的版本不能原地或
    直接切旧 digest 回退，须以新 commit、新 digest、保持当前 schema 的 forward-rollback 候选
-   执行 `prepare-forward-rollback` 后再 activate。所有动作都必须经过 `deploy/sms-compose`；
+   执行 `prepare-forward-rollback` 后再 activate。所有生产动作都必须经过
+   `sudo /usr/local/sbin/sms-compose`；
    Phase 0 不授权 raw Compose，也不改变迁移失败时 schema 不自动回退的约束。
 5. 常规发布可由唯一技术管理员执行；另一名具名的业务负责人或变更审批人
    以独立身份复核候选、变更窗、备份和回退条件，不要求其持有平台管理员账号，
@@ -99,6 +105,7 @@ VPN ─▶ 企业 TLS/入口 ─────────────────
 
 | 资源 | vCPU/内存/磁盘 | 故障域与用途 | 证据 |
 |---|---|---|---|
+| 宿主 OS | Ubuntu Server 24.04.4 LTS amd64 最小化安装；`/usr/bin/python3` 精确 3.12 | 新增冻结决策；生产与预生产同 OS 轨道，精确补丁/包版本以预生产通过后的 package lock 为准 | ISO/模板、包锁、内核/systemd/Python/Docker/Compose 与时间同步读回 |
 | 单台生产 VM | 12 vCPU / 48 GiB；VMDK 合计 1050 GiB | 同机承载 Core、Nginx、PostgreSQL 与三个 Redis 容器；整机为共同故障域 | VMware 资产、虚拟磁盘控制器、实际内存/CPU 读回 |
 | 五个 VMDK | OS 100 / Docker 250 / PostgreSQL 400 / Redis 100 / Runtime 200 GiB | 固定 UUID 挂载；不得搬迁 Docker volume `_data` | `deploy/storage.md` 预检、fstab/findmnt/容量与权限证据 |
 | PostgreSQL | 使用上述同机 400 GiB VMDK | 当前无托管 PostgreSQL；唯一事实源 | 版本、七角色、备份与隔离恢复报告 |
@@ -185,13 +192,13 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 
    `approved_at` 只能在未来 5 分钟容差内且不早于执行时刻 2 小时；不得把 `outage_start` 改写为
    围栏命令执行时刻。以文件原始字节的 SHA-256 执行
-   `sudo deploy/sms-compose continuity engage --evidence /绝对路径/engage.json --evidence-sha256 <sha256>`。
+   `sudo /usr/local/sbin/sms-compose continuity engage --evidence /绝对路径/engage.json --evidence-sha256 <sha256>`。
 2. 该命令在 lifecycle lock 内先把 intent 原子写入
    `/var/lib/sms-platform/continuity/state.json`，再停止并逐项读回
    `web/api/worker-realtime/worker-bulk/worker-callback/outbox-dispatcher/beat`；PostgreSQL 和三个
    Redis 数据服务保留。中途失败、宿主重启、状态或证据损坏都会继续阻断 `up`、systemd 启动、
    rotate、migrate、partition、init-admin 和所有 release mutation；用
-   `sudo deploy/sms-compose continuity status` 只读取得机读状态，禁止删除或手改状态文件。
+   `sudo /usr/local/sbin/sms-compose continuity status` 只读取得机读状态，禁止删除或手改状态文件。
 3. 对 queued/submitting/submitted/uncertain 逐类盘点。只有厂商与平台证据确认未受理的请求才可
    双人批准补发；submitted/uncertain 禁止自动重发。
 4. 完成围栏读回后，才把互斥路由切到旧系统和旧服务商并完成最小 notice 发送验收。两个系统
@@ -204,7 +211,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
    身份的不可逆 subject SHA-256，以及
    `approver_one_controlled/approver_two_controlled/old_route_disabled/new_route_exclusive/inflight_reconciled/uncertain_no_auto_resend`
    六个值全为 `true`。证据不得记录姓名、账号、手机号、请求内容或密钥。执行
-   `sudo deploy/sms-compose continuity release --evidence /绝对路径/release.json --evidence-sha256 <sha256>`；
+   `sudo /usr/local/sbin/sms-compose continuity release --evidence /绝对路径/release.json --evidence-sha256 <sha256>`；
    管理器再次确认全部消费者停止后只把状态转为 `released`，**不会自动启动全栈**，后续仍须走
    受控发布/启动与最小 notice 验收。
 

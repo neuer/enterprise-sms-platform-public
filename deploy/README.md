@@ -10,6 +10,7 @@ API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需�
 - [database-roles.md](database-roles.md)：七个运行职责、显式授权与 fail-closed 回滚。
 - [dba.md](dba.md)：`sms_owner` 边界、审计不可变与分区生命周期。
 - [storage.md](storage.md)：单台 12 vCPU/48 GiB 生产 VM 的五块固定 VMDK、七个 bind-backed named volume、70/80/90 阈值与在线扩容。
+- [production-resource-responsibility-freeze.md](../docs/runbooks/production-resource-responsibility-freeze.md)：Ubuntu 24.04.4、VMware/磁盘/网络/制品/PKI/监控资源冻结，RACI、宿主只读预检与安全初始化顺序。
 - [backup-restore.md](backup-restore.md)：无明文落盘的加密备份、校验与隔离恢复。
 - [vendor-egress.md](vendor-egress.md)：Phase 0 主出口报备、后续备出口启用条件、QPS 与错误码 1010 验证。
 - [controlled-real-vendor-test.md](../docs/runbooks/controlled-real-vendor-test.md)：开发测试环境使用正式 Key 的受控真实联调、100 计费条上限与停发规则。
@@ -105,36 +106,41 @@ owner/mode 真实读回为前置。若 Docker 已经启动或其
 数据位于 OS 盘，先停机并按存储手册受控处置；禁止让应用安装命令自动搬迁
 `/var/lib/docker/volumes/*/_data`。
 
+首次安装只使用固定资产安装器；`CANDIDATE_COMMIT` 必须从受限变更单复制为本机 `HEAD` 的
+40 位小写 SHA。占位字符串会被入口拒绝，不能原样执行：
+
 ```bash
-sudo install -d -m 0700 /etc/sms-platform
-sudo install -m 0600 deploy/systemd/compose.env.example /etc/sms-platform/compose.env
-sudo ln -sfn /opt/sms-platform/deploy/sms-compose /usr/local/sbin/sms-compose
-sudo install -m 0755 deploy/scripts/storage_preflight.py \
-  /usr/local/sbin/sms-storage-preflight
-sudo install -m 0644 deploy/systemd/sms-storage-preflight.service \
-  /etc/systemd/system/sms-storage-preflight.service
-sudo install -d -m 0755 \
-  /etc/systemd/system/docker.service.d \
-  /etc/systemd/system/sms-platform.service.d
-sudo install -m 0644 deploy/systemd/docker.service.d/10-sms-platform-storage.conf \
-  /etc/systemd/system/docker.service.d/10-sms-platform-storage.conf
-sudo install -m 0644 deploy/systemd/sms-platform.service.d/10-storage-preflight.conf \
-  /etc/systemd/system/sms-platform.service.d/10-storage-preflight.conf
-sudo install -m 0644 deploy/systemd/sms-platform.service \
-  /etc/systemd/system/sms-platform.service
-sudo install -m 0644 deploy/systemd/vendor-control-agent.service \
-  /etc/systemd/system/vendor-control-agent.service
-sudo install -m 0600 deploy/lifecycle.server.example.json \
-  /etc/sms-platform/lifecycle.json
-sudo install -m 0600 deploy/systemd/lifecycle.env.example \
-  /etc/sms-platform/lifecycle.env
-sudo install -m 0644 \
-  deploy/systemd/sms-partition-maintenance.service \
-  deploy/systemd/sms-partition-maintenance.timer \
-  deploy/systemd/sms-backup.service deploy/systemd/sms-backup.timer \
-  deploy/systemd/sms-restore-drill.service deploy/systemd/sms-restore-drill.timer \
-  deploy/systemd/sms-lifecycle-status.service deploy/systemd/sms-lifecycle-status.timer \
-  /etc/systemd/system/
+CANDIDATE_COMMIT='REPLACE_WITH_40_LOWERCASE_HEX_COMMIT'
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
+  --expected-commit "$CANDIDATE_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
+  --expected-commit "$CANDIDATE_COMMIT" \
+  --confirm-dedicated-production-host \
+  --confirm-vcenter-storage-reviewed
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
+```
+
+该入口把上述 17 个普通文件及 `/usr/local/sbin/sms-compose` 固定链接作为闭集安装，拒绝覆盖
+任何已有目标，其中存储检查固定安装为 `/usr/local/sbin/sms-storage-preflight`；并把来源 commit
+与逐文件摘要写入最后提交的 root-owned 状态文件。它不执行
+APT/Git/磁盘/fstab/mount、secret、`.env`、Docker/Compose 或 systemd 生命周期动作。`status`
+只有在状态和全部资产完整一致时才退出 0；`absent/incomplete/drifted` 都非零。apply 中途失败时
+不得手工删除后重跑，须保留 `status` 输出并建立宿主资产恢复变更。
+
+闭集具体包括 `compose.env`、`sms-storage-preflight`、`sms-storage-preflight.service`、
+`10-sms-platform-storage.conf`、`10-storage-preflight.conf`、`sms-platform.service`、
+`vendor-control-agent.service`、`lifecycle.json`、`lifecycle.env`，以及 partition、backup、
+restore-drill、lifecycle-status 各自的 service/timer，共 17 个普通文件和一个 wrapper symlink。
+
+该安装器是首装入口，不是宿主资产升级器。常规 release 不会更新上述 17 个 root-owned 文件；
+`sms-compose` 又是指向 production operator 可写 checkout 的 symlink，因此该 operator 必须按
+root-equivalent 受信身份管理。受控宿主资产升级/漂移围栏闭合前，任何修改该 inventory 或
+wrapper 的生产候选都为 No-Go。security-report collector 不在本 inventory 内，当前不得手工
+补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
+
+安装成功后再做只读 unit 验证和显式宿主动作：
+
+```bash
 sudo systemd-analyze verify /etc/systemd/system/sms-platform.service
 sudo systemd-analyze verify /etc/systemd/system/sms-storage-preflight.service
 sudo systemd-analyze verify /etc/systemd/system/vendor-control-agent.service
