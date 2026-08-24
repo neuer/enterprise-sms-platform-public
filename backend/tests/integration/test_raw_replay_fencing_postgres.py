@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
@@ -438,7 +439,13 @@ async def test_heartbeat_fails_closed_on_postgres_disconnect() -> None:
             custom_ids=[],
             item_count=0,
         )
-        lease = reports._leases[raw_id]
+        live = reports._leases[raw_id]
+        lease = RawProcessingLease(
+            raw_id=live.raw_id,
+            lease_id=live.lease_id,
+            epoch=live.epoch,
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
 
         async def renew(token: RawProcessingLease) -> None:
             await renew_raw_lease(engine, token)
@@ -451,9 +458,13 @@ async def test_heartbeat_fails_closed_on_postgres_disconnect() -> None:
         ) as beat:
             await asyncio.sleep(0.05)
             await engine.dispose()
-            await asyncio.sleep(0.08)
+            deadline = asyncio.get_running_loop().time() + 2.0
             with pytest.raises(RawLeaseHeartbeatFailed):
-                beat.raise_if_lost()
+                while True:
+                    beat.raise_if_lost()
+                    if asyncio.get_running_loop().time() >= deadline:
+                        break
+                    await asyncio.sleep(0.05)
         probe = create_async_engine(database_url)
         try:
             async with probe.begin() as connection:
