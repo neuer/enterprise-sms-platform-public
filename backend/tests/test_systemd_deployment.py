@@ -22,9 +22,7 @@ DRILL_SERVICE = ROOT / "deploy" / "systemd" / "sms-restore-drill.service"
 DRILL_TIMER = ROOT / "deploy" / "systemd" / "sms-restore-drill.timer"
 STATUS_SERVICE = ROOT / "deploy" / "systemd" / "sms-lifecycle-status.service"
 STATUS_TIMER = ROOT / "deploy" / "systemd" / "sms-lifecycle-status.timer"
-SECURITY_COLLECTOR_SERVICE = (
-    ROOT / "deploy" / "systemd" / "security-report-collector.service"
-)
+SECURITY_COLLECTOR_SERVICE = ROOT / "deploy" / "systemd" / "security-report-collector.service"
 SECRET_NAMES = {
     "vendor_secret_name",
     "vendor_secret_key",
@@ -117,10 +115,7 @@ def test_backup_and_preproduction_restore_timers_are_persistent() -> None:
         assert "WantedBy=timers.target" in timer
     assert "Persistent=true" in drill_timer
     assert "RandomizedDelaySec=" in drill_timer
-    assert (
-        "ConditionPathExists=/etc/sms-platform/preproduction-restore-host"
-        in drill_timer
-    )
+    assert "ConditionPathExists=/etc/sms-platform/preproduction-restore-host" in drill_timer
     assert "WantedBy=timers.target" not in drill_timer
 
 
@@ -158,8 +153,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
             assert token in service
         preflight_mode = "observe" if operation == "backup-status" else "startup"
         assert (
-            f"ExecStartPre=/usr/local/sbin/sms-storage-preflight --mode {preflight_mode}"
-            in service
+            f"ExecStartPre=/usr/local/sbin/sms-storage-preflight --mode {preflight_mode}" in service
         )
         assert "StateDirectory=" not in service
         assert "/var/lib/sms-platform/backups" not in service
@@ -171,10 +165,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
             assert "Requires=docker.service sms-platform.service" not in service
 
     drill_service = read_asset(DRILL_SERVICE)
-    assert (
-        "ConditionPathExists=/etc/sms-platform/preproduction-restore-host"
-        in drill_service
-    )
+    assert "ConditionPathExists=/etc/sms-platform/preproduction-restore-host" in drill_service
     assert "preproduction isolated restore drill" in drill_service
     assert "isolated database restore engineering deadline" in drill_service
     assert "12h RTO" not in drill_service
@@ -201,12 +192,8 @@ def test_lifecycle_examples_contain_only_paths_and_recovery_targets() -> None:
         "schema_version": 1,
         "environment_file": "/opt/sms-platform/.env",
         "output_root": "/var/lib/sms-platform/runtime/backups",
-        "recovery_crypto_generation_id_file": (
-            "/etc/sms-platform/recovery-crypto-generation-id"
-        ),
-        "backup_passphrase_generation_id_file": (
-            "/etc/sms-platform/backup-secrets/generation-id"
-        ),
+        "recovery_crypto_generation_id_file": ("/etc/sms-platform/recovery-crypto-generation-id"),
+        "backup_passphrase_generation_id_file": ("/etc/sms-platform/backup-secrets/generation-id"),
         "database": "sms",
         "retention_days": 35,
         "minimum_snapshots": 2,
@@ -254,6 +241,18 @@ def test_persistent_timer_jobs_never_implicitly_restart_stopped_platform() -> No
         assert "Requisite=sms-platform.service" in service
         assert "Requires=docker.service sms-platform.service" not in service
         assert "Requires=sms-platform.service" not in service
+
+
+def test_security_collector_uses_the_host_python_and_ubuntu_auth_log() -> None:
+    service = read_asset(SECURITY_COLLECTOR_SERVICE)
+
+    assert (
+        "ExecStart=/usr/bin/python3 "
+        "/opt/sms-platform/deploy/scripts/collect_security_daily_evidence.py "
+        "--auth-log /var/log/auth.log" in service
+    )
+    assert "backend/.venv" not in service
+    assert "ReadOnlyPaths=-/var/log/auth.log" in service
 
 
 def test_systemd_unit_rate_limits_restart_on_start_failure() -> None:

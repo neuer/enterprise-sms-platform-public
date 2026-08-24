@@ -933,6 +933,8 @@ class ReportIngestService:
                         await self.repository.persist_unmatched(raw_id, report)
                     elif applied.changed:
                         await self._alert_failure_rate(applied.batch_id)
+                    if beat is not None:
+                        beat.raise_if_lost()
             except RawLeaseLost:
                 raise
             except Exception as error:
@@ -955,5 +957,7 @@ class ReportIngestService:
                 mark_kwargs["lease"] = lease
             if system_audit_intent:
                 mark_kwargs["system_audit_intent"] = True
+            if beat is not None:
+                beat.raise_if_lost()
             await self.repository.mark_processed(raw_id, **mark_kwargs)
             return len(data)

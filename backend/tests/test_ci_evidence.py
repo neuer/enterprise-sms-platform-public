@@ -86,6 +86,32 @@ def test_ci_gate_uses_the_latest_exact_matching_check_run() -> None:
     assert ci_gate_status(document, commit=COMMIT) == "failure"
 
 
+def test_frontend_root_entry_requires_security_job_exact_sha() -> None:
+    result = classify_paths(["frontend/src/main.ts"])
+    assert result.frontend is True
+    assert result.security is True
+    names = ("backend", "frontend", "g2", "ci-gate")
+    without_security = {
+        "check_runs": [check_run(name=name, run_id=index) for index, name in enumerate(names, 1)]
+    }
+    wrong_sha = {
+        "check_runs": [
+            check_run(name="frontend", run_id=1),
+            check_run(name="security", run_id=2, head_sha=HEAD),
+            check_run(name="ci-gate", run_id=3),
+        ]
+    }
+    exact = {
+        "check_runs": [
+            check_run(name=name, run_id=index)
+            for index, name in enumerate(("backend", "frontend", "security", "g2", "ci-gate"), 1)
+        ]
+    }
+    assert full_ci_status(without_security, commit=COMMIT) == "missing"
+    assert full_ci_status(wrong_sha, commit=COMMIT) == "missing"
+    assert full_ci_status(exact, commit=COMMIT) == "success"
+
+
 def test_sensitive_component_requires_security_job_exact_sha() -> None:
     result = classify_paths(["frontend/src/components/DailyPasswordChangeDialog.vue"])
     assert result.frontend is True

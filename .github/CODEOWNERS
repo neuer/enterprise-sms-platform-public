@@ -7,6 +7,8 @@ frontend/src/router/ @neuer
 frontend/src/api/ @neuer
 frontend/src/views/ @neuer
 frontend/src/components/ @neuer
+frontend/src/*.ts @neuer
+frontend/src/*.vue @neuer
 backend/migrations/ @neuer
 schema.sql @neuer
 deploy/ @neuer

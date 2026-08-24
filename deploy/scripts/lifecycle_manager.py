@@ -27,6 +27,7 @@ from failover_common import (
     CommandRunner,
     DeadlineExceeded,
     atomic_write_json,
+    fsync_directory,
     read_root_generation_id_file,
     sha256_file,
     validate_drill_database,
@@ -43,6 +44,8 @@ from restore_drill import (
 from sync_standby import SyncConfig, SyncResult, SyncService
 
 SNAPSHOT_ID = re.compile(r"^\d{8}T\d{6}Z_[0-9a-f]{12}$")
+BACKUP_OUTPUT_CHILDREN = ("snapshots", "reports", ".incoming", "orphans")
+ORPHAN_TTL = timedelta(hours=24)
 RESTORE_REPORT_FIELDS = frozenset(
     {
         "schema_version",
@@ -780,7 +783,7 @@ class LifecycleService:
             self.repository_root.resolve(strict=True)
         ):
             raise ValueError("backup output root must be outside the repository")
-        for child_name in ("snapshots", "reports", ".incoming"):
+        for child_name in BACKUP_OUTPUT_CHILDREN:
             if config.output_root.joinpath(child_name).is_symlink():
                 raise ValueError("backup output child must not be a symlink")
 
@@ -800,7 +803,7 @@ class LifecycleService:
         ):
             raise ValueError("backup output root must be outside the repository")
         config.output_root.chmod(0o700)
-        for child_name in ("snapshots", "reports", ".incoming"):
+        for child_name in BACKUP_OUTPUT_CHILDREN:
             child = config.output_root / child_name
             if child.is_symlink():
                 raise ValueError("backup output child must not be a symlink")
@@ -1159,6 +1162,178 @@ class LifecycleService:
         }
         return removed
 
+    def _current_snapshot_id(self, config: LifecycleConfig) -> str | None:
+        current_link = config.output_root / "current"
+        if not current_link.is_symlink():
+            return None
+        target = current_link.readlink()
+        if (
+            len(target.parts) == 2
+            and target.parts[0] == "snapshots"
+            and SNAPSHOT_ID.fullmatch(target.parts[1]) is not None
+        ):
+            return target.parts[1]
+        return None
+
+    def _latest_ledger_snapshot_id(self, state: Mapping[str, Any]) -> str | None:
+        snapshots = state.get("snapshots")
+        if not isinstance(snapshots, dict) or not snapshots:
+            return None
+        ranked: list[tuple[datetime, str]] = []
+        for snapshot_id, item in snapshots.items():
+            if not isinstance(item, dict) or item.get("integrity_verified") is not True:
+                continue
+            try:
+                created = _aware_datetime(item.get("created_at"), "snapshot state creation time")
+            except ValueError:
+                continue
+            ranked.append((created, snapshot_id))
+        if not ranked:
+            return None
+        ranked.sort()
+        return ranked[-1][1]
+
+    def _retarget_current(self, config: LifecycleConfig, snapshot_id: str | None) -> None:
+        current = config.output_root / "current"
+        next_link = config.output_root / ".current.next"
+        next_link.unlink(missing_ok=True)
+        if snapshot_id is None:
+            current.unlink(missing_ok=True)
+            fsync_directory(config.output_root)
+            return
+        next_link.symlink_to(Path("snapshots") / snapshot_id)
+        os.replace(next_link, current)
+        fsync_directory(config.output_root)
+
+    def _isolate_snapshot(self, config: LifecycleConfig, snapshot_id: str) -> None:
+        source = config.output_root / "snapshots" / snapshot_id
+        if not source.exists():
+            return
+        orphans = config.output_root / "orphans"
+        orphans.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination = orphans / snapshot_id
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        shutil.move(str(source), str(destination))
+        fsync_directory(orphans)
+        fsync_directory(source.parent)
+
+    def _cleanup_stale_incoming(self, config: LifecycleConfig, now: datetime) -> None:
+        incoming = config.output_root / ".incoming"
+        if not incoming.is_dir() or incoming.is_symlink():
+            return
+        for child in incoming.iterdir():
+            try:
+                age = now.timestamp() - child.stat().st_mtime
+            except OSError:
+                continue
+            if age > config.max_backup_seconds:
+                shutil.rmtree(child, ignore_errors=True)
+        if incoming.is_dir():
+            fsync_directory(incoming)
+
+    def _prune_orphans(self, config: LifecycleConfig, now: datetime) -> None:
+        orphans = config.output_root / "orphans"
+        if not orphans.is_dir() or orphans.is_symlink():
+            return
+        for child in orphans.iterdir():
+            try:
+                age = now.timestamp() - child.stat().st_mtime
+            except OSError:
+                continue
+            if age > ORPHAN_TTL.total_seconds():
+                shutil.rmtree(child, ignore_errors=True)
+        if orphans.is_dir():
+            fsync_directory(orphans)
+
+    def _adopt_snapshot_state(
+        self,
+        state: dict[str, Any],
+        evidence: SnapshotEvidence,
+        *,
+        as_latest: bool,
+    ) -> None:
+        state["snapshots"][evidence.snapshot_id] = {
+            "created_at": evidence.created_at.isoformat(),
+            "integrity_verified": True,
+            "restore_verified": False,
+            "available": False,
+            "manifest_sha256": evidence.manifest_sha256,
+            "database_sha256": evidence.database_sha256,
+            "recovery_crypto_generation_id": evidence.recovery_crypto_generation_id,
+            "backup_passphrase_generation_id": evidence.backup_passphrase_generation_id,
+            "last_restore": None,
+            "commit_phase": "ledger_committed",
+        }
+        if as_latest:
+            state["last_successful_backup"] = {
+                "snapshot_id": evidence.snapshot_id,
+                "completed_at": self._now().isoformat(),
+                "created_at": evidence.created_at.isoformat(),
+                "integrity_verified": True,
+                "recovery_crypto_generation_id": evidence.recovery_crypto_generation_id,
+                "backup_passphrase_generation_id": evidence.backup_passphrase_generation_id,
+            }
+
+    def _reconcile_directory_ledger(
+        self,
+        config: LifecycleConfig,
+        *,
+        adopt_id: str | None = None,
+    ) -> None:
+        """目录、current 与账本的唯一可重入收敛：采用、隔离或回退。"""
+
+        state = self._load_state(config)
+        now = self._now()
+        mutated = False
+        snapshots_root = config.output_root / "snapshots"
+        current_id = self._current_snapshot_id(config)
+        on_disk: list[str] = []
+        if snapshots_root.is_dir() and not snapshots_root.is_symlink():
+            on_disk = [
+                child.name
+                for child in snapshots_root.iterdir()
+                if child.is_dir()
+                and not child.is_symlink()
+                and SNAPSHOT_ID.fullmatch(child.name) is not None
+            ]
+        ledger = state["snapshots"]
+        for snapshot_id in on_disk:
+            if snapshot_id in ledger:
+                continue
+            should_adopt = snapshot_id in {adopt_id, current_id}
+            if should_adopt:
+                try:
+                    evidence = self._verify_snapshot(config, snapshot_id)
+                    self._adopt_snapshot_state(
+                        state, evidence, as_latest=snapshot_id == current_id
+                    )
+                    mutated = True
+                    continue
+                except (OSError, UnicodeError, ValueError):
+                    if snapshot_id == adopt_id:
+                        continue
+            self._isolate_snapshot(config, snapshot_id)
+            mutated = True
+            if current_id == snapshot_id:
+                current_id = None
+        for snapshot_id, item in ledger.items():
+            path = snapshots_root / snapshot_id
+            if path.is_dir() or not isinstance(item, dict):
+                continue
+            item["available"] = False
+            item["integrity_verified"] = False
+            mutated = True
+        live_current = self._current_snapshot_id(config)
+        if live_current is None or not (snapshots_root / live_current).is_dir():
+            latest = self._latest_ledger_snapshot_id(state)
+            self._retarget_current(config, latest)
+            mutated = True
+        self._cleanup_stale_incoming(config, now)
+        self._prune_orphans(config, now)
+        if mutated:
+            self._save_state(config, state)
+
     def backup(self, config: LifecycleConfig) -> SnapshotEvidence:
         self._prevalidate_output_root(config)
         try:
@@ -1183,6 +1358,7 @@ class LifecycleService:
             )
         except Exception as error:
             with self._lock(config):
+                self._reconcile_directory_ledger(config)
                 self._failure(config, "backup", type(error).__name__)
             raise
 
@@ -1190,6 +1366,7 @@ class LifecycleService:
             try:
                 if SNAPSHOT_ID.fullmatch(result.snapshot_id) is None:
                     raise ValueError("backup returned an invalid snapshot id")
+                self._reconcile_directory_ledger(config, adopt_id=result.snapshot_id)
                 state = self._load_state(config)
                 state["snapshots"][result.snapshot_id] = {
                     "created_at": self._now().isoformat(),
@@ -1201,6 +1378,7 @@ class LifecycleService:
                     "recovery_crypto_generation_id": None,
                     "backup_passphrase_generation_id": None,
                     "last_restore": None,
+                    "commit_phase": "snapshot_published",
                 }
                 self._save_state(config, state)
                 evidence = self._verify_snapshot(config, result.snapshot_id)
@@ -1217,6 +1395,7 @@ class LifecycleService:
                         "backup_passphrase_generation_id": (
                             evidence.backup_passphrase_generation_id
                         ),
+                        "commit_phase": "ledger_committed",
                     }
                 )
                 completed_at = self._now()
@@ -1235,9 +1414,16 @@ class LifecycleService:
                 state["last_failure"] = None
                 self._prune(config, state, completed_at)
                 self._save_state(config, state)
+                self._reconcile_directory_ledger(config, adopt_id=result.snapshot_id)
                 return evidence
             except Exception as error:
-                self._failure(config, "backup", type(error).__name__)
+                self._reconcile_directory_ledger(config)
+                self._failure(
+                    config,
+                    "backup",
+                    type(error).__name__,
+                    snapshot_id=result.snapshot_id,
+                )
                 raise
 
     def drill(self, config: LifecycleConfig) -> Mapping[str, Any]:
@@ -1573,6 +1759,7 @@ class LifecycleService:
         """只验证生产最新备份的完整性与 RPO，不采信任何同机恢复证据。"""
 
         with self._lock(config):
+            self._reconcile_directory_ledger(config)
             state = self._load_state(config)
             now = self._now()
             backup = state["last_successful_backup"]

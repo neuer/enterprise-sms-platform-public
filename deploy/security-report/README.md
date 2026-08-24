@@ -1,5 +1,10 @@
 # Resend 安全日报投递伴生容器
 
+> **生产 No-Go：** 当前伴生 mailer 仍是第五个本地 build 镜像，下面的目录默认落在 checkout，
+> collector 也尚未纳入受控宿主资产升级，access log 没有 Runtime VMDK 容量门禁和 rotate/reopen
+> 资产。正式发布、绝对 Runtime 路径、轮转和升级合同闭合前，禁止在生产执行本页的 build/up 或
+> enable 命令；本页命令只用于开发/预生产修复验证。
+
 这个目录负责把已经通过 `render_security_daily_report.py` 校验的脱敏 JSON 日报发送到固定 Resend HTTPS 端点。日常配置全部在平台管理员的 `/security-daily` 页面完成，不需要手工维护 Resend secret 或收件人文件。
 
 ## 页面配置
@@ -32,7 +37,7 @@ Resend Key 应具备发送权限并绑定 `reports.neuer.cn`。发件域名和�
 - 域名：`reports.neuer.cn`
 - 地址：由独立 mailer 固定配置（不在公开文档中回显）
 
-## 启动 mailer
+## 启动 mailer（仅开发/预生产修复验证）
 
 在仓库根目录执行：
 
@@ -58,7 +63,7 @@ mailer 以 UID 10001 非 root 运行，只读根文件系统、无 Linux capabil
 worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递请求），但
 始终不挂载 Resend 配置目录。
 
-## 证据采集器（一次性安装，之后自动运行）
+## 证据采集器（当前仅开发/预生产修复验证）
 
 日报数据不是 mailer 生成的。主机侧需要安装同一提交中的
 `security-report-collector.service` 和 `.timer`；采集器只读取固定主机日志，写入
@@ -68,7 +73,8 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 
 采集器当前覆盖的证据源：
 
-- SSH journal：`/var/log/auth.log` 及昨日轮转文件（`.1`、`.1.gz`），同时匹配
+- SSH 认证日志：Ubuntu Server 24.04 使用 `/var/log/auth.log`，采集器同时读取昨日
+  轮转文件（`.1`、`.1.gz`），并匹配
   journald ISO、系统 syslog 与“Accepted key”等实际措辞；
 - Fail2ban：`/var/log/fail2ban.log` 及轮转文件；
 - Web/API access log：默认读取 `deploy/security-report-nginx/access.log`
@@ -83,7 +89,13 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 审计 JSON 明细。任一证据源缺失时，报告保持
 `attention` 并在“证据范围”显示缺口，不会用零值冒充完整覆盖。
 
-由授权运维在主机上安装一次：
+以下安装示例当前不得用于生产；只有上述生产 No-Go 闭合后，才可由授权运维按新的受控入口安装：
+
+采集器只使用 Python 标准库，必须由生产宿主固定的 `/usr/bin/python3` 运行；该解释器
+必须是 Python 3.12。它不依赖、也不得回退到发布目录中的 `backend/.venv`。启用 timer
+前先完成生产宿主只读预检，并确认 Ubuntu 的 `rsyslog` 正在把 SSH 认证事件写入
+`/var/log/auth.log`；文件缺失或目标日期不可归属时，日报保持“证据缺失”，不得改用
+不受控路径或把缺失当作零事件。
 
 ```bash
 sudo install -d -o root -g root -m 0750 \

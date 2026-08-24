@@ -249,6 +249,8 @@ class CommandRunner:
                 left_code = left.wait(
                     timeout=self._remaining_timeout(started, bounded_timeout)
                 )
+                output.flush()
+                os.fsync(output.fileno())
             left_error.seek(0)
             right_error.seek(0)
             if left_code != 0:
@@ -259,6 +261,8 @@ class CommandRunner:
                 raise CommandFailure(
                     right_argv[0], right_code, right_error.read().decode(errors="replace")
                 )
+            fsync_file(output_path)
+            fsync_directory(output_path.parent)
         except subprocess.TimeoutExpired:
             self._terminate_and_wait(processes)
             output_path.unlink(missing_ok=True)
@@ -616,8 +620,34 @@ def _json_object_without_duplicates(
     return result
 
 
+def fsync_file(path: Path) -> None:
+    """对已存在的普通文件执行 fsync，作为掉电持久化屏障。"""
+
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def fsync_directory(path: Path) -> None:
+    """对目录项执行 fsync，使 rename/symlink 在掉电后可见。"""
+
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def durability_barrier(name: str, path: Path | None = None) -> None:
+    """掉电注入点。生产为空操作；测试替换此函数以模拟断电。"""
+
+    return
+
+
 def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
-    """以 0600 临时文件写 JSON，fsync 后原子替换。"""
+    """以 0600 临时文件写 JSON：文件 fsync → replace → 目标校验 → 父目录 fsync。"""
 
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -630,6 +660,11 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("atomic json destination is unsafe")
+        fsync_file(path)
+        fsync_directory(path.parent)
+        durability_barrier("state_replace", path)
     except BaseException:
         with suppress(OSError):
             os.close(fd)

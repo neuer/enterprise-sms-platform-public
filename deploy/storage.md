@@ -24,6 +24,11 @@
 这只能证明 guest 内磁盘分离；VMDK 所在 datastore、PVSCSI controller 和 vSphere 放置仍须
 在变更单中另附 vCenter 证据。
 
+100 GiB OS VMDK 固定使用 GPT、`512 MiB` EFI System Partition 和占用剩余空间的单一 ext4
+根文件系统；不建独立 `/boot`、swap 分区或 LVM，swap 默认关闭。公司模板若强制额外分区或
+LVM，必须扩大 OS VMDK，确保 `/` 实测容量仍不少于 98 GiB，并先在预生产验证，不能降低预检
+阈值来适配模板。
+
 表中的 100/250/400/100/200 GiB 是冻结的标称 VMDK 规格，不是格式化后
 `statvfs` 必须逐字节相等的容量。预检只为 ext4/XFS 元数据保留明确的 2% 小容差；低于标称
 容量 98% 仍失败。JSON 中 `nominal_vmdk_gib` 是冻结期望，
@@ -64,7 +69,7 @@ UUID 和用途。不得根据易漂移的 `/dev/sdX` 名称猜测目标，更不
    `x-systemd.automount`。以下只是字段模板，尖括号必须替换为已核对 UUID：
 
    ```fstab
-   UUID=<os-uuid>       /                                  xfs  defaults                  0 1
+   UUID=<os-uuid>       /                                  ext4 defaults                  0 1
    UUID=<docker-uuid>   /var/lib/docker                    xfs  defaults,nodev,nosuid     0 2
    UUID=<postgres-uuid> /var/lib/sms-platform/postgres     xfs  defaults,nodev,nosuid     0 2
    UUID=<redis-uuid>    /var/lib/sms-platform/redis        xfs  defaults,nodev,nosuid     0 2
