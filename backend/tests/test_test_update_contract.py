@@ -1067,7 +1067,7 @@ def test_users_preview_keeps_user_view_high_risk() -> None:
     assert change.migration_changed is False
 
 
-def test_callbacks_preview_does_not_block_web_only_update() -> None:
+def test_callbacks_preview_keeps_callback_view_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/callback-redesign-prototype.html",
@@ -1082,7 +1082,8 @@ def test_callbacks_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/CallbackView.vue",)
     assert change.migration_changed is False
 
 
