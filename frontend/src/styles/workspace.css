@@ -255,16 +255,19 @@ button:focus-visible {
 }
 
 .reply-heading,
-.blacklist-heading {
+.blacklist-heading,
+.user-heading {
   align-items: end;
 }
 
-/* 黑名单/敏感词检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/sensitive-filter-bar/
-   blacklist-fld/sensitive-fld/blacklist-seg/sensitive-policy-seg/blacklist-filter-go/
-   sensitive-filter-go/blacklist-privacy/sensitive-filter-note 共用 reply-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色检索条与上行回复同构（方案 A 单行）：blacklist-filter-bar/sensitive-filter-bar/
+   user-filter-bar/blacklist-fld/sensitive-fld/user-fld/blacklist-seg/sensitive-policy-seg/user-seg/
+   blacklist-filter-go/sensitive-filter-go/user-filter-go/blacklist-privacy/sensitive-filter-note/
+   user-privacy 共用 reply-* 规则，按页复制即缺陷。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
-.sensitive-filter-bar {
+.sensitive-filter-bar,
+.user-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -278,14 +281,16 @@ button:focus-visible {
 
 .reply-fld,
 .blacklist-fld,
-.sensitive-fld {
+.sensitive-fld,
+.user-fld {
   display: grid;
   gap: 5px;
 }
 
 .reply-fld > span,
 .blacklist-fld > span,
-.sensitive-fld > span {
+.sensitive-fld > span,
+.user-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -316,7 +321,8 @@ button:focus-visible {
 
 .reply-seg,
 .blacklist-seg,
-.sensitive-policy-seg {
+.sensitive-policy-seg,
+.user-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -326,7 +332,8 @@ button:focus-visible {
 
 .reply-seg button,
 .blacklist-seg button,
-.sensitive-policy-seg button {
+.sensitive-policy-seg button,
+.user-seg button {
   display: inline-flex;
   align-items: center;
   padding: 0 12px;
@@ -342,14 +349,16 @@ button:focus-visible {
 
 .reply-seg button.on,
 .blacklist-seg button.on,
-.sensitive-policy-seg button.on {
+.sensitive-policy-seg button.on,
+.user-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
 }
 
 .reply-filter-go,
 .blacklist-filter-go,
-.sensitive-filter-go {
+.sensitive-filter-go,
+.user-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -358,7 +367,8 @@ button:focus-visible {
 
 .reply-privacy,
 .blacklist-privacy,
-.sensitive-filter-note {
+.sensitive-filter-note,
+.user-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -369,7 +379,8 @@ button:focus-visible {
 
 .reply-privacy code,
 .blacklist-privacy code,
-.sensitive-filter-note code {
+.sensitive-filter-note code,
+.user-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -381,7 +392,8 @@ button:focus-visible {
 
 .reply-results,
 .blacklist-results,
-.sensitive-results {
+.sensitive-results,
+.user-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -459,7 +471,8 @@ button:focus-visible {
 
 .reply-pagination,
 .blacklist-pagination,
-.sensitive-pagination {
+.sensitive-pagination,
+.user-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -484,20 +497,23 @@ button:focus-visible {
 @media (max-width: 840px) {
   .reply-heading,
   .blacklist-heading,
-  .sensitive-heading {
+  .sensitive-heading,
+  .user-heading {
     align-items: start;
   }
 
   .reply-filter-bar,
   .blacklist-filter-bar,
-  .sensitive-filter-bar {
+  .sensitive-filter-bar,
+  .user-filter-bar {
     align-items: flex-start;
   }
 
   .reply-filter-phone,
   .reply-filter-dates,
   .blacklist-keyword,
-  .sensitive-keyword {
+  .sensitive-keyword,
+  .user-keyword {
     width: 100%;
   }
 
@@ -507,14 +523,16 @@ button:focus-visible {
 
   .reply-filter-go,
   .blacklist-filter-go,
-  .sensitive-filter-go {
+  .sensitive-filter-go,
+  .user-filter-go {
     width: 100%;
     margin-left: 0;
   }
 
   .reply-filter-go .el-button,
   .blacklist-filter-go .el-button,
-  .sensitive-filter-go .el-button {
+  .sensitive-filter-go .el-button,
+  .user-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -523,7 +541,8 @@ button:focus-visible {
 @media (max-width: 560px) {
   .reply-pagination,
   .blacklist-pagination,
-  .sensitive-pagination {
+  .sensitive-pagination,
+  .user-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -3729,7 +3748,8 @@ main {
 
 .template-keyword,
 .sign-keyword,
-.blacklist-keyword {
+.blacklist-keyword,
+.user-keyword {
   width: 220px;
 }
 
@@ -4164,13 +4184,14 @@ main {
   font-size: 10.5px;
 }
 
-/* 黑名单/敏感词抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
-   blacklist-drawer-title/sensitive-drawer-title/blacklist-delete-dialog/sensitive-delete-dialog/
-   blacklist-delete-audit/sensitive-delete-audit/blacklist-form/blacklist-editor-foot/
-   sensitive-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
+/* 黑名单/敏感词/用户与角色抽屉头/删除确认/编辑器底栏与签名页同构：blacklist-drawer-head/sensitive-drawer-head/
+   user-drawer-head/blacklist-drawer-title/sensitive-drawer-title/user-drawer-title/blacklist-delete-dialog/
+   sensitive-delete-dialog/user-confirm-dialog/blacklist-delete-audit/sensitive-delete-audit/user-confirm-audit/
+   blacklist-form/blacklist-editor-foot/sensitive-editor-foot/user-editor-foot 共用 sign-* 规则，按页复制即缺陷。 */
 .sign-drawer-head,
 .blacklist-drawer-head,
-.sensitive-drawer-head {
+.sensitive-drawer-head,
+.user-drawer-head {
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -4179,7 +4200,8 @@ main {
 
 .sign-drawer-title,
 .blacklist-drawer-title,
-.sensitive-drawer-title {
+.sensitive-drawer-title,
+.user-drawer-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -4190,7 +4212,8 @@ main {
 
 .sign-drawer-head code,
 .blacklist-drawer-head code,
-.sensitive-drawer-head code {
+.sensitive-drawer-head code,
+.user-drawer-head code {
   display: block;
   color: var(--tx-3);
   font: 11px var(--mono);
@@ -4245,13 +4268,15 @@ main {
 
 .sign-delete-dialog p,
 .blacklist-delete-dialog p,
-.sensitive-delete-dialog p {
+.sensitive-delete-dialog p,
+.user-confirm-dialog p {
   margin: 0;
 }
 
 .sign-delete-audit,
 .blacklist-delete-audit,
-.sensitive-delete-audit {
+.sensitive-delete-audit,
+.user-confirm-audit {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -4324,7 +4349,8 @@ main {
 }
 
 .sign-form,
-.blacklist-form {
+.blacklist-form,
+.user-form {
   padding-right: 4px;
 }
 
@@ -4334,7 +4360,8 @@ main {
 
 .sign-editor-foot,
 .blacklist-editor-foot,
-.sensitive-editor-foot {
+.sensitive-editor-foot,
+.user-editor-foot {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -4343,7 +4370,8 @@ main {
 
 .sign-editor-foot small,
 .blacklist-editor-foot small,
-.sensitive-editor-foot small {
+.sensitive-editor-foot small,
+.user-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
   font-size: 10px;
@@ -4441,7 +4469,8 @@ main {
 }
 
 .blacklist-parse,
-.sensitive-parse {
+.sensitive-parse,
+.user-parse {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -4449,7 +4478,8 @@ main {
 }
 
 .blacklist-chip,
-.sensitive-chip {
+.sensitive-chip,
+.user-chip {
   padding: 2px 10px;
   color: var(--tx-2);
   font: 10.5px var(--mono);
@@ -4459,19 +4489,22 @@ main {
 }
 
 .blacklist-chip-ok,
-.sensitive-chip-ok {
+.sensitive-chip-ok,
+.user-chip-ok {
   color: #71c4ad;
   border-color: rgba(47, 161, 132, 0.4);
 }
 
 .blacklist-chip-bad,
-.sensitive-chip-bad {
+.sensitive-chip-bad,
+.user-chip-bad {
   color: #ef9b89;
   border-color: rgba(228, 106, 79, 0.45);
 }
 
 .blacklist-parse-error,
-.sensitive-parse-error {
+.sensitive-parse-error,
+.user-parse-error {
   margin: -6px 0 12px;
   color: var(--verm);
   font-size: 11px;
@@ -4485,7 +4518,8 @@ main {
 @media (max-width: 760px) {
   .approval-rows,
   .sign-mobile-list,
-  .blacklist-mobile-list {
+  .blacklist-mobile-list,
+  .user-mobile-list {
     min-height: 120px;
   }
 
@@ -5586,96 +5620,54 @@ main {
   .timeline-event.incoming { width: calc(100% - 26px); margin-left: 20px; }
 }
 
-/* 用户管理：统一身份台账同时呈现本地凭据与外部目录身份。 */
-.user-heading { align-items: flex-end; }
-
-.user-heading-actions {
+/* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
+   检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
+   本区只保留规则条、台账单元格与移动端卡片的页级专属样式。 */
+.user-rules {
   display: flex;
-  align-items: stretch;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
 }
 
-.user-pulse {
+.user-rules > div {
   display: flex;
-  gap: 1px;
-  padding: 1px;
-  border: 1px solid var(--line);
-  background: var(--line);
-}
-
-.user-pulse span {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  padding: 11px 14px;
-  background: var(--surface);
-  color: var(--ink-soft);
-  font: 11px/1 var(--mono);
+  align-items: baseline;
+  min-width: 0;
 }
 
-.user-pulse i,
-.sync-state i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muted);
+.user-rules span {
+  flex: none;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 
-.user-pulse .online,
-.sync-state.synced i { background: var(--green); }
-.user-pulse .override { background: var(--amber); }
-.user-pulse .local,
-.sync-state.local i { background: var(--cyan); }
-.sync-state.disabled i { background: var(--red); }
-
-.account-rules {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  margin-top: 18px;
-  border: 1px solid var(--line);
-  background: var(--line);
-}
-
-.account-rules > div {
-  display: grid;
-  grid-template-columns: 92px 1fr;
-  align-items: start;
-  gap: 14px;
-  padding: 14px 16px;
-  background: var(--surface-soft);
-}
-
-.account-rules span {
-  color: var(--muted);
-  font: 10px/1.6 var(--mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-
-.account-rules p {
+.user-rules p {
   margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
+  color: var(--tx-2);
+  font-size: 11px;
   line-height: 1.6;
 }
 
-.user-filter-card,
-.user-ledger-card { margin-top: 18px; }
-.user-error { margin-top: 14px; }
+.user-alert { margin-bottom: 14px; }
 
-.user-filter-action { justify-self: end; }
-
-.user-table strong,
-.user-table code {
+.user-name {
   display: block;
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.user-table code,
-.user-mobile-list code,
-.role-subject code {
-  margin-top: 4px;
-  color: var(--muted);
+.user-code {
+  display: block;
+  margin-top: 2px;
+  color: var(--tx-3);
   font: 11px/1.3 var(--mono);
 }
 
@@ -5684,14 +5676,14 @@ main {
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
-  margin-top: 9px;
+  margin-top: 7px;
 }
 
 .source-groups {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin-top: 7px;
+  margin-top: 6px;
 }
 
 .source-groups .el-tag {
@@ -5704,32 +5696,47 @@ main {
   text-overflow: ellipsis;
 }
 
-.source-groups small,
-.role-origin,
-.user-table time {
+.source-groups small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.role-origin {
   display: block;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 11px;
+  margin-top: 4px;
+  color: var(--tx-3);
+  font-size: 10px;
 }
 
 .sync-state {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-weight: 700;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--tx-3);
+  font-size: 10.5px;
 }
 
-.user-table .sync-state {
-  display: flex;
-  margin-top: 8px;
+.sync-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-3);
 }
 
-.sync-state.pending { color: var(--amber); }
-.sync-state.disabled { color: var(--red); }
+.sync-state.synced i { background: var(--verdi-l); }
+.sync-state.pending i { background: var(--amber); }
+.sync-state.disabled i { background: var(--verm); }
 
-.user-mobile-list { display: none; }
+.user-times {
+  display: grid;
+  gap: 1px;
+  margin-top: 5px;
+}
+
+.user-table .user-row-off {
+  opacity: 0.55;
+}
 
 .user-row-actions {
   display: flex;
@@ -5748,43 +5755,48 @@ main {
   align-content: center;
 }
 
-.user-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 16px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .role-subject {
   display: grid;
-  margin: -10px 0 24px;
-  padding: 14px 0 16px;
-  border-bottom: 1px solid var(--line);
+  gap: 2px;
+  margin: -4px 0 18px;
+  padding: 11px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
 }
 
-.role-subject span { font-size: 18px; font-weight: 750; }
-.role-subject small { margin-top: 8px; color: var(--muted); }
-.account-drawer .el-select { width: 100%; }
-
-.drawer-intro,
-.local-role-note {
-  margin: -6px 0 20px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.7;
+.role-subject span {
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.local-role-note { margin: 0; }
+.role-subject code {
+  color: var(--tx-2);
+  font: 11px var(--mono);
+}
 
+.role-subject small {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.user-drawer .el-select { width: 100%; }
+
+/* field-rule 同时服务应用管理抽屉表单。 */
 .field-rule {
   display: block;
   margin-top: 7px;
-  color: var(--muted);
+  color: var(--tx-3);
   font-size: 11px;
   line-height: 1.6;
+}
+
+.local-role-note {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .override-control {
@@ -5796,48 +5808,42 @@ main {
 
 .override-control p {
   margin: 0;
-  color: var(--ink-soft);
+  color: var(--tx-2);
   font-size: 12px;
   line-height: 1.65;
 }
 
 .role-source-preview {
-  margin-top: 10px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  background: var(--surface-soft);
+  margin-top: 4px;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
 }
 
 .role-source-preview > span {
-  color: var(--muted);
-  font: 10px/1 var(--mono);
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.08em;
 }
+
+.user-mobile-list { display: none; }
 
 @media (max-width: 760px) {
   .user-heading { align-items: stretch; }
-  .user-heading-actions { flex-direction: column; }
-  .user-pulse { align-self: stretch; }
-  .user-pulse span { flex: 1; }
-  .account-rules { grid-template-columns: 1fr; }
-  .account-rules > div { grid-template-columns: 80px 1fr; }
-  .user-filter-action { justify-self: stretch; }
-  .user-filter-action .el-button { width: 100%; }
+  .user-rules > div { width: 100%; }
   .user-table { display: none; }
-  .user-mobile-list { display: grid; gap: 10px; }
-  .user-mobile-list article { padding: 14px; border: 1px solid var(--line); background: var(--surface-soft); }
+  .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
+  .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
   .user-mobile-list header,
   .user-mobile-list footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .user-mobile-list header > div { min-width: 0; }
   .user-mobile-list .identity-tags { margin-top: 12px; }
-  .user-mobile-list p { margin: 12px 0 0; color: var(--ink-soft); }
-  .user-mobile-list footer { align-items: flex-end; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
-  .user-mobile-list footer > span:first-child { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+  .user-mobile-list p { margin: 12px 0 0; color: var(--tx-2); }
+  .user-mobile-list footer { align-items: flex-end; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--hair-2); }
+  .user-mobile-list footer > span:first-child { display: grid; gap: 5px; color: var(--tx-3); font-size: 10px; }
   .user-mobile-list footer > span:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; }
   .user-mobile-list footer .el-button + .el-button { margin-left: 8px; }
-  .user-pagination { align-items: flex-start; }
-  .account-drawer { width: 100% !important; }
 }
 
 /* 运维中心：高密度控制室，危险动作和事实状态保持清晰分层。 */
@@ -6340,7 +6346,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .sign-heading .eyebrow,
 .template-heading .eyebrow,
 .blacklist-heading .eyebrow,
-.apps-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
+.apps-heading .eyebrow,
+.user-heading .eyebrow { color: var(--tx-3); font-weight: 400; }
 .send-heading p:not(.eyebrow),
 .dashboard-heading p:not(.eyebrow),
 .report-heading p:not(.eyebrow),
@@ -6351,7 +6358,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .sign-heading p:not(.eyebrow),
 .template-heading p:not(.eyebrow),
 .blacklist-heading p:not(.eyebrow),
-.apps-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
+.apps-heading p:not(.eyebrow),
+.user-heading p:not(.eyebrow) { margin-top: 1px; color: var(--tx-3); font-size: 11px; }
 
 .el-card,
 .el-dialog,

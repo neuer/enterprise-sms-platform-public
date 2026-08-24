@@ -222,7 +222,7 @@ describe("用户与角色", () => {
     expect(wrapper.text()).toContain("尚无平台账号")
 
     await wrapper.get("[data-testid='user-filter-keyword']").setValue("不存在的用户")
-    await wrapper.get("form.user-filter").trigger("submit")
+    await wrapper.get("form.user-filter-bar").trigger("submit")
     await flushPromises()
 
     expect(wrapper.text()).toContain("没有符合条件的账号")
@@ -235,8 +235,7 @@ describe("用户与角色", () => {
     wrapper.unmount()
   })
 
-  it("提交前拦截不合规用户名与临时密码，不发起请求", async () => {
-    const warning = vi.spyOn(ElMessage, "warning")
+  it("提交前即时拦截不合规用户名与临时密码，提交按钮保持禁用", async () => {
     const fetch = routeFetch()
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(UserView, {
@@ -249,31 +248,69 @@ describe("用户与角色", () => {
       fetch.mock.calls.filter(([url]) => url === "/api/v1/web/admin/users/local").length
 
     await wrapper.get("[data-testid='create-local-user']").trigger("click")
+    const save = () => wrapper.get("[data-testid='save-local-user']")
+    expect(save().attributes("disabled")).toBeDefined()
+
     await wrapper.get("[data-testid='create-username']").setValue("x")
     await wrapper.get("[data-testid='create-display-name']").setValue("新用户")
     await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
-    await wrapper.get("[data-testid='save-local-user']").trigger("click")
-    await flushPromises()
-    expect(warning).toHaveBeenCalledWith("本地用户名必须为 3–64 位字母、数字、点、下划线或短横线")
+    expect(save().attributes("disabled")).toBeDefined()
+    expect(wrapper.get("[data-testid='create-precheck']").text()).toContain("用户名 3–64 位合规")
+    expect(wrapper.text()).toContain("本地用户名必须为 3–64 位字母、数字、点、下划线或短横线")
     expect(created()).toBe(0)
 
     await wrapper.get("[data-testid='create-username']").setValue("new.user")
     await wrapper.get("[data-testid='create-password']").setValue("short")
-    await wrapper.get("[data-testid='save-local-user']").trigger("click")
-    await flushPromises()
-    expect(warning).toHaveBeenCalledWith("密码长度必须为 12–128 位")
+    expect(save().attributes("disabled")).toBeDefined()
+    expect(wrapper.text()).toContain("密码长度必须为 12–128 位")
     expect(created()).toBe(0)
 
     await wrapper.get("[data-testid='create-password']").setValue("New.user@12345")
-    await wrapper.get("[data-testid='save-local-user']").trigger("click")
-    await flushPromises()
-    expect(warning).toHaveBeenCalledWith("密码不能包含用户名")
+    expect(save().attributes("disabled")).toBeDefined()
+    expect(wrapper.text()).toContain("密码不能包含用户名")
     expect(created()).toBe(0)
 
     await wrapper.get("[data-testid='create-password']").setValue("Valid@Pass123")
-    await wrapper.get("[data-testid='save-local-user']").trigger("click")
+    expect(save().attributes("disabled")).toBeUndefined()
+    await save().trigger("click")
     await flushPromises()
     expect(created()).toBe(1)
+    wrapper.unmount()
+  })
+
+  it("认证源、角色与状态 seg 点选即重查并映射服务端参数", async () => {
+    const fetch = routeFetch()
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(UserView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    const listCalls = () =>
+      fetch.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url.startsWith("/api/v1/web/admin/users?"))
+
+    await wrapper.get("[data-testid='user-provider-local']").trigger("click")
+    await flushPromises()
+    expect(listCalls().at(-1)).toContain("provider_code=local")
+    expect(wrapper.get("[data-testid='user-provider-local']").classes()).toContain("on")
+
+    await wrapper.get("[data-testid='user-role-admin']").trigger("click")
+    await flushPromises()
+    expect(listCalls().at(-1)).toContain("role=admin")
+
+    await wrapper.get("[data-testid='user-status-disabled']").trigger("click")
+    await flushPromises()
+    expect(listCalls().at(-1)).toContain("status=0")
+
+    await wrapper.get("[data-testid='user-reset']").trigger("click")
+    await flushPromises()
+    const last = listCalls().at(-1) ?? ""
+    expect(last).not.toContain("provider_code=")
+    expect(last).not.toContain("role=")
+    expect(last).not.toContain("status=")
     wrapper.unmount()
   })
 })
