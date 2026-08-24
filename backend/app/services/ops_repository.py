@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from redis.asyncio import Redis
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
@@ -59,6 +60,23 @@ from app.services.raw_replay import (
     RawReplayRecord,
 )
 from app.settings import Settings, get_settings
+
+
+def _is_unique_violation(error: BaseException) -> bool:
+    """只认 PostgreSQL unique_violation，避免把触发器/载荷约束当幂等。"""
+
+    current: object | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "pgcode", None) or getattr(current, "sqlstate", None)
+        if code == "23505":
+            return True
+        nxt = getattr(current, "orig", None)
+        if nxt is None and isinstance(current, BaseException):
+            nxt = current.__cause__ or current.__context__
+        current = nxt
+    return False
 
 
 class SqlOpsRepository:
@@ -703,41 +721,41 @@ class SqlOpsRepository:
                         action="raw_replay",
                         producer_domain=producer_domain,
                     )
-                    # sms_send 只有 audit_log INSERT，没有 SELECT。唯一性靠部分
-                    # 唯一索引冲突吞掉重复写入，禁止回读审计表。
-                    await connection.execute(
-                        text(
-                            """
-                            INSERT INTO audit_log(
-                              actor,actor_subject_kind,role,action,object_type,
-                              object_id,after_val
-                            ) VALUES (
-                              :actor,'system','system','raw_replay',
-                              'raw_vendor_log',
-                              CAST(CAST(:raw_id AS bigint) AS text),
-                              jsonb_build_object(
-                                'source',CAST(:source AS text),
-                                'items',CAST(:items AS integer),
-                                'lease_epoch',CAST(:lease_epoch AS bigint),
-                                'producer_domain',CAST(:producer_domain AS text)
-                              )
+                    # sms_send 只有 audit_log INSERT，没有 SELECT。冲突推断
+                    # 会触发表级读权限检查；重复写入只吞 unique_violation。
+                    try:
+                        async with connection.begin_nested():
+                            await connection.execute(
+                                text(
+                                    """
+                                    INSERT INTO audit_log(
+                                      actor,actor_subject_kind,role,action,object_type,
+                                      object_id,after_val
+                                    ) VALUES (
+                                      :actor,'system','system','raw_replay',
+                                      'raw_vendor_log',
+                                      CAST(CAST(:raw_id AS bigint) AS text),
+                                      jsonb_build_object(
+                                        'source',CAST(:source AS text),
+                                        'items',CAST(:items AS integer),
+                                        'lease_epoch',CAST(:lease_epoch AS bigint),
+                                        'producer_domain',CAST(:producer_domain AS text)
+                                      )
+                                    )
+                                    """
+                                ),
+                                {
+                                    "actor": actor,
+                                    "raw_id": raw_id,
+                                    "source": source,
+                                    "items": items,
+                                    "lease_epoch": epoch,
+                                    "producer_domain": producer_domain,
+                                },
                             )
-                            ON CONFLICT (object_id, ((after_val->>'lease_epoch')))
-                            WHERE action='raw_replay'
-                              AND actor_subject_kind='system'
-                              AND object_type='raw_vendor_log'
-                            DO NOTHING
-                            """
-                        ),
-                        {
-                            "actor": actor,
-                            "raw_id": raw_id,
-                            "source": source,
-                            "items": items,
-                            "lease_epoch": epoch,
-                            "producer_domain": producer_domain,
-                        },
-                    )
+                    except IntegrityError as error:
+                        if not _is_unique_violation(error):
+                            raise
                     completed = await connection.execute(
                         text(
                             """

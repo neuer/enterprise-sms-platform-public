@@ -144,6 +144,10 @@ async def send_runtime(
             {"key": SYSTEM_REALTIME_KEY},
         )
         await connection.exec_driver_sql(_system_audit_function_sql())
+        await connection.execute(text("GRANT INSERT ON audit_log TO sms_send"))
+        await connection.execute(
+            text("GRANT USAGE, SELECT ON SEQUENCE audit_log_id_seq TO sms_send")
+        )
     monkeypatch.setattr(
         "app.core.runtime_resources._audit_context_key",
         lambda name: (

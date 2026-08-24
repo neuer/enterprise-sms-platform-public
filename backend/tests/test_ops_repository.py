@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
@@ -17,7 +18,7 @@ from app.services.ops import (
     RawLogQuery,
     UnmatchedQuery,
 )
-from app.services.ops_repository import SqlOpsRepository
+from app.services.ops_repository import SqlOpsRepository, _is_unique_violation
 from app.services.raw_parse import (
     ELIGIBILITY_AUTOMATIC,
     ELIGIBILITY_NEVER,
@@ -382,9 +383,20 @@ def test_human_raw_replay_audit_source_does_not_use_legacy_unattributed_insert()
     assert "bind_connection_audit_subject" in source
     assert "insert_audit" in source
     assert ":actor,'admin',CAST(:ip AS inet),'raw_replay'" not in source
-    assert "ON CONFLICT" in source
+    assert "ON CONFLICT" not in source
     assert "WHERE NOT EXISTS" not in source
     assert "SELECT 1 FROM audit_log" not in source
+    assert "_is_unique_violation" in source
+
+
+def test_system_raw_replay_audit_only_treats_unique_violation_as_idempotent() -> None:
+    unique = IntegrityError("dup", {}, None)
+    unique.orig = type("Orig", (), {"sqlstate": "23505"})()
+    check = IntegrityError("check", {}, None)
+    check.orig = type("Orig", (), {"sqlstate": "23514"})()
+    assert _is_unique_violation(unique) is True
+    assert _is_unique_violation(check) is False
+    assert _is_unique_violation(RuntimeError("no")) is False
 
 
 @pytest.mark.asyncio
@@ -438,7 +450,7 @@ async def test_system_raw_replay_audit_binds_system_producer_context(
     sql, params = connection.calls[0]
     assert "INSERT INTO audit_log" in sql
     assert "VALUES" in sql
-    assert "ON CONFLICT" in sql
+    assert "ON CONFLICT" not in sql
     assert "WHERE NOT EXISTS" not in sql
     assert "FROM audit_log" not in sql
     assert "actor_subject_kind" in sql

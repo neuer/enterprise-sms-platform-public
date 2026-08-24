@@ -1164,8 +1164,9 @@
 
 - 决策：reconcile 跑在 realtime worker，数据库角色是 `sms_send`，生产者域是
   `realtime`。系统 `raw_replay` 审计只有该组合可插入。`sms_send` 对 `audit_log`
-  只有 INSERT、没有 SELECT，补写必须 `INSERT VALUES` + 部分唯一索引
-  `ON CONFLICT DO NOTHING`，禁止 `WHERE NOT EXISTS` / `EXISTS` 回读审计表。
+  只有 INSERT、没有 SELECT。补写必须 `INSERT VALUES`；重复写入只在独立
+  savepoint 内吞 `unique_violation`。禁止 `WHERE NOT EXISTS`、`EXISTS` 或
+  `ON CONFLICT`，这些语句都会触发表级读权限检查。
   `sms_accept` 不得获得 `system_replay_audit_state` 列 UPDATE。补审计失败保持
   pending，不得重投影。
 - 原因：#441 第七轮只补了应用层 rewrite，触发器仍拒绝 `system-reconcile`；
