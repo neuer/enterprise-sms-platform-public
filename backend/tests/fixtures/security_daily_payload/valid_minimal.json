@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "report_date": "2026-08-01",
+  "period_start": "2026-08-01T00:00:00+08:00",
+  "period_end": "2026-08-01T23:59:59+08:00",
+  "generated_at": "2026-08-02T07:50:00+08:00",
+  "status": "normal",
+  "summary": "未发现成功入侵证据。",
+  "pending_confirmation": "",
+  "metrics": [
+    {
+      "label": "SSH 认证失败",
+      "value": "0",
+      "tone": "good",
+      "note": "按日志聚合"
+    },
+    {
+      "label": "SSH 成功认证",
+      "value": "1",
+      "tone": "good",
+      "note": "不含来源明细"
+    },
+    {
+      "label": "Fail2ban 封禁",
+      "value": "0",
+      "tone": "good",
+      "note": "按日志聚合"
+    },
+    {
+      "label": "Web/API 5xx",
+      "value": "0",
+      "tone": "good",
+      "note": "按访问日志聚合"
+    },
+    {
+      "label": "证据覆盖缺口",
+      "value": "0",
+      "tone": "good",
+      "note": "缺口数量"
+    }
+  ],
+  "ssh": [
+    {
+      "label": "失败认证",
+      "value": "0 次",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "成功认证",
+      "value": "1 次",
+      "assessment": "已知来源",
+      "tone": "good"
+    },
+    {
+      "label": "Fail2ban",
+      "value": "0 次封禁",
+      "assessment": "正常",
+      "tone": "good"
+    }
+  ],
+  "web": [
+    {
+      "label": "访问请求",
+      "value": "10 条",
+      "assessment": "流量较低",
+      "tone": "neutral"
+    },
+    {
+      "label": "拒绝请求",
+      "value": "0 条",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "服务端错误",
+      "value": "0 条",
+      "assessment": "正常",
+      "tone": "good"
+    },
+    {
+      "label": "敏感路径",
+      "value": "0 次命中",
+      "assessment": "0 命中",
+      "tone": "good"
+    }
+  ],
+  "audit": [],
+  "runtime": [],
+  "actions": [],
+  "coverage": []
+}

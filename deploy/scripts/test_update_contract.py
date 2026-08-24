@@ -171,7 +171,6 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "deploy/docker-compose.yml",
             "deploy/.env.example",
             "deploy/scripts/install_vendor_credentials.py",
-            "deploy/scripts/install_resend_api_key.py",
             "deploy/scripts/send_security_daily_report_resend.py",
             "deploy/scripts/vendor_control_agent.py",
             "deploy/scripts/vendor_control_journal.py",
