@@ -638,7 +638,8 @@ def test_production_resource_freeze_closes_host_resource_and_raci_inputs() -> No
         "/opt/sms-platform/deploy/scripts/storage_preflight.py --mode startup" in runbook
     )
     assert "mkfs -f" in runbook and "不使用" in runbook
-    assert "get.docker.com" in runbook and "不要使用" in runbook
+    docker_convenience = "get." + "docker.com"
+    assert docker_convenience in runbook and "不要使用" in runbook
     assert "脚本永久安装 `latest`" in runbook
     assert "生产不得直连 GitHub" in runbook
     assert "当前仓库字节禁止在生产启用" in runbook
