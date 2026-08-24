@@ -1,0 +1,46 @@
+# 生产固定磁盘映射。必须与 storage_preflight.py 及磁盘手册同时变更。
+# 保留既有 named volume 名称，但由 local driver 绑定到独立 VMDK 的固定子目录；
+# 禁止直接移动或 bind /var/lib/docker/volumes/*/_data。
+volumes:
+  pgdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/postgres/pgdata
+  redisdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/redis/broker
+  redisauthdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/redis/auth
+  rediscontroldata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/redis/control
+  importdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/runtime/imports
+  exportdata:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/runtime/exports
+  rawspill:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/sms-platform/runtime/raw-spill

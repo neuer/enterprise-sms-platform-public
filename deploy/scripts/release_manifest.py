@@ -275,7 +275,9 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         raise ReleaseManifestError("evidence.data_images does not match changed data images")
 
     backup_candidate = evidence_value["backup_restore_change"]
-    backup_required = mode == "production" and images["postgres"].changed
+    backup_required = mode == "production" and (
+        images["postgres"].changed or migration_changes_schema
+    )
     backup_evidence: Mapping[str, str] | None
     if backup_candidate is None:
         backup_evidence = None
@@ -303,7 +305,8 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         )
     if backup_required is (backup_evidence is None):
         raise ReleaseManifestError(
-            "evidence.backup_restore_change does not match production PostgreSQL change"
+            "evidence.backup_restore_change does not match production "
+            "PostgreSQL or migration change"
         )
 
     bundle_names = ["manifest.json", release_gate]

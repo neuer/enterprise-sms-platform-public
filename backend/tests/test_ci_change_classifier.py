@@ -87,6 +87,38 @@ def test_classifies_repository_paths(
     assert (result.backend, result.frontend, result.g2) == expected
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        "frontend/src/views/OpsView.vue",
+        "frontend/src/views/UserView.vue",
+        "frontend/src/views/SendView.vue",
+        "frontend/src/views/AuditView.vue",
+    ),
+)
+def test_sensitive_management_views_select_frontend_security(path: str) -> None:
+    result = classify_paths([path])
+
+    assert result.frontend is True
+    assert result.security is True
+    assert result.g2 is False
+    assert result.backend is False
+    assert result.categories == frozenset({"frontend-security"})
+    assert result.full_fallback is False
+
+
+def test_dashboard_view_stays_ordinary_frontend() -> None:
+    result = classify_paths(["frontend/src/views/DashboardView.vue"])
+
+    assert (result.backend, result.frontend, result.g2, result.security) == (
+        False,
+        True,
+        False,
+        False,
+    )
+    assert result.categories == frozenset({"frontend"})
+
+
 def test_mixed_changes_take_union() -> None:
     result = classify_paths(["frontend/src/App.vue", "backend/app/main.py"])
 

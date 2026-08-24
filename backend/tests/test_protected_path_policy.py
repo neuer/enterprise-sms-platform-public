@@ -53,6 +53,69 @@ ISSUE_427_FRONTEND_SECURITY_VIEWS = (
     "frontend/src/views/ApprovalView.vue",
     "frontend/src/views/ConfigView.vue",
 )
+# T6-02：实际承担特权操作的视图不得低于 frontend-security。
+ISSUE_427_CAPABILITY_SECURITY_VIEWS = (
+    "frontend/src/views/OpsView.vue",
+    "frontend/src/views/UserView.vue",
+    "frontend/src/views/BlacklistView.vue",
+    "frontend/src/views/CallbackView.vue",
+    "frontend/src/views/SecurityDailyView.vue",
+    "frontend/src/views/SendView.vue",
+    "frontend/src/views/SensitiveWordView.vue",
+    "frontend/src/views/SignView.vue",
+    "frontend/src/views/TemplateView.vue",
+    "frontend/src/views/AuditView.vue",
+    "frontend/src/views/BatchView.vue",
+    "frontend/src/views/MessageView.vue",
+    "frontend/src/views/ReplyView.vue",
+    "frontend/src/views/ReportView.vue",
+)
+SENSITIVE_VIEW_IMPORTS = frozenset(
+    {
+        "replayRaw",
+        "resumeQueue",
+        "retryOutboxEvent",
+        "triggerJob",
+        "createLocalUser",
+        "resetLocalPassword",
+        "revokeUserSessions",
+        "updateUserRole",
+        "updateUserStatus",
+        "sendWebMessage",
+        "uploadPhones",
+        "updateSecurityDailyConfiguration",
+        "sendSecurityDailyReport",
+        "retrySecurityDailyReport",
+        "updateConfigs",
+        "addBlacklist",
+        "deleteBlacklist",
+        "retryCallback",
+        "addSensitiveWords",
+        "deleteSensitiveWord",
+        "createSign",
+        "updateSign",
+        "deleteSign",
+        "syncSign",
+        "createTemplate",
+        "updateTemplate",
+        "deleteTemplate",
+        "syncTemplate",
+        "decryptMessagePhone",
+        "cancelBatch",
+        "resendFailedBatch",
+        "rescheduleBatch",
+        "blacklistReply",
+        "createDetailExport",
+        "issueExportStepUp",
+        "downloadExport",
+        "rotateAppKey",
+        "rotateCallbackSecret",
+        "createApp",
+        "updateApp",
+        "passwordPolicyRequest",
+    }
+)
+ORDINARY_REASON_REQUIRED_FIELDS = ("allowed_apis=", "excluded=", "review=")
 
 
 def tracked_files() -> list[str]:
@@ -113,6 +176,7 @@ def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
     assert "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh" in ci_yml
     assert "test_raw_capture_legacy_postgres.py" in postgres_gate
     assert "test_raw_replay_eligibility_postgres.py" in postgres_gate
+    assert "test_raw_replay_fencing_postgres.py" in postgres_gate
     assert "SECURITY_SESSION_POSTGRES_DSN" in postgres_gate
 
 
@@ -198,10 +262,20 @@ def test_reviewed_ordinary_is_an_explicit_downgrade() -> None:
     assert "frontend/src/App.vue" not in REVIEWED_ORDINARY_EXACT
     for path in ISSUE_427_FRONTEND_SECURITY_VIEWS:
         assert path not in REVIEWED_ORDINARY_EXACT
+    for path in ISSUE_427_CAPABILITY_SECURITY_VIEWS:
+        assert path not in REVIEWED_ORDINARY_EXACT
     for path in ISSUE_427_BACKEND_CRITICAL_PATHS:
         if path.endswith("brand_new_model.py"):
             continue
         assert path not in REVIEWED_ORDINARY_EXACT
+
+
+def test_ordinary_reasons_are_unique_and_structured() -> None:
+    reasons = list(REVIEWED_ORDINARY_REASONS.values())
+    assert len(set(reasons)) == len(reasons)
+    for path, reason in REVIEWED_ORDINARY_REASONS.items():
+        for field in ORDINARY_REASON_REQUIRED_FIELDS:
+            assert field in reason, f"{path} 缺少 {field}"
 
 
 @pytest.mark.parametrize("path", REVIEWED_ORDINARY_REASONS)
@@ -267,6 +341,30 @@ def test_issue_427_sensitive_views_are_frontend_security(path: str) -> None:
         assert (result.backend, result.g2) == (False, False)
         assert result.categories == frozenset({"frontend-security"})
         assert classify_changed_paths([path]).risk == "high-risk"
+
+
+@pytest.mark.parametrize("path", ISSUE_427_CAPABILITY_SECURITY_VIEWS)
+def test_sensitive_view_classification_is_not_below_capability(path: str) -> None:
+    """分类已经存在但低于实际安全能力时必须失败。"""
+
+    assert path not in REVIEWED_ORDINARY_EXACT
+    assert security_domain_category(path) == "frontend-security"
+    result = classify_paths([path])
+    assert result.frontend is True
+    assert result.security is True
+    assert result.g2 is False
+    assert result.full_fallback is False
+    assert result.categories == frozenset({"frontend-security"})
+    assert classify_changed_paths([path]).risk == "high-risk"
+
+
+def test_ordinary_views_do_not_import_sensitive_apis() -> None:
+    for path, _reason in REVIEWED_ORDINARY_REASONS.items():
+        if not path.endswith(".vue"):
+            continue
+        source = (ROOT / path).read_text(encoding="utf-8")
+        hits = sorted(name for name in SENSITIVE_VIEW_IMPORTS if name in source)
+        assert hits == [], f"{path} ordinary but imports {hits}"
 
 
 def test_required_source_trees_stay_independent_of_domain_list() -> None:

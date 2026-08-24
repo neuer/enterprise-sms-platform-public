@@ -18,14 +18,28 @@ from app.services.ops import (
     UnmatchedQuery,
 )
 from app.services.ops_repository import SqlOpsRepository
+from app.services.raw_parse import (
+    ELIGIBILITY_AUTOMATIC,
+    ELIGIBILITY_NEVER,
+    PARSE_PROCESSED,
+    PARSE_UNATTEMPTED,
+    RawParseDisposition,
+)
+from app.services.raw_replay import RawReplayConflict
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
 
 
 class FakeResult:
-    def __init__(self, rows: list[dict[str, object]] | None = None, scalar: object = None) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, object]] | None = None,
+        scalar: object = None,
+        rowcount: int = 1,
+    ) -> None:
         self.rows = rows or []
         self.scalar = scalar
+        self.rowcount = rowcount
 
     def mappings(self) -> FakeResult:
         return self
@@ -124,11 +138,14 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "processed=false" in normalized_sql
     assert "capture_state IN ('complete','complete_too_large')" in normalized_sql
     assert "replay_eligibility IN ('automatic', 'manual')" in normalized_sql
-    assert "processing_started_at IS NULL" in normalized_sql
+    assert "processing_lease_id" in normalized_sql
+    assert "processing_lease_epoch=processing_lease_epoch+1" in normalized_sql
+    assert "processing_lease_expires_at" in normalized_sql
     assert "interval '15 minutes'" in normalized_sql
     assert "RETURNING" in normalized_sql
     assert "item_count" in normalized_sql
-    assert params == {"raw_id": 9}
+    assert params["raw_id"] == 9
+    assert params["lease_id"]
 
 
 @pytest.mark.asyncio
@@ -444,6 +461,8 @@ async def test_stale_raw_ids_only_include_complete_captures() -> None:
     assert "capture_state='complete'" in sql
     assert "replay_eligibility='automatic'" in sql
     assert "processed=false" in sql
+    assert "processing_lease_id IS NULL" in sql
+    assert "processing_lease_expires_at<=now()" in sql
 
 
 @pytest.mark.asyncio
@@ -536,3 +555,84 @@ async def test_unmatched_list_returns_mask_only_and_binds_hmac_candidates() -> N
     )
     assert "phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))" in sql
     assert params["phone_hmacs"] == ["a" * 64]
+
+
+@pytest.mark.asyncio
+async def test_apply_raw_reevaluation_rejects_processed_to_replayable() -> None:
+    repo, connection = repository([])
+    principal = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with pytest.raises(RawReplayConflict, match="已处理 raw"):
+        await repo.apply_raw_reevaluation(
+            7,
+            expected_processed=True,
+            expected_parse_state=PARSE_PROCESSED,
+            expected_eligibility=ELIGIBILITY_NEVER,
+            disposition=RawParseDisposition(
+                PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+            ),
+            error=None,
+            actor="admin01",
+            ip="10.0.0.8",
+            principal=principal,
+            before={"parse_state": PARSE_PROCESSED, "replay_eligibility": ELIGIBILITY_NEVER},
+            after={"parse_state": PARSE_UNATTEMPTED, "replay_eligibility": ELIGIBILITY_AUTOMATIC},
+        )
+
+    assert connection.calls == []
+
+
+@pytest.mark.asyncio
+async def test_apply_raw_reevaluation_expected_state_miss_does_not_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audits: list[object] = []
+
+    async def fake_bind(*_: object, **__: object) -> None:
+        return None
+
+    async def fake_audit(*_: object, **__: object) -> None:
+        audits.append(True)
+
+    monkeypatch.setattr(
+        "app.services.ops_repository.bind_connection_audit_subject",
+        fake_bind,
+    )
+    monkeypatch.setattr("app.services.ops_repository.insert_audit", fake_audit)
+    repo, connection = repository(
+        [
+            FakeResult(
+                [
+                    {
+                        "processed": False,
+                        "parse_state": "protocol_invalid",
+                        "replay_eligibility": "manual",
+                        "live_lease": False,
+                    }
+                ]
+            ),
+            FakeResult(rowcount=0),
+        ]
+    )
+    principal = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
+
+    with correlation_scope(), pytest.raises(RawReplayConflict, match="状态已变化"):
+        await repo.apply_raw_reevaluation(
+            8,
+            expected_processed=False,
+            expected_parse_state=PARSE_UNATTEMPTED,
+            expected_eligibility=ELIGIBILITY_AUTOMATIC,
+            disposition=RawParseDisposition(
+                PARSE_UNATTEMPTED, ELIGIBILITY_AUTOMATIC, "decoded_ok"
+            ),
+            error=None,
+            actor="admin01",
+            ip="10.0.0.8",
+            principal=principal,
+            before={"parse_state": "protocol_invalid"},
+            after={"parse_state": PARSE_UNATTEMPTED},
+        )
+
+    assert audits == []
+    assert len(connection.calls) == 2
+    assert "UPDATE raw_vendor_log" in connection.calls[1][0]

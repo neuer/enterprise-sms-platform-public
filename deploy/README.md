@@ -2,33 +2,37 @@
 
 API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
-`deploy/docker-compose.yml` 是服务名、队列名、volume 与 24 件运行 secrets 名称的唯一部署契约。生产变更必须先在同版本冷备或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`，它始终显式读取项目根 `.env`、先准备运行密钥并 fail-closed 校验 Compose。
+`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。三份文件共同定义 volume 与 25 件运行 secrets，禁止操作者自行选择、删减或改序。生产变更必须先在同版本预生产或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
 
 ## 权威手册
 
-- [secrets.md](secrets.md)：生产 24 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
+- [secrets.md](secrets.md)：生产 25 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
 - [database-roles.md](database-roles.md)：七个运行职责、显式授权与 fail-closed 回滚。
 - [dba.md](dba.md)：`sms_owner` 边界、审计不可变与分区生命周期。
+- [storage.md](storage.md)：单台 12 vCPU/48 GiB 生产 VM 的五块固定 VMDK、七个 bind-backed named volume、70/80/90 阈值与在线扩容。
 - [backup-restore.md](backup-restore.md)：无明文落盘的加密备份、校验与隔离恢复。
-- [vendor-egress.md](vendor-egress.md)：厂商主/备出口 IP 双报备、QPS 与错误码 1010 验证。
+- [vendor-egress.md](vendor-egress.md)：Phase 0 主出口报备、后续备出口启用条件、QPS 与错误码 1010 验证。
 - [controlled-real-vendor-test.md](../docs/runbooks/controlled-real-vendor-test.md)：开发测试环境使用正式 Key 的受控真实联调、100 计费条上限与停发规则。
 - [test-fast-update.md](../docs/runbooks/test-fast-update.md)：真实联调期间的安全快速更新范围、固定命令和失败关闭流程。
 - [usage-ledger-recovery.md](../docs/runbooks/usage-ledger-recovery.md)：配额/频控事实解释、Redis 投影漂移复核与安全重建。
 - [redis-ha.md](redis-ha.md)：broker/auth/control 故障域、ACL、托管高可用、切换恢复和密码轮换。
 - [database-pool-recovery.md](../docs/runbooks/database-pool-recovery.md)：分进程连接预算、指标、故障恢复与 24 小时混合负载留证。
 - [prometheus.example.yml](prometheus.example.yml)：内网 Prometheus scrape 样例。
-- [failover.md](failover.md)：T4.9a 冷备同步与 RTO≤30min 切换手册。
+- [failover.md](failover.md)：Phase 0 单主恢复、旧系统切回边界与 RTO≤12h/RPO≤24h 手册。
 - `seed.example.sql`：真实 LDAP 模式 role_mapping 示例；生产禁止执行 `seed-dev`。
 
 上线切换业务顺序以 **PRD.md 第 10 章**为准，需人工签收事项以
 **HANDOVER.md 第 1 节**为准。两者与本目录文档冲突时以 PRD 为准并记录变更单。
 
-## 公网端口
+## VPN 入口与端口边界
 
 - Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；direct 模式生产强制回环。远程 TLS 终结器场景必须显式设置 `SMS_EXTERNAL_TLS_MODE=1`、将 `WEB_BIND_IP` 设为专用私网接口，并用精确 `SMS_TRUSTED_PROXY_CIDRS` 同时限制代理头信任与明文 listener 来源；其余来源由 Nginx 返回 444。
-- `18443` 预留给配置证书后的 TLS 终结服务；未配置证书前不得作为 HTTPS 对外宣称可用。
+- `18443` 预留给配置证书后的 TLS 终结服务；Phase 0 只对经批准的公司 VPN
+  来源开放，未配置证书前不得宣称 HTTPS 可用。
 - API `8000` 与 dev profile 的 Mock `9028` 只绑定宿主机回环地址，不得直接暴露到公网。
-- 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；云主机防火墙与 Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的公网入站，公开入口只允许经审批的 `18443`。
+- 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；主机防火墙与
+  Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的互联网入站。
+  `18443` 也不对互联网公开，只接受获批公司 VPN 网段；网络侧真实读回是上线证据。
 
 ## 存活、就绪与容器运行边界
 
@@ -93,12 +97,29 @@ Callback 同样实行双层边界：根 `.env` 的 `CALLBACK_EGRESS_ALLOWED_CIDR
 
 认证、API Key、加密、幂等、短信发送任务、会话面、迁移、部署和 CI workflow 属于安全敏感边界。目录默认由 `deploy/scripts/protected_path_policy.py` 定义，并与 `.github/CODEOWNERS` 一致。这些区域的变更必须经过独立 Code Review；仓库不提供 owner 自动合并 workflow，required reviews 与 ruleset 不得被旁路。
 
-生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 24 件 secret 名或值。
+生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 25 件 secret 名或值。
+
+下列安装必须在专用生产主机的 Docker 首次启动前完成，并以 [storage.md](storage.md) 的五块
+VMDK、UUID fstab、七个 Compose bind 源目录加独立备份目录（共八个固定子目录）及
+owner/mode 真实读回为前置。若 Docker 已经启动或其
+数据位于 OS 盘，先停机并按存储手册受控处置；禁止让应用安装命令自动搬迁
+`/var/lib/docker/volumes/*/_data`。
 
 ```bash
 sudo install -d -m 0700 /etc/sms-platform
 sudo install -m 0600 deploy/systemd/compose.env.example /etc/sms-platform/compose.env
 sudo ln -sfn /opt/sms-platform/deploy/sms-compose /usr/local/sbin/sms-compose
+sudo install -m 0755 deploy/scripts/storage_preflight.py \
+  /usr/local/sbin/sms-storage-preflight
+sudo install -m 0644 deploy/systemd/sms-storage-preflight.service \
+  /etc/systemd/system/sms-storage-preflight.service
+sudo install -d -m 0755 \
+  /etc/systemd/system/docker.service.d \
+  /etc/systemd/system/sms-platform.service.d
+sudo install -m 0644 deploy/systemd/docker.service.d/10-sms-platform-storage.conf \
+  /etc/systemd/system/docker.service.d/10-sms-platform-storage.conf
+sudo install -m 0644 deploy/systemd/sms-platform.service.d/10-storage-preflight.conf \
+  /etc/systemd/system/sms-platform.service.d/10-storage-preflight.conf
 sudo install -m 0644 deploy/systemd/sms-platform.service \
   /etc/systemd/system/sms-platform.service
 sudo install -m 0644 deploy/systemd/vendor-control-agent.service \
@@ -115,6 +136,7 @@ sudo install -m 0644 \
   deploy/systemd/sms-lifecycle-status.service deploy/systemd/sms-lifecycle-status.timer \
   /etc/systemd/system/
 sudo systemd-analyze verify /etc/systemd/system/sms-platform.service
+sudo systemd-analyze verify /etc/systemd/system/sms-storage-preflight.service
 sudo systemd-analyze verify /etc/systemd/system/vendor-control-agent.service
 sudo systemd-analyze verify \
   /etc/systemd/system/sms-partition-maintenance.service \
@@ -122,20 +144,56 @@ sudo systemd-analyze verify \
   /etc/systemd/system/sms-restore-drill.service \
   /etc/systemd/system/sms-lifecycle-status.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now sms-platform.service
-sudo systemctl enable --now \
-  sms-partition-maintenance.timer sms-backup.timer \
-  sms-restore-drill.timer sms-lifecycle-status.timer
-sudo systemctl status sms-platform.service
+sudo systemctl start sms-storage-preflight.service
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/host_python_preflight.py lifecycle
 ```
 
-安装前人工复核 `/etc/sms-platform/compose.env` 恰好六行有效配置，mode 为 `0600`；只检查变量名、路径与 mode，不读取任何权威文件。备份系统还须事先在仓库外提供
-`/run/backup-secrets/sms-backup-passphrase` 的 root-owned 0600 文件；示例 lifecycle 配置
-只含路径、保留期和 RPO/RTO 目标，不含口令。首次启动也可显式执行
-`sudo /usr/local/sbin/sms-compose up -d --remove-orphans`，但日常主机与 Docker 生命周期由
-systemd 管理。包装器要求动作是第一个参数，只允许受控 `up`、`down`、`rotate backend`、
+宿主固定 `/usr/bin/python3` 必须精确为 Python 3.12；上述 preflight 还会验证 lifecycle 所需标准库
+模块，失败时不得把 unit 改指项目虚拟环境或其他解释器。安装前人工复核
+`/etc/sms-platform/compose.env` 恰好六行有效配置，mode 为 `0600`；只检查变量名、路径与 mode，
+不读取任何权威文件。备份口令必须持久落在仓库外固定边界：
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/sms-platform/backup-secrets
+sudo install -o root -g root -m 0600 /secure/staging/sms-backup-passphrase \
+  /etc/sms-platform/backup-secrets/sms-backup-passphrase
+sudo install -o root -g root -m 0600 \
+  /secure/staging/recovery-crypto-generation-id \
+  /etc/sms-platform/recovery-crypto-generation-id
+sudo install -o root -g root -m 0600 \
+  /secure/staging/backup-passphrase-generation-id \
+  /etc/sms-platform/backup-secrets/generation-id
+sudo test -f /etc/sms-platform/recovery-crypto-generation-id
+sudo test ! -L /etc/sms-platform/recovery-crypto-generation-id
+sudo test -f /etc/sms-platform/backup-secrets/generation-id
+sudo test ! -L /etc/sms-platform/backup-secrets/generation-id
+test "$(sudo stat -c '%U:%G:%a' /etc/sms-platform/recovery-crypto-generation-id)" \
+  = 'root:root:600'
+test "$(sudo stat -c '%U:%G:%a' /etc/sms-platform/backup-secrets/generation-id)" \
+  = 'root:root:600'
+```
+
+三个源文件必须由受控密钥/备份保管流程生成并另有离机 escrow，命令和输出不得显示值、长度或
+摘要；禁止改回重启即消失的 `/run` 路径。两个 generation ID 只是 1–64 字节 ASCII 的非敏感
+标签（字符集 `[A-Za-z0-9._-]`，首字符必须是字母或数字，可有一个结尾换行），**不是**密钥/
+口令材料的摘要、MAC 或密码学绑定证明；代码只比较 manifest 与主机上的标签，无法证明材料
+来自该 ID 对应的 escrow bundle。离机 escrow 必须以 ID 管理原子、不可变的 recovery-crypto
+bundle（data AES/HMAC、四个审计 keyring，按需含 alert pair）和 backup passphrase，双人见证
+整包发放与一次性恢复机 provision；只要 35 天保留期内仍有 snapshot 引用，就必须保留相应
+材料。报告中的标签匹配与实际探针成功只能证明当次已安装材料能读取已覆盖的样本，不能证明
+escrow provenance、未抽样历史行或未来仍可取得材料。
+
+示例 lifecycle 配置只含上述固定 ID 路径、口令路径、保留期和 RPO/工程恢复目标，不含口令或
+密钥值。三个 lifecycle service 的 `ReadOnlyPaths=/etc/sms-platform` 只读覆盖这两个 ID 与备份
+配置，只有备份保管流程可以在 service 停止后更新它们；不得为方便轮换扩大 systemd 写权限。
+到首个 `release bootstrap` 成功前，
+`sms-platform.service` 和四个 timer 必须保持未启用、未启动；全新主机禁止用普通 `up`
+代替 bootstrap。bootstrap 成功后的 systemd 接管命令见首次引导章节。包装器要求动作是第一个
+参数，只允许受控 `up`、`down`、`rotate backend`、
 精确 `run --rm migrate`、`partition-maintenance [--dry-run]`、一次性 `init-admin`，以及
-不会创建、启动或改变容器生命周期的 `config`、`ps`、`logs`、`exec` 诊断入口；其他生命周期和未知动作全部退出 2。包装器拒绝 `--profile`、第二个 `--env-file` 等 Compose 全局参数作为首参，内部固定 `--env-file <项目根>/.env`。production 的 `up`、`rotate`、`run --rm migrate`、`partition-maintenance`、`init-admin` 会只读校验根 `.env` 的 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，并拒绝 shell 或 `.env` 中任何非空 `COMPOSE_PROFILES`。缺失、重复、不安全设置或 Compose 展开失败都会在启动前阻断。
+不会创建、启动或改变容器生命周期的 `config`、`ps`、`logs` 只读诊断入口；生产通用 `exec`
+不属于只读诊断能力，不得用于数据库恢复、SQL、Redis 或容器内变更。其他生命周期和未知动作
+全部退出 2。包装器拒绝 `--profile`、第二个 `--env-file` 等 Compose 全局参数作为首参，内部固定 `--env-file <项目根>/.env`。production 的 `up`、`rotate`、`run --rm migrate`、`partition-maintenance`、`init-admin` 会只读校验根 `.env` 的 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，并拒绝 shell 或 `.env` 中任何非空 `COMPOSE_PROFILES`。缺失、重复、不安全设置或 Compose 展开失败都会在启动前阻断。
 
 开发测试服务器要启用真实联调控制台时，先安装 `deploy/systemd/compose.vendor-test.env.example` 和同 commit 的固定 agent unit，再由 root 执行 `sudo /usr/bin/env SMS_PLATFORM_ROOT=/opt/sms-platform SMS_SECRETS_MODE=development /usr/local/sbin/sms-compose vendor-test bootstrap`。bootstrap 会在 lifecycle lock 内验证纯 Mock 根配置、固定路径和 unit 后执行 `systemctl enable --now`；不得用手工命令绕过这些检查。随后用 `systemctl is-active` 及 `stat` 只核对 `/run/sms-platform/vendor-control/vendor-control.sock`、`control-state.json` 的 owner/mode/类型。Compose 只把独立 UDS 目录只读挂载给 API 与 realtime worker，不挂载 `/run/sms-platform/secrets` 或 Docker Socket。GetBalance 由持有同一 lifecycle lock 的控制流程以 `run --rm --no-deps` 创建一次性 realtime worker 执行；命令仅调用 GetBalance，结束即删除，不把厂商凭据授予 API。agent 安装和应用发布都不得自动进入 controlled；正常的凭据、号码、激活、暂停、恢复和单号码 UAT 操作只能在系统配置页完成。页面轮换由 agent 先恢复私有 `rotation-state.json` 或孤儿 pending generation，再在 lifecycle lock 内保留既有暂停、停止发送进程、确认活动计数清零、建立加密 checkpoint、持久化 previous/new/phase、切换 generation、重建后端并用 GetBalance 验证；失败时写入不受 manual pause 遮蔽的独立 critical 层，回切并重建旧 generation，旧运行态再次通过 GetBalance 后才清理事务。marker 缺失时替换首次激活前凭据还必须再次证明根 `.env` 仍是严格纯 Mock，否则 fail closed。数据 HMAC keyring 增加版本后，active 测试号码须在页面重录同一号码刷新索引，否则真实 UAT fail-closed。版本化凭据根目录禁止进入发布、备份或恢复包，具体边界见受控真实联调手册。
 
@@ -316,7 +374,7 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 `--public-snapshot-cutover`。
 
 一次性基线迁移必须另立变更单，在不属于公开工作区的隔离临时证据仓库中完成逐文件验真，
-并单独评审 PostgreSQL/volume 保留、24 件 secrets、三域 Redis、七职责数据库角色、回退与
+并单独评审 PostgreSQL/volume 保留、25 件 secrets、三域 Redis、七职责数据库角色、回退与
 证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
 任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
 按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
@@ -475,6 +533,8 @@ scripts/test_update.sh rebaseline --ref origin/main
 0061_vendor_binding_outbox` 路径还会在 checkpoint 后由服务器本机把精确旧 18 件权威密钥
 清单可恢复地扩展为 24 件，再用目标预处理器生成 runtime generation；只追加四个独立审计
 key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
+这是历史固定迁移，不能代生成 Phase 0 新增的第 25 件 `redis_tls_server_key`；该私钥必须走
+独立运行密钥变更，并与内部 PKI 证书在预生产验真后才能更新目标版本。
 若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
 按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
 指针并保持 pause；该入口可在已回到请求 base 后幂等重放，并在最终 root Git 校验后恢复
@@ -516,7 +576,7 @@ AD 默认禁用，初始化本地管理员并完成首次改密后，由管理�
 3. **启用配置**：只有当前草稿版本测试成功后才能激活。启用后登录页才显示 AD；登录请求只调用用户明确选择的认证源，失败时不回退本地账号。
 4. **禁用 AD**：立即从登录页移除 AD 入口，但配置与角色映射均保留；再次启用前应按变更后的当前草稿重新测试。
 
-目录组到平台角色的映射也在该区域维护。AD 账号首次成功登录后进入用户台账；登录名若已被本地身份先占用，将拒绝该次 AD 登录并记录来源冲突审计。生产部署仍必须提供 24 件 secrets，其中 LDAP bind 密码固定为 `ldap_bind_password`，CA 为只读受控文件而非 secret；未来 IAM Provider 仅预留扩展能力，本期不配置、不启用。
+目录组到平台角色的映射也在该区域维护。AD 账号首次成功登录后进入用户台账；登录名若已被本地身份先占用，将拒绝该次 AD 登录并记录来源冲突审计。生产部署仍必须提供 25 件 secrets，其中 LDAP bind 密码固定为 `ldap_bind_password`，CA 为只读受控文件而非 secret；未来 IAM Provider 仅预留扩展能力，本期不配置、不启用。
 
 ## 四镜像统一发布
 
@@ -610,8 +670,8 @@ python3 scripts/create_release_manifest.py \
   --changed web
 ```
 
-数据镜像变化时再追加 `--data-images`；PostgreSQL 变化时还必须追加
-`--backup-record` 与 `--restore-report`。生成器会原子写入 `0600` 文件并调用现有
+数据镜像变化时再追加 `--data-images`；PostgreSQL 镜像变化或 migration from/target 不同
+时还必须追加 `--backup-record` 与 `--restore-report`。生成器会原子写入 `0600` 文件并调用现有
 exact-field 契约自校验。最终目录清单必须与 manifest 声明完全相等。
 
 `gate_type=release_control_smoke` 只由 `scripts/verify_release_control.sh` 在隔离 development project 中生成，用于配置失败、健康失败、自动补偿、TERM 中断和续跑的控制面证据。它明确 `scan_performed=false`，不替代 Trivy，不代表发布就绪，生产 mode 和 `scripts/deploy_release_remote.py` 均拒绝该证据。正式发布只能使用 `release_gate_kind=release`。
@@ -619,7 +679,7 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
 ### development archive 与 production preloaded digest
 
 - `development archive`：每个 changed 镜像必须提供清单点名的 tar 和 SHA-256；prepare 校验后执行受控 `docker load`。未变化镜像的 archive 字段必须为 null。此模式用于隔离 Mock/控制面演练，不得作为生产镜像来源。
-- `production preloaded digest`：四个 ref 必须是受控仓库 `image@sha256:RepoDigest`，镜像须在目标主机预先拉取；清单 archive 字段全部为 null，prepare 不拉取网络资源，并逐一核对本地 image ID、`linux/amd64` 与 RepoDigests。PostgreSQL changed 时还必须附加同 commit 的加密备份变更记录和隔离恢复报告。
+- `production preloaded digest`：四个 ref 必须是受控仓库 `image@sha256:RepoDigest`，镜像须在目标主机预先拉取；清单 archive 字段全部为 null，prepare 不拉取网络资源，并逐一核对本地 image ID、`linux/amd64` 与 RepoDigests。PostgreSQL changed 或 migration from/target 不同时都必须附加同 commit 的加密备份变更记录和隔离恢复报告。
 
 清单由 `scripts/create_release_manifest.py` 按 `deploy/scripts/release_manifest.py` 的
 exact-field 契约自动生成并用 `0600` 原子落盘。Web-only production 清单只把 Web 标为
@@ -638,7 +698,38 @@ sudo /usr/local/sbin/sms-compose release resume --release-id release-20260715
 sudo /usr/local/sbin/sms-compose release rollback --release-id release-20260715
 ```
 
-`release prepare` 是受控准备动作：验证证据、当前 commit/容器、镜像和迁移基线并写入 `/var/lib/sms-platform/releases/<release_id>`，但不改根 `.env` 或容器，也不取得 lifecycle lock；因此必须在没有 systemd/包装器生命周期操作的准备窗口执行。`release status` 只读且不取锁。`release activate/resume/rollback` 会准备运行密钥，并与 up/down/rotate/migrate 共用同一个 lifecycle flock；锁冲突时在任何 Docker 或状态修改前退出。成功状态重复调用幂等；succeeded 发布不能原地 rollback，回退必须作为绑定旧 digest 的新发布执行。
+全新空生产主机不先执行普通 `up`。使用四镜像均为目标 digest、全部 `changed=false`、
+migration from=target=head 的基线 manifest，并在人工确认固定 Compose 项目、七个 bind 源目录、
+独立备份目录和 release 根均为空后执行一次：
+
+```bash
+python3 scripts/create_release_manifest.py \
+  --release-report /secure/staging/production-baseline/release-gate.json \
+  --output /secure/staging/production-baseline/manifest.json \
+  --release-id production-baseline \
+  --migration-from "$MIGRATION_HEAD" \
+  --migration-target "$MIGRATION_HEAD" \
+  --baseline
+sudo /usr/local/sbin/sms-compose release bootstrap \
+  --manifest /secure/staging/production-baseline/manifest.json \
+  --confirm-empty-host
+```
+
+该命令在 lifecycle lock 内再次验证空主机、正式 release evidence、生产 topology、存储、TLS、
+volume、镜像与精确 commit，按数据服务→migration→应用服务顺序启动，并把首个基线封存为
+`succeeded` release。确认参数只表达当次人工确认，不会清理或初始化已有数据；发现任何容器、
+volume、bind 源文件或 release 状态立即失败，失败后必须人工审计，禁止删除状态后重跑。
+
+`release prepare` 是受控准备动作：验证证据、当前 commit/容器、镜像和迁移基线并写入 `/var/lib/sms-platform/releases/<release_id>`，但不改根 `.env` 或容器，也不取得 lifecycle lock；因此必须在没有 systemd/包装器生命周期操作的准备窗口执行。它把 Redis 模式、按序 Compose 文件及 hash、非镜像 `.env` 配置绑定到发布状态，activate/resume/rollback 发现漂移会在 Docker mutation 前失败。`release status` 只读且不取锁。`release activate/resume/rollback` 会准备运行密钥，并与 up/down/rotate/migrate 共用同一个 lifecycle flock；锁冲突时在任何 Docker 或状态修改前退出。成功状态重复调用幂等；succeeded 发布不能原地 rollback，也不能直接切回旧镜像或 downgrade schema。应在新 commit 中做保持当前 schema 的兼容修复或反向应用变更，生成并扫描新的 digest/manifest，再执行：
+
+```bash
+sudo /usr/local/sbin/sms-compose release prepare-forward-rollback \
+  --source-release-id release-20260715 \
+  --manifest /secure/staging/release-forward-fix/manifest.json
+sudo /usr/local/sbin/sms-compose release activate --release-id release-forward-fix
+```
+
+前向回退候选必须保持 PostgreSQL/Redis 数据镜像与当前 schema，不得把旧 digest 包装成新发布。
 
 systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
 
@@ -665,7 +756,12 @@ systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机
 
 ### 首次引导、远端执行与保留策略
 
-`首次引导`时，先以既有受控方式把已审核 commit、`deploy/sms-compose`、release scripts、systemd unit 安装到 `/opt/sms-platform`，执行 `systemd-analyze verify` 并确认当前四个容器与根 `.env` 的 ref/ID 一致；再预加载四个 production digest。首次 release 只能从这个已验证基线 prepare，不能用发布工具自举替换它自身。后续才使用统一状态机。
+`首次引导`时，从公司内部只读 Git 镜像把已审核的精确 commit、`deploy/sms-compose`、release
+scripts 和 systemd unit 安装到空的 `/opt/sms-platform`，执行 `systemd-analyze verify`；此时不得
+已有任何本项目容器或数据卷。四个 production digest 只能从内部 Registry 预加载，不在生产
+主机源码构建。生产仓库的 `origin` 必须指向该内部只读镜像，禁止把 GitHub 作为生产主机的
+直接依赖。发布工具不能自更新或替换自身；首个基线只能使用人工安装的同一精确 commit 执行
+`release bootstrap`。后续才使用统一状态机和远端 driver。
 
 发布前先在隔离远端 Mock 主机用同 commit、独立 Compose project/端口/卷完成 changed-subset 演练，且保留未变化容器 ID 证据。生产联网交接只允许本地 driver 一次执行：
 
@@ -679,7 +775,18 @@ uv run --project backend python scripts/deploy_release_remote.py \
   --public-url https://sms.example.internal/readyz
 ```
 
-driver 只以固定 argv 执行 Git fast-forward、逐文件哈希上传、prepare/activate/status 和公网探针，不拼接远端 shell。上传前会依次把暂存根和单次发布目录收紧为 `0700`，避免首次递归建目录遗留可遍历的中间目录。每个文件始终写入同名固定 `.part`，`rsync --partial --inplace` 失败时最多自动重试 3 次；因此 macOS `openrsync` 或 SSH 长连接中断后可从同一个远端文件续传。只有远端 SHA-256 与本地清单一致才原子改名，三次仍失败则在 Git、prepare 和 activate 前失败关闭并保留 `.part` 供下一次续传。它会把清单枚举后的 `SMS_SECRETS_MODE=development|production` 通过固定 `/usr/bin/env` argv 显式交给 sudo wrapper，不依赖 sudo 环境继承；服务器 fetch 后还会要求获批 remote ref 精确解析为清单 commit，已存在的 rollback ref 只读复核、绝不 force 覆盖。终态必须同时通过 `systemctl is-active --quiet sms-platform.service` 和 `git status --porcelain --untracked-files=normal` 空输出。
+driver 只用于首个 bootstrap 成功后的更新，不能承担空主机自举。它只以固定 argv 执行内部
+只读 `origin` 的 Git fast-forward、逐文件哈希上传、prepare/activate/status 和 `/readyz` 探针，
+不拼接远端 shell，也不从 GitHub 拉取或在生产主机源码构建。上传前会依次把暂存根和单次发布
+目录收紧为 `0700`，避免首次递归建目录遗留可遍历的中间目录。每个文件始终写入同名固定
+`.part`，`rsync --partial --inplace` 失败时最多自动重试 3 次；因此 macOS `openrsync` 或 SSH
+长连接中断后可从同一个远端文件续传。只有远端 SHA-256 与本地清单一致才原子改名，三次仍
+失败则在 Git、prepare 和 activate 前失败关闭并保留 `.part` 供下一次续传。它会把清单枚举后的
+`SMS_SECRETS_MODE=development|production` 通过固定 `/usr/bin/env` argv 显式交给 sudo wrapper，
+不依赖 sudo 环境继承；服务器 fetch 后还会要求内部获批 remote ref 精确解析为清单 commit，
+已存在的 rollback ref 只读复核、绝不 force 覆盖。终态必须同时通过
+`systemctl is-active --quiet sms-platform.service` 和
+`git status --porcelain --untracked-files=normal` 空输出。
 
 development 的统一高风险发布还必须处理宿主 `vendor-control-agent.service` 的进程版本。driver 以本次持久化 `release-rollback/<release_id>` 为基线，只比较 agent 入口及其固定本地依赖；即使 Git 已在上一次中断中快进到候选，同一 release 重试仍能识别需要重载。只有 release status 已严格到达 `succeeded` 且这些文件确有变化，才以固定 argv 执行 `sudo -- /usr/bin/systemctl restart vendor-control-agent.service`，随后执行 `systemctl is-active --quiet vendor-control-agent.service`。任一 restart/active 校验失败都使 driver 失败关闭，并在公网探针和最终成功确认前停止；不得把旧 agent 进程与新 API/journal 混用。production 发布和普通 `scripts/test_update.sh` 不进入此 development-only 阶段。
 
@@ -719,19 +826,46 @@ bash scripts/verify_data_images.sh
 密码环境变量。脚本通过不替代备份隔离恢复和 RTO 验证。
 
 1. 冻结发布版本，记录 Git commit、镜像 digest、变更单、执行人和回退决策人。
-2. 按 `secrets.md` 从受控密钥系统落盘恰好 24 件权威源，确认目录 `0700`、文件 `0600`；主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key 必须是四个两两独立的 32 字节 base64 key，企微公私钥必须是匹配的 X25519 对。不得从聊天、工单或 shell 历史复制值。
-3. 从 `.env.example` 创建根目录 `.env`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile，并填写 LDAP CA 文件、`LDAP_ALLOWED_HOSTS` 部署允许列表与厂商 URL。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于非生产的旧无 `kid` 令牌观察窗口，**生产必须为 false，禁止观察窗口**。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理。内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`（`X-Real-IP`/`X-Forwarded-For`），`X-Forwarded-Proto` 仅在 `$sms_trusted_proxy=1`（连接来自精确受信 TLS 终结器）时接受 `http|https`。direct 模式强制 `WEB_BIND_IP` 为回环。外部 TLS 终结拓扑必须设置 `SMS_EXTERNAL_TLS_MODE=1`，并在 `SMS_TRUSTED_PROXY_CIDRS` 中逐个枚举 TLS 终结器（IPv4 `/32`、IPv6 `/128`；禁止 `0.0.0.0/0`、整个云 VPC、客户端可达网段或任何多主机网段）；这些精确地址同时控制 Nginx 明文 listener allowlist，非受信来源在进入页面或 API 前返回 444。`sms-compose up` 启动前由 `deploy/scripts/render_trusted_proxy_conf.py` 渲染 `/usr/local/share/sms-platform/trusted-proxies.conf`（Git 工作树之外，目录 0755、文件 0644），配置缺失、非法或非主机前缀时失败关闭。直连模式（`SMS_EXTERNAL_TLS_MODE=0`）保持代理头信任标志为 0，任何客户端代理头都不会被接受。若调整代理地址，必须在同一提交同步修改 Web 静态 IP（`SMS_WEB_INGRESS_IPV4`）、API 的 `--forwarded-allow-ips`（引用同一变量）和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
-4. 按 `vendor-egress.md` 完成主出口 IP、备出口 IP 同单报备，取得 QPS、单次号码上限和生效时间的书面回执。
-5. 按 `backup-restore.md` 对当前生产库做一次加密备份并在隔离库恢复验证；未验证的备份不得作为回退点。
+2. 按 `secrets.md` 从受控密钥系统落盘恰好 25 件权威源，确认目录 `0700`、文件 `0600`；主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key 必须是四个两两独立的 32 字节 base64 key，企微公私钥必须是匹配的 X25519 对，`redis_tls_server_key` 必须与内部 PKI 的三 SAN 服务端证书配对。不得从聊天、工单或 shell 历史复制值。
+3. 从 `.env.example` 创建根目录 `.env` 并设置 `root:root 0600`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`、`REDIS_HA_MODE=isolated-standalone` 和固定 `METRICS_ALLOWED_CIDRS=172.31.250.1/32`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile。Phase 0 先安装可读的系统 CA 文件但保持 `LDAP_ALLOWED_HOSTS` 为空、AD Provider 禁用；AD 地址、CA、bind secret、连接测试和角色映射齐备后再走独立变更。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于非生产的旧无 `kid` 令牌观察窗口，**生产必须为 false，禁止观察窗口**。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理。内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`（`X-Real-IP`/`X-Forwarded-For`），`X-Forwarded-Proto` 仅在 `$sms_trusted_proxy=1`（连接来自精确受信 TLS 终结器）时接受 `http|https`。direct 模式强制 `WEB_BIND_IP` 为回环。外部 TLS 终结拓扑必须设置 `SMS_EXTERNAL_TLS_MODE=1`，并在 `SMS_TRUSTED_PROXY_CIDRS` 中逐个枚举 TLS 终结器（IPv4 `/32`、IPv6 `/128`；禁止 `0.0.0.0/0`、整个云 VPC、客户端可达网段或任何多主机网段）；这些精确地址同时控制 Nginx 明文 listener allowlist，非受信来源在进入页面或 API 前返回 444。`sms-compose up` 启动前由 `deploy/scripts/render_trusted_proxy_conf.py` 渲染 `/usr/local/share/sms-platform/trusted-proxies.conf`（Git 工作树之外，目录 0755、文件 0644），配置缺失、非法或非主机前缀时失败关闭。直连模式（`SMS_EXTERNAL_TLS_MODE=0`）保持代理头信任标志为 0，任何客户端代理头都不会被接受。若调整代理地址，必须在同一提交同步修改 Web 静态 IP（`SMS_WEB_INGRESS_IPV4`）、API 的 `--forwarded-allow-ips`（引用同一变量）和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
+4. 按 `vendor-egress.md` 完成固定主出口 IP 报备，取得 QPS、单次号码上限和生效时间的书面回执。备出口待后续建设并在启用前另行报备、验证，不阻断 Phase 0 首发。
+5. 在预生产使用候选 digest 和预生产自有数据完成加密备份/隔离恢复；此时生产库仍必须为空，
+   不得在 bootstrap 前声称存在“当前生产备份”。
 6. 执行 `sudo /usr/local/sbin/sms-compose config --quiet`，再核对 `sms_owner` secret 不会挂载到 api/worker/outbox-dispatcher/beat。
    PostgreSQL 的 `log_error_verbosity=terse`、`log_min_error_statement=panic`、`log_parameter_max_length_on_error=0` 是 PII 日志边界，禁止覆盖；错误类型仍保留，但失败 SQL、绑定参数与 DETAIL 不写容器日志。
    API 必须使用 uvicorn `--no-access-log`；Nginx 只使用 `pii_safe` 格式（`$uri`，不得记录 query string，禁止改回 `$request`/`$request_uri`）。这是手机号不得进入访问日志的硬约束。
-7. 通过 systemd 或受控包装器启动栈；migrate 会把主体与自治事件两个审计 key 同步进仅 owner 可读的验证表。确认 postgres、migrate、api、三个 worker、Outbox dispatcher、beat、web 的健康与运行密钥 owner；生产不得启用 `dev` profile。升级到 v1.6.50 会清空旧企微 webhook 密文，必须在新 X25519 密钥对生效后由管理员重新配置并测试，禁止尝试回读或迁移旧明文。
+7. 全新主机先用上述 `release bootstrap --confirm-empty-host` 建立首个 succeeded 基线。成功并完成状态读回后，执行 `sudo systemctl enable --now sms-platform.service`；该次受控、幂等的 `up` 让 `Type=oneshot`/`RemainAfterExit` unit 正式进入 active，确保后续关机和重启受 systemd 管理，不能只 `enable` 而不启动。再执行 `sudo systemctl enable --now sms-partition-maintenance.timer sms-backup.timer sms-lifecycle-status.timer`，最后检查平台和这三个 timer；**生产不得启用 `sms-restore-drill.timer`**。migrate 会把主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key（共四个）同步进仅 owner 可读的验证表。确认 postgres、migrate、api、三个 worker、Outbox dispatcher、beat、web 的健康与运行密钥 owner；生产不得启用 `dev` profile。升级到 v1.6.50 会清空旧企微 webhook 密文，必须在新 X25519 密钥对生效后由管理员重新配置并测试，禁止尝试回读或迁移旧明文。
    API 发布端口固定只绑定宿主 `127.0.0.1`，外部业务流量必须经 Web/Nginx 入口；不得把 API 端口改为全网监听。
-8. 使用已初始化的本地管理员进入系统配置页，保存并测试 AD 草稿后启用，导入经审批的目录组角色映射并完成真实 LDAP 四角色登录。禁止生产运行 mock seed。
-9. 生产阶段让独立监控网段按 `prometheus.example.yml` 使用只读 `metrics_scrape_token` 抓取 `api:8000/metrics`，验证 `up == 1`；配置 `up == 0` 告警。端点同时校验来源 CIDR 与独立 Bearer secret，不得经公网入口开放。开发测试阶段按当前范围不执行生产监控或故障切换验收。
-10. 按 `docs/UAT.md` 执行 28 项验收，确认 log-sink 已替换为经审批告警渠道且不泄露手机号/密钥。
-11. 按 PRD 第 10 章执行 T0 “拉取权一刀切”，先 notice、再 verify、后 market；每应用观察 3 天后再迁下一批。
+8. bootstrap 后立即手动启动 `sms-backup.service`，确认 `backup-status` 通过；把首份生产密文
+   快照经批准的离线通道送到具备独立 PostgreSQL/VMDK 和 preproduction marker 的恢复主机，
+   按 `failover.md` 先停止该主机的平台与 lifecycle timers，再安装完整 25 件 canonical
+   secret：其中 data AES/HMAC 与四个审计 key（确需读历史告警时再含 alert pair）
+   只能使用离机 escrow 按 manifest 所记 generation ID 原子发放且双人见证的不可变 recovery
+   bundle，其余使用当前获批运行凭据；同时安装
+   backup passphrase、两个固定 generation ID 和内容精确为
+   `preproduction-restore-host-v1\n` 的 marker。先通过包装器公开参数执行
+   `release start-recovery` 来生成/绑定 runtime generation 并只启动四个数据服务，
+   再以显式 snapshot/manifest 调用官方 `restore_drill.py` 并配对报告；不得使用普通
+   `up`、通用 `exec`、手工 prepare 或修改 `/run`，也不得
+   复制/手改生产 lifecycle state，也不得让预生产账本猜选候选。Phase 0 只允许使用从预生产
+   资源池按需创建的一次性空白隔离恢复机；共享应用预生产不得安装生产密码学材料或承担该演练。
+   证据归档后按批准的 VMware 流程整体退役恢复机。该证据通过前不得初始化管理员、创建
+   API Key 或开放 T0 流量。
+   此时生产 `sms_message` 应为 0；schema v2 恢复报告的
+   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自显示 17 个固定密文字段、
+   `counts.encrypted_rows=0`、全部 `coverage.rows=0` 与 `status=not_applicable_empty`，绑定
+   pre 的汇总检查也只能为 `not_applicable_empty`。这只作为**初始化前**空库结果，不能证明
+   data AES/HMAC 能读取未来生产历史密文。首批最小 notice 形成事实后，必须在 3 天观察期内
+   再生成一份生产快照，并在新的一次性空白隔离恢复机复验；报告须有
+   `table_counts.sms_message>0`，两份 receipt 按 17 字段精确闭集逐字段逐实际版本抽样认证，
+   且 pre/post 与绑定检查均为 `performed`。抽样结果不得外推为所有历史行、alert 历史密文/
+   keypair 或 `audit_log` MAC 已验证；未取得该证据不得扩大到更多应用、verify 或 market。
+   通过后才使用正式入口初始化本地管理员、完成首次改密，并保持 local Provider 为 Phase 0
+   唯一启用认证源。AD 草稿、连接测试、角色映射和启用留待地址、CA、bind secret 与组织映射
+   齐备后的独立变更。禁止生产运行 mock seed。
+9. 在生产 VM 宿主安装本机 Prometheus 或等价采集 agent，按 `prometheus.example.yml` 从 Docker ingress 网桥访问 `172.31.250.2:8000/metrics`。采集连接在 API 容器内应读为网桥网关 `172.31.250.1`；真实抓包/日志读回一致后，生产 `METRICS_ALLOWED_CIDRS` 必须收紧为 `172.31.250.1/32`，不得放行整个 `/24`。把独立 token 的受控副本落到 `/etc/prometheus/secrets/metrics_scrape_token`，`root:prometheus 0440`，验证 `up == 1` 并配置 `up == 0` 告警。该端点不经 Nginx 或公网开放。由于采集器与业务同 VM，VM 宕机告警必须另由 VMware/宿主外监控产生；两类告警都由外部日志/告警转发链送达企业微信和公司邮件。开发测试阶段按当前范围不执行生产监控或故障切换验收。
+10. 在预生产按 `docs/UAT.md` 完成 28 项适用验收；生产首发只对 local Provider、1–2 个低风险 notice 应用及对应安全/运维边界做真人复验，确认企业微信和公司邮件均有真实接收证据且不泄露手机号/密钥。AD 用例延后到 Provider 启用前。
+11. 按 PRD 第 10 章只接入首批 1–2 个 notice 应用，每个连续观察至少 3 天。verify、market 或更多应用另行审批，旧系统继续长期并行。
 12. 归档变更记录、厂商回执、备份 SHA-256、权限检查、UAT 报告和监控截图；任一关键检查失败立即停止，不带病切换。
 
 ## 重启、`/run` 丢失与回退演练
@@ -743,9 +877,24 @@ bash scripts/verify_data_images.sh
 3. 先 `sudo systemctl stop sms-platform.service`，再次确认目标目录属于本项目且没有真实数据或真实厂商发送，再删除 `/run/sms-platform/secrets`，随后 `sudo systemctl start sms-platform.service`；
 4. 执行 `sudo reboot`，重连后检查 `sudo systemctl status sms-platform.service`。
 
-每次必须自动重建 `current` generation 并恢复健康，且公网仍只允许经审批的 `18443`，`80/443/8080/8443/8000/9028` 与明文上游端口继续禁用。失败时禁止手工 chmod `0644`、改 root 容器、绕过预处理器或部分启动新容器。
+每次必须自动重建 `current` generation 并恢复健康，且 `18443` 仍只允许经审批的公司 VPN
+网段，不对互联网公开；`80/443/8080/8443/8000/9028` 与明文上游端口继续禁用。
+失败时禁止手工 chmod `0644`、改 root 容器、绕过预处理器或部分启动新容器。
 
-代码回退先停止 unit，恢复上一已审核版本的 Compose、包装器、预处理器和 unit，再执行 `systemctl daemon-reload` 与受控启动。`rotate backend` 在共享 lifecycle flock 内执行整个 current-target→prepare→重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控清理旧 generation。代码回退不删除 24 件权威源、数据库卷或旧 generation。若彻底撤销 systemd 托管，执行 `sudo systemctl disable --now sms-platform.service`，但不得把后续生产操作切回 raw Compose。
+上面的重启和 `/run` 删除步骤**只限隔离 Mock 演练**，不得在生产中通过恢复旧 Compose、包装器、
+预处理器或 unit 来做代码回退。生产 succeeded release 的常规回退只能构建新 commit、新 digest、
+保持当前 schema 的 forward-rollback manifest，再执行 `prepare-forward-rollback` 和 `activate`；
+发布工具自身也必须随新候选评审，禁止停 unit 后手工替换旧工具绕过 release state。
+`recovery_required` 仅允许在保持维护窗口时，由 DBA、发布负责人和安全复核人根据归档 state/event、
+容器和 migration 只读证据批准专项恢复方案，不得伪装成常规回退。
+
+`rotate backend` 在共享 lifecycle flock 内执行整个 current-target→prepare→三 Redis 与全部客户端
+重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前
+失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有
+全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控
+清理旧 generation。任何回退都不删除 25 件权威源、数据库卷或旧 generation。若经独立退役
+变更彻底撤销 systemd 托管，可执行 `sudo systemctl disable --now sms-platform.service`，但不得把
+后续生产操作切回 raw Compose。
 
 ### v1.6.11 回调事件迁移前置检查
 
@@ -753,7 +902,15 @@ bash scripts/verify_data_images.sh
 
 ## Prometheus 验收清单
 
-Prometheus 仅从 `METRICS_ALLOWED_CIDRS` 指定的监控网段访问 API 内网地址，并通过 `authorization.credentials_file` 提交独立、可轮换的 `metrics_scrape_token`；公网防火墙和 Nginx 明确拒绝 `/metrics`。抓取超时固定 3 秒。开发测试阶段不执行生产监控/故障切换验收；进入生产准备后再按本节留存证据。部署后确认以下十二组 family 均存在：
+Phase 0 的 Prometheus/agent 位于生产 VM 宿主，只从固定 ingress 地址
+`172.31.250.2:8000` 访问 API；API 观察到的宿主网桥源地址必须读回并以精确 `/32` 写入
+`METRICS_ALLOWED_CIDRS`。它通过 `authorization.credentials_file` 从
+`/etc/prometheus/secrets/metrics_scrape_token` 提交独立、可轮换的
+`metrics_scrape_token`；公网防火墙和 Nginx 明确拒绝 `/metrics`。抓取超时固定 3 秒。
+宿主内采集不能证明整 VM 存活，必须另有 VMware/宿主外心跳告警。生命周期、存储预检和
+Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链负责送达企业微信与公司邮件；
+两个渠道的真实接收回执才构成闭环。开发测试阶段不执行生产监控/故障切换验收；进入生产
+准备后再按本节留存证据。部署后确认以下十二组 family 均存在：
 
 - `sms_queue_depth`
 - `sms_send_rate_per_second`
@@ -788,7 +945,7 @@ Prometheus 仅从 `METRICS_ALLOWED_CIDRS` 指定的监控网段访问 API 内网
 主机已认证的 TLS 连接；连接并发、5 秒总预算、单地址连接预算以及响应头/正文上限由代码
 固定，禁止通过部署参数放宽。
 
-标准生产 24 件 secret 契约不因默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
+标准生产 25 件 secret 契约不因 callback 默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
 变更：只有在安全评审同步扩展凭据清单和 Compose 只读挂载、且私钥仅对
 `worker-callback` 可见后，才可在 `.env` 配置
 `CALLBACK_CA_CERTS_FILE`、`CALLBACK_MTLS_CERT_FILE` 与

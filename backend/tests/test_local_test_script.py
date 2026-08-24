@@ -36,6 +36,7 @@ SECRET_NAMES = {
     "redis_broker_password",
     "redis_auth_password",
     "redis_control_password",
+    "redis_tls_server_key",
 }
 PORT_OVERRIDE_NAMES = {"WEB_PORT", "API_PORT", "MOCK_VENDOR_PORT"}
 
@@ -113,6 +114,10 @@ def test_prepare_creates_only_dev_configuration_and_secrets(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    assert (
+        "METRICS_ALLOWED_CIDRS=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+        in env_file.read_text(encoding="utf-8")
+    )
     assert stat.S_IMODE(secrets_dir.stat().st_mode) == 0o700
     assert {item.name for item in secrets_dir.iterdir()} == SECRET_NAMES
     assert all(stat.S_IMODE(item.stat().st_mode) == 0o600 for item in secrets_dir.iterdir())

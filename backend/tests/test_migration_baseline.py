@@ -499,6 +499,38 @@ def test_raw_replay_processing_lease_is_in_schema_and_followup_migration() -> No
     assert "DROP COLUMN IF EXISTS processing_started_at" in source
 
 
+def test_raw_processing_lease_epoch_is_in_schema_and_followup_migration() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0076_raw_processing_lease.py"
+
+    raw_table = schema.split(
+        "CREATE TABLE raw_vendor_log",
+        maxsplit=1,
+    )[1].split("CREATE INDEX idx_raw_unprocessed", maxsplit=1)[0]
+    assert "processing_lease_id UUID" in raw_table
+    assert "processing_lease_epoch BIGINT" in raw_table
+    assert "processing_lease_expires_at TIMESTAMPTZ" in raw_table
+    assert "ck_raw_vendor_processed_consistency" in raw_table
+    assert "idx_raw_processing_lease_epoch" in schema
+    assert "CHECK (task_kind IN ('callback','export','raw'))" in schema
+    assert revision.is_file()
+
+    spec = importlib.util.spec_from_file_location(
+        "raw_processing_lease_revision",
+        revision,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0076_raw_processing_lease"
+    assert module.down_revision == "0075_raw_parse_eligibility"
+    source = revision.read_text(encoding="utf-8")
+    assert "processing_lease_id" in source
+    assert "ck_raw_vendor_processed_consistency" in source
+    assert "GRANT UPDATE" in source
+    assert "sms_accept" in source
+
+
 def test_correlation_audit_guard_preserves_immutable_legacy_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

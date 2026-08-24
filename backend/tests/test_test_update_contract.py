@@ -985,7 +985,7 @@ def test_replies_preview_does_not_block_classified_update() -> None:
     assert change.migration_changed is False
 
 
-def test_batch_density_preview_does_not_block_web_only_update() -> None:
+def test_batch_density_preview_keeps_batch_view_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/batch-density-prototype.html",
@@ -999,11 +999,12 @@ def test_batch_density_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/BatchView.vue",)
     assert change.migration_changed is False
 
 
-def test_templates_preview_does_not_block_web_only_update() -> None:
+def test_templates_preview_keeps_send_and_template_views_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/templates-redesign-prototype.html",
@@ -1020,11 +1021,15 @@ def test_templates_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == (
+        "frontend/src/views/SendView.vue",
+        "frontend/src/views/TemplateView.vue",
+    )
     assert change.migration_changed is False
 
 
-def test_signs_preview_does_not_block_web_only_update() -> None:
+def test_signs_preview_keeps_sign_view_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/signs-redesign-prototype.html",
@@ -1039,11 +1044,12 @@ def test_signs_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/SignView.vue",)
     assert change.migration_changed is False
 
 
-def test_users_preview_does_not_block_web_only_update() -> None:
+def test_users_preview_keeps_user_view_high_risk() -> None:
     change = classify_changed_paths(
         [
             "docs/previews/users-redesign-prototype.html",
@@ -1056,7 +1062,8 @@ def test_users_preview_does_not_block_web_only_update() -> None:
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
-    assert change.risk == "web-only"
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/UserView.vue",)
     assert change.migration_changed is False
 
 
@@ -1113,7 +1120,10 @@ def test_filter_bar_preview_keeps_approval_view_high_risk() -> None:
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
     assert change.risk == "high-risk"
-    assert change.high_risk_paths == ("frontend/src/views/ApprovalView.vue",)
+    assert change.high_risk_paths == (
+        "frontend/src/views/ApprovalView.vue",
+        "frontend/src/views/BatchView.vue",
+    )
     assert change.migration_changed is False
 
 
@@ -1223,6 +1233,7 @@ def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None
     assert change.high_risk_paths == (
         "deploy/scripts/prepare_runtime_secrets.py",
         "deploy/scripts/vendor_runtime_reset.py",
+        "frontend/src/views/SignView.vue",
     )
 
 
@@ -1317,6 +1328,7 @@ def test_rebaseline_nul_cli_uses_the_strict_rebaseline_classifier() -> None:
         "high_risk_paths": [
             "deploy/scripts/prepare_runtime_secrets.py",
             "deploy/scripts/vendor_runtime_reset.py",
+            "frontend/src/views/SignView.vue",
         ],
         "migration_changed": True,
         "risk": "high-risk",

@@ -150,6 +150,14 @@ for domain in "${domains[@]}"; do
     echo "Redis ACL unexpectedly allowed a dangerous command" >&2
     exit 1
   fi
+  for dangerous_client_subcommand in PAUSE KILL UNBLOCK; do
+    if printf '%s\n' "$password" | docker exec -i "$container" \
+      redis-cli --user "sms_${domain}" --askpass -e CLIENT \
+      "$dangerous_client_subcommand" 1 >/dev/null 2>&1; then
+      echo "Redis ACL unexpectedly allowed a dangerous CLIENT subcommand" >&2
+      exit 1
+    fi
+  done
   if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" |
     grep -Fq "$password"; then
     echo "Redis password leaked into container environment" >&2

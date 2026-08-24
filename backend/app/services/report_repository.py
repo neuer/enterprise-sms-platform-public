@@ -14,6 +14,16 @@ from app.services.callback_repository import (
     enqueue_batch_finished,
     enqueue_message_report,
 )
+from app.services.raw_lease import (
+    FENCED_METADATA_SQL,
+    FENCED_TERMINAL_SQL,
+    PERSIST_LEASE_COLUMNS,
+    PERSIST_LEASE_VALUES,
+    RawProcessingLease,
+    commit_fenced_raw_update,
+    new_lease_id,
+    require_lease,
+)
 from app.services.raw_parse import (
     ELIGIBILITY_NEVER,
     PARSE_PROCESSED,
@@ -33,6 +43,13 @@ LOGGER = logging.getLogger(__name__)
 class SqlReportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self._leases: dict[int, RawProcessingLease] = {}
+
+    def remember_lease(self, lease: RawProcessingLease) -> None:
+        self._leases[lease.raw_id] = lease
+
+    def _lease_for(self, raw_id: int, lease: RawProcessingLease | None) -> RawProcessingLease:
+        return require_lease(lease or self._leases.get(raw_id), raw_id)
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -60,31 +77,37 @@ class SqlReportRepository:
                 content_encoding=str(payload.get("content_encoding") or "identity"),
             )
         )
+        lease_id = new_lease_id()
+        payload["processing_lease_id"] = str(lease_id)
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(
                     text(
-                        """
+                        f"""
                         INSERT INTO raw_vendor_log (
                           source,payload_enc,payload_sha256,key_version,http_status,
                           content_encoding,custom_ids,item_count,processing_started_at,
-                          capture_state,parse_state,replay_eligibility
+                          capture_state,parse_state,replay_eligibility,
+                          {PERSIST_LEASE_COLUMNS.strip()}
                         ) VALUES (
                           'report',:payload_enc,:payload_sha256,:key_version,:http_status,
                           :content_encoding,
                           CAST(:custom_ids AS text[]),:item_count,now(),
                           COALESCE(:capture_state,'complete'),
                           COALESCE(:parse_state,'unattempted'),
-                          COALESCE(:replay_eligibility,'manual')
+                          COALESCE(:replay_eligibility,'manual'),
+                          {PERSIST_LEASE_VALUES.strip()}
                         ) RETURNING id
                         """
                     ),
                     payload,
                 )
-                return int(result.scalar_one())
+                raw_id = int(result.scalar_one())
         finally:
             await engine.dispose()
+        self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
+        return raw_id
 
     async def update_metadata(
         self,
@@ -92,19 +115,25 @@ class SqlReportRepository:
         *,
         custom_ids: list[str],
         item_count: int,
+        lease: RawProcessingLease | None = None,
     ) -> None:
         """raw 已提交后补充不含 PII 的索引元数据。"""
 
+        token = self._lease_for(raw_id, lease)
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        "UPDATE raw_vendor_log SET custom_ids=CAST(:custom_ids AS text[]),"
-                        "item_count=:item_count WHERE id=:id AND source='report'"
-                    ),
-                    {"id": raw_id, "custom_ids": custom_ids, "item_count": item_count},
-                )
+            await commit_fenced_raw_update(
+                engine,
+                FENCED_METADATA_SQL + " AND source='report'",
+                {
+                    "id": raw_id,
+                    "custom_ids": custom_ids,
+                    "item_count": item_count,
+                    "lease_id": str(token.lease_id),
+                    "epoch": token.epoch,
+                },
+                lease=token,
+            )
         finally:
             await engine.dispose()
 
@@ -504,16 +533,21 @@ class SqlReportRepository:
         finally:
             await engine.dispose()
 
-    async def mark_processed(self, raw_id: int) -> None:
+    async def mark_processed(
+        self, raw_id: int, *, lease: RawProcessingLease | None = None
+    ) -> None:
         await self._mark_raw(
             raw_id,
             processed=True,
             error=None,
             parse_state=PARSE_PROCESSED,
             replay_eligibility=ELIGIBILITY_NEVER,
+            lease=lease,
         )
 
-    async def mark_error(self, raw_id: int, error: str) -> None:
+    async def mark_error(
+        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
+    ) -> None:
         columns = mark_error_column_values(error)
         await self._mark_raw(
             raw_id,
@@ -521,6 +555,7 @@ class SqlReportRepository:
             error=error,
             parse_state=columns["parse_state"],
             replay_eligibility=columns["replay_eligibility"],
+            lease=lease,
         )
 
     async def _mark_raw(
@@ -531,36 +566,28 @@ class SqlReportRepository:
         error: str | None,
         parse_state: str,
         replay_eligibility: str,
+        lease: RawProcessingLease | None = None,
     ) -> None:
+        token = self._lease_for(raw_id, lease)
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE raw_vendor_log
-                        SET processed=:processed,error=:error,processing_started_at=NULL,
-                          parse_state=CASE
-                            WHEN parse_state='processed' THEN 'processed'
-                            ELSE :parse_state
-                          END,
-                          replay_eligibility=CASE
-                            WHEN replay_eligibility='never' THEN 'never'
-                            ELSE :replay_eligibility
-                          END
-                        WHERE id=:id
-                        """
-                    ),
-                    {
-                        "id": raw_id,
-                        "processed": processed,
-                        "error": error,
-                        "parse_state": parse_state,
-                        "replay_eligibility": replay_eligibility,
-                    },
-                )
+            await commit_fenced_raw_update(
+                engine,
+                FENCED_TERMINAL_SQL,
+                {
+                    "id": raw_id,
+                    "processed": processed,
+                    "error": error,
+                    "parse_state": parse_state,
+                    "replay_eligibility": replay_eligibility,
+                    "lease_id": str(token.lease_id),
+                    "epoch": token.epoch,
+                },
+                lease=token,
+            )
         finally:
             await engine.dispose()
+        self._leases.pop(raw_id, None)
 
     async def expire_unknown(self, timeout_hours: int) -> int:
         engine = self._engine()

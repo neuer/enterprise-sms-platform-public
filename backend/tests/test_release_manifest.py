@@ -57,7 +57,14 @@ def _manifest(
             "release_gate": "release-gate.json",
             "release_gate_sha256": "c" * 64,
             "data_images": None,
-            "backup_restore_change": None,
+            "backup_restore_change": (
+                {
+                    "record": "backup-change.json",
+                    "restore_report": "restore-report.json",
+                }
+                if mode == "production"
+                else None
+            ),
         },
     }
 
@@ -226,6 +233,7 @@ def test_production_postgres_change_requires_exact_backup_evidence(
     payload = _manifest(mode="production")
     payload["images"]["postgres"]["changed"] = True
     payload["evidence"]["data_images"] = "data-images.json"
+    payload["evidence"]["backup_restore_change"] = None
 
     with pytest.raises(ReleaseManifestError, match="backup_restore_change"):
         load_manifest(_write_manifest(tmp_path, payload))
@@ -250,7 +258,26 @@ def test_production_postgres_change_requires_exact_backup_evidence(
         load_manifest(_write_manifest(tmp_path, payload))
 
 
-def test_backup_evidence_is_forbidden_outside_production_postgres_change(
+def test_production_migration_only_requires_backup_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _manifest(mode="production")
+    payload["evidence"]["backup_restore_change"] = None
+
+    with pytest.raises(ReleaseManifestError, match="backup_restore_change"):
+        load_manifest(_write_manifest(tmp_path, payload))
+
+    payload["evidence"]["backup_restore_change"] = {
+        "record": "backup-change.json",
+        "restore_report": "restore-report.json",
+    }
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+
+    assert manifest.images["postgres"].changed is False
+    assert manifest.migration_from != manifest.migration_target
+
+
+def test_backup_evidence_is_forbidden_without_production_data_or_migration_change(
     tmp_path: Path,
 ) -> None:
     payload = _manifest()
@@ -261,6 +288,15 @@ def test_backup_evidence_is_forbidden_outside_production_postgres_change(
 
     with pytest.raises(ReleaseManifestError, match="backup_restore_change"):
         load_manifest(_write_manifest(tmp_path, payload))
+
+    production = _manifest(mode="production")
+    production["migration"] = {
+        "from": "0012",
+        "target": "0012",
+        "compatibility": "none",
+    }
+    with pytest.raises(ReleaseManifestError, match="backup_restore_change"):
+        load_manifest(_write_manifest(tmp_path, production))
 
 
 def test_release_gate_kind_is_explicit_and_bound_in_manifest(tmp_path: Path) -> None:

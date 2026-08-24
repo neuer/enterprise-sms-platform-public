@@ -214,7 +214,10 @@ def write_named_stream(directory: Path, data: bytes, *, full: bytes | None = Non
 
 def evidence_payloads(directory: Path) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for path in directory.glob(f"*{HEADER_QUARANTINE_SUFFIX}"):
+    for path in (
+        *directory.glob(f"*{HEADER_QUARANTINE_SUFFIX}"),
+        *directory.glob("*.cq.man"),
+    ):
         if path.name.endswith(".tmp"):
             continue
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -226,6 +229,9 @@ def evidence_payloads(directory: Path) -> list[dict[str, Any]]:
                 continue
             assert forbidden not in text
         assert set(raw).isdisjoint({"phone", "payload", "ciphertext", "secret", "key"})
+        if "src_name" in raw:
+            assert "/" not in str(raw["src_name"])
+            assert "\\" not in str(raw["src_name"])
     return items
 
 
@@ -281,7 +287,7 @@ def test_kill_at_every_byte_of_first_frame_has_terminal_state(
             assert repository.events
             continue
         isolated += 1
-        assert leftover_names(work, HEADER_QUARANTINE_SUFFIX)
+        assert leftover_names(work, ".cq") or leftover_names(work, HEADER_QUARANTINE_SUFFIX)
         evidence_payloads(work)
         assert any(
             item["alert_type"] == "vendor_raw_nonactive_quarantine" for item in alerts.events
@@ -322,7 +328,7 @@ def test_corrupt_spill_leaves_activity_quota(tmp_path: Path) -> None:
     recovered, alerts, _repository = asyncio.run(restart(store))
     assert recovered == 0
     assert leftover_names(tmp_path, ".spill") == []
-    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert leftover_names(tmp_path, ".cq")
     evidence_payloads(tmp_path)
     assert_quota(store, 0)
     stats = store.artifact_stats()
@@ -358,7 +364,7 @@ def test_atomic_write_temps_are_promoted_or_isolated(tmp_path: Path) -> None:
     age_path(incomplete)
     store.reclaim_idle("report", crypto())
     assert not incomplete.exists()
-    assert leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    assert leftover_names(tmp_path, ".cq")
 
     headerq_tmp = tmp_path / f"report-{'d' * 32}.headerq.tmp"
     headerq_tmp.write_text(
@@ -436,6 +442,7 @@ async def test_32_unreadable_objects_do_not_stop_shared_volume_polls(tmp_path: P
     assert gateway.calls == 1
     assert_quota(store, 0)
     assert leftover_names(tmp_path, ".spill") == []
+    assert leftover_names(tmp_path, ".cq")
     assert store.artifact_stats().quarantine_count >= 1
     assert any(item["alert_type"] == "vendor_raw_nonactive_quarantine" for item in alerts.events)
 
@@ -501,9 +508,9 @@ def test_nonactive_quarantine_has_capacity_retention_metrics(tmp_path: Path) -> 
     store = RawSpillStore(
         tmp_path,
         header_only_min_age_s=0,
-        max_quarantine_files=2,
-        max_quarantine_bytes=4096,
-        quarantine_retention_s=60,
+        max_cipherq_files=2,
+        max_cipherq_bytes=4096,
+        cipherq_retention_s=60,
     )
     for index in range(4):
         (tmp_path / f"report-{index:064x}.spill").write_bytes(b"corrupt")
@@ -511,19 +518,19 @@ def test_nonactive_quarantine_has_capacity_retention_metrics(tmp_path: Path) -> 
     assert result.isolated >= 2
     stats = store.artifact_stats()
     assert stats.active_count == 0
-    assert stats.quarantine_count <= 2
-    assert stats.quarantine_bytes <= 4096
+    assert stats.cipherq_count <= 2
+    assert stats.cipherq_bytes <= 4096
     assert stats.capacity_dropped_total >= 1
     assert_quota(store, 0)
 
-    retained = leftover_names(tmp_path, HEADER_QUARANTINE_SUFFIX)
+    retained = leftover_names(tmp_path, ".cq")
     assert retained
     for name in retained:
         age_path(tmp_path / name, seconds=120)
-    store.quarantine_retention_s = 30
+    store.cipherq_retention_s = 30
     expired = store.reclaim_idle("reply", crypto())
-    assert expired.quarantine_expired >= 1
-    assert store.artifact_stats().quarantine_count == 0
+    assert expired.cipherq_expired >= 1
+    assert store.artifact_stats().cipherq_count == 0
 
 
 @pytest.mark.asyncio

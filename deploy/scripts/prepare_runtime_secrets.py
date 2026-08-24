@@ -8,6 +8,8 @@ import base64
 import binascii
 import contextlib
 import fcntl
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -44,11 +46,15 @@ CANONICAL_SECRET_NAMES = frozenset(
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
+        "redis_tls_server_key",
     }
 )
 VENDOR_SECRET_NAMES = frozenset({"vendor_secret_name", "vendor_secret_key"})
 VENDOR_REVOCATION_TOMBSTONE = b"!"
-BACKEND_SECRET_NAMES = CANONICAL_SECRET_NAMES - {"db_owner_password"}
+BACKEND_SECRET_NAMES = CANONICAL_SECRET_NAMES - {
+    "db_owner_password",
+    "redis_tls_server_key",
+}
 POSTGRES_SECRET_NAMES = frozenset(
     {
         "db_owner_password",
@@ -75,13 +81,39 @@ REDIS_SECRET_NAMES = frozenset(
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
+        "redis_tls_server_key",
     }
+)
+REDIS_PASSWORD_NAMES = (
+    "redis_broker_password",
+    "redis_auth_password",
+    "redis_control_password",
+)
+DATABASE_PASSWORD_NAMES = (
+    "db_owner_password",
+    "db_auth_password",
+    "db_accept_password",
+    "db_send_password",
+    "db_callback_password",
+    "db_export_password",
+    "db_scheduler_password",
+    "db_metrics_password",
 )
 BACKEND_UID = 10001
 POSTGRES_UID = 70
 REDIS_UID = 999
 REDIS_GID = 1000
 MAX_SECRET_BYTES = 1024 * 1024
+REDIS_TLS_CA_PATH = Path("/etc/sms-platform/redis-tls/ca.pem")
+REDIS_TLS_CERTIFICATE_PATH = Path("/etc/sms-platform/redis-tls/server.pem")
+REDIS_TLS_PUBLIC_METADATA_NAME = "redis-tls-public-metadata.json"
+REDIS_TLS_PUBLIC_METADATA_SCHEMA_VERSION = 1
+MAX_REDIS_TLS_PUBLIC_BYTES = 1024 * 1024
+MAX_REDIS_TLS_METADATA_BYTES = 4096
+REDIS_TLS_FULL_STOP_ERROR = (
+    "Redis TLS tuple changed or generation metadata is unavailable; "
+    "use the documented full-stop three-domain TLS rotation"
+)
 
 _SERVICE_SECRET_NAMES = {
     "backend": BACKEND_SECRET_NAMES,
@@ -91,6 +123,9 @@ _SERVICE_SECRET_NAMES = {
 }
 _DEV_ONLY_NAMES = frozenset({"dev-apikeys.txt"})
 _GENERATION_NAME_PATTERN = re.compile(r"generation-[0-9a-f]{32}\Z")
+_SERVICE_PASSWORD_PATTERN = re.compile(rb"[A-Za-z0-9_+/=-]{32,128}\Z")
+_PKCS8_PEM_BEGIN = b"-----" + b"BEGIN " + b"PRIVATE " + b"KEY-----\n"
+_PKCS8_PEM_END = b"\n-----" + b"END " + b"PRIVATE " + b"KEY-----"
 
 
 class RuntimeSecretsError(RuntimeError):
@@ -171,6 +206,9 @@ def _validate_source(source_dir: Path, mode: str) -> dict[str, bytes]:
         for name in sorted(CANONICAL_SECRET_NAMES)
     }
     _validate_security_key_material(values)
+    if mode == "production":
+        _validate_distinct_service_passwords(values)
+        _validate_redis_tls_server_key(values["redis_tls_server_key"])
     return values
 
 
@@ -244,6 +282,150 @@ def _validate_security_key_material(values: dict[str, bytes]) -> None:
     )
     if not secrets.compare_digest(_x25519_public(private_value), public_value):
         raise RuntimeSecretsError("alert credential keypair is invalid")
+
+
+def _validate_distinct_service_passwords(values: dict[str, bytes]) -> None:
+    """拒绝可注入、多行、低长度或跨职责复用的运行密码。"""
+
+    redis_passwords = [values[name] for name in REDIS_PASSWORD_NAMES]
+    database_passwords = [values[name] for name in DATABASE_PASSWORD_NAMES]
+    for normalized, label in (
+        (redis_passwords, "Redis ACL passwords"),
+        (database_passwords, "database role passwords"),
+    ):
+        if any(_SERVICE_PASSWORD_PATTERN.fullmatch(value) is None for value in normalized):
+            raise RuntimeSecretsError(f"{label} violate format policy")
+        if any(
+            secrets.compare_digest(value, other)
+            for index, value in enumerate(normalized)
+            for other in normalized[index + 1 :]
+        ):
+            raise RuntimeSecretsError(f"{label} must be pairwise independent")
+
+
+def _validate_redis_tls_server_key(value: bytes) -> None:
+    """生产 Redis TLS 私钥必须是无口令 PKCS#8 PEM；具体配对由启动预检复验。"""
+
+    stripped = value.strip()
+    if (
+        len(stripped) > 64 * 1024
+        or not stripped.startswith(_PKCS8_PEM_BEGIN)
+        or not stripped.endswith(_PKCS8_PEM_END)
+        or b"\x00" in stripped
+    ):
+        raise RuntimeSecretsError("redis TLS server key must be unencrypted PKCS#8 PEM")
+
+
+def _read_redis_tls_contract_file(
+    path: Path,
+    *,
+    label: str,
+    expected_mode: int,
+    expected_owner: tuple[int, int],
+    maximum_bytes: int,
+) -> bytes:
+    """以 no-follow FD 固化 Redis TLS 公共材料或 generation 文件。"""
+
+    metadata = _lstat(path, label)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeSecretsError(f"{label} must be a non-symlink regular file")
+    if _mode(metadata) != expected_mode:
+        raise RuntimeSecretsError(f"{label} mode violates policy")
+    if (metadata.st_uid, metadata.st_gid) != expected_owner:
+        raise RuntimeSecretsError(f"{label} owner violates policy")
+    if metadata.st_size <= 0 or metadata.st_size > maximum_bytes:
+        raise RuntimeSecretsError(f"{label} size violates policy")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeSecretsError(f"{label} cannot be opened safely") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+            or _mode(opened) != expected_mode
+            or (opened.st_uid, opened.st_gid) != expected_owner
+            or opened.st_size <= 0
+            or opened.st_size > maximum_bytes
+        ):
+            raise RuntimeSecretsError(f"{label} changed during validation")
+        value = bytearray()
+        while len(value) <= maximum_bytes:
+            chunk = os.read(descriptor, min(65536, maximum_bytes + 1 - len(value)))
+            if not chunk:
+                break
+            value.extend(chunk)
+        if not value or len(value) > maximum_bytes:
+            raise RuntimeSecretsError(f"{label} size violates policy")
+        return bytes(value)
+    except OSError as exc:
+        raise RuntimeSecretsError(f"{label} could not be validated") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _serialize_redis_tls_public_metadata(ca: bytes, certificate: bytes) -> bytes:
+    value = {
+        "schema_version": REDIS_TLS_PUBLIC_METADATA_SCHEMA_VERSION,
+        "ca_sha256": hashlib.sha256(ca).hexdigest(),
+        "server_certificate_sha256": hashlib.sha256(certificate).hexdigest(),
+    }
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")
+        + b"\n"
+    )
+
+
+def _redis_tls_public_metadata(
+    *,
+    ca_path: Path,
+    certificate_path: Path,
+    expected_owner: tuple[int, int],
+) -> bytes:
+    ca = _read_redis_tls_contract_file(
+        ca_path,
+        label="Redis TLS CA",
+        expected_mode=0o644,
+        expected_owner=expected_owner,
+        maximum_bytes=MAX_REDIS_TLS_PUBLIC_BYTES,
+    )
+    certificate = _read_redis_tls_contract_file(
+        certificate_path,
+        label="Redis TLS server certificate",
+        expected_mode=0o644,
+        expected_owner=expected_owner,
+        maximum_bytes=MAX_REDIS_TLS_PUBLIC_BYTES,
+    )
+    return _serialize_redis_tls_public_metadata(ca, certificate)
+
+
+def _validate_redis_tls_public_metadata(value: bytes) -> bytes:
+    try:
+        decoded = json.loads(value.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeSecretsError("Redis TLS generation metadata is invalid") from exc
+    if (
+        not isinstance(decoded, dict)
+        or set(decoded)
+        != {"schema_version", "ca_sha256", "server_certificate_sha256"}
+        or decoded.get("schema_version") != REDIS_TLS_PUBLIC_METADATA_SCHEMA_VERSION
+        or any(
+            not isinstance(decoded.get(name), str)
+            or re.fullmatch(r"[0-9a-f]{64}", decoded[name]) is None
+            for name in ("ca_sha256", "server_certificate_sha256")
+        )
+    ):
+        raise RuntimeSecretsError("Redis TLS generation metadata is invalid")
+    canonical = (
+        json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode("ascii")
+        + b"\n"
+    )
+    if not secrets.compare_digest(value, canonical):
+        raise RuntimeSecretsError("Redis TLS generation metadata is invalid")
+    return canonical
 
 
 def _ensure_directory(path: Path, expected_mode: int, label: str) -> None:
@@ -420,6 +602,8 @@ def _materialize_generation(
     values: dict[str, bytes],
     owners: dict[str, tuple[int, int]],
     rollback_after_switch: bool,
+    redis_tls_public_metadata: bytes | None = None,
+    redis_tls_public_metadata_owner: tuple[int, int] = (0, 0),
 ) -> None:
     generations_root = runtime_root / "generations"
     _ensure_directory(generations_root, 0o700, "generation root")
@@ -437,6 +621,13 @@ def _materialize_generation(
             for name in sorted(names):
                 _write_copy(service_dir / name, values[name], owners[service], name)
             _fsync_directory(service_dir)
+        if redis_tls_public_metadata is not None:
+            _write_copy(
+                staging / REDIS_TLS_PUBLIC_METADATA_NAME,
+                redis_tls_public_metadata,
+                redis_tls_public_metadata_owner,
+                REDIS_TLS_PUBLIC_METADATA_NAME,
+            )
         _verify_service_inventory(staging)
         _fsync_directory(staging)
 
@@ -513,6 +704,9 @@ def prepare(
     redis_owner: tuple[int, int] | None = None,
     require_root: bool = True,
     vendor_credential_root: Path | None = None,
+    redis_tls_ca_path: Path = REDIS_TLS_CA_PATH,
+    redis_tls_certificate_path: Path = REDIS_TLS_CERTIFICATE_PATH,
+    redis_tls_public_owner: tuple[int, int] = (0, 0),
 ) -> None:
     """校验核心凭据与 Redis ACL secrets 并原子生成服务级只读副本。"""
 
@@ -528,11 +722,20 @@ def prepare(
     }
     if any(uid < 0 or gid < 0 for uid, gid in owners.values()):
         raise RuntimeSecretsError("runtime owner violates policy")
+    if any(value < 0 for value in redis_tls_public_owner):
+        raise RuntimeSecretsError("Redis TLS public material owner violates policy")
 
     runtime_root = Path(runtime_root)
     _ensure_runtime_root(runtime_root)
     with _runtime_lock(runtime_root):
         values = _validate_source(Path(source_dir), mode)
+        redis_tls_metadata = None
+        if mode == "production":
+            redis_tls_metadata = _redis_tls_public_metadata(
+                ca_path=Path(redis_tls_ca_path),
+                certificate_path=Path(redis_tls_certificate_path),
+                expected_owner=redis_tls_public_owner,
+            )
         if vendor_credential_root is not None:
             from vendor_credential_store import (  # noqa: PLC0415
                 CredentialStoreError,
@@ -552,6 +755,8 @@ def prepare(
             values=values,
             owners=owners,
             rollback_after_switch=True,
+            redis_tls_public_metadata=redis_tls_metadata,
+            redis_tls_public_metadata_owner=redis_tls_public_owner,
         )
 
 
@@ -683,6 +888,93 @@ def activate(*, runtime_root: Path, target: str) -> None:
         finally:
             with contextlib.suppress(FileNotFoundError):
                 pointer_temp.unlink()
+
+
+def verify_ordinary_redis_tls_rotation(
+    *,
+    source_dir: Path,
+    runtime_root: Path,
+    baseline_target: str,
+    ca_path: Path = REDIS_TLS_CA_PATH,
+    certificate_path: Path = REDIS_TLS_CERTIFICATE_PATH,
+    expected_redis_owner: tuple[int, int] = (REDIS_UID, REDIS_GID),
+    expected_metadata_owner: tuple[int, int] = (0, 0),
+    require_root: bool = True,
+) -> None:
+    """确认普通 backend 轮换没有夹带 Redis TLS 三域 tuple 变化。"""
+
+    if require_root and os.geteuid() != 0:
+        raise RuntimeSecretsError("Redis TLS rotation verification requires root")
+    if any(
+        value < 0
+        for owner in (expected_redis_owner, expected_metadata_owner)
+        for value in owner
+    ):
+        raise RuntimeSecretsError(REDIS_TLS_FULL_STOP_ERROR)
+
+    runtime_root = Path(runtime_root)
+    _require_runtime_root(runtime_root)
+    with _runtime_lock(runtime_root):
+        try:
+            current_target_value = _relative_current_target(runtime_root)
+            if current_target_value is None:
+                raise RuntimeSecretsError("current generation is unavailable")
+            baseline = _validated_generation_path(runtime_root, baseline_target)
+            current = _validated_generation_path(runtime_root, current_target_value)
+
+            source_dir = Path(source_dir)
+            _validate_source_inventory(source_dir, "production")
+            source_key = _read_source_file(
+                source_dir / "redis_tls_server_key", "redis_tls_server_key"
+            )
+            _validate_redis_tls_server_key(source_key)
+            host_metadata = _redis_tls_public_metadata(
+                ca_path=Path(ca_path),
+                certificate_path=Path(certificate_path),
+                expected_owner=expected_metadata_owner,
+            )
+            baseline_metadata = _validate_redis_tls_public_metadata(
+                _read_redis_tls_contract_file(
+                    baseline / REDIS_TLS_PUBLIC_METADATA_NAME,
+                    label="baseline Redis TLS generation metadata",
+                    expected_mode=0o400,
+                    expected_owner=expected_metadata_owner,
+                    maximum_bytes=MAX_REDIS_TLS_METADATA_BYTES,
+                )
+            )
+            current_metadata = _validate_redis_tls_public_metadata(
+                _read_redis_tls_contract_file(
+                    current / REDIS_TLS_PUBLIC_METADATA_NAME,
+                    label="current Redis TLS generation metadata",
+                    expected_mode=0o400,
+                    expected_owner=expected_metadata_owner,
+                    maximum_bytes=MAX_REDIS_TLS_METADATA_BYTES,
+                )
+            )
+            baseline_key = _read_redis_tls_contract_file(
+                baseline / "redis" / "redis_tls_server_key",
+                label="baseline Redis TLS runtime key",
+                expected_mode=0o400,
+                expected_owner=expected_redis_owner,
+                maximum_bytes=MAX_SECRET_BYTES,
+            )
+            current_key = _read_redis_tls_contract_file(
+                current / "redis" / "redis_tls_server_key",
+                label="current Redis TLS runtime key",
+                expected_mode=0o400,
+                expected_owner=expected_redis_owner,
+                maximum_bytes=MAX_SECRET_BYTES,
+            )
+        except RuntimeSecretsError as exc:
+            raise RuntimeSecretsError(REDIS_TLS_FULL_STOP_ERROR) from exc
+
+        if not (
+            secrets.compare_digest(baseline_metadata, current_metadata)
+            and secrets.compare_digest(current_metadata, host_metadata)
+            and secrets.compare_digest(baseline_key, current_key)
+            and secrets.compare_digest(current_key, source_key)
+        ):
+            raise RuntimeSecretsError(REDIS_TLS_FULL_STOP_ERROR)
 
 
 def cleanup(*, runtime_root: Path, remove_all: bool) -> None:

@@ -38,6 +38,7 @@ SECRETS_MODE="${SMS_SECRETS_MODE:-production}"
 PREPROCESSOR="$ROOT/deploy/scripts/prepare_runtime_secrets.py"
 LOCK_RUNNER="$ROOT/deploy/scripts/run_with_lifecycle_lock.py"
 RELEASE_MANAGER="$ROOT/deploy/scripts/release_manager.py"
+CONTINUITY_MANAGER="$ROOT/deploy/scripts/continuity_manager.py"
 VENDOR_TEST_MANAGER="$ROOT/deploy/scripts/vendor_test_manager.py"
 VENDOR_TEST_BOOTSTRAP="$ROOT/deploy/scripts/vendor_test_bootstrap.py"
 VENDOR_RUNTIME_RESET="$ROOT/deploy/scripts/vendor_runtime_reset.py"
@@ -46,6 +47,10 @@ TEST_UPDATE_MANAGER="$ROOT/deploy/scripts/test_update_manager.py"
 TEST_UPDATE_PROMOTE="$ROOT/deploy/scripts/test_update_promote.py"
 PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
 PUBLIC_BASELINE_MANAGER=""
+STORAGE_PREFLIGHT="$ROOT/deploy/scripts/storage_preflight.py"
+VOLUME_CONTRACT_PREFLIGHT="$ROOT/deploy/scripts/volume_contract_preflight.py"
+REDIS_TLS_PREFLIGHT="$ROOT/deploy/scripts/redis_tls_preflight.py"
+REDIS_TLS_ROTATION_GUARD="$ROOT/deploy/scripts/redis_tls_rotation_guard.py"
 HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
 TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
 CLOUDFLARE_TUNNEL_MANAGER="$HOST_CONTROL_ROOT/cloudflare_tunnel_manager.py"
@@ -86,14 +91,20 @@ TEST_UPDATE_REQUEST="$TEST_UPDATE_STATE_ROOT/incoming/request.json"
 PUBLIC_BASELINE_MANIFEST="$TEST_UPDATE_STATE_ROOT/incoming/baseline-manifest.json"
 PUBLIC_BASELINE_ROOT="/opt/sms-platform"
 PUBLIC_BASELINE_RUNTIME_ROOT="/run/sms-platform/secrets"
-COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/docker-compose.yml")
+BASE_COMPOSE_FILE="$ROOT/deploy/docker-compose.yml"
+PRODUCTION_STORAGE_COMPOSE_FILE="$ROOT/deploy/docker-compose.production-storage.yml"
+REDIS_TLS_COMPOSE_FILE="$ROOT/deploy/docker-compose.redis-tls.yml"
+COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$BASE_COMPOSE_FILE")
+PRODUCTION_REDIS_HA_MODE=""
+EXPECTED_PRODUCTION_METRICS_ALLOWED_CIDRS="172.31.250.1/32"
 ROTATE_WAIT_TIMEOUT=120
 BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-bulk worker-callback outbox-dispatcher beat)
 export SMS_RUNTIME_SECRETS_DIR="$RUNTIME_ROOT/current"
 
 usage() {
-  echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs|exec [args...]" >&2
-  echo "release prepare|activate|status|resume|rollback: use the documented exact arguments" >&2
+  echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes (development only)] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs [args...]" >&2
+  echo "release prepare|bootstrap|start-recovery|observe-recovery|adopt-recovery|resume-recovery|prepare-forward-rollback|activate|status|resume|rollback: use the documented exact arguments" >&2
+  echo "production only: continuity engage|release --evidence FILE --evidence-sha256 SHA256; continuity status" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
   echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
@@ -135,6 +146,116 @@ trim_non_secret_value() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+configure_compose_topology() {
+  COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$BASE_COMPOSE_FILE")
+  PRODUCTION_REDIS_HA_MODE=""
+  if [[ "$SECRETS_MODE" != production ]]; then
+    return 0
+  fi
+
+  local env_file="$ROOT/.env"
+  local line value
+  local seen_redis_ha_mode=0 seen_metrics_allowed_cidrs=0
+  if [[ ! -f "$env_file" || -L "$env_file" ]]; then
+    echo "sms-compose: production requires a regular root .env file" >&2
+    return 1
+  fi
+  local env_metadata
+  env_metadata="$(stat -c '%u:%g:%a:%F' -- "$env_file")" || {
+    echo "sms-compose: production root .env metadata is unavailable" >&2
+    return 1
+  }
+  if [[ "$env_metadata" != "0:0:600:regular file" ]]; then
+    echo "sms-compose: production root .env must be root:root mode 0600" >&2
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*(COMPOSE_FILE|COMPOSE_PROJECT_NAME)[[:space:]]*= ]]; then
+      echo "sms-compose: production Compose topology overrides are forbidden" >&2
+      return 1
+    fi
+    if [[ "$line" =~ ^[[:space:]]*REDIS_HA_MODE[[:space:]]*=(.*)$ ]]; then
+      [[ "$seen_redis_ha_mode" == 0 ]] || {
+        echo "sms-compose: duplicate production REDIS_HA_MODE in root .env" >&2
+        return 1
+      }
+      seen_redis_ha_mode=1
+      value="${BASH_REMATCH[1]}"
+      if [[ "$line" != "REDIS_HA_MODE=$value" ||
+            "$value" != isolated-standalone ]]; then
+        echo "sms-compose: production REDIS_HA_MODE is invalid" >&2
+        return 1
+      fi
+      PRODUCTION_REDIS_HA_MODE="$value"
+    fi
+    if [[ "$line" =~ ^[[:space:]]*METRICS_ALLOWED_CIDRS[[:space:]]*=(.*)$ ]]; then
+      [[ "$seen_metrics_allowed_cidrs" == 0 ]] || {
+        echo "sms-compose: duplicate production METRICS_ALLOWED_CIDRS in root .env" >&2
+        return 1
+      }
+      seen_metrics_allowed_cidrs=1
+      value="${BASH_REMATCH[1]}"
+      if [[ "$line" != "METRICS_ALLOWED_CIDRS=$EXPECTED_PRODUCTION_METRICS_ALLOWED_CIDRS" ||
+            "$value" != "$EXPECTED_PRODUCTION_METRICS_ALLOWED_CIDRS" ]]; then
+        echo "sms-compose: production METRICS_ALLOWED_CIDRS is invalid" >&2
+        return 1
+      fi
+    fi
+  done < "$env_file"
+
+  if [[ "$seen_redis_ha_mode" != 1 ]]; then
+    echo "sms-compose: production requires exactly one REDIS_HA_MODE" >&2
+    return 1
+  fi
+  if [[ "$seen_metrics_allowed_cidrs" != 1 ]]; then
+    echo "sms-compose: production requires exactly one METRICS_ALLOWED_CIDRS" >&2
+    return 1
+  fi
+  for value in REDIS_HA_MODE COMPOSE_FILE COMPOSE_PROJECT_NAME; do
+    if [[ ${!value+x} ]]; then
+      echo "sms-compose: shell Compose topology overrides are forbidden in production" >&2
+      return 1
+    fi
+  done
+  for value in SMS_API_IMAGE SMS_WEB_IMAGE SMS_POSTGRES_IMAGE SMS_REDIS_IMAGE; do
+    if [[ ${!value+x} ]]; then
+      echo "sms-compose: shell image overrides are forbidden in production" >&2
+      return 1
+    fi
+  done
+  if [[ ${METRICS_ALLOWED_CIDRS+x} ]]; then
+    echo "sms-compose: shell METRICS_ALLOWED_CIDRS override is forbidden in production" >&2
+    return 1
+  fi
+
+  COMPOSE+=( -f "$PRODUCTION_STORAGE_COMPOSE_FILE" )
+  COMPOSE+=( -f "$REDIS_TLS_COMPOSE_FILE" )
+}
+
+run_production_infrastructure_preflights() {
+  local storage_mode="${1:-startup}"
+  case "$storage_mode" in
+    release | startup) ;;
+    *)
+      echo "sms-compose: invalid production storage preflight mode" >&2
+      return 2
+      ;;
+  esac
+  if ! python3 "$STORAGE_PREFLIGHT" --mode "$storage_mode"; then
+    echo "sms-compose: production storage preflight failed" >&2
+    return 1
+  fi
+  if [[ "$PRODUCTION_REDIS_HA_MODE" == isolated-standalone ]] &&
+     ! python3 "$REDIS_TLS_PREFLIGHT"; then
+    echo "sms-compose: isolated Redis TLS preflight failed" >&2
+    return 1
+  fi
+  if ! python3 "$VOLUME_CONTRACT_PREFLIGHT"; then
+    echo "sms-compose: production volume contract preflight failed" >&2
+    return 1
+  fi
 }
 
 load_development_web_transport() {
@@ -194,6 +315,7 @@ load_development_web_transport() {
 }
 
 validate_production_launch() {
+  local storage_mode="${1:-startup}"
   local env_file="$ROOT/.env"
   local line key raw value shell_value
   local seen_environment=0 seen_debug=0 seen_auth_mock=0 seen_vendor_mock=0
@@ -204,10 +326,7 @@ validate_production_launch() {
   local env_external_tls_mode='0' env_trusted_proxy_cidrs=''
   local effective_web_bind_ip effective_external_tls_mode effective_trusted_proxy_cidrs
 
-  if [[ ! -f "$env_file" ]]; then
-    echo "sms-compose: production requires the root .env file" >&2
-    return 1
-  fi
+  configure_compose_topology || return $?
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*(SMS_INGRESS_SUBNET|SMS_API_INGRESS_IPV4|SMS_WEB_INGRESS_IPV4)[[:space:]]*= ]]; then
@@ -342,13 +461,30 @@ validate_production_launch() {
   fi
   PRODUCTION_EXTERNAL_TLS_MODE="$effective_external_tls_mode"
   PRODUCTION_TRUSTED_PROXY_CIDRS="$effective_trusted_proxy_cidrs"
+  run_continuity_manager gate >/dev/null || {
+    echo "sms-compose: production continuity fence blocks this operation" >&2
+    return 1
+  }
+  if [[ "$storage_mode" == startup ]]; then
+    run_release_manager start-gate || {
+      echo "sms-compose: production release start gate failed" >&2
+      return 1
+    }
+  fi
+  run_production_infrastructure_preflights "$storage_mode"
 }
 
 validate_down_args() {
   local argument
   for argument in "$@"; do
     case "$argument" in
-      --remove-orphans | -v | --volumes) ;;
+      --remove-orphans) ;;
+      -v | --volumes)
+        if [[ "$SECRETS_MODE" == production ]]; then
+          echo "sms-compose: production down must retain persistent volumes" >&2
+          return 2
+        fi
+        ;;
       *)
         echo "sms-compose: unsupported down argument" >&2
         return 2
@@ -371,8 +507,38 @@ validate_production_up_args() {
   done
 }
 
+runtime_generation_root_is_empty() (
+  local generation_root="$RUNTIME_ROOT/generations"
+  local entries
+  if [[ ! -e "$generation_root" && ! -L "$generation_root" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$generation_root" || -L "$generation_root" ||
+        ! -r "$generation_root" || ! -x "$generation_root" ]]; then
+    return 1
+  fi
+  shopt -s nullglob dotglob
+  entries=("$generation_root"/*)
+  ((${#entries[@]} == 0))
+)
+
 prepare_runtime_secrets() {
-  local command
+  local command baseline_target='' guard_status=0
+  if [[ "$SECRETS_MODE" == production ]]; then
+    if [[ -e "$RUNTIME_ROOT/current" || -L "$RUNTIME_ROOT/current" ]]; then
+      baseline_target="$(current_runtime_target)" || {
+        echo "sms-compose: production runtime baseline is invalid" >&2
+        return 1
+      }
+      if [[ ! "$baseline_target" =~ ^generations/generation-[0-9a-f]{32}$ ]]; then
+        echo "sms-compose: production runtime baseline is invalid" >&2
+        return 1
+      fi
+    elif ! runtime_generation_root_is_empty; then
+      echo "sms-compose: production runtime has generations without a valid current pointer" >&2
+      return 1
+    fi
+  fi
   if [[ "$SECRETS_MODE" == development && ! -f "$VENDOR_CREDENTIAL_ROOT/active" ]]; then
     command=(
       python3 "$PREPROCESSOR" revoke-vendor
@@ -391,7 +557,21 @@ prepare_runtime_secrets() {
       command+=(--vendor-credential-root "$VENDOR_CREDENTIAL_ROOT")
     fi
   fi
-  "${command[@]}"
+  "${command[@]}" || return $?
+  if [[ "$SECRETS_MODE" == production && -n "$baseline_target" ]]; then
+    python3 "$REDIS_TLS_ROTATION_GUARD" \
+      --source-dir "$ROOT/deploy/secrets" \
+      --runtime-root "$RUNTIME_ROOT" \
+      --baseline-target "$baseline_target" || guard_status=$?
+    if ((guard_status != 0)); then
+      if ! activate_runtime_target "$baseline_target"; then
+        echo "sms-compose: Redis TLS guard failed and the previous generation could not be reactivated" >&2
+        return 1
+      fi
+      echo "sms-compose: Redis TLS guard rejected the prepared generation; previous generation reactivated" >&2
+      return "$guard_status"
+    fi
+  fi
 }
 
 cleanup_runtime_secrets() {
@@ -583,12 +763,78 @@ validate_release_manifest_path() {
   fi
 }
 
+validate_recovery_evidence_path() {
+  local evidence_path="$1"
+  if [[ ! "$evidence_path" =~ ^/[A-Za-z0-9._/-]+$ ||
+        "$evidence_path" == *//* || "$evidence_path" == */../* ||
+        "$evidence_path" == */./* ]]; then
+    echo "sms-compose: invalid recovery evidence path" >&2
+    return 2
+  fi
+}
+
+validate_sha256() {
+  [[ "$1" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "sms-compose: invalid SHA-256 digest" >&2
+    return 2
+  }
+}
+
 run_release_manager() {
   python3 "$RELEASE_MANAGER" \
     --root "$ROOT" \
     --release-root "$RELEASE_ROOT" \
     --mode "$SECRETS_MODE" \
     "$@"
+}
+
+run_continuity_manager() {
+  python3 "$CONTINUITY_MANAGER" \
+    --root "$ROOT" \
+    --mode "$SECRETS_MODE" \
+    "$@"
+}
+
+run_locked_continuity() {
+  local lock_fd="$1"
+  local subcommand="$2"
+  shift 2
+  [[ "$SECRETS_MODE" == production ]] || return 2
+  case "$subcommand" in
+    engage | release)
+      [[ $# -eq 4 && "$1" == --evidence && "$3" == --evidence-sha256 ]] || return 2
+      validate_recovery_evidence_path "$2" || return $?
+      validate_sha256 "$4" || return $?
+      configure_compose_topology || return $?
+      SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
+        run_continuity_manager "$subcommand" "$@"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+dispatch_continuity() {
+  local subcommand="${1:-}"
+  shift || true
+  [[ "$SECRETS_MODE" == production ]] || return 2
+  case "$subcommand" in
+    status)
+      [[ $# -eq 0 ]] || return 2
+      run_continuity_manager status
+      ;;
+    engage | release)
+      [[ $# -eq 4 && "$1" == --evidence && "$3" == --evidence-sha256 ]] || return 2
+      validate_recovery_evidence_path "$2" || return $?
+      validate_sha256 "$4" || return $?
+      configure_compose_topology || return $?
+      run_with_lifecycle_lock continuity "$subcommand" "$@"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
 }
 
 exec_release_manager() {
@@ -601,20 +847,80 @@ exec_release_manager() {
 
 run_locked_release() {
   local subcommand="$1"
+  local prepare_secrets=0
+  local runtime_target=''
   shift
   case "$subcommand" in
     activate | resume | rollback)
       [[ $# -eq 2 && "$1" == --release-id ]] || return 2
       validate_release_id "$2" || return $?
+      prepare_secrets=1
+      ;;
+    bootstrap)
+      [[ $# -eq 3 && "$1" == --manifest && "$3" == --confirm-empty-host ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      prepare_secrets=1
+      ;;
+    start-recovery)
+      [[ $# -eq 7 && "$1" == --manifest && "$3" == --snapshot-manifest &&
+         "$5" == --snapshot-manifest-sha256 && "$7" == --confirm-recovered-host ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      validate_recovery_evidence_path "$4" || return $?
+      validate_sha256 "$6" || return $?
+      prepare_secrets=1
+      ;;
+    observe-recovery)
+      [[ $# -eq 9 && "$1" == --manifest && "$3" == --snapshot-manifest &&
+         "$5" == --snapshot-manifest-sha256 && "$7" == --output &&
+         "$9" == --confirm-recovered-host ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      validate_recovery_evidence_path "$4" || return $?
+      validate_sha256 "$6" || return $?
+      validate_recovery_evidence_path "$8" || return $?
+      ;;
+    adopt-recovery)
+      [[ $# -eq 15 && "$1" == --manifest && "$3" == --snapshot-manifest &&
+         "$5" == --snapshot-manifest-sha256 && "$7" == --restore-receipt &&
+         "$9" == --restore-receipt-sha256 && "${11}" == --gap-fence-evidence &&
+         "${13}" == --gap-fence-sha256 && "${15}" == --confirm-recovered-host ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      validate_recovery_evidence_path "$4" || return $?
+      validate_sha256 "$6" || return $?
+      validate_recovery_evidence_path "$8" || return $?
+      validate_sha256 "${10}" || return $?
+      validate_recovery_evidence_path "${12}" || return $?
+      validate_sha256 "${14}" || return $?
+      ;;
+    resume-recovery)
+      [[ $# -eq 3 && "$1" == --stage && "$3" == --confirm-recovered-host ]] || return 2
+      [[ "$2" =~ ^(api|callback|workers|outbox|beat|web)$ ]] || return 2
+      ;;
+    prepare-forward-rollback)
+      [[ $# -eq 4 && "$1" == --source-release-id && "$3" == --manifest ]] || return 2
+      validate_release_id "$2" || return $?
+      validate_release_manifest_path "$4" || return $?
       ;;
     *)
       return 2
       ;;
   esac
   if [[ "$SECRETS_MODE" == production ]]; then
-    validate_production_launch || return $?
+    validate_production_launch release || return $?
   fi
-  prepare_runtime_secrets || return $?
+  if [[ "$prepare_secrets" == 1 ]]; then
+    prepare_runtime_secrets || return $?
+  fi
+  case "$subcommand" in
+    start-recovery | observe-recovery | adopt-recovery | resume-recovery)
+      runtime_target="$(current_runtime_target)" || return $?
+      if [[ ! "$runtime_target" =~ ^generations/generation-[0-9a-f]{32}$ ]]; then
+        echo "sms-compose: recovery runtime secrets target is invalid" >&2
+        return 1
+      fi
+      exec_release_manager "$subcommand" "$@" \
+        --runtime-secrets-target "$runtime_target"
+      ;;
+  esac
   exec_release_manager "$subcommand" "$@"
 }
 
@@ -628,7 +934,7 @@ dispatch_release() {
       [[ $# -eq 2 && "$1" == --manifest ]] || return 2
       validate_release_manifest_path "$2" || return $?
       if [[ "$SECRETS_MODE" == production ]]; then
-        validate_production_launch || return $?
+        validate_production_launch release || return $?
       fi
       run_release_manager prepare --manifest "$2"
       ;;
@@ -637,11 +943,32 @@ dispatch_release() {
       validate_release_id "$2" || return $?
       run_release_manager status --release-id "$2"
       ;;
+    bootstrap)
+      [[ $# -eq 3 && "$1" == --manifest && "$3" == --confirm-empty-host ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      [[ "$SECRETS_MODE" == production ]] || return 2
+      validate_production_launch release || return $?
+      run_with_lifecycle_lock release bootstrap --manifest "$2" --confirm-empty-host
+      ;;
+    start-recovery | observe-recovery | adopt-recovery | resume-recovery)
+      [[ "$SECRETS_MODE" == production ]] || return 2
+      validate_production_launch release || return $?
+      run_with_lifecycle_lock release "$subcommand" "$@"
+      ;;
+    prepare-forward-rollback)
+      [[ $# -eq 4 && "$1" == --source-release-id && "$3" == --manifest ]] || return 2
+      validate_release_id "$2" || return $?
+      validate_release_manifest_path "$4" || return $?
+      [[ "$SECRETS_MODE" == production ]] || return 2
+      validate_production_launch release || return $?
+      run_with_lifecycle_lock release prepare-forward-rollback \
+        --source-release-id "$2" --manifest "$4"
+      ;;
     activate | resume | rollback)
       [[ $# -eq 2 && "$1" == --release-id ]] || return 2
       validate_release_id "$2" || return $?
       if [[ "$SECRETS_MODE" == production ]]; then
-        validate_production_launch || return $?
+        validate_production_launch release || return $?
       fi
       run_with_lifecycle_lock release "$subcommand" --release-id "$2"
       ;;
@@ -1003,6 +1330,9 @@ run_locked_operation() {
       ;;
     down)
       validate_down_args "$@"
+      if [[ "$SECRETS_MODE" == production ]]; then
+        configure_compose_topology
+      fi
       stop_stack "$@"
       ;;
     rotate)
@@ -1025,6 +1355,14 @@ run_locked_operation() {
         validate_production_launch
       fi
       run_partition_maintenance "$@"
+      ;;
+    init-admin)
+      validate_init_admin_args "$@"
+      run_init_admin
+      ;;
+    continuity)
+      SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
+        run_locked_continuity "$lock_fd" "$@"
       ;;
     release)
       run_locked_release "$@"
@@ -1072,7 +1410,7 @@ case "$SECRETS_MODE" in
 esac
 
 case "$ACTION" in
-  up | down | rotate | run | partition-maintenance | release | vendor-test | test-update | __locked)
+  up | down | rotate | run | partition-maintenance | init-admin | continuity | release | vendor-test | test-update | __locked)
     configure_release_root
     ;;
 esac
@@ -1091,12 +1429,15 @@ case "$ACTION" in
   up)
     if [[ "$SECRETS_MODE" == production ]]; then
       validate_production_up_args "$@"
-      validate_production_launch
+      validate_production_launch release
     fi
     run_with_lifecycle_lock up "$@"
     ;;
   down)
     validate_down_args "$@"
+    if [[ "$SECRETS_MODE" == production ]]; then
+      configure_compose_topology
+    fi
     run_with_lifecycle_lock down "$@"
     ;;
   rotate)
@@ -1105,7 +1446,7 @@ case "$ACTION" in
       exit 2
     fi
     if [[ "$SECRETS_MODE" == production ]]; then
-      validate_production_launch
+      validate_production_launch release
     fi
     run_with_lifecycle_lock rotate
     ;;
@@ -1115,7 +1456,7 @@ case "$ACTION" in
       exit 2
     fi
     if [[ "$SECRETS_MODE" == production ]]; then
-      validate_production_launch
+      validate_production_launch release
     fi
     run_with_lifecycle_lock migrate
     ;;
@@ -1125,13 +1466,27 @@ case "$ACTION" in
       exit 2
     fi
     if [[ "$SECRETS_MODE" == production ]]; then
-      validate_production_launch
+      validate_production_launch release
     fi
     run_with_lifecycle_lock partition-maintenance "$@"
     ;;
   init-admin)
     validate_init_admin_args "$@"
-    run_init_admin
+    if [[ "$SECRETS_MODE" == production ]]; then
+      validate_production_launch release
+      run_with_lifecycle_lock init-admin "$@"
+    else
+      run_init_admin
+    fi
+    ;;
+  continuity)
+    if dispatch_continuity "$@"; then
+      :
+    else
+      continuity_status=$?
+      usage
+      exit "$continuity_status"
+    fi
     ;;
   release)
     if dispatch_release "$@"; then
@@ -1178,8 +1533,18 @@ case "$ACTION" in
       exit "$control_status"
     fi
     ;;
-  config | ps | logs | exec)
+  config | ps | logs)
+    if [[ "$SECRETS_MODE" == production ]]; then
+      configure_compose_topology
+    fi
     "${COMPOSE[@]}" "$ACTION" "$@"
+    ;;
+  exec)
+    if [[ "$SECRETS_MODE" == production ]]; then
+      echo "sms-compose: generic exec is forbidden in production mode" >&2
+      exit 2
+    fi
+    "${COMPOSE[@]}" exec "$@"
     ;;
   cp)
     if [[ "$SECRETS_MODE" == production ]]; then
