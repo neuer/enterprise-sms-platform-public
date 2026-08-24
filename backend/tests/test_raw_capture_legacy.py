@@ -332,6 +332,7 @@ class _ForbiddenReplayRepository:
             (),
             {
                 "claimed": False,
+                "lease": None,
                 "record": RawReplayRecord(
                     raw_id,
                     "report",
@@ -344,7 +345,7 @@ class _ForbiddenReplayRepository:
             },
         )()
 
-    async def mark_replay_error(self, raw_id: int, error: str) -> None:
+    async def mark_replay_error(self, raw_id: int, error: str, **_: object) -> None:
         return None
 
     async def has_human_raw_replay_audit(self, raw_id: int) -> bool:

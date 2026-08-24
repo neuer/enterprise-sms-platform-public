@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.64  2026-08-24
+-- v1.6.64：raw_vendor_log 增加 processing_lease_id/epoch/expires_at，
+--          初始 poll、自动/人工重放与 parser 重评估共用 fencing；
+--          processed/parse_state/replay_eligibility 交叉 CHECK 拒绝矛盾组合
 -- v1.6.63  2026-08-23
 -- v1.6.63：raw_vendor_log 增加 parse_state 与 replay_eligibility，
 --          自动重放只认 automatic；确定性 HTTP/编码/JSON/包络进入
@@ -705,6 +709,10 @@ CREATE TABLE raw_vendor_log (
     item_count     INTEGER     NOT NULL DEFAULT 0,
     processed      BOOLEAN     NOT NULL DEFAULT FALSE,
     processing_started_at TIMESTAMPTZ,
+    processing_lease_id UUID,
+    processing_lease_epoch BIGINT NOT NULL DEFAULT 0
+                   CHECK (processing_lease_epoch >= 0),
+    processing_lease_expires_at TIMESTAMPTZ,
     error          VARCHAR(256),
     -- 自动重放消耗的认领次数；达到上限即退出自动重放，仅保留人工入口
     replay_attempts INTEGER    NOT NULL DEFAULT 0 CHECK (replay_attempts>=0),
@@ -728,12 +736,23 @@ CREATE TABLE raw_vendor_log (
     CONSTRAINT ck_raw_vendor_parse_state
       CHECK (parse_state IN ('unattempted','transient_failure','protocol_invalid','processed')),
     CONSTRAINT ck_raw_vendor_replay_eligibility
-      CHECK (replay_eligibility IN ('automatic','manual','never'))
+      CHECK (replay_eligibility IN ('automatic','manual','never')),
+    CONSTRAINT ck_raw_vendor_processed_consistency
+      CHECK (
+        (processed = FALSE AND parse_state <> 'processed')
+        OR (
+          processed = TRUE
+          AND parse_state = 'processed'
+          AND replay_eligibility = 'never'
+        )
+      )
 );
 CREATE INDEX idx_raw_unprocessed ON raw_vendor_log(processed, fetched_at)
     WHERE processed = FALSE;
 CREATE INDEX idx_raw_processing_lease ON raw_vendor_log(processing_started_at, id)
     WHERE processed = FALSE;
+CREATE INDEX idx_raw_processing_lease_epoch ON raw_vendor_log(processing_lease_expires_at, id)
+    WHERE processed = FALSE AND processing_lease_id IS NOT NULL;
 CREATE INDEX idx_raw_auto_replay ON raw_vendor_log(replay_attempts, id)
     WHERE processed = FALSE AND replay_eligibility = 'automatic';
 CREATE INDEX idx_raw_fetched ON raw_vendor_log(fetched_at);
@@ -1295,7 +1314,7 @@ FOR EACH ROW EXECUTE FUNCTION revoke_callback_tasks_on_app_change();
 CREATE TABLE worker_lease_event (
     id          BIGSERIAL PRIMARY KEY,
     task_kind   VARCHAR(16) NOT NULL
-                CHECK (task_kind IN ('callback','export')),
+                CHECK (task_kind IN ('callback','export','raw')),
     task_id     BIGINT NOT NULL CHECK (task_id>0),
     event_type  VARCHAR(24) NOT NULL
                 CHECK (event_type IN (
@@ -2257,6 +2276,13 @@ GRANT INSERT, UPDATE ON
     vendor_test_operation
 TO sms_accept;
 GRANT SELECT, INSERT ON audit_log TO sms_accept;
+GRANT UPDATE (
+    parse_state, replay_eligibility, error, processed, replay_attempts,
+    processing_started_at, processing_lease_id, processing_lease_epoch,
+    processing_lease_expires_at
+) ON raw_vendor_log TO sms_accept;
+GRANT INSERT ON worker_lease_event TO sms_accept;
+GRANT USAGE, SELECT ON SEQUENCE worker_lease_event_id_seq TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE
     app_id_seq, sms_batch_id_seq, idempotency_record_id_seq,
     sms_message_id_seq, import_task_id_seq,
@@ -2378,7 +2404,8 @@ GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
 GRANT SELECT (queue, state)
     ON outbox_event TO sms_metrics;
-GRANT SELECT (replay_eligibility) ON raw_vendor_log TO sms_metrics;
+GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expires_at)
+    ON raw_vendor_log TO sms_metrics;
 
 -- 新表/序列默认不向任何运行身份授权；迁移必须显式更新本矩阵。
 ALTER DEFAULT PRIVILEGES FOR ROLE sms_owner IN SCHEMA public

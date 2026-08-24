@@ -113,6 +113,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "test_worker_fencing_postgres.py" in postgres_gate
     assert "test_raw_capture_legacy_postgres.py" in postgres_gate
     assert "test_raw_replay_eligibility_postgres.py" in postgres_gate
+    assert "test_raw_replay_fencing_postgres.py" in postgres_gate
     assert "test_ops_audit_postgres.py" in postgres_gate
     assert "OUTBOX_POSTGRES_DSN" in postgres_gate
     assert "EXPORT_AUTH_POSTGRES_DSN" in postgres_gate

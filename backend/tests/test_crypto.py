@@ -15,6 +15,7 @@ from app.services.crypto import (
     BOUND_ENVELOPE_MAGIC,
     CryptoService,
     EncryptionContext,
+    UnknownKeyVersionError,
 )
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -136,8 +137,9 @@ def test_phone_mask_and_hmac_reject_invalid_numbers(phone: str) -> None:
 def test_unknown_key_version_and_short_ciphertext_are_rejected() -> None:
     service = CryptoService.from_secret_values(b64(b"a"), b64(b"h"))
 
-    with pytest.raises(ValueError, match="key version"):
+    with pytest.raises(UnknownKeyVersionError) as raised:
         service.decrypt_text(b"x" * 32, 2)
+    assert raised.value.version == 2
     with pytest.raises(ValueError, match="ciphertext"):
         service.decrypt_text(b"too-short", 1)
 

@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     raw_spill_recover_max_files: int = RAW_SPILL_RECOVER_MAX_FILES_DEFAULT
     raw_spill_recover_max_plaintext_bytes: int = RAW_SPILL_RECOVERY_CAPTURE_BYTES
     raw_spill_recover_max_seconds: float = RAW_SPILL_RECOVER_MAX_SECONDS_DEFAULT
+    raw_spill_max_cipherq_files: int = 64
+    raw_spill_max_cipherq_bytes: int = RAW_SPILL_MIN_TOTAL_BYTES
+    raw_spill_cipherq_retention_s: float = 86400.0
     security_daily_control_dir: Path = Path("/run/security-report")
     security_daily_config_dir: Path = Path("/run/security-report-config")
 
@@ -437,6 +440,15 @@ class Settings(BaseSettings):
             )
         if not 0.1 <= self.raw_spill_recover_max_seconds <= 60:
             raise ValueError("RAW_SPILL_RECOVER_MAX_SECONDS must be between 0.1 and 60")
+        if not 1 <= self.raw_spill_max_cipherq_files <= 4096:
+            raise ValueError("RAW_SPILL_MAX_CIPHERQ_FILES must be between 1 and 4096")
+        if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_cipherq_bytes <= max_spill_bytes:
+            raise ValueError(
+                "RAW_SPILL_MAX_CIPHERQ_BYTES must be at least one 64MiB recovery "
+                "reservation and at most 8GiB"
+            )
+        if not 0 <= self.raw_spill_cipherq_retention_s <= 30 * 86400:
+            raise ValueError("RAW_SPILL_CIPHERQ_RETENTION_S must be between 0 and 30 days")
         return self
 
     @property

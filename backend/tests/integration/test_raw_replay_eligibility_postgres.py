@@ -181,7 +181,11 @@ async def test_http_encoding_json_and_transient_matrix_on_postgres() -> None:
                     error="report protocol-invalid vendor response",
                 )
                 processed_id = await _insert(
-                    connection, name="done", processed=True
+                    connection,
+                    name="done",
+                    processed=True,
+                    parse_state="processed",
+                    replay_eligibility="never",
                 )
 
                 http = await _load(connection, http_id)
@@ -226,8 +230,9 @@ async def test_http_encoding_json_and_transient_matrix_on_postgres() -> None:
                                   AND replay_eligibility='automatic'
                                   AND replay_attempts<10
                                   AND (
-                                    processing_started_at IS NULL
-                                    OR processing_started_at<=now()-interval '15 minutes'
+                                    processing_lease_id IS NULL
+                                    OR processing_lease_expires_at IS NULL
+                                    OR processing_lease_expires_at<=now()
                                   )
                                   AND id = ANY(CAST(:ids AS bigint[]))
                                 ORDER BY id

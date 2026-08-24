@@ -29,6 +29,7 @@ from app.services.crypto import (
     TAG_SIZE,
     EncryptedValue,
     EncryptionContext,
+    UnknownKeyVersionError,
 )
 
 SOURCE_PATTERN = re.compile(r"^(report|reply)$")
@@ -83,10 +84,37 @@ DIRECTORY_METADATA_BYTES = 768
 SPILL_HEADER_BUDGET_BYTES = 768
 # 3× 厂商绝对超时，避免回收仍在 DNS/connect/TLS 中的在途 header-only。
 HEADER_ONLY_RECLAIM_AFTER_S = 30.0
-# 非活动隔离与活动拉取配额分离：只保存无 PII 证据，不占 32 文件/64MiB 活动容量。
+# 非活动隔离与活动拉取配额分离：.headerq 只保存无 PII 小标记；.cq 保存原密文字节。
 DEFAULT_MAX_QUARANTINE_FILES = 64
 DEFAULT_MAX_QUARANTINE_BYTES = 256 * 1024
 DEFAULT_QUARANTINE_RETENTION_S = 86400.0
+DEFAULT_MAX_CIPHERQ_FILES = 64
+DEFAULT_CIPHERQ_RETENTION_S = 86400.0
+REASON_KEY_UNAVAILABLE = "key_unavailable"
+REASON_TRANSIENT_IO = "transient_io"
+REASON_AUTH_FAILED = "auth_failed"
+REASON_CORRUPT = "corrupt"
+REASON_PROVABLY_EMPTY = "provably_empty"
+CIPHERQ_STATE_PENDING = "pending"
+CIPHERQ_STATE_SEALED = "sealed"
+CIPHERQ_SUFFIX = ".cq"
+CIPHERQ_MANIFEST_SUFFIX = ".cq.man"
+CIPHERQ_EVICTABLE_REASONS = frozenset({REASON_AUTH_FAILED, REASON_CORRUPT})
+CIPHERQ_RETAIN_REASONS = frozenset({REASON_KEY_UNAVAILABLE, REASON_TRANSIENT_IO})
+CIPHERQ_MANIFEST_KEYS = frozenset(
+    {
+        "isolated_at",
+        "kind",
+        "reason",
+        "sha256",
+        "size_bytes",
+        "source",
+        "src_name",
+        "state",
+        "token",
+    }
+)
+CIPHERQ_FORBIDDEN_KEYS = frozenset({"phone", "payload", "ciphertext", "secret", "key", "body"})
 MAX_CLASSIFY_DATA_CIPHER_BYTES = INTERNAL_FRAME_SIZE + DATA_FRAME_OVERHEAD_BYTES + 64
 MAX_CLASSIFY_CONTROL_BYTES = CONTROL_FRAME_BUDGET_BYTES * 4
 QUOTA_LOCK_NAME = ".quota.lock"
@@ -114,7 +142,10 @@ REWRITE_HDR_NAME = re.compile(
 )
 MARKER_TMP_NAME = re.compile(
     r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32,64})\."
-    r"(?:headerq|quarantine|reserve)\.tmp$"
+    r"(?:headerq|quarantine|reserve|cq\.man)\.tmp$"
+)
+CIPHERQ_FILE_NAME = re.compile(
+    r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32,64})\.cq(?:\.man)?(?:\.tmp)?$"
 )
 STREAM_LIFE_LEGAL_HEADER_ONLY = "legal_header_only"
 STREAM_LIFE_PARTIAL_HEADER = "partial_header"
@@ -123,9 +154,13 @@ STREAM_LIFE_INCOMPLETE_FRAMES = "incomplete_frames"
 STREAM_LIFE_UNAUTHENTICATED_PARTIAL = "unauthenticated_partial"
 STREAM_LIFE_HAS_CONTROL = "has_control"
 STREAM_LIFE_HAS_AUTHENTICATED_DATA = "has_authenticated_data"
+STREAM_LIFE_KEY_UNAVAILABLE = REASON_KEY_UNAVAILABLE
+STREAM_LIFE_TRANSIENT_IO = REASON_TRANSIENT_IO
+STREAM_LIFE_AUTH_FAILED = REASON_AUTH_FAILED
 SPILL_LIFE_VALID = "valid_spill"
 SPILL_LIFE_INCOMPLETE = "incomplete_spill"
 SPILL_LIFE_CORRUPT = "corrupt_spill"
+SPILL_LIFE_TRANSIENT = REASON_TRANSIENT_IO
 LOGGER = logging.getLogger(__name__)
 
 
@@ -144,6 +179,10 @@ def is_nonactive_quota_filename(name: str) -> bool:
             HEADER_QUARANTINE_SUFFIX + ".tmp",
             HANDOFF_QUARANTINE_SUFFIX,
             HANDOFF_QUARANTINE_SUFFIX + ".tmp",
+            CIPHERQ_SUFFIX,
+            CIPHERQ_SUFFIX + ".tmp",
+            CIPHERQ_MANIFEST_SUFFIX,
+            CIPHERQ_MANIFEST_SUFFIX + ".tmp",
         )
     )
 
@@ -177,6 +216,8 @@ def capture_reservation_bytes(capture_bytes: int) -> int:
 CAPTURE_FRAME_OVERHEAD_BYTES = (
     capture_reservation_bytes(RECOVERY_CAPTURE_BYTES) - RECOVERY_CAPTURE_BYTES
 )
+# cipherq 至少能容纳一次完整 64MiB 预留，不得用 256KiB headerq 配额存密文。
+DEFAULT_MAX_CIPHERQ_BYTES = capture_reservation_bytes(RECOVERY_CAPTURE_BYTES)
 
 
 class SpillQuotaExceeded(RuntimeError):
@@ -201,6 +242,11 @@ class SpillReclaimResult:
     temps_reclaimed: int = 0
     quarantine_expired: int = 0
     quarantine_capacity_dropped: int = 0
+    key_unavailable: int = 0
+    transient_io: int = 0
+    auth_failed: int = 0
+    cipherq_expired: int = 0
+    cipherq_capacity_dropped: int = 0
 
     @property
     def header_cleaned(self) -> int:
@@ -242,6 +288,9 @@ class ArtifactStats:
     isolated_total: int
     expired_total: int
     capacity_dropped_total: int
+    cipherq_count: int = 0
+    cipherq_bytes: int = 0
+    oldest_cipherq_age_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +300,21 @@ class _StreamInspection:
     stream_id: str
     age_seconds: float
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _CipherqEntry:
+    source: str
+    token: str
+    kind: str
+    reason: str
+    src_name: str
+    size_bytes: int
+    sha256: str
+    state: str
+    dest: Path
+    manifest: Path
+    isolated_at: str
 
 
 def flush_announced_pending_frames(stream: Any | None) -> None:
@@ -519,6 +583,23 @@ def _spill_header_context(meta: dict[str, object]) -> EncryptionContext:
     )
 
 
+def _crypto_key_versions(crypto: StreamChunkCrypto) -> tuple[int, ...]:
+    raw_versions = getattr(crypto, "key_versions", None)
+    if not raw_versions:
+        return ()
+    versions: list[int] = []
+    for value in raw_versions:
+        version = int(value)
+        if version not in versions:
+            versions.append(version)
+    return tuple(versions)
+
+
+def _crypto_has_version(crypto: StreamChunkCrypto, version: int) -> bool:
+    versions = _crypto_key_versions(crypto)
+    return not versions or version in versions
+
+
 def candidate_key_versions(crypto: StreamChunkCrypto, hint: int | None = None) -> tuple[int, ...]:
     """认证尝试顺序：提示版本与 active 优先，但必须覆盖整个 keyring。"""
 
@@ -526,12 +607,9 @@ def candidate_key_versions(crypto: StreamChunkCrypto, hint: int | None = None) -
     for value in (hint, getattr(crypto, "active_version", None)):
         if isinstance(value, int) and not isinstance(value, bool) and value not in ordered:
             ordered.append(value)
-    raw_versions = getattr(crypto, "key_versions", None)
-    if raw_versions:
-        for value in raw_versions:
-            version = int(value)
-            if version not in ordered:
-                ordered.append(version)
+    for version in _crypto_key_versions(crypto):
+        if version not in ordered:
+            ordered.append(version)
     if not ordered:
         ordered = [1]
     return tuple(ordered)
@@ -637,6 +715,9 @@ class RawSpillStore:
         max_quarantine_files: int = DEFAULT_MAX_QUARANTINE_FILES,
         max_quarantine_bytes: int = DEFAULT_MAX_QUARANTINE_BYTES,
         quarantine_retention_s: float = DEFAULT_QUARANTINE_RETENTION_S,
+        max_cipherq_files: int = DEFAULT_MAX_CIPHERQ_FILES,
+        max_cipherq_bytes: int = DEFAULT_MAX_CIPHERQ_BYTES,
+        cipherq_retention_s: float = DEFAULT_CIPHERQ_RETENTION_S,
     ) -> None:
         if max_total_bytes < 1 or max_pending_files < 1:
             raise ValueError("raw spill quotas must be positive")
@@ -646,6 +727,10 @@ class RawSpillStore:
             raise ValueError("raw spill quarantine quotas must be positive")
         if quarantine_retention_s < 0:
             raise ValueError("quarantine_retention_s must not be negative")
+        if max_cipherq_files < 1 or max_cipherq_bytes < 1:
+            raise ValueError("raw spill cipherq quotas must be positive")
+        if cipherq_retention_s < 0:
+            raise ValueError("cipherq_retention_s must not be negative")
         self.directory = directory
         self.max_total_bytes = max_total_bytes
         self.max_pending_files = max_pending_files
@@ -653,12 +738,17 @@ class RawSpillStore:
         self.max_quarantine_files = max_quarantine_files
         self.max_quarantine_bytes = max_quarantine_bytes
         self.quarantine_retention_s = quarantine_retention_s
+        self.max_cipherq_files = max_cipherq_files
+        self.max_cipherq_bytes = max_cipherq_bytes
+        self.cipherq_retention_s = cipherq_retention_s
         self.recover_budget = recover_budget or RecoverRoundBudget()
         self._probe = memory_probe
         self._header_only_cleaned = 0
         self._isolated_total = 0
         self._quarantine_expired = 0
         self._quarantine_capacity_dropped = 0
+        self._cipherq_expired = 0
+        self._cipherq_capacity_dropped = 0
         self.last_reclaim = SpillReclaimResult()
 
     @classmethod
@@ -698,6 +788,15 @@ class RawSpillStore:
                     "raw_spill_quarantine_retention_s",
                     DEFAULT_QUARANTINE_RETENTION_S,
                 )
+            ),
+            max_cipherq_files=int(
+                getattr(settings, "raw_spill_max_cipherq_files", DEFAULT_MAX_CIPHERQ_FILES)
+            ),
+            max_cipherq_bytes=int(
+                getattr(settings, "raw_spill_max_cipherq_bytes", DEFAULT_MAX_CIPHERQ_BYTES)
+            ),
+            cipherq_retention_s=float(
+                getattr(settings, "raw_spill_cipherq_retention_s", DEFAULT_CIPHERQ_RETENTION_S)
             ),
         )
 
@@ -868,6 +967,7 @@ class RawSpillStore:
             raise ValueError("invalid raw spill source")
         yield from self._iter_records(source, streams=False, crypto=crypto, isolate=True)
         yield from self._iter_records(source, streams=True, crypto=crypto, isolate=False)
+        yield from self._iter_cipherq_recoverable(crypto, source)
 
     def _iter_records(
         self,
@@ -892,10 +992,29 @@ class RawSpillStore:
             except SpillMetadataAuthError:
                 LOGGER.warning(
                     "raw spill metadata authentication failed",
-                    extra={"kind": "spill", "state": "auth_failed"},
+                    extra={"kind": "spill", "state": REASON_AUTH_FAILED},
                 )
                 if isolate and not streams:
                     self._isolate_spill_auth_failure(path, locked=False)
+                continue
+            except UnknownKeyVersionError:
+                LOGGER.warning(
+                    "raw spill key unavailable",
+                    extra={
+                        "kind": "stream" if streams else "spill",
+                        "state": REASON_KEY_UNAVAILABLE,
+                    },
+                )
+                continue
+            except OSError as exc:
+                LOGGER.warning(
+                    "raw spill recover skipped transient io",
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "kind": "stream" if streams else "spill",
+                        "state": REASON_TRANSIENT_IO,
+                    },
+                )
                 continue
             except Exception as exc:
                 LOGGER.warning(
@@ -1028,6 +1147,9 @@ class RawSpillStore:
         quarantine_count = 0
         quarantine_bytes = 0
         oldest: float | None = None
+        cipherq_count = 0
+        cipherq_bytes = 0
+        oldest_cipherq: float | None = None
         now_ts = time.time()
         if self.directory.exists():
             for path in self._iter_evidence_paths():
@@ -1038,14 +1160,31 @@ class RawSpillStore:
                 except OSError:
                     continue
                 oldest = age if oldest is None else max(oldest, age)
+            for item in self._iter_cipherq_entries_locked():
+                if item.state != CIPHERQ_STATE_SEALED or not item.dest.exists():
+                    continue
+                cipherq_count += 1
+                try:
+                    cipherq_bytes += item.dest.stat().st_size
+                    age = self._file_age_seconds(item.dest, now_ts)
+                except OSError:
+                    continue
+                oldest_cipherq = age if oldest_cipherq is None else max(oldest_cipherq, age)
         return ArtifactStats(
             active_count=self.pending_count(),
-            quarantine_count=quarantine_count,
-            quarantine_bytes=quarantine_bytes,
-            oldest_quarantine_age_seconds=oldest,
+            quarantine_count=quarantine_count + cipherq_count,
+            quarantine_bytes=quarantine_bytes + cipherq_bytes,
+            oldest_quarantine_age_seconds=oldest if oldest_cipherq is None else (
+                oldest_cipherq if oldest is None else max(oldest, oldest_cipherq)
+            ),
             isolated_total=self._isolated_total,
-            expired_total=self._quarantine_expired,
-            capacity_dropped_total=self._quarantine_capacity_dropped,
+            expired_total=self._quarantine_expired + self._cipherq_expired,
+            capacity_dropped_total=(
+                self._quarantine_capacity_dropped + self._cipherq_capacity_dropped
+            ),
+            cipherq_count=cipherq_count,
+            cipherq_bytes=cipherq_bytes,
+            oldest_cipherq_age_seconds=oldest_cipherq,
         )
 
     def reclaim_idle(self, source: str, crypto: StreamChunkCrypto) -> SpillReclaimResult:
@@ -1270,7 +1409,9 @@ class RawSpillStore:
         try:
             handle = path.open("rb")
         except OSError:
-            return None
+            return _StreamInspection(
+                STREAM_LIFE_TRANSIENT_IO, named_source, named_id, age, path
+            )
         try:
             return self._classify_stream_header(
                 handle,
@@ -1279,6 +1420,10 @@ class RawSpillStore:
                 age=age,
                 path=path,
                 crypto=crypto,
+            )
+        except OSError:
+            return _StreamInspection(
+                STREAM_LIFE_TRANSIENT_IO, named_source, named_id, age, path
             )
         finally:
             handle.close()
@@ -1376,6 +1521,10 @@ class RawSpillStore:
             return _StreamInspection(
                 STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
+        if not _crypto_has_version(crypto, key_version):
+            return _StreamInspection(
+                STREAM_LIFE_KEY_UNAVAILABLE, source, stream_id, age, path
+            )
         try:
             _fields, _offset, ok = self._read_control_frame(
                 STREAM_RECORD_HEADER.pack(frame_len) + frame,
@@ -1386,8 +1535,16 @@ class RawSpillStore:
                 key_version=key_version,
                 seq=0,
             )
-        except Exception:
-            ok = False
+        except UnknownKeyVersionError:
+            return _StreamInspection(
+                STREAM_LIFE_KEY_UNAVAILABLE, source, stream_id, age, path
+            )
+        except InvalidTag:
+            return _StreamInspection(STREAM_LIFE_AUTH_FAILED, source, stream_id, age, path)
+        except OSError:
+            return _StreamInspection(
+                STREAM_LIFE_TRANSIENT_IO, source, stream_id, age, path
+            )
         if ok:
             return _StreamInspection(STREAM_LIFE_HAS_CONTROL, source, stream_id, age, path)
         return _StreamInspection(
@@ -1417,6 +1574,10 @@ class RawSpillStore:
             return _StreamInspection(
                 STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
+        if not _crypto_has_version(crypto, key_version):
+            return _StreamInspection(
+                STREAM_LIFE_KEY_UNAVAILABLE, source, stream_id, age, path
+            )
         try:
             crypto.decrypt_bound_bytes(
                 ciphertext,
@@ -1428,7 +1589,17 @@ class RawSpillStore:
                     object_id=f"{source}:{stream_id}:{0:08d}",
                 ),
             )
-        except Exception:
+        except UnknownKeyVersionError:
+            return _StreamInspection(
+                STREAM_LIFE_KEY_UNAVAILABLE, source, stream_id, age, path
+            )
+        except InvalidTag:
+            return _StreamInspection(STREAM_LIFE_AUTH_FAILED, source, stream_id, age, path)
+        except OSError:
+            return _StreamInspection(
+                STREAM_LIFE_TRANSIENT_IO, source, stream_id, age, path
+            )
+        except (ValueError, TypeError):
             return _StreamInspection(
                 STREAM_LIFE_UNAUTHENTICATED_PARTIAL, source, stream_id, age, path
             )
@@ -1447,9 +1618,18 @@ class RawSpillStore:
         corrupt_header = 0
         unauthenticated_partial = 0
         isolated = 0
+        key_unavailable = 0
+        transient_io = 0
+        auth_failed = 0
+        cipherq_dropped_before = self._cipherq_capacity_dropped
         temps = self._reclaim_rewrite_tmps_locked(now_ts)
         temps += self._reclaim_marker_tmps_locked()
-        isolated += self._reclaim_spills_locked(now_ts, crypto)
+        temps += self._reclaim_cipherq_pending_locked()
+        spill_counts = self._reclaim_spills_locked(now_ts, crypto)
+        isolated += spill_counts[0]
+        key_unavailable += spill_counts[1]
+        transient_io += spill_counts[2]
+        auth_failed += spill_counts[3]
         for path in self._iter_stream_paths():
             inspection = self._inspect_stream_path(path, crypto=crypto, now_ts=now_ts)
             if inspection is None:
@@ -1459,27 +1639,39 @@ class RawSpillStore:
                 STREAM_LIFE_HAS_CONTROL,
             }:
                 continue
+            if inspection.kind == STREAM_LIFE_TRANSIENT_IO:
+                transient_io += 1
+                continue
             if inspection.age_seconds < self.header_only_min_age_s:
+                continue
+            if inspection.kind == STREAM_LIFE_KEY_UNAVAILABLE:
+                key_unavailable += 1
+                if self._reclaim_classified_locked(inspection, reason=REASON_KEY_UNAVAILABLE):
+                    isolated += 1
+                continue
+            if inspection.kind == STREAM_LIFE_AUTH_FAILED:
+                auth_failed += 1
+                unauthenticated_partial += 1
+                if self._reclaim_classified_locked(inspection, reason=REASON_AUTH_FAILED):
+                    isolated += 1
                 continue
             if inspection.kind in {
                 STREAM_LIFE_UNAUTHENTICATED_PARTIAL,
                 STREAM_LIFE_INCOMPLETE_FRAMES,
                 STREAM_LIFE_CORRUPT_HEADER,
             }:
-                self._reclaim_classified_locked(inspection, quarantine=True)
-                isolated += 1
-                if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
-                    corrupt_header += 1
-                else:
-                    unauthenticated_partial += 1
+                if self._reclaim_classified_locked(inspection, reason=REASON_CORRUPT):
+                    isolated += 1
+                    if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
+                        corrupt_header += 1
+                    else:
+                        unauthenticated_partial += 1
                 continue
             if inspection.kind in {
                 STREAM_LIFE_LEGAL_HEADER_ONLY,
                 STREAM_LIFE_PARTIAL_HEADER,
             }:
-                self._reclaim_classified_locked(
-                    inspection, quarantine=inspection.kind == STREAM_LIFE_CORRUPT_HEADER
-                )
+                self._reclaim_classified_locked(inspection, reason=REASON_PROVABLY_EMPTY)
                 if inspection.kind == STREAM_LIFE_LEGAL_HEADER_ONLY:
                     header_only += 1
                 else:
@@ -1488,11 +1680,15 @@ class RawSpillStore:
         orphans += self._reclaim_orphan_handoff_locked()
         expired = self._expire_quarantine_locked(now_ts)
         dropped = self._enforce_quarantine_quota_locked()
+        cipherq_expired = self._expire_cipherq_locked(now_ts)
+        self._enforce_cipherq_quota_locked()
+        cipherq_dropped = self._cipherq_capacity_dropped - cipherq_dropped_before
         cleaned = header_only + partial_header + corrupt_header
         self._header_only_cleaned += cleaned
         self._isolated_total += isolated
         self._quarantine_expired += expired
         self._quarantine_capacity_dropped += dropped
+        self._cipherq_expired += cipherq_expired
         result = SpillReclaimResult(
             header_only=header_only,
             partial_header=partial_header,
@@ -1502,11 +1698,16 @@ class RawSpillStore:
             orphans=orphans,
             isolated=isolated,
             temps_reclaimed=temps,
-            quarantine_expired=expired,
-            quarantine_capacity_dropped=dropped,
+            quarantine_expired=expired + cipherq_expired,
+            quarantine_capacity_dropped=dropped + cipherq_dropped,
+            key_unavailable=key_unavailable,
+            transient_io=transient_io,
+            auth_failed=auth_failed,
+            cipherq_expired=cipherq_expired,
+            cipherq_capacity_dropped=cipherq_dropped,
         )
         self.last_reclaim = result
-        if cleaned or isolated or temps or orphans:
+        if cleaned or isolated or temps or orphans or key_unavailable or transient_io:
             LOGGER.warning(
                 "raw spill artifacts reclaimed",
                 extra={
@@ -1520,6 +1721,11 @@ class RawSpillStore:
                     "orphans": orphans,
                     "quarantine_expired": expired,
                     "quarantine_capacity_dropped": dropped,
+                    "key_unavailable": key_unavailable,
+                    "transient_io": transient_io,
+                    "auth_failed": auth_failed,
+                    "cipherq_expired": cipherq_expired,
+                    "cipherq_capacity_dropped": cipherq_dropped,
                 },
             )
         return result
@@ -1530,11 +1736,14 @@ class RawSpillStore:
         """spill/tmp/孤儿分类；有 crypto 时认证失败的 .spill 立即离开活动配额。"""
 
         self._reclaim_marker_tmps_locked()
+        self._reclaim_cipherq_pending_locked()
         self._reclaim_spills_locked(now_ts, crypto)
         self._reclaim_orphans_locked(None)
         self._reclaim_orphan_handoff_locked()
         self._expire_quarantine_locked(now_ts)
         self._enforce_quarantine_quota_locked()
+        self._expire_cipherq_locked(now_ts)
+        self._enforce_cipherq_quota_locked()
 
     def _iter_evidence_paths(self) -> list[Path]:
         if not self.directory.exists():
@@ -1618,12 +1827,15 @@ class RawSpillStore:
 
     def _reclaim_spills_locked(
         self, now_ts: float, crypto: StreamChunkCrypto | None = None
-    ) -> int:
-        """损坏/不完整/认证失败的 .spill 与 .spill.tmp 离开活动配额。"""
+    ) -> tuple[int, int, int, int]:
+        """损坏/认证失败的 .spill 进入 cipherq；缺 Key / 暂态 I/O 不得销毁。"""
 
         if not self.directory.exists():
-            return 0
+            return 0, 0, 0, 0
         isolated = 0
+        key_unavailable = 0
+        transient_io = 0
+        auth_failed = 0
         for path in [
             *sorted(self.directory.glob("*.spill")),
             *sorted(self.directory.glob("*.spill.tmp")),
@@ -1631,34 +1843,48 @@ class RawSpillStore:
             if not path.is_file():
                 continue
             kind, source, token = self._classify_spill_path(path)
+            if kind == SPILL_LIFE_TRANSIENT:
+                transient_io += 1
+                continue
             if kind == SPILL_LIFE_VALID and path.name.endswith(".spill.tmp"):
                 target = self._path(source, token)
                 os.replace(path, target)
                 self._fsync_directory()
                 path = target
             if kind == SPILL_LIFE_VALID:
-                if crypto is not None and not self._authenticated_spill_header_ok(path, crypto):
-                    self._isolate_named_file_locked(
-                        path,
-                        source=source or "report",
-                        token=token,
-                        state="auth_failed",
-                        kind="spill",
-                    )
+                if crypto is None:
+                    continue
+                reason = self._inspect_spill_header_auth(path, crypto)
+                if reason is None:
+                    continue
+                if reason == REASON_TRANSIENT_IO:
+                    transient_io += 1
+                    continue
+                if reason == REASON_KEY_UNAVAILABLE:
+                    key_unavailable += 1
+                elif reason == REASON_AUTH_FAILED:
+                    auth_failed += 1
+                if self._isolate_named_file_locked(
+                    path,
+                    source=source or "report",
+                    token=token,
+                    state=reason,
+                    kind="spill",
+                ):
                     isolated += 1
                 continue
             aged = self._file_age_seconds(path, now_ts) >= self.header_only_min_age_s
             if kind == SPILL_LIFE_INCOMPLETE and path.name.endswith(".spill.tmp") and not aged:
                 continue
-            self._isolate_named_file_locked(
+            if self._isolate_named_file_locked(
                 path,
                 source=source or "report",
                 token=token,
-                state=SPILL_LIFE_CORRUPT if kind == SPILL_LIFE_CORRUPT else SPILL_LIFE_INCOMPLETE,
+                state=REASON_CORRUPT,
                 kind="spill",
-            )
-            isolated += 1
-        return isolated
+            ):
+                isolated += 1
+        return isolated, key_unavailable, transient_io, auth_failed
 
     def _classify_spill_path(self, path: Path) -> tuple[str, str, str]:
         match = SPILL_FILE_NAME.fullmatch(path.name)
@@ -1698,7 +1924,11 @@ class RawSpillStore:
                 if not handle.read(1):
                     return SPILL_LIFE_INCOMPLETE, source, digest
                 return SPILL_LIFE_VALID, source, digest
-        except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        except OSError:
+            token = named_digest or hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
+            source = named_source or "report"
+            return SPILL_LIFE_TRANSIENT, source, token
+        except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             token = named_digest or hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:32]
             source = named_source or "report"
             return SPILL_LIFE_CORRUPT, source, token
@@ -1770,18 +2000,21 @@ class RawSpillStore:
         token: str,
         state: str,
         kind: str,
-    ) -> None:
-        size = 0
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-        path.unlink(missing_ok=True)
-        if SOURCE_PATTERN.fullmatch(source) is None:
-            source = "report"
-        if not token:
-            token = hashlib.sha256(kind.encode("utf-8")).hexdigest()[:32]
-        self._write_nonactive_evidence(source, token, state, kind=kind, size_bytes=size)
+    ) -> bool:
+        """把仍可能有效的密文原子迁入 cipherq；禁止先 unlink。"""
+
+        reason = state
+        if state in {SPILL_LIFE_CORRUPT, SPILL_LIFE_INCOMPLETE, "corrupt_tmp"}:
+            reason = REASON_CORRUPT
+        elif state == "auth_failed":
+            reason = REASON_AUTH_FAILED
+        return self._isolate_ciphertext_locked(
+            path,
+            source=source,
+            token=token,
+            kind=kind,
+            reason=reason,
+        )
 
     def _write_nonactive_evidence(
         self,
@@ -1838,32 +2071,42 @@ class RawSpillStore:
         return target
 
     def _reclaim_classified_locked(
-        self, inspection: _StreamInspection, *, quarantine: bool
-    ) -> None:
+        self,
+        inspection: _StreamInspection,
+        *,
+        reason: str,
+    ) -> bool:
+        """按原因处置 stream：可证为空才删除，其余保留原字节。"""
+
+        if reason == REASON_PROVABLY_EMPTY:
+            if SOURCE_PATTERN.fullmatch(inspection.source) and STREAM_ID_PATTERN.fullmatch(
+                inspection.stream_id
+            ):
+                self._remove_stream_locked(inspection.source, inspection.stream_id)
+                return True
+            inspection.path.unlink(missing_ok=True)
+            return True
+        token = inspection.stream_id
+        if not token:
+            token = hashlib.sha256(inspection.path.name.encode("utf-8")).hexdigest()[:32]
+        moved = self._isolate_ciphertext_locked(
+            inspection.path,
+            source=inspection.source or "report",
+            token=token,
+            kind="stream",
+            reason=reason,
+        )
+        if not moved:
+            return False
         if SOURCE_PATTERN.fullmatch(inspection.source) and STREAM_ID_PATTERN.fullmatch(
             inspection.stream_id
         ):
-            size = 0
-            try:
-                size = inspection.path.stat().st_size
-            except OSError:
-                size = 0
-            self._remove_stream_locked(inspection.source, inspection.stream_id)
-            if quarantine:
-                if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
-                    self._write_header_quarantine(
-                        inspection.source, inspection.stream_id, inspection.kind
-                    )
-                else:
-                    self._write_nonactive_evidence(
-                        inspection.source,
-                        inspection.stream_id,
-                        inspection.kind,
-                        kind="stream",
-                        size_bytes=size,
-                    )
-            return
-        inspection.path.unlink(missing_ok=True)
+            self._release_stream_activity_locked(inspection.source, inspection.stream_id)
+            if inspection.kind == STREAM_LIFE_CORRUPT_HEADER:
+                self._write_header_quarantine(
+                    inspection.source, inspection.stream_id, inspection.kind
+                )
+        return True
 
     def _isolate_spill_auth_failure(self, path: Path, *, locked: bool) -> None:
         match = SPILL_FILE_NAME.fullmatch(path.name)
@@ -1895,6 +2138,11 @@ class RawSpillStore:
             temps_reclaimed=previous.temps_reclaimed,
             quarantine_expired=previous.quarantine_expired,
             quarantine_capacity_dropped=previous.quarantine_capacity_dropped,
+            key_unavailable=previous.key_unavailable,
+            transient_io=previous.transient_io,
+            auth_failed=previous.auth_failed + 1,
+            cipherq_expired=previous.cipherq_expired,
+            cipherq_capacity_dropped=previous.cipherq_capacity_dropped,
         )
 
     def _parse_spill_header_frame(
@@ -1938,10 +2186,14 @@ class RawSpillStore:
             raise SpillMetadataAuthError("spill header is not canonical")
         context = _spill_header_context(parsed)
         hint = _require_key_version(parsed["key_version"])
+        if not _crypto_has_version(crypto, hint):
+            raise UnknownKeyVersionError(hint)
         last_error: Exception | None = None
         for version in candidate_key_versions(crypto, hint):
             try:
                 plaintext = crypto.decrypt_bound_bytes(ciphertext, version, context)
+            except UnknownKeyVersionError:
+                raise
             except (ValueError, TypeError, InvalidTag) as exc:
                 last_error = exc
                 continue
@@ -1955,26 +2207,46 @@ class RawSpillStore:
             return authenticated
         raise SpillMetadataAuthError("spill header authentication failed") from last_error
 
-    def _authenticated_spill_header_ok(
+    def _inspect_spill_header_auth(
         self, path: Path, crypto: StreamChunkCrypto
-    ) -> bool:
-        """回收路径只认证 header 帧，不把 payload 读进 RSS。"""
+    ) -> str | None:
+        """回收路径只认证 header 帧。成功返回 None，否则返回 typed reason。"""
 
         try:
             with path.open("rb") as handle:
                 magic = handle.read(len(SPILL_MAGIC))
                 if magic != SPILL_MAGIC:
-                    return True
+                    return None
                 parsed = self._parse_spill_header_frame(handle)
                 if parsed is None:
-                    return False
+                    return REASON_CORRUPT
                 meta, ciphertext = parsed
-                self._decrypt_spill_header(meta, ciphertext, crypto)
-                return True
+                try:
+                    visible = json.loads(meta.decode("utf-8"))
+                    hint = _require_key_version(visible["key_version"])
+                except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+                    return REASON_AUTH_FAILED
+                if not _crypto_has_version(crypto, hint):
+                    return REASON_KEY_UNAVAILABLE
+                authenticated = self._decrypt_spill_header(meta, ciphertext, crypto)
+                expected = str(authenticated["payload_enc_sha256"])
+                hasher = hashlib.sha256()
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                if hasher.hexdigest() != expected:
+                    return REASON_AUTH_FAILED
+                return None
+        except UnknownKeyVersionError:
+            return REASON_KEY_UNAVAILABLE
         except SpillMetadataAuthError:
-            return False
-        except (OSError, TypeError, ValueError, UnicodeError):
-            return False
+            return REASON_AUTH_FAILED
+        except OSError:
+            return REASON_TRANSIENT_IO
+        except (TypeError, ValueError, UnicodeError):
+            return REASON_AUTH_FAILED
 
     def _read(
         self,
@@ -1993,6 +2265,8 @@ class RawSpillStore:
                 handle.seek(0)
                 return self._read_legacy_spill(handle, path, expected_source=expected_source)
         except SpillMetadataAuthError:
+            raise
+        except UnknownKeyVersionError:
             raise
         except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None
@@ -2181,6 +2455,10 @@ class RawSpillStore:
                 offset,
                 True,
             )
+        except UnknownKeyVersionError:
+            raise
+        except InvalidTag:
+            return None, offset, False
         except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             return None, offset, False
 
@@ -2292,7 +2570,9 @@ class RawSpillStore:
                         object_id=f"{header.source}:{header.stream_id}:{seq:08d}",
                     ),
                 )
-            except (ValueError, TypeError):
+            except UnknownKeyVersionError:
+                raise
+            except (InvalidTag, ValueError, TypeError):
                 incomplete = True
                 break
             hasher.update(chunk)
@@ -2342,6 +2622,10 @@ class RawSpillStore:
                 return None
             self._probe_payload_read(path.name)
             assembled = self._assemble_stream_handle(handle, header, crypto)
+        except UnknownKeyVersionError:
+            raise
+        except OSError:
+            return None
         except Exception as exc:
             LOGGER.warning(
                 "raw spill stream recover skipped",
@@ -2404,6 +2688,411 @@ class RawSpillStore:
             metadata_authenticated=metadata_authenticated,
             format_legacy=assembled.legacy_terminal,
         )
+
+    def _cipherq_paths(self, source: str, token: str) -> tuple[Path, Path]:
+        stem = f"{source}-{token}"
+        return (
+            self.directory / f"{stem}{CIPHERQ_SUFFIX}",
+            self.directory / f"{stem}{CIPHERQ_MANIFEST_SUFFIX}",
+        )
+
+    def _safe_src_name(self, name: str) -> str | None:
+        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+            return None
+        if name.startswith("."):
+            return None
+        return name
+
+    def _file_size_and_sha256(self, path: Path) -> tuple[int, str]:
+        hasher = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+                size += len(chunk)
+        return size, hasher.hexdigest()
+
+    def _write_json_atomic(self, target: Path, document: dict[str, object]) -> None:
+        payload = json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        tmp = target.with_name(target.name + ".tmp")
+        with tmp.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+        self._fsync_directory()
+
+    def _parse_cipherq_manifest(self, path: Path) -> _CipherqEntry | None:
+        match = CIPHERQ_FILE_NAME.fullmatch(path.name)
+        if match is None or not path.name.endswith(CIPHERQ_MANIFEST_SUFFIX):
+            return None
+        try:
+            raw = json.loads(path.read_bytes().decode("utf-8"))
+            if not isinstance(raw, dict) or set(raw) != CIPHERQ_MANIFEST_KEYS:
+                return None
+            if CIPHERQ_FORBIDDEN_KEYS.intersection(raw):
+                return None
+            source = str(raw["source"])
+            token = str(raw["token"])
+            src_name = self._safe_src_name(str(raw["src_name"]))
+            if src_name is None:
+                return None
+            if SOURCE_PATTERN.fullmatch(source) is None:
+                return None
+            if not re.fullmatch(r"[0-9a-f]{32,64}", token):
+                return None
+            dest, expected = self._cipherq_paths(source, token)
+            if expected != path:
+                return None
+            state = str(raw["state"])
+            if state not in {CIPHERQ_STATE_PENDING, CIPHERQ_STATE_SEALED}:
+                return None
+            reason = str(raw["reason"])
+            if reason not in {
+                REASON_KEY_UNAVAILABLE,
+                REASON_TRANSIENT_IO,
+                REASON_AUTH_FAILED,
+                REASON_CORRUPT,
+            }:
+                return None
+            digest = str(raw["sha256"])
+            if SHA256_PATTERN.fullmatch(digest) is None:
+                return None
+            return _CipherqEntry(
+                source=source,
+                token=token,
+                kind=str(raw["kind"]),
+                reason=reason,
+                src_name=src_name,
+                size_bytes=int(raw["size_bytes"]),
+                sha256=digest,
+                state=state,
+                dest=dest,
+                manifest=path,
+                isolated_at=str(raw["isolated_at"]),
+            )
+        except (OSError, KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+            return None
+
+    def _iter_cipherq_entries_locked(self) -> list[_CipherqEntry]:
+        if not self.directory.exists():
+            return []
+        items: list[_CipherqEntry] = []
+        for path in sorted(self.directory.glob(f"*{CIPHERQ_MANIFEST_SUFFIX}")):
+            if path.name.endswith(".tmp"):
+                continue
+            entry = self._parse_cipherq_manifest(path)
+            if entry is not None:
+                items.append(entry)
+        return items
+
+    def _cipherq_usage_locked(self) -> tuple[int, int]:
+        count = 0
+        total = 0
+        for entry in self._iter_cipherq_entries_locked():
+            if not entry.dest.exists():
+                continue
+            try:
+                total += entry.dest.stat().st_size
+            except OSError:
+                continue
+            count += 1
+        return count, total
+
+    def _drop_cipherq_entry_locked(self, entry: _CipherqEntry) -> None:
+        entry.dest.unlink(missing_ok=True)
+        entry.manifest.unlink(missing_ok=True)
+        entry.dest.with_name(entry.dest.name + ".tmp").unlink(missing_ok=True)
+        entry.manifest.with_name(entry.manifest.name + ".tmp").unlink(missing_ok=True)
+
+    def _enforce_cipherq_quota_locked(
+        self, extra_files: int = 0, extra_bytes: int = 0
+    ) -> int:
+        """只淘汰已封印的 auth_failed/corrupt；缺 Key / 暂态 I/O 永不驱逐。"""
+
+        evictable: list[tuple[float, int, _CipherqEntry]] = []
+        retained_files = 0
+        retained_bytes = 0
+        for entry in self._iter_cipherq_entries_locked():
+            if entry.state != CIPHERQ_STATE_SEALED or not entry.dest.exists():
+                continue
+            try:
+                stat = entry.dest.stat()
+            except OSError:
+                continue
+            if entry.reason in CIPHERQ_RETAIN_REASONS:
+                retained_files += 1
+                retained_bytes += stat.st_size
+                continue
+            if entry.reason in CIPHERQ_EVICTABLE_REASONS:
+                evictable.append((stat.st_mtime, stat.st_size, entry))
+        evictable.sort()
+        total_files = retained_files + len(evictable)
+        total_bytes = retained_bytes + sum(size for _mtime, size, _entry in evictable)
+        dropped = 0
+        while evictable and (
+            total_files + extra_files > self.max_cipherq_files
+            or total_bytes + extra_bytes > self.max_cipherq_bytes
+        ):
+            _mtime, size, entry = evictable.pop(0)
+            self._drop_cipherq_entry_locked(entry)
+            total_files -= 1
+            total_bytes -= size
+            dropped += 1
+        if dropped:
+            self._cipherq_capacity_dropped += dropped
+        return dropped
+
+    def _ensure_cipherq_capacity_locked(self, additional_bytes: int) -> bool:
+        self._enforce_cipherq_quota_locked(extra_files=1, extra_bytes=additional_bytes)
+        count, total = self._cipherq_usage_locked()
+        return (
+            count + 1 <= self.max_cipherq_files
+            and total + additional_bytes <= self.max_cipherq_bytes
+        )
+
+    def _expire_cipherq_locked(self, now_ts: float) -> int:
+        expired = 0
+        for entry in self._iter_cipherq_entries_locked():
+            if entry.state != CIPHERQ_STATE_SEALED or entry.reason not in CIPHERQ_EVICTABLE_REASONS:
+                continue
+            aged_path = entry.dest if entry.dest.exists() else entry.manifest
+            if self._file_age_seconds(aged_path, now_ts) < (
+                self.cipherq_retention_s
+            ):
+                continue
+            self._drop_cipherq_entry_locked(entry)
+            expired += 1
+        return expired
+
+    def _seal_cipherq_manifest_locked(self, entry: _CipherqEntry) -> bool:
+        document = {
+            "isolated_at": entry.isolated_at,
+            "kind": entry.kind,
+            "reason": entry.reason,
+            "sha256": entry.sha256,
+            "size_bytes": entry.size_bytes,
+            "source": entry.source,
+            "src_name": entry.src_name,
+            "state": CIPHERQ_STATE_SEALED,
+            "token": entry.token,
+        }
+        try:
+            self._write_json_atomic(entry.manifest, document)
+            return True
+        except OSError:
+            return False
+
+    def _reclaim_cipherq_pending_locked(self) -> int:
+        """重入未完成隔离：有源则改名，有目标则封印，禁止源与目标同时消失。"""
+
+        reclaimed = 0
+        for entry in self._iter_cipherq_entries_locked():
+            source_path = self.directory / entry.src_name
+            if entry.state == CIPHERQ_STATE_SEALED:
+                if entry.dest.exists():
+                    continue
+                if source_path.exists():
+                    entry.manifest.unlink(missing_ok=True)
+                    reclaimed += 1
+                    continue
+                entry.manifest.unlink(missing_ok=True)
+                reclaimed += 1
+                continue
+            if entry.dest.exists():
+                self._seal_cipherq_manifest_locked(entry)
+                reclaimed += 1
+                continue
+            if source_path.exists():
+                try:
+                    os.replace(source_path, entry.dest)
+                    self._fsync_directory()
+                    self._seal_cipherq_manifest_locked(entry)
+                    reclaimed += 1
+                except OSError:
+                    continue
+        return reclaimed
+
+    def _isolate_ciphertext_locked(
+        self,
+        path: Path,
+        *,
+        source: str,
+        token: str,
+        kind: str,
+        reason: str,
+    ) -> bool:
+        """先写+fsync manifest，再原子改名密文，再封印。ENOSPC 时源文件不动。"""
+
+        if SOURCE_PATTERN.fullmatch(source) is None:
+            source = "report"
+        if not token:
+            token = hashlib.sha256(kind.encode("utf-8")).hexdigest()[:32]
+        dest, manifest_path = self._cipherq_paths(source, token)
+        if dest.exists() and not path.exists():
+            existing = self._parse_cipherq_manifest(manifest_path)
+            if existing is not None and existing.state != CIPHERQ_STATE_SEALED:
+                self._seal_cipherq_manifest_locked(existing)
+            return dest.exists()
+        if not path.exists():
+            return False
+        try:
+            size, digest = self._file_size_and_sha256(path)
+        except OSError:
+            LOGGER.warning(
+                "raw spill cipherq hash skipped transient io",
+                extra={"kind": kind, "reason": REASON_TRANSIENT_IO, "source": source},
+            )
+            return False
+        src_name = self._safe_src_name(path.name)
+        if src_name is None:
+            return False
+        if not self._ensure_cipherq_capacity_locked(size):
+            LOGGER.warning(
+                "raw spill cipherq capacity fail-closed",
+                extra={"kind": kind, "reason": reason, "source": source},
+            )
+            return False
+        isolated_at = datetime.now(SHANGHAI_TIMEZONE).isoformat()
+        document = {
+            "isolated_at": isolated_at,
+            "kind": kind,
+            "reason": reason,
+            "sha256": digest,
+            "size_bytes": size,
+            "source": source,
+            "src_name": src_name,
+            "state": CIPHERQ_STATE_PENDING,
+            "token": token,
+        }
+        try:
+            self._write_json_atomic(manifest_path, document)
+        except OSError as exc:
+            LOGGER.warning(
+                "raw spill cipherq manifest write failed",
+                extra={
+                    "error_type": type(exc).__name__,
+                    "kind": kind,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+            return False
+        try:
+            os.replace(path, dest)
+            self._fsync_directory()
+        except OSError as exc:
+            LOGGER.warning(
+                "raw spill cipherq rename failed",
+                extra={
+                    "error_type": type(exc).__name__,
+                    "kind": kind,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+            return False
+        document["state"] = CIPHERQ_STATE_SEALED
+        try:
+            self._write_json_atomic(manifest_path, document)
+        except OSError:
+            return True
+        return True
+
+    def _release_stream_activity_locked(self, source: str, stream_id: str) -> None:
+        """隔离密文后释放预留与重写临时文件，不删除 .cq / .quarantine 交接标记。"""
+
+        tmp = self._stream_tmp(source, stream_id)
+        tmp.with_name(tmp.name + ".hdr").unlink(missing_ok=True)
+        final = self._stream_path(source, stream_id)
+        final.with_name(final.name + ".hdr").unlink(missing_ok=True)
+        reserve = self._reservation_path(source, stream_id)
+        reserve.unlink(missing_ok=True)
+        reserve.with_name(reserve.name + ".tmp").unlink(missing_ok=True)
+
+    def _restore_cipherq_locked(self, entry: _CipherqEntry) -> Path | None:
+        """把封印密文原子改回原文件名，供既有 _read 恢复。"""
+
+        dest_name = self._safe_src_name(entry.src_name)
+        if dest_name is None:
+            return None
+        target = self.directory / dest_name
+        if target.exists():
+            entry.manifest.unlink(missing_ok=True)
+            return target
+        if not entry.dest.exists():
+            entry.manifest.unlink(missing_ok=True)
+            return None
+        try:
+            os.replace(entry.dest, target)
+            self._fsync_directory()
+            entry.manifest.unlink(missing_ok=True)
+            self._fsync_directory()
+            return target
+        except OSError:
+            return None
+
+    def _iter_cipherq_recoverable(
+        self, crypto: StreamChunkCrypto, source: str
+    ) -> Iterator[RawSpillRecord]:
+        """Key 归还后从封印 .cq 恢复原 Raw；失败则重新隔离，不得丢字节。"""
+
+        if not self.directory.exists():
+            return
+        for entry in self._iter_cipherq_entries_locked():
+            if entry.source != source or entry.state != CIPHERQ_STATE_SEALED:
+                continue
+            if not entry.dest.exists():
+                continue
+            with self._quota_lock():
+                restored = self._restore_cipherq_locked(entry)
+            if restored is None:
+                continue
+            try:
+                if entry.kind == "stream" or restored.name.endswith((".stream", ".tmp")):
+                    record = self._read_stream(restored, crypto, expected_source=source)
+                else:
+                    record = self._read(restored, expected_source=source, crypto=crypto)
+            except UnknownKeyVersionError:
+                with self._quota_lock():
+                    self._isolate_ciphertext_locked(
+                        restored,
+                        source=entry.source,
+                        token=entry.token,
+                        kind=entry.kind,
+                        reason=REASON_KEY_UNAVAILABLE,
+                    )
+                continue
+            except SpillMetadataAuthError:
+                with self._quota_lock():
+                    self._isolate_ciphertext_locked(
+                        restored,
+                        source=entry.source,
+                        token=entry.token,
+                        kind=entry.kind,
+                        reason=REASON_AUTH_FAILED,
+                    )
+                continue
+            except OSError:
+                continue
+            if record is None:
+                with self._quota_lock():
+                    self._isolate_ciphertext_locked(
+                        restored,
+                        source=entry.source,
+                        token=entry.token,
+                        kind=entry.kind,
+                        reason=(
+                            entry.reason
+                            if entry.reason in CIPHERQ_RETAIN_REASONS
+                            else REASON_CORRUPT
+                        ),
+                    )
+                continue
+            yield record
 
     def _fsync_directory(self) -> None:
         directory_fd = os.open(self.directory, os.O_RDONLY)
