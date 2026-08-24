@@ -55,7 +55,15 @@ function result(url: string, method: string): unknown {
 }
 
 function tab(wrapper: ReturnType<typeof mount>, label: string) {
-  return wrapper.findAll(".el-tabs__item").find((item) => item.text().includes(label))!
+  return wrapper.findAll(".ops-tabs button").find((item) => item.text().includes(label))!
+}
+
+// ElMessageBox.confirm 的消息为 h() VNode（ops-confirm-dialog），递归提取文本用于断言。
+function vnodeText(node: unknown): string {
+  if (typeof node === "string") return node
+  if (Array.isArray(node)) return node.map(vnodeText).join("")
+  if (node && typeof node === "object" && "children" in node) return vnodeText((node as { children: unknown }).children)
+  return ""
 }
 
 describe("统一运维中心", () => {
@@ -75,7 +83,7 @@ describe("统一运维中心", () => {
     await flushPromises()
     expect(wrapper.text()).toContain("ValueError")
     expect(wrapper.text()).not.toContain("payload_enc")
-    await wrapper.findAll("button").find((item) => item.text().includes("重放"))!.trigger("click")
+    await wrapper.findAll("button").find((item) => item.text() === "重放")!.trigger("click")
     await flushPromises()
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/raw-logs/2/replay") && init?.method === "POST")).toBe(true)
 
@@ -103,7 +111,9 @@ describe("统一运维中心", () => {
 
     await tab(wrapper, "unmatched").trigger("click")
     await flushPromises()
-    expect(wrapper.get(".ops-filter-title > div:last-child").classes()).toContain("filter-toolbar")
+    const filterBar = wrapper.get("#ops-panel-unmatched .ops-filter-bar")
+    expect(filterBar.find("[data-testid='ops-unmatched-phone']").exists()).toBe(true)
+    expect(filterBar.text()).toContain("授权明文")
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.find(".phone-mask").text()).toBe("138****8000")
     expect(wrapper.findAll(".ops-hash").map((item) => item.attributes("title"))).toEqual(["legacy-1", "vendor-1"])
@@ -165,7 +175,7 @@ describe("统一运维中心", () => {
     await wrapper.get(`[data-testid='outbox-retry-${outboxEventId}']`).trigger("click")
     await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(1)
-    expect(String(confirm.mock.calls[0][0])).toContain("usage.release")
+    expect(vnodeText(confirm.mock.calls[0][0])).toContain("usage.release")
     expect(
       fetch.mock.calls.some(
         ([url, init]) => String(url).endsWith(`/outbox/${outboxEventId}/retry`) && init?.method === "POST",

@@ -239,6 +239,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/messages-redesign-prototype.html",
         "docs/previews/messages-redesign-shots.md",
         "docs/previews/messages-redesign-shots/full.png",
+        "docs/previews/ops-redesign-prototype.html",
         "docs/previews/report-redesign-prototype.html",
         "docs/previews/replies-redesign-prototype.html",
         "docs/previews/replies-redesign-shots.md",

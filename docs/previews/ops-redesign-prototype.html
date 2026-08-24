@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 运维中心重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:640px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{background:var(--verm);border-color:transparent;color:#fdf1ee}
+.btn.plain-danger{background:none;border-color:rgba(228,106,79,.45);color:#ef9b89}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{background:none;color:#ef9b89}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 页签（并入 config-tabs 共享组） ═══════════ */
+.tabs{display:flex;gap:22px;overflow-x:auto;border-bottom:1px solid var(--hair-2);margin-top:-4px}
+.tabs b{position:relative;flex:none;padding:12px 2px;font-size:12px;font-weight:600;color:var(--tx-3)}
+.tabs b.on{color:var(--verdi-l)}
+.tabs b.on::after{content:"";position:absolute;right:0;bottom:-1px;left:0;height:2px;background:var(--verdi)}
+
+/* ═══════════ 熔断横幅（维持现状） ═══════════ */
+.circuit{display:flex;align-items:center;gap:14px;padding:13px 18px;border:1px solid rgba(216,163,92,.45);border-radius:12px;background:rgba(216,163,92,.08)}
+.circuit .ic{display:grid;place-items:center;flex:0 0 34px;height:34px;border-radius:50%;background:rgba(216,163,92,.16);color:var(--amber)}
+.circuit strong{color:var(--amber);font-size:13px}
+.circuit p{margin:2px 0 0;font-size:11.5px;color:var(--tx-2)}
+.circuit .acts{margin-left:auto;display:flex;gap:10px}
+
+/* ═══════════ 检索条（并入 reply-* 共享组） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3)}
+.kw-input.mono{font-family:var(--mono);letter-spacing:.06em;width:250px}
+.date-input{display:flex;align-items:center;width:280px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font:11px var(--mono);color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 15px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.filter-go{display:flex;gap:8px;align-items:center;margin-left:auto}
+.privacy-note{grid-column:1/-1;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px;width:100%}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 规则条（与 user-rules/config-rules 同组） ═══════════ */
+.rules-strip{display:flex;gap:26px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.rules-strip>div{display:flex;gap:8px;align-items:baseline;min-width:0}
+.rules-strip span{flex:none;font-size:10.5px;color:var(--tx-3)}
+.rules-strip p{font-size:11px;color:var(--tx-2)}
+
+/* ═══════════ 面板与表格（并入 reply-results 共享组） ═══════════ */
+.panel-title{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:4px}
+.panel-title strong{font-size:14px;color:var(--tx-hi)}
+.panel-title small{display:block;margin-top:3px;color:var(--tx-3);font:10px/1.4 var(--mono)}
+.results{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:2px 8px 8px}
+table{width:100%;border-collapse:collapse}
+th{padding:9px 10px;text-align:left;font-size:11px;font-weight:400;letter-spacing:.08em;color:var(--tx-3);border-bottom:1px solid var(--hair)}
+td{padding:9px 10px;font-size:12.5px;border-bottom:1px solid var(--hair-2);color:var(--tx)}
+td .mono,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.hash{display:block;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px/1.4 var(--mono);color:var(--tx)}
+.tag{display:inline-flex;align-items:center;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.info{background:rgba(255,255,255,.04);color:var(--tx-2);border:1px solid var(--hair)}
+.tag.warn{background:rgba(216,163,92,.12);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.tag.crit{background:var(--verm);color:#fdf1ee;border:1px solid transparent}
+.tag.verdi{background:rgba(47,161,132,.12);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.tag.danger{background:rgba(228,106,79,.12);color:#ef9b89;border:1px solid rgba(228,106,79,.4)}
+.foot{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:46px;padding:10px 8px 4px;border-top:1px solid var(--hair-2);color:var(--tx-3);font-size:11px}
+.pager{display:flex;gap:6px;align-items:center;font:11px var(--mono)}
+.pager b{display:grid;place-items:center;min-width:26px;height:26px;border:1px solid var(--hair);border-radius:6px;font-weight:400}
+.pager b.on{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+
+/* ═══════════ 任务健康 / 队列恢复 / Outbox 统计（页级专属） ═══════════ */
+.job-health{display:inline-flex;align-items:center;gap:7px;color:var(--verdi-l);font:11px/1 var(--mono)}
+.job-health i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.job-health.danger{color:var(--verm)}
+.queue-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;border:1px solid var(--hair);background:var(--hair-2);border-radius:12px;overflow:hidden}
+.queue-grid article{display:grid;gap:10px;min-height:112px;padding:18px;background:var(--panel-2);align-content:start}
+.queue-grid span{color:var(--tx-3);font:10px/1 var(--mono);letter-spacing:.08em}
+.queue-grid strong{font-size:20px;font-weight:600;color:var(--tx-hi)}
+.queue-grid strong.paused{color:var(--amber)}
+.queue-grid small{color:var(--tx-3)}
+.break-glass{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px;padding:16px;border:1px solid rgba(228,106,79,.4);border-radius:12px;background:rgba(228,106,79,.05)}
+.switch{position:relative;width:44px;height:24px;border-radius:999px;background:var(--sink);border:1px solid var(--hair)}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--tx-3)}
+.switch.on{background:var(--verm);border-color:transparent}
+.switch.on::after{left:23px;background:#fdf1ee}
+.switch+p{font-size:11.5px;color:var(--tx-2)}
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;border:1px solid var(--hair);background:var(--hair-2);border-radius:12px;overflow:hidden}
+.stats article{display:grid;gap:8px;padding:12px 14px;background:var(--panel-2)}
+.stats span{color:var(--tx-3);font:10px/1 var(--mono);letter-spacing:.08em}
+.stats strong{font-size:18px;font-weight:600;color:var(--tx-hi)}
+.stats article.danger strong{color:var(--verm)}
+
+/* ═══════════ 确认对话框 / toast ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5;border-radius:12px}
+.modal{position:absolute;z-index:6;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:20px 22px 16px;box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.modal h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:8px}
+.modal p{font-size:12.5px;color:var(--tx-2)}
+.modal p b{color:var(--tx);font-weight:500}
+.modal .audit-hint{margin-top:10px;font-size:11px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+.toast{position:absolute;top:18px;right:22px;z-index:7;background:var(--panel);border:1px solid rgba(47,161,132,.4);border-radius:8px;padding:8px 14px;font-size:11.5px;color:#71c4ad;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+
+@media (max-width:1100px){ .screen{min-width:0} .queue-grid,.stats{grid-template-columns:repeat(3,1fr)} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 运维中心重设计原型</b>
+  <span>v1 评审稿 · 拟修订 docs/ui-design.md §5 · 路由 /ops（admin 专属，?tab= 深链保持）</span>
+  <em>2026-08-24 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>el-tabs + el-card 外壳退役</b>：改与系统参数同组的自定义页签条（告警记录 / 回调任务 / 原始报文 / uncertain / unmatched / 任务健康 / 队列恢复 / Outbox 投递），横向溢出可滚动，键盘左右切换，?tab= 深链与首访 lazy 语义不变；八个面板脱离 el-card 直接落地。<span class="need calc">前端</span></li>
+  <li><b>四块筛选区统一方案 A 单行检索条</b>：告警=类型关键词 220px + 等级 seg（全部/info/warn/crit 点选即重查）+ 时间范围 + 查询/重置；原始报文=来源 seg（全部/报告/回复）+ 处理状态 seg（全部/待重放/已处理）点选即重查，无查询按钮；unmatched=手机号 mono 250px + 时间范围 + 查询/重置 + 右侧导出区（授权明文勾选 + 导出对账）；Outbox=状态 seg（全部+六态）点选即重查。条底细字如实写明过滤边界与隐私事实。服务端分页过滤不变，不新增查询参数。<span class="need calc">前端</span></li>
+  <li><b>常驻规则条两格</b>：守卫与审计（重放/手动触发/死信重推/队列恢复均二次确认并写审计；uncertain 只读，仅 reconcile 可迁移，禁止自动重发）+ PII 边界（原始报文只展示无 PII 元数据；手机号仅在内存转 HMAC；明文导出需二次认证）。与 user-rules/config-rules 同组。<span class="need calc">前端</span></li>
+  <li><b>页头计数沉底</b>：面板标题右侧的「共 N 条」计数撤下，各表页脚统一「共 N 条 · 每页 20」+ 分页（并入 reply-pagination 共享组）；任务健康无分页，计数收进面板副题。<span class="need calc">前端</span></li>
+  <li><b>结果面板化</b>：表格与移动端卡片统一包进 ops-results 面板（并入 reply-results 共享组）；既有 testid、表格列、移动端双渲染全部保留。<span class="need calc">前端</span></li>
+  <li><b>四处确认拆后果正文与审计细字</b>：报文重放 / 任务手动触发 / 死信重推 / 队列恢复全部改 h() VNode 确认（ops-confirm-dialog/ops-confirm-audit 并入 sign-* 共享组）；成功 toast 统一带「本次操作已记入审计」。<span class="need ok">现有</span></li>
+  <li><b>回调任务页签不动</b>：嵌入的 CallbackView 维持既有紧凑工具栏（filter-toolbar 契约仍由 CallbackView 承载），本规范不覆盖。<span class="need ok">现有</span></li>
+  <li><b>行为与 testid 全量保留</b>：ops-alert/raw/uncertain/unmatched/outbox-pagination、alert-detail-*、ops-unmatched-phone/ops-unmatched-search、download-unmatched-export、force-resume、outbox-stats、outbox-retry-*、导出 step-up 密码流程与 loadToken 竞态防护均不变。<span class="need calc">前端</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：告警记录默认屏 ════════════════ -->
+<div class="stage-label">SCREEN A · 告警记录默认屏（自定义页签条 + 熔断横幅 + 单行检索条 + 常驻规则条 + 结果面板 + 页脚）</div>
+<div class="variant-caption">等级 seg 点选即重查；类型关键词与时间范围须点查询生效。熔断横幅仅在队列暂停或刚恢复时出现。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">CONTROL ROOM / 运维控制室</div>
+      <h1>运维中心</h1>
+      <div class="sub">所有恢复动作均有守卫与审计；原始报文只展示无 PII 元数据。</div>
+    </div>
+    <span class="tag verdi" style="font-size:10px">审计在线 · 安全元数据</span>
+  </div>
+
+  <div class="circuit">
+    <span class="ic">♨</span>
+    <div><strong>余额熔断 · 实时队列暂缓</strong><p>实时发送暂停；批量通道状态以队列恢复面板为准。</p></div>
+    <div class="acts"><span class="btn">查看余额与队列</span><span class="btn primary">已充值，恢复队列</span></div>
+  </div>
+
+  <div class="tabs"><b class="on">告警记录</b><b>回调任务</b><b>原始报文</b><b>uncertain</b><b>unmatched</b><b>任务健康</b><b>队列恢复</b><b>Outbox 投递</b></div>
+
+  <div class="rules-strip">
+    <div><span>守卫与审计</span><p>重放 / 手动触发 / 死信重推 / 队列恢复均二次确认并写审计；uncertain 只读，仅 reconcile 可迁移，禁止自动重发。</p></div>
+    <div><span>PII 边界</span><p>原始报文只展示无 PII 元数据；手机号仅在内存转 HMAC 精确查询；明文导出需二次认证。</p></div>
+  </div>
+
+  <div class="panel-title"><div><strong>告警事实流</strong><small>渠道为空时仅写 alert_log + 日志</small></div></div>
+
+  <div class="search-bar">
+    <label class="fld"><span>告警类型</span><div class="kw-input">如 job_failed</div></label>
+    <div class="fld"><span>等级</span><div class="seg"><b class="on">全部</b><b>info</b><b>warn</b><b>crit</b></div></div>
+    <label class="fld"><span>时间范围</span><div class="date-input">2026-08-17 00:00:00 至 2026-08-24 00:00:00</div></label>
+    <div class="filter-go"><span class="btn primary">查询</span><span class="btn">重置</span></div>
+    <p class="privacy-note">服务端分页过滤；等级点选即重查，关键词与时间范围点「查询」生效。告警渠道为空时仅落 alert_log 与日志，不外呼。</p>
+  </div>
+
+  <div class="results">
+    <table>
+      <thead><tr><th>等级</th><th>告警</th><th>类型</th><th>渠道</th><th>时间</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag crit">crit</span></td><td>任务连续失败：poll_report</td><td class="mono">job_failed</td><td class="mono">log-sink</td><td class="mono">2026-08-24 08:00:00</td><td style="text-align:right"><span class="btn link">详情</span></td></tr>
+        <tr><td><span class="tag warn">warn</span></td><td>回调失败进入重试</td><td class="mono">callback_retry</td><td class="mono">log-sink</td><td class="mono">2026-08-24 07:41:12</td><td style="text-align:right"><span class="btn link">详情</span></td></tr>
+        <tr><td><span class="tag info">info</span></td><td>厂商余额快照已更新</td><td class="mono">balance_snapshot</td><td class="mono">log-sink</td><td class="mono">2026-08-24 07:30:00</td><td style="text-align:right"><span class="btn link">详情</span></td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>共 45 条 · 每页 20</span><div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>›</b></div></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：原始报文 + 重放确认 ════════════════ -->
+<div class="stage-label">SCREEN B · 原始报文保险箱（双 seg 点选即重查）+ 重放确认（含成功 toast 样例）</div>
+<div class="variant-caption">来源与处理状态 seg 点选即重查；确认框拆后果正文（仅未处理且载荷完整可重放、不产生重复下发）与审计细字。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">重放完成，处理 3 项 · 本次操作已记入审计</div>
+  <div class="tabs"><b>告警记录</b><b>回调任务</b><b class="on">原始报文</b><b>uncertain</b><b>unmatched</b><b>任务健康</b><b>队列恢复</b><b>Outbox 投递</b></div>
+
+  <div class="panel-title"><div><strong>原始报文保险箱</strong><small>密文载荷与完整性摘要不对外返回</small></div></div>
+
+  <div class="search-bar dim" style="position:relative">
+    <div class="fld"><span>来源</span><div class="seg"><b class="on">全部</b><b>报告</b><b>回复</b></div></div>
+    <div class="fld"><span>处理状态</span><div class="seg"><b class="on">全部</b><b>待重放</b><b>已处理</b></div></div>
+    <p class="privacy-note">点选即重查；拉走即消费，完整响应先以 AES-GCM 密文落库，页面只展示无 PII 元数据。</p>
+  </div>
+
+  <div class="results dim" style="position:relative">
+    <table>
+      <thead><tr><th>RAW</th><th>来源</th><th>记录 / customId</th><th>状态</th><th>完整性</th><th>错误摘要</th><th>时间</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">2</td><td class="mono">report</td><td class="mono">3 / 2</td><td><span class="tag danger">待重放</span></td><td><span class="tag verdi">完整</span></td><td>ValueError</td><td class="mono">2026-08-24 08:00:00</td><td style="text-align:right"><span class="btn link danger">重放</span></td></tr>
+        <tr><td class="mono">1</td><td class="mono">reply</td><td class="mono">12 / 12</td><td><span class="tag verdi">已处理</span></td><td><span class="tag verdi">完整</span></td><td>—</td><td class="mono">2026-08-24 07:20:00</td><td style="text-align:right"></td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>共 45 条 · 每页 20</span><div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>›</b></div></div>
+  </div>
+
+  <div class="modal">
+    <h3>确认报文重放</h3>
+    <p>重放 <b>raw #2</b>：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。</p>
+    <p class="audit-hint">重放行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn primary">确认重放</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：unmatched 检索与导出 ════════════════ -->
+<div class="stage-label">SCREEN C · 迁移期无主报告（手机号精确查询 + 授权明文导出区 + 导出任务条）</div>
+<div class="variant-caption">手机号提交前校验 ^1\d{10}$；导出区右置，「授权明文」勾选即如实提示二次认证；任务条仅在有任务时出现。</div>
+<div class="viewport"><div class="screen">
+  <div class="tabs"><b>告警记录</b><b>回调任务</b><b>原始报文</b><b>uncertain</b><b class="on">unmatched</b><b>任务健康</b><b>队列恢复</b><b>Outbox 投递</b></div>
+
+  <div class="panel-title"><div><strong>迁移期无主报告</strong><small>无法匹配平台批次的状态报告在此留存，仅供对账核查</small></div></div>
+
+  <div class="search-bar">
+    <label class="fld"><span>手机号</span><div class="kw-input mono">手机号精确查询</div></label>
+    <label class="fld"><span>报告时间</span><div class="date-input">开始时间 至 结束时间</div></label>
+    <div class="filter-go"><span class="btn">查询</span><span class="btn">重置</span><span class="btn" style="border-style:dashed">☑ 授权明文</span><span class="btn primary">导出对账</span></div>
+    <p class="privacy-note">手机号仅在内存转换为 HMAC 精确查询，服务端不接触明文；勾选「授权明文」导出的文件仍以密文落盘，下载时需重新输入当前认证源密码。</p>
+  </div>
+
+  <div class="rules-strip">
+    <div><span>导出任务</span><p>导出任务 #134 · done · 45 行 · 有效期至 2026-08-31 08:00:00 · <b style="color:var(--verdi-l)">下载 CSV</b></p></div>
+  </div>
+
+  <div class="results">
+    <table>
+      <thead><tr><th>号码</th><th>customId</th><th>厂商任务</th><th>结果</th><th>报告时间</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">138****8000</td><td><span class="hash">legacy-1</span></td><td><span class="hash">vendor-1</span></td><td>DELIVRD</td><td class="mono">2026-08-24 08:00:00</td></tr>
+        <tr><td class="mono">139****2211</td><td><span class="hash">—</span></td><td><span class="hash">vendor-2</span></td><td>UNDELIV</td><td class="mono">2026-08-23 22:14:03</td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>共 45 条 · 每页 20</span><div class="pager"><b>‹</b><b class="on">1</b><b>2</b><b>3</b><b>›</b></div></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：任务健康 + 手动触发确认 ════════════════ -->
+<div class="stage-label">SCREEN D · 任务健康（心跳表）+ 手动触发确认（含成功 toast 样例）</div>
+<div class="variant-caption">无筛选条；计数收进面板副题。确认框如实告知立即投递一次、不改变 beat 调度，审计细字独立分段。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">任务已投递 · 本次操作已记入审计</div>
+  <div class="tabs"><b>告警记录</b><b>回调任务</b><b>原始报文</b><b>uncertain</b><b>unmatched</b><b class="on">任务健康</b><b>队列恢复</b><b>Outbox 投递</b></div>
+
+  <div class="panel-title"><div><strong>后台任务心跳</strong><small>预期间隔由 beat 与 API 启动时读取，修改后需重启两个容器 · 共 9 项</small></div></div>
+
+  <div class="results dim" style="position:relative">
+    <table>
+      <thead><tr><th>任务</th><th>中文用途</th><th>健康</th><th>耗时 ms</th><th>处理量</th><th>24h 成功率</th><th>最近运行</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">poll_report</td><td>轮询厂商状态报告，保存原始报文后解析并更新发送结果</td><td><span class="job-health danger"><i></i>stalled</span></td><td class="mono">120</td><td class="mono">0</td><td class="mono">75.0%</td><td class="mono">2026-08-24 08:00:00</td><td style="text-align:right"><span class="btn link">手动触发</span></td></tr>
+        <tr><td class="mono">reconcile</td><td>对账：按 customId 修复 uncertain 分片并重投丢失任务</td><td><span class="job-health"><i></i>success</span></td><td class="mono">842</td><td class="mono">3</td><td class="mono">99.1%</td><td class="mono">2026-08-24 08:05:00</td><td style="text-align:right"><span class="btn link">手动触发</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal">
+    <h3>确认任务触发</h3>
+    <p>手动触发 <b>poll_report</b> 将立即投递一次执行，不改变 beat 既有调度。</p>
+    <p class="audit-hint">触发行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn primary">手动触发</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 E：队列恢复 + 恢复确认 ════════════════ -->
+<div class="stage-label">SCREEN E · 队列恢复（双队列状态格 + break-glass）+ 恢复确认</div>
+<div class="variant-caption">SAFE/FORCE 开关文案随行切换；确认框按 force 取值给出不同后果正文，审计细字写明 force 一并留痕。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="tabs"><b>告警记录</b><b>回调任务</b><b>原始报文</b><b>uncertain</b><b>unmatched</b><b>任务健康</b><b class="on">队列恢复</b><b>Outbox 投递</b></div>
+
+  <div class="panel-title"><div><strong>双队列恢复</strong><small>PostgreSQL 状态先恢复，Redis 仅作为投递通道</small></div></div>
+
+  <div class="queue-grid dim" style="position:relative">
+    <article><span>REALTIME</span><strong class="paused">暂停 · 999</strong></article>
+    <article><span>BULK</span><strong class="paused">暂停 · 999</strong></article>
+    <article><span>余额</span><strong>余额 20,000</strong><small>阈值 10,000</small></article>
+  </div>
+
+  <div class="break-glass dim" style="position:relative">
+    <span class="switch on"></span>
+    <p>将绕过余额与暂停原因守卫，操作会写审计。</p>
+    <span class="btn danger">恢复队列</span>
+  </div>
+
+  <div class="modal">
+    <h3>确认恢复双队列</h3>
+    <p>FORCE 已开启：将<b>绕过余额与暂停原因守卫</b>，实时与批量队列立即恢复投递。</p>
+    <p class="audit-hint">恢复行为、force 取值与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn danger">恢复队列</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 F：Outbox 投递 + 死信重推确认 ════════════════ -->
+<div class="stage-label">SCREEN F · Outbox 投递（状态 seg 点选即重查 + 六格统计）+ 死信重推确认（含成功 toast 样例）</div>
+<div class="variant-caption">六格统计保留：待投递/已发布/处理中/死信/失败尝试/最老积压；仅死信行出现重推入口，确认后重置为待投递。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="toast" style="top:64px">事件已重置为待投递 · 本次操作已记入审计</div>
+  <div class="tabs"><b>告警记录</b><b>回调任务</b><b>原始报文</b><b>uncertain</b><b>unmatched</b><b>任务健康</b><b>队列恢复</b><b class="on">Outbox 投递</b></div>
+
+  <div class="panel-title"><div><strong>事务性 Outbox 投递</strong><small>PostgreSQL 为唯一事实源 · 死信事件确认后可人工重推</small></div></div>
+
+  <div class="search-bar">
+    <div class="fld"><span>事件状态</span><div class="seg"><b>全部</b><b>待投递</b><b>已发布</b><b>处理中</b><b>已租约</b><b>已完成</b><b class="on">死信</b></div></div>
+    <p class="privacy-note">点选即重查；事件由业务事务写入，dispatcher 按租约逐步投递，重推不二次投递已完成事件。</p>
+  </div>
+
+  <div class="stats">
+    <article><span>待投递</span><strong>3</strong></article>
+    <article><span>已发布</span><strong>2</strong></article>
+    <article><span>处理中</span><strong>1</strong></article>
+    <article class="danger"><span>死信</span><strong>1</strong></article>
+    <article><span>失败尝试</span><strong>7</strong></article>
+    <article><span>最老积压</span><strong>5 分钟</strong></article>
+  </div>
+
+  <div class="results dim" style="position:relative">
+    <table>
+      <thead><tr><th>事件</th><th>聚合引用</th><th>任务</th><th>队列</th><th>状态</th><th>尝试</th><th>失败</th><th>最近错误</th><th>更新时间</th><th style="text-align:right">操作</th></tr></thead>
+      <tbody>
+        <tr><td><b>usage.release</b></td><td><span class="hash">usage_reservation/9f1c2e7a</span></td><td>release_usage</td><td class="mono">realtime</td><td><span class="tag danger">死信</span></td><td class="mono">12/12</td><td class="mono">3</td><td class="mono">BrokerTimeout</td><td class="mono">2026-08-24 08:00:00</td><td style="text-align:right"><span class="btn link danger">重推</span></td></tr>
+      </tbody>
+    </table>
+    <div class="foot"><span>共 1 条 · 每页 20</span><div class="pager"><b>‹</b><b class="on">1</b><b>›</b></div></div>
+  </div>
+
+  <div class="modal">
+    <h3>确认重推 Outbox 事件</h3>
+    <p>将死信事件 <b>usage.release</b>（usage_reservation/9f1c2e7a）重置为待投递，dispatcher 将按租约重新投递。</p>
+    <p class="audit-hint">重推行为与操作人将写入审计日志。</p>
+    <div class="modal-foot"><span class="btn">取消</span><span class="btn primary">重推事件</span></div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 G：筛选空态 ════════════════ -->
+<div class="stage-label">SCREEN G · 空态（告警筛选无结果）</div>
+<div class="variant-caption">两行规约：一行结论 + 一行出路；无筛选条件的空库另有独立文案（渠道为空时仅落 alert_log 与日志）。</div>
+<div class="viewport"><div class="screen">
+  <div class="search-bar">
+    <label class="fld"><span>告警类型</span><div class="kw-input" style="color:var(--tx)">not_exist_type</div></label>
+    <div class="fld"><span>等级</span><div class="seg"><b class="on">全部</b><b>info</b><b>warn</b><b>crit</b></div></div>
+    <label class="fld"><span>时间范围</span><div class="date-input">开始时间 至 结束时间</div></label>
+    <div class="filter-go"><span class="btn primary">查询</span><span class="btn">重置</span></div>
+  </div>
+  <div class="empty">
+    <div><b>没有符合筛选条件的告警</b>
+    <span>调整告警类型、等级或时间范围后重新查询，也可重置筛选。</span></div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>告警 <code>GET /admin/alerts</code>（page / alert_type / level / start / end）、原始报文 <code>GET /admin/raw-logs</code>（page / source / processed）、unmatched <code>GET /admin/unmatched-reports</code>（page / phone / start / end）、Outbox <code>GET /admin/outbox/events</code>（page / state）：全部维持服务端分页过滤，seg 只是既有查询参数的映射，不新增任何契约字段。<span class="need ok">现有</span></li>
+  <li>重放 <code>POST /admin/raw-logs/{id}/replay</code>、手动触发 <code>POST /admin/jobs/{job_name}/trigger</code>、死信重推 <code>POST /admin/outbox/{id}/retry</code>、队列恢复 <code>POST /admin/queue/resume?force=</code>：四个写入口均保留二次确认与审计，请求体与状态机不变。<span class="need ok">现有</span></li>
+  <li>导出 <code>POST /admin/unmatched-reports/export</code> + <code>GET /reports/export/{id}</code> + 明文下载 <code>X-Export-Step-Up</code> 密码二次认证流程不变；手机号仍只在内存转 HMAC。<span class="need ok">现有</span></li>
+  <li>回调任务页签为嵌入的 CallbackView，沿用独立紧凑工具栏与契约，本原型不覆盖。<span class="need ok">现有</span></li>
+  <li>零契约变更：不新增端点与字段、不服务端化过滤、不改 openapi.yaml；?tab= 深链、首访 lazy 渲染与 loadToken 竞态防护维持现状。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>

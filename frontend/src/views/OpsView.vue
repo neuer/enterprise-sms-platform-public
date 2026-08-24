@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 
 import {
@@ -42,6 +42,16 @@ import CallbackView from "./CallbackView.vue"
 
 type TabName = "alerts" | "callbacks" | "raw" | "uncertain" | "unmatched" | "jobs" | "queue" | "outbox"
 const OPS_TABS: TabName[] = ["alerts", "callbacks", "raw", "uncertain", "unmatched", "jobs", "queue", "outbox"]
+const OPS_TAB_ITEMS: { name: TabName; label: string }[] = [
+  { name: "alerts", label: "告警记录" },
+  { name: "callbacks", label: "回调任务" },
+  { name: "raw", label: "原始报文" },
+  { name: "uncertain", label: "uncertain" },
+  { name: "unmatched", label: "unmatched" },
+  { name: "jobs", label: "任务健康" },
+  { name: "queue", label: "队列恢复" },
+  { name: "outbox", label: "Outbox 投递" },
+]
 const route = useRoute()
 const router = useRouter()
 
@@ -52,6 +62,7 @@ function tabFromQuery(raw: unknown): TabName | null {
 }
 
 const activeTab = ref<TabName>(tabFromQuery(route.query.tab) ?? "alerts")
+const visitedTabs = ref<TabName[]>([activeTab.value])
 const loading = ref(false)
 const errorMessage = ref("")
 const alerts = ref<AlertItem[]>([])
@@ -107,6 +118,23 @@ const OUTBOX_STATE_OPTIONS = (Object.keys(OUTBOX_STATE_META) as OutboxState[]).m
   value,
   label: OUTBOX_STATE_META[value].label,
 }))
+
+const ALERT_LEVEL_OPTIONS: { key: string; label: string; value: "" | AlertItem["level"] }[] = [
+  { key: "all", label: "全部", value: "" },
+  { key: "info", label: "info", value: "info" },
+  { key: "warn", label: "warn", value: "warn" },
+  { key: "crit", label: "crit", value: "crit" },
+]
+const RAW_SOURCE_OPTIONS: { key: string; label: string; value: "" | RawLogItem["source"] }[] = [
+  { key: "all", label: "全部", value: "" },
+  { key: "report", label: "报告", value: "report" },
+  { key: "reply", label: "回复", value: "reply" },
+]
+const RAW_PROCESSED_OPTIONS: { key: string; label: string; value: "" | "true" | "false" }[] = [
+  { key: "all", label: "全部", value: "" },
+  { key: "false", label: "待重放", value: "false" },
+  { key: "true", label: "已处理", value: "true" },
+]
 
 const alertEmpty = computed(() =>
   alertType.value.trim() || alertLevel.value || alertRange.value
@@ -242,6 +270,37 @@ function reloadFromFirstPage(tab: "alerts" | "raw" | "unmatched" | "outbox"): vo
   void load(tab)
 }
 
+function setAlertLevel(value: "" | AlertItem["level"]): void {
+  if (alertLevel.value === value) return
+  alertLevel.value = value
+  reloadFromFirstPage("alerts")
+}
+
+function resetAlerts(): void {
+  alertType.value = ""
+  alertLevel.value = ""
+  alertRange.value = null
+  reloadFromFirstPage("alerts")
+}
+
+function setRawSource(value: "" | RawLogItem["source"]): void {
+  if (rawSource.value === value) return
+  rawSource.value = value
+  reloadFromFirstPage("raw")
+}
+
+function setRawProcessed(value: "" | "true" | "false"): void {
+  if (rawProcessed.value === value) return
+  rawProcessed.value = value
+  reloadFromFirstPage("raw")
+}
+
+function setOutboxState(value: "" | OutboxState): void {
+  if (outboxState.value === value) return
+  outboxState.value = value
+  reloadFromFirstPage("outbox")
+}
+
 function unmatchedPhoneProblem(): string | null {
   const value = unmatchedPhone.value.trim()
   return value === "" || PHONE_RE.test(value) ? null : "手机号须为 11 位以 1 开头的数字"
@@ -253,6 +312,12 @@ function searchUnmatched(): void {
     ElMessage.warning(issue)
     return
   }
+  reloadFromFirstPage("unmatched")
+}
+
+function resetUnmatched(): void {
+  unmatchedPhone.value = ""
+  unmatchedRange.value = null
   reloadFromFirstPage("unmatched")
 }
 
@@ -269,16 +334,35 @@ function openAlertDetail(item: AlertItem): void {
   alertDetailVisible.value = true
 }
 
+function selectTab(tab: TabName): void {
+  activeTab.value = tab
+}
+
+async function moveTab(direction: -1 | 1): Promise<void> {
+  const current = OPS_TABS.indexOf(activeTab.value)
+  const next = (current + direction + OPS_TABS.length) % OPS_TABS.length
+  activeTab.value = OPS_TABS[next]
+  await nextTick()
+  document.getElementById(`ops-tab-${activeTab.value}`)?.focus()
+}
+
 async function retryOutbox(item: OutboxEventItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      `将死信事件 ${item.event_type}（${item.aggregate_type}/${item.aggregate_id}）重置为待投递？重推会写入审计。`,
+      h("div", { class: "ops-confirm-dialog" }, [
+        h("p", [
+          "将死信事件 ",
+          h("strong", item.event_type),
+          `（${item.aggregate_type}/${item.aggregate_id}）重置为待投递，dispatcher 将按租约重新投递。`,
+        ]),
+        h("p", { class: "ops-confirm-audit" }, "重推行为与操作人将写入审计日志。"),
+      ]),
       "确认重推 Outbox 事件",
-      { type: "warning", confirmButtonText: "重推事件" },
+      { type: "warning", confirmButtonText: "重推事件", cancelButtonText: "取消", customClass: "ops-confirm-box" },
     )
     retryingOutboxId.value = item.id
     await retryOutboxEvent(item.id)
-    ElMessage.success("事件已重置为待投递")
+    ElMessage.success("事件已重置为待投递 · 本次操作已记入审计")
     await load("outbox")
   } catch (error) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "事件重推失败")
@@ -289,9 +373,16 @@ async function retryOutbox(item: OutboxEventItem): Promise<void> {
 
 async function replay(item: RawLogItem): Promise<void> {
   try {
-    await ElMessageBox.confirm(`重放 raw #${item.id}，仅允许未处理报文。`, "确认报文重放", { type: "warning", confirmButtonText: "确认重放" })
+    await ElMessageBox.confirm(
+      h("div", { class: "ops-confirm-dialog" }, [
+        h("p", `重放 raw #${item.id}：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。`),
+        h("p", { class: "ops-confirm-audit" }, "重放行为与操作人将写入审计日志。"),
+      ]),
+      "确认报文重放",
+      { type: "warning", confirmButtonText: "确认重放", cancelButtonText: "取消", customClass: "ops-confirm-box" },
+    )
     const result = await replayRaw(item.id)
-    ElMessage.success(`重放完成，处理 ${result.processed_items} 项`)
+    ElMessage.success(`重放完成，处理 ${result.processed_items} 项 · 本次操作已记入审计`)
     await load("raw")
   } catch (error) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "重放失败")
@@ -300,9 +391,16 @@ async function replay(item: RawLogItem): Promise<void> {
 
 async function trigger(item: JobItem): Promise<void> {
   try {
-    await ElMessageBox.confirm(`手动触发 ${item.job_name}，本次请求将写入审计。`, "确认任务触发", { type: "warning", confirmButtonText: "手动触发" })
+    await ElMessageBox.confirm(
+      h("div", { class: "ops-confirm-dialog" }, [
+        h("p", `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`),
+        h("p", { class: "ops-confirm-audit" }, "触发行为与操作人将写入审计日志。"),
+      ]),
+      "确认任务触发",
+      { type: "warning", confirmButtonText: "手动触发", cancelButtonText: "取消", customClass: "ops-confirm-box" },
+    )
     await triggerJob(item.job_name)
-    ElMessage.success("任务已投递")
+    ElMessage.success("任务已投递 · 本次操作已记入审计")
   } catch (error) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "任务触发失败")
   }
@@ -321,7 +419,7 @@ async function exportUnmatched(): Promise<void> {
       phone: unmatchedPhone.value,
       ...rangeValues(unmatchedRange.value),
     }, exportDecrypted.value)
-    ElMessage.success("对账导出任务已创建")
+    ElMessage.success("对账导出任务已创建 · 本次操作已记入审计")
     await refreshExport()
   } catch (error) {
     exportError.value = error instanceof Error ? error.message : "导出创建失败"
@@ -393,11 +491,19 @@ async function downloadUnmatchedExport(): Promise<void> {
 
 async function recover(): Promise<void> {
   try {
-    const warning = forceResume.value ? "force 将绕过余额和熔断原因检查。" : "仅在余额达标且原因为 999 时恢复。"
-    await ElMessageBox.confirm(warning, "确认恢复双队列", { type: "warning", confirmButtonText: "恢复队列" })
+    await ElMessageBox.confirm(
+      h("div", { class: "ops-confirm-dialog" }, [
+        forceResume.value
+          ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
+          : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
+        h("p", { class: "ops-confirm-audit" }, "恢复行为、force 取值与操作人将写入审计日志。"),
+      ]),
+      "确认恢复双队列",
+      { type: "warning", confirmButtonText: "恢复队列", cancelButtonText: "取消", customClass: "ops-confirm-box" },
+    )
     const result = await resumeQueue(forceResume.value)
     queueRecovered.value = true
-    ElMessage.success(`已恢复 ${result.resumed_batches} 个批次`)
+    ElMessage.success(`已恢复 ${result.resumed_batches} 个批次 · 本次操作已记入审计`)
     await load("queue")
   } catch (error) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "队列恢复失败")
@@ -405,6 +511,7 @@ async function recover(): Promise<void> {
 }
 
 watch(activeTab, (value) => {
+  if (!visitedTabs.value.includes(value)) visitedTabs.value.push(value)
   void load(value)
   if (tabFromQuery(route.query.tab) === value) return
   const query = { ...route.query }
@@ -442,77 +549,247 @@ onBeforeUnmount(stopExportPolling)
     </div>
   </section>
 
-  <el-card shadow="never" class="ops-workbench">
-    <el-tabs v-model="activeTab" class="ops-tabs">
-      <el-tab-pane label="告警记录" name="alerts" />
-      <el-tab-pane label="回调任务" name="callbacks" lazy />
-      <el-tab-pane label="原始报文" name="raw" lazy />
-      <el-tab-pane label="uncertain" name="uncertain" lazy />
-      <el-tab-pane label="unmatched" name="unmatched" lazy />
-      <el-tab-pane label="任务健康" name="jobs" lazy />
-      <el-tab-pane label="队列恢复" name="queue" lazy />
-      <el-tab-pane label="Outbox 投递" name="outbox" lazy />
-    </el-tabs>
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false"><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert>
+  <nav class="ops-tabs" role="tablist" aria-label="运维中心模块">
+    <button
+      v-for="tab in OPS_TAB_ITEMS"
+      :id="`ops-tab-${tab.name}`"
+      :key="tab.name"
+      type="button"
+      role="tab"
+      :aria-selected="activeTab === tab.name"
+      :aria-controls="`ops-panel-${tab.name}`"
+      :tabindex="activeTab === tab.name ? 0 : -1"
+      :class="{ active: activeTab === tab.name }"
+      @click="selectTab(tab.name)"
+      @keydown.left.prevent="moveTab(-1)"
+      @keydown.right.prevent="moveTab(1)"
+    >{{ tab.label }}</button>
+  </nav>
 
-    <section v-if="activeTab === 'alerts'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title ops-filter-title"><div><strong>告警事实流</strong><small>渠道为空时仅写 alert_log + 日志 · 共 {{ alertTotal }} 条</small></div><div class="filter-toolbar ops-query-filters"><el-input v-model="alertType" clearable placeholder="告警类型" /><el-select v-model="alertLevel" clearable placeholder="等级"><el-option label="info" value="info" /><el-option label="warn" value="warn" /><el-option label="crit" value="crit" /></el-select><el-date-picker v-model="alertRange" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" /><el-button type="primary" @click="reloadFromFirstPage('alerts')">查询</el-button><el-button @click="alertType = ''; alertLevel = ''; alertRange = null; reloadFromFirstPage('alerts')">重置</el-button></div></header>
+  <aside class="ops-rules" aria-label="运维守卫与数据边界">
+    <div><span>守卫与审计</span><p>重放 / 手动触发 / 死信重推 / 队列恢复均二次确认并写审计；uncertain 只读，仅 reconcile 可迁移，禁止自动重发。</p></div>
+    <div><span>PII 边界</span><p>原始报文只展示无 PII 元数据；手机号仅在内存转 HMAC 精确查询；明文导出需二次认证。</p></div>
+  </aside>
+
+  <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert>
+
+  <section
+    v-if="visitedTabs.includes('alerts')"
+    v-show="activeTab === 'alerts'"
+    id="ops-panel-alerts"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-alerts"
+  >
+    <header class="ops-panel-title"><div><strong>告警事实流</strong><small>渠道为空时仅写 alert_log + 日志</small></div></header>
+    <form class="ops-filter-bar" @submit.prevent="reloadFromFirstPage('alerts')">
+      <label class="ops-fld"><span>告警类型</span>
+        <el-input v-model="alertType" class="ops-keyword" clearable placeholder="如 job_failed" aria-label="告警类型关键词" />
+      </label>
+      <div class="ops-fld"><span>等级</span>
+        <div class="ops-seg" role="group" aria-label="告警等级筛选" data-testid="ops-alert-level-seg">
+          <button
+            v-for="option in ALERT_LEVEL_OPTIONS"
+            :key="option.key"
+            type="button"
+            :class="{ on: alertLevel === option.value }"
+            :data-testid="`ops-alert-level-${option.key}`"
+            @click="setAlertLevel(option.value)"
+          >{{ option.label }}</button>
+        </div>
+      </div>
+      <label class="ops-fld"><span>时间范围</span>
+        <el-date-picker v-model="alertRange" class="ops-dates" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" />
+      </label>
+      <div class="ops-filter-go">
+        <el-button type="primary" @click="reloadFromFirstPage('alerts')">查询</el-button>
+        <el-button @click="resetAlerts">重置</el-button>
+      </div>
+      <p class="ops-privacy">服务端分页过滤；等级点选即重查，关键词与时间范围点「查询」生效。告警渠道为空时仅落 alert_log 与日志，不外呼。</p>
+    </form>
+    <section class="ops-results">
       <el-table :data="alerts" class="ops-table"><el-table-column label="等级" width="88"><template #default="{ row }"><el-tag :type="row.level === 'crit' ? 'danger' : row.level === 'warn' ? 'warning' : 'info'" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{ row.level }}</el-tag></template></el-table-column><el-table-column prop="title" label="告警" min-width="220" /><el-table-column prop="alert_type" label="类型" min-width="150" /><el-table-column prop="channels" label="渠道" width="110" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="70" fixed="right"><template #default="{ row }"><el-button link type="primary" :data-testid="`alert-detail-${row.id}`" @click="openAlertDetail(row)">详情</el-button></template></el-table-column><template #empty><EmptyState :title="alertEmpty.title" :description="alertEmpty.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in alerts" :key="item.id"><header><el-tag :type="item.level === 'crit' ? 'danger' : 'warning'">{{ item.level }}</el-tag><time>{{ time(item.created_at) }}</time></header><strong>{{ item.title }}</strong><p>{{ item.alert_type }} · {{ item.channels }}</p><el-button link type="primary" @click="openAlertDetail(item)">详情</el-button></article><EmptyState v-if="!alerts.length" :title="alertEmpty.title" :description="alertEmpty.description" /></div>
-      <el-pagination v-if="alertTotal > 20" v-model:current-page="alertPage" data-testid="ops-alert-pagination" class="ops-pagination" :page-size="20" :total="alertTotal" layout="prev, pager, next, total" background @current-change="load('alerts')" />
+      <footer class="ops-pagination"><span>共 {{ alertTotal }} 条 · 每页 20</span><el-pagination v-if="alertTotal > 20" v-model:current-page="alertPage" data-testid="ops-alert-pagination" :page-size="20" :total="alertTotal" layout="prev, pager, next" background @current-change="load('alerts')" /></footer>
     </section>
+  </section>
 
-    <CallbackView v-else-if="activeTab === 'callbacks'" embedded />
+  <section
+    v-if="visitedTabs.includes('callbacks')"
+    v-show="activeTab === 'callbacks'"
+    id="ops-panel-callbacks"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-callbacks"
+  >
+    <CallbackView embedded />
+  </section>
 
-    <section v-else-if="activeTab === 'raw'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title ops-filter-title"><div><strong>原始报文保险箱</strong><small>密文载荷与完整性摘要不对外返回 · 共 {{ rawTotal }} 条</small></div><div class="filter-toolbar ops-query-filters"><el-select v-model="rawSource" clearable placeholder="来源"><el-option label="报告" value="report" /><el-option label="回复" value="reply" /></el-select><el-select v-model="rawProcessed" clearable placeholder="处理状态"><el-option label="待重放" value="false" /><el-option label="已处理" value="true" /></el-select><el-button type="primary" @click="reloadFromFirstPage('raw')">查询</el-button><el-button @click="rawSource = ''; rawProcessed = ''; reloadFromFirstPage('raw')">重置</el-button></div></header>
+  <section
+    v-if="visitedTabs.includes('raw')"
+    v-show="activeTab === 'raw'"
+    id="ops-panel-raw"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-raw"
+  >
+    <header class="ops-panel-title"><div><strong>原始报文保险箱</strong><small>密文载荷与完整性摘要不对外返回</small></div></header>
+    <form class="ops-filter-bar" @submit.prevent>
+      <div class="ops-fld"><span>来源</span>
+        <div class="ops-seg" role="group" aria-label="报文来源筛选" data-testid="ops-raw-source-seg">
+          <button
+            v-for="option in RAW_SOURCE_OPTIONS"
+            :key="option.key"
+            type="button"
+            :class="{ on: rawSource === option.value }"
+            :data-testid="`ops-raw-source-${option.key}`"
+            @click="setRawSource(option.value)"
+          >{{ option.label }}</button>
+        </div>
+      </div>
+      <div class="ops-fld"><span>处理状态</span>
+        <div class="ops-seg" role="group" aria-label="处理状态筛选" data-testid="ops-raw-processed-seg">
+          <button
+            v-for="option in RAW_PROCESSED_OPTIONS"
+            :key="option.key"
+            type="button"
+            :class="{ on: rawProcessed === option.value }"
+            :data-testid="`ops-raw-processed-${option.key}`"
+            @click="setRawProcessed(option.value)"
+          >{{ option.label }}</button>
+        </div>
+      </div>
+      <p class="ops-privacy">点选即重查；拉走即消费，完整响应先以 AES-GCM 密文落库，页面只展示无 PII 元数据。</p>
+    </form>
+    <section class="ops-results">
       <el-table :data="rawLogs" class="ops-table"><el-table-column prop="id" label="RAW" width="80" /><el-table-column prop="source" label="来源" width="100" /><el-table-column label="记录 / customId" min-width="150"><template #default="{ row }">{{ row.item_count }} / {{ row.custom_id_count }}</template></el-table-column><el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="row.processed ? 'success' : 'danger'">{{ row.processed ? '已处理' : '待重放' }}</el-tag></template></el-table-column><el-table-column label="完整性" width="120"><template #default="{ row }"><el-tag :type="row.capture_state === 'complete' ? 'success' : row.capture_state === 'complete_too_large' ? 'warning' : 'danger'">{{ row.capture_state === 'complete' ? '完整' : row.capture_state === 'complete_too_large' ? '超限完整' : '截断' }}</el-tag></template></el-table-column><el-table-column prop="error" label="错误摘要" min-width="180" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ time(row.fetched_at) }}</template></el-table-column><el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="!row.processed && row.capture_state !== 'truncated'" link type="danger" @click="replay(row)">重放</el-button></template></el-table-column><template #empty><EmptyState :title="rawEmpty.title" :description="rawEmpty.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in rawLogs" :key="item.id"><header><strong>RAW-{{ item.id }} · {{ item.source }}</strong><el-tag :type="item.processed ? 'success' : 'danger'">{{ item.processed ? '已处理' : '待重放' }}</el-tag></header><p>{{ item.item_count }} 项 · {{ item.custom_id_count }} customId · {{ item.capture_state === 'complete' ? '完整' : item.capture_state === 'complete_too_large' ? '超限完整' : '截断' }}</p><small>{{ item.error || time(item.fetched_at) }}</small><el-button v-if="!item.processed && item.capture_state !== 'truncated'" link type="danger" @click="replay(item)">重放</el-button></article><EmptyState v-if="!rawLogs.length" :title="rawEmpty.title" :description="rawEmpty.description" /></div>
-      <el-pagination v-if="rawTotal > 20" v-model:current-page="rawPage" data-testid="ops-raw-pagination" class="ops-pagination" :page-size="20" :total="rawTotal" layout="prev, pager, next, total" background @current-change="load('raw')" />
+      <footer class="ops-pagination"><span>共 {{ rawTotal }} 条 · 每页 20</span><el-pagination v-if="rawTotal > 20" v-model:current-page="rawPage" data-testid="ops-raw-pagination" :page-size="20" :total="rawTotal" layout="prev, pager, next" background @current-change="load('raw')" /></footer>
     </section>
+  </section>
 
-    <section v-else-if="activeTab === 'uncertain'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>只读核查；仅 reconcile 可迁移状态</small></div><span>{{ uncertainTotal }} 项</span></header>
+  <section
+    v-if="visitedTabs.includes('uncertain')"
+    v-show="activeTab === 'uncertain'"
+    id="ops-panel-uncertain"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-uncertain"
+  >
+    <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>只读核查；仅 reconcile 可迁移状态</small></div></header>
+    <section class="ops-results">
       <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="180" /><el-table-column label="customId" min-width="180"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="120"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="进入时间" width="180"><template #default="{ row }">{{ time(row.uncertain_since) }}</template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in uncertain" :key="item.chunk_id"><header><strong>{{ item.batch_no }}</strong><el-tag :type="item.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(item.age_seconds) }}</el-tag></header><code>{{ item.custom_id }}</code><p>{{ item.phone_count }} 个号码 · 禁止自动重发</p></article><EmptyState v-if="!uncertain.length" :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></div>
-      <el-pagination v-if="uncertainTotal > 20" v-model:current-page="uncertainPage" data-testid="ops-uncertain-pagination" class="ops-pagination" :page-size="20" :total="uncertainTotal" layout="prev, pager, next, total" background @current-change="load('uncertain')" />
+      <footer class="ops-pagination"><span>共 {{ uncertainTotal }} 项 · 每页 20</span><el-pagination v-if="uncertainTotal > 20" v-model:current-page="uncertainPage" data-testid="ops-uncertain-pagination" :page-size="20" :total="uncertainTotal" layout="prev, pager, next" background @current-change="load('uncertain')" /></footer>
     </section>
+  </section>
 
-    <section v-else-if="activeTab === 'unmatched'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title ops-filter-title"><div><strong>迁移期无主报告</strong><small>手机号精确查询只在内存转换 HMAC · 共 {{ unmatchedTotal }} 条</small></div><div class="filter-toolbar ops-query-filters"><el-input v-model="unmatchedPhone" maxlength="11" clearable placeholder="手机号精确查询" data-testid="ops-unmatched-phone" /><el-date-picker v-model="unmatchedRange" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" /><el-button data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button><el-checkbox v-model="exportDecrypted">授权明文</el-checkbox><el-button type="primary" :loading="exportBusy" @click="exportUnmatched">导出对账</el-button></div></header>
-      <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" />
-      <el-alert v-if="exportTask" :title="`导出任务 #${exportTask.id} · ${exportTask.status}`" :type="exportTask.status === 'failed' ? 'error' : 'success'" :closable="false"><template #default><div class="export-task-detail"><span v-if="exportTask.row_count !== null">{{ exportTask.row_count }} 行</span><span v-if="exportTask.expires_at">有效期至 {{ time(exportTask.expires_at) }}</span><el-button v-if="exportTask.status === 'done' && exportTask.download_url" data-testid="download-unmatched-export" type="primary" link @click="downloadUnmatchedExport">下载 CSV</el-button></div></template></el-alert>
+  <section
+    v-if="visitedTabs.includes('unmatched')"
+    v-show="activeTab === 'unmatched'"
+    id="ops-panel-unmatched"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-unmatched"
+  >
+    <header class="ops-panel-title"><div><strong>迁移期无主报告</strong><small>无法匹配平台批次的状态报告在此留存，仅供对账核查</small></div></header>
+    <form class="ops-filter-bar" @submit.prevent="searchUnmatched">
+      <label class="ops-fld"><span>手机号</span>
+        <el-input v-model="unmatchedPhone" class="ops-phone" maxlength="11" clearable placeholder="手机号精确查询" data-testid="ops-unmatched-phone" aria-label="无主报告手机号" />
+      </label>
+      <label class="ops-fld"><span>报告时间</span>
+        <el-date-picker v-model="unmatchedRange" class="ops-dates" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" />
+      </label>
+      <div class="ops-filter-go">
+        <el-button data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button>
+        <el-button @click="resetUnmatched">重置</el-button>
+        <el-checkbox v-model="exportDecrypted">授权明文</el-checkbox>
+        <el-button type="primary" :loading="exportBusy" @click="exportUnmatched">导出对账</el-button>
+      </div>
+      <p class="ops-privacy">手机号仅在内存转换为 HMAC 精确查询，服务端不接触明文；勾选「授权明文」导出的文件仍以密文落盘，下载时需重新输入当前认证源密码。</p>
+    </form>
+    <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" />
+    <el-alert v-if="exportTask" :title="`导出任务 #${exportTask.id} · ${exportTask.status}`" :type="exportTask.status === 'failed' ? 'error' : 'success'" :closable="false"><template #default><div class="export-task-detail"><span v-if="exportTask.row_count !== null">{{ exportTask.row_count }} 行</span><span v-if="exportTask.expires_at">有效期至 {{ time(exportTask.expires_at) }}</span><el-button v-if="exportTask.status === 'done' && exportTask.download_url" data-testid="download-unmatched-export" type="primary" link @click="downloadUnmatchedExport">下载 CSV</el-button></div></template></el-alert>
+    <section class="ops-results">
       <el-table :data="unmatched" class="ops-table"><el-table-column label="号码" width="140"><template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template></el-table-column><el-table-column label="customId" min-width="170"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id || ''">{{ row.custom_id || "—" }}</code></template></el-table-column><el-table-column label="厂商任务" min-width="150"><template #default="{ row }"><code class="ops-hash" :title="row.vendor_task_id || ''">{{ row.vendor_task_id || "—" }}</code></template></el-table-column><el-table-column prop="report_desc" label="结果" width="120" /><el-table-column label="报告时间" width="180"><template #default="{ row }">{{ time(row.report_time) }}</template></el-table-column><template #empty><EmptyState :title="unmatchedEmpty.title" :description="unmatchedEmpty.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in unmatched" :key="item.id"><header><PhoneMask :value="item.phone_mask" /><el-tag type="warning">unmatched</el-tag></header><code>{{ item.custom_id || '—' }}</code><p>{{ item.report_desc || '未知结果' }} · {{ time(item.report_time) }}</p></article><EmptyState v-if="!unmatched.length" :title="unmatchedEmpty.title" :description="unmatchedEmpty.description" /></div>
-      <el-pagination v-if="unmatchedTotal > 20" v-model:current-page="unmatchedPage" data-testid="ops-unmatched-pagination" class="ops-pagination" :page-size="20" :total="unmatchedTotal" layout="prev, pager, next, total" background @current-change="load('unmatched')" />
+      <footer class="ops-pagination"><span>共 {{ unmatchedTotal }} 条 · 每页 20</span><el-pagination v-if="unmatchedTotal > 20" v-model:current-page="unmatchedPage" data-testid="ops-unmatched-pagination" :page-size="20" :total="unmatchedTotal" layout="prev, pager, next" background @current-change="load('unmatched')" /></footer>
     </section>
+  </section>
 
-    <section v-else-if="activeTab === 'jobs'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title"><div><strong>后台任务心跳</strong><small>预期间隔由 beat 与 API 启动时读取，修改后需重启两个容器</small></div><span>{{ jobs.length }} 项</span></header>
+  <section
+    v-if="visitedTabs.includes('jobs')"
+    v-show="activeTab === 'jobs'"
+    id="ops-panel-jobs"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-jobs"
+  >
+    <header class="ops-panel-title"><div><strong>后台任务心跳</strong><small>预期间隔由 beat 与 API 启动时读取，修改后需重启两个容器 · 共 {{ jobs.length }} 项</small></div></header>
+    <section class="ops-results">
       <el-table :data="jobs" class="ops-table"><el-table-column prop="job_name" label="任务" min-width="180" /><el-table-column label="中文用途" min-width="270"><template #default="{ row }"><span class="job-description">{{ jobDescription(row.job_name) }}</span></template></el-table-column><el-table-column label="健康" width="100"><template #default="{ row }"><span class="job-health" :class="{ danger: row.stalled || row.last_status === 'failed' }"><i></i>{{ row.stalled ? 'stalled' : row.last_status || '无记录' }}</span></template></el-table-column><el-table-column prop="last_duration_ms" label="耗时 ms" width="100" /><el-table-column prop="last_items" label="处理量" width="90" /><el-table-column label="24h 成功率" width="120"><template #default="{ row }">{{ row.last_run_at ? (row.success_rate_24h * 100).toFixed(1) + '%' : '—' }}</template></el-table-column><el-table-column label="最近运行" width="180"><template #default="{ row }">{{ time(row.last_run_at) }}</template></el-table-column><el-table-column label="操作" width="110"><template #default="{ row }"><el-button link type="primary" @click="trigger(row)">手动触发</el-button></template></el-table-column><template #empty><EmptyState :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in jobs" :key="item.job_name"><header><strong>{{ item.job_name }}</strong><span class="job-health" :class="{ danger: item.stalled }"><i></i>{{ item.stalled ? 'stalled' : item.last_status || '无记录' }}</span></header><p class="job-description">{{ jobDescription(item.job_name) }}</p><p>{{ item.last_items }} 项 · {{ item.last_duration_ms ?? 0 }}ms · {{ item.last_run_at ? (item.success_rate_24h * 100).toFixed(1) + '%' : '—' }}</p><el-button link type="primary" @click="trigger(item)">手动触发</el-button></article><EmptyState v-if="!jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description" /></div>
     </section>
+  </section>
 
-    <section v-else-if="activeTab === 'queue'" v-loading="loading" class="ops-panel queue-recovery">
-      <header class="ops-panel-title"><div><strong>双队列恢复</strong><small>PostgreSQL 状态先恢复，Redis 仅作为投递通道</small></div></header>
-      <template v-if="queue"><div class="queue-status-grid"><article><span>REALTIME</span><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : '运行中' }}</strong></article><article><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : '运行中' }}</strong></article><article><span>余额</span><strong>{{ queue.balance === null ? '无快照' : `余额 ${queue.balance.toLocaleString()}` }}</strong><small>阈值 {{ queue.threshold.toLocaleString() }}</small></article></div><div class="break-glass"><el-switch v-model="forceResume" data-testid="force-resume" inline-prompt active-text="FORCE" inactive-text="SAFE" /><p>{{ forceResume ? '将绕过余额与暂停原因守卫，操作会写审计。' : '仅余额达到阈值且暂停码为 999 时允许恢复。' }}</p><el-button type="danger" @click="recover">恢复队列</el-button></div></template>
-    </section>
+  <section
+    v-if="visitedTabs.includes('queue')"
+    v-show="activeTab === 'queue'"
+    id="ops-panel-queue"
+    v-loading="loading"
+    class="ops-panel queue-recovery"
+    role="tabpanel"
+    aria-labelledby="ops-tab-queue"
+  >
+    <header class="ops-panel-title"><div><strong>双队列恢复</strong><small>PostgreSQL 状态先恢复，Redis 仅作为投递通道</small></div></header>
+    <template v-if="queue"><div class="queue-status-grid"><article><span>REALTIME</span><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : '运行中' }}</strong></article><article><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : '运行中' }}</strong></article><article><span>余额</span><strong>{{ queue.balance === null ? '无快照' : `余额 ${queue.balance.toLocaleString()}` }}</strong><small>阈值 {{ queue.threshold.toLocaleString() }}</small></article></div><div class="break-glass"><el-switch v-model="forceResume" data-testid="force-resume" inline-prompt active-text="FORCE" inactive-text="SAFE" /><p>{{ forceResume ? '将绕过余额与暂停原因守卫，操作会写审计。' : '仅余额达到阈值且暂停码为 999 时允许恢复。' }}</p><el-button type="danger" @click="recover">恢复队列</el-button></div></template>
+  </section>
 
-    <section v-else-if="activeTab === 'outbox'" v-loading="loading" class="ops-panel">
-      <header class="ops-panel-title ops-filter-title"><div><strong>事务性 Outbox 投递</strong><small>PostgreSQL 为唯一事实源 · 死信事件确认后可人工重推 · 共 {{ outboxTotal }} 条</small></div><div class="filter-toolbar ops-query-filters"><el-select v-model="outboxState" clearable placeholder="事件状态" data-testid="ops-outbox-state"><el-option v-for="option in OUTBOX_STATE_OPTIONS" :key="option.value" :label="option.label" :value="option.value" /></el-select><el-button type="primary" @click="reloadFromFirstPage('outbox')">查询</el-button><el-button @click="outboxState = ''; reloadFromFirstPage('outbox')">重置</el-button></div></header>
-      <div v-if="outboxStats" class="outbox-stats" data-testid="outbox-stats">
-        <article><span>待投递</span><strong>{{ outboxStats.pending }}</strong></article>
-        <article><span>已发布</span><strong>{{ outboxStats.published }}</strong></article>
-        <article><span>处理中</span><strong>{{ outboxStats.processing }}</strong></article>
-        <article class="danger"><span>死信</span><strong>{{ outboxStats.dead }}</strong></article>
-        <article><span>失败尝试</span><strong>{{ outboxStats.failed_attempts }}</strong></article>
-        <article><span>最老积压</span><strong>{{ duration(outboxStats.oldest_age_seconds) }}</strong></article>
+  <section
+    v-if="visitedTabs.includes('outbox')"
+    v-show="activeTab === 'outbox'"
+    id="ops-panel-outbox"
+    v-loading="loading"
+    class="ops-panel"
+    role="tabpanel"
+    aria-labelledby="ops-tab-outbox"
+  >
+    <header class="ops-panel-title"><div><strong>事务性 Outbox 投递</strong><small>PostgreSQL 为唯一事实源 · 死信事件确认后可人工重推</small></div></header>
+    <form class="ops-filter-bar" @submit.prevent>
+      <div class="ops-fld"><span>事件状态</span>
+        <div class="ops-seg" role="group" aria-label="Outbox 事件状态筛选" data-testid="ops-outbox-state">
+          <button type="button" :class="{ on: outboxState === '' }" data-testid="ops-outbox-state-all" @click="setOutboxState('')">全部</button>
+          <button
+            v-for="option in OUTBOX_STATE_OPTIONS"
+            :key="option.value"
+            type="button"
+            :class="{ on: outboxState === option.value }"
+            :data-testid="`ops-outbox-state-${option.value}`"
+            @click="setOutboxState(option.value)"
+          >{{ option.label }}</button>
+        </div>
       </div>
+      <p class="ops-privacy">点选即重查；事件由业务事务写入，dispatcher 按租约逐步投递，重推不二次投递已完成事件。</p>
+    </form>
+    <div v-if="outboxStats" class="outbox-stats" data-testid="outbox-stats">
+      <article><span>待投递</span><strong>{{ outboxStats.pending }}</strong></article>
+      <article><span>已发布</span><strong>{{ outboxStats.published }}</strong></article>
+      <article><span>处理中</span><strong>{{ outboxStats.processing }}</strong></article>
+      <article class="danger"><span>死信</span><strong>{{ outboxStats.dead }}</strong></article>
+      <article><span>失败尝试</span><strong>{{ outboxStats.failed_attempts }}</strong></article>
+      <article><span>最老积压</span><strong>{{ duration(outboxStats.oldest_age_seconds) }}</strong></article>
+    </div>
+    <section class="ops-results">
       <el-table :data="outboxEvents" class="ops-table"><el-table-column label="事件" min-width="140"><template #default="{ row }"><strong>{{ row.event_type }}</strong></template></el-table-column><el-table-column label="聚合引用" min-width="180"><template #default="{ row }"><code class="batch-code">{{ row.aggregate_type }}/{{ row.aggregate_id }}</code></template></el-table-column><el-table-column label="任务" min-width="130"><template #default="{ row }">{{ shortTaskName(row.task_name) }}</template></el-table-column><el-table-column prop="queue" label="队列" width="90" /><el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="outboxStateMeta(row.state).tag">{{ outboxStateMeta(row.state).label }}</el-tag></template></el-table-column><el-table-column label="尝试" width="80"><template #default="{ row }">{{ row.attempts }}/{{ row.max_attempts }}</template></el-table-column><el-table-column prop="failure_count" label="失败" width="70" /><el-table-column label="最近错误" min-width="130"><template #default="{ row }">{{ row.last_error || '—' }}</template></el-table-column><el-table-column label="更新时间" width="170"><template #default="{ row }">{{ time(row.updated_at) }}</template></el-table-column><el-table-column label="操作" width="80" fixed="right"><template #default="{ row }"><el-button v-if="row.state === 'dead'" link type="danger" :loading="retryingOutboxId === row.id" :data-testid="`outbox-retry-${row.id}`" @click="retryOutbox(row)">重推</el-button></template></el-table-column><template #empty><EmptyState :title="outboxEmpty.title" :description="outboxEmpty.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in outboxEvents" :key="item.id"><header><strong>{{ item.event_type }}</strong><el-tag :type="outboxStateMeta(item.state).tag">{{ outboxStateMeta(item.state).label }}</el-tag></header><code>{{ item.aggregate_type }}/{{ item.aggregate_id }}</code><p>{{ shortTaskName(item.task_name) }} · {{ item.queue }} · 尝试 {{ item.attempts }}/{{ item.max_attempts }} · 失败 {{ item.failure_count }}</p><small>{{ item.last_error || time(item.updated_at) }}</small><el-button v-if="item.state === 'dead'" link type="danger" :loading="retryingOutboxId === item.id" @click="retryOutbox(item)">重推</el-button></article><EmptyState v-if="!outboxEvents.length" :title="outboxEmpty.title" :description="outboxEmpty.description" /></div>
-      <el-pagination v-if="outboxTotal > 20" v-model:current-page="outboxPage" data-testid="ops-outbox-pagination" class="ops-pagination" :page-size="20" :total="outboxTotal" layout="prev, pager, next, total" background @current-change="load('outbox')" />
+      <footer class="ops-pagination"><span>共 {{ outboxTotal }} 条 · 每页 20</span><el-pagination v-if="outboxTotal > 20" v-model:current-page="outboxPage" data-testid="ops-outbox-pagination" :page-size="20" :total="outboxTotal" layout="prev, pager, next" background @current-change="load('outbox')" /></footer>
     </section>
-  </el-card>
+  </section>
 
   <el-drawer v-model="alertDetailVisible" title="告警详情" size="440px" destroy-on-close>
     <template v-if="selectedAlert">
