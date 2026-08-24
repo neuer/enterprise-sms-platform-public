@@ -56,6 +56,7 @@ def test_contract_pins_every_host_runtime_boundary() -> None:
         "test_update_promote.py",
         "test_update_store.py",
         "test_update_verify.py",
+        "protected_path_policy.py",
         "check_public_readiness.py",
         "export_public_snapshot.py",
         "verify_public_snapshot_cutover.py",

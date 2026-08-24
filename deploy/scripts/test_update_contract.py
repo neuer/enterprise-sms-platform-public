@@ -117,6 +117,7 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_update_promote.py",
         "deploy/scripts/test_update_store.py",
         "deploy/scripts/test_update_verify.py",
+        "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
         "scripts/verify_public_snapshot_cutover.py",
@@ -260,6 +261,10 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
         "docs/runbooks/controlled-real-vendor-test.md",
         "docs/runbooks/test-fast-update.md",
+        "docs/runbooks/usage-ledger-recovery.md",
+        "docs/runbooks/worker-fencing-recovery.md",
+        "docs/vendor-api.md",
+        "SECURITY.md",
     }
 )
 _SAFE_NON_RUNTIME_GATES = frozenset(
