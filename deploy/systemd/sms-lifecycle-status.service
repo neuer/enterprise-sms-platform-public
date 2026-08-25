@@ -31,6 +31,7 @@ RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
 DevicePolicy=closed
+DeviceAllow=block-sd r
 ReadWritePaths=/var/lib/sms-platform/runtime/backups
 ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid
 StandardOutput=journal

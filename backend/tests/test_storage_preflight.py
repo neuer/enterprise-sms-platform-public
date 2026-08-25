@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from dataclasses import dataclass, replace
@@ -12,9 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "deploy" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import initialize_production_storage as initializer_storage_module  # noqa: E402
 import storage_preflight as storage_module  # noqa: E402
 from storage_preflight import (  # noqa: E402
     DIRECTORY_REQUIREMENTS,
+    DOCKER_BIND_MOUNT_REQUIREMENTS,
     FILESYSTEM_METADATA_TOLERANCE_PERCENT,
     GIB,
     MOUNT_REQUIREMENTS,
@@ -25,6 +28,12 @@ from storage_preflight import (  # noqa: E402
 
 PREFLIGHT = ROOT / "deploy" / "scripts" / "storage_preflight.py"
 PREFLIGHT_UNIT = ROOT / "deploy" / "systemd" / "sms-storage-preflight.service"
+BACKUP_UNIT = ROOT / "deploy" / "systemd" / "sms-backup.service"
+RESTORE_DRILL_UNIT = ROOT / "deploy" / "systemd" / "sms-restore-drill.service"
+LIFECYCLE_STATUS_UNIT = ROOT / "deploy" / "systemd" / "sms-lifecycle-status.service"
+PARTITION_MAINTENANCE_UNIT = (
+    ROOT / "deploy" / "systemd" / "sms-partition-maintenance.service"
+)
 DOCKER_DROP_IN = (
     ROOT / "deploy" / "systemd" / "docker.service.d" / "10-sms-platform-storage.conf"
 )
@@ -37,6 +46,7 @@ PLATFORM_DROP_IN = (
 )
 RUNBOOK = ROOT / "deploy" / "storage.md"
 WRAPPER = ROOT / "deploy" / "sms-compose"
+PRODUCTION_STORAGE_COMPOSE = ROOT / "deploy" / "docker-compose.production-storage.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,15 +81,31 @@ class FakeProbe:
         self.filesystems = filesystems
         self.resolved: dict[Path, Path] = {}
         self.uuid_devices: dict[str, tuple[int, int]] = {}
+        self.xfs_ftypes: dict[Path, int] = {}
+        self.fstab_verification_error: Exception | None = None
+        self.source_devices: dict[str, tuple[int, int] | None] = {}
+        self.host_context_error: Exception | None = None
+        self.read_paths: list[Path] = []
+        self.lstat_errors: dict[Path, OSError] = {}
+        self.resolve_errors: dict[Path, OSError] = {}
+
+    def assert_host_context(self) -> None:
+        if self.host_context_error is not None:
+            raise self.host_context_error
 
     def read_text(self, path: Path) -> str:
+        self.read_paths.append(path)
         if path == Path("/etc/fstab"):
             return self.fstab
-        if path == Path("/proc/self/mountinfo"):
-            return self.mountinfo
         raise FileNotFoundError(path)
 
+    def read_host_mountinfo(self) -> str:
+        self.read_paths.append(Path("/proc/1/mountinfo"))
+        return self.mountinfo
+
     def lstat(self, path: Path) -> FakeStat:
+        if path in self.lstat_errors:
+            raise self.lstat_errors[path]
         try:
             return self.stats[path]
         except KeyError as error:
@@ -91,12 +117,11 @@ class FakeProbe:
         except KeyError as error:
             raise FileNotFoundError(path) from error
 
-    def lexists(self, path: Path) -> bool:
-        return path in self.stats
-
     def resolve(self, path: Path) -> Path:
         if path not in self.stats:
             raise FileNotFoundError(path)
+        if path in self.resolve_errors:
+            raise self.resolve_errors[path]
         return self.resolved.get(path, path)
 
     def block_device_identity(self, uuid: str) -> tuple[int, int]:
@@ -104,6 +129,26 @@ class FakeProbe:
             return self.uuid_devices[uuid]
         except KeyError as error:
             raise FileNotFoundError(uuid) from error
+
+    def xfs_ftype(self, path: Path) -> int:
+        try:
+            return self.xfs_ftypes[path]
+        except KeyError as error:
+            raise FileNotFoundError(path) from error
+
+    def verify_fstab(self, path: Path) -> None:
+        assert path == Path("/etc/fstab")
+        if self.fstab_verification_error is not None:
+            raise self.fstab_verification_error
+
+    def fstab_source_identity(
+        self,
+        entry: storage_module.FstabEntry,
+    ) -> tuple[int, int] | None:
+        try:
+            return self.source_devices[entry.source]
+        except KeyError as error:
+            raise FileNotFoundError(entry.source) from error
 
 
 def fake_stat(mode: int, uid: int, gid: int, device_number: int) -> FakeStat:
@@ -147,11 +192,12 @@ def valid_probe() -> FakeProbe:
             else "rw,relatime,nodev,nosuid"
         )
         fstab_lines.append(
-            f"UUID={uuid} {mount_requirement.path} xfs {options} 0 2"
+            f"UUID={uuid} {mount_requirement.path} {mount_requirement.fs_type} "
+            f"{options} 0 {1 if mount_requirement.path == Path('/') else 2}"
         )
         mountinfo_lines.append(
             f"{index + 20} 20 8:{index} / {mount_requirement.path} {active_options} "
-            f"- xfs /dev/disk{index} rw"
+            f"- {mount_requirement.fs_type} /dev/disk{index} rw"
         )
         uuid_devices[uuid] = (8, index)
         mount_devices[mount_requirement.path] = index
@@ -178,6 +224,14 @@ def valid_probe() -> FakeProbe:
         filesystems=filesystems,
     )
     probe.uuid_devices = uuid_devices
+    probe.source_devices = {
+        f"UUID={uuid}": device for uuid, device in uuid_devices.items()
+    }
+    probe.xfs_ftypes = {
+        requirement.path: 1
+        for requirement in MOUNT_REQUIREMENTS
+        if requirement.fs_type == "xfs"
+    }
     return probe
 
 
@@ -209,6 +263,13 @@ def test_fixed_storage_contract_matches_approved_vmdks_and_subpaths() -> None:
     backups = next(item for item in DIRECTORY_REQUIREMENTS if item.name == "backups")
     assert (backups.uid, backups.gid, backups.mode) == (0, 0, 0o700)
     assert FILESYSTEM_METADATA_TOLERANCE_PERCENT == 2
+    assert [item.fs_type for item in MOUNT_REQUIREMENTS] == [
+        "ext4",
+        "xfs",
+        "xfs",
+        "xfs",
+        "xfs",
+    ]
 
 
 def test_complete_distinct_storage_layout_passes() -> None:
@@ -257,6 +318,200 @@ def test_fstab_requires_uuid_and_rejects_weak_mount_options() -> None:
     assert {"fstab_not_uuid", "fstab_weak_dependency"} <= codes
 
 
+def test_fstab_rejects_read_only_boot_and_wrong_fsck_order() -> None:
+    probe = valid_probe()
+    probe.fstab = probe.fstab.replace(
+        "UUID=00000000-0000-0000-0000-000000000001 / ext4 defaults 0 1",
+        "UUID=00000000-0000-0000-0000-000000000001 / ext4 defaults,ro 0 0",
+    )
+
+    codes = finding_codes(probe)
+
+    assert {"fstab_weak_dependency", "fstab_check_order_mismatch"} <= codes
+
+
+def test_preflight_reads_pid1_mountinfo_not_its_systemd_sandbox_view() -> None:
+    probe = valid_probe()
+
+    assert inspect_storage(probe).passed is True
+    assert Path("/proc/1/mountinfo") in probe.read_paths
+    assert Path("/proc/self/mountinfo") not in probe.read_paths
+
+
+def test_untrusted_host_context_fails_closed_before_reading_storage() -> None:
+    probe = valid_probe()
+    probe.host_context_error = storage_module.StorageContractError(
+        "not a production host"
+    )
+
+    with pytest.raises(storage_module.StorageContractError):
+        inspect_storage(probe)
+
+    assert probe.read_paths == []
+
+
+def test_findmnt_warning_fails_daily_preflight_closed() -> None:
+    probe = valid_probe()
+    probe.fstab_verification_error = storage_module.StorageContractError(
+        "findmnt warning"
+    )
+
+    assert "fstab_verification_failed" in finding_codes(probe)
+
+
+def test_managed_sources_and_devices_cannot_have_extra_alias_mounts() -> None:
+    probe = valid_probe()
+    probe.fstab += (
+        "UUID=00000000-0000-0000-0000-000000000002 "
+        "/mnt/docker-alias xfs defaults,nodev,nosuid 0 2\n"
+    )
+    probe.mountinfo += (
+        "99 20 8:2 / /mnt/docker-alias rw,relatime,nodev,nosuid "
+        "- xfs /dev/disk2 rw\n"
+    )
+
+    codes = finding_codes(probe)
+
+    assert {"fstab_managed_source_alias", "managed_device_mount_alias"} <= codes
+
+
+def test_managed_source_alias_is_detected_before_mount_with_label_form() -> None:
+    probe = valid_probe()
+    probe.fstab += (
+        "LABEL=sms_docker /mnt/docker-alias xfs defaults,nodev,nosuid 0 2\n"
+    )
+    probe.source_devices["LABEL=sms_docker"] = (8, 2)
+
+    assert "fstab_managed_source_alias" in finding_codes(probe)
+
+
+def test_tag_source_paths_preserve_case_for_vfat_uuid_and_labels() -> None:
+    entries = parse_fstab(
+        "UUID=ABCD-1234 /boot/efi vfat defaults 0 1\n"
+        "LABEL=CaseSensitive /srv/data xfs defaults 0 2\n"
+        "PARTLABEL=DataDisk /srv/part xfs defaults 0 2\n"
+    )
+
+    assert [storage_module._fstab_source_path(entry) for entry in entries] == [
+        Path("/dev/disk/by-uuid/ABCD-1234"),
+        Path("/dev/disk/by-label/CaseSensitive"),
+        Path("/dev/disk/by-partlabel/DataDisk"),
+    ]
+
+
+def test_standard_uppercase_vfat_uuid_does_not_block_reverse_scan() -> None:
+    probe = valid_probe()
+    probe.fstab += "UUID=ABCD-1234 /boot/efi vfat defaults 0 1\n"
+    probe.source_devices["UUID=ABCD-1234"] = (8, 99)
+
+    assert inspect_storage(probe).passed is True
+
+
+def test_exact_docker_local_driver_bind_mounts_are_approved() -> None:
+    probe = valid_probe()
+    devices = {
+        Path("/var/lib/sms-platform/postgres"): 3,
+        Path("/var/lib/sms-platform/redis"): 4,
+        Path("/var/lib/sms-platform/runtime"): 5,
+    }
+    for index, requirement in enumerate(
+        DOCKER_BIND_MOUNT_REQUIREMENTS,
+        start=100,
+    ):
+        device = devices[requirement.source_mount_path]
+        probe.stats[requirement.target_path] = fake_stat(0o700, 0, 0, device)
+        probe.mountinfo += (
+            f"{index} 20 8:{device} {requirement.filesystem_root} "
+            f"{requirement.target_path} rw,relatime,nodev,nosuid "
+            f"- xfs /dev/disk{device} rw\n"
+        )
+
+    assert inspect_storage(probe).passed is True
+
+
+def test_docker_bind_allowlist_matches_production_compose_contract() -> None:
+    compose = PRODUCTION_STORAGE_COMPOSE.read_text(encoding="utf-8")
+
+    for requirement in DOCKER_BIND_MOUNT_REQUIREMENTS:
+        assert requirement.target_path.parent.name == f"sms-platform_{requirement.name}"
+        assert re.search(
+            rf"(?m)^  {re.escape(requirement.name)}:\n"
+            rf"(?:    .*\n)*?      device: {re.escape(str(requirement.source_path))}$",
+            compose,
+        )
+
+    preflight_contract = {
+        (
+            requirement.source_path,
+            requirement.target_path,
+            requirement.filesystem_root,
+        )
+        for requirement in DOCKER_BIND_MOUNT_REQUIREMENTS
+    }
+    initializer_contract = {
+        (requirement.source_path, requirement.target_path, requirement.filesystem_root)
+        for requirement in initializer_storage_module.DOCKER_BIND_MOUNT_SPECS
+    }
+    assert preflight_contract == initializer_contract
+
+
+@pytest.mark.parametrize(
+    ("filesystem_root", "options"),
+    (
+        ("/wrong-root", "rw,relatime,nodev,nosuid"),
+        ("/pgdata", "rw,relatime,nodev"),
+    ),
+)
+def test_docker_bind_contract_mismatch_is_blocking(
+    filesystem_root: str,
+    options: str,
+) -> None:
+    probe = valid_probe()
+    requirement = DOCKER_BIND_MOUNT_REQUIREMENTS[0]
+    probe.stats[requirement.target_path] = fake_stat(0o700, 0, 0, 3)
+    probe.mountinfo += (
+        f"100 20 8:3 {filesystem_root} {requirement.target_path} {options} "
+        "- xfs /dev/disk3 rw\n"
+    )
+
+    assert "docker_bind_mount_contract_mismatch" in finding_codes(probe)
+
+
+def test_duplicate_approved_docker_bind_target_is_blocking() -> None:
+    probe = valid_probe()
+    requirement = DOCKER_BIND_MOUNT_REQUIREMENTS[0]
+    probe.stats[requirement.target_path] = fake_stat(0o700, 0, 0, 3)
+    line = (
+        f"100 20 8:3 {requirement.filesystem_root} {requirement.target_path} "
+        "rw,relatime,nodev,nosuid - xfs /dev/disk3 rw\n"
+    )
+    probe.mountinfo += line + line.replace("100 20", "101 20")
+
+    assert "docker_bind_mount_contract_mismatch" in finding_codes(probe)
+
+
+def test_approved_docker_target_on_wrong_device_is_blocking() -> None:
+    probe = valid_probe()
+    requirement = DOCKER_BIND_MOUNT_REQUIREMENTS[0]
+    probe.stats[requirement.target_path] = fake_stat(0o700, 0, 0, 99)
+    probe.mountinfo += (
+        f"100 20 8:99 {requirement.filesystem_root} {requirement.target_path} "
+        "rw,relatime,nodev,nosuid - xfs /dev/disk99 rw\n"
+    )
+
+    assert "docker_bind_mount_contract_mismatch" in finding_codes(probe)
+
+
+def test_fixed_mount_must_expose_filesystem_root() -> None:
+    probe = valid_probe()
+    probe.mountinfo = probe.mountinfo.replace(
+        "8:2 / /var/lib/docker",
+        "8:2 /subdirectory /var/lib/docker",
+    )
+
+    assert "mount_filesystem_root_mismatch" in finding_codes(probe)
+
+
 def test_fstab_rejects_manual_docker_internal_volume_relocation() -> None:
     probe = valid_probe()
     probe.fstab += (
@@ -265,6 +520,87 @@ def test_fstab_rejects_manual_docker_internal_volume_relocation() -> None:
     )
 
     assert "docker_internal_volume_fstab" in finding_codes(probe)
+
+
+@pytest.mark.parametrize(
+    ("mode", "uid"),
+    (
+        (stat.S_IFLNK | 0o777, 0),
+        (stat.S_IFDIR | 0o777, 0),
+        (stat.S_IFDIR | 0o600, 0),
+        (stat.S_IFDIR | 0o755, 1000),
+    ),
+)
+def test_docker_volume_control_ancestors_must_be_canonical_and_root_controlled(
+    mode: int,
+    uid: int,
+) -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker/volumes")
+    probe.stats[path] = FakeStat(
+        st_mode=mode,
+        st_uid=uid,
+        st_gid=0,
+        st_dev=os.makedev(8, 2),
+    )
+    if stat.S_ISLNK(mode):
+        probe.resolved[path] = Path("/mnt/untrusted-volumes")
+
+    assert "docker_volume_control_path_unsafe" in finding_codes(probe)
+
+
+def test_inaccessible_docker_volume_control_path_fails_closed() -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker/volumes")
+    probe.lstat_errors[path] = PermissionError(path)
+
+    assert "docker_volume_control_path_unsafe" in finding_codes(probe)
+
+
+def test_dangling_docker_volume_control_symlink_fails_closed() -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker/volumes")
+    probe.stats[path] = FakeStat(
+        st_mode=stat.S_IFLNK | 0o777,
+        st_uid=0,
+        st_gid=0,
+        st_dev=os.makedev(8, 2),
+    )
+    probe.resolve_errors[path] = FileNotFoundError(path)
+
+    assert "docker_volume_control_path_unsafe" in finding_codes(probe)
+
+
+def test_missing_or_secure_docker_volume_control_ancestors_are_allowed() -> None:
+    probe = valid_probe()
+    root = Path("/var/lib/docker/volumes")
+    volume = Path("/var/lib/docker/volumes/sms-platform_pgdata")
+    probe.stats[root] = fake_stat(0o711, 0, 0, 2)
+    probe.stats[volume] = fake_stat(0o755, 0, 0, 2)
+
+    assert inspect_storage(probe).passed is True
+
+
+def test_docker_volume_control_directories_must_stay_on_docker_vmdk() -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker/volumes")
+    probe.stats[path] = fake_stat(0o711, 0, 0, 99)
+
+    assert "docker_volume_control_device_mismatch" in finding_codes(probe)
+
+
+def test_docker_volume_control_directories_must_not_be_nested_mounts() -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker/volumes")
+    probe.stats[path] = fake_stat(0o711, 0, 0, 2)
+    probe.mountinfo += (
+        f"100 20 8:2 /volumes {path} rw,relatime,nodev,nosuid "
+        "- xfs /dev/disk2 rw\n"
+    )
+
+    codes = finding_codes(probe)
+
+    assert "docker_volume_control_nested_mount" in codes
 
 
 def test_storage_devices_must_remain_distinct() -> None:
@@ -393,14 +729,35 @@ def test_unapproved_or_read_only_filesystem_fails_closed() -> None:
 
     codes = finding_codes(probe)
 
-    assert {"mounted_filesystem_not_allowed", "mount_read_only"} <= codes
+    assert {"mounted_filesystem_mismatch", "mount_read_only"} <= codes
+
+
+def test_filesystem_types_are_role_specific_in_fstab_and_mountinfo() -> None:
+    probe = valid_probe()
+    target = "/var/lib/sms-platform/postgres"
+    probe.fstab = probe.fstab.replace(f"{target} xfs", f"{target} ext4")
+    probe.mountinfo = probe.mountinfo.replace(
+        f"{target} rw,relatime,nodev,nosuid - xfs",
+        f"{target} rw,relatime,nodev,nosuid - ext4",
+    )
+
+    codes = finding_codes(probe)
+
+    assert {"fstab_filesystem_mismatch", "mounted_filesystem_mismatch"} <= codes
+
+
+def test_every_data_xfs_requires_ftype_one() -> None:
+    probe = valid_probe()
+    redis_path = Path("/var/lib/sms-platform/redis")
+    probe.xfs_ftypes[redis_path] = 0
+
+    assert "xfs_ftype_required" in finding_codes(probe)
 
 
 def test_preflight_implementation_has_no_host_mutation_primitive() -> None:
     source = PREFLIGHT.read_text(encoding="utf-8")
 
     for forbidden in (
-        "subprocess",
         "os.system",
         ".mkdir(",
         ".chmod(",
@@ -408,6 +765,10 @@ def test_preflight_implementation_has_no_host_mutation_primitive() -> None:
         "shutil",
     ):
         assert forbidden not in source
+    assert "shell=False" in source
+    assert storage_module.XFS_INFO_BINARY.startswith("/usr/sbin/")
+    assert Path("/proc/1/mountinfo") == storage_module.MOUNTINFO_PATH
+    assert storage_module.FINDMNT_BINARY == "/usr/bin/findmnt"
 
 
 def test_systemd_assets_gate_docker_and_every_platform_start() -> None:
@@ -423,7 +784,10 @@ def test_systemd_assets_gate_docker_and_every_platform_start() -> None:
     assert "Before=docker.service sms-platform.service" in unit
     assert "ExecStart=/usr/local/sbin/sms-storage-preflight --mode startup" in unit
     assert "PrivateDevices=yes" not in unit
+    assert "ProtectSystem=strict" in unit
     assert "DevicePolicy=closed" in unit
+    assert "DeviceAllow=block-sd r" in unit
+    assert "TimeoutStartSec=45" in unit
     assert "ReadOnlyPaths=/etc/fstab /dev/disk/by-uuid" in unit
     assert "Requires=sms-storage-preflight.service" in docker_drop_in
     assert "After=sms-storage-preflight.service" in docker_drop_in
@@ -433,6 +797,23 @@ def test_systemd_assets_gate_docker_and_every_platform_start() -> None:
         in platform_drop_in
     )
     assert "ExecStartPre=-" not in platform_drop_in
+
+
+def test_every_hardened_preflight_caller_has_read_only_pvscsi_access() -> None:
+    for path in (
+        BACKUP_UNIT,
+        RESTORE_DRILL_UNIT,
+        LIFECYCLE_STATUS_UNIT,
+        PARTITION_MAINTENANCE_UNIT,
+    ):
+        unit = path.read_text(encoding="utf-8")
+        assert "DevicePolicy=closed" in unit
+        assert "DeviceAllow=block-sd r" in unit
+        assert "DeviceAllow=block-sd rw" not in unit
+        assert "DeviceAllow=block-*" not in unit
+    partition = PARTITION_MAINTENANCE_UNIT.read_text(encoding="utf-8")
+    assert "PrivateDevices=yes" not in partition
+    assert "ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid" in partition
 
 
 def test_runbook_covers_provisioning_thresholds_expansion_and_no_go() -> None:

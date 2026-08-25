@@ -8,7 +8,7 @@ RequiresMountsFor=/var/lib/docker /var/lib/sms-platform/postgres /var/lib/sms-pl
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/sms-storage-preflight --mode startup
-TimeoutStartSec=30
+TimeoutStartSec=45
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -23,6 +23,7 @@ CapabilityBoundingSet=
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 DevicePolicy=closed
+DeviceAllow=block-sd r
 ReadOnlyPaths=/etc/fstab /dev/disk/by-uuid
 StandardOutput=journal
 StandardError=journal
