@@ -133,6 +133,13 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "security_daily_config_version": ConfigSpec(
         "1", "int", GROUP_SECURITY, maximum=9_223_372_036_854_775_807
     ),
+    "security_daily_config_publish_state": ConfigSpec(
+        "file_committed", "str", GROUP_SECURITY
+    ),
+    "security_daily_config_file_version": ConfigSpec(
+        "1", "int", GROUP_SECURITY, maximum=9_223_372_036_854_775_807
+    ),
+    "security_daily_config_operation_id": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
 }
