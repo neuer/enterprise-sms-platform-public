@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -12,7 +13,8 @@ import stat
 import subprocess
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -23,6 +25,9 @@ SYSTEMD_ROOT = Path("/etc/systemd/system")
 LOCAL_SBIN_ROOT = Path("/usr/local/sbin")
 DOCKER_ROOT = Path("/var/lib/docker")
 STATE_PATH = ETC_ROOT / "production-host-assets.json"
+INTENT_NAME = "production-host-assets.intent.json"
+LOCK_NAME = ".host-assets.lock"
+INTENT_SCHEMA_VERSION = 1
 GIT_BINARY = "/usr/bin/git"
 PYTHON_BINARY = "/usr/bin/python3"
 SYSTEMCTL_BINARY = "/usr/bin/systemctl"
@@ -33,6 +38,7 @@ COMMAND_OUTPUT_LIMIT_RETURN_CODE = 125
 MAX_ASSET_BYTES = 2 * 1024 * 1024
 MAX_INLINE_PREFLIGHT_BYTES = 128 * 1024
 MAX_STATE_BYTES = 128 * 1024
+MAX_INTENT_BYTES = 128 * 1024
 MAX_UID = 2**32 - 2
 STATE_SCHEMA_VERSION = 1
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -580,6 +586,17 @@ def _commit_regular_no_replace(temporary: Path, destination: Path) -> None:
         ) from exc
 
 
+def _commit_regular_replace(temporary: Path, destination: Path) -> None:
+    """Replace an installer-owned control file after a durable stage."""
+
+    try:
+        os.replace(temporary, destination)
+        _fsync_directory(destination.parent)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise HostAssetInstallError("installer control file could not be persisted") from exc
+
+
 def _commit_symlink_no_replace(
     spec: AssetSpec, *, expected_uid: int, expected_gid: int
 ) -> None:
@@ -944,13 +961,17 @@ class ProductionHostAssetInstaller:
             else:
                 _assert_existing_path_chain_no_symlinks(path.parent)
 
-    def _inspect_plan(self, expected_commit: str) -> tuple[AssetSnapshot, ...]:
+    def _inspect_host_readiness(self, expected_commit: str) -> tuple[AssetSnapshot, ...]:
         snapshots = self._source_snapshots(expected_commit)
         self._validate_plan_directories()
-        self._require_empty_destinations()
         self._require_storage_ready(snapshots)
         self._require_services_inactive()
         self._require_empty_docker_root()
+        return snapshots
+
+    def _inspect_plan(self, expected_commit: str) -> tuple[AssetSnapshot, ...]:
+        snapshots = self._inspect_host_readiness(expected_commit)
+        self._require_empty_destinations()
         return snapshots
 
     def plan(self, expected_commit: str) -> dict[str, object]:
@@ -963,6 +984,171 @@ class ProductionHostAssetInstaller:
             "source_commit": expected_commit,
             "status": "ready",
         }
+
+    def _intent_path(self) -> Path:
+        return self.etc_root / INTENT_NAME
+
+    def _lock_path(self) -> Path:
+        return self.etc_root / LOCK_NAME
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        file_obj = self._lock_path().open("a+")
+        try:
+            fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            file_obj.close()
+            raise HostAssetInstallError("installer lock is busy") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+            file_obj.close()
+
+    def _intent_payload(
+        self,
+        expected_commit: str,
+        snapshots: Sequence[AssetSnapshot],
+        *,
+        published: Sequence[str] | None = None,
+        phase: str = "publishing",
+    ) -> dict[str, object]:
+        return {
+            "schema_version": INTENT_SCHEMA_VERSION,
+            "commit": expected_commit,
+            "phase": phase,
+            "published": list(published or []),
+            "assets": [
+                {
+                    "destination": str(snapshot.spec.destination),
+                    "kind": snapshot.spec.kind,
+                    "mode": f"{snapshot.spec.mode:04o}",
+                    "name": snapshot.spec.name,
+                    "owner": f"{self.expected_uid}:{self.expected_gid}",
+                    "sha256": snapshot.sha256,
+                    **(
+                        {"target": str(snapshot.spec.symlink_target)}
+                        if snapshot.spec.symlink_target is not None
+                        else {}
+                    ),
+                }
+                for snapshot in snapshots
+            ],
+        }
+
+    def _write_intent(self, intent: Mapping[str, object]) -> None:
+        payload = (
+            json.dumps(
+                dict(intent),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("ascii")
+        if len(payload) > MAX_INTENT_BYTES:
+            raise HostAssetInstallError("install intent exceeds its size limit")
+        temporary = _stage_regular(
+            self._intent_path(),
+            payload,
+            mode=0o600,
+            expected_uid=self.expected_uid,
+            expected_gid=self.expected_gid,
+        )
+        _commit_regular_replace(temporary, self._intent_path())
+
+    def _load_intent(self) -> dict[str, object] | None:
+        path = self._intent_path()
+        if not _lexists(path):
+            return None
+        try:
+            payload, metadata = _read_regular_no_follow(path, MAX_INTENT_BYTES)
+        except HostAssetInstallError:
+            return None
+        if (
+            metadata.st_uid != self.expected_uid
+            or metadata.st_gid != self.expected_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            return None
+        try:
+            value = json.loads(payload)
+        except (UnicodeError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != INTENT_SCHEMA_VERSION
+            or not isinstance(value.get("commit"), str)
+            or COMMIT_RE.fullmatch(str(value["commit"])) is None
+            or not isinstance(value.get("assets"), list)
+            or not value["assets"]
+        ):
+            return None
+        published = value.get("published")
+        if published is not None and not isinstance(published, list):
+            return None
+        return value
+
+    def _clear_intent(self) -> None:
+        path = self._intent_path()
+        if _lexists(path):
+            path.unlink()
+            _fsync_directory(path.parent)
+
+    def _published_names(self, intent: Mapping[str, object]) -> list[str]:
+        published = intent.get("published")
+        if not isinstance(published, list):
+            return []
+        return [str(name) for name in published]
+
+    def _mark_published(
+        self, intent: dict[str, object], name: str, *, phase: str = "publishing"
+    ) -> dict[str, object]:
+        published = self._published_names(intent)
+        if name not in published:
+            published.append(name)
+        updated = {**intent, "phase": phase, "published": published}
+        self._write_intent(updated)
+        return updated
+
+    def _destination_matches_snapshot(self, snapshot: AssetSnapshot) -> bool:
+        destination = snapshot.spec.destination
+        if not _lexists(destination):
+            return False
+        if snapshot.spec.kind == "symlink":
+            try:
+                metadata = destination.lstat()
+            except OSError:
+                return False
+            if (
+                not stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_uid != self.expected_uid
+                or metadata.st_gid != self.expected_gid
+                or os.readlink(destination) != str(snapshot.spec.symlink_target)
+            ):
+                return False
+            try:
+                _validate_wrapper_target(snapshot.spec, snapshot.sha256)
+            except HostAssetInstallError:
+                return False
+            return True
+        try:
+            payload, metadata = _read_regular_no_follow(destination, MAX_ASSET_BYTES)
+        except HostAssetInstallError:
+            return False
+        return (
+            hashlib.sha256(payload).hexdigest() == snapshot.sha256
+            and metadata.st_uid == self.expected_uid
+            and metadata.st_gid == self.expected_gid
+            and stat.S_IMODE(metadata.st_mode) == snapshot.spec.mode
+        )
+
+    def _reject_mismatched_existing(self, snapshots: Sequence[AssetSnapshot]) -> None:
+        for snapshot in snapshots:
+            if not _lexists(snapshot.spec.destination):
+                continue
+            if not self._destination_matches_snapshot(snapshot):
+                raise HostAssetInstallError("host asset destination already exists")
 
     def _create_destination_directories(self) -> None:
         for path, mode in (
@@ -995,27 +1181,115 @@ class ProductionHostAssetInstaller:
             raise HostAssetInstallError(
                 "both production host confirmations are required"
             )
-        snapshots = self._inspect_plan(expected_commit)
+        snapshots = self._inspect_host_readiness(expected_commit)
         self._create_destination_directories()
-        self._require_empty_destinations()
+        with self._exclusive_lock():
+            return self._install_or_resume(
+                expected_commit, snapshots, allow_fresh=True, action="apply"
+            )
+
+    def resume(self, expected_commit: str) -> dict[str, object]:
+        """Continue a durable install intent without overwriting drifted destinations."""
+
+        if self.effective_uid != 0:
+            raise HostAssetInstallError("resume requires root")
+        snapshots = self._inspect_host_readiness(expected_commit)
+        self._create_destination_directories()
+        with self._exclusive_lock():
+            return self._install_or_resume(
+                expected_commit, snapshots, allow_fresh=False, action="resume"
+            )
+
+    def rollback(
+        self,
+        expected_commit: str,
+        *,
+        confirm_rollback_this_install: bool,
+    ) -> dict[str, object]:
+        """Delete only destinations that still match this install intent."""
+
+        if self.effective_uid != 0:
+            raise HostAssetInstallError("rollback requires root")
+        if not confirm_rollback_this_install:
+            raise HostAssetInstallError("rollback confirmation is required")
+        if COMMIT_RE.fullmatch(expected_commit) is None:
+            raise HostAssetInstallError(
+                "expected commit must be a lowercase 40-character SHA"
+            )
+        self.etc_root.mkdir(parents=True, exist_ok=True)
+        with self._exclusive_lock():
+            if _lexists(self.state_path):
+                raise HostAssetInstallError(
+                    "completed installation cannot be rolled back"
+                )
+            intent = self._load_intent()
+            if intent is None or str(intent.get("commit")) != expected_commit:
+                raise HostAssetInstallError("install intent is missing or does not match")
+            snapshots = {
+                snapshot.spec.name: snapshot
+                for snapshot in self._source_snapshots(expected_commit)
+            }
+            removed = 0
+            for spec in self.assets:
+                if not _lexists(spec.destination):
+                    continue
+                snapshot = snapshots.get(spec.name)
+                if snapshot is None or not self._destination_matches_snapshot(snapshot):
+                    continue
+                spec.destination.unlink()
+                _fsync_directory(spec.destination.parent)
+                removed += 1
+            self._clear_intent()
+            return {
+                "action": "rollback",
+                "assets_removed": removed,
+                "source_commit": expected_commit,
+                "status": "rolled_back",
+            }
+
+    def _install_or_resume(
+        self,
+        expected_commit: str,
+        snapshots: Sequence[AssetSnapshot],
+        *,
+        allow_fresh: bool,
+        action: str,
+    ) -> dict[str, object]:
+        intent = self._load_intent()
+        if intent is None:
+            if not allow_fresh:
+                raise HostAssetInstallError("install intent is missing")
+            self._require_empty_destinations()
+            intent = self._intent_payload(expected_commit, snapshots)
+            self._write_intent(intent)
+        elif str(intent.get("commit")) != expected_commit:
+            raise HostAssetInstallError("install intent does not match expected commit")
+        else:
+            self._reject_mismatched_existing(snapshots)
 
         staged: list[tuple[Path, AssetSnapshot]] = []
         state_temporary: Path | None = None
         try:
             for snapshot in snapshots:
-                if snapshot.spec.kind == "regular":
-                    staged.append(
-                        (
-                            _stage_regular(
-                                snapshot.spec.destination,
-                                snapshot.payload,
-                                mode=snapshot.spec.mode,
-                                expected_uid=self.expected_uid,
-                                expected_gid=self.expected_gid,
-                            ),
-                            snapshot,
-                        )
+                if snapshot.spec.kind != "regular":
+                    continue
+                if self._destination_matches_snapshot(snapshot):
+                    intent = self._mark_published(intent, snapshot.spec.name)
+                    continue
+                if _lexists(snapshot.spec.destination):
+                    raise HostAssetInstallError("host asset destination already exists")
+                staged.append(
+                    (
+                        _stage_regular(
+                            snapshot.spec.destination,
+                            snapshot.payload,
+                            mode=snapshot.spec.mode,
+                            expected_uid=self.expected_uid,
+                            expected_gid=self.expected_gid,
+                        ),
+                        snapshot,
                     )
+                )
             state_temporary = _stage_regular(
                 self.state_path,
                 _state_payload(expected_commit, snapshots),
@@ -1025,23 +1299,35 @@ class ProductionHostAssetInstaller:
             )
             for temporary, snapshot in staged:
                 _commit_regular_no_replace(temporary, snapshot.spec.destination)
+                intent = self._mark_published(intent, snapshot.spec.name)
             wrapper_snapshot = next(
                 snapshot for snapshot in snapshots if snapshot.spec.kind == "symlink"
             )
-            _validate_wrapper_target(wrapper_snapshot.spec, wrapper_snapshot.sha256)
-            _commit_symlink_no_replace(
-                wrapper_snapshot.spec,
-                expected_uid=self.expected_uid,
-                expected_gid=self.expected_gid,
-            )
-            _validate_installed_wrapper(
-                wrapper_snapshot.spec,
-                wrapper_snapshot.sha256,
-                expected_uid=self.expected_uid,
-                expected_gid=self.expected_gid,
-            )
+            if self._destination_matches_snapshot(wrapper_snapshot):
+                intent = self._mark_published(
+                    intent, wrapper_snapshot.spec.name, phase="state"
+                )
+            elif _lexists(wrapper_snapshot.spec.destination):
+                raise HostAssetInstallError("host asset destination already exists")
+            else:
+                _validate_wrapper_target(wrapper_snapshot.spec, wrapper_snapshot.sha256)
+                _commit_symlink_no_replace(
+                    wrapper_snapshot.spec,
+                    expected_uid=self.expected_uid,
+                    expected_gid=self.expected_gid,
+                )
+                _validate_installed_wrapper(
+                    wrapper_snapshot.spec,
+                    wrapper_snapshot.sha256,
+                    expected_uid=self.expected_uid,
+                    expected_gid=self.expected_gid,
+                )
+                intent = self._mark_published(
+                    intent, wrapper_snapshot.spec.name, phase="state"
+                )
             _commit_regular_no_replace(state_temporary, self.state_path)
             state_temporary = None
+            self._clear_intent()
         finally:
             for temporary, _snapshot in staged:
                 temporary.unlink(missing_ok=True)
@@ -1056,7 +1342,7 @@ class ProductionHostAssetInstaller:
                 "installed host assets failed post-publish verification"
             )
         return {
-            "action": "apply",
+            "action": action,
             "assets": len(snapshots),
             "source_commit": expected_commit,
             "status": "installed",
@@ -1082,11 +1368,18 @@ class ProductionHostAssetInstaller:
         """Inspect the commit-last state and every installed asset without mutation."""
 
         present = [asset for asset in self.assets if _lexists(asset.destination)]
+        intent = self._load_intent()
         if not _lexists(self.state_path):
+            if intent is not None:
+                return {
+                    "action": "status",
+                    "assets_present": len(present),
+                    "status": "installing",
+                }
             return {
                 "action": "status",
                 "assets_present": len(present),
-                "status": "absent" if not present else "incomplete",
+                "status": "absent" if not present else "rollback_required",
             }
         try:
             state = self._read_state()
@@ -1167,7 +1460,8 @@ def _parser() -> argparse.ArgumentParser:
         epilog=(
             "plan/apply 经 sudo 读取非 root checkout 时，SUDO_UID 必须为与项目根 owner "
             "一致的十进制 UID；不会配置 safe.directory。"
-            "status 仅在完整 installed 且无漂移时退出 0；absent、incomplete、drifted 均退出 1。"
+            "status 仅在完整 installed 且无漂移时退出 0；absent、installing、"
+            "rollback_required、incomplete、drifted 均退出 1。"
         ),
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -1177,6 +1471,11 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--expected-commit", required=True)
     apply.add_argument("--confirm-dedicated-production-host", action="store_true")
     apply.add_argument("--confirm-vcenter-storage-reviewed", action="store_true")
+    resume = subparsers.add_parser("resume")
+    resume.add_argument("--expected-commit", required=True)
+    rollback = subparsers.add_parser("rollback")
+    rollback.add_argument("--expected-commit", required=True)
+    rollback.add_argument("--confirm-rollback-this-install", action="store_true")
     subparsers.add_parser("status")
     return parser
 
@@ -1185,6 +1484,8 @@ def _result_exit_code(result: dict[str, object]) -> int:
     successful_results = {
         ("plan", "ready"),
         ("apply", "installed"),
+        ("resume", "installed"),
+        ("rollback", "rolled_back"),
         ("status", "installed"),
     }
     return (
@@ -1207,6 +1508,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 confirm_vcenter_storage_reviewed=(
                     arguments.confirm_vcenter_storage_reviewed
                 ),
+            )
+        elif arguments.action == "resume":
+            result = installer.resume(arguments.expected_commit)
+        elif arguments.action == "rollback":
+            result = installer.rollback(
+                arguments.expected_commit,
+                confirm_rollback_this_install=arguments.confirm_rollback_this_install,
             )
         else:
             result = installer.status()

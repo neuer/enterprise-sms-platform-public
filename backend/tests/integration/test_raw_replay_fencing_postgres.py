@@ -615,3 +615,84 @@ async def test_generic_renew_error_fails_closed_without_takeover_regression() ->
                     {"id": raw_id},
                 )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_returning_expiry_bounds_retry_after_stale_in_memory_expiry() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    raw_id: int | None = None
+    try:
+        raw_id = await reports.persist_raw(
+            payload_enc=b"ciphertext-only",
+            payload_sha256="j" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            custom_ids=[],
+            item_count=0,
+        )
+        live = reports._leases[raw_id]
+        first = await renew_raw_lease(engine, live, lease_seconds=2)
+        assert first > datetime.now(UTC)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET processing_lease_expires_at=now()+interval '30 minutes'
+                    WHERE id=:raw_id
+                    """
+                ),
+                {"raw_id": raw_id},
+            )
+        stale = RawProcessingLease(
+            raw_id=live.raw_id,
+            lease_id=live.lease_id,
+            epoch=live.epoch,
+            expires_at=datetime.now(UTC) - timedelta(minutes=16),
+        )
+        calls = {"n": 0}
+
+        async def renew(token: RawProcessingLease) -> datetime:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise TimeoutError("brief")
+            return await renew_raw_lease(engine, token, lease_seconds=30)
+
+        async with RawLeaseHeartbeat(renew, stale, interval_s=0.02) as beat:
+            await asyncio.sleep(0.12)
+            beat.raise_if_lost()
+            assert beat._confirmed_expires_at is not None
+            assert beat._confirmed_expires_at > datetime.now(UTC)
+            assert beat._confirmed_expires_at != stale.expires_at
+        assert calls["n"] >= 3
+        await reports.mark_processed(raw_id, lease=live)
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT processed,processing_lease_id
+                        FROM raw_vendor_log WHERE id=:raw_id
+                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+            ).mappings().one()
+        assert row["processed"] is True
+        assert row["processing_lease_id"] is None
+    finally:
+        if raw_id is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM worker_lease_event WHERE task_kind='raw' AND task_id=:id"),
+                    {"id": raw_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+        await engine.dispose()

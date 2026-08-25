@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -95,10 +96,10 @@ class SqlReplyRepository:
             self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
         return raw_id
 
-    async def renew_processing_lease(self, lease: RawProcessingLease) -> None:
+    async def renew_processing_lease(self, lease: RawProcessingLease) -> datetime:
         engine = self._engine()
         try:
-            await renew_raw_lease(engine, lease)
+            return await renew_raw_lease(engine, lease)
         finally:
             await engine.dispose()
 

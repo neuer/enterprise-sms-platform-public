@@ -60,6 +60,7 @@ class FakeRunner:
         self.calls: list[list[str]] = []
         self.pipeline_calls: list[tuple[list[str], list[str], Path]] = []
         self.timeouts: list[tuple[str, float | None]] = []
+        self.envs: list[dict[str, str] | None] = []
 
     def run(
         self,
@@ -72,6 +73,7 @@ class FakeRunner:
     ) -> bytes:
         argv = list(command)
         self.calls.append(argv)
+        self.envs.append(env)
         self.timeouts.append((" ".join(argv), timeout))
         if "SELECT pg_database_size(current_database())" in " ".join(argv):
             return f"{self.database_size}\n".encode()
@@ -144,7 +146,9 @@ class FakeRunner:
             self.timer.value = self.expire_pipeline_at
 
 
-def make_config(tmp_path: Path, *, build_only: bool = True) -> SyncConfig:
+def make_config(
+    tmp_path: Path, *, build_only: bool = True, port: int = 22
+) -> SyncConfig:
     root = tmp_path / "repo"
     root.mkdir()
     (root / "deploy").mkdir()
@@ -160,7 +164,7 @@ def make_config(tmp_path: Path, *, build_only: bool = True) -> SyncConfig:
     passphrase.chmod(0o600)
     target = None
     if not build_only:
-        target = StandbyTarget("backup01.internal", "smsdr", "/srv/sms-standby", 22)
+        target = StandbyTarget("backup01.internal", "smsdr", "/srv/sms-standby", port)
     return SyncConfig(
         repository_root=root,
         compose_file=root / "deploy/docker-compose.yml",
@@ -622,3 +626,70 @@ def test_remote_enospc_does_not_pollute_next_backup(tmp_path: Path) -> None:
     result = make_sync_service(FakeRunner()).run(config)
     assert config.output_dir.joinpath("current").resolve() == result.snapshot_dir.resolve()
     assert (result.snapshot_dir / "SHA256SUMS").is_file()
+
+
+def _assert_remote_uses_port(runner: FakeRunner, port: int) -> None:
+    port_token = str(port)
+    remote_shell = f"ssh -p {port}"
+    ssh_calls = [call for call in runner.calls if call[0] == "ssh"]
+    rsync_calls = [call for call in runner.calls if call[0] == "rsync"]
+    assert ssh_calls
+    assert rsync_calls
+    for call in ssh_calls:
+        assert call[1] == "-p"
+        assert call[2] == port_token
+    for call in rsync_calls:
+        assert "-e" in call
+        assert call[call.index("-e") + 1] == remote_shell
+
+
+def test_non_default_port_is_used_by_capacity_rsync_checksum_current_and_cleanup(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    config = make_config(tmp_path, build_only=False, port=2222)
+    make_sync_service(runner).run(config)
+    _assert_remote_uses_port(runner, 2222)
+    rsync = next(call for call in runner.calls if call[0] == "rsync")
+    assert rsync[1:4] == ["-a", "-e", "ssh -p 2222"]
+
+
+def test_default_port_22_still_passes_explicit_rsync_remote_shell(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    make_sync_service(runner).run(make_config(tmp_path, build_only=False, port=22))
+    _assert_remote_uses_port(runner, 22)
+
+
+@pytest.mark.parametrize("fail_at", ("rsync", "ssh_drop", "slow_net"))
+def test_non_default_port_refusal_fails_closed_and_cleans_incoming(
+    tmp_path: Path,
+    fail_at: str,
+) -> None:
+    runner = FakeRunner(remote_fail_at=fail_at)
+    config = make_config(tmp_path, build_only=False, port=2222)
+    with pytest.raises(CommandFailure):
+        make_sync_service(runner).run(config)
+    _assert_remote_uses_port(runner, 2222)
+    incoming = config.output_dir / ".incoming"
+    assert not incoming.exists() or list(incoming.iterdir()) == []
+    assert not any(call[0] == "ssh" and "ln -sfn" in call[-1] for call in runner.calls)
+
+
+def test_rsync_environment_cannot_override_fixed_remote_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RSYNC_RSH", "ssh -p 9")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -p 9")
+    monkeypatch.setenv("RSYNC_CONNECT_PROG", "nc -X connect")
+    runner = FakeRunner()
+    make_sync_service(runner).run(make_config(tmp_path, build_only=False, port=2222))
+    rsync_index = next(index for index, call in enumerate(runner.calls) if call[0] == "rsync")
+    env = runner.envs[rsync_index]
+    assert env is not None
+    assert "RSYNC_RSH" not in env
+    assert "GIT_SSH_COMMAND" not in env
+    assert "RSYNC_CONNECT_PROG" not in env
+    assert runner.calls[rsync_index][runner.calls[rsync_index].index("-e") + 1] == (
+        "ssh -p 2222"
+    )

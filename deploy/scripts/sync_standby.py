@@ -49,6 +49,9 @@ BACKUP_CAPACITY_PERCENT = 70
 BACKUP_SIZE_NUMERATOR = 3
 BACKUP_SIZE_DENOMINATOR = 2
 REMOTE_INCOMING_TTL_MINUTES = 24 * 60
+REMOTE_ENV_BLOCKLIST = frozenset(
+    {"RSYNC_RSH", "GIT_SSH_COMMAND", "RSYNC_CONNECT_PROG", "RSYNC_PROXY"}
+)
 
 
 class Runner(Protocol):
@@ -248,11 +251,14 @@ class SyncService:
         command: Sequence[str],
         config: SyncConfig,
         deadline: float,
+        *,
+        env: dict[str, str] | None = None,
     ) -> bytes:
         try:
             output = self.runner.run(
                 list(command),
                 cwd=config.repository_root,
+                env=env,
                 timeout=self._remaining(deadline),
             )
         except BaseException:
@@ -412,6 +418,26 @@ class SyncService:
     def _ssh(self, target: StandbyTarget) -> list[str]:
         return ["ssh", "-p", str(target.port), f"{target.user}@{target.host}"]
 
+    def _remote_env(self) -> dict[str, str]:
+        """去掉可覆盖 rsync/ssh 传输通道的环境变量，只使用已校验 Target。"""
+
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if key not in REMOTE_ENV_BLOCKLIST
+        }
+
+    def _rsync_remote_shell(self, target: StandbyTarget) -> str:
+        return f"ssh -p {target.port}"
+
+    def _run_remote(
+        self,
+        command: Sequence[str],
+        config: SyncConfig,
+        deadline: float,
+    ) -> bytes:
+        return self._run_command(command, config, deadline, env=self._remote_env())
+
     def _precheck_remote_capacity(
         self,
         target: StandbyTarget,
@@ -419,7 +445,7 @@ class SyncService:
         deadline: float,
         estimated_bytes: int,
     ) -> None:
-        output = self._run_command(
+        output = self._run_remote(
             self._ssh(target)
             + [f"set -eu; df -Pk {shlex.quote(target.root)} | tail -n 1"],
             config,
@@ -444,7 +470,7 @@ class SyncService:
         incoming_root = f"{target.root}/.incoming"
         incoming = f"{incoming_root}/{snapshot_id}"
         destination = f"{target.root}/snapshots/{snapshot_id}"
-        self._run_command(
+        self._run_remote(
             self._ssh(target)
             + [
                 "set -eu; "
@@ -457,10 +483,12 @@ class SyncService:
             deadline,
         )
         self._precheck_remote_capacity(target, config, deadline, estimated_bytes)
-        self._run_command(
+        self._run_remote(
             [
                 "rsync",
                 "-a",
+                "-e",
+                self._rsync_remote_shell(target),
                 "--chmod=Du=rwx,Dgo=,Fu=rw,Fgo=",
                 "--",
                 f"{snapshot_dir}/",
@@ -482,7 +510,7 @@ class SyncService:
             "fi; "
             f"sync {shlex.quote(target.root + '/snapshots')}"
         )
-        self._run_command(self._ssh(target) + [remote], config, deadline)
+        self._run_remote(self._ssh(target) + [remote], config, deadline)
 
     def _commit_remote_current(
         self,
@@ -500,7 +528,7 @@ class SyncService:
             "mv -f current.next current; "
             "sync"
         )
-        self._run_command(self._ssh(target) + [remote], config, deadline)
+        self._run_remote(self._ssh(target) + [remote], config, deadline)
 
     def _cleanup_remote_incoming(
         self,
@@ -510,7 +538,7 @@ class SyncService:
         deadline: float,
     ) -> None:
         incoming = f"{target.root}/.incoming/{snapshot_id}"
-        self._run_command(
+        self._run_remote(
             self._ssh(target) + [f"set -eu; rm -rf {shlex.quote(incoming)}"],
             config,
             deadline,
@@ -535,7 +563,7 @@ class SyncService:
             "fi; "
             f"rm -rf {shlex.quote(incoming)}"
         )
-        self._run_command(self._ssh(target) + [remote], config, deadline)
+        self._run_remote(self._ssh(target) + [remote], config, deadline)
 
     def run(self, config: SyncConfig) -> SyncResult:
         started = self.timer()
