@@ -140,6 +140,23 @@ describe("安全日报页面", () => {
     wrapper.unmount()
   })
 
+  it("概览为状态横条加事实横排带，说明细字在检索条下一行", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    const overviewSection = wrapper.get("section.security-daily-overview")
+    expect(overviewSection.get(".security-daily-state").text()).toContain("日报已启用")
+    expect(overviewSection.get(".security-daily-state em").text()).toContain("下次 2026-07-19 08:00:00")
+    expect(overviewSection.findAll(".security-daily-facts > div")).toHaveLength(8)
+
+    const form = wrapper.get("form.security-daily-filter-bar")
+    expect(form.find(".security-daily-filter-go").exists()).toBe(true)
+    expect(form.find(".security-daily-privacy").exists()).toBe(false)
+    const note = wrapper.get("form.security-daily-filter-bar + p.security-daily-privacy")
+    expect(note.text()).toContain("服务端执行")
+    wrapper.unmount()
+  })
+
   it("列表对投递失败行展示处理入口，已投递报告不提供重复投递", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()

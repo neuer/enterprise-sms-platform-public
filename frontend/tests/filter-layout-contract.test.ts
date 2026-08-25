@@ -49,8 +49,8 @@ describe("全站筛选布局契约", () => {
     expect(replyView).not.toContain("<el-segmented")
     expect(replyView).not.toContain("↗")
     expect(replyView).not.toContain("厂商未回传 customId")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("管理筛选遵循同一表单语义", () => {
@@ -72,8 +72,8 @@ describe("全站筛选布局契约", () => {
     expect(userView).not.toContain("<el-card")
     expect(userView).not.toContain("user-pulse")
     expect(userView).not.toContain("account-rules")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules\s*\{[^}]*display:\s*flex/s)
   })
 
@@ -93,8 +93,8 @@ describe("全站筛选布局契约", () => {
     expect(configView).not.toContain("config-toolbar")
     expect(configView).not.toContain("config-restart-alert")
     expect(configView).not.toContain("config-heading-note")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("回调任务使用方案 A 单行检索条、常驻规则条与详情抽屉", () => {
@@ -114,15 +114,17 @@ describe("全站筛选布局契约", () => {
     expect(callbackView).not.toContain("<el-card")
     expect(callbackView).not.toContain("callback-filter-card")
     expect(callbackView).not.toContain("callback-table-card")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules\s*\{[^}]*display:\s*flex/s)
   })
 
-  it("安全日报使用方案 A 单行检索条、常驻规则条与结果面板", () => {
+  it("安全日报使用页级紧凑单行检索条、常驻规则条与结果面板", () => {
     expect(securityDailyView).toContain("security-daily-filter-bar")
     expect(securityDailyView).toContain("security-daily-seg")
     expect(securityDailyView).toContain("security-daily-dates")
+    expect(securityDailyView).toContain("security-daily-fld")
+    expect(securityDailyView).toContain("security-daily-filter-go")
     expect(securityDailyView).toContain("security-daily-privacy")
     expect(securityDailyView).toContain("security-daily-rules")
     expect(securityDailyView).toContain("security-daily-results")
@@ -136,8 +138,19 @@ describe("全站筛选布局契约", () => {
     expect(securityDailyView).not.toContain("<el-card")
     expect(securityDailyView).not.toContain("security-daily-filters")
     expect(securityDailyView).not.toContain("card-heading")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    // 查询/重置与筛选条件同处一行 form，说明细字在条外下一行
+    expect(securityDailyView).toMatch(/<form class="security-daily-filter-bar"[\s\S]*<div class="security-daily-filter-go">[\s\S]*<\/form>\s*<p class="security-daily-privacy">/)
+    // 页级紧凑条专属样式：标签内联、日期 112px、seg 30px、按钮 margin-left:auto
+    expect(css).toMatch(/\.security-daily-filter-bar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*nowrap/s)
+    expect(css).toMatch(/\.security-daily-fld\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center/s)
+    expect(css).toMatch(/\.security-daily-fld > span\s*\{[^}]*white-space:\s*nowrap/s)
+    expect(css).toMatch(/\.security-daily-date\s*\{[^}]*width:\s*112px/s)
+    expect(css).toMatch(/\.security-daily-seg\s*\{[^}]*height:\s*30px[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.security-daily-seg button\s*\{[^}]*padding:\s*0 8px[^}]*font-size:\s*10\.5px/s)
+    expect(css).toMatch(/\.security-daily-filter-go\s*\{[^}]*margin-left:\s*auto/s)
+    // 检索条不再并入 reply-* 共享尺寸组；规则条仍与 user-rules 同组
+    expect(css).not.toMatch(/\.callback-filter-bar,\s*\.security-daily-filter-bar/)
+    expect(css).not.toMatch(/\.callback-seg,\s*\.security-daily-seg/)
     expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules\s*\{[^}]*display:\s*flex/s)
   })
 
@@ -238,8 +251,8 @@ describe("全站筛选布局契约", () => {
     expect(sensitiveWordView).not.toContain("<el-table")
     expect(sensitiveWordView).not.toContain("governance-entry")
     expect(sensitiveWordView).not.toContain("sensitive-mobile-list")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.sensitive-wall\s*\{[^}]*display:\s*grid[^}]*auto-fill/s)
   })
 
@@ -254,8 +267,8 @@ describe("全站筛选布局契约", () => {
     expect(blacklistView).not.toContain("<el-segmented")
     expect(blacklistView).not.toContain("<el-card")
     expect(blacklistView).not.toContain("governance-entry")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("运维中心使用方案 A 单行检索条与常驻规则条", () => {
@@ -280,8 +293,8 @@ describe("全站筛选布局契约", () => {
     expect(opsView).not.toContain("<el-card")
     expect(opsView).not.toContain("ops-workbench")
     expect(opsView).not.toContain("ops-filter-title")
-    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.security-daily-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg,\s*\.security-daily-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(css).toMatch(/\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules\s*\{[^}]*display:\s*flex/s)
   })
 
