@@ -862,6 +862,7 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/approval-align-decisions.html",
             "docs/previews/approval-redesign-prototype.html",
             "docs/previews/apps-redesign-prototype.html",
+            "docs/previews/audit-redesign-prototype.html",
             "docs/previews/batch-density-prototype.html",
             "docs/previews/batch-redesign-prototype.html",
             "docs/previews/blacklist-redesign-prototype.html",
@@ -1210,6 +1211,27 @@ def test_security_daily_preview_keeps_security_daily_view_high_risk() -> None:
     assert change.runtime_changed is True
     assert change.risk == "high-risk"
     assert change.high_risk_paths == ("frontend/src/views/SecurityDailyView.vue",)
+    assert change.migration_changed is False
+
+
+def test_audit_preview_keeps_audit_view_high_risk() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/audit-redesign-prototype.html",
+            "docs/ui-design.md",
+            "frontend/src/styles/workspace.css",
+            "frontend/src/views/AuditView.vue",
+            "frontend/tests/admin-views.test.ts",
+            "frontend/tests/accessibility-contract.test.ts",
+            "frontend/tests/filter-layout-contract.test.ts",
+            "frontend/tests/qingluan-screen-fidelity.test.ts",
+        ]
+    )
+
+    assert change.components == frozenset({"web"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/AuditView.vue",)
     assert change.migration_changed is False
 
 

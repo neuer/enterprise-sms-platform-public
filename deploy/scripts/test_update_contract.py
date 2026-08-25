@@ -222,6 +222,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/approval-align-decisions.html",
         "docs/previews/approval-redesign-prototype.html",
         "docs/previews/apps-redesign-prototype.html",
+        "docs/previews/audit-redesign-prototype.html",
         "docs/previews/batch-density-prototype.html",
         "docs/previews/batch-redesign-prototype.html",
         "docs/previews/blacklist-redesign-prototype.html",

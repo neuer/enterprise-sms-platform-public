@@ -97,8 +97,8 @@ describe("无障碍样式契约", () => {
   })
 
   it("移动筛选器和日期范围可收缩且运维页签条保留横向滚动", () => {
-    expect(css).toMatch(/\.filter-grid[^}]*min-width:\s*0/s)
-    expect(css).toMatch(/\.filter-grid \.el-date-editor[^}]*width:\s*100%[^}]*min-width:\s*0/s)
+    expect(css).toMatch(/@media \(max-width: 840px\)[\s\S]*\.audit-keyword,[\s\S]*?\.audit-dates\s*\{[^}]*width:\s*100%/s)
+    expect(css).toMatch(/@media \(max-width: 840px\)[\s\S]*\.audit-dates\s*\{[^}]*--el-date-editor-datetimerange-width:\s*100%/s)
     expect(css).not.toMatch(/\.(?:query-filter-card|message-search-card|audit-filter-card|reply-filter-card)[^{]*\{[^}]*overflow-x:\s*auto/s)
     expect(css).toMatch(/\.config-tabs,\s*\.ops-tabs\s*\{[^}]*overflow-x:\s*auto/s)
   })

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 审计日志重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:640px}
+.ledger-lock{padding:10px 12px;border:1px solid var(--hair);background:var(--panel-2);color:var(--verdi-l);font:9px/1 var(--mono);letter-spacing:.08em;white-space:nowrap}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+
+/* ═══════════ 检索条（方案 A 单行，并入 reply-* 共享组） ═══════════ */
+.search-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.input{display:flex;align-items:center;height:34px;padding:0 12px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx-3)}
+.input.w220{width:220px}
+.input.w190{width:190px}
+.input.w150{width:150px}
+.input.w200{width:200px}
+.input.range{width:244px;font-family:var(--mono);font-size:11px}
+.more-trigger{height:34px;padding:0 12px;color:var(--tx);font-size:11.5px;white-space:nowrap;background:var(--sink);border:1px solid var(--hair);border-radius:7px}
+.more-trigger.active{color:var(--verdi-l);border-color:var(--verdi-l)}
+.more-count{margin-left:4px;padding:0 4px;color:var(--verdi-l);font:600 9.5px/1.6 var(--mono);background:rgba(14,122,99,.2);border-radius:4px}
+.search-bar .go{display:flex;gap:8px;align-items:center;margin-left:auto}
+.privacy-note{flex:1 0 100%;font-size:10.5px;color:var(--tx-3);border-top:1px solid var(--hair-2);padding-top:8px}
+.privacy-note code{font:10px var(--mono);color:var(--tx-2)}
+
+/* ═══════════ 更多筛选用气泡（与批次页同语言） ═══════════ */
+.more-pop{width:288px;padding:12px 14px;background:var(--panel);border:1px solid var(--hair);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.45);display:grid;gap:8px}
+.more-pop label{font-size:11px;color:var(--tx-3)}
+.more-pop label:not(:first-child){margin-top:6px}
+.more-pop .input{width:100%;font-family:var(--mono)}
+
+/* ═══════════ 规则条（常驻，与 user-rules 同组） ═══════════ */
+.rules-strip{display:flex;gap:26px;flex-wrap:wrap;padding:10px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.rules-strip>div{display:flex;gap:8px;align-items:baseline;min-width:0}
+.rules-strip span{flex:none;font-size:10.5px;color:var(--tx-3)}
+.rules-strip p{font-size:11px;color:var(--tx-2)}
+
+/* ═══════════ 结果面板：事件台账（并入 reply-results 共享组） ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:9px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t-time{font:11px var(--mono);color:var(--tx-2);white-space:nowrap}
+.t-action{font:10px/1.4 var(--mono);color:var(--verdi-l)}
+.t-ip{font:11px var(--mono);color:var(--tx-2)}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:3px}
+.result-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:46px;padding:10px 8px 4px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.pager{display:flex;gap:5px}
+.pager b{min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--hair);border-radius:6px;font:11px var(--mono);color:var(--tx-2);background:var(--sink);font-weight:400}
+.pager b.on{background:var(--verdi);color:#eaf1ed;border-color:transparent}
+
+/* ═══════════ 详情抽屉：描述格 + 载荷差异 ═══════════ */
+.rel{position:relative}
+.dim::after{content:"";position:absolute;inset:0;background:rgba(7,11,9,.55);z-index:5}
+.drawer{position:absolute;z-index:6;top:0;right:0;bottom:0;width:560px;max-width:92%;background:var(--panel);border-left:1px solid var(--hair);box-shadow:-18px 0 60px rgba(0,0,0,.5);padding:18px 22px;overflow:auto}
+.drawer h3{font-size:14px;font-weight:600;color:var(--tx-hi);margin-bottom:14px}
+.desc{display:grid;gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:8px;overflow:hidden;margin-bottom:16px}
+.desc>div{display:grid;grid-template-columns:96px 1fr;gap:10px;padding:8px 12px;background:var(--panel-2);font-size:12px}
+.desc dt{color:var(--tx-3);font-size:10.5px}
+.desc dd{color:var(--tx);overflow-wrap:anywhere}
+.desc dd code{font:10.5px var(--mono);color:var(--verdi-l);overflow-wrap:anywhere}
+.desc .lnk{color:var(--verdi-l);font-size:11.5px;margin-left:6px}
+.diff{border:1px solid var(--hair);background:var(--panel-2)}
+.diff-head,.diff-row{display:grid;grid-template-columns:minmax(96px,1fr) 1fr 1fr;gap:10px;padding:8px 12px}
+.diff-head{border-bottom:1px solid var(--hair);color:var(--tx-3);font:9px/1.4 var(--mono);letter-spacing:.08em}
+.diff-row{border-bottom:1px solid var(--hair);align-items:start}
+.diff-row:last-of-type{border-bottom:0}
+.diff-row.changed{box-shadow:inset 2px 0 0 var(--amber)}
+.diff-row.added{box-shadow:inset 2px 0 0 var(--verdi-l)}
+.diff-row.removed{box-shadow:inset 2px 0 0 var(--verm)}
+.diff-row.same{opacity:.55}
+.diff-key{display:grid;gap:2px;min-width:0;justify-items:start}
+.diff-key code{color:var(--verdi-l);font:10px/1.5 var(--mono);overflow-wrap:anywhere}
+.diff-key em{font:9px/1.4 var(--mono);font-style:normal}
+.diff-row.changed .diff-key em{color:var(--amber)}
+.diff-row.added .diff-key em{color:#71c4ad}
+.diff-row.removed .diff-key em{color:#ef9b89}
+.diff-val{min-width:0;color:var(--tx-2);font:10px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.pii-note{margin-top:14px;padding:10px 12px;border:1px solid rgba(47,161,132,.4);border-radius:8px;background:rgba(14,122,99,.1);font-size:11px;color:#71c4ad}
+.pii-note b{display:block;margin-bottom:2px}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty-duo{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.empty-duo .empty{display:grid;align-content:center;justify-items:center;gap:8px}
+
+@media (max-width:1100px){ .screen{min-width:0} .empty-duo{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 审计日志重设计原型</b>
+  <span>v1 评审稿 · 拟新增 docs/ui-design.md §8f · 路由 /audit（admin 专属）</span>
+  <em>2026-08-25 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>el-card 外壳与 filter-grid 十二列栅格退役</b>：七个筛选器收进方案 A 单行检索条——操作人关键词 220px + 动作下拉（选项来自 <code>GET /admin/audit-logs/actions</code>，可输入新值）+ 对象类型 + 对象 ID + 时间范围 datetimerange + 查询/重置；低频次精确字段「稳定账号 ID / 关联 ID」收进「更多筛选」气泡且激活带角标计数，与批次列表同语言。检索条并入 reply-* 共享组，filter-grid 全站随之退役。<span class="need calc">前端</span></li>
+  <li><b>常驻规则条 slim 两格</b>：不可变账本（append-only、七个运行角色均无 UPDATE/DELETE/TRUNCATE 权限、保留 36 个月由 DBA 变更单驱动清理）与 PII 边界（手机号、逐号密文与 HMAC 列表无法写入 audit_log，载荷只记数量与引用），与 user-rules 同组常驻。<span class="need calc">前端</span></li>
+  <li><b>结果面板化并入 reply-results 共享组</b>：撤下「操作事件流」卡头，列保持 稳定主体 / 操作人快照 / 动作 mono / 对象 / IP / 时间 mono / 详情；底栏合并「共 N 条 · 每页 20」+ 分页并入 reply-pagination 共享组，原 total&gt;0 才渲染分页的限制退役；移动端 760px 表格↔卡片双渲染保留。<span class="need calc">前端</span></li>
+  <li><b>详情抽屉保持载荷差异检视器</b>：560 抽屉统一为 <code>min(560px, 92vw)</code>，描述格 + 关联 ID 复制/同链路追踪 + before/after 三列差异（变更琥珀 / 新增 verdi / 删除 verm / 不变淡化）+ PII 保护提示全部维持现状；「同链路事件」重查时自动展开更多筛选项气泡，如实展示激活的关联 ID 过滤。<span class="need ok">现有</span></li>
+  <li><b>条底细字写明口径</b>：操作人/动作/对象类型/对象 ID 与时间为服务端等值筛选，稳定账号 ID 与关联 ID（request ID）为精确匹配；筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。<span class="need calc">前端</span></li>
+  <li><b>空态两行规约 + 错误条带重新加载</b>：暂无审计事件（空库）/ 没有符合条件的审计事件（带清除筛选）；加载失败 el-alert 内联重新加载。全部既有 data-testid 与行为保留。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：默认台账列表（单行检索条 + 常驻规则条 + 事件台账） ════════════════ -->
+<div class="stage-label">SCREEN A · 默认台账列表（admin 视角 · 单行检索条 + 常驻规则条 + 事件台账全量要素）</div>
+<div class="variant-caption">低频精确字段收进「更多筛选」并带角标计数；规则条常驻；末行演示 system 主体与无对象事件。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">IMMUTABLE LEDGER / 不可变账本</div>
+      <h1>审计日志</h1>
+      <div class="sub">覆盖全部写操作与敏感读取；append-only，运行角色只增不查改。载荷受数据库 PII 约束保护，手机号与逐号密文无法写入。</div>
+    </div>
+    <span class="ledger-lock">APPEND ONLY · 36 MONTHS</span>
+  </div>
+
+  <div class="search-bar">
+    <div class="fld"><span>操作人</span><div class="input w220">用户名</div></div>
+    <div class="fld"><span>动作</span><div class="input w190">全部动作 ▾</div></div>
+    <div class="fld"><span>对象类型</span><div class="input w150">如 sys_config</div></div>
+    <div class="fld"><span>对象 ID</span><div class="input w200">批次号 / 配置 key</div></div>
+    <div class="fld"><span>时间范围</span><div class="input range">2026-08-18 00:00 至 2026-08-25 00:00</div></div>
+    <div class="fld"><span>&nbsp;</span><span class="more-trigger active">更多筛选 ▾<b class="more-count">1</b></span></div>
+    <div class="go"><span class="btn primary">查询</span><span class="btn">重置</span></div>
+    <p class="privacy-note">操作人 / 动作 / 对象类型 / 对象 ID 与时间为服务端等值筛选；稳定账号 ID 与关联 ID（request ID）为精确匹配，收进「更多筛选」并带激活计数。筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。</p>
+  </div>
+
+  <div class="rules-strip">
+    <div><span>不可变账本</span><p>审计事件 append-only：七个运行角色均无 UPDATE/DELETE/TRUNCATE 权限；保留 36 个月，到期清理由 DBA 变更单驱动。</p></div>
+    <div><span>PII 边界</span><p>载荷受数据库约束保护，手机号、逐号密文与 HMAC 列表无法写入 audit_log；载荷只记数量与引用，本页与详情均为只读。</p></div>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr><th>稳定主体</th><th>操作人快照</th><th>动作</th><th>对象</th><th>IP</th><th>时间</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">账号 #1</span></td>
+          <td>admin01</td>
+          <td><span class="t-action">config_update</span></td>
+          <td>sys_config · vendor_qps</td>
+          <td><span class="t-ip">10.0.0.8</span></td>
+          <td><span class="t-time">2026-08-24 21:14:03</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">账号 #7</span></td>
+          <td>approver_zhao</td>
+          <td><span class="t-action">approval_decision</span></td>
+          <td>sms_batch · B20260824-0182</td>
+          <td><span class="t-ip">10.0.0.21</span></td>
+          <td><span class="t-time">2026-08-24 18:02:44</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">应用 #3</span></td>
+          <td>oms-gateway</td>
+          <td><span class="t-action">message_send</span></td>
+          <td>sms_batch · B20260824-0179</td>
+          <td><span class="t-ip">172.16.4.9</span></td>
+          <td><span class="t-time">2026-08-24 17:58:10</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">账号 #1</span></td>
+          <td>admin01</td>
+          <td><span class="t-action">blacklist_delete</span></td>
+          <td>blacklist · —</td>
+          <td><span class="t-ip">10.0.0.8</span></td>
+          <td><span class="t-time">2026-08-24 15:36:57</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="mono">system</span></td>
+          <td>system</td>
+          <td><span class="t-action">queue_resume</span></td>
+          <td>— · —</td>
+          <td><span class="t-ip">—</span></td>
+          <td><span class="t-time">2026-08-24 09:30:00</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 5 条 · 每页 20</span>
+      <div class="pager"><b>‹</b><b class="on">1</b><b>›</b></div>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：详情抽屉（载荷差异检视器） ════════════════ -->
+<div class="stage-label">SCREEN B · 审计事件详情抽屉（560 · before/after 差异 + 关联 ID 追踪）</div>
+<div class="variant-caption">差异行按 变更→新增→删除→不变 排序；关联 ID 可复制或一键追踪同链路事件（重查时自动展开更多筛选项气泡）；底部 PII 提示常驻。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="result-panel dim">
+    <table>
+      <thead><tr><th>稳定主体</th><th>操作人快照</th><th>动作</th><th>对象</th><th>时间</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="mono">账号 #1</span></td>
+          <td>admin01</td>
+          <td><span class="t-action">config_update</span></td>
+          <td>sys_config · vendor_qps</td>
+          <td><span class="t-time">2026-08-24 21:14:03</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="drawer">
+    <h3>审计事件详情</h3>
+    <dl class="desc">
+      <div><dt>事件</dt><dd>#9 · <code>config_update</code></dd></div>
+      <div><dt>关联 ID</dt><dd><code>30000000-0000-4000-8000-000000000009</code><span class="lnk">复制</span><span class="lnk">同链路事件</span></dd></div>
+      <div><dt>稳定主体</dt><dd>human / account=1 / identity=10 / app=—</dd></div>
+      <div><dt>操作人快照</dt><dd>admin01 / admin</dd></div>
+      <div><dt>来源 IP</dt><dd><code>10.0.0.8</code></dd></div>
+      <div><dt>对象</dt><dd>sys_config / vendor_qps</dd></div>
+      <div><dt>时间</dt><dd><code>2026-08-24 21:14:03</code></dd></div>
+    </dl>
+    <div class="diff">
+      <div class="diff-head"><span>字段</span><span>BEFORE</span><span>AFTER</span></div>
+      <div class="diff-row changed"><div class="diff-key"><code>value</code><em>变更</em></div><span class="diff-val">"5"</span><span class="diff-val">"8"</span></div>
+      <div class="diff-row added"><div class="diff-key"><code>enabled</code><em>新增</em></div><span class="diff-val">—</span><span class="diff-val">true</span></div>
+      <div class="diff-row removed"><div class="diff-key"><code>note</code><em>删除</em></div><span class="diff-val">"old"</span><span class="diff-val">—</span></div>
+    </div>
+    <div class="pii-note"><b>载荷受数据库 PII 约束保护</b>手机号、逐号密文与 HMAC 列表无法写入 audit_log。</div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：更多筛选用气泡 + 空态（两变体） ════════════════ -->
+<div class="stage-label">SCREEN C · 更多筛选用气泡（激活态）与空态（暂无事件 / 筛选无结果）</div>
+<div class="variant-caption">气泡内两枚精确匹配字段为 mono 输入；空态两行规约：一行结论 + 一行出路，筛选态带「清除筛选」。</div>
+<div class="viewport"><div class="screen">
+  <div class="search-bar">
+    <div class="fld"><span>操作人</span><div class="input w220">admin01</div></div>
+    <div class="fld"><span>动作</span><div class="input w190">config_update ▾</div></div>
+    <div class="fld"><span>时间范围</span><div class="input range">开始时间 至 结束时间</div></div>
+    <div class="fld" style="position:relative"><span>&nbsp;</span><span class="more-trigger active">更多筛选 ▾<b class="more-count">2</b></span>
+      <div class="more-pop" style="position:absolute;top:44px;right:0;z-index:6">
+        <label>稳定账号 ID</label>
+        <div class="input">account_id 精确匹配</div>
+        <label>关联 ID</label>
+        <div class="input">30000000-0000-4000-8000-000000000009</div>
+      </div>
+    </div>
+    <div class="go"><span class="btn primary">查询</span><span class="btn">重置</span></div>
+  </div>
+  <div class="empty-duo">
+    <div class="empty">
+      <div><b>暂无审计事件</b>
+      <span>全部写操作与敏感读取都会在此留下不可变记录。</span></div>
+    </div>
+    <div class="empty">
+      <div><b>没有符合条件的审计事件</b>
+      <span>调整筛选条件或扩大时间范围后重新查询。</span>
+      <span class="btn" style="justify-self:center">清除筛选</span></div>
+    </div>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表 <code>GET /api/v1/web/admin/audit-logs</code> 参数 <code>actor / actor_account_id / action / object_type / object_id / correlation_id / start / end / page / page_size</code> 全部沿用；动作选项 <code>GET .../audit-logs/actions</code> 维持现状；零契约变更，不新增端点、不新增字段、不加导出。<span class="need ok">现有</span></li>
+  <li><code>correlation_id</code> 服务端按 UUID 精确解析、<code>actor_account_id</code> 按整数精确匹配，两者收进「更多筛选」；「同链路事件」追踪复用同一参数，行为不变。<span class="need ok">现有</span></li>
+  <li>页面 admin 专属（路由 /audit），守卫与导航维持现状；手机号明文永不进入本页载荷，详情抽屉同样只是只读投影。<span class="need ok">现有</span></li>
+  <li>全部既有 data-testid 保留（audit-actor / audit-account-id / audit-action / audit-object-id / audit-correlation-id / audit-time-range / audit-reset / audit-clear-filters / audit-copy-correlation / audit-trace-correlation），新增 audit-object-type 与 audit-more-filters 两枚。<span class="need calc">前端</span></li>
+</ul>
+
+</body>
+</html>

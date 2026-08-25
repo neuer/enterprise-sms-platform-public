@@ -30,6 +30,8 @@ const selected = ref<AuditItem | null>(null)
 const drawer = ref(false)
 const timeRange = ref<[Date, Date] | null>(null)
 const actionOptions = ref<string[]>([])
+// 更多筛选（低频精确字段：稳定账号 ID / 关联 ID，收进气泡）
+const moreOpen = ref(false)
 
 const timeShortcuts = [
   { text: "最近 1 小时", value: () => [new Date(Date.now() - 3_600_000), new Date()] as [Date, Date] },
@@ -57,6 +59,11 @@ const filtering = computed(
     Boolean(filters.start) ||
     Boolean(filters.end),
 )
+
+const moreActiveCount = computed(
+  () => (filters.actorAccountId.trim() ? 1 : 0) + (filters.correlationId.trim() ? 1 : 0),
+)
+const moreActive = computed(() => moreActiveCount.value > 0)
 
 const selectedDiff = computed<DiffRow[]>(() =>
   selected.value ? diffRows(selected.value.before_val, selected.value.after_val) : [],
@@ -147,11 +154,6 @@ function detail(item: AuditItem): void {
   drawer.value = true
 }
 
-function changePage(page: number): void {
-  filters.page = page
-  void load()
-}
-
 async function copyCorrelation(): Promise<void> {
   if (!selected.value) return
   if (await copyText(selected.value.correlation_id)) {
@@ -161,6 +163,7 @@ async function copyCorrelation(): Promise<void> {
   }
 }
 
+/** 同链路追踪复用 correlation_id 精确匹配；展开气泡如实展示激活的过滤条件。 */
 function traceCorrelation(): void {
   const correlationId = selected.value?.correlation_id
   if (!correlationId) return
@@ -175,6 +178,7 @@ function traceCorrelation(): void {
   filters.correlationId = correlationId
   filters.page = 1
   drawer.value = false
+  moreOpen.value = true
   void load()
 }
 
@@ -186,30 +190,62 @@ onMounted(() => {
 
 <template>
   <section class="page-heading audit-heading">
-    <div><p class="eyebrow">IMMUTABLE LEDGER / 不可变账本</p><h1>审计日志</h1><p>覆盖全部写操作与敏感读取；运行态账号只有新增与查询权限。</p></div>
+    <div><p class="eyebrow">IMMUTABLE LEDGER / 不可变账本</p><h1>审计日志</h1><p>覆盖全部写操作与敏感读取；append-only，运行角色只有新增与查询权限。载荷受数据库 PII 约束保护，手机号与逐号密文无法写入。</p></div>
     <span class="audit-lock">APPEND ONLY · 36 MONTHS</span>
   </section>
 
-  <el-card shadow="never" class="audit-filter-card">
-    <el-form class="audit-filter filter-grid" label-position="top" @submit.prevent="search">
-      <el-form-item class="filter-span-2" label="操作人"><el-input v-model="filters.actor" data-testid="audit-actor" clearable placeholder="用户名" /></el-form-item>
-      <el-form-item class="filter-span-2" label="稳定账号 ID"><el-input v-model="filters.actorAccountId" data-testid="audit-account-id" clearable placeholder="account_id" /></el-form-item>
-      <el-form-item class="filter-span-2" label="动作">
-        <el-select v-model="filters.action" data-testid="audit-action" filterable clearable allow-create placeholder="选择或输入动作">
-          <el-option v-for="option in actionOptions" :key="option" :label="option" :value="option" />
-        </el-select>
-      </el-form-item>
-      <el-form-item class="filter-span-2" label="对象类型"><el-input v-model="filters.objectType" clearable placeholder="如 sys_config" /></el-form-item>
-      <el-form-item class="filter-span-2" label="对象 ID"><el-input v-model="filters.objectId" data-testid="audit-object-id" clearable placeholder="批次号 / 配置 key" /></el-form-item>
-      <el-form-item class="filter-span-2" label="关联 ID"><el-input v-model="filters.correlationId" data-testid="audit-correlation-id" clearable placeholder="request ID 精确匹配" /></el-form-item>
-      <el-form-item class="filter-span-4" label="时间范围"><el-date-picker v-model="timeRange" data-testid="audit-time-range" type="datetimerange" :shortcuts="timeShortcuts" popper-class="qingluan-date-popper" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" /></el-form-item>
-      <el-form-item class="filter-actions filter-span-2"><el-button type="primary" native-type="submit" :loading="loading">查询</el-button><el-button data-testid="audit-reset" @click="reset">重置</el-button></el-form-item>
-    </el-form>
-  </el-card>
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false"><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert>
+  <form class="audit-filter-bar" @submit.prevent="search">
+    <div class="audit-fld">
+      <span>操作人</span>
+      <el-input v-model="filters.actor" class="audit-keyword" data-testid="audit-actor" clearable placeholder="用户名" />
+    </div>
+    <div class="audit-fld">
+      <span>动作</span>
+      <el-select v-model="filters.action" class="audit-action" data-testid="audit-action" filterable clearable allow-create placeholder="全部动作">
+        <el-option v-for="option in actionOptions" :key="option" :label="option" :value="option" />
+      </el-select>
+    </div>
+    <div class="audit-fld">
+      <span>对象类型</span>
+      <el-input v-model="filters.objectType" class="audit-object-type" data-testid="audit-object-type" clearable placeholder="如 sys_config" />
+    </div>
+    <div class="audit-fld">
+      <span>对象 ID</span>
+      <el-input v-model="filters.objectId" class="audit-object-id" data-testid="audit-object-id" clearable placeholder="批次号 / 配置 key" />
+    </div>
+    <div class="audit-fld">
+      <span>时间范围</span>
+      <el-date-picker v-model="timeRange" class="audit-dates" data-testid="audit-time-range" type="datetimerange" :shortcuts="timeShortcuts" popper-class="qingluan-date-popper" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" />
+    </div>
+    <div class="audit-fld">
+      <span>精确匹配</span>
+      <el-popover v-model:visible="moreOpen" placement="bottom-end" :width="320" trigger="click">
+        <template #reference>
+          <button type="button" class="audit-more-trigger" :class="{ 'is-more-active': moreActive }" data-testid="audit-more-filters">更多筛选 ▾<b v-if="moreActiveCount" class="audit-more-count">{{ moreActiveCount }}</b></button>
+        </template>
+        <div class="audit-more">
+          <label>稳定账号 ID</label>
+          <el-input v-model="filters.actorAccountId" data-testid="audit-account-id" clearable placeholder="account_id 精确匹配" />
+          <label>关联 ID</label>
+          <el-input v-model="filters.correlationId" data-testid="audit-correlation-id" clearable placeholder="request ID 精确匹配" />
+        </div>
+      </el-popover>
+    </div>
+    <div class="audit-filter-go">
+      <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
+      <el-button data-testid="audit-reset" @click="reset">重置</el-button>
+    </div>
+    <p class="audit-privacy">操作人 / 动作 / 对象类型 / 对象 ID 与时间为服务端等值筛选；稳定账号 ID 与关联 ID（request ID）为精确匹配，收进「更多筛选」并带激活计数。筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。</p>
+  </form>
 
-  <el-card shadow="never" class="audit-results" v-loading="loading">
-    <header class="audit-result-title"><div><strong>操作事件流</strong><small>按时间倒序 · 仅展示安全审计载荷</small></div><span>{{ total }} 条</span></header>
+  <aside class="audit-rules" aria-label="不可变账本与 PII 边界">
+    <div><span>不可变账本</span><p>审计事件 append-only：七个运行角色均无 UPDATE/DELETE/TRUNCATE 权限；保留 36 个月，到期清理由 DBA 变更单驱动。</p></div>
+    <div><span>PII 边界</span><p>载荷受数据库约束保护，手机号、逐号密文与 HMAC 列表无法写入 audit_log；载荷只记数量与引用，本页与详情均为只读。</p></div>
+  </aside>
+
+  <el-alert v-if="errorMessage" class="audit-alert" :title="errorMessage" type="error" :closable="false"><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert>
+
+  <section class="audit-results" v-loading="loading">
     <template v-if="items.length">
       <el-table :data="items" class="audit-table"><el-table-column label="稳定主体" min-width="150"><template #default="{ row }">{{ row.actor_account_id ? `账号 #${row.actor_account_id}` : row.actor_app_id ? `应用 #${row.actor_app_id}` : '历史未知' }}</template></el-table-column><el-table-column prop="actor" label="操作人快照" min-width="120" /><el-table-column prop="action" label="动作" min-width="170"><template #default="{ row }"><code>{{ row.action }}</code></template></el-table-column><el-table-column label="对象" min-width="190"><template #default="{ row }">{{ row.object_type || '—' }} · {{ row.object_id || '—' }}</template></el-table-column><el-table-column prop="ip" label="IP" width="135" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="detail(row)">详情</el-button></template></el-table-column></el-table>
       <div class="audit-mobile-list"><article v-for="item in items" :key="item.id"><header><code>{{ item.action }}</code><time>{{ time(item.created_at) }}</time></header><strong>{{ item.actor }} · {{ item.role || '—' }}</strong><p>{{ item.object_type || '—' }} / {{ item.object_id || '—' }}</p><el-button link type="primary" @click="detail(item)">详情</el-button></article></div>
@@ -221,10 +257,13 @@ onMounted(() => {
     <div v-else class="audit-empty-action">
       <EmptyState title="暂无审计事件" description="全部写操作与敏感读取都会在此留下不可变记录。" />
     </div>
-    <el-pagination v-if="total > 0" v-model:current-page="filters.page" :page-size="filters.pageSize" :total="total" layout="prev, pager, next" @current-change="changePage" />
-  </el-card>
+    <footer class="audit-pagination">
+      <span>共 {{ total }} 条 · 每页 20</span>
+      <el-pagination v-model:current-page="filters.page" :page-size="filters.pageSize" :total="total" layout="prev, pager, next" @current-change="load" />
+    </footer>
+  </section>
 
-  <el-drawer v-model="drawer" title="审计事件详情" size="min(520px, 100vw)" class="audit-drawer">
+  <el-drawer v-model="drawer" title="审计事件详情" size="min(560px, 92vw)" class="audit-drawer">
     <template v-if="selected"><el-descriptions :column="1" border><el-descriptions-item label="事件">#{{ selected.id }} · {{ selected.action }}</el-descriptions-item><el-descriptions-item label="关联 ID"><div class="audit-correlation"><code>{{ selected.correlation_id }}</code><el-button link type="primary" data-testid="audit-copy-correlation" @click="copyCorrelation">复制</el-button><el-button link type="primary" data-testid="audit-trace-correlation" @click="traceCorrelation">同链路事件</el-button></div></el-descriptions-item><el-descriptions-item label="稳定主体">{{ selected.actor_subject_kind }} / account={{ selected.actor_account_id || '—' }} / identity={{ selected.actor_identity_id || '—' }} / app={{ selected.actor_app_id || '—' }}</el-descriptions-item><el-descriptions-item label="操作人快照">{{ selected.actor }} / {{ selected.role || '—' }}</el-descriptions-item><el-descriptions-item label="来源 IP">{{ selected.ip || '—' }}</el-descriptions-item><el-descriptions-item label="对象">{{ selected.object_type || '—' }} / {{ selected.object_id || '—' }}</el-descriptions-item><el-descriptions-item label="时间">{{ time(selected.created_at) }}</el-descriptions-item></el-descriptions><section class="audit-diff" aria-label="载荷前后差异"><header class="audit-diff-head"><span>字段</span><span>BEFORE</span><span>AFTER</span></header><template v-if="selectedDiff.length"><div v-for="row in selectedDiff" :key="row.key" class="audit-diff-row" :class="`is-${row.state}`"><div class="audit-diff-key"><code>{{ row.key }}</code><em v-if="row.state !== 'same'">{{ DIFF_LABEL[row.state] }}</em></div><span class="audit-diff-value audit-diff-value--before">{{ row.before }}</span><span class="audit-diff-value audit-diff-value--after">{{ row.after }}</span></div></template><p v-else class="audit-diff-empty">该事件无 before/after 载荷记录</p></section><el-alert title="载荷受数据库 PII 约束保护" type="success" :closable="false" description="手机号、逐号密文与 HMAC 列表无法写入 audit_log。" /></template>
   </el-drawer>
 </template>

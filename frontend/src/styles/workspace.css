@@ -166,45 +166,7 @@ button:focus-visible {
   display: none;
 }
 
-/* 全站查询区：由页面声明字段跨度，共享同一响应式栅格。 */
-.filter-grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 12px;
-  align-items: end;
-  width: 100%;
-  min-width: 0;
-}
-
-.filter-grid .el-form-item {
-  grid-column: span 3;
-  width: 100%;
-  min-width: 0;
-  margin: 0;
-}
-
-.filter-grid .el-form-item__content,
-.filter-grid .el-input,
-.filter-grid .el-select,
-.filter-grid .el-date-editor,
-.filter-grid .el-segmented {
-  width: 100%;
-  min-width: 0;
-}
-
-.filter-span-2 { grid-column: span 2 !important; }
-.filter-span-3 { grid-column: span 3 !important; }
-.filter-span-4 { grid-column: span 4 !important; }
-.filter-span-6 { grid-column: span 6 !important; }
-
-.filter-actions {
-  align-self: end;
-}
-
-.filter-actions .el-form-item__content {
-  flex-wrap: nowrap;
-}
-
+/* filter-grid 十二列栅格已随审计日志页改造退役（最后使用方为 AuditView），不得复活。 */
 .filter-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -212,46 +174,6 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-}
-
-@media (max-width: 1100px) {
-  .filter-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-
-  .filter-span-4 { grid-column: span 4 !important; }
-  .filter-span-6 { grid-column: span 6 !important; }
-}
-
-@media (max-width: 760px) {
-  .filter-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .filter-grid .el-form-item,
-  .filter-grid .el-form-item__content {
-    grid-column: 1 / -1 !important;
-    min-width: 0;
-  }
-
-  .filter-grid .el-range-editor {
-    display: flex;
-  }
-
-  .filter-grid .el-range-input {
-    width: 100%;
-    min-width: 0;
-    flex: 1 1 0;
-  }
-
-  .filter-grid .el-range-separator {
-    width: auto;
-    flex: 0 0 auto;
-  }
-
-  .filter-actions .el-button {
-    min-height: 44px;
-  }
 }
 
 .reply-heading,
@@ -263,7 +185,7 @@ button:focus-visible {
   align-items: end;
 }
 
-/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务共享检索条选择器：ops-* 与 callback-* 均并入同一组，按页复制即缺陷；
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务/审计日志共享检索条选择器：ops-* 、callback-* 与 audit-* 均并入同一组，按页复制即缺陷；
    安全日报检索条为页级紧凑专属样式（见文件尾部安全日报区），仅页头/结果面板/分页/确认框/规则条继续并入共享组。 */
 .reply-filter-bar,
 .blacklist-filter-bar,
@@ -271,7 +193,8 @@ button:focus-visible {
 .user-filter-bar,
 .config-filter-bar,
 .ops-filter-bar,
-.callback-filter-bar {
+.callback-filter-bar,
+.audit-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -289,7 +212,8 @@ button:focus-visible {
 .user-fld,
 .config-fld,
 .ops-fld,
-.callback-fld {
+.callback-fld,
+.audit-fld {
   display: grid;
   gap: 5px;
 }
@@ -300,7 +224,8 @@ button:focus-visible {
 .user-fld > span,
 .config-fld > span,
 .ops-fld > span,
-.callback-fld > span {
+.callback-fld > span,
+.audit-fld > span {
   color: var(--tx-3);
   font-size: 10.5px;
   white-space: nowrap;
@@ -318,20 +243,23 @@ button:focus-visible {
   letter-spacing: 0.06em;
 }
 
-/* 运维中心告警/无主报告时间范围与上行回复同构：mono 范围输入。 */
+/* 运维中心告警/无主报告与审计日志时间范围同上行回复同构：mono 范围输入。 */
 .reply-filter-dates,
-.ops-dates {
+.ops-dates,
+.audit-dates {
   --el-date-editor-datetimerange-width: 244px;
 }
 
 .reply-filter-dates.el-date-editor.el-input__wrapper,
-.ops-dates.el-date-editor.el-input__wrapper {
+.ops-dates.el-date-editor.el-input__wrapper,
+.audit-dates.el-date-editor.el-input__wrapper {
   padding-right: 8px;
   padding-left: 8px;
 }
 
 .reply-filter-dates .el-range-input,
-.ops-dates .el-range-input {
+.ops-dates .el-range-input,
+.audit-dates .el-range-input {
   font-family: var(--mono);
   font-size: 11px;
 }
@@ -386,7 +314,8 @@ button:focus-visible {
 .sensitive-filter-go,
 .user-filter-go,
 .ops-filter-go,
-.callback-filter-go {
+.callback-filter-go,
+.audit-filter-go {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -399,7 +328,8 @@ button:focus-visible {
 .user-privacy,
 .config-privacy,
 .ops-privacy,
-.callback-privacy {
+.callback-privacy,
+.audit-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -414,7 +344,8 @@ button:focus-visible {
 .user-privacy code,
 .config-privacy code,
 .ops-privacy code,
-.callback-privacy code {
+.callback-privacy code,
+.audit-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -430,7 +361,8 @@ button:focus-visible {
 .user-results,
 .ops-results,
 .callback-results,
-.security-daily-results {
+.security-daily-results,
+.audit-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -512,7 +444,8 @@ button:focus-visible {
 .user-pagination,
 .ops-pagination,
 .callback-pagination,
-.security-daily-pagination {
+.security-daily-pagination,
+.audit-pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -552,7 +485,8 @@ button:focus-visible {
   .user-filter-bar,
   .config-filter-bar,
   .ops-filter-bar,
-  .callback-filter-bar {
+  .callback-filter-bar,
+  .audit-filter-bar {
     align-items: flex-start;
   }
 
@@ -566,12 +500,18 @@ button:focus-visible {
   .ops-phone,
   .ops-dates,
   .callback-keyword,
-  .callback-app-select {
+  .callback-app-select,
+  .audit-keyword,
+  .audit-action,
+  .audit-object-type,
+  .audit-object-id,
+  .audit-dates {
     width: 100%;
   }
 
   .reply-filter-dates,
-  .ops-dates {
+  .ops-dates,
+  .audit-dates {
     --el-date-editor-datetimerange-width: 100%;
   }
 
@@ -580,7 +520,8 @@ button:focus-visible {
   .sensitive-filter-go,
   .user-filter-go,
   .ops-filter-go,
-  .callback-filter-go {
+  .callback-filter-go,
+  .audit-filter-go {
     width: 100%;
     margin-left: 0;
   }
@@ -590,7 +531,8 @@ button:focus-visible {
   .sensitive-filter-go .el-button,
   .user-filter-go .el-button,
   .ops-filter-go .el-button,
-  .callback-filter-go .el-button {
+  .callback-filter-go .el-button,
+  .audit-filter-go .el-button {
     min-height: 44px;
     flex: 1;
   }
@@ -603,7 +545,8 @@ button:focus-visible {
   .user-pagination,
   .ops-pagination,
   .callback-pagination,
-  .security-daily-pagination {
+  .security-daily-pagination,
+  .audit-pagination {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
@@ -5206,7 +5149,9 @@ main {
 .batch-filter-dates .el-range__icon { margin-right: 2px; font-size: 12px; }
 .batch-filter-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .batch-dirty { color: var(--amber); font: 10px var(--mono); white-space: nowrap; }
-.batch-more-trigger {
+/* 批次列表与审计日志共享「更多筛选」气泡触发器与内容格：低频字段折叠 + 激活角标计数，按页复制即缺陷。 */
+.batch-more-trigger,
+.audit-more-trigger {
   padding: 3px 10px;
   color: var(--tx);
   font: inherit;
@@ -5217,11 +5162,13 @@ main {
   border-radius: 7px;
   cursor: pointer;
 }
-.batch-more-trigger.is-more-active {
+.batch-more-trigger.is-more-active,
+.audit-more-trigger.is-more-active {
   color: var(--verdi-l);
   border-color: var(--verdi-l);
 }
-.batch-more-count {
+.batch-more-count,
+.audit-more-count {
   margin-left: 4px;
   padding: 0 4px;
   color: var(--verdi-l);
@@ -5229,11 +5176,16 @@ main {
   background: rgba(14, 122, 99, 0.2);
   border-radius: 4px;
 }
-.batch-more { display: grid; gap: 8px; }
-.batch-more label { color: var(--tx-3); font-size: 11px; }
-.batch-more label:not(:first-child) { margin-top: 6px; }
+.batch-more,
+.audit-more { display: grid; gap: 8px; }
+.batch-more label,
+.audit-more label { color: var(--tx-3); font-size: 11px; }
+.batch-more label:not(:first-child),
+.audit-more label:not(:first-child) { margin-top: 6px; }
 .batch-more .el-select,
-.batch-more .el-input { width: 100%; }
+.batch-more .el-input,
+.audit-more .el-select,
+.audit-more .el-input { width: 100%; }
 .batch-error { margin-bottom: 12px; }
 
 .batch-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; padding: 0 2px; }
@@ -5674,12 +5626,13 @@ main {
 /* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
    检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
    本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
-   config-rules / ops-rules / callback-rules / security-daily-rules 与 user-rules 同构，共用本组规则。 */
+   config-rules / ops-rules / callback-rules / security-daily-rules / audit-rules 与 user-rules 同构，共用本组规则。 */
 .user-rules,
 .config-rules,
 .ops-rules,
 .callback-rules,
-.security-daily-rules {
+.security-daily-rules,
+.audit-rules {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 28px;
@@ -5694,7 +5647,8 @@ main {
 .config-rules > div,
 .ops-rules > div,
 .callback-rules > div,
-.security-daily-rules > div {
+.security-daily-rules > div,
+.audit-rules > div {
   display: flex;
   gap: 8px;
   align-items: baseline;
@@ -5705,7 +5659,8 @@ main {
 .config-rules span,
 .ops-rules span,
 .callback-rules span,
-.security-daily-rules span {
+.security-daily-rules span,
+.audit-rules span {
   flex: none;
   color: var(--tx-3);
   font-size: 10.5px;
@@ -5716,7 +5671,8 @@ main {
 .config-rules p,
 .ops-rules p,
 .callback-rules p,
-.security-daily-rules p {
+.security-daily-rules p,
+.audit-rules p {
   margin: 0;
   color: var(--tx-2);
   font-size: 11px;
@@ -5726,7 +5682,8 @@ main {
 .user-alert,
 .ops-alert,
 .callback-alert,
-.security-daily-alert { margin-bottom: 14px; }
+.security-daily-alert,
+.audit-alert { margin-bottom: 14px; }
 
 .user-name {
   display: block;
@@ -5912,7 +5869,8 @@ main {
   .config-rules > div,
   .ops-rules > div,
   .callback-rules > div,
-  .security-daily-rules > div { width: 100%; }
+  .security-daily-rules > div,
+  .audit-rules > div { width: 100%; }
   .user-table { display: none; }
   .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
   .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
@@ -6172,15 +6130,19 @@ main {
 .vendor-sensitive-note { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }
 .vendor-sensitive-note { padding: 10px 12px; border: 1px solid var(--line); background: var(--surface-soft); }
 
+/* 审计日志：不可变账本与载荷差异抽屉（admin 专属）。
+   检索条/结果面板/分页/空态并入 reply-* 共享组、规则条与 user-rules 同组、
+   更多筛选触发器与 batch-more 同组，按页复制即缺陷；
+   本区只保留页头徽标、字段宽度、气泡内 mono 输入、账本单元格、移动端卡片与 before/after 差异格。 */
 .audit-lock { padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--green); font: 9px/1 var(--mono); letter-spacing: .08em; }
-.audit-results { margin-top: 16px; }
-.audit-result-title { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 16px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }
-.audit-result-title > div { display: grid; gap: 4px; }
-.audit-result-title small,
-.audit-result-title > span { color: var(--muted); font: 10px/1.4 var(--mono); }
+.audit-keyword { width: 220px; }
+.audit-action { width: 190px; }
+.audit-object-type { width: 150px; }
+.audit-object-id { width: 200px; }
+.audit-more-trigger { height: 32px; padding: 0 12px; font-size: 11.5px; }
+.audit-more .el-input__inner { font-family: var(--mono); }
 .audit-table code { color: var(--green); font: 10px/1.4 var(--mono); }
 .audit-mobile-list { display: none; }
-.audit-results .el-pagination { justify-content: flex-end; margin-top: 16px; }
 .audit-empty-action { display: grid; justify-items: center; gap: 12px; padding: 32px 0; }
 .audit-correlation { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .audit-correlation code { overflow-wrap: anywhere; }
@@ -6236,7 +6198,6 @@ main {
   .vendor-uat-actions .el-button { width: 100%; }
   .audit-heading { align-items: stretch; }
   .audit-lock { align-self: flex-start; }
-  .audit-filter-card .el-button { width: 100%; }
   .audit-table { display: none; }
   .audit-mobile-list { display: grid; gap: 10px; }
   .audit-mobile-list article { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); background: var(--surface-soft); }
@@ -6250,7 +6211,6 @@ main {
   .audit-diff-value::before { display: block; margin-bottom: 2px; color: var(--muted); font: 9px/1 var(--mono); letter-spacing: .08em; }
   .audit-diff-value--before::before { content: "BEFORE"; }
   .audit-diff-value--after::before { content: "AFTER"; }
-  .audit-drawer { width: 100% !important; }
 }
 
 .el-table .cell,
