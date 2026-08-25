@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 应用管理重设计原型 v1（评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.notes{margin:14px 28px 0;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+.notes code{font:10.5px var(--mono);color:var(--tx)}
+.need{display:inline-block;font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--hair);vertical-align:1px;margin-left:6px}
+.need.ok{color:#71c4ad;border-color:rgba(47,161,132,.4)}
+.need.ext{color:var(--amber);border-color:rgba(216,163,92,.45)}
+.need.calc{color:#6f9bcf;border-color:rgba(69,116,163,.45)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:20px 26px 28px;display:grid;gap:14px;min-width:960px;align-content:start}
+.rel{position:relative}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.page-head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.page-head .sub{color:var(--tx-3);font-size:11px;max-width:560px}
+.btn{padding:6px 16px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px;cursor:default;white-space:nowrap}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{border-color:rgba(228,106,79,.4);color:#ef9b89;background:rgba(228,106,79,.08)}
+.btn.link{border:0;background:none;color:var(--verdi-l);padding:2px 6px;font-size:11.5px}
+.btn.link.danger{color:#ef9b89;background:none;border:0}
+.btn[disabled]{opacity:.45}
+
+/* ═══════════ 筛选条 ═══════════ */
+.filter-bar{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:14px 16px 10px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:grid;gap:5px}
+.fld>span{font-size:10.5px;color:var(--tx-3)}
+.kw-input{display:flex;align-items:center;width:220px;padding:0 12px;height:34px;background:var(--sink);border:1px solid var(--hair);border-radius:7px}
+.kw-input b{font:12px var(--mono);color:var(--tx-hi);font-weight:500}
+.kw-input .ph{font:12px var(--sans);color:var(--tx-3)}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:34px}
+.seg b{display:flex;align-items:center;padding:0 14px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.filter-note{margin-left:auto;font:10.5px var(--mono);color:var(--tx-3);align-self:center}
+
+/* ═══════════ 列表表格 ═══════════ */
+.result-panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:11px;letter-spacing:.08em;color:var(--tx-3);font-weight:400;text-align:left;padding:9px 14px;border-bottom:1px solid var(--hair);background:var(--panel-2)}
+td{padding:10px 14px;border-bottom:1px solid var(--hair-2);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+tbody tr.row-disabled{opacity:.55}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.cell-sub{display:block;font-size:10px;color:var(--tx-3);margin-top:1px}
+.app-name{font-size:13px;font-weight:600;color:var(--tx-hi)}
+.app-name .id{font:10.5px var(--mono);color:var(--tx-3);font-weight:400;margin-left:6px}
+.cat{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tx);white-space:nowrap}
+.cat::before{content:"";width:3px;height:12px;border-radius:2px}
+.cat.verify::before{background:var(--verdi-l)} .cat.notice::before{background:var(--slate)} .cat.market::before{background:var(--amber)}
+.quota-cell{display:grid;gap:4px;min-width:150px}
+.quota-num{font:12px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.quota-num small{color:var(--tx-3);font-size:10px}
+.quota-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden}
+.quota-bar i{display:block;height:100%;border-radius:3px;background:var(--verdi-l)}
+.quota-bar i.warn{background:var(--amber)}
+.quota-bar i.over{background:var(--verm)}
+.key-cell{display:grid;gap:3px}
+.key-prefix{font:11.5px var(--mono);color:var(--tx);letter-spacing:.04em}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px;width:fit-content}
+.tag.verm{background:rgba(228,106,79,.15);color:#ef9b89;border:1px solid rgba(228,106,79,.35)}
+.tag.gray{background:rgba(255,255,255,.05);color:var(--tx-2);border:1px solid var(--hair)}
+.tag.verdi{background:rgba(47,161,132,.13);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.tag.amb{background:rgba(216,163,92,.13);color:var(--amber);border:1px solid rgba(216,163,92,.35)}
+.st{display:inline-block;font:10.5px/1.9 var(--mono);padding:0 8px;border-radius:5px;white-space:nowrap}
+.st.ok{background:rgba(47,161,132,.13);color:#71c4ad}
+.st.bad{background:rgba(228,106,79,.14);color:#ef9b89}
+.st.info{background:rgba(255,255,255,.06);color:var(--tx-2)}
+.result-foot{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--hair-2);font-size:11px;color:var(--tx-3)}
+.result-foot .rwd{margin-left:auto}
+
+/* ═══════════ 抽屉 ═══════════ */
+.scrim{position:absolute;inset:0;background:rgba(7,11,9,.55)}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:560px;background:var(--panel);border-left:1px solid var(--hair);display:flex;flex-direction:column;box-shadow:-18px 0 48px rgba(0,0,0,.45)}
+.drawer-head{padding:16px 20px 12px;border-bottom:1px solid var(--hair-2)}
+.drawer-head .t{display:flex;align-items:center;gap:10px}
+.drawer-head h2{font-size:15px;font-weight:600;color:var(--tx-hi)}
+.drawer-head .meta{font:10.5px var(--mono);color:var(--tx-3);margin-top:3px}
+.drawer-body{flex:1;overflow:hidden;padding:14px 20px;display:grid;gap:14px;align-content:start}
+.drawer-foot{display:flex;align-items:center;gap:8px;padding:12px 20px;border-top:1px solid var(--hair-2)}
+.drawer-foot .sp{flex:1}
+.sec{border:1px solid var(--hair-2);border-radius:10px;padding:12px 14px;background:var(--panel-2)}
+.sec>h3{font-size:11px;letter-spacing:.1em;color:var(--tx-3);font-weight:400;margin-bottom:10px;display:flex;align-items:baseline;gap:8px}
+.sec>h3 small{font:9.5px var(--mono);color:var(--tx-3);margin-left:auto}
+.fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px}
+.fact-grid .full{grid-column:1/-1}
+.fact{display:grid;gap:1px}
+.fact span{font-size:10px;color:var(--tx-3)}
+.fact b{font-size:12.5px;color:var(--tx);font-weight:500}
+.fact b.mono{font-family:var(--mono)}
+.hero-usage{display:grid;gap:6px}
+.hero-usage .nums{display:flex;align-items:baseline;gap:10px}
+.hero-usage .nums b{font:20px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums;font-weight:600}
+.hero-usage .nums span{font:11px var(--mono);color:var(--tx-3)}
+.key-line{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--hair-2);border-radius:8px;background:var(--sink)}
+.key-line code{font:12px var(--mono);color:var(--tx-hi);letter-spacing:.05em}
+.key-line small{font-size:10px;color:var(--tx-3)}
+.key-line .act{margin-left:auto;display:flex;gap:6px}
+.key-grace{margin-top:8px;padding:9px 12px;border:1px solid rgba(216,163,92,.35);background:rgba(216,163,92,.07);border-radius:8px;display:flex;align-items:center;gap:10px}
+.key-grace code{font:11px var(--mono);color:var(--amber)}
+.key-grace small{font-size:10px;color:var(--tx-2)}
+
+/* ═══════════ 表单（新建/编辑抽屉） ═══════════ */
+.form-sec{border:1px solid var(--hair-2);border-radius:10px;padding:12px 14px;background:var(--panel-2);display:grid;gap:10px}
+.form-sec>h3{font-size:11px;letter-spacing:.1em;color:var(--tx-3);font-weight:400}
+.f-row{display:grid;gap:4px}
+.f-row>span{font-size:11px;color:var(--tx-2)}
+.f-row>span i{color:var(--verm);font-style:normal}
+.f-input{height:32px;display:flex;align-items:center;padding:0 10px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:12px;color:var(--tx)}
+.f-input.area{height:auto;min-height:52px;align-items:flex-start;padding-top:7px;font-family:var(--mono);font-size:11px;color:var(--tx-2)}
+.f-input .ph{color:var(--tx-3)}
+.f-rule{font-size:10px;color:var(--tx-3)}
+.f-2col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.f-alert{padding:8px 12px;border-radius:8px;font-size:11px;border:1px solid rgba(216,163,92,.35);background:rgba(216,163,92,.07);color:var(--amber)}
+.f-alert.verm{border-color:rgba(228,106,79,.35);background:rgba(228,106,79,.07);color:#ef9b89}
+.checks{display:flex;gap:14px;font-size:12px;color:var(--tx)}
+.checks b{font-weight:400;display:inline-flex;align-items:center;gap:6px}
+.checks b::before{content:"";width:13px;height:13px;border-radius:4px;border:1px solid var(--hair);background:var(--sink)}
+.checks b.on::before{background:var(--verdi);border-color:transparent}
+.switch{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--tx)}
+.switch i{width:30px;height:16px;border-radius:9px;background:var(--verdi);position:relative}
+.switch i::after{content:"";position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#eaf1ed}
+.switch.off i{background:rgba(255,255,255,.12)}
+.switch.off i::after{left:2px;right:auto}
+
+/* ═══════════ 弹窗 ═══════════ */
+.dialog{width:520px;background:var(--panel);border:1px solid var(--hair);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden}
+.dialog-head{padding:14px 18px 10px;border-bottom:1px solid var(--hair-2)}
+.dialog-head h3{font-size:14px;font-weight:600;color:var(--tx-hi)}
+.dialog-body{padding:14px 18px;display:grid;gap:10px}
+.dialog-body p{font-size:12px;color:var(--tx-2)}
+.dialog-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--hair-2)}
+.secret-box{background:var(--sink);border:1px solid rgba(216,163,92,.4);border-radius:8px;padding:12px 14px;font:12px/1.8 var(--mono);color:var(--tx-hi);white-space:pre-wrap;word-break:break-all}
+.conseq{font-size:12px;color:var(--tx-2);padding-left:0}
+.conseq li{list-style:none;padding:2px 0 2px 16px;position:relative}
+.conseq li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.audit-note{font-size:10px;color:var(--tx-3)}
+
+/* ═══════════ 空态 ═══════════ */
+.empty{padding:52px 20px 56px;text-align:center;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.empty b{display:block;font-size:14px;color:var(--tx-hi);margin-bottom:5px;font-weight:600}
+.empty span{font-size:11.5px;color:var(--tx-3)}
+.empty .btn{margin-top:14px;display:inline-block}
+
+@media (max-width:1100px){ .screen{min-width:0} }
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 应用管理重设计原型</b>
+  <span>v1 评审稿 · 对应 PRD FR-18 · 路由 /apps · 仅 admin</span>
+  <em>2026-08-21 · 深色唯一基准</em>
+</div>
+
+<ul class="notes">
+  <h2>现状诊断（为什么这是最痛的一个模块）</h2>
+  <li><b>卡片网格无检索</b>：名称/部门/类别/状态全靠肉眼扫；迁移收口期几十上百个接入方，定位一个应用要滚完整页。</li>
+  <li><b>密钥生命周期黑盒</b>：库里已有 <code>api_key_prefix / api_key_prev_prefix / api_key_prev_expires</code>，但 <code>App</code> 响应不投影 → 卡片只能贴一个死的 <code>sk-••••</code>；「作废旧 Key」按钮常驻，该应用没有宽限期旧 Key 时点了就是 404。</li>
+  <li><b>零运行信号</b>：今日消耗 vs 日配额、成功率、限流，卡片上一概没有；配额将耗尽时管理员只能自己去报表页拼条件。</li>
+  <li><b>7 个平铺文字按钮</b>：高危（停用 / 作废旧 Key）与低频（接入示例）挤在同一行 footer，无误操作隔离。</li>
+  <li><b>12 字段平铺长表单</b>：新建/编辑一个抽屉到底；危险默认值（配额 0=不限、白名单空=全网放行）只有一行细字或局部 alert，创建即生效。</li>
+  <li><b>「启用」走整表 PUT 前端重建</b>：把列表行字段原样拼回请求体，任何字段漂移都会静默写坏配置（前端顺带修，不改契约）。<span class="need calc">前端</span></li>
+</ul>
+
+<ul class="notes">
+  <h2>设计决策（相对现网的变更点）</h2>
+  <li><b>卡片网格 → 单行筛选条 + 账本表格</b>：关键词（名称/部门）+ 类别 seg + 状态 seg；接口本来就全量返回，过滤前端化，不新增查询参数。<span class="need calc">前端</span></li>
+  <li><b>密钥状态上列</b>：当前 Key 前缀（mono <code>sk-a1b2••••</code>）+ 宽限期倒计时 tag；<code>App</code> 响应补三个非密投影字段：<code>api_key_prefix</code>、<code>old_key_expires_at</code>（null=无宽限旧 Key）、<code>callback_secret_configured</code>。均为元数据，不涉密文，规则 1 不受触碰。<span class="need ext">契约</span></li>
+  <li><b>今日消耗列</b>：计费条 消耗/配额 + 5px 进度条（&gt;80% 琥珀、&ge;100% 朱红）；数据来自现有 <code>GET /web/reports/stats?granularity=day&amp;group_by=app</code> 一次联查前端按行合并，成功率口径不动（规则 28）。<span class="need ok">现有</span></li>
+  <li><b>操作分层</b>：行内只留「详情」；轮换/作废/停用/接入示例全部收进 560 详情抽屉，高危操作仅出现在对应事实旁边并带后果确认。</li>
+  <li><b>新建/编辑抽屉三段分组</b>：基本信息 / 配额与策略 / 安全与回调；危险默认值触发组内琥珀警示条（不限量、全网放行），不改变默认值本身（产品默认见 PRD FR-18）。</li>
+  <li><b>一次性凭据弹窗保留现有交互</b>：no-store 响应 + 仅展示一次 + 复制 +「我已安全保存」，不重新发明。<span class="need ok">现有</span></li>
+</ul>
+
+<!-- ════════════════ 屏 A：列表全景 ════════════════ -->
+<div class="stage-label">SCREEN A · 列表全景（筛选条 + 账本表格 · 四种典型状态同行）</div>
+<div class="variant-caption">密钥列直接回答三个问题：当前 Key 是什么前缀、有没有旧 Key 在宽限期、回调密钥配没配；今日消耗列让配额风险一眼可见。</div>
+<div class="viewport"><div class="screen">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">APPLICATION CONTROL / 应用控制</div>
+      <h1>应用管理</h1>
+      <div class="sub">接入方、配额、频控与密钥生命周期。全部写操作记审计；密钥明文仅创建/轮换当次展示。</div>
+    </div>
+    <span class="btn primary">新建应用</span>
+  </div>
+
+  <div class="filter-bar">
+    <label class="fld"><span>关键词</span>
+      <div class="kw-input"><span class="ph">名称 / 部门</span></div>
+    </label>
+    <label class="fld"><span>类别</span>
+      <div class="seg"><b class="on">全部</b><b>验证码</b><b>通知</b><b>营销</b></div>
+    </label>
+    <label class="fld"><span>状态</span>
+      <div class="seg"><b class="on">全部</b><b>启用</b><b>停用</b></div>
+    </label>
+    <span class="filter-note">接口全量返回 · 前端过滤</span>
+  </div>
+
+  <div class="result-panel">
+    <table>
+      <thead><tr>
+        <th style="width:220px">应用</th>
+        <th style="width:150px">允许类别</th>
+        <th style="width:190px">今日消耗（计费条）</th>
+        <th style="width:80px">限流/分</th>
+        <th style="width:210px">密钥</th>
+        <th style="width:170px">回调</th>
+        <th style="width:64px">状态</th>
+        <th style="width:70px">操作</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="app-name">mall-prod<span class="id">#3</span></span><span class="cell-sub">零售事业部</span></td>
+          <td><span class="cat notice">通知</span> <span class="cat market">营销</span></td>
+          <td><div class="quota-cell"><span class="quota-num">41,203 <small>/ 50,000</small></span><span class="quota-bar"><i class="warn" style="width:82%"></i></span></div></td>
+          <td class="mono">600</td>
+          <td><div class="key-cell"><span class="key-prefix">sk-7f3a••••</span><span class="tag amb">旧 Key 宽限 · 余 41h</span></div></td>
+          <td><span class="mono" style="font-size:11.5px">gw-mall.example.internal/sms</span><span class="cell-sub">明细回调 开启 · 密钥已配置</span></td>
+          <td><span class="st ok">启用</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="app-name">account-svc<span class="id">#7</span></span><span class="cell-sub">平台技术部</span></td>
+          <td><span class="cat verify">验证码</span></td>
+          <td><div class="quota-cell"><span class="quota-num">8,882 <small>/ 不限量</small></span><span class="quota-bar"><i style="width:0%"></i></span></div></td>
+          <td class="mono">300</td>
+          <td><div class="key-cell"><span class="key-prefix">sk-c19d••••</span><span class="tag gray">单 Key 运行</span></div></td>
+          <td><span class="mono" style="font-size:11.5px">iam.example.internal/hooks/sms</span><span class="cell-sub">明细回调 关闭 · 密钥已配置</span></td>
+          <td><span class="st ok">启用</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr>
+          <td><span class="app-name">ops-alert<span class="id">#11</span></span><span class="cell-sub">平台技术部</span></td>
+          <td><span class="cat notice">通知</span></td>
+          <td><div class="quota-cell"><span class="quota-num">2,000 <small>/ 2,000</small></span><span class="quota-bar"><i class="over" style="width:100%"></i></span></div></td>
+          <td class="mono">60</td>
+          <td><div class="key-cell"><span class="key-prefix">sk-55e0••••</span><span class="tag gray">单 Key 运行</span></div></td>
+          <td><span style="color:var(--tx-3);font-size:11.5px">未配置</span></td>
+          <td><span class="st ok">启用</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+        <tr class="row-disabled">
+          <td><span class="app-name">legacy-crm<span class="id">#2</span></span><span class="cell-sub">客户运营部 · 创建于 2026-03-12</span></td>
+          <td><span class="cat notice">通知</span> <span class="cat market">营销</span></td>
+          <td><div class="quota-cell"><span class="quota-num">0 <small>/ 10,000</small></span><span class="quota-bar"><i style="width:0%"></i></span></div></td>
+          <td class="mono">120</td>
+          <td><div class="key-cell"><span class="key-prefix">sk-02b8••••</span><span class="tag verm">已随停用吊销</span></div></td>
+          <td><span class="mono" style="font-size:11.5px">crm.example.internal/cb</span><span class="cell-sub">明细回调 开启 · 密钥已配置</span></td>
+          <td><span class="st info">停用</span></td>
+          <td><span class="btn link">详情</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="result-foot">
+      <span>共 4 个应用 · 启用 3 · 停用 1</span>
+      <span class="rwd">读写：admin · 今日消耗来自 stat_daily 联查</span>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 B：详情抽屉 ════════════════ -->
+<div class="stage-label">SCREEN B · 详情抽屉（mall-prod · 旧 Key 宽限期中）</div>
+<div class="variant-caption">三段分区：运行概览 / 密钥与回调 / 策略事实格。高危操作只出现在对应事实旁边；「作废旧 Key」仅宽限期存在时可见，不再常驻。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">APPLICATION CONTROL / 应用控制</div>
+      <h1>应用管理</h1>
+    </div>
+    <span class="btn primary">新建应用</span>
+  </div>
+  <div class="result-panel" style="opacity:.35">
+    <table><thead><tr><th>应用</th><th>允许类别</th><th>今日消耗</th><th>密钥</th><th>状态</th></tr></thead>
+    <tbody><tr><td><span class="app-name">mall-prod</span></td><td>通知 营销</td><td class="mono">41,203 / 50,000</td><td class="mono">sk-7f3a••••</td><td><span class="st ok">启用</span></td></tr></tbody></table>
+  </div>
+  <div class="scrim"></div>
+
+  <div class="drawer">
+    <div class="drawer-head">
+      <div class="t"><span class="st ok">启用</span><h2>mall-prod</h2></div>
+      <div class="meta">#3 · 零售事业部 · 创建于 2026-04-02 10:18:44</div>
+    </div>
+    <div class="drawer-body">
+      <section class="sec">
+        <h3>运行概览 · 今日<small>统计口径 services/stats.py</small></h3>
+        <div class="hero-usage">
+          <div class="nums"><b>41,203</b><span>/ 50,000 计费条 · 成功率 98.6%（delivered/(delivered+failed)）</span></div>
+          <span class="quota-bar"><i class="warn" style="width:82%"></i></span>
+        </div>
+        <div class="fact-grid" style="margin-top:10px">
+          <div class="fact"><span>每分钟限流</span><b class="mono">600 次</b></div>
+          <div class="fact"><span>频控覆盖</span><b>营销 同号 2 条/日</b></div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h3>密钥与回调<small>明文仅轮换当次展示</small></h3>
+        <div class="key-line">
+          <code>sk-7f3a••••</code><small>当前 API Key · 2026-08-19 轮换</small>
+          <span class="act"><span class="btn link">轮换 Key</span></span>
+        </div>
+        <div class="key-grace">
+          <code>sk-9c2e••••</code><small>旧 Key 宽限期至 2026-08-22 10:18（余 41h），到期自动失效</small>
+          <span class="act" style="margin-left:auto"><span class="btn link danger">立即作废</span></span>
+        </div>
+        <div class="fact-grid" style="margin-top:10px">
+          <div class="fact full"><span>回调 URL（内网白名单校验 · 生产仅 HTTPS）</span><b class="mono">https://gw-mall.example.internal/sms/callback</b></div>
+          <div class="fact"><span>明细级回调</span><b>开启</b></div>
+          <div class="fact"><span>回调密钥</span><b>已配置 · <span class="btn link" style="font-size:11px">轮换回调密钥</span></b></div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h3>策略</h3>
+        <div class="fact-grid">
+          <div class="fact"><span>允许类别</span><b>通知 · 营销</b></div>
+          <div class="fact"><span>默认签名</span><b>【青鸾商城】</b></div>
+          <div class="fact"><span>黑名单检查</span><b>开启</b></div>
+          <div class="fact"><span>来源 IP 白名单</span><b class="mono">6 条 CIDR</b></div>
+        </div>
+      </section>
+    </div>
+    <div class="drawer-foot">
+      <span class="btn">编辑配置</span>
+      <span class="btn">接入示例</span>
+      <span class="sp"></span>
+      <span class="btn danger">停用应用</span>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 C：新建抽屉（分组表单） ════════════════ -->
+<div class="stage-label">SCREEN C · 新建抽屉（三段分组 · 危险默认值就地警示）</div>
+<div class="variant-caption">分组不新增字段；配额留 0 或白名单留空时，组内琥珀条把后果写在提交按钮视线内。创建成功才弹一次性凭据。</div>
+<div class="viewport"><div class="screen rel">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">APPLICATION CONTROL / 应用控制</div>
+      <h1>应用管理</h1>
+    </div>
+  </div>
+  <div class="result-panel" style="opacity:.35">
+    <table><thead><tr><th>应用</th><th>允许类别</th><th>今日消耗</th><th>密钥</th><th>状态</th></tr></thead>
+    <tbody><tr><td><span class="app-name">mall-prod</span></td><td>通知 营销</td><td class="mono">41,203 / 50,000</td><td class="mono">sk-7f3a••••</td><td><span class="st ok">启用</span></td></tr></tbody></table>
+  </div>
+  <div class="scrim"></div>
+
+  <div class="drawer">
+    <div class="drawer-head">
+      <div class="t"><h2>新建应用</h2></div>
+      <div class="meta">创建成功后 API Key 与回调密钥仅展示一次，请立即保存</div>
+    </div>
+    <div class="drawer-body">
+      <section class="form-sec">
+        <h3>基本信息</h3>
+        <div class="f-row"><span>应用名 <i>*</i></span><div class="f-input"><span class="ph">1–64 字符，全局唯一，创建后不可修改</span></div></div>
+        <div class="f-row"><span>部门 <i>*</i></span><div class="f-input"><span class="ph">用于部门级日配额归集</span></div></div>
+        <div class="f-row"><span>允许类别 <i>*</i></span>
+          <div class="checks"><b>验证码</b><b class="on">通知</b><b>营销</b></div>
+          <span class="f-rule">至少一个；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED</span>
+        </div>
+        <div class="f-row"><span>默认签名</span><div class="f-input"><span class="ph">请求未指定签名时使用；请求内显式签名优先</span></div></div>
+      </section>
+
+      <section class="form-sec">
+        <h3>配额与策略</h3>
+        <div class="f-2col">
+          <div class="f-row"><span>日配额（计费条）</span><div class="f-input mono">0</div><span class="f-rule">0 = 不限量，最大 100,000,000</span></div>
+          <div class="f-row"><span>每分钟限流</span><div class="f-input mono">60</div><span class="f-rule">1–60,000 次/分钟</span></div>
+        </div>
+        <div class="f-alert">日配额为 0 表示不限量：该应用当日发送不受平台配额约束，请确认接入方可信。</div>
+        <div class="f-row"><span>黑名单检查</span><span class="switch"><i></i>开启 · 关闭后该应用号码不执行黑名单剔除</span></div>
+        <div class="f-row"><span>频控覆盖 JSON</span>
+          <div class="f-input area">{"market_per_day": 2}</div>
+          <span class="f-rule">留空用系统默认；仅 verify_per_minute（1–100）/ verify_per_day（1–10,000）/ market_per_day（1–1,000）</span>
+        </div>
+      </section>
+
+      <section class="form-sec">
+        <h3>安全与回调</h3>
+        <div class="f-row"><span>来源 IP 白名单</span>
+          <div class="f-input area"><span class="ph">每行一个 IP/CIDR，最多 50 条；单 IP 自动归一化为 /32</span></div>
+        </div>
+        <div class="f-alert verm">白名单为空 = 全网放行。Key 泄露后失去第二道防线，生产环境务必填写 CIDR。</div>
+        <div class="f-row"><span>回调 URL</span><div class="f-input"><span class="ph">https:// · 须落在内网 CIDR 白名单，生产仅 HTTPS</span></div></div>
+        <div class="f-row"><span>明细级回调</span><span class="switch off"><i></i>关闭 · 开启前需先配置回调 URL</span></div>
+      </section>
+    </div>
+    <div class="drawer-foot">
+      <span class="audit-note">保存即记审计（app_create）</span>
+      <span class="sp"></span>
+      <span class="btn">取消</span>
+      <span class="btn primary">创建应用</span>
+    </div>
+  </div>
+</div></div>
+
+<!-- ════════════════ 屏 D：一次性凭据 + 危险操作确认 ════════════════ -->
+<div class="stage-label">SCREEN D · 凭据揭示与高危确认（三个弹窗并列展示，实际不同时出现）</div>
+<div class="variant-caption">凭据弹窗沿用现有规约（no-store、仅一次、复制 + 我已安全保存）；停用确认把后果逐条列出，不再只有一句「确认停用？」。</div>
+<div class="viewport"><div class="screen" style="grid-template-columns:repeat(3,auto);justify-content:center;gap:22px;padding:26px">
+
+  <div class="dialog">
+    <div class="dialog-head"><h3>应用凭据（仅展示一次）</h3></div>
+    <div class="dialog-body">
+      <p>应用「mall-prod」的凭据仅展示一次，请立即复制并安全保存；关闭后平台不会再次展示。</p>
+      <div class="secret-box">API Key: sk-7f3a••••
+Callback Secret: cb-9d4f••••</div>
+      <p class="audit-note">本响应 Cache-Control: no-store · 明文不落任何持久层与日志</p>
+    </div>
+    <div class="dialog-foot"><span class="btn">复制</span><span class="btn primary">我已安全保存</span></div>
+  </div>
+
+  <div class="dialog">
+    <div class="dialog-head"><h3>停用应用 mall-prod？</h3></div>
+    <div class="dialog-body">
+      <ul class="conseq">
+        <li>当前与宽限期旧 API Key 立即吊销，发送/查询返回 401</li>
+        <li>在途批次继续到终态，历史数据保留可查</li>
+        <li>未终结的旧回调在同一事务隔离为不可重试</li>
+        <li>恢复需管理员在详情抽屉重新启用</li>
+      </ul>
+      <p class="audit-note">操作记审计（app_disable）· 操作人写入审计主体</p>
+    </div>
+    <div class="dialog-foot"><span class="btn">取消</span><span class="btn danger">确认停用</span></div>
+  </div>
+
+  <div class="dialog">
+    <div class="dialog-head"><h3>立即作废旧 Key？</h3></div>
+    <div class="dialog-body">
+      <p>旧 Key <code class="mono">sk-9c2e••••</code> 原定 2026-08-22 10:18 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。</p>
+      <p class="audit-note">仅宽限期存在旧 Key 时此入口可见 · 操作记审计（app_revoke_old_key）</p>
+    </div>
+    <div class="dialog-foot"><span class="btn">取消</span><span class="btn danger">确认作废</span></div>
+  </div>
+
+</div></div>
+
+<!-- ════════════════ 屏 E：空态 ════════════════ -->
+<div class="stage-label">SCREEN E · 空态（两行规约 + 主行动）</div>
+<div class="viewport"><div class="screen">
+  <div class="filter-bar">
+    <label class="fld"><span>关键词</span><div class="kw-input"><span class="ph">名称 / 部门</span></div></label>
+    <label class="fld"><span>状态</span><div class="seg"><b class="on">全部</b><b>启用</b><b>停用</b></div></label>
+  </div>
+  <div class="empty">
+    <b>当前没有接入应用</b>
+    <span>创建应用后会得到一对 API Key / 回调密钥（仅展示一次）；类别、配额、限流与回调均可在详情中随时调整。</span>
+    <span class="btn primary">新建应用</span>
+  </div>
+</div></div>
+
+<ul class="notes" style="margin-bottom:28px">
+  <h2>契约核对</h2>
+  <li>列表/详情基础字段全部来自 <code>GET /web/admin/apps</code> 与 <code>GET /web/admin/apps/{id}</code>，无新增查询参数；关键词/类别/状态过滤前端化（沿用签名管理同一规约）。<span class="need ok">现有</span></li>
+  <li>密钥列与详情密钥区需要 <code>App</code> 响应补三个只读投影：<code>api_key_prefix</code>（CHAR(8) 前缀，非密）、<code>old_key_expires_at</code>（<code>api_key_prev_expires</code> 投影，null=无宽限旧 Key，控制「作废旧 Key」显隐）、<code>callback_secret_configured</code>（<code>callback_secret_enc IS NOT NULL</code>）。纯 metadata，不产生/不传输任何密文，规则 1/2 不涉。<span class="need ext">契约</span></li>
+  <li>「创建于」需要 <code>created_at</code> 投影；库列已存在，同样只是响应补字段。<span class="need ext">契约</span></li>
+  <li>今日消耗/成功率：<code>GET /web/reports/stats?granularity=day&amp;group_by=app&amp;start=今日&amp;end=今日</code> 一次联查，前端按应用行合并；成功率口径仍由 <code>services/stats.py</code> 唯一实现，前端不自行计算（规则 28）。<span class="need ok">现有</span></li>
+  <li>轮换 Key / 作废旧 Key / 轮换回调密钥 / 停用 / 创建均沿用现有端点与一次性明文弹窗；「启用」由整表 PUT 前端重建改为先 <code>GET /{id}</code> 取权威配置再 PUT，消除字段漂移写坏配置的风险。<span class="need calc">前端</span></li>
+  <li>凭据与回调密钥明文仍只出现在一次性弹窗的页面易失内存；审计载荷只含操作与引用，不含任何密钥材料（规则 14/21）。<span class="need ok">现有</span></li>
+</ul>
+
+</body>
+</html>

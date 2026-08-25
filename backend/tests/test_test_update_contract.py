@@ -859,7 +859,9 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/vendor-api.md",
             "HANDOVER.md",
             "SECURITY.md",
+            "docs/previews/approval-align-decisions.html",
             "docs/previews/approval-redesign-prototype.html",
+            "docs/previews/apps-redesign-prototype.html",
             "docs/previews/batch-density-prototype.html",
             "docs/previews/batch-redesign-prototype.html",
             "docs/previews/blacklist-redesign-prototype.html",
@@ -867,6 +869,8 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/blacklist-redesign-shots/full.png",
             "docs/previews/callback-redesign-prototype.html",
             "docs/previews/configs-redesign-prototype.html",
+            "docs/previews/dashboard-balance-compare.html",
+            "docs/previews/dashboard-balance-compare.png",
             "docs/previews/dashboard-redesign-prototype.html",
             "docs/previews/filter-bar-single-row-prototype.html",
             "docs/previews/login-redesign-prototype.html",
@@ -881,6 +885,8 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/messages-redesign-shots.md",
             "docs/previews/messages-redesign-shots/full.png",
             "docs/previews/ops-redesign-prototype.html",
+            "docs/previews/report-align-decisions.html",
+            "docs/previews/report-align-decisions.png",
             "docs/previews/report-redesign-prototype.html",
             "docs/previews/replies-redesign-prototype.html",
             "docs/previews/replies-redesign-shots.md",
@@ -898,6 +904,23 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/previews/templates-redesign-shots/full.png",
             "docs/previews/users-redesign-prototype.html",
             "PROGRESS.md",
+        ]
+    )
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
+def test_align_decision_previews_are_safe_non_runtime_inputs() -> None:
+    change = classify_changed_paths(
+        [
+            "docs/previews/approval-align-decisions.html",
+            "docs/previews/apps-redesign-prototype.html",
+            "docs/previews/dashboard-balance-compare.html",
+            "docs/previews/dashboard-balance-compare.png",
+            "docs/previews/report-align-decisions.html",
+            "docs/previews/report-align-decisions.png",
         ]
     )
 

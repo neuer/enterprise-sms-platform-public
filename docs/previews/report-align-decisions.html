@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>统计报表 · 三处拍板对照</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf; --violet:#9b7ed9;
+  --sans:"Noto Sans SC","PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto;padding:22px 24px 40px}
+.top{display:flex;align-items:baseline;gap:14px;margin-bottom:18px}
+.top b{color:var(--tx-hi);font-size:16px}
+.top span{color:var(--tx-3);font-size:12px}
+.top em{margin-left:auto;font:10px/1 var(--mono);font-style:normal;color:var(--tx-3)}
+.block{margin-bottom:28px}
+.q{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.q i{font:10px/1.6 var(--mono);color:var(--amber);letter-spacing:.08em;font-style:normal}
+.q b{color:var(--tx-hi);font-size:13px}
+.q p{color:var(--tx-3);font-size:12px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.col{background:var(--bg);border:1px solid var(--hair);border-radius:14px;padding:12px 14px 16px;min-width:0}
+.tag{display:inline-flex;align-items:center;gap:6px;margin-bottom:10px;font:10px/1 var(--mono);letter-spacing:.1em;color:var(--tx-3)}
+.tag.on{color:#71c4ad}
+.tag.off{color:var(--amber)}
+.note{margin-top:10px;color:var(--tx-3);font-size:11px}
+
+.filter-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 14px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.fld{display:flex;align-items:center;gap:7px}
+.fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.seg b{padding:4px 12px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink)}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.pill{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx)}
+.dates{font:11.5px var(--mono);color:var(--tx);border:1px solid var(--hair);border-radius:7px;background:var(--sink);padding:4px 10px}
+.btn{padding:6px 14px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.filter-bar .go{margin-left:auto}
+
+.live-card{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}
+.cell{grid-column:span 2}
+.cell.wide{grid-column:span 3}
+.cell>span{display:block;margin-bottom:5px;font-size:10.5px;color:var(--tx-3)}
+.check{font-size:11.5px;color:var(--tx-2);padding-top:22px}
+
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px}
+.panel-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.panel-head b{color:var(--tx-hi);font-size:13px}
+.panel-head small{color:var(--tx-3);font-size:10px;margin-left:6px;font-weight:400}
+.metric{display:flex;gap:4px;border:1px solid var(--hair);border-radius:6px;padding:2px}
+.metric i{padding:2px 9px;font-size:10.5px;font-style:normal;color:var(--tx-3);border-radius:5px}
+.metric i.on{background:var(--sink);color:var(--tx-hi)}
+.row{display:grid;grid-template-columns:2fr 1fr;gap:10px;align-items:start}
+.bars{display:flex;align-items:flex-end;gap:8px;height:170px;padding:6px 2px 0}
+.bars.tall{height:300px}
+.bar-col{flex:1;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:5px}
+.bar{width:min(76%,28px);display:flex;flex-direction:column-reverse;border-radius:4px 4px 0 0;overflow:hidden}
+.bar i{display:block;width:100%}
+.bar-col span{font:9px var(--mono);color:var(--tx-3)}
+.bar-col.today span{color:var(--tx-2)}
+.c1{background:var(--verdi-l)} .c2{background:var(--slate)} .c3{background:var(--amber)} .c4{background:var(--violet)} .c5{background:#5b8c7b}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font-size:10.5px;color:var(--tx-2)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.legend em{margin-left:auto;font:10px var(--mono);color:var(--tx-3);font-style:normal}
+.axis{height:22px;margin-top:4px;border-top:1px dashed var(--hair);color:var(--tx-3);font:9px var(--mono);display:flex;justify-content:space-between;padding-top:4px}
+.ghost{height:34px;margin-bottom:8px;border:1px dashed var(--hair-2);border-radius:6px;color:var(--tx-3);font:10px var(--mono);display:flex;align-items:center;padding:0 8px}
+.rank{list-style:none}
+.rank li{display:grid;grid-template-columns:72px 1fr auto;gap:8px;align-items:center;padding:7px 0;border-top:1px solid var(--hair-2)}
+.rank li:first-child{border-top:0}
+.rank .nm{font-size:11px;color:var(--tx)}
+.track{height:5px;background:var(--sink);border-radius:3px;overflow:hidden}
+.track i{display:block;height:100%;border-radius:3px}
+.h170,.h300{position:relative}
+.h-mark{position:absolute;right:0;top:0;font:9px/1 var(--mono);color:var(--amber)}
+
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{font-size:10.5px;font-weight:400;color:var(--tx-3);text-align:right;padding:7px 8px;border-bottom:1px solid var(--hair);white-space:nowrap}
+.tbl th:first-child,.tbl th:nth-child(2){text-align:left}
+.tbl th .sort{color:var(--verdi-l)}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--hair-2);text-align:right;font-variant-numeric:tabular-nums;color:var(--tx-2)}
+.tbl td:first-child{font:11px var(--mono);color:var(--tx-3);text-align:left}
+.tbl td:nth-child(2){color:var(--tx);text-align:left}
+.chip{font:10px/1.7 var(--mono);padding:0 6px;border-radius:5px}
+.chip.g{background:rgba(47,161,132,.13);color:#71c4ad}
+.chip.y{background:rgba(216,163,92,.13);color:var(--amber)}
+.merged{color:var(--tx-2)}
+.foot{margin-top:16px;padding:12px 14px;border:1px dashed var(--hair);border-radius:10px;color:var(--tx-2);font-size:12px}
+@media (max-width:980px){.pair{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <b>统计报表 · 三处拍板</b>
+    <span>左栏 = 方案 A 原型　右栏 = 现网结构 stub（不是线上截图）</span>
+    <em>2026-08-19</em>
+  </div>
+
+  <section class="block">
+    <div class="q"><i>Q1</i><b>筛选压成单行，还是只把现卡收矮？</b><p>明文勾选两种都留，不收进无说明的 ▾。</p></div>
+    <div class="pair">
+      <div class="col">
+        <div class="tag on">方案 A · 单行工具条</div>
+        <div class="filter-bar">
+          <div class="fld"><span>周期</span><div class="seg"><b class="on">日</b><b>周</b><b>月</b></div></div>
+          <div class="fld"><span>维度</span><div class="seg"><b class="on">应用</b><b>部门</b></div></div>
+          <div class="fld"><span>类别</span><span class="pill">全部类别 ▾</span></div>
+          <div class="fld"><span>范围</span><span class="dates">2026-07-20 → 2026-08-18</span></div>
+          <button class="btn primary go">查询</button>
+          <button class="btn">导出明细 CSV</button>
+        </div>
+        <p class="note">标签和控件同一行。导出旁实现时仍挂「含明文手机号」（有权限才出）。</p>
+      </div>
+      <div class="col">
+        <div class="tag off">现网 · 顶标签大卡</div>
+        <div class="live-card">
+          <div class="grid">
+            <div class="cell"><span>统计周期</span><div class="seg"><b class="on">日</b><b>周</b><b>月</b></div></div>
+            <div class="cell"><span>分组维度</span><div class="seg"><b class="on">应用</b><b>部门</b></div></div>
+            <div class="cell"><span>消息类别</span><span class="pill">全部类别 ▾</span></div>
+            <div class="cell wide"><span>日期范围</span><span class="dates">2026-07-20 至 2026-08-18</span></div>
+            <div class="cell wide check">查询　导出明细 CSV　含明文手机号</div>
+          </div>
+        </div>
+        <p class="note">标签在上、控件在下，整卡独占一层。这是方案 A 诊断里要压掉的那层。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="q"><i>Q2</i><b>趋势收到 ~170px、图例在下，还是维持 300px？</b><p>旁边都放了排行，方便看中栏齐不齐。柱下不要留空。</p></div>
+    <div class="pair">
+      <div class="col">
+        <div class="tag on">方案 A · 170px 柱区 + 图例在下</div>
+        <div class="row">
+          <div class="panel h170">
+            <span class="h-mark">170px</span>
+            <div class="panel-head"><b>发送趋势 · 按应用堆叠<small>日粒度</small></b><span class="metric"><i class="on">消息数</i><i>计费条</i></span></div>
+            <div class="bars">
+              <div class="bar-col"><div class="bar" style="height:118px"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-05</span></div>
+              <div class="bar-col"><div class="bar" style="height:83px"><i class="c1" style="height:39%"></i><i class="c2" style="height:21%"></i><i class="c3" style="height:16%"></i><i class="c4" style="height:14%"></i><i class="c5" style="height:10%"></i></div><span>08-07</span></div>
+              <div class="bar-col"><div class="bar" style="height:154px"><i class="c1" style="height:36%"></i><i class="c2" style="height:25%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:12%"></i><i class="c5" style="height:10%"></i></div><span>08-12</span></div>
+              <div class="bar-col"><div class="bar" style="height:79px"><i class="c1" style="height:40%"></i><i class="c2" style="height:20%"></i><i class="c3" style="height:15%"></i><i class="c4" style="height:15%"></i><i class="c5" style="height:10%"></i></div><span>08-14</span></div>
+              <div class="bar-col today"><div class="bar" style="height:138px"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>今天</span></div>
+            </div>
+            <div class="legend"><span><i class="c1"></i>订单中心</span><span><i class="c2"></i>会员营销</span><span><i class="c3"></i>支付网关</span><em>图例在下 · 柱铺满</em></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><b>维度排行</b></div>
+            <ul class="rank">
+              <li><span class="nm">订单中心</span><div class="track"><i class="c1" style="width:100%"></i></div></li>
+              <li><span class="nm">会员营销</span><div class="track"><i class="c2" style="width:58%"></i></div></li>
+              <li><span class="nm">支付网关</span><div class="track"><i class="c3" style="width:45%"></i></div></li>
+              <li><span class="nm">客服系统</span><div class="track"><i class="c4" style="width:34%"></i></div></li>
+              <li><span class="nm">IoT 平台</span><div class="track"><i class="c5" style="width:26%"></i></div></li>
+            </ul>
+          </div>
+        </div>
+        <p class="note">和排行大致齐平。实现仍用 ECharts，只是把画布收到这个高度。</p>
+      </div>
+      <div class="col">
+        <div class="tag off">现网 · 300px 画布 + 图例在上</div>
+        <div class="row">
+          <div class="panel h300">
+            <span class="h-mark">300px</span>
+            <div class="panel-head"><b>发送趋势 · 按应用堆叠<small>Top 5 + 其他</small></b><span class="metric"><i class="on">消息数</i><i>计费条</i></span></div>
+            <div class="ghost">图例在顶：订单中心 · 会员营销 · 支付网关 · …</div>
+            <div class="bars tall">
+              <div class="bar-col"><div class="bar" style="height:210px"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>07-01</span></div>
+              <div class="bar-col"><div class="bar" style="height:148px"><i class="c1" style="height:39%"></i><i class="c2" style="height:21%"></i><i class="c3" style="height:16%"></i><i class="c4" style="height:14%"></i><i class="c5" style="height:10%"></i></div><span>07-07</span></div>
+              <div class="bar-col"><div class="bar" style="height:274px"><i class="c1" style="height:36%"></i><i class="c2" style="height:25%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:12%"></i><i class="c5" style="height:10%"></i></div><span>08-12</span></div>
+              <div class="bar-col"><div class="bar" style="height:140px"><i class="c1" style="height:40%"></i><i class="c2" style="height:20%"></i><i class="c3" style="height:15%"></i><i class="c4" style="height:15%"></i><i class="c5" style="height:10%"></i></div><span>08-14</span></div>
+              <div class="bar-col"><div class="bar" style="height:246px"><i class="c1" style="height:38%"></i><i class="c2" style="height:22%"></i><i class="c3" style="height:17%"></i><i class="c4" style="height:13%"></i><i class="c5" style="height:10%"></i></div><span>08-18</span></div>
+            </div>
+            <div class="axis"><span>Y 轴 + 底轴占位</span><span>柱区被坐标轴再吃一截</span></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><b>维度排行</b><small>5 个应用</small></div>
+            <ul class="rank">
+              <li><span class="nm">订单中心</span><div class="track"><i class="c1" style="width:100%"></i></div></li>
+              <li><span class="nm">会员营销</span><div class="track"><i class="c1" style="width:58%"></i></div></li>
+              <li><span class="nm">支付网关</span><div class="track"><i class="c1" style="width:45%"></i></div></li>
+              <li><span class="nm">客服系统</span><div class="track"><i class="c1" style="width:34%"></i></div></li>
+              <li><span class="nm">IoT 平台</span><div class="track"><i class="c1" style="width:26%"></i></div></li>
+            </ul>
+          </div>
+        </div>
+        <p class="note">现网排行比趋势矮一截；轨色还是清一色绿，没有跟系列对齐。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="q"><i>Q3</i><b>明细拆成送达 / 失败 / 未知三列，还是维持合并列？</b><p>成功率芯片两种都留，口径仍走服务端。</p></div>
+    <div class="pair">
+      <div class="col">
+        <div class="tag on">方案 A · 八列，结果三项分开</div>
+        <div class="panel" style="padding:10px 8px 4px">
+          <table class="tbl">
+            <tr><th>周期<span class="sort"> ↓</span></th><th>应用</th><th>消息数</th><th>计费条</th><th>送达</th><th>失败</th><th>未知</th><th>成功率</th></tr>
+            <tr><td>2026-08-18</td><td>订单中心</td><td>24,812</td><td>27,104</td><td>24,512</td><td>287</td><td>13</td><td><span class="chip g">98.8%</span></td></tr>
+            <tr><td>2026-08-18</td><td>会员营销</td><td>14,206</td><td>18,302</td><td>13,655</td><td>521</td><td>30</td><td><span class="chip y">96.3%</span></td></tr>
+            <tr><td>2026-08-18</td><td>支付网关</td><td>11,034</td><td>11,980</td><td>10,944</td><td>85</td><td>5</td><td><span class="chip g">99.2%</span></td></tr>
+            <tr><td>2026-08-17</td><td>订单中心</td><td>24,105</td><td>26,332</td><td>23,842</td><td>251</td><td>12</td><td><span class="chip g">99.0%</span></td></tr>
+          </table>
+        </div>
+        <p class="note">失败、未知能单独扫、单独比。列头「周期」而不是「周期起始」。</p>
+      </div>
+      <div class="col">
+        <div class="tag off">现网 · 六列，三项挤在一格</div>
+        <div class="panel" style="padding:10px 8px 4px">
+          <table class="tbl">
+            <tr><th>周期起始</th><th>应用</th><th>消息数</th><th>计费条</th><th>送达 / 失败 / 未知</th><th>成功率</th></tr>
+            <tr><td>2026-08-18</td><td>订单中心</td><td>24,812</td><td>27,104</td><td class="merged">24,512 / 287 / 13</td><td><span class="chip g">98.8%</span></td></tr>
+            <tr><td>2026-08-18</td><td>会员营销</td><td>14,206</td><td>18,302</td><td class="merged">13,655 / 521 / 30</td><td><span class="chip y">96.3%</span></td></tr>
+            <tr><td>2026-08-18</td><td>支付网关</td><td>11,034</td><td>11,980</td><td class="merged">10,944 / 85 / 5</td><td><span class="chip g">99.2%</span></td></tr>
+            <tr><td>2026-08-17</td><td>订单中心</td><td>24,105</td><td>26,332</td><td class="merged">23,842 / 251 / 12</td><td><span class="chip g">99.0%</span></td></tr>
+          </table>
+        </div>
+        <p class="note">失败量级要在斜杠里找。窄屏现网已有卡片列表，拆列不影响。</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="foot">这页只作拍板，还没改 <code>ReportView</code>。回 Q1 / Q2 / Q3 选左还是右即可开工。不编造营销长短信脚注，也不把数字 id 写成 app/order-center。</p>
+</div>
+</body>
+</html>
