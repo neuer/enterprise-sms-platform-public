@@ -251,3 +251,153 @@ async def test_reply_item_writes_stop_after_timeout_heartbeat_failure(
     assert names.count("store") < 8
     assert "processed" not in names
     assert "error" not in names
+
+
+@pytest.mark.asyncio
+async def test_timeout_after_successful_renews_retries_within_latest_expiry() -> None:
+    original = datetime.now(UTC) - timedelta(minutes=16)
+    latest = datetime.now(UTC) + timedelta(seconds=5)
+    calls = 0
+
+    async def renew(_lease: RawProcessingLease) -> datetime:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return latest
+        raise TimeoutError("brief")
+
+    async with RawLeaseHeartbeat(
+        renew,
+        RawProcessingLease(12, UUID(int=12), 1, expires_at=original),
+        interval_s=0.02,
+    ) as beat:
+        await asyncio.sleep(0.4)
+        assert beat._confirmed_expires_at == latest
+        if beat._lost is not None:
+            with pytest.raises(RawLeaseHeartbeatFailed, match="failed"):
+                beat.raise_if_lost()
+            assert "expired" not in str(beat._lost)
+        else:
+            beat.raise_if_lost()
+    assert calls > 3
+
+
+@pytest.mark.asyncio
+async def test_confirmed_expiry_only_updates_on_datetime_returning() -> None:
+    original = datetime.now(UTC) + timedelta(seconds=30)
+    lease = RawProcessingLease(12, UUID(int=12), 1, expires_at=original)
+
+    async def renew(_lease: RawProcessingLease) -> None:
+        return None
+
+    beat = RawLeaseHeartbeat(renew, lease, interval_s=0.01)
+    await beat._renew_until_confirmed()
+    assert beat._confirmed_expires_at == original
+
+
+@pytest.mark.asyncio
+async def test_wrong_owner_does_not_update_confirmed_expiry() -> None:
+    original = datetime.now(UTC) + timedelta(seconds=30)
+    lease = RawProcessingLease(12, UUID(int=12), 1, expires_at=original)
+
+    async def renew(_lease: RawProcessingLease) -> datetime:
+        raise RawLeaseLost("raw processing lease heartbeat lost")
+
+    beat = RawLeaseHeartbeat(renew, lease, interval_s=0.01)
+    with pytest.raises(RawLeaseLost):
+        await beat._renew_until_confirmed()
+    assert beat._confirmed_expires_at == original
+
+
+@pytest.mark.asyncio
+async def test_latest_confirmed_expiry_already_past_fails_immediately() -> None:
+    calls = 0
+
+    async def renew(_lease: RawProcessingLease) -> datetime:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("late")
+
+    async with RawLeaseHeartbeat(renew, _lease(expired=True), interval_s=0.01) as beat:
+        await asyncio.sleep(0.05)
+        with pytest.raises(RawLeaseHeartbeatFailed, match="expired|failed"):
+            beat.raise_if_lost()
+        assert beat._failure_class(beat._lost) == "local_expiry_stale"  # type: ignore[arg-type]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_after_brief_timeout_still_writes_one_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.report_ingest as report_ingest_module
+
+    monkeypatch.setattr(report_ingest_module, "bind_raw_lease_heartbeat", _fast_bind)
+    latest = datetime.now(UTC) + timedelta(seconds=5)
+    calls = 0
+
+    class RecoveringRepo:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+            self._leases: dict[int, object] = {}
+
+        def remember_lease(self, lease: RawProcessingLease) -> None:
+            self._leases[lease.raw_id] = lease
+
+        async def renew_processing_lease(self, _lease: RawProcessingLease) -> datetime:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise TimeoutError("brief")
+            return latest
+
+        async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
+            return custom_ids
+
+        async def update_metadata(self, raw_id: int, **_: object) -> None:
+            self.events.append(("metadata", raw_id))
+
+        async def apply_report(self, raw_id: int, report_item: object) -> object:
+            await asyncio.sleep(0.08)
+            self.events.append(("apply", report_item))
+            return ReportApplyResult(1, True)
+
+        async def persist_unmatched(self, raw_id: int, report_item: object) -> None:
+            self.events.append(("unmatched", report_item))
+
+        async def mark_processed(self, raw_id: int, **_: object) -> None:
+            self.events.append(("processed", raw_id))
+
+        async def mark_error(self, raw_id: int, error: str, **_: object) -> None:
+            self.events.append(("error", error))
+
+    repository = RecoveringRepo()
+    await ReportIngestService(None, repository, _crypto()).process_existing(
+        12,
+        [_report_item()],
+        lease=_lease(),
+    )
+    names = [event[0] for event in repository.events]
+    assert names.count("processed") == 1
+    assert "error" not in names
+
+
+@pytest.mark.asyncio
+async def test_stale_expiry_logs_have_no_phone_or_ciphertext(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def renew(_lease: RawProcessingLease) -> datetime:
+        raise TimeoutError("late")
+
+    caplog.set_level(logging.WARNING)
+    async with RawLeaseHeartbeat(renew, _lease(expired=True), interval_s=0.01) as beat:
+        await asyncio.sleep(0.05)
+        with pytest.raises(RawLeaseHeartbeatFailed):
+            beat.raise_if_lost()
+    text = " ".join(record.getMessage() for record in caplog.records)
+    extras = " ".join(
+        f"{getattr(record, 'failure_class', '')}" for record in caplog.records
+    )
+    assert "138" not in text
+    assert "ciphertext" not in text.lower()
+    assert "local_expiry_stale" in extras

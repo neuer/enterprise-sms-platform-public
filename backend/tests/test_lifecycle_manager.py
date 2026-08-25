@@ -1221,3 +1221,112 @@ def test_stale_incoming_is_pruned_on_status(tmp_path: Path) -> None:
     os.utime(incoming, (0, 0))
     service.backup_status(config)
     assert not incoming.exists()
+
+
+SNAPSHOT_FOUR = "20260712T070000Z_dddddddddddd"
+
+
+def test_snapshot_published_restart_promotes_to_ledger_committed(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    state = read_state(config)
+    entry = state["snapshots"][SNAPSHOT_THREE]
+    assert isinstance(entry, dict)
+    entry["integrity_verified"] = False
+    entry["commit_phase"] = "snapshot_published"
+    entry["manifest_sha256"] = None
+    entry["database_sha256"] = None
+    atomic_write_json(config.output_root / "lifecycle-state.json", state)
+    first = service.backup_status(config)
+    remount = read_state(config)
+    snapshot = remount["snapshots"][SNAPSHOT_THREE]
+    assert isinstance(snapshot, dict)
+    assert snapshot["commit_phase"] == "ledger_committed"
+    assert snapshot["integrity_verified"] is True
+    assert remount["last_successful_backup"]["snapshot_id"] == SNAPSHOT_THREE  # type: ignore[index]
+    assert (config.output_root / "current").readlink().name == SNAPSHOT_THREE
+    second = service.backup_status(config)
+    assert read_state(config)["snapshots"][SNAPSHOT_THREE] == snapshot
+    assert first.healthy is True or second.healthy is True
+
+
+def test_invalid_snapshot_published_is_isolated_and_current_retargets(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    extra = config.output_root / "snapshots" / SNAPSHOT_ONE
+    extra.mkdir(mode=0o700)
+    (extra / "junk").write_text("x", encoding="utf-8")
+    next_link = config.output_root / ".current.next"
+    next_link.unlink(missing_ok=True)
+    next_link.symlink_to(Path("snapshots") / SNAPSHOT_ONE)
+    next_link.replace(config.output_root / "current")
+    state = read_state(config)
+    snapshots = state["snapshots"]
+    assert isinstance(snapshots, dict)
+    snapshots[SNAPSHOT_ONE] = {
+        "created_at": "2026-05-01T05:00:00+00:00",
+        "integrity_verified": False,
+        "restore_verified": False,
+        "available": False,
+        "manifest_sha256": None,
+        "database_sha256": None,
+        "recovery_crypto_generation_id": None,
+        "backup_passphrase_generation_id": None,
+        "last_restore": None,
+        "commit_phase": "snapshot_published",
+    }
+    atomic_write_json(config.output_root / "lifecycle-state.json", state)
+    service.backup_status(config)
+    assert not extra.exists()
+    assert (config.output_root / "orphans" / SNAPSHOT_ONE).is_dir()
+    assert (config.output_root / "current").readlink().name == SNAPSHOT_THREE
+    remount = read_state(config)
+    assert remount["last_successful_backup"]["snapshot_id"] == SNAPSHOT_THREE  # type: ignore[index]
+    assert remount["snapshots"][SNAPSHOT_THREE]["commit_phase"] == "ledger_committed"  # type: ignore[index]
+
+
+def test_phase_cannot_downgrade_from_ledger_committed_to_snapshot_published(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))]),
+    )
+    service.backup(config)
+    state = service._load_state(config)
+    assert state["snapshots"][SNAPSHOT_THREE]["commit_phase"] == "ledger_committed"
+    assert service._register_snapshot_published(state, SNAPSHOT_THREE) is False
+    assert state["snapshots"][SNAPSHOT_THREE]["commit_phase"] == "ledger_committed"
+    assert state["snapshots"][SNAPSHOT_THREE]["integrity_verified"] is True
+
+
+def test_later_backup_does_not_clobber_earlier_committed_phase(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    service = make_service(
+        tmp_path,
+        FakeSync(
+            [
+                (SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC)),
+                (SNAPSHOT_FOUR, datetime(2026, 7, 12, 5, 30, tzinfo=UTC)),
+            ]
+        ),
+    )
+    service.backup(config)
+    service.backup(config)
+    state = read_state(config)
+    assert state["snapshots"][SNAPSHOT_THREE]["commit_phase"] == "ledger_committed"  # type: ignore[index]
+    assert state["snapshots"][SNAPSHOT_FOUR]["commit_phase"] == "ledger_committed"  # type: ignore[index]
+    assert state["last_successful_backup"]["snapshot_id"] == SNAPSHOT_FOUR  # type: ignore[index]
