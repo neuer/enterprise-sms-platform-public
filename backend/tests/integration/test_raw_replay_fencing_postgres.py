@@ -658,17 +658,19 @@ async def test_returning_expiry_bounds_retry_after_stale_in_memory_expiry() -> N
 
         async def renew(token: RawProcessingLease) -> datetime:
             calls["n"] += 1
-            if calls["n"] == 2:
+            if calls["n"] <= 2:
+                return await renew_raw_lease(engine, token, lease_seconds=30)
+            if calls["n"] == 3:
                 raise TimeoutError("brief")
             return await renew_raw_lease(engine, token, lease_seconds=30)
 
         async with RawLeaseHeartbeat(renew, stale, interval_s=0.02) as beat:
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.5)
             beat.raise_if_lost()
             assert beat._confirmed_expires_at is not None
             assert beat._confirmed_expires_at > datetime.now(UTC)
             assert beat._confirmed_expires_at != stale.expires_at
-        assert calls["n"] >= 3
+        assert calls["n"] >= 4
         await reports.mark_processed(raw_id, lease=live)
         async with engine.connect() as connection:
             row = (
