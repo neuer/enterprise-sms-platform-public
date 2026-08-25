@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 安全日报紧凑布局原型 v3（B 优化 · 评审稿）</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#4574a3;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+
+/* ═══════════ 评审辅助（非设计本体） ═══════════ */
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.stage-label{padding:26px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1100px}
+.variant-caption b{color:var(--tx)}
+.notes{margin:14px 28px 28px;padding:16px 20px;border:1px dashed var(--hair);border-radius:12px;max-width:1160px}
+.notes h2{font-family:var(--serif);font-size:14px;color:var(--tx-hi);margin-bottom:8px}
+.notes li{font-size:12px;color:var(--tx-2);padding:3px 0 3px 16px;position:relative;list-style:none}
+.notes li::before{content:"—";position:absolute;left:0;color:var(--tx-3)}
+.notes li b{color:var(--tx)}
+
+/* ═══════════ 共享画布 ═══════════ */
+.viewport{margin:12px 28px 8px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.screen{background:var(--bg);padding:18px 22px 22px;display:grid;gap:12px;min-width:960px;align-content:start}
+.tag{display:inline-flex;align-items:center;gap:6px;font:10.5px/1.9 var(--mono);padding:0 9px;border-radius:5px}
+.tag.verdi{background:rgba(47,161,132,.12);color:#71c4ad;border:1px solid rgba(47,161,132,.35)}
+.sec-label{font:10px var(--mono);letter-spacing:.08em;color:var(--tx-3)}
+.btn{padding:5px 14px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:11.5px;white-space:nowrap}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+
+/* ═══════════ 概览（变体 B 定稿）：状态横条 + 事实横排带 ═══════════ */
+.b-overview{display:grid;gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.b-state{display:flex;align-items:baseline;gap:12px;padding:9px 16px;background:linear-gradient(90deg,#162b23,#13221c);flex-wrap:wrap}
+.b-state strong{color:var(--tx-hi);font-size:13.5px;font-weight:600}
+.b-state p{color:var(--tx-2);font-size:11px}
+.b-state em{margin-left:auto;font:10.5px var(--mono);color:var(--tx-2);font-style:normal;white-space:nowrap}
+.b-facts{display:flex;flex-wrap:wrap;background:var(--panel)}
+.b-facts>div{min-width:150px;flex:1 1 0;padding:7px 12px;border-right:1px solid var(--hair-2)}
+.b-facts>div:last-child{border-right:0}
+.b-facts dt{font-size:9.5px;color:var(--tx-3)}
+.b-facts dd{margin:2px 0 0;font:11px var(--mono);color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ═══════════ 检索条（B 优化）：按钮与筛选条件稳定同行 ═══════════ */
+.b-bar{display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.b-fld{display:flex;align-items:center;gap:6px;flex:none}
+.b-fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.b-dates{display:flex;gap:5px}
+.b-date{width:112px;padding:0 9px;height:30px;line-height:30px;background:var(--sink);border:1px solid var(--hair);border-radius:7px;font-size:11px;color:var(--tx-3);font-family:var(--mono);white-space:nowrap}
+.b-seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden;height:30px}
+.b-seg b{display:flex;align-items:center;padding:0 8px;font-size:10.5px;font-weight:400;color:var(--tx-2);background:var(--sink);white-space:nowrap}
+.b-seg b.on{background:var(--verdi);color:#eaf1ed}
+.b-go{display:inline-flex;gap:7px;margin-left:auto;flex:none}
+.b-note{display:flex;gap:9px;padding:0 14px 2px;font-size:10.5px;color:var(--tx-3)}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 安全日报紧凑布局原型</b>
+  <span>v3 评审稿 · 变体 B 优化 · 概览与检索条两块，数据与交互完全不变</span>
+  <em>2026-08-25 · 深色唯一基准</em>
+</div>
+
+<div class="stage-label">SCREEN · 默认列表头（概览横条 + 事实带 + 单行检索条）</div>
+<div class="variant-caption">在 B 基础上：检索条<b>查询/重置与筛选条件稳定同一行</b>——标签左内联、日期 126→112px、seg 内距 9→8px 字号 10.5、组距 10→9px、按钮 12→11.5px，总宽压到约 1450px（内容区 ≥1500px 即不折行，窄屏由 760px 断点整体纵排）；说明细字从条内挪到条下一行，不再占条内宽度。</div>
+<div class="viewport"><div class="screen">
+
+  <div class="b-overview">
+    <div class="b-state">
+      <span class="sec-label">安全日报运行状态</span>
+      <strong>日报已启用</strong>
+      <span class="tag verdi">配置完整</span>
+      <p>汇总前一自然日（北京时间）· 按固定时间生成并交由独立投递器发送</p>
+      <em>下次 2026-08-26 08:00:00</em>
+    </div>
+    <dl class="b-facts">
+      <div><dt>调度</dt><dd>08:00 · Asia/Shanghai</dd></div>
+      <div><dt>收件人数</dt><dd>1 人（只展示数量）</dd></div>
+      <div><dt>发件域名</dt><dd>reports.example.com / secur…</dd></div>
+      <div><dt>最近日报状态</dt><dd>已投递</dd></div>
+      <div><dt>最近成功生成</dt><dd>2026-08-25 08:00:56</dd></div>
+      <div><dt>最近成功投递</dt><dd>2026-08-25 08:00:58</dd></div>
+      <div><dt>最近失败</dt><dd>—</dd></div>
+      <div><dt>Beat 配置</dt><dd>修改后需重启 beat</dd></div>
+    </dl>
+  </div>
+
+  <div>
+    <form class="b-bar">
+      <div class="b-fld"><span>报告日期</span>
+        <div class="b-dates"><div class="b-date">起始日期</div><div class="b-date">结束日期</div></div>
+      </div>
+      <div class="b-fld"><span>安全状态</span>
+        <div class="b-seg"><b class="on">全部</b><b>正常</b><b>关注</b><b>高风险</b></div>
+      </div>
+      <div class="b-fld"><span>生成状态</span>
+        <div class="b-seg"><b class="on">全部</b><b>生成中</b><b>已生成</b><b>生成失败</b><b>数据不可用</b></div>
+      </div>
+      <div class="b-fld"><span>投递状态</span>
+        <div class="b-seg"><b class="on">全部</b><b>未投递</b><b>等待 mailer</b><b>投递中</b><b>已投递</b><b>投递失败</b></div>
+      </div>
+      <span class="b-go"><span class="btn primary">查询</span><span class="btn">重置</span></span>
+    </form>
+    <p class="b-note">安全 / 生成 / 投递状态点选即重查，报告日期经「查询」生效并先校验起止先后；筛选与分页均在服务端执行。页面只展示脱敏结构化证据，手机号与密钥不进入本页。</p>
+  </div>
+
+</div></div>
+
+<ul class="notes">
+  <h2>相对 v2-B 的改动点</h2>
+  <li><b>按钮同行</b>：检索条总宽从约 1680px 压到约 1450px——日期输入 126→112px、seg 按钮内距 9→8px/字号 11→10.5、组距 10→9px、查询/重置 12→11.5px、条内说明细字挪到条下一行；条改为不换行（桌面），760px 断点维持整体纵排。</li>
+  <li><b>概览区维持 B</b>：slim 状态横条（状态+说明+右侧下次调度 mono）+ 8 格事实 flex 横排带，总高约 92px。</li>
+  <li>筛选语义、枚举文案、点选/查询分工、全部 testid 与后端参数完全不变，零契约变更；规则条三格、日报台账、抽屉与确认框不在本次范围。</li>
+  <li>实现落点：概览与检索条为页级专属样式（不再硬并 reply-* 共享组的检索条尺寸组），共享组仅沿用面板/分页/确认框；vue 组件结构与 PR3 相同，仅模板类名与样式调整。</li>
+</ul>
+
+</body>
+</html>

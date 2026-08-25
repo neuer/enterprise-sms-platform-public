@@ -251,6 +251,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/previews/replies-redesign-prototype.html",
         "docs/previews/replies-redesign-shots.md",
         "docs/previews/replies-redesign-shots/full.png",
+        "docs/previews/security-daily-compact-prototype.html",
         "docs/previews/security-daily-redesign-prototype.html",
         "docs/previews/security-daily-report-sample.html",
         "docs/previews/security-daily-report-sample.txt",

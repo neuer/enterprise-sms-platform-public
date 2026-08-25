@@ -541,17 +541,15 @@ onMounted(() => void refresh())
   <el-alert v-if="overviewErrorMessage" class="security-daily-alert" :title="overviewErrorMessage" type="error" show-icon :closable="false" />
 
   <section v-if="overview" class="security-daily-overview" aria-label="安全日报概览">
-    <article class="security-daily-state-card">
+    <div class="security-daily-state">
       <span class="security-section-label">安全日报运行状态</span>
       <strong>{{ configurationLabel(overview.configuration_state) }}</strong>
       <el-tag :type="configurationTagType(overview.configuration_state)" size="small">
         {{ configurationTagLabel(overview.configuration_state) }}
       </el-tag>
-      <p>
-        {{ overview.period_description }} · {{ configurationMessage(overview.configuration_state) }}
-        <template v-if="overview.next_scheduled_at">下次 {{ displayMoment(overview.next_scheduled_at) }}</template>
-      </p>
-    </article>
+      <p>{{ overview.period_description }} · {{ configurationMessage(overview.configuration_state) }}</p>
+      <em v-if="overview.next_scheduled_at">下次 {{ displayMoment(overview.next_scheduled_at) }}</em>
+    </div>
     <dl class="security-daily-facts">
       <div><dt>调度</dt><dd>{{ overview.schedule_time }} · {{ overview.timezone }}</dd></div>
       <div><dt>收件人数</dt><dd>{{ overview.recipient_count }} 人（只展示数量）</dd></div>
@@ -564,77 +562,79 @@ onMounted(() => void refresh())
     </dl>
   </section>
 
-  <form class="security-daily-filter-bar" @submit.prevent="search">
-    <div class="security-daily-fld">
-      <span>报告日期</span>
-      <div class="security-daily-dates">
-        <el-date-picker
-          v-model="filters.dateFrom"
-          class="security-daily-date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          popper-class="qingluan-date-popper"
-          clearable
-          placeholder="起始日期"
-          data-testid="security-daily-date-from"
-        />
-        <el-date-picker
-          v-model="filters.dateTo"
-          class="security-daily-date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          popper-class="qingluan-date-popper"
-          clearable
-          placeholder="结束日期"
-          data-testid="security-daily-date-to"
-        />
+  <div>
+    <form class="security-daily-filter-bar" @submit.prevent="search">
+      <div class="security-daily-fld">
+        <span>报告日期</span>
+        <div class="security-daily-dates">
+          <el-date-picker
+            v-model="filters.dateFrom"
+            class="security-daily-date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            popper-class="qingluan-date-popper"
+            clearable
+            placeholder="起始日期"
+            data-testid="security-daily-date-from"
+          />
+          <el-date-picker
+            v-model="filters.dateTo"
+            class="security-daily-date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            popper-class="qingluan-date-popper"
+            clearable
+            placeholder="结束日期"
+            data-testid="security-daily-date-to"
+          />
+        </div>
       </div>
-    </div>
-    <div class="security-daily-fld">
-      <span>安全状态</span>
-      <div class="security-daily-seg" role="group" aria-label="安全状态筛选" data-testid="security-daily-status-seg">
-        <button
-          v-for="option in statusSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.status === option.value }"
-          :data-testid="`security-daily-status-${option.key}`"
-          @click="setStatus(option.value)"
-        >{{ option.label }}</button>
+      <div class="security-daily-fld">
+        <span>安全状态</span>
+        <div class="security-daily-seg" role="group" aria-label="安全状态筛选" data-testid="security-daily-status-seg">
+          <button
+            v-for="option in statusSegOptions"
+            :key="option.key"
+            type="button"
+            :class="{ on: filters.status === option.value }"
+            :data-testid="`security-daily-status-${option.key}`"
+            @click="setStatus(option.value)"
+          >{{ option.label }}</button>
+        </div>
       </div>
-    </div>
-    <div class="security-daily-fld">
-      <span>生成状态</span>
-      <div class="security-daily-seg" role="group" aria-label="生成状态筛选" data-testid="security-daily-generation-seg">
-        <button
-          v-for="option in generationSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.generationStatus === option.value }"
-          :data-testid="`security-daily-generation-${option.key}`"
-          @click="setGenerationStatus(option.value)"
-        >{{ option.label }}</button>
+      <div class="security-daily-fld">
+        <span>生成状态</span>
+        <div class="security-daily-seg" role="group" aria-label="生成状态筛选" data-testid="security-daily-generation-seg">
+          <button
+            v-for="option in generationSegOptions"
+            :key="option.key"
+            type="button"
+            :class="{ on: filters.generationStatus === option.value }"
+            :data-testid="`security-daily-generation-${option.key}`"
+            @click="setGenerationStatus(option.value)"
+          >{{ option.label }}</button>
+        </div>
       </div>
-    </div>
-    <div class="security-daily-fld">
-      <span>投递状态</span>
-      <div class="security-daily-seg" role="group" aria-label="投递状态筛选" data-testid="security-daily-delivery-seg">
-        <button
-          v-for="option in deliverySegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.deliveryStatus === option.value }"
-          :data-testid="`security-daily-delivery-${option.key}`"
-          @click="setDeliveryStatus(option.value)"
-        >{{ option.label }}</button>
+      <div class="security-daily-fld">
+        <span>投递状态</span>
+        <div class="security-daily-seg" role="group" aria-label="投递状态筛选" data-testid="security-daily-delivery-seg">
+          <button
+            v-for="option in deliverySegOptions"
+            :key="option.key"
+            type="button"
+            :class="{ on: filters.deliveryStatus === option.value }"
+            :data-testid="`security-daily-delivery-${option.key}`"
+            @click="setDeliveryStatus(option.value)"
+          >{{ option.label }}</button>
+        </div>
       </div>
-    </div>
-    <div class="security-daily-filter-go">
-      <el-button data-testid="security-daily-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
-      <el-button data-testid="security-daily-reset" @click="resetFilters">重置</el-button>
-    </div>
+      <div class="security-daily-filter-go">
+        <el-button data-testid="security-daily-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
+        <el-button data-testid="security-daily-reset" @click="resetFilters">重置</el-button>
+      </div>
+    </form>
     <p class="security-daily-privacy">安全 / 生成 / 投递状态点选即重查，报告日期经「查询」生效并先校验起止先后；筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。页面只展示脱敏结构化证据，手机号与密钥不进入本页。</p>
-  </form>
+  </div>
 
   <aside class="security-daily-rules" aria-label="脱敏边界、配置例外与投递语义">
     <div><span>脱敏边界</span><p>页面只展示脱敏结构化证据，手机号与密钥永不进入界面；详情与预览同样只是只读投影。</p></div>
