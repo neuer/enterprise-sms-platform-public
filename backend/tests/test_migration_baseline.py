@@ -1550,7 +1550,7 @@ def test_security_daily_delivery_generation_migration_is_expand_only() -> None:
         "ck_security_daily_request_delivery_generation",
         "ck_security_daily_request_recipient_digest",
     ):
-        assert fragment in schema or fragment in source
+        assert fragment in schema
         assert fragment in source
 
     assert "ADD COLUMN IF NOT EXISTS delivery_generation" in source

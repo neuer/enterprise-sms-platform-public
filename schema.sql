@@ -1742,8 +1742,7 @@ CREATE TABLE security_daily_report (
     recipient_count    SMALLINT NOT NULL DEFAULT 0
                       CHECK (recipient_count BETWEEN 0 AND 3),
     retry_count        SMALLINT NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
-    delivery_generation BIGINT NOT NULL DEFAULT 1
-                      CHECK (delivery_generation >= 1),
+    delivery_generation BIGINT NOT NULL DEFAULT 1,
     last_error         VARCHAR(256),
     last_error_at      TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1751,7 +1750,9 @@ CREATE TABLE security_daily_report (
     CONSTRAINT ck_security_daily_period CHECK (period_start < period_end),
     CONSTRAINT ck_security_daily_payload_ready CHECK (
       generation_status <> 'ready' OR payload IS NOT NULL
-    )
+    ),
+    CONSTRAINT ck_security_daily_report_delivery_generation
+      CHECK (delivery_generation >= 1)
 );
 CREATE INDEX idx_security_daily_report_status
     ON security_daily_report(status,report_date DESC);
@@ -1772,10 +1773,8 @@ CREATE TABLE security_daily_delivery_request (
     dedup_key        VARCHAR(192) NOT NULL UNIQUE,
     requested_by     VARCHAR(64) NOT NULL,
     config_version   BIGINT NOT NULL,
-    delivery_generation BIGINT NOT NULL DEFAULT 1
-                     CHECK (delivery_generation >= 1),
-    recipient_set_digest VARCHAR(64) NOT NULL DEFAULT ''
-                     CHECK (recipient_set_digest = '' OR recipient_set_digest ~ '^[0-9a-f]{64}$'),
+    delivery_generation BIGINT NOT NULL DEFAULT 1,
+    recipient_set_digest VARCHAR(64) NOT NULL DEFAULT '',
     requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at     TIMESTAMPTZ,
     error            VARCHAR(256),
@@ -1783,7 +1782,11 @@ CREATE TABLE security_daily_delivery_request (
     CONSTRAINT ck_security_daily_request_completion CHECK (
       (state='pending' AND completed_at IS NULL)
       OR (state IN ('sent','failed','unknown') AND completed_at IS NOT NULL)
-    )
+    ),
+    CONSTRAINT ck_security_daily_request_delivery_generation
+      CHECK (delivery_generation >= 1),
+    CONSTRAINT ck_security_daily_request_recipient_digest
+      CHECK (recipient_set_digest = '' OR recipient_set_digest ~ '^[0-9a-f]{64}$')
 );
 CREATE INDEX idx_security_daily_request_pending
     ON security_daily_delivery_request(state,requested_at)
