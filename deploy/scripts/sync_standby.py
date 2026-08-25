@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from failover_common import (
     BACKUP_PASSPHRASE_GENERATION_ID_FILE,
@@ -465,7 +465,7 @@ class SyncService:
         config: SyncConfig,
         deadline: float,
         estimated_bytes: int,
-    ) -> None:
+    ) -> Literal["created", "reused_existing"]:
         endpoint = f"{target.user}@{target.host}"
         incoming_root = f"{target.root}/.incoming"
         incoming = f"{incoming_root}/{snapshot_id}"
@@ -505,12 +505,18 @@ class SyncService:
             f"cmp -s SHA256SUMS {shlex.quote(destination + '/SHA256SUMS')} "
             "|| { echo snapshot-digest-mismatch >&2; exit 1; }; "
             f"rm -rf {shlex.quote(incoming)}; "
+            "echo reused_existing; "
             "else "
             f"mv {shlex.quote(incoming)} {shlex.quote(destination)}; "
+            "echo created; "
             "fi; "
             f"sync {shlex.quote(target.root + '/snapshots')}"
         )
-        self._run_remote(self._ssh(target) + [remote], config, deadline)
+        output = self._run_remote(self._ssh(target) + [remote], config, deadline)
+        ownership = output.decode("utf-8", errors="replace").strip().splitlines()[-1]
+        if ownership not in {"created", "reused_existing"}:
+            raise RuntimeError("remote snapshot ownership unavailable")
+        return ownership  # type: ignore[return-value]
 
     def _commit_remote_current(
         self,
@@ -636,6 +642,7 @@ class SyncService:
         failure: BaseException | None = None
         snapshot_id: str | None = None
         remote_staged = False
+        remote_ownership: Literal["created", "reused_existing"] | None = None
         try:
             config.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             self._remaining(deadline)
@@ -848,7 +855,7 @@ class SyncService:
 
             remote_staged = False
             if target is not None:
-                self._stage_remote(
+                remote_ownership = self._stage_remote(
                     staging,
                     snapshot_id,
                     target,
@@ -877,7 +884,11 @@ class SyncService:
                         )
             if target is not None and snapshot_id is not None:
                 try:
-                    if failure is not None and remote_staged:
+                    if (
+                        failure is not None
+                        and remote_staged
+                        and remote_ownership == "created"
+                    ):
                         self._rollback_uncommitted_remote_snapshot(
                             snapshot_id, target, config, deadline
                         )

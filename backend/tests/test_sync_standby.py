@@ -48,6 +48,7 @@ class FakeRunner:
         timer: ManualTimer | None = None,
         expire_pipeline_at: float | None = None,
         remote_fail_at: str | None = None,
+        existing_remote_same_digest: bool = False,
     ) -> None:
         self.dirty = dirty
         self.pipeline_error = pipeline_error
@@ -56,6 +57,7 @@ class FakeRunner:
         self.timer = timer
         self.expire_pipeline_at = expire_pipeline_at
         self.remote_fail_at = remote_fail_at
+        self.existing_remote_same_digest = existing_remote_same_digest
         self.rev_parse_calls = 0
         self.calls: list[list[str]] = []
         self.pipeline_calls: list[tuple[list[str], list[str], Path]] = []
@@ -114,6 +116,10 @@ class FakeRunner:
             raise CommandFailure("ssh", 255, "Connection reset")
         if argv[0] == "ssh" and fail_at == "digest_mismatch" and "cmp -s" in remote:
             raise CommandFailure("ssh", 1, "snapshot-digest-mismatch")
+        if argv[0] == "ssh" and "echo created" in remote and "cmp -s SHA256SUMS" in remote:
+            if self.existing_remote_same_digest:
+                return b"reused_existing\n"
+            return b"created\n"
         if argv[0] == "git" and argv[1] == "archive":
             output_value = next(
                 item.split("=", 1)[1] for item in argv if item.startswith("--output=")
@@ -584,6 +590,19 @@ def test_remote_existing_target_with_different_digest_fails_closed(tmp_path: Pat
     )
 
 
+def _remote_destination_rollback(runner: FakeRunner) -> bool:
+    return any(
+        call[0] == "ssh" and "readlink current" in call[-1] for call in runner.calls
+    )
+
+
+def _remote_incoming_cleanup(runner: FakeRunner) -> bool:
+    return any(
+        call[0] == "ssh" and "rm -rf" in call[-1] and ".incoming" in call[-1]
+        for call in runner.calls
+    )
+
+
 def test_local_failure_after_remote_stage_rolls_back_uncommitted_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -597,10 +616,57 @@ def test_local_failure_after_remote_stage_rolls_back_uncommitted_snapshot(
     monkeypatch.setattr(sync_module.SyncService, "_publish_local", fail_local)
     with pytest.raises(RuntimeError, match="local publish"):
         make_sync_service(runner).run(config)
-    assert any("readlink current" in call[-1] for call in runner.calls if call[0] == "ssh")
+    assert _remote_destination_rollback(runner)
     assert not any(
         call[0] == "ssh" and "ln -sfn" in call[-1] for call in runner.calls
     )
+
+
+def test_reused_existing_snapshot_survives_local_publish_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeRunner(existing_remote_same_digest=True)
+    config = make_config(tmp_path, build_only=False)
+
+    def fail_local(self: SyncService, *args: object, **kwargs: object) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(sync_module.SyncService, "_publish_local", fail_local)
+    with pytest.raises(OSError, match="space"):
+        make_sync_service(runner).run(config)
+    assert not _remote_destination_rollback(runner)
+    assert _remote_incoming_cleanup(runner)
+    assert not any(
+        call[0] == "ssh" and "ln -sfn" in call[-1] for call in runner.calls
+    )
+
+
+@pytest.mark.parametrize("existing", (False, True))
+@pytest.mark.parametrize("local_fails", (False, True))
+def test_remote_snapshot_ownership_matrix_only_deletes_this_run_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+    local_fails: bool,
+) -> None:
+    runner = FakeRunner(existing_remote_same_digest=existing)
+    config = make_config(tmp_path, build_only=False)
+    if local_fails:
+
+        def fail_local(self: SyncService, *args: object, **kwargs: object) -> Path:
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(sync_module.SyncService, "_publish_local", fail_local)
+        with pytest.raises(OSError, match="Input/output"):
+            make_sync_service(runner).run(config)
+    else:
+        make_sync_service(runner).run(config)
+    if local_fails and not existing:
+        assert _remote_destination_rollback(runner)
+    else:
+        assert not _remote_destination_rollback(runner)
+    assert _remote_incoming_cleanup(runner) or not local_fails
 
 
 def test_retry_same_snapshot_is_idempotent(tmp_path: Path) -> None:

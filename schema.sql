@@ -1735,7 +1735,7 @@ CREATE TABLE security_daily_report (
     generation_source  VARCHAR(8)  NOT NULL DEFAULT 'auto'
                       CHECK (generation_source IN ('auto','manual')),
     delivery_status    VARCHAR(16) NOT NULL DEFAULT 'not_sent'
-                      CHECK (delivery_status IN ('not_sent','pending','sending','sent','failed')),
+                      CHECK (delivery_status IN ('not_sent','pending','sending','sent','failed','unknown')),
     payload            JSONB,
     generated_at       TIMESTAMPTZ,
     delivered_at       TIMESTAMPTZ,
@@ -1766,7 +1766,7 @@ CREATE TABLE security_daily_delivery_request (
     report_date      DATE NOT NULL,
     action           VARCHAR(8) NOT NULL CHECK (action IN ('send','retry')),
     state            VARCHAR(8) NOT NULL DEFAULT 'pending'
-                     CHECK (state IN ('pending','sent','failed')),
+                     CHECK (state IN ('pending','sent','failed','unknown')),
     dedup_key        VARCHAR(192) NOT NULL UNIQUE,
     requested_by     VARCHAR(64) NOT NULL,
     config_version   BIGINT NOT NULL,
@@ -1776,7 +1776,7 @@ CREATE TABLE security_daily_delivery_request (
     CONSTRAINT ck_security_daily_request_config_version CHECK (config_version > 0),
     CONSTRAINT ck_security_daily_request_completion CHECK (
       (state='pending' AND completed_at IS NULL)
-      OR (state IN ('sent','failed') AND completed_at IS NOT NULL)
+      OR (state IN ('sent','failed','unknown') AND completed_at IS NOT NULL)
     )
 );
 CREATE INDEX idx_security_daily_request_pending
@@ -1869,6 +1869,9 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
 ('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态'),
 ('security_daily_config_version','1','int','安全日报发信配置单调版本'),
+('security_daily_config_publish_state','file_committed','str','安全日报配置发布状态'),
+('security_daily_config_file_version','1','int','安全日报已发布到 mailer 文件的配置版本'),
+('security_daily_config_operation_id','','str','安全日报最近一次配置发布操作标识'),
 -- v1.6.40 新增：安全日报配置页允许管理员维护 Resend Key。
 ('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）');
 

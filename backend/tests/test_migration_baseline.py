@@ -1511,3 +1511,28 @@ def test_security_findings_hardening_migration_is_baseline_idempotent() -> None:
     assert "conname='ck_external_role_mapping_dept'" in source
     assert "CREATE TABLE IF NOT EXISTS blacklist_hmac_alias" in source
     assert "ON UPDATE CASCADE ON DELETE CASCADE" in source
+
+
+def test_security_daily_publish_outbox_migration_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0079_security_daily_publish_outbox.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "security_daily_config_publish_state",
+        "security_daily_config_file_version",
+        "security_daily_config_operation_id",
+        "'unknown'",
+        "ck_security_daily_request_completion",
+    ):
+        assert fragment in schema
+        assert fragment in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_publish_outbox_revision", revision
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0079_security_daily_publish_outbox"
+    assert module.down_revision == "0078_system_raw_replay_audit_producer"

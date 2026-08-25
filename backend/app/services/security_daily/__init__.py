@@ -52,6 +52,7 @@ from app.services.security_daily.contract import (
 )
 from app.services.security_daily.control import (
     FileSecurityDailyControl,
+    SecurityDailyConfigurationSuperseded,
     SecurityDailyControl,
     SecurityDailyControlError,
     SecurityDailyControlResult,
@@ -111,6 +112,7 @@ __all__ = [
     "SecurityDailyAutoDeliveryConfiguration",
     "SecurityDailyConfiguration",
     "SecurityDailyConfigurationError",
+    "SecurityDailyConfigurationSuperseded",
     "SecurityDailyConfigurationUpdate",
     "SecurityDailyControl",
     "SecurityDailyControlError",

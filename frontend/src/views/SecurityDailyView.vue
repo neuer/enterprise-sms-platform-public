@@ -44,6 +44,7 @@ const deliveryLabels: Record<DeliveryStatus, string> = {
   sending: "投递中",
   sent: "已投递",
   failed: "投递失败",
+  unknown: "投递结果未知",
 }
 const configurationLabels: Record<SecurityDailyConfigurationState, string> = {
   disabled: "日报未启用",
@@ -89,6 +90,7 @@ const deliverySegOptions = [
   { label: "投递中", value: "sending" as DeliveryStatus, key: "sending" },
   { label: "已投递", value: "sent" as DeliveryStatus, key: "sent" },
   { label: "投递失败", value: "failed" as DeliveryStatus, key: "failed" },
+  { label: "结果未知", value: "unknown" as DeliveryStatus, key: "unknown" },
 ]
 
 const overview = ref<SecurityDailyOverview | null>(null)
@@ -198,7 +200,7 @@ function apiErrorMessage(error: unknown, fallback: string): string {
 
 function tagType(value: string): "success" | "warning" | "danger" | "info" {
   if (value === "normal" || value === "ready" || value === "sent" || value === "good") return "success"
-  if (value === "attention" || value === "pending" || value === "sending" || value === "warn") return "warning"
+  if (value === "attention" || value === "pending" || value === "sending" || value === "unknown" || value === "warn") return "warning"
   if (value === "high" || value === "failed" || value === "danger") return "danger"
   return "info"
 }
