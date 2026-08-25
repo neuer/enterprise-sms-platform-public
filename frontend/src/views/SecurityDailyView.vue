@@ -558,7 +558,6 @@ onMounted(() => void refresh())
       <div><dt>最近成功生成</dt><dd>{{ displayMoment(overview.last_generated_at) }}</dd></div>
       <div><dt>最近成功投递</dt><dd>{{ displayMoment(overview.last_delivered_at) }}</dd></div>
       <div><dt>最近失败</dt><dd>{{ overview.latest_failure ?? "—" }}</dd></div>
-      <div><dt>Beat 配置</dt><dd>{{ overview.beat_restart_required ? "修改后需重启 beat" : "无需重启" }}</dd></div>
     </dl>
   </section>
 

@@ -21,7 +21,6 @@ export interface SecurityDailyOverview {
   resend_configured: boolean
   sender_domain: string
   sender_address: string
-  beat_restart_required: boolean
 }
 
 export interface SecurityDailyConfiguration {

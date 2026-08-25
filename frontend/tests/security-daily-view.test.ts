@@ -93,7 +93,6 @@ const overview = {
   resend_configured: true,
   sender_domain: "reports.neuer.cn",
   sender_address: "security-daily@reports.neuer.cn",
-  beat_restart_required: true,
 }
 
 describe("安全日报页面", () => {
@@ -147,7 +146,9 @@ describe("安全日报页面", () => {
     const overviewSection = wrapper.get("section.security-daily-overview")
     expect(overviewSection.get(".security-daily-state").text()).toContain("日报已启用")
     expect(overviewSection.get(".security-daily-state em").text()).toContain("下次 2026-07-19 08:00:00")
-    expect(overviewSection.findAll(".security-daily-facts > div")).toHaveLength(8)
+    const facts = overviewSection.findAll(".security-daily-facts > div")
+    expect(facts).toHaveLength(7)
+    expect(facts.map((cell) => cell.text())).not.toContainEqual(expect.stringContaining("Beat 配置"))
 
     const form = wrapper.get("form.security-daily-filter-bar")
     expect(form.find(".security-daily-filter-go").exists()).toBe(true)
