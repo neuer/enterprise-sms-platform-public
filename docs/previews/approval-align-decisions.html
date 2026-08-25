@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>青鸾 · 审批中心像素对齐对照</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c; --verm:#e46a4f; --slate:#6f9bcf;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Noto Serif SC","Source Han Serif SC","Songti SC",serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}
+ul{list-style:none}
+
+.review-bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.review-bar b{font-family:var(--serif);font-size:15px;color:var(--tx-hi);letter-spacing:.06em}
+.review-bar span{color:var(--tx-3);font-size:11px}
+.review-bar em{margin-left:auto;color:var(--tx-3);font:10px/1 var(--mono);font-style:normal}
+.notes{margin:14px 28px 0;padding:14px 18px;border:1px dashed var(--hair);border-radius:12px;max-width:1240px;color:var(--tx-2);font-size:12px}
+.notes b{color:var(--tx)}
+.stage-label{padding:28px 28px 0;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.variant-caption{padding:6px 28px 0;font-size:12px;color:var(--tx-2);max-width:1240px}
+
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 28px 8px;align-items:start}
+.col{border:1px solid var(--hair);border-radius:14px;overflow:hidden;background:var(--bg);min-width:0}
+.col-h{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--panel-2);border-bottom:1px solid var(--hair-2)}
+.col-h .side{font:10px/1 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.col-h strong{font-size:12px;color:var(--tx-hi);font-weight:600}
+.rec{font:9px/1.6 var(--mono);padding:1px 6px;border-radius:4px;border:1px solid rgba(47,161,132,.4);color:#71c4ad}
+.col-b{padding:16px}
+.col-note{padding:0 16px 14px;font-size:11px;color:var(--tx-3)}
+
+/* 共用：页头 / 工具条 / 队列 */
+.head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px}
+.eyebrow{font:10px/1.6 var(--mono);letter-spacing:.16em;color:var(--tx-3)}
+.head h1{font-size:19px;font-weight:600;color:var(--tx-hi)}
+.head .sub{color:var(--tx-3);font-size:11px;margin-top:1px}
+.head-side{display:flex;align-items:center;gap:10px}
+.todo-pill{display:inline-flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--tx-hi);border:1px solid rgba(47,161,132,.4);border-radius:7px;padding:5px 12px;background:rgba(14,122,99,.18)}
+.todo-pill b{font-size:13px;color:#71c4ad}
+.todo-pill .hot{color:var(--verm)}
+.role-tag{display:inline-flex;align-items:center;gap:7px;font:10.5px var(--mono);color:var(--tx-2);border:1px solid var(--hair);border-radius:7px;padding:5px 11px;background:var(--panel)}
+.role-tag i{width:6px;height:6px;border-radius:50%;background:var(--verdi-l)}
+.filter-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 16px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.filter-bar .fld{display:flex;align-items:center;gap:8px}
+.filter-bar .fld>span{font-size:10.5px;color:var(--tx-3);white-space:nowrap}
+.seg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.seg b{padding:4px 11px;font-size:11.5px;font-weight:400;color:var(--tx-2);background:var(--sink);display:inline-flex;align-items:center;gap:6px}
+.seg b.on{background:var(--verdi);color:#eaf1ed}
+.seg b .cnt{font:9.5px/1.5 var(--mono);padding:0 5px;border-radius:4px;background:rgba(255,255,255,.12)}
+.seg b:not(.on) .cnt{background:var(--panel-2);color:var(--tx-3)}
+.seg b .cnt.hot{background:rgba(228,106,79,.25);color:#f0a08c}
+.pill{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx)}
+.search{padding:4px 11px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);font-size:11.5px;color:var(--tx-3)}
+.btn{padding:6px 14px;border:1px solid var(--hair);border-radius:7px;background:var(--panel);color:var(--tx);font-size:12px}
+.btn.primary{background:var(--verdi);border-color:transparent;color:#eaf1ed}
+.btn.danger{border-color:rgba(228,106,79,.5);color:var(--verm);background:transparent}
+.btn.ghost{background:transparent}
+.btn.sm{padding:4px 10px;font-size:11.5px}
+.refresh-hint{font:10px var(--mono);color:var(--tx-3)}
+
+/* 现网卡 */
+.live-card{background:var(--panel);border:1px solid var(--hair);border-radius:11px;overflow:hidden}
+.live-toolbar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--hair)}
+.el-seg{display:flex;padding:2px;background:var(--sink);border-radius:6px}
+.el-seg b{padding:5px 12px;border-radius:5px;font-size:12px;font-weight:400;color:var(--tx-2)}
+.el-seg b.on{background:var(--panel);color:var(--tx-hi)}
+.el-seg .cnt{margin-left:6px;font:9.5px/1.5 var(--mono);padding:0 5px;border-radius:4px;background:rgba(255,255,255,.06);color:var(--tx-3)}
+.el-seg .cnt.hot{color:var(--verm);background:rgba(228,106,79,.16)}
+.live-fields{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;color:var(--tx-3);font-size:10.5px}
+.live-fields i{padding:4px 10px;border:1px solid var(--hair);border-radius:7px;background:var(--sink);color:var(--tx);font-style:normal;font-size:11.5px}
+.live-pill-round{display:inline-flex;align-items:center;gap:8px;padding:5px 11px;border:1px solid var(--hair);border-radius:999px;background:var(--panel-2);font:10px var(--mono);color:var(--tx-3)}
+.live-pill-round b{font-size:12px;color:var(--tx-hi)}
+.live-role{padding:5px 9px;border-radius:4px;font:10px var(--mono);color:var(--verdi);background:rgba(14,122,99,.12);border:1px solid rgba(14,122,99,.3)}
+
+.q-row{display:grid;grid-template-columns:86px 1fr auto;gap:16px;align-items:center;padding:14px 18px;background:var(--panel);border:1px solid var(--hair);border-radius:12px}
+.q-row.live{grid-template-columns:96px 1fr auto;padding:14px 16px;border-radius:9px}
+.q-row.urgent{border-color:rgba(228,106,79,.45);background:linear-gradient(90deg,rgba(228,106,79,.07),var(--panel) 30%)}
+.cd{display:flex;flex-direction:column;gap:2px}
+.cd b{font:600 14px var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.cd span{font-size:9.5px;color:var(--tx-3)}
+.cd.hot b{color:var(--verm)}
+.q-main{display:grid;gap:3px;min-width:0}
+.q-l1{display:flex;align-items:center;gap:9px}
+.q-l1 code{font:11.5px var(--mono);color:var(--tx-hi)}
+.q-l1 code.verdi{color:#71c4ad}
+.cat-tag{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--tx)}
+.cat-tag::before{content:"";width:3px;height:14px;background:var(--slate)}
+.cat-tag.market::before{background:var(--amber)}
+.cat-chip{font:10px/1.7 var(--mono);padding:0 7px;border-radius:4px;background:rgba(111,155,207,.15);color:#93b6e0}
+.sched{font:10px/1.7 var(--mono);padding:0 7px;border-radius:4px;border:1px solid var(--hair);color:var(--tx-2)}
+.q-l2{font-size:12px;color:var(--tx)}
+.q-l2 em{font-style:normal;color:var(--tx-3)}
+.q-l2 b{font-variant-numeric:tabular-nums}
+.q-l3{font-size:11px;color:var(--tx-3)}
+.expand{font-size:11px;color:var(--verdi-l)}
+.q-actions{display:flex;gap:8px;align-items:center}
+.queue-foot{display:flex;align-items:center;gap:14px;padding:8px 4px 0;font:10px var(--mono);color:var(--tx-3)}
+.queue-foot .poll{margin-left:auto}
+.queue-foot i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--verdi-l);margin-right:6px}
+
+/* 详情对比 */
+.split{display:grid;grid-template-columns:1fr 280px;gap:12px}
+.drawer-mock{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:14px 16px;display:grid;gap:10px}
+.drawer-overlay{position:relative;min-height:280px}
+.drawer-overlay .scrim{position:absolute;inset:0;background:rgba(8,12,10,.45)}
+.drawer-overlay .sheet{position:absolute;top:0;right:0;bottom:0;width:min(560px,72%);background:var(--panel);border-left:1px solid var(--hair);padding:16px 18px;display:grid;gap:10px;align-content:start}
+.d-head{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:8px;border-bottom:1px solid var(--hair-2)}
+.d-head .sub2{font-size:10.5px;color:var(--tx-3)}
+.d-head code{display:block;margin-top:2px;font:12px var(--mono);color:var(--tx-hi)}
+.stag{font:10px/1.8 var(--mono);padding:0 8px;border-radius:5px;background:rgba(216,163,92,.14);color:var(--amber)}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:7px 14px}
+.facts dt{font-size:10.5px;color:var(--tx-3)}
+.facts dd{font-size:12px;color:var(--tx);margin-top:1px}
+.kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:6px}
+.kv-grid div{padding:8px 10px;background:var(--panel)}
+.kv-grid dt{font-size:10px;color:var(--tx-3)}
+.kv-grid dd{margin-top:2px;font-size:12px}
+.proof{border:1px solid var(--hair);border-radius:10px;background:var(--sink);padding:10px 12px}
+.proof span{font-size:10.5px;color:var(--tx-3)}
+.proof p{margin-top:6px;font-size:12.5px;color:var(--tx-hi);line-height:1.7}
+.proof .meta{margin-top:7px;font-size:10.5px;color:var(--tx-3)}
+.quote{margin-top:6px;padding:12px;background:var(--panel-2);border-left:3px solid var(--verdi);font-size:12.5px;color:var(--tx-hi)}
+.outcome{font-size:11px;color:var(--tx-2);border:1px solid rgba(47,161,132,.35);border-radius:7px;padding:6px 10px;background:rgba(14,122,99,.12)}
+.outcome code{font:10px var(--mono);color:#71c4ad}
+
+/* 拟定落地 */
+.stage{margin:12px 28px 40px;border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
+.apv{background:var(--bg);padding:20px 26px 24px;display:grid;gap:14px}
+.dock{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:14px;align-items:start}
+@media (max-width: 1180px){
+  .pair,.dock{grid-template-columns:1fr}
+  .drawer-overlay .sheet{width:100%}
+}
+</style>
+</head>
+<body>
+
+<div class="review-bar">
+  <b>青鸾 · 审批中心像素对齐对照</b>
+  <span>静态评审 · 不改产品代码 · 左边 = 方案 A，右边 = 现网 / 全站约定</span>
+  <em>2026-08-19</em>
+</div>
+
+<section class="notes">
+  现网已经是方案 A 队列（#380）。这页只把三处拍板画出来，方便看完再定。
+  <b>拟定落地稿</b>用推荐组合：筛选走左边，详情和倒计时走右边，并带上 P1 铬（19px 无衬线 H1、CategoryTag 竖条、不编造已剔除 / 近 7 天 / 窗外预判）。
+</section>
+
+<div class="stage-label">① 筛选条</div>
+<p class="variant-caption">左边：独立单行胶囊（verdi 选中 + 计数）。右边：现网一张大卡 + ElSegmented（选中是 panel，不是 verdi）。</p>
+<div class="pair">
+  <div class="col">
+    <div class="col-h"><span class="side">LEFT / 方案 A</span><strong>独立工具条</strong><span class="rec">推荐</span></div>
+    <div class="col-b">
+      <div class="filter-bar">
+        <div class="fld"><span>状态</span>
+          <div class="seg">
+            <b class="on">待审批 <span class="cnt hot">12</span></b>
+            <b>已通过 <span class="cnt">46</span></b>
+            <b>已驳回 <span class="cnt">7</span></b>
+            <b>已过期 <span class="cnt">3</span></b>
+          </div>
+        </div>
+        <div class="fld"><span>类别</span><span class="pill">全部 ▾</span></div>
+        <div class="fld"><span>部门</span><span class="search">模糊匹配部门</span></div>
+        <div class="fld"><span>申请人</span><span class="search">登录名</span></div>
+        <div class="fld"><span>排序</span><span class="pill">临期优先 ▾</span></div>
+        <button class="btn ghost">刷新</button>
+        <span class="refresh-hint">30s 自动</span>
+      </div>
+    </div>
+    <p class="col-note">部门保持文本过滤，不编下拉名单。已办不编「近 7 天」。</p>
+  </div>
+  <div class="col">
+    <div class="col-h"><span class="side">RIGHT / 现网</span><strong>大卡 + Segmented</strong></div>
+    <div class="col-b">
+      <div class="live-card">
+        <div class="live-toolbar">
+          <div class="el-seg">
+            <b class="on">待审批<span class="cnt hot">12</span></b>
+            <b>已通过<span class="cnt">46</span></b>
+            <b>已驳回<span class="cnt">7</span></b>
+            <b>已过期<span class="cnt">3</span></b>
+          </div>
+          <div class="live-fields">
+            类别 <i>全部类别 ▾</i>
+            部门 <i>模糊匹配部门</i>
+            申请人 <i>登录名</i>
+            排序 <i>临期优先 ▾</i>
+          </div>
+          <button class="btn">刷新</button>
+          <span class="refresh-hint">30s 自动</span>
+        </div>
+        <div style="padding:14px 18px;color:var(--tx-3);font-size:11px">队列行也包在这张卡里…</div>
+      </div>
+    </div>
+    <p class="col-note">只收矮这张卡，选中态仍然不是方案 A 的 verdi 胶囊。</p>
+  </div>
+</div>
+
+<div class="stage-label">② 详情出现方式</div>
+<p class="variant-caption">左边：原型第一视口的左右分栏（详情常驻）。右边：全站右侧抽屉，加宽到 560px。推荐右边——和批次详情一致，不做方案 B 焦点卡。</p>
+<div class="pair">
+  <div class="col">
+    <div class="col-h"><span class="side">LEFT / 方案 A 稿面</span><strong>左右分栏常驻</strong></div>
+    <div class="col-b">
+      <div class="split">
+        <div class="q-row urgent">
+          <div class="cd hot"><b>00:01:36</b><span>后过期</span></div>
+          <div class="q-main">
+            <div class="q-l1"><span class="cat-tag">通知</span><code>WB202608190014</code></div>
+            <div class="q-l2">张伟 · 财务部</div>
+          </div>
+        </div>
+        <aside class="drawer-mock">
+          <div class="d-head"><div><span class="sub2">审批详情</span><code>WB202608190014</code></div><span class="stag">待审批 · 剩 00:01:36</span></div>
+          <p style="font-size:11px;color:var(--tx-3)">详情始终占一列，列表被挤窄。和全站「行点击开抽屉」不一致。</p>
+        </aside>
+      </div>
+    </div>
+    <p class="col-note">评审稿示意用。落地会和批次/号码页分叉。</p>
+  </div>
+  <div class="col">
+    <div class="col-h"><span class="side">RIGHT / 全站约定</span><strong>右侧抽屉 560</strong><span class="rec">推荐</span></div>
+    <div class="col-b">
+      <div class="drawer-overlay">
+        <div class="q-row urgent" style="opacity:.45">
+          <div class="cd hot"><b>00:01:36</b><span>后过期</span></div>
+          <div class="q-main"><div class="q-l1"><span class="cat-tag">通知</span><code>WB202608190014</code></div></div>
+        </div>
+        <div class="scrim"></div>
+        <aside class="sheet">
+          <div class="d-head"><div><span class="sub2">审批详情</span><code>WB202608190014</code></div><span class="stag">待审批 · 剩 00:01:36</span></div>
+          <dl class="facts">
+            <div><dt>类别 / 通道</dt><dd>通知 · realtime</dd></div>
+            <div><dt>发送计划</dt><dd>立即发送</dd></div>
+            <div><dt>受理号码</dt><dd><b>1,284</b></dd></div>
+            <div><dt>预计计费</dt><dd><b>1,412</b> 条</dd></div>
+          </dl>
+          <div class="proof"><span>待审内容（OTP 已等长打码）</span><p>【企业短信】报销单已审批通过…</p></div>
+        </aside>
+      </div>
+    </div>
+    <p class="col-note">现网是 480px。对齐时只加宽并改内部铬，不改成常驻分栏。</p>
+  </div>
+</div>
+
+<div class="stage-label">③ 倒计时格式</div>
+<p class="variant-caption">同一条临期单。左边跟稿面去掉秒；右边保持现网每秒 tick。推荐右边，更准。</p>
+<div class="pair">
+  <div class="col">
+    <div class="col-h"><span class="side">LEFT / 方案 A 稿面</span><strong>HH:MM</strong></div>
+    <div class="col-b">
+      <div class="q-row urgent">
+        <div class="cd hot"><b>01:36</b><span>后过期</span></div>
+        <div class="q-main">
+          <div class="q-l1"><span class="cat-chip">通知</span><code>WB202608190014</code></div>
+          <div class="q-l2">张伟 · 财务部 <em>·</em> 受众 <b>1,284</b></div>
+        </div>
+        <div class="q-actions"><span class="expand">详情 ›</span></div>
+      </div>
+    </div>
+    <p class="col-note">稿面 01:36 看起来像小时:分钟。停留时秒在走，对稿会少一截信息。</p>
+  </div>
+  <div class="col">
+    <div class="col-h"><span class="side">RIGHT / 现网</span><strong>HH:MM:SS</strong><span class="rec">推荐</span></div>
+    <div class="col-b">
+      <div class="q-row urgent">
+        <div class="cd hot"><b>00:01:36</b><span>后过期</span></div>
+        <div class="q-main">
+          <div class="q-l1"><span class="cat-tag">通知</span><code>WB202608190014</code></div>
+          <div class="q-l2">张伟 · 财务部 <em>·</em> 受众 <b>1,284</b></div>
+        </div>
+        <div class="q-actions"><span class="expand">详情 ›</span></div>
+      </div>
+    </div>
+    <p class="col-note">不足一小时时小时位是 00，比稿面更长，但和 1s tick 一致。</p>
+  </div>
+</div>
+
+<div class="stage-label">拟定落地稿　① 左 + ② 右 + ③ 右 + P1 铬</div>
+<p class="variant-caption">
+  这是确认后准备落到 ApprovalView 的样子。H1 19px 无衬线；类别用全站竖条；抽屉 560；倒计时带秒；
+  可补通道 / 字数 / 单号计费条 / 快照说明。不写已剔除、已含退订语、当前配置阈值、通过前预判窗外改派。
+</p>
+<div class="stage">
+  <div class="apv">
+    <header class="head">
+      <div>
+        <p class="eyebrow">GOVERNANCE / 审批流转</p>
+        <h1>审批中心</h1>
+        <p class="sub">Web 发送达阈值进入审批；超时未决自动过期并释放配额。</p>
+      </div>
+      <div class="head-side">
+        <span class="todo-pill"><b>12</b> 待审 · <span class="hot">3 临期</span></span>
+        <span class="role-tag"><i></i>当前身份 · 审批员</span>
+      </div>
+    </header>
+
+    <div class="filter-bar">
+      <div class="fld"><span>状态</span>
+        <div class="seg">
+          <b class="on">待审批 <span class="cnt hot">12</span></b>
+          <b>已通过 <span class="cnt">46</span></b>
+          <b>已驳回 <span class="cnt">7</span></b>
+          <b>已过期 <span class="cnt">3</span></b>
+        </div>
+      </div>
+      <div class="fld"><span>类别</span><span class="pill">全部 ▾</span></div>
+      <div class="fld"><span>部门</span><span class="search">模糊匹配部门</span></div>
+      <div class="fld"><span>申请人</span><span class="search">登录名</span></div>
+      <div class="fld"><span>排序</span><span class="pill">临期优先 ▾</span></div>
+      <button class="btn ghost">刷新</button>
+      <span class="refresh-hint">30s 自动</span>
+    </div>
+
+    <div class="drawer-overlay" style="min-height:520px">
+      <div style="display:grid;gap:10px;padding-right:0">
+        <div class="q-row urgent">
+          <div class="cd hot"><b>00:01:36</b><span>后过期</span></div>
+          <div class="q-main">
+            <div class="q-l1"><span class="cat-tag">通知</span><code>WB202608190014</code></div>
+            <div class="q-l2">张伟 · 财务部 <em>·</em> 09:12 提交 <em>·</em> 受众 <b>1,284</b> 号码 <em>·</em> 预计计费 <b>1,412</b> 条</div>
+            <div class="q-l3">触发规则 <b>通知 ≥ 1,000 个号码（提交时阈值快照）</b> · 立即发送</div>
+          </div>
+          <div class="q-actions">
+            <span class="expand">详情 ›</span>
+            <button class="btn primary sm">通过</button>
+            <button class="btn danger sm">驳回</button>
+          </div>
+        </div>
+        <div class="q-row urgent">
+          <div class="cd hot"><b>00:01:52</b><span>后过期</span></div>
+          <div class="q-main">
+            <div class="q-l1"><span class="cat-tag market">营销</span><code>WB202608190011</code><span class="sched">定时 08-19 20:00</span></div>
+            <div class="q-l2">李娜 · 会员运营部 <em>·</em> 08:58 提交 <em>·</em> 受众 <b>3,072</b> 号码 <em>·</em> 预计计费 <b>3,686</b> 条</div>
+            <div class="q-l3">触发规则 <b>营销 ≥ 50 个号码（提交时阈值快照）</b> · 通过后排入定时</div>
+          </div>
+          <div class="q-actions">
+            <span class="expand">详情 ›</span>
+            <button class="btn primary sm">通过</button>
+            <button class="btn danger sm">驳回</button>
+          </div>
+        </div>
+        <div class="q-row" style="opacity:.72">
+          <div class="cd" style="color:var(--amber)"><b style="color:var(--amber)">00:05:47</b><span>后过期</span></div>
+          <div class="q-main">
+            <div class="q-l1"><span class="cat-tag">通知</span><code>WB202608190009</code></div>
+            <div class="q-l2">王芳（我） · 客服部 <em>·</em> 受众 <b>1,050</b> 号码</div>
+            <div class="q-l3">触发规则 <b>通知 ≥ 1,000 个号码</b> · 立即发送</div>
+          </div>
+          <span style="font-size:11px;color:var(--tx-3);border:1px dashed var(--hair);border-radius:7px;padding:5px 11px">本人提交 · 按规则回避</span>
+        </div>
+        <div class="queue-foot">
+          <span>‹ 1 / 3 › · 共 12 条 · 每页 20</span>
+          <span class="poll"><i></i>30s 轮询中 · 上次更新 09:41:22</span>
+        </div>
+      </div>
+
+      <div class="scrim"></div>
+      <aside class="sheet">
+        <div class="d-head">
+          <div><span class="sub2">审批详情</span><code>WB202608190014</code></div>
+          <span class="stag">待审批 · 剩 00:01:36</span>
+        </div>
+        <dl class="facts">
+          <div><dt>类别 / 通道</dt><dd>通知 · realtime</dd></div>
+          <div><dt>发送计划</dt><dd>立即发送</dd></div>
+          <div><dt>受理号码</dt><dd><b>1,284</b></dd></div>
+          <div><dt>预计计费</dt><dd><b>1,412</b> 条 · 1 条/号码</dd></div>
+          <div style="grid-column:1/-1"><dt>触发规则</dt><dd>通知 ≥ 1,000 个号码 · 提交时阈值快照</dd></div>
+          <div><dt>申请人</dt><dd>张伟 · 财务部</dd></div>
+          <div><dt>申请时间</dt><dd>2026-08-19 09:12:04</dd></div>
+          <div style="grid-column:1/-1"><dt>审批有效期</dt><dd>至 2026-08-19 11:12:04 · 过期自动作废并释放配额</dd></div>
+        </dl>
+        <div class="proof">
+          <span>待审内容（OTP 已等长打码） · <em style="font:9px/1.6 var(--mono);color:#93b6e0;border:1px solid rgba(111,155,207,.4);border-radius:4px;padding:1px 6px;font-style:normal">按需解密 · 已写敏感读审计</em></span>
+          <p>【企业短信】尊敬的客户，您申请的报销单 RE-20260818-0092 已审批通过，金额 3,200.00 元将于 3 个工作日内到账，请注意查收。</p>
+          <div class="meta">58 字 · 计费 1 条/号码 · 与下发口径一致</div>
+        </div>
+        <div class="outcome">通过后 → <code>queued / realtime</code>（有 scheduled_at 才预告定时；窗外改派等响应回来再显示）</div>
+        <div style="border:1px dashed var(--hair);border-radius:7px;padding:9px 11px;font-size:12px;color:var(--tx-3);background:var(--sink)">审批意见（通过选填 · 驳回必填，≤256 字）</div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn danger">驳回</button>
+          <button class="btn primary">通过</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

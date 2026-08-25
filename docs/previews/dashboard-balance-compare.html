@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>仪表盘 · 余额图两种做法对照</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#101814; --panel:#18231e; --panel-2:#141d19; --sink:#0c1512;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.05);
+  --tx:#c9d2cc; --tx-2:#8b978f; --tx-3:#6d7a72; --tx-hi:#eaf1ed;
+  --verdi:#0e7a63; --verdi-l:#2fa184; --amber:#d8a35c;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b100d;color:var(--tx);font-family:var(--sans);font-size:13px;line-height:1.6}
+.bar{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--hair-2);background:#0e1411}
+.bar b{font-size:15px;color:var(--tx-hi)}
+.bar span{color:var(--tx-3);font-size:11px}
+.stage{padding:18px 28px 8px;font:10px/1.5 var(--mono);letter-spacing:.14em;color:var(--tx-3)}
+.cap{padding:0 28px 12px;max-width:1180px;color:var(--tx-2);font-size:12px}
+.pair{margin:0 28px 28px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.col{border:1px solid var(--hair-2);border-radius:14px;overflow:hidden;background:var(--bg)}
+.col h2{padding:12px 16px 0;font-size:13px;color:var(--tx-hi)}
+.col p.why{padding:2px 16px 10px;font-size:11px;color:var(--tx-3)}
+.row{display:grid;grid-template-columns:2fr 1fr;gap:10px;padding:0 12px 14px}
+.panel{background:var(--panel);border:1px solid var(--hair);border-radius:12px;padding:15px 16px}
+.ph{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.ph b{font-size:13px;color:var(--tx-hi)}
+.ph small,.ph a{font-size:10px;color:var(--tx-3);font-weight:400}
+.ph a{color:var(--verdi-l)}
+.trend{height:158px;display:flex;align-items:flex-end;gap:8px;padding-top:6px}
+.trend i{flex:1;border-radius:3px 3px 0 0;background:linear-gradient(180deg,#2fa184,#4574a3 70%,#d8a35c)}
+.legend{margin-top:8px;font-size:10px;color:var(--tx-3)}
+.bal-num{font:600 30px/1.2 var(--mono);color:var(--tx-hi);font-variant-numeric:tabular-nums}
+.bal-num.sm{font-size:26px}
+.bal-num small{font-size:11px;color:var(--tx-3);font-weight:400;margin-left:6px}
+.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.meta.three{grid-template-columns:repeat(3,1fr)}
+.meta div{background:var(--sink);border:1px solid var(--hair-2);border-radius:8px;padding:7px 10px}
+.meta span{display:block;font-size:9.5px;color:var(--tx-3)}
+.meta b{font:12px var(--mono);color:var(--tx);font-variant-numeric:tabular-nums}
+.meta .warn b{color:var(--amber)}
+.spark{margin-top:8px;display:block;width:100%;height:64px}
+.chart{margin-top:8px;display:block;width:100%;height:140px}
+.axis{fill:var(--tx-3);font:9px var(--mono)}
+.note{margin:0 28px 32px;padding:12px 16px;border:1px dashed var(--hair);border-radius:10px;color:var(--tx-2);font-size:12px;max-width:1180px}
+.note b{color:var(--tx)}
+@media (max-width:980px){.pair,.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>余额图对照</b>
+  <span>同一套 mock 数据 · 右侧都配方案 A 的 158px 趋势，方便看高度是否齐平</span>
+</div>
+
+<p class="stage">OPTION 1 — 64px SPARKLINE + 四格</p>
+<p class="cap">跟评审稿方案 A 一致：大数字 + 矮走势 + 2×2 元数据。阈值不画在图上，写在格子里。和左侧趋势大致齐平。</p>
+
+<p class="stage">OPTION 2 — 缩矮 ECharts + 阈值虚线</p>
+<p class="cap">保留现网读图方式：坐标、面积、琥珀虚线阈值。高度从 260px 收到 140px，meta 仍是三格。右栏会比趋势更高一截。</p>
+
+<div class="pair">
+  <div class="col">
+    <h2>做法 1 · sparkline + 四格</h2>
+    <p class="why">信息在格子里读完；图只负责「在掉」。推荐与方案 A 像素对齐。</p>
+    <div class="row">
+      <div class="panel">
+        <div class="ph"><b>近 7 日发送趋势 <small>按类目 · 消息条数</small></b></div>
+        <div class="trend"><i style="height:86%"></i><i style="height:90%"></i><i style="height:94%"></i><i style="height:58%"></i><i style="height:54%"></i><i style="height:88%"></i><i style="height:96%"></i></div>
+        <p class="legend">158px 柱区（对照高度）</p>
+      </div>
+      <div class="panel">
+        <div class="ph"><b>厂商余额 <small>近 14 日 · 每日末值</small></b><a>详情 →</a></div>
+        <div class="bal-num">1,336,822<small>计费条</small></div>
+        <svg class="spark" viewBox="0 0 280 64" role="img" aria-label="余额 sparkline">
+          <polyline fill="none" stroke="#2fa184" stroke-width="1.6"
+            points="0,4 21.5,8.1 43.1,12.3 64.6,16.4 86.2,18.9 107.7,21.4 129.2,25.6 150.8,29.9 172.3,33.9 193.8,38.2 215.4,42.5 236.9,45.2 258.5,47.8 280,52"/>
+          <polygon fill="rgba(47,161,132,.12)" points="0,4 21.5,8.1 43.1,12.3 64.6,16.4 86.2,18.9 107.7,21.4 129.2,25.6 150.8,29.9 172.3,33.9 193.8,38.2 215.4,42.5 236.9,45.2 258.5,47.8 280,52 280,64 0,64"/>
+        </svg>
+        <div class="meta">
+          <div><span>告警阈值</span><b>200,000</b></div>
+          <div><span>日均消耗（14 日）</span><b>≈ 55,800</b></div>
+          <div><span>预计可用</span><b class="warn">≈ 24 天</b></div>
+          <div><span>余额轮询</span><b>正常 · 09:20</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>做法 2 · 缩矮 ECharts + 虚线</h2>
+    <p class="why">能看见余额相对阈值的位置；右栏比左侧趋势高出约一张图例的高度。</p>
+    <div class="row">
+      <div class="panel">
+        <div class="ph"><b>近 7 日发送趋势 <small>按类目 · 消息条数</small></b></div>
+        <div class="trend"><i style="height:86%"></i><i style="height:90%"></i><i style="height:94%"></i><i style="height:58%"></i><i style="height:54%"></i><i style="height:88%"></i><i style="height:96%"></i></div>
+        <p class="legend">158px 柱区（对照高度）</p>
+      </div>
+      <div class="panel">
+        <div class="ph"><b>厂商余额 <small>近 14 个自然日 · 每日末值</small></b><span>单位：计费条</span></div>
+        <div class="bal-num sm">1,336,822</div>
+        <div class="meta three" style="margin-top:10px">
+          <div><span>告警阈值</span><b>200,000</b></div>
+          <div><span>日均消耗</span><b>≈ 55,800</b></div>
+          <div><span>预计可用</span><b class="warn">≈ 24 天</b></div>
+        </div>
+        <svg class="chart" viewBox="0 0 320 140" role="img" aria-label="缩矮余额图">
+          <text class="axis" x="4" y="18">1.4M</text>
+          <text class="axis" x="4" y="78">0.8M</text>
+          <text class="axis" x="4" y="128">0.2M</text>
+          <line x1="36" y1="22" x2="314" y2="22" stroke="rgba(255,255,255,.06)" stroke-dasharray="3 3"/>
+          <line x1="36" y1="82" x2="314" y2="82" stroke="rgba(255,255,255,.06)" stroke-dasharray="3 3"/>
+          <line x1="36" y1="118" x2="314" y2="118" stroke="#d8a35c" stroke-dasharray="5 4" stroke-width="1.2"/>
+          <text class="axis" x="248" y="114" fill="#d8a35c">告警阈值</text>
+          <polygon fill="rgba(47,161,132,.12)" points="36,18 57,24 79,30 100,36 122,40 143,44 165,50 186,56 208,62 229,68 251,74 272,78 294,82 314,88 314,132 36,132"/>
+          <polyline fill="none" stroke="#2fa184" stroke-width="2"
+            points="36,18 57,24 79,30 100,36 122,40 143,44 165,50 186,56 208,62 229,68 251,74 272,78 294,82 314,88"/>
+          <circle cx="36" cy="18" r="2.4" fill="#2fa184"/>
+          <circle cx="165" cy="50" r="2.4" fill="#2fa184"/>
+          <circle cx="314" cy="88" r="2.4" fill="#2fa184"/>
+          <text class="axis" x="36" y="138">08-05</text>
+          <text class="axis" x="268" y="138">08-18</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="note">
+  <b>怎么选：</b>要对齐方案 A 的行高和「确认单」密度，选做法 1。
+  若值班更在意「现在离 200,000 还有多远」，选做法 2，接受右栏更高、没有「余额轮询」格。
+  交互稿：<a href="./dashboard-balance-compare.html" style="color:#2fa184">本页</a> · 方案 A 全文见 dashboard-redesign-prototype.html。
+</p>
+</body>
+</html>
