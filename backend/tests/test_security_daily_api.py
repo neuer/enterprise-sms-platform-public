@@ -22,6 +22,7 @@ from app.services.security_daily import (
     SecurityDailyPreview,
     SecurityDailyQuery,
     SecurityDailyReportRecord,
+    SecurityDailyStateConflict,
     SecurityDailyUnavailable,
 )
 
@@ -63,6 +64,8 @@ class FakeService:
             payload=None,
         )
         self.generate_error: Exception | None = None
+        self.configure_error: Exception | None = None
+        self.delivery_error: Exception | None = None
 
     async def configuration(self) -> SecurityDailyConfiguration:
         return self.configuration_value
@@ -75,6 +78,8 @@ class FakeService:
         ip: str,
     ) -> SecurityDailyConfiguration:
         del principal, ip
+        if self.configure_error is not None:
+            raise self.configure_error
         self.configuration_update = update
         self.configuration_value = SecurityDailyConfiguration(
             enabled=update.enabled,
@@ -124,6 +129,8 @@ class FakeService:
     ) -> SecurityDailyDeliveryRequest:
         if report_id != self.generated.id:
             raise SecurityDailyNotFound(str(report_id))
+        if self.delivery_error is not None:
+            raise self.delivery_error
         return SecurityDailyDeliveryRequest(
             request_id=UUID(int=0),
             report_date=self.generated.report_date,
@@ -277,6 +284,35 @@ def test_configuration_endpoint_returns_status_without_echoing_resend_key() -> N
     assert "re_new_value" not in write.text
 
 
+def test_configuration_update_conflict_is_409_without_echoing_key() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    service.configure_error = SecurityDailyStateConflict(
+        "安全日报配置已被更新版本取代"
+    )
+
+    response = client(service).put(
+        "/api/v1/web/admin/security-daily/config",
+        headers={"Authorization": "Bearer jwt"},
+        json={
+            "enabled": True,
+            "recipients": ["ops@example.com"],
+            "resend_api_key": "re_conflict_value",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"
+    assert "re_conflict_value" not in response.text
+    assert "ops@example.com" not in response.text
+
+
 def test_manual_generation_returns_report_without_triggering_delivery() -> None:
     service = FakeService(
         overview(
@@ -412,3 +448,25 @@ def test_send_and_retry_are_keyed_by_record_id() -> None:
     assert send.json()["request_id"] == "00000000-0000-0000-0000-000000000000"
     assert retry.status_code == 202
     assert retry.json()["action"] == "retry"
+
+
+def test_unknown_delivery_retry_is_409() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    service.delivery_error = SecurityDailyStateConflict("投递结果未知，禁止盲目重试")
+
+    response = client(service).post(
+        "/api/v1/web/admin/security-daily/reports/42/retry",
+        headers={"Authorization": "Bearer jwt"},
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"
+    assert "禁止盲目重试" in response.json()["message"]

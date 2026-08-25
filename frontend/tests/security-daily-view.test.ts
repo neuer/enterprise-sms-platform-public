@@ -76,6 +76,11 @@ const reports = [
     status: "high", generation_status: "unavailable", delivery_status: "pending", generated_at: null, delivered_at: null,
     recipient_count: 0, retry_count: 0, last_error: null, last_error_at: null, updated_at: "2026-07-18T08:00:00+08:00", payload: null, timeline: [],
   },
+  {
+    id: 6, report_date: "2026-07-18", period_start: "2026-07-18T00:00:00+08:00", period_end: "2026-07-18T23:59:59+08:00",
+    status: "attention", generation_status: "ready", delivery_status: "unknown", generated_at: "2026-07-19T08:00:00+08:00", delivered_at: null,
+    recipient_count: 1, retry_count: 0, last_error: "投递结果未知", last_error_at: "2026-07-19T08:03:00+08:00", updated_at: "2026-07-19T08:03:00+08:00", payload, timeline: [],
+  },
 ]
 
 const overview = {
@@ -181,6 +186,19 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(true)
+    expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("结果未知的日报展示显式状态且不提供盲目重试", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(5)!.trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("投递结果未知")
+    expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(false)
     expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
     wrapper.unmount()
   })
@@ -297,7 +315,7 @@ describe("安全日报页面", () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     const buttons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
-    await buttons.at(-1)!.trigger("click")
+    await buttons.at(4)!.trigger("click")
     await flushPromises()
 
     expect(wrapper.text()).toContain("当前没有可展示的脱敏结构化报告")

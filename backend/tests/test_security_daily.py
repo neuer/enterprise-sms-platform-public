@@ -15,6 +15,7 @@ from app.services.security_daily import (
     SecurityDailyAutoDeliveryConfiguration,
     SecurityDailyConfiguration,
     SecurityDailyConfigurationSuperseded,
+    SecurityDailyConfigurationUpdate,
     SecurityDailyControlError,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
@@ -23,6 +24,7 @@ from app.services.security_daily import (
     SecurityDailyQuery,
     SecurityDailyReportRecord,
     SecurityDailyService,
+    SecurityDailyStateConflict,
     SecurityDailyUnavailable,
     SecurityDailyValidationError,
     _count_delta_suffix,
@@ -135,6 +137,10 @@ class FakeRepository:
     def __init__(self, record: SecurityDailyReportRecord) -> None:
         self.record = record
         self.failed: list[tuple[UUID, str]] = []
+        self.unknowns: list[tuple[UUID, str]] = []
+        self.publish_states: list[str] = []
+        self.applied_results: list[SecurityDailyControlResult] = []
+        self.pending_requests: list[tuple[UUID, date]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
         self.existing_request: SecurityDailyDeliveryRequest | None = None
         self.delivery_failed: list[tuple[int, str]] = []
@@ -212,12 +218,21 @@ class FakeRepository:
 
     async def update_configuration(
         self,
-        update: object,
+        update: SecurityDailyConfigurationUpdate,
         *,
         principal: SecurityPrincipal,
         ip: str,
     ) -> SecurityDailyConfiguration:
-        raise NotImplementedError
+        del principal, ip
+        api_key = self.config.api_key if update.api_key is None else update.api_key
+        self.config = SecurityDailyConfiguration(
+            update.enabled,
+            api_key,
+            tuple(update.recipients),
+            self.config.config_version + 1,
+        )
+        self.publish_states.append("file_pending")
+        return self.config
 
     async def overview(self, *, now: datetime) -> SecurityDailyOverview:
         return SecurityDailyOverview(
@@ -288,16 +303,18 @@ class FakeRepository:
         return request
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]:
-        return ()
+        return tuple(self.pending_requests)
 
     async def apply_control_result(self, result: SecurityDailyControlResult) -> None:
-        return None
+        self.applied_results.append(result)
+        if result.state == "sent":
+            self.record = replace(self.record, delivery_status="sent", last_error=None)
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None:
         self.failed.append((request_id, message))
 
     async def mark_request_unknown(self, request_id: UUID, message: str) -> None:
-        self.failed.append((request_id, message))
+        self.unknowns.append((request_id, message))
 
     async def mark_configuration_publish_state(
         self,
@@ -307,7 +324,8 @@ class FakeRepository:
         operation_id: str | None = None,
         actor: str = "security-daily-config",
     ) -> None:
-        del config_version, publish_state, operation_id, actor
+        del config_version, operation_id, actor
+        self.publish_states.append(publish_state)
 
     async def mark_delivery_failed(self, report_id: int, message: str) -> bool:
         self.delivery_failed.append((report_id, message))
@@ -1120,3 +1138,284 @@ async def test_auto_delivery_waits_on_configuration_version_split() -> None:
     assert control.submitted == []
     assert repository.delivery_failed == []
     assert repository.failed == []
+
+
+def _admin() -> SecurityPrincipal:
+    return SecurityPrincipal(1, 2, "admin", "security", "admin")
+
+
+class RepairableVersionSplitControl(FakeControl):
+    def __init__(self) -> None:
+        super().__init__()
+        self.file_version = 1
+        self.fail_sync = True
+
+    async def published_config_version(self) -> int | None:
+        return self.file_version
+
+    async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None:
+        if self.fail_sync:
+            raise SecurityDailyControlError("安全日报配置同步失败")
+        self.file_version = configuration.config_version
+        await super().sync_configuration(configuration)
+
+
+class InspectUnavailableControl(RecordingFailingControl):
+    def __init__(self) -> None:
+        super().__init__("missing")
+
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        raise SecurityDailyControlError("投递证据不可读")
+
+
+class SentResultControl(FakeControl):
+    def __init__(self, request_id: UUID, report_date: date) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.report_date = report_date
+
+    async def result(self, request_id: UUID) -> SecurityDailyControlResult | None:
+        if request_id != self.request_id:
+            return None
+        return SecurityDailyControlResult(
+            request_id=request_id,
+            report_date=self.report_date,
+            state="sent",
+            completed_at=datetime(2026, 7, 16, 8, 10, tzinfo=SHANGHAI),
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_delivery_resumes_after_configuration_version_split_is_repaired() -> None:
+    repository = FakeRepository(record())
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="re_test_value",
+        recipients=("security-owner@example.com",),
+        config_version=3,
+    )
+    control = RepairableVersionSplitControl()
+    service = SecurityDailyService(repository, control)
+
+    assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
+    assert control.submitted == []
+    control.fail_sync = False
+    request = await service.submit_auto_delivery(date(2026, 7, 15))
+    assert request is not None
+    assert len(control.submitted) == 1
+    assert control.file_version == 3
+
+
+@pytest.mark.asyncio
+async def test_configure_enospc_leaves_file_pending_and_overview_reconciles() -> None:
+    repository = FakeRepository(record())
+    control = RepairableVersionSplitControl()
+    service = SecurityDailyService(repository, control)
+    update = SecurityDailyConfigurationUpdate(
+        True, ("security-owner@example.com",), "re_test_value"
+    )
+
+    with pytest.raises(SecurityDailyControlError, match="配置同步失败"):
+        await service.configure(update, principal=_admin(), ip="127.0.0.1")
+    assert repository.publish_states == ["file_pending"]
+    assert repository.config.config_version == 2
+
+    control.fail_sync = False
+    await service.overview()
+    assert repository.publish_states[-1] == "file_committed"
+    assert control.file_version == 2
+    assert all(
+        "re_test_value" not in state and "security-owner@example.com" not in state
+        for state in repository.publish_states
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_configure_does_not_claim_file_committed_success() -> None:
+    repository = FakeRepository(record())
+
+    class SupersededControl(FakeControl):
+        async def sync_configuration(
+            self, configuration: SecurityDailyConfiguration
+        ) -> None:
+            del configuration
+            raise SecurityDailyConfigurationSuperseded(
+                "安全日报配置版本已被更新版本取代"
+            )
+
+    service = SecurityDailyService(repository, SupersededControl())
+    with pytest.raises(SecurityDailyStateConflict, match="已被更新版本取代"):
+        await service.configure(
+            SecurityDailyConfigurationUpdate(
+                True, ("security-owner@example.com",), "re_test_value"
+            ),
+            principal=_admin(),
+            ip="127.0.0.1",
+        )
+    assert "file_committed" not in repository.publish_states
+    assert repository.publish_states == ["file_pending", "file_pending"]
+
+
+@pytest.mark.asyncio
+async def test_inspect_failure_marks_unknown_instead_of_failed() -> None:
+    repository = FakeRepository(record())
+    service = SecurityDailyService(repository, InspectUnavailableControl())
+
+    with pytest.raises(SecurityDailyControlError):
+        await service.request_delivery(1, "send", principal=_admin(), ip="127.0.0.1")
+
+    assert repository.failed == []
+    assert repository.unknowns
+    assert repository.unknowns[0][1] == "投递结果未知"
+
+
+@pytest.mark.asyncio
+async def test_unknown_delivery_status_cannot_be_retried() -> None:
+    repository = FakeRepository(
+        replace(record(), delivery_status="unknown", last_error="投递结果未知")
+    )
+    service = SecurityDailyService(repository, FakeControl())
+    with pytest.raises(SecurityDailyStateConflict, match="只有投递失败"):
+        await service.request_delivery(1, "retry", principal=_admin(), ip="127.0.0.1")
+    assert repository.requests == []
+
+
+@pytest.mark.asyncio
+async def test_failed_unknown_error_cannot_be_retried() -> None:
+    repository = FakeRepository(
+        replace(record(), delivery_status="failed", last_error="投递结果未知")
+    )
+    service = SecurityDailyService(repository, FakeControl())
+    with pytest.raises(SecurityDailyStateConflict, match="禁止盲目重试"):
+        await service.request_delivery(1, "retry", principal=_admin(), ip="127.0.0.1")
+    assert repository.requests == []
+
+
+@pytest.mark.asyncio
+async def test_overview_reconciles_writer_race_failed_request_to_sent() -> None:
+    item = record()
+    request_id = uuid4()
+    repository = FakeRepository(replace(item, delivery_status="failed"))
+    repository.pending_requests = [(request_id, item.report_date)]
+    service = SecurityDailyService(
+        repository, SentResultControl(request_id, item.report_date)
+    )
+
+    await service.overview()
+
+    assert repository.applied_results[0].state == "sent"
+    assert repository.record.delivery_status == "sent"
+
+
+def test_configuration_write_fsyncs_temp_final_and_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stat
+
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def tracked_fsync(descriptor: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file"
+        events.append(f"fsync:{kind}")
+        real_fsync(descriptor)
+
+    def tracked_replace(source: Path, destination: Path) -> None:
+        events.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "fsync", tracked_fsync)
+    monkeypatch.setattr(os, "replace", tracked_replace)
+    control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
+    control._write_configuration(
+        SecurityDailyConfiguration(
+            True, "re_test_value", ("security-owner@example.com",), 1
+        )
+    )
+    assert events == ["fsync:file", "replace", "fsync:file", "fsync:directory"]
+    restarted = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
+    assert restarted._read_published_version() == 1
+
+
+def test_configuration_crash_before_replace_does_not_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        os,
+        "replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("killed")),
+    )
+    control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
+    with pytest.raises(SecurityDailyControlError):
+        control._write_configuration(
+            SecurityDailyConfiguration(
+                True, "re_test_value", ("security-owner@example.com",), 1
+            )
+        )
+    assert not (tmp_path / "config" / "resend.json").exists()
+    assert list((tmp_path / "config").glob(".resend.*.tmp")) == []
+
+
+def test_request_fsync_failure_after_replace_is_already_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_dir = tmp_path / "control"
+    control_dir.mkdir(mode=0o700)
+    control = FileSecurityDailyControl(control_dir, tmp_path / "config")
+    request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=False,
+        delivery_id="10086",
+    )
+    seen = 0
+    real_fsync = os.fsync
+
+    def flaky_fsync(descriptor: int) -> None:
+        nonlocal seen
+        seen += 1
+        if seen >= 2:
+            raise OSError(5, "Input/output error")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", flaky_fsync)
+    assert control._write_request(request, payload()) == "already_published"
+    published = control_dir / "requests" / f"{request.request_id}.json"
+    assert published.is_file()
+    encoded = published.read_text(encoding="utf-8")
+    assert json.loads(encoded)["delivery_id"] == "10086"
+    assert "re_test_value" not in encoded
+
+
+def test_request_enospc_before_publish_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_dir = tmp_path / "control"
+    control_dir.mkdir(mode=0o700)
+    control = FileSecurityDailyControl(control_dir, tmp_path / "config")
+    request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=False,
+        delivery_id="10086",
+    )
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(SecurityDailyControlError, match="投递请求写入失败"):
+        control._write_request(request, payload())
+    assert not (control_dir / "requests" / f"{request.request_id}.json").exists()

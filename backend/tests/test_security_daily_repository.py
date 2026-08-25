@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, cast
@@ -7,8 +8,10 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services.security_daily import (
     DeliveryStatus,
+    SecurityDailyConfigurationUpdate,
     SecurityDailyControlResult,
     SecurityDailyReportRecord,
 )
@@ -352,3 +355,79 @@ async def test_writer_race_failed_request_still_accepts_mailer_sent(
         if "UPDATE security_daily_report" in sql
     )
     assert report_update["delivery_status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_update_configuration_audits_publish_phases_without_secrets() -> None:
+    repo, connection = repository([FakeResult() for _ in range(20)])
+
+    configuration = await repo.update_configuration(
+        SecurityDailyConfigurationUpdate(
+            enabled=True,
+            recipients=("security-owner@example.com",),
+            api_key="re_secret_key",
+        ),
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+    )
+
+    assert configuration.config_version == 1
+    audits = [
+        json.loads(params["after"])
+        for sql, params in connection.calls
+        if "INSERT INTO audit_log" in sql
+    ]
+    assert [item["publish_state"] for item in audits] == ["db_committed", "file_pending"]
+    encoded = json.dumps(audits)
+    assert "re_secret_key" not in encoded
+    assert "security-owner@example.com" not in encoded
+    assert all(item["operation_id"] for item in audits)
+    assert all("recipient_count" in item for item in audits)
+
+
+@pytest.mark.asyncio
+async def test_mark_file_committed_audit_excludes_key_and_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, connection = repository([FakeResult() for _ in range(8)])
+
+    async def no_audit_bind(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.security_daily_repository.bind_connection_system_audit",
+        no_audit_bind,
+    )
+
+    await repo.mark_configuration_publish_state(
+        config_version=3,
+        publish_state="file_committed",
+        operation_id="op-1",
+    )
+
+    audits = [
+        json.loads(params["after"])
+        for sql, params in connection.calls
+        if "INSERT INTO audit_log" in sql
+    ]
+    assert audits == [
+        {
+            "config_version": 3,
+            "publish_state": "file_committed",
+            "operation_id": "op-1",
+        }
+    ]
+    encoded = json.dumps(connection.calls)
+    assert "re_" not in encoded
+    assert "@" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_pending_delivery_requests_include_unknown_and_writer_race() -> None:
+    repo, connection = repository([FakeResult([])])
+
+    await repo.pending_delivery_requests()
+
+    sql = connection.calls[0][0]
+    assert "state IN ('pending','unknown')" in sql
+    assert "独立投递器不可用" in sql
