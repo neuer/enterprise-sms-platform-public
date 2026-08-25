@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import render_security_daily_report as renderer
 
@@ -76,6 +76,7 @@ class ControlRequest:
     action: str
     config_version: int
     report: renderer.SecurityDailyReport
+    delivery_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,14 +250,16 @@ class ResendClient:
         *,
         recipients: Sequence[str],
         request_id: UUID | None = None,
+        delivery_id: str | None = None,
     ) -> DeliveryReceipt:
         normalized_recipients = _validate_recipients(recipients)
         body = _render_payload(report, normalized_recipients)
+        identity = delivery_id or (str(request_id) if request_id is not None else "")
         idempotency_key = f"security-daily-{report.report_date}"
-        if request_id is not None:
-            # 同一日期重新生成/重发会携带新请求 ID，避免与历史请求的
-            # Resend 幂等键冲突（相同键+不同载荷会被 Resend 以 409 拒绝）。
-            idempotency_key = f"{idempotency_key}-{request_id}"
+        if identity:
+            # 绑定稳定逻辑投递身份：同一份已生成日报的重试复用同一键；
+            # 真正重新生成的新日报使用新的 Generation / report id。
+            idempotency_key = f"{idempotency_key}-{identity}"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -296,13 +299,9 @@ def _control_request(path: Path) -> ControlRequest:
         if path.stat().st_size > MAX_CONTROL_REQUEST_BYTES:
             raise ResendConfigurationError("control request is too large")
         value = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict) or set(value) != {
-            "request_id",
-            "report_date",
-            "action",
-            "config_version",
-            "payload",
-        }:
+        fields = set(value)
+        required = {"request_id", "report_date", "action", "config_version", "payload"}
+        if not required <= fields or not fields <= required | {"delivery_id"}:
             raise ResendConfigurationError("control request has invalid fields")
         request_id = UUID(str(value["request_id"]))
         report_date = str(value["report_date"])
@@ -318,6 +317,14 @@ def _control_request(path: Path) -> ControlRequest:
             or config_version < 1
         ):
             raise ResendConfigurationError("control request configuration version is invalid")
+        raw_delivery_id = value.get("delivery_id", str(request_id))
+        delivery_id = str(raw_delivery_id)
+        if (
+            not delivery_id
+            or len(delivery_id) > 128
+            or any(character.isspace() for character in delivery_id)
+        ):
+            raise ResendConfigurationError("control request delivery identity is invalid")
         report = renderer.parse_report(value["payload"])
     except ResendConfigurationError:
         raise
@@ -325,7 +332,7 @@ def _control_request(path: Path) -> ControlRequest:
         raise ResendConfigurationError("control request is invalid") from None
     if report.report_date != report_date:
         raise ResendConfigurationError("control request date does not match report")
-    return ControlRequest(request_id, report_date, action, config_version, report)
+    return ControlRequest(request_id, report_date, action, config_version, report, delivery_id)
 
 
 def _write_control_result(
@@ -345,7 +352,7 @@ def _write_control_result(
     result_dir = control_dir / "results"
     result_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     destination = result_dir / f"{request_id}.json"
-    temporary = result_dir / f".{request_id}.tmp"
+    temporary = result_dir / f".{request_id}.{uuid4().hex}.tmp"
     body = {
         "request_id": str(request_id),
         "report_date": report_date,
@@ -386,6 +393,7 @@ def process_control_request(
             request.report,
             recipients=configuration.recipients,
             request_id=request.request_id,
+            delivery_id=request.delivery_id,
         )
     except (ResendConfigurationError, ResendDeliveryError) as exc:
         _write_control_result(

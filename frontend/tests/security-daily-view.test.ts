@@ -130,6 +130,7 @@ describe("安全日报页面", () => {
     expect(wrapper.text()).toContain("高风险")
     expect(wrapper.text()).toContain("生成失败")
     expect(wrapper.text()).toContain("投递失败")
+    expect(wrapper.text()).toContain("结果未知")
     expect(wrapper.text()).toContain("数据不可用")
     expect(wrapper.text()).toContain("1 人（只展示数量）")
     expect(wrapper.text()).toContain("2026-07-14 08:00:00")

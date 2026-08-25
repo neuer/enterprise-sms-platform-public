@@ -283,6 +283,7 @@ async def test_superseded_request_result_cannot_overwrite_current_report() -> No
                         "report_id": 10086,
                         "report_date": date(2026, 8, 12),
                         "state": "failed",
+                        "error": "安全日报邮件配置已更新，旧投递请求已失效",
                     }
                 ]
             ),
@@ -301,3 +302,53 @@ async def test_superseded_request_result_cannot_overwrite_current_report() -> No
     assert len(connection.calls) == 2
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
     assert all("UPDATE security_daily_report" not in sql for sql, _ in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_writer_race_failed_request_still_accepts_mailer_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = uuid4()
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(
+                [
+                    {
+                        "report_id": 10086,
+                        "report_date": date(2026, 8, 12),
+                        "state": "failed",
+                        "error": "独立投递器不可用",
+                    }
+                ]
+            ),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+
+    async def no_audit_bind(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.security_daily_repository.bind_connection_system_audit",
+        no_audit_bind,
+    )
+
+    await repo.apply_control_result(
+        SecurityDailyControlResult(
+            request_id=request_id,
+            report_date=date(2026, 8, 12),
+            state="sent",
+            completed_at=datetime(2026, 8, 13, 8, 10, tzinfo=SHANGHAI),
+        )
+    )
+
+    assert any("UPDATE security_daily_report" in sql for sql, _ in connection.calls)
+    report_update = next(
+        params
+        for sql, params in connection.calls
+        if "UPDATE security_daily_report" in sql
+    )
+    assert report_update["delivery_status"] == "sent"

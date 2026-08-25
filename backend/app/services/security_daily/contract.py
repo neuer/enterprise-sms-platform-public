@@ -15,10 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 SecurityStatus = Literal["normal", "attention", "high"]
 GenerationSource = Literal["auto", "manual"]
 GenerationStatus = Literal["pending", "ready", "failed", "unavailable"]
-DeliveryStatus = Literal["not_sent", "pending", "sending", "sent", "failed"]
+DeliveryStatus = Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"]
 ConfigurationState = Literal["disabled", "dispatcher_missing", "recipients_empty", "ready"]
 DeliveryAction = Literal["send", "retry"]
-DeliveryRequestState = Literal["pending", "sent", "failed"]
+DeliveryRequestState = Literal["pending", "sent", "failed", "unknown"]
 
 SHANGHAI_OFFSET = timedelta(hours=8)
 SHANGHAI_TZ = timezone(SHANGHAI_OFFSET, name="Asia/Shanghai")
@@ -339,6 +339,7 @@ class SecurityDailyDeliveryRequest:
     requested_at: datetime
     idempotent: bool
     config_version: int = 1
+    delivery_id: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -347,6 +348,11 @@ class SecurityDailyDeliveryRequest:
             or self.config_version < 1
         ):
             raise SecurityDailyConfigurationError("安全日报配置版本无效")
+        if self.delivery_id and (
+            len(self.delivery_id) > 128
+            or any(character.isspace() for character in self.delivery_id)
+        ):
+            raise SecurityDailyConfigurationError("安全日报投递身份无效")
 
 
 @dataclass(frozen=True, slots=True)

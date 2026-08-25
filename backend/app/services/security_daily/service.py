@@ -33,6 +33,7 @@ from app.services.security_daily.contract import (
     validate_security_daily_payload,
 )
 from app.services.security_daily.control import (
+    SecurityDailyConfigurationSuperseded,
     SecurityDailyControl,
     SecurityDailyControlError,
     SecurityDailyControlResult,
@@ -115,7 +116,18 @@ class SecurityDailyRepository(Protocol):
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None: ...
 
+    async def mark_request_unknown(self, request_id: UUID, message: str) -> None: ...
+
     async def mark_delivery_failed(self, report_id: int, message: str) -> bool: ...
+
+    async def mark_configuration_publish_state(
+        self,
+        *,
+        config_version: int,
+        publish_state: str,
+        operation_id: str | None = None,
+        actor: str = "security-daily-config",
+    ) -> None: ...
 
 
 async def generate_security_daily_for_date(
@@ -229,19 +241,22 @@ class SecurityDailyService:
             principal=principal,
             ip=ip,
         )
-        await self.control.sync_configuration(configuration)
+        await self._publish_configuration(configuration, persist=True)
         return configuration
 
     async def overview(self) -> SecurityDailyOverview:
+        await self._reconcile_configuration(persist=True)
         await self._synchronize_control_results()
         now = self.clock()
         return await self.repository.overview(now=now)
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
+        await self._reconcile_configuration(persist=True)
         await self._synchronize_control_results()
         return await self.repository.list_reports(query)
 
     async def get_report(self, report_id: int) -> SecurityDailyReportRecord:
+        await self._reconcile_configuration(persist=True)
         await self._synchronize_control_results()
         record = await self.repository.get_report(report_id)
         if record is None:
@@ -326,10 +341,18 @@ class SecurityDailyService:
             return None
         if record.delivery_status == "sent":
             return None
-        if record.delivery_status in {"pending", "sending"}:
+        if record.delivery_status in {"pending", "sending", "unknown"}:
             pending_age = self.clock() - record.updated_at
             if pending_age < self._PENDING_DELIVERY_RECOVERY_DELAY:
                 return None
+        if record.delivery_status == "unknown":
+            await self._synchronize_control_results()
+            refreshed = await self.repository.get_latest_report(
+                report_date, generation_source="auto"
+            )
+            if refreshed is None or refreshed.delivery_status in {"sent", "unknown"}:
+                return None
+            record = refreshed
         if record.delivery_status == "failed" and not (record.last_error or "").startswith(
             "安全日报发信配置不完整"
         ):
@@ -364,6 +387,8 @@ class SecurityDailyService:
                 generated_at=self.clock(),
                 reason=record.last_error or "证据源不可用",
             )
+        if not await self._configuration_ready_for_delivery():
+            return None
         return await self.request_delivery(
             record.id,
             "send",
@@ -408,6 +433,8 @@ class SecurityDailyService:
         assert submit_payload is not None
         if action == "retry" and record.delivery_status != "failed":
             raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
+        if action == "retry" and (record.last_error or "").startswith("投递结果未知"):
+            raise SecurityDailyStateConflict("投递结果未知，禁止盲目重试")
         request = await self.repository.request_delivery(
             record,
             action,
@@ -424,12 +451,71 @@ class SecurityDailyService:
             return request
         try:
             if not system:
-                await self.control.sync_configuration(await self.repository.configuration())
+                await self._publish_configuration(
+                    await self.repository.configuration(), persist=True
+                )
             await self.control.submit(request, submit_payload)
         except SecurityDailyControlError:
-            await self.repository.mark_request_failed(request.request_id, "独立投递器不可用")
+            if await self._submit_still_accepted(request.request_id):
+                return request
             raise
         return request
+
+    async def _publish_configuration(
+        self,
+        configuration: SecurityDailyConfiguration,
+        *,
+        persist: bool,
+    ) -> None:
+        try:
+            await self.control.sync_configuration(configuration)
+        except SecurityDailyConfigurationSuperseded:
+            if persist:
+                await self.repository.mark_configuration_publish_state(
+                    config_version=configuration.config_version,
+                    publish_state="file_pending",
+                )
+            raise SecurityDailyStateConflict("安全日报配置已被更新版本取代") from None
+        if persist:
+            await self.repository.mark_configuration_publish_state(
+                config_version=configuration.config_version,
+                publish_state="file_committed",
+            )
+
+    async def _reconcile_configuration(self, *, persist: bool) -> None:
+        published = await self.control.published_config_version()
+        configuration = await self.repository.configuration()
+        if published == configuration.config_version:
+            if persist:
+                await self.repository.mark_configuration_publish_state(
+                    config_version=configuration.config_version,
+                    publish_state="file_committed",
+                )
+            return
+        try:
+            await self._publish_configuration(configuration, persist=persist)
+        except (SecurityDailyControlError, SecurityDailyStateConflict):
+            return
+
+    async def _configuration_ready_for_delivery(self) -> bool:
+        await self._reconcile_configuration(persist=False)
+        try:
+            published = await self.control.published_config_version()
+        except SecurityDailyControlError:
+            return False
+        configuration = await self.repository.configuration()
+        return published == configuration.config_version
+
+    async def _submit_still_accepted(self, request_id: UUID) -> bool:
+        try:
+            evidence = await self.control.inspect_delivery(request_id)
+        except SecurityDailyControlError:
+            await self.repository.mark_request_unknown(request_id, "投递结果未知")
+            return False
+        if evidence in {"published", "claimed", "result"}:
+            return True
+        await self.repository.mark_request_failed(request_id, "独立投递器不可用")
+        return False
 
     @staticmethod
     def timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:

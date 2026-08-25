@@ -48,6 +48,9 @@ def _timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:
         elif record.generation_status == "failed":
             event_type = "generation_failed"
             label = "生成失败"
+        elif record.delivery_status == "unknown":
+            event_type = "delivery_unknown"
+            label = "投递结果未知"
         else:
             event_type = "delivery_failed"
             label = "投递失败"

@@ -14,6 +14,8 @@ from app.services.security_daily import (
     FileSecurityDailyControl,
     SecurityDailyAutoDeliveryConfiguration,
     SecurityDailyConfiguration,
+    SecurityDailyConfigurationSuperseded,
+    SecurityDailyControlError,
     SecurityDailyControlResult,
     SecurityDailyDeliveryRequest,
     SecurityDailyOverview,
@@ -294,6 +296,19 @@ class FakeRepository:
     async def mark_request_failed(self, request_id: UUID, message: str) -> None:
         self.failed.append((request_id, message))
 
+    async def mark_request_unknown(self, request_id: UUID, message: str) -> None:
+        self.failed.append((request_id, message))
+
+    async def mark_configuration_publish_state(
+        self,
+        *,
+        config_version: int,
+        publish_state: str,
+        operation_id: str | None = None,
+        actor: str = "security-daily-config",
+    ) -> None:
+        del config_version, publish_state, operation_id, actor
+
     async def mark_delivery_failed(self, report_id: int, message: str) -> bool:
         self.delivery_failed.append((report_id, message))
         return True
@@ -314,6 +329,13 @@ class FakeControl:
 
     async def result(self, request_id: UUID) -> SecurityDailyControlResult | None:
         return None
+
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        return "missing"
+
+    async def published_config_version(self) -> int | None:
+        return self.synced[-1].config_version if self.synced else 1
 
 
 def record() -> SecurityDailyReportRecord:
@@ -897,3 +919,204 @@ async def test_submit_auto_delivery_sends_when_snapshot_predates_generation(
 
     assert request is not None
     assert len(control.submitted) == 1
+
+
+class RecordingFailingControl(FakeControl):
+    def __init__(self, evidence: str) -> None:
+        super().__init__()
+        self.evidence = evidence
+
+    async def submit(
+        self, request: SecurityDailyDeliveryRequest, report: dict[str, object]
+    ) -> None:
+        del request, report
+        raise SecurityDailyControlError("独立投递器不可用")
+
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        return self.evidence
+
+
+@pytest.mark.asyncio
+async def test_stale_config_writer_cannot_overwrite_newer_mailer_file(
+    tmp_path: Path,
+) -> None:
+    control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
+    newer = SecurityDailyConfiguration(
+        True, "re_test_value", ("security-owner@example.com",), 3
+    )
+    older = SecurityDailyConfiguration(
+        True, "re_test_value", ("security-owner@example.com",), 2
+    )
+    await control.sync_configuration(newer)
+    with pytest.raises(SecurityDailyConfigurationSuperseded, match="更新版本"):
+        await control.sync_configuration(older)
+    assert json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
+        "config_version"
+    ] == 3
+    assert list((tmp_path / "config").glob(".resend.json.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_config_writers_use_unique_temps_and_keep_highest_version(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
+    errors: list[BaseException] = []
+
+    def write(version: int) -> None:
+        try:
+            control._write_configuration(
+                SecurityDailyConfiguration(
+                    True, "re_test_value", ("security-owner@example.com",), version
+                )
+            )
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+
+    first = threading.Thread(target=write, args=(2,))
+    second = threading.Thread(target=write, args=(3,))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+    assert json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
+        "config_version"
+    ] == 3
+    assert list((tmp_path / "config").glob(".resend.json.tmp")) == []
+    assert all(
+        not str(error).startswith("re_")
+        and "security-owner@example.com" not in str(error)
+        for error in errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_published_request_is_not_marked_failed_when_other_writer_wins() -> None:
+    repository = FakeRepository(record())
+    control = RecordingFailingControl("published")
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(
+        1,
+        "send",
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+    )
+
+    assert request.state == "pending"
+    assert repository.failed == []
+
+
+@pytest.mark.asyncio
+async def test_submit_failure_without_delivery_evidence_marks_failed() -> None:
+    repository = FakeRepository(record())
+    control = RecordingFailingControl("missing")
+    service = SecurityDailyService(repository, control)
+
+    with pytest.raises(SecurityDailyControlError):
+        await service.request_delivery(
+            1,
+            "send",
+            principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+            ip="127.0.0.1",
+        )
+
+    assert repository.failed
+    assert repository.failed[0][1] == "独立投递器不可用"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_request_rewrite_is_idempotent_and_never_shares_tmp(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    control_dir = tmp_path / "control"
+    control_dir.mkdir(mode=0o700)
+    control = FileSecurityDailyControl(control_dir, tmp_path / "config")
+    request = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=False,
+        delivery_id="10086",
+    )
+    errors: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            control._write_request(request, payload())
+        except BaseException as error:  # noqa: BLE001
+            errors.append(error)
+
+    first = threading.Thread(target=write)
+    second = threading.Thread(target=write)
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+    published = list((control_dir / "requests").glob("*.json"))
+    assert len(published) == 1
+    assert errors == []
+    assert not list((control_dir / "requests").glob(f".{request.request_id}.tmp"))
+    encoded = published[0].read_text(encoding="utf-8")
+    assert "re_test_value" not in encoded
+    assert json.loads(encoded)["delivery_id"] == "10086"
+
+
+@pytest.mark.asyncio
+async def test_mailer_claim_is_inspected_as_in_progress_not_failure(
+    tmp_path: Path,
+) -> None:
+    control_dir = tmp_path / "control"
+    (control_dir / "requests").mkdir(parents=True)
+    (control_dir / "results").mkdir()
+    request_id = uuid4()
+    (control_dir / "requests" / f".{request_id}.99.processing").write_text(
+        "{}", encoding="utf-8"
+    )
+    control = FileSecurityDailyControl(control_dir, tmp_path / "config")
+    assert await control.inspect_delivery(request_id) == "claimed"
+    request = SecurityDailyDeliveryRequest(
+        request_id=request_id,
+        report_date=date(2026, 7, 15),
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+        delivery_id="10086",
+    )
+    assert control._write_request(request, payload()) == "in_progress"
+    assert not (control_dir / "requests" / f"{request_id}.json").exists()
+
+
+class StaleMailerFileControl(FakeControl):
+    async def published_config_version(self) -> int | None:
+        return 1
+
+    async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None:
+        del configuration
+        raise SecurityDailyControlError("安全日报配置同步失败")
+
+
+@pytest.mark.asyncio
+async def test_auto_delivery_waits_on_configuration_version_split() -> None:
+    repository = FakeRepository(record())
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="re_test_value",
+        recipients=("security-owner@example.com",),
+        config_version=3,
+    )
+    control = StaleMailerFileControl()
+    service = SecurityDailyService(repository, control)
+
+    assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
+    assert control.submitted == []
+    assert repository.delivery_failed == []
+    assert repository.failed == []

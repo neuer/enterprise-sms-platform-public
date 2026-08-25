@@ -55,7 +55,9 @@ class SecurityDailyOverviewModel(StrictModel):
     last_delivered_at: datetime | None
     next_scheduled_at: datetime | None
     latest_failure: str | None
-    delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed"] | None
+    delivery_status: (
+        Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"] | None
+    )
     recipient_count: int = Field(ge=0, le=3)
     resend_configured: bool
     sender_domain: str
@@ -85,7 +87,9 @@ class SecurityDailyReportModel(StrictModel):
     status: SecurityStatus
     generation_source: Literal["auto", "manual"]
     generation_status: Literal["pending", "ready", "failed", "unavailable"]
-    delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed"]
+    delivery_status: Literal[
+        "not_sent", "pending", "sending", "sent", "failed", "unknown"
+    ]
     generated_at: datetime | None
     delivered_at: datetime | None
     recipient_count: int = Field(ge=0, le=3)
@@ -122,7 +126,7 @@ class SecurityDailyDeliveryResponseModel(StrictModel):
     request_id: UUID
     report_date: date
     action: Literal["send", "retry"]
-    state: Literal["pending", "sent", "failed"]
+    state: Literal["pending", "sent", "failed", "unknown"]
     idempotent: bool
 
 
@@ -311,6 +315,8 @@ async def update_security_daily_config(
         )
     except SecurityDailyConfigurationError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    except SecurityDailyStateConflict as error:
+        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except SecurityDailyControlError:
         raise _unavailable("安全日报配置同步失败") from None
     return _configuration_model(configuration)
@@ -329,7 +335,9 @@ async def list_security_daily_reports(
     date_to: date | None = None,
     report_status: Annotated[SecurityStatus | None, Query(alias="status")] = None,
     generation_status: Literal["pending", "ready", "failed", "unavailable"] | None = None,
-    delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed"] | None = None,
+    delivery_status: (
+        Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"] | None
+    ) = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SecurityDailyPageModel:

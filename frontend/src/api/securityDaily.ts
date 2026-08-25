@@ -3,7 +3,7 @@ import { apiRequest } from "./webMessages"
 export type SecurityStatus = "normal" | "attention" | "high"
 export type GenerationSource = "auto" | "manual"
 export type GenerationStatus = "pending" | "ready" | "failed" | "unavailable"
-export type DeliveryStatus = "not_sent" | "pending" | "sending" | "sent" | "failed"
+export type DeliveryStatus = "not_sent" | "pending" | "sending" | "sent" | "failed" | "unknown"
 export type SecurityDailyConfigurationState = "disabled" | "dispatcher_missing" | "recipients_empty" | "ready"
 
 export interface SecurityDailyOverview {
@@ -133,7 +133,7 @@ export interface SecurityDailyDeliveryResponse {
   request_id: string
   report_date: string
   action: "send" | "retry"
-  state: "pending" | "sent" | "failed"
+  state: "pending" | "sent" | "failed" | "unknown"
   idempotent: boolean
 }
 
