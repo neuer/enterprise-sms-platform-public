@@ -152,6 +152,7 @@ SET processing_lease_expires_at=now()+make_interval(secs => :lease_seconds)
 WHERE id=:id
   AND processing_lease_id=CAST(:lease_id AS uuid)
   AND processing_lease_epoch=:epoch
+RETURNING processing_lease_expires_at
 """
 
 CLAIM_LEASE_PREDICATE_SQL = """
@@ -254,9 +255,10 @@ async def renew_raw_lease(
     lease: RawProcessingLease,
     *,
     lease_seconds: int = RAW_LEASE_SECONDS,
-) -> None:
-    """仅当前 lease_id+epoch 可续租；miss 先提交 heartbeat_lost 再失败关闭。"""
+) -> datetime:
+    """仅当前 lease_id+epoch 可续租；成功只返回数据库 RETURNING 的新到期时间。"""
 
+    expires_at: datetime | None = None
     async with engine.begin() as connection:
         result = await connection.execute(
             text(HEARTBEAT_LEASE_SQL),
@@ -267,13 +269,16 @@ async def renew_raw_lease(
                 "lease_seconds": lease_seconds,
             },
         )
-        applied = getattr(result, "rowcount", 1) != 0
-        if not applied:
+        row = result.mappings().first()
+        if row is None:
             await record_raw_heartbeat_lost(
                 connection, raw_id=lease.raw_id, lease_id=lease.lease_id
             )
-    if not applied:
+        else:
+            expires_at = row["processing_lease_expires_at"]
+    if expires_at is None:
         raise RawLeaseLost("raw processing lease heartbeat lost")
+    return _aware_utc(expires_at)
 
 
 class RawLeaseHeartbeat:
@@ -281,7 +286,7 @@ class RawLeaseHeartbeat:
 
     def __init__(
         self,
-        renew: Callable[[RawProcessingLease], Awaitable[None]],
+        renew: Callable[[RawProcessingLease], Awaitable[object]],
         lease: RawProcessingLease,
         *,
         interval_s: float = RAW_LEASE_HEARTBEAT_SECONDS,
@@ -295,6 +300,7 @@ class RawLeaseHeartbeat:
         self._lost: RawLeaseLost | None = None
         self._task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
+        self._confirmed_expires_at = lease.expires_at
 
     def raise_if_lost(self) -> None:
         if self._lost is not None:
@@ -318,6 +324,14 @@ class RawLeaseHeartbeat:
         )
         raise self._lost
 
+    def _failure_class(self, error: RawLeaseLost) -> str:
+        message = str(error)
+        if "expired before renew" in message:
+            return "local_expiry_stale"
+        if type(error) is RawLeaseLost:
+            return "owner_lost"
+        return "heartbeat_db_failure"
+
     async def _notify_failure(self, error: RawLeaseLost) -> None:
         LOGGER.warning(
             "raw lease heartbeat failed",
@@ -325,6 +339,7 @@ class RawLeaseHeartbeat:
                 "raw_id": self.lease.raw_id,
                 "epoch": self.lease.epoch,
                 "error_type": type(error).__name__,
+                "failure_class": self._failure_class(error),
             },
         )
         if self._on_failure is None:
@@ -342,14 +357,16 @@ class RawLeaseHeartbeat:
             )
 
     async def _renew_until_confirmed(self) -> None:
-        """暂态错误可重试，但不得越过内存中的原租约到期点继续等待。"""
+        """暂态错误可重试，但不得越过最近一次数据库确认的到期点继续等待。"""
 
-        expiry = self.lease.expires_at
         last: BaseException | None = None
         attempt = 0
         while True:
+            expiry = self._confirmed_expires_at
             try:
-                await self._renew(self.lease)
+                confirmed = await self._renew(self.lease)
+                if isinstance(confirmed, datetime):
+                    self._confirmed_expires_at = _aware_utc(confirmed)
                 return
             except RawLeaseLost:
                 raise

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 import os
 import stat
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -578,7 +580,7 @@ def test_failed_publish_never_commits_state_marker(
         apply(fixture)
 
     assert not fixture.state_path.exists()
-    assert fixture.installer.status()["status"] == "incomplete"  # type: ignore[union-attr]
+    assert fixture.installer.status()["status"] == "installing"  # type: ignore[union-attr]
 
 
 def test_wrapper_target_drift_before_state_prevents_success_marker(
@@ -597,7 +599,7 @@ def test_wrapper_target_drift_before_state_prevents_success_marker(
     with pytest.raises(fixture.module.HostAssetInstallError, match="wrapper target has drifted"):
         apply(fixture)
     assert not fixture.state_path.exists()
-    assert fixture.installer.status()["status"] == "incomplete"  # type: ignore[union-attr]
+    assert fixture.installer.status()["status"] == "installing"  # type: ignore[union-attr]
 
 
 def test_post_state_drift_never_returns_installed(
@@ -671,6 +673,17 @@ def test_cli_exposes_only_reviewed_arguments() -> None:
         ]
     )
     assert parsed.action == "apply"
+    resumed = parser.parse_args(["resume", "--expected-commit", COMMIT])
+    assert resumed.action == "resume"
+    rolled = parser.parse_args(
+        [
+            "rollback",
+            "--expected-commit",
+            COMMIT,
+            "--confirm-rollback-this-install",
+        ]
+    )
+    assert rolled.action == "rollback"
     for forbidden in ("--root", "--force", "--skip-storage", "--source-root"):
         with pytest.raises(SystemExit):
             parser.parse_args(["status", forbidden])
@@ -684,6 +697,10 @@ def test_cli_exposes_only_reviewed_arguments() -> None:
         ({"action": "status", "status": "installed"}, 0),
         ({"action": "status", "status": "absent"}, 1),
         ({"action": "status", "status": "incomplete"}, 1),
+        ({"action": "status", "status": "installing"}, 1),
+        ({"action": "status", "status": "rollback_required"}, 1),
+        ({"action": "resume", "status": "installed"}, 0),
+        ({"action": "rollback", "status": "rolled_back"}, 0),
         ({"action": "status", "status": "drifted"}, 1),
     ),
 )
@@ -725,12 +742,39 @@ def test_blocked_cli_stderr_never_echoes_internal_reason(
         def plan(self, _expected_commit: str) -> dict[str, object]:
             raise module.HostAssetInstallError("private path and command detail")
 
+        def resume(self, _expected_commit: str) -> dict[str, object]:
+            raise module.HostAssetInstallError("secret=/etc/sms-platform/private")
+
+        def rollback(
+            self, _expected_commit: str, *, confirm_rollback_this_install: bool
+        ) -> dict[str, object]:
+            raise module.HostAssetInstallError("credential=super-secret")
+
     monkeypatch.setattr(module, "ProductionHostAssetInstaller", BlockedInstaller)
     assert module.main(["plan", "--expected-commit", COMMIT]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert json.loads(captured.err) == {"action": "plan", "status": "blocked"}
     assert "private" not in captured.err
+    assert module.main(["resume", "--expected-commit", COMMIT]) == 1
+    resumed = capsys.readouterr()
+    assert json.loads(resumed.err) == {"action": "resume", "status": "blocked"}
+    assert "secret" not in resumed.err
+    assert (
+        module.main(
+            [
+                "rollback",
+                "--expected-commit",
+                COMMIT,
+                "--confirm-rollback-this-install",
+            ]
+        )
+        == 1
+    )
+    rolled = capsys.readouterr()
+    assert json.loads(rolled.err) == {"action": "rollback", "status": "blocked"}
+    assert "credential" not in rolled.err
+    assert "super-secret" not in rolled.err
 
 
 def test_subprocess_runner_passes_sudo_uid_only_to_fixed_read_only_git(
@@ -790,3 +834,205 @@ def test_subprocess_runner_rejects_oversized_captured_output(
     assert result.returncode == module.COMMAND_OUTPUT_LIMIT_RETURN_CODE
     assert result.stdout == b""
     assert result.stderr == b""
+
+
+def _interrupt_after(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, index: int) -> None:
+    real_regular = fixture.module._commit_regular_no_replace
+    real_symlink = fixture.module._commit_symlink_no_replace
+    published = {"n": 0}
+
+    def fail_regular(temporary: Path, destination: Path) -> None:
+        if destination == fixture.state_path:
+            real_regular(temporary, destination)
+            return
+        if published["n"] == index:
+            raise fixture.module.HostAssetInstallError("simulated interrupt")
+        real_regular(temporary, destination)
+        published["n"] += 1
+
+    def fail_symlink(spec, *, expected_uid: int, expected_gid: int) -> None:  # type: ignore[no-untyped-def]
+        if published["n"] == index:
+            raise fixture.module.HostAssetInstallError("simulated interrupt")
+        real_symlink(spec, expected_uid=expected_uid, expected_gid=expected_gid)
+        published["n"] += 1
+
+    monkeypatch.setattr(fixture.module, "_commit_regular_no_replace", fail_regular)
+    monkeypatch.setattr(fixture.module, "_commit_symlink_no_replace", fail_symlink)
+
+
+@pytest.mark.parametrize("index", range(18))
+def test_crash_at_each_asset_publish_boundary_can_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    index: int,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    _interrupt_after(fixture, monkeypatch, index)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        apply(fixture)
+    assert not fixture.state_path.exists()
+    assert fixture.installer.status()["status"] == "installing"  # type: ignore[union-attr]
+    monkeypatch.undo()
+    result = fixture.installer.resume(COMMIT)  # type: ignore[union-attr]
+    assert result["status"] == "installed"
+    assert fixture.installer.status()["status"] == "installed"  # type: ignore[union-attr]
+    assert fixture.state_path.is_file()
+
+
+@pytest.mark.parametrize("index", range(18))
+def test_crash_at_each_asset_publish_boundary_can_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    index: int,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    _interrupt_after(fixture, monkeypatch, index)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        apply(fixture)
+    extra = fixture.etc_root / "operator-notes"
+    extra.write_text("keep-me\n", encoding="utf-8")
+    extra.chmod(0o600)
+    monkeypatch.undo()
+    result = fixture.installer.rollback(  # type: ignore[union-attr]
+        COMMIT, confirm_rollback_this_install=True
+    )
+    assert result["status"] == "rolled_back"
+    for spec in fixture.installer.assets:  # type: ignore[union-attr]
+        assert not fixture.module._lexists(spec.destination)
+    assert not fixture.state_path.exists()
+    assert not (fixture.etc_root / "production-host-assets.intent.json").exists()
+    assert extra.read_text(encoding="utf-8") == "keep-me\n"
+    assert apply(fixture)["status"] == "installed"
+
+
+def test_concurrent_apply_only_one_installer_lock(tmp_path: Path) -> None:
+    fixture = make_fixture(tmp_path)
+    fixture.etc_root.mkdir(parents=True, mode=0o700)
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_lock() -> None:
+        with fixture.installer._exclusive_lock():  # type: ignore[union-attr]
+            held.set()
+            release.wait(timeout=2)
+
+    worker = threading.Thread(target=hold_lock)
+    worker.start()
+    assert held.wait(timeout=2)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="lock"):
+        apply(fixture)
+    release.set()
+    worker.join(timeout=2)
+
+
+def test_matching_partial_destinations_resume_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    _interrupt_after(fixture, monkeypatch, 5)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        apply(fixture)
+    monkeypatch.undo()
+    assert apply(fixture)["status"] == "installed"
+    assert fixture.installer.status()["source_commit"] == COMMIT  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("drift", ("content", "mode"))
+def test_mismatched_existing_destination_fails_closed_without_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    _interrupt_after(fixture, monkeypatch, 3)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        apply(fixture)
+    monkeypatch.undo()
+    target = fixture.etc_root / "compose.env"
+    original = target.read_bytes()
+    if drift == "content":
+        target.write_text("tampered\n", encoding="utf-8")
+        target.chmod(0o600)
+    else:
+        target.chmod(0o644)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="already exists"):
+        apply(fixture)
+    if drift == "content":
+        assert target.read_text(encoding="utf-8") == "tampered\n"
+    else:
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert target.read_bytes() == original
+    assert not fixture.state_path.exists()
+
+
+def test_state_publish_failure_is_resumable_without_manual_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    real_regular = fixture.module._commit_regular_no_replace
+
+    def fail_state(temporary: Path, destination: Path) -> None:
+        if destination == fixture.state_path:
+            raise fixture.module.HostAssetInstallError("state publish failed")
+        real_regular(temporary, destination)
+
+    monkeypatch.setattr(fixture.module, "_commit_regular_no_replace", fail_state)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="state publish"):
+        apply(fixture)
+    assert not fixture.state_path.exists()
+    assert fixture.installer.status()["status"] == "installing"  # type: ignore[union-attr]
+    monkeypatch.undo()
+    assert fixture.installer.resume(COMMIT)["status"] == "installed"  # type: ignore[union-attr]
+
+
+def test_resume_and_rollback_are_reentrant_after_their_own_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    _interrupt_after(fixture, monkeypatch, 4)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        apply(fixture)
+    monkeypatch.undo()
+    _interrupt_after(fixture, monkeypatch, 8)
+    with pytest.raises(fixture.module.HostAssetInstallError, match="simulated interrupt"):
+        fixture.installer.resume(COMMIT)  # type: ignore[union-attr]
+    monkeypatch.undo()
+    assert fixture.installer.resume(COMMIT)["status"] == "installed"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("error_no", (errno.ENOSPC, errno.EIO, errno.EACCES))
+def test_publish_os_errors_are_resumable_after_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_no: int,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    real_link = os.link
+    calls = {"n": 0}
+
+    def flaky_link(
+        src: str | os.PathLike[str],
+        dst: str | os.PathLike[str],
+        **kwargs: object,
+    ) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(error_no, "injected")
+        real_link(src, dst, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "link", flaky_link)
+    with pytest.raises(fixture.module.HostAssetInstallError):
+        apply(fixture)
+    monkeypatch.setattr(os, "link", real_link)
+    assert apply(fixture)["status"] == "installed"
+
+
+def test_destinations_without_intent_are_rollback_required(tmp_path: Path) -> None:
+    fixture = make_fixture(tmp_path)
+    fixture.etc_root.mkdir(mode=0o700)
+    (fixture.etc_root / "compose.env").write_text("operator-owned\n", encoding="utf-8")
+    (fixture.etc_root / "compose.env").chmod(0o600)
+    assert fixture.installer.status()["status"] == "rollback_required"  # type: ignore[union-attr]

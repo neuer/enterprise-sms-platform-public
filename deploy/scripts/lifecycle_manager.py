@@ -46,6 +46,13 @@ from sync_standby import SyncConfig, SyncResult, SyncService
 SNAPSHOT_ID = re.compile(r"^\d{8}T\d{6}Z_[0-9a-f]{12}$")
 BACKUP_OUTPUT_CHILDREN = ("snapshots", "reports", ".incoming", "orphans")
 ORPHAN_TTL = timedelta(hours=24)
+COMMIT_PHASE_ORDER = (
+    "staging",
+    "payload_durable",
+    "snapshot_published",
+    "current_switched",
+    "ledger_committed",
+)
 RESTORE_REPORT_FIELDS = frozenset(
     {
         "schema_version",
@@ -1183,6 +1190,8 @@ class LifecycleService:
         for snapshot_id, item in snapshots.items():
             if not isinstance(item, dict) or item.get("integrity_verified") is not True:
                 continue
+            if item.get("commit_phase") not in {None, "ledger_committed"}:
+                continue
             try:
                 created = _aware_datetime(item.get("created_at"), "snapshot state creation time")
             except ValueError:
@@ -1246,6 +1255,87 @@ class LifecycleService:
         if orphans.is_dir():
             fsync_directory(orphans)
 
+    def _phase_rank(self, phase: object) -> int:
+        if not isinstance(phase, str):
+            return 0
+        try:
+            return COMMIT_PHASE_ORDER.index(phase) + 1
+        except ValueError:
+            return 0
+
+    def _can_advance_phase(self, current: object, target: str) -> bool:
+        return self._phase_rank(current) <= self._phase_rank(target)
+
+    def _register_snapshot_published(
+        self, state: dict[str, Any], snapshot_id: str
+    ) -> bool:
+        existing = state["snapshots"].get(snapshot_id)
+        current_phase = existing.get("commit_phase") if isinstance(existing, dict) else None
+        if not self._can_advance_phase(current_phase, "snapshot_published"):
+            return False
+        if isinstance(existing, dict) and current_phase == "snapshot_published":
+            return False
+        state["snapshots"][snapshot_id] = {
+            "created_at": self._now().isoformat(),
+            "integrity_verified": False,
+            "restore_verified": False,
+            "available": False,
+            "manifest_sha256": None,
+            "database_sha256": None,
+            "recovery_crypto_generation_id": None,
+            "backup_passphrase_generation_id": None,
+            "last_restore": None,
+            "commit_phase": "snapshot_published",
+        }
+        return True
+
+    def _promote_published_snapshot(
+        self,
+        config: LifecycleConfig,
+        state: dict[str, Any],
+        snapshot_id: str,
+        *,
+        as_latest: bool,
+    ) -> bool:
+        try:
+            evidence = self._verify_snapshot(config, snapshot_id)
+        except (OSError, UnicodeError, ValueError):
+            return False
+        existing = state["snapshots"].get(snapshot_id)
+        current_phase = existing.get("commit_phase") if isinstance(existing, dict) else None
+        if not self._can_advance_phase(current_phase, "ledger_committed"):
+            return False
+        self._adopt_snapshot_state(state, evidence, as_latest=as_latest)
+        return True
+
+    def _converge_last_successful(
+        self, state: dict[str, Any], snapshot_id: str | None
+    ) -> None:
+        if snapshot_id is None:
+            return
+        item = state["snapshots"].get(snapshot_id)
+        if (
+            not isinstance(item, dict)
+            or item.get("integrity_verified") is not True
+            or item.get("commit_phase") not in {None, "ledger_committed"}
+        ):
+            return
+        current = state.get("last_successful_backup")
+        if isinstance(current, dict) and current.get("snapshot_id") == snapshot_id:
+            return
+        state["last_successful_backup"] = {
+            "snapshot_id": snapshot_id,
+            "completed_at": self._now().isoformat(),
+            "created_at": item.get("created_at"),
+            "integrity_verified": True,
+            "recovery_crypto_generation_id": item.get(
+                "recovery_crypto_generation_id"
+            ),
+            "backup_passphrase_generation_id": item.get(
+                "backup_passphrase_generation_id"
+            ),
+        }
+
     def _adopt_snapshot_state(
         self,
         state: dict[str, Any],
@@ -1299,20 +1389,31 @@ class LifecycleService:
             ]
         ledger = state["snapshots"]
         for snapshot_id in on_disk:
-            if snapshot_id in ledger:
+            item = ledger.get(snapshot_id)
+            if isinstance(item, dict):
+                phase = item.get("commit_phase")
+                if phase == "snapshot_published" or item.get("integrity_verified") is not True:
+                    if self._promote_published_snapshot(
+                        config, state, snapshot_id, as_latest=snapshot_id == current_id
+                    ):
+                        mutated = True
+                        continue
+                    if snapshot_id == adopt_id:
+                        continue
+                    self._isolate_snapshot(config, snapshot_id)
+                    mutated = True
+                    if current_id == snapshot_id:
+                        current_id = None
                 continue
             should_adopt = snapshot_id in {adopt_id, current_id}
             if should_adopt:
-                try:
-                    evidence = self._verify_snapshot(config, snapshot_id)
-                    self._adopt_snapshot_state(
-                        state, evidence, as_latest=snapshot_id == current_id
-                    )
+                if self._promote_published_snapshot(
+                    config, state, snapshot_id, as_latest=snapshot_id == current_id
+                ):
                     mutated = True
                     continue
-                except (OSError, UnicodeError, ValueError):
-                    if snapshot_id == adopt_id:
-                        continue
+                if snapshot_id == adopt_id:
+                    continue
             self._isolate_snapshot(config, snapshot_id)
             mutated = True
             if current_id == snapshot_id:
@@ -1328,7 +1429,13 @@ class LifecycleService:
         if live_current is None or not (snapshots_root / live_current).is_dir():
             latest = self._latest_ledger_snapshot_id(state)
             self._retarget_current(config, latest)
+            self._converge_last_successful(state, latest)
             mutated = True
+        else:
+            before = state.get("last_successful_backup")
+            self._converge_last_successful(state, live_current)
+            if state.get("last_successful_backup") is not before:
+                mutated = True
         self._cleanup_stale_incoming(config, now)
         self._prune_orphans(config, now)
         if mutated:
@@ -1368,36 +1475,43 @@ class LifecycleService:
                     raise ValueError("backup returned an invalid snapshot id")
                 self._reconcile_directory_ledger(config, adopt_id=result.snapshot_id)
                 state = self._load_state(config)
-                state["snapshots"][result.snapshot_id] = {
-                    "created_at": self._now().isoformat(),
-                    "integrity_verified": False,
-                    "restore_verified": False,
-                    "available": False,
-                    "manifest_sha256": None,
-                    "database_sha256": None,
-                    "recovery_crypto_generation_id": None,
-                    "backup_passphrase_generation_id": None,
-                    "last_restore": None,
-                    "commit_phase": "snapshot_published",
-                }
-                self._save_state(config, state)
-                evidence = self._verify_snapshot(config, result.snapshot_id)
-                snapshot_state = state["snapshots"][result.snapshot_id]
-                snapshot_state.update(
-                    {
-                        "created_at": evidence.created_at.isoformat(),
-                        "integrity_verified": True,
-                        "manifest_sha256": evidence.manifest_sha256,
-                        "database_sha256": evidence.database_sha256,
-                        "recovery_crypto_generation_id": (
-                            evidence.recovery_crypto_generation_id
-                        ),
-                        "backup_passphrase_generation_id": (
-                            evidence.backup_passphrase_generation_id
-                        ),
-                        "commit_phase": "ledger_committed",
-                    }
+                existing = state["snapshots"].get(result.snapshot_id)
+                already_committed = (
+                    isinstance(existing, dict)
+                    and existing.get("commit_phase") == "ledger_committed"
+                    and existing.get("integrity_verified") is True
                 )
+                if not already_committed:
+                    if self._register_snapshot_published(state, result.snapshot_id):
+                        self._save_state(config, state)
+                evidence = self._verify_snapshot(config, result.snapshot_id)
+                snapshot_state = state["snapshots"].get(result.snapshot_id)
+                if not isinstance(snapshot_state, dict):
+                    snapshot_state = {}
+                    state["snapshots"][result.snapshot_id] = snapshot_state
+                if self._can_advance_phase(
+                    snapshot_state.get("commit_phase"), "ledger_committed"
+                ):
+                    snapshot_state.update(
+                        {
+                            "created_at": evidence.created_at.isoformat(),
+                            "integrity_verified": True,
+                            "manifest_sha256": evidence.manifest_sha256,
+                            "database_sha256": evidence.database_sha256,
+                            "recovery_crypto_generation_id": (
+                                evidence.recovery_crypto_generation_id
+                            ),
+                            "backup_passphrase_generation_id": (
+                                evidence.backup_passphrase_generation_id
+                            ),
+                            "commit_phase": "ledger_committed",
+                        }
+                    )
+                if (
+                    snapshot_state.get("commit_phase") != "ledger_committed"
+                    or snapshot_state.get("integrity_verified") is not True
+                ):
+                    raise ValueError("backup could not commit ledger")
                 completed_at = self._now()
                 state["last_successful_backup"] = {
                     "snapshot_id": result.snapshot_id,

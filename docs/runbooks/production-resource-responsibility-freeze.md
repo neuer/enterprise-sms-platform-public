@@ -561,6 +561,16 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
 ```
 
+安装中断后只允许用同一候选 commit 恢复或回滚，禁止手工猜测删除已发布目标：
+
+```bash
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py resume \
+  --expected-commit <40位候选commit>
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py rollback \
+  --expected-commit <40位候选commit> \
+  --confirm-rollback-this-install
+```
+
 尖括号必须替换为将要安装的 40 位候选 commit，不能原样执行。
 该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl start/enable、
 secret、`.env` 或 release。安装后人工核对 `/etc/sms-platform/compose.env` 与 lifecycle 配置，运行
