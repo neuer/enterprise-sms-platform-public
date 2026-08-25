@@ -346,7 +346,9 @@ describe("审计与系统参数", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("审计日志")
-    expect(wrapper.get(".audit-filter").classes()).toContain("filter-grid")
+    expect(wrapper.find(".audit-filter-bar").exists()).toBe(true)
+    expect(wrapper.text()).toContain("不可变账本")
+    expect(wrapper.text()).toContain("PII 边界")
     expect(wrapper.text()).toContain("config_update")
     expect(wrapper.find('input[placeholder="开始时间"]').exists()).toBe(true)
     expect(wrapper.find("[data-testid='audit-action']").exists()).toBe(true)
@@ -356,9 +358,13 @@ describe("审计与系统参数", () => {
 
     await wrapper.get("[data-testid='audit-actor']").setValue("admin01")
     await wrapper.get("[data-testid='audit-object-id']").setValue("vendor_qps")
-    await wrapper
-      .get("[data-testid='audit-correlation-id']")
-      .setValue("30000000-0000-4000-8000-000000000009")
+    await wrapper.get("[data-testid='audit-more-filters']").trigger("click")
+    await flushPromises()
+    const correlationInput = document.querySelector<HTMLInputElement>("[data-testid='audit-correlation-id']")
+    expect(correlationInput).toBeTruthy()
+    correlationInput!.value = "30000000-0000-4000-8000-000000000009"
+    correlationInput!.dispatchEvent(new Event("input"))
+    await flushPromises()
     await wrapper.findAll("button").find((button) => button.text().includes("查询"))!.trigger("click")
     await flushPromises()
     expect(lastAuditQuery(fetch)).toContain("actor=admin01")
