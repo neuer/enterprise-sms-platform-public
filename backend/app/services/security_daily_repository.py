@@ -847,6 +847,44 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         finally:
             await engine.dispose()
 
+    async def latest_delivery_request(
+        self, report_id: int
+    ) -> SecurityDailyDeliveryRequest | None:
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT request_id,report_date,action,state,requested_at,
+                               config_version,
+                               COALESCE(delivery_generation,1) AS delivery_generation,
+                               COALESCE(recipient_set_digest,'') AS recipient_set_digest
+                        FROM security_daily_delivery_request
+                        WHERE report_id=:report_id
+                        ORDER BY requested_at DESC LIMIT 1
+                        """
+                    ),
+                    {"report_id": report_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return None
+                return SecurityDailyDeliveryRequest(
+                    request_id=UUID(str(row["request_id"])),
+                    report_date=row["report_date"],
+                    action=cast(DeliveryAction, str(row["action"])),
+                    state=cast(DeliveryRequestState, str(row["state"])),
+                    requested_at=row["requested_at"],
+                    idempotent=True,
+                    config_version=int(row["config_version"]),
+                    delivery_id=str(report_id),
+                    delivery_generation=int(row["delivery_generation"]),
+                    recipient_set_digest=str(row["recipient_set_digest"]),
+                )
+        finally:
+            await engine.dispose()
+
     async def request_delivery(
         self,
         report: SecurityDailyReportRecord,
@@ -855,6 +893,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         principal: SecurityPrincipal | None = None,
         ip: str | None = None,
         system: bool = False,
+        control_evidence: str = "missing",
+        recipient_set_digest: str = "",
     ) -> SecurityDailyDeliveryRequest:
         request_id = uuid4()
         if system:
@@ -893,8 +933,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     raise SecurityDailyConfigurationError("安全日报配置版本无效")
                 locked_result = await connection.execute(
                     text(
-                        "SELECT delivery_status,retry_count FROM security_daily_report "
-                        "WHERE id=:id FOR UPDATE"
+                        "SELECT delivery_status,retry_count,"
+                        "COALESCE(delivery_generation,1) AS delivery_generation "
+                        "FROM security_daily_report WHERE id=:id FOR UPDATE"
                     ),
                     {"id": report.id},
                 )
@@ -903,8 +944,10 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     raise SecurityDailyStateConflict("日报已不存在")
                 delivery_status = str(locked["delivery_status"])
                 retry_count = int(locked["retry_count"])
+                report_generation = int(locked["delivery_generation"])
                 superseded_pending = False
                 delivery_id = str(report.id)
+                next_generation = report_generation
                 if action == "send" and delivery_status in {
                     "pending",
                     "sending",
@@ -913,7 +956,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 }:
                     existing = await connection.execute(
                         text(
-                            "SELECT request_id,requested_at,state,config_version "
+                            "SELECT request_id,requested_at,state,config_version,"
+                            "COALESCE(delivery_generation,1) AS delivery_generation,"
+                            "COALESCE(recipient_set_digest,'') AS recipient_set_digest "
                             "FROM security_daily_delivery_request "
                             "WHERE report_id=:report_id ORDER BY requested_at DESC LIMIT 1"
                         ),
@@ -923,10 +968,13 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     if row is not None:
                         existing_state = cast(DeliveryRequestState, str(row["state"]))
                         existing_version = int(row["config_version"])
+                        existing_generation = int(row["delivery_generation"])
+                        unpublished = control_evidence == "missing"
                         if (
                             delivery_status != "sent"
                             and existing_state == "pending"
                             and existing_version != config_version
+                            and unpublished
                         ):
                             await connection.execute(
                                 text(
@@ -942,6 +990,26 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                 },
                             )
                             superseded_pending = True
+                            next_generation = existing_generation + 1
+                        elif (
+                            delivery_status == "sent"
+                            and existing_version != config_version
+                            and existing_state == "sent"
+                        ):
+                            next_generation = existing_generation + 1
+                        elif control_evidence in {"published", "claimed", "result", "unknown"}:
+                            return SecurityDailyDeliveryRequest(
+                                request_id=UUID(str(row["request_id"])),
+                                report_date=report.report_date,
+                                action="send",
+                                state=existing_state,
+                                requested_at=row["requested_at"],
+                                idempotent=True,
+                                config_version=existing_version,
+                                delivery_id=delivery_id,
+                                delivery_generation=existing_generation,
+                                recipient_set_digest=str(row["recipient_set_digest"]),
+                            )
                         else:
                             if existing_state == "pending" and delivery_status != "sent":
                                 # 对丢失控制文件的同版本续投做退避，避免每分钟重复落盘。
@@ -961,8 +1029,13 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                 idempotent=True,
                                 config_version=existing_version,
                                 delivery_id=delivery_id,
+                                delivery_generation=existing_generation,
+                                recipient_set_digest=str(row["recipient_set_digest"]),
                             )
-                    if not superseded_pending:
+                    create_new_generation = (
+                        superseded_pending or next_generation > report_generation
+                    )
+                    if not create_new_generation:
                         return SecurityDailyDeliveryRequest(
                             request_id=request_id,
                             report_date=report.report_date,
@@ -972,6 +1045,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                             idempotent=True,
                             config_version=config_version,
                             delivery_id=delivery_id,
+                            delivery_generation=report_generation,
+                            recipient_set_digest=recipient_set_digest,
                         )
                 if action == "retry" and delivery_status != "failed":
                     raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
@@ -991,10 +1066,12 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         """
                         INSERT INTO security_daily_delivery_request(
                           request_id,report_id,report_date,action,state,dedup_key,
-                          requested_by,config_version
+                          requested_by,config_version,delivery_generation,
+                          recipient_set_digest
                         ) VALUES(
                           :request_id,:report_id,:report_date,:action,'pending',
-                          :dedup_key,:actor,:config_version
+                          :dedup_key,:actor,:config_version,:delivery_generation,
+                          :recipient_set_digest
                         )
                         """
                     ),
@@ -1006,6 +1083,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "dedup_key": dedup_key,
                         "actor": requested_by,
                         "config_version": config_version,
+                        "delivery_generation": next_generation,
+                        "recipient_set_digest": recipient_set_digest,
                     },
                 )
                 await connection.execute(
@@ -1013,6 +1092,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         """
                         UPDATE security_daily_report
                         SET delivery_status='pending',retry_count=:retry_count,
+                            delivery_generation=:delivery_generation,
                             last_error = CASE
                               WHEN last_error LIKE '安全日报发信配置不完整%'
                               THEN NULL ELSE last_error END,
@@ -1023,7 +1103,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         WHERE id=:id
                         """
                     ),
-                    {"id": report.id, "retry_count": next_retry},
+                    {
+                        "id": report.id,
+                        "retry_count": next_retry,
+                        "delivery_generation": next_generation,
+                    },
                 )
                 if system:
                     await bind_connection_system_audit(
@@ -1054,7 +1138,12 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "action": f"security_daily_{action}",
                         "object_id": report.report_date.isoformat(),
                         "after": json.dumps(
-                            {"request_id": str(request_id), "status": "requested"},
+                            {
+                                "request_id": str(request_id),
+                                "status": "requested",
+                                "config_version": config_version,
+                                "delivery_generation": next_generation,
+                            },
                             ensure_ascii=False,
                         ),
                     },
@@ -1068,6 +1157,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     idempotent=False,
                     config_version=config_version,
                     delivery_id=delivery_id,
+                    delivery_generation=next_generation,
+                    recipient_set_digest=recipient_set_digest,
                 )
         finally:
             await engine.dispose()
@@ -1085,7 +1176,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         FROM security_daily_delivery_request
                         WHERE state IN ('pending','unknown')
                            OR (state='failed' AND error LIKE '独立投递器不可用%')
-                        ORDER BY requested_at ASC
+                        ORDER BY report_date DESC, requested_at DESC
                         LIMIT 100
                         """
                     )
@@ -1109,7 +1200,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 request_result = await connection.execute(
                     text(
                         """
-                        SELECT report_id,report_date,state,error
+                        SELECT report_id,report_date,state,error,config_version,
+                               COALESCE(delivery_generation,1) AS delivery_generation
                         FROM security_daily_delivery_request
                         WHERE request_id=:request_id
                         FOR UPDATE
@@ -1123,13 +1215,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 if request["report_date"] != result.report_date:
                     raise SecurityDailyStateConflict("安全日报投递请求日期不匹配")
                 current_state = str(request["state"])
-                current_error = str(request["error"] or "")
                 if current_state == "sent":
-                    return
-                if result.state == "sent" and (
-                    current_state == "failed"
-                    and _SUPERSEDED_REQUEST_ERROR in current_error
-                ):
                     return
                 if result.state == "failed" and current_state not in {
                     "pending",
@@ -1168,6 +1254,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                                ELSE NULL END,
                             updated_at=now()
                         WHERE id=:report_id
+                          AND COALESCE(delivery_generation,1) <= :delivery_generation
                         """
                     ),
                     {
@@ -1176,6 +1263,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "state": result.state,
                         "completed_at": result.completed_at,
                         "error": result.error,
+                        "delivery_generation": int(request["delivery_generation"]),
                     },
                 )
                 await connection.execute(
@@ -1193,7 +1281,14 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     {
                         "object_id": result.report_date.isoformat(),
                         "after": json.dumps(
-                            {"request_id": str(result.request_id), "state": result.state},
+                            {
+                                "request_id": str(result.request_id),
+                                "state": result.state,
+                                "delivery_generation": int(
+                                    request["delivery_generation"]
+                                ),
+                                "config_version": int(request["config_version"]),
+                            },
                             ensure_ascii=False,
                         ),
                     },

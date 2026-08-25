@@ -81,6 +81,11 @@ const reports = [
     status: "attention", generation_status: "ready", delivery_status: "unknown", generated_at: "2026-07-19T08:00:00+08:00", delivered_at: null,
     recipient_count: 1, retry_count: 0, last_error: "投递结果未知", last_error_at: "2026-07-19T08:03:00+08:00", updated_at: "2026-07-19T08:03:00+08:00", payload, timeline: [],
   },
+  {
+    id: 7, report_date: "2026-07-19", period_start: "2026-07-19T00:00:00+08:00", period_end: "2026-07-19T23:59:59+08:00",
+    status: "normal", generation_status: "ready", delivery_status: "failed", generated_at: "2026-07-20T08:00:00+08:00", delivered_at: "2026-07-20T08:02:00+08:00",
+    recipient_count: 1, retry_count: 1, last_error: "安全日报邮件配置已更新，旧投递请求已失效", last_error_at: "2026-07-20T08:04:00+08:00", updated_at: "2026-07-20T08:04:00+08:00", payload, timeline: [],
+  },
 ]
 
 const overview = {
@@ -200,6 +205,18 @@ describe("安全日报页面", () => {
     expect(wrapper.text()).toContain("投递结果未知")
     expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(false)
     expect(wrapper.findAll("button").some((button) => button.text().includes("手动投递"))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it("已发送的被配置更新取代请求不展示为普通投递失败", async () => {
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain("历史投递已完成")
+    const detailButtons = wrapper.findAll("button").filter((button) => button.text().includes("查看详情"))
+    await detailButtons.at(6)!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("历史投递已完成")
+    expect(wrapper.findAll("button").some((button) => button.text().includes("重试投递"))).toBe(false)
     wrapper.unmount()
   })
 

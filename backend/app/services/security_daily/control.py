@@ -184,8 +184,11 @@ class FileSecurityDailyControl:
             "action": request.action,
             "config_version": request.config_version,
             "delivery_id": delivery_id,
+            "delivery_generation": request.delivery_generation,
             "payload": validate_security_daily_payload(payload),
         }
+        if request.recipient_set_digest:
+            body["recipient_set_digest"] = request.recipient_set_digest
         try:
             with lock_path.open("w", encoding="utf-8") as lock:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX)

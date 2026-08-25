@@ -127,6 +127,22 @@ class BackupCleanupFailure(RuntimeError):
         super().__init__("backup staging cleanup failed")
 
 
+class AmbiguousRemoteCommit(RuntimeError):
+    """远端副作用可能已完成，但 SSH 成功确认丢失；必须按 Operation 对账。"""
+
+    def __init__(self, message: str = "remote commit confirmation lost") -> None:
+        super().__init__(message)
+
+
+OPERATION_PHASES = (
+    "intent_created",
+    "staged",
+    "verified",
+    "snapshot_published",
+    "current_committed",
+)
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -235,6 +251,7 @@ class SyncService:
         self.timer = timer
         self.capacity_reader = capacity_reader
         self.generation_reader = generation_reader
+        self.last_orphans: list[str] = []
 
     @staticmethod
     def _compose(config: SyncConfig) -> list[str]:
@@ -429,6 +446,165 @@ class SyncService:
 
     def _rsync_remote_shell(self, target: StandbyTarget) -> str:
         return f"ssh -p {target.port}"
+
+    def _operation_dir(self, config: SyncConfig) -> Path:
+        path = config.output_dir / "operations"
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return path
+
+    def _write_local_operation(
+        self,
+        config: SyncConfig,
+        *,
+        operation_id: str,
+        snapshot_id: str,
+        phase: str,
+        ownership: str | None = None,
+    ) -> None:
+        if phase not in OPERATION_PHASES:
+            raise ValueError("invalid remote operation phase")
+        payload = {
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "snapshot_id": snapshot_id,
+            "phase": phase,
+        }
+        if ownership is not None:
+            payload["ownership"] = ownership
+        path = self._operation_dir(config) / f"{operation_id}.json"
+        atomic_write_json(path, payload)
+        fsync_directory(self._operation_dir(config))
+
+    def _parse_operation_file(self, path: Path) -> dict[str, str] | None:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        return {
+            "operation_id": str(value.get("operation_id", "")),
+            "snapshot_id": str(value.get("snapshot_id", "")),
+            "phase": str(value.get("phase", "")),
+            "ownership": str(value.get("ownership", "")),
+        }
+
+    def _load_latest_operation(
+        self, config: SyncConfig, *, include_committed: bool
+    ) -> dict[str, str] | None:
+        directory = self._operation_dir(config)
+        newest: dict[str, str] | None = None
+        newest_mtime = -1.0
+        for path in directory.glob("*.json"):
+            parsed = self._parse_operation_file(path)
+            if parsed is None:
+                continue
+            if not include_committed and parsed["phase"] == "current_committed":
+                continue
+            mtime = path.stat().st_mtime
+            if mtime >= newest_mtime:
+                newest = parsed
+                newest_mtime = mtime
+        if newest is None or not newest["operation_id"] or not newest["snapshot_id"]:
+            return None
+        return newest
+
+    def _load_incomplete_operation(self, config: SyncConfig) -> dict[str, str] | None:
+        return self._load_latest_operation(config, include_committed=False)
+
+    def _probe_remote_operation(
+        self,
+        snapshot_id: str,
+        operation_id: str,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+    ) -> dict[str, str]:
+        destination = f"{target.root}/snapshots/{snapshot_id}"
+        remote = (
+            "set -eu; "
+            f"cd {shlex.quote(target.root)}; "
+            "echo probe-operation; "
+            f"if [ -d {shlex.quote(destination)} ]; then "
+            f"if [ -f {shlex.quote(destination + '/operation.json')} ]; then "
+            f"cat {shlex.quote(destination + '/operation.json')}; "
+            "else echo '{\"phase\":\"snapshot_published\",\"ownership\":\"unknown\"}'; fi; "
+            "else echo '{\"phase\":\"missing\"}'; fi; "
+            "if [ -L current ]; then echo CURRENT=$(readlink -n current); fi"
+        )
+        output = self._run_remote(self._ssh(target) + [remote], config, deadline)
+        text = output.decode("utf-8", errors="replace")
+        phase = "missing"
+        ownership = ""
+        current = ""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("CURRENT="):
+                current = stripped.split("=", 1)[1]
+                continue
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    payload = json.loads(stripped)
+                except ValueError:
+                    continue
+                if isinstance(payload, dict):
+                    phase = str(payload.get("phase", phase))
+                    ownership = str(payload.get("ownership", ownership))
+                    if str(payload.get("operation_id", "")) not in {"", operation_id}:
+                        ownership = "foreign"
+        return {"phase": phase, "ownership": ownership, "current": current}
+
+    def _reconcile_remote(
+        self,
+        target: StandbyTarget,
+        config: SyncConfig,
+        deadline: float,
+    ) -> None:
+        inventory = (
+            "set -eu; "
+            f"cd {shlex.quote(target.root)}; "
+            "echo reconcile-inventory; "
+            "if [ -d snapshots ]; then "
+            "for d in snapshots/*; do "
+            "[ -e \"$d\" ] || continue; "
+            "name=$(basename \"$d\"); "
+            "echo \"$name\"; "
+            "if [ ! -f \"$d/operation.json\" ]; then echo ORPHAN=$name; fi; "
+            "done; fi; "
+            "if [ -L current ]; then echo CURRENT=$(readlink -n current); fi"
+        )
+        output = self._run_remote(self._ssh(target) + [inventory], config, deadline)
+        names: list[str] = []
+        orphans: list[str] = []
+        current = ""
+        for raw in output.decode("utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line == "reconcile-inventory":
+                continue
+            if line.startswith("CURRENT="):
+                current = line.split("=", 1)[1]
+                continue
+            if line.startswith("ORPHAN="):
+                orphans.append(line.split("=", 1)[1])
+                continue
+            names.append(line)
+        self.last_orphans = orphans
+        latest = self._load_latest_operation(config, include_committed=True)
+        if latest is not None and latest["phase"] not in OPERATION_PHASES:
+            raise RuntimeError("remote operation phase missing")
+        if (
+            latest is not None
+            and latest["phase"] in {"verified", "snapshot_published", "current_committed"}
+            and latest["snapshot_id"] not in names
+        ):
+            raise RuntimeError("remote operation has no snapshot")
+        if (
+            latest is not None
+            and latest["phase"] == "current_committed"
+            and current
+            and current != f"snapshots/{latest['snapshot_id']}"
+        ):
+            raise RuntimeError("remote current drifted from committed operation")
 
     def _run_remote(
         self,
@@ -641,6 +817,7 @@ class SyncService:
         staging: Path | None = None
         failure: BaseException | None = None
         snapshot_id: str | None = None
+        operation_id: str | None = None
         remote_staged = False
         remote_ownership: Literal["created", "reused_existing"] | None = None
         try:
@@ -650,6 +827,52 @@ class SyncService:
             lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self._remaining(deadline)
+            if target is not None:
+                self._reconcile_remote(target, config, deadline)
+                incomplete = self._load_incomplete_operation(config)
+                if incomplete is not None:
+                    snapshot_id = incomplete["snapshot_id"]
+                    operation_id = incomplete["operation_id"]
+                    probed = self._probe_remote_operation(
+                        snapshot_id, operation_id, target, config, deadline
+                    )
+                    published = incomplete["phase"] in {
+                        "verified",
+                        "snapshot_published",
+                        "current_committed",
+                    }
+                    if published and probed["phase"] == "missing":
+                        raise RuntimeError("remote operation has no snapshot")
+                    if probed["phase"] != "missing":
+                        self._reconcile_remote(target, config, deadline)
+                        if probed["current"] != f"snapshots/{snapshot_id}":
+                            try:
+                                self._commit_remote_current(
+                                    snapshot_id, target, config, deadline
+                                )
+                            except BaseException:
+                                again = self._probe_remote_operation(
+                                    snapshot_id,
+                                    operation_id,
+                                    target,
+                                    config,
+                                    deadline,
+                                )
+                                if again["current"] != f"snapshots/{snapshot_id}":
+                                    raise
+                        self._write_local_operation(
+                            config,
+                            operation_id=operation_id,
+                            snapshot_id=snapshot_id,
+                            phase="current_committed",
+                            ownership=incomplete.get("ownership") or "created",
+                        )
+                        snapshot_dir = (
+                            config.output_dir / "snapshots" / snapshot_id
+                        )
+                        if not snapshot_dir.is_dir():
+                            snapshot_dir = self._operation_dir(config)
+                        return SyncResult(snapshot_id, snapshot_dir, True)
             status = self._run_command(
                 ["git", "status", "--porcelain", "--untracked-files=no"],
                 config,
@@ -852,22 +1075,81 @@ class SyncService:
             fsync_directory(staging)
             durability_barrier("payload_durable", staging)
             self._remaining(deadline)
+            operation_id = snapshot_id
+            atomic_write_json(
+                staging / "operation.json",
+                {
+                    "schema_version": 1,
+                    "operation_id": operation_id,
+                    "snapshot_id": snapshot_id,
+                    "phase": "verified",
+                },
+            )
+            self._write_local_operation(
+                config,
+                operation_id=operation_id,
+                snapshot_id=snapshot_id,
+                phase="intent_created",
+            )
 
-            remote_staged = False
             if target is not None:
-                remote_ownership = self._stage_remote(
-                    staging,
-                    snapshot_id,
-                    target,
-                    config,
-                    deadline,
-                    estimated_bytes,
-                )
-                remote_staged = True
+                try:
+                    remote_ownership = self._stage_remote(
+                        staging,
+                        snapshot_id,
+                        target,
+                        config,
+                        deadline,
+                        estimated_bytes,
+                    )
+                    remote_staged = True
+                    self._write_local_operation(
+                        config,
+                        operation_id=operation_id,
+                        snapshot_id=snapshot_id,
+                        phase="snapshot_published",
+                        ownership=remote_ownership,
+                    )
+                except BaseException:
+                    probed = self._probe_remote_operation(
+                        snapshot_id, operation_id, target, config, deadline
+                    )
+                    if probed["phase"] != "missing":
+                        remote_ownership = (
+                            "reused_existing"
+                            if probed["ownership"] == "reused_existing"
+                            else "created"
+                        )
+                        remote_staged = True
+                        self._write_local_operation(
+                            config,
+                            operation_id=operation_id,
+                            snapshot_id=snapshot_id,
+                            phase="snapshot_published",
+                            ownership=remote_ownership,
+                        )
+                        raise AmbiguousRemoteCommit from None
+                    raise
             snapshot_dir = self._publish_local(config, staging, snapshot_id, deadline)
             staging = None
             if target is not None:
-                self._commit_remote_current(snapshot_id, target, config, deadline)
+                try:
+                    self._commit_remote_current(
+                        snapshot_id, target, config, deadline
+                    )
+                except BaseException:
+                    probed = self._probe_remote_operation(
+                        snapshot_id, operation_id, target, config, deadline
+                    )
+                    if probed["current"] != f"snapshots/{snapshot_id}":
+                        raise
+                self._write_local_operation(
+                    config,
+                    operation_id=operation_id,
+                    snapshot_id=snapshot_id,
+                    phase="current_committed",
+                    ownership=remote_ownership,
+                )
             return SyncResult(snapshot_id, snapshot_dir, target is not None)
         except BaseException as error:
             failure = error
@@ -888,6 +1170,7 @@ class SyncService:
                         failure is not None
                         and remote_staged
                         and remote_ownership == "created"
+                        and not isinstance(failure, AmbiguousRemoteCommit)
                     ):
                         self._rollback_uncommitted_remote_snapshot(
                             snapshot_id, target, config, deadline

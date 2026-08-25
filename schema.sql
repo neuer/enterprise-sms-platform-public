@@ -1742,6 +1742,8 @@ CREATE TABLE security_daily_report (
     recipient_count    SMALLINT NOT NULL DEFAULT 0
                       CHECK (recipient_count BETWEEN 0 AND 3),
     retry_count        SMALLINT NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    delivery_generation BIGINT NOT NULL DEFAULT 1
+                      CHECK (delivery_generation >= 1),
     last_error         VARCHAR(256),
     last_error_at      TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1770,6 +1772,10 @@ CREATE TABLE security_daily_delivery_request (
     dedup_key        VARCHAR(192) NOT NULL UNIQUE,
     requested_by     VARCHAR(64) NOT NULL,
     config_version   BIGINT NOT NULL,
+    delivery_generation BIGINT NOT NULL DEFAULT 1
+                     CHECK (delivery_generation >= 1),
+    recipient_set_digest VARCHAR(64) NOT NULL DEFAULT ''
+                     CHECK (recipient_set_digest = '' OR recipient_set_digest ~ '^[0-9a-f]{64}$'),
     requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at     TIMESTAMPTZ,
     error            VARCHAR(256),

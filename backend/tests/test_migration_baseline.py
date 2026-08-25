@@ -1536,3 +1536,34 @@ def test_security_daily_publish_outbox_migration_is_expand_only() -> None:
     spec.loader.exec_module(module)
     assert module.revision == "0079_security_daily_publish_outbox"
     assert module.down_revision == "0078_system_raw_replay_audit_producer"
+
+
+def test_security_daily_delivery_generation_migration_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0080_security_daily_delivery_generation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    for fragment in (
+        "delivery_generation",
+        "recipient_set_digest",
+        "ck_security_daily_report_delivery_generation",
+        "ck_security_daily_request_delivery_generation",
+        "ck_security_daily_request_recipient_digest",
+    ):
+        assert fragment in schema or fragment in source
+        assert fragment in source
+
+    assert "ADD COLUMN IF NOT EXISTS delivery_generation" in source
+    assert "ADD COLUMN IF NOT EXISTS recipient_set_digest" in source
+    assert "DROP TABLE" not in source
+    assert "DROP COLUMN" not in source
+    assert "DO $$" not in source
+
+    spec = importlib.util.spec_from_file_location(
+        "security_daily_delivery_generation_revision", revision
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0080_security_daily_delivery_generation"
+    assert module.down_revision == "0079_security_daily_publish_outbox"
