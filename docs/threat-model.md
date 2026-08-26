@@ -17,7 +17,7 @@
 | 手机号、消息、回复、raw/unmatched | 明文不持久化；只在授权边界受控解密；按 12 个月/90 天策略清理 |
 | 审计日志 | 无手机号列表、只增不可改，保留 36 个月 |
 | 厂商、JWT、加密/HMAC、DB、Redis、LDAP 等 secrets | 生产独立生成，只经受控文件挂载；不进入测试、Git、Registry、日志或命令行 |
-| 发布制品 | 四镜像与 manifest 绑定不可变 digest；预生产和生产使用同一候选 |
+| 发布制品 | 四镜像与 manifest 绑定不可变身份；预生产和生产使用同一候选。内部 Registry 建成前只允许签名的生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout） |
 | PostgreSQL 事实 | RPO≤24h；加密备份保留 35 天并可在隔离环境恢复 |
 | 发送唯一性 | timeout/网络异常保持 uncertain，submitted/uncertain 禁止自动重发 |
 | 身份与权限 | VPN 不是身份认证替代；Web 仍显式 Provider、RBAC、step-up 和审计 |
@@ -26,15 +26,16 @@
 ## 信任边界与允许流
 
 ```text
-GitHub/外部 CI ──候选证据──▶ 制品提升节点 ──digest──▶ 内部 Registry
-                                                        │
+GitHub/外部 CI ──候选证据/attestation──▶ 受控联网签名节点
+                                             ├─签名封闭离线包──▶ 预生产──▶ 生产
+                                             └─未来 RepoDigest──▶ 内部 Registry
 VPN 用户/应用 ─▶ 企业 TLS 入口 ─▶ Web/API ─▶ PostgreSQL │ Redis 三域
                                       │                 │
                                       └─固定主出口──────▶ 新短信服务商
                                       └─受限出站────────▶ 企微/公司邮件
 
 旧短信系统 ─────────────────────────────────────────────▶ 旧短信服务商
-测试环境  ──X──▶ 生产数据库 / 生产 secrets / 生产 Registry namespace
+测试环境  ──X──▶ 生产数据库 / 生产 secrets / 生产制品信任根
 ```
 
 允许旧系统与新平台长期并行，但不允许共享短信服务商凭据、API Key、数据库、报告拉取权或运行
@@ -44,8 +45,8 @@ secret。每个系统只能消费自己服务商的 GetReport/GetReply。
 
 | 场景 | 攻击/失败路径与影响 | Phase 0 控制 | 残余风险与状态 |
 |---|---|---|---|
-| 测试污染生产 | 复制测试 dump/volume/Key/secret，使测试身份、手机号或弱凭据进入生产 | 生产空库；数据库、目录、Registry namespace、25 件 canonical secrets（含 Redis ACL 密码）、API Key 和备份口令独立生成并双人复核；`redis_tls_server_key` 只进入 `current/redis`，不进 backend | 未取得真实资产与 generation 读回前 No-Go |
-| 制品供应链替换 | GitHub 不稳定时手工构建/上传，或 Registry tag 漂移到未经验证镜像 | 四镜像 digest+manifest+Trivy+SBOM；受控提升节点；预生产/生产同 digest；生产不构建源码 | Registry、提升节点和真实 digest 尚未建设/读回时 No-Go |
+| 测试污染生产 | 复制测试 dump/volume/Key/secret，使测试身份、手机号或弱凭据进入生产 | 生产空库；数据库、目录、制品空间、25 件 canonical secrets（含 Redis ACL 密码）、API Key 和备份口令独立生成并双人复核；`redis_tls_server_key` 只进入 `current/redis`，不进 backend | 未取得真实资产与 generation 读回前 No-Go |
+| 制品供应链替换 | GitHub 不稳定时手工构建/裸上传，离线包被替换，或 Registry tag 漂移到未经验证镜像 | 四镜像 image ID+manifest+Trivy+SBOM+GitHub attestation；Ed25519 私钥不入仓库/生产，生产固定公钥与 key ID；导入前校验签名/摘要/大小，Docker 导入后逐镜像读回 ID/平台/labels；预生产/生产同包；生产不构建源码且禁止人工 `docker load` | 受控生成/签名环境、公钥安装、同包预生产和真实读回未闭合时 No-Go；内部 Registry 建成并演练后退出离线通道 |
 | VPN 内部横向移动 | 已入 VPN 的非授权主体直达 Web、API、DB、Redis 或管理端口 | VPN 后仍由 TLS 入口、精确网段、Web/API 认证、RBAC、DB/Redis 网络隔离和审计约束 | VPN 自身、ACL 与防火墙规则需 `[HANDOVER]` 读回 |
 | 单生产 VM 故障 | VM/宿主/维护使 Core、PostgreSQL、broker、auth、control 同时不可用；Redis VMDK 故障使三域同时丢失 | 显式 `isolated-standalone`；三实例保持进程、host:port、目录、ACL、密码和 AOF 隔离并强制 TLS；数据库每日加密备份；broker 由 Outbox 恢复，auth fail closed，control 写路径 503 | Core、数据库、三 Redis、宿主及 TLS 服务端私钥的共同故障域仍在；精确最终 SHA 和整 VM 恢复证据未闭合前发布 No-Go |
 | PostgreSQL/主节点丢失 | 单主或本地备份同故障受损，平台数据不可用 | 平台数据 RPO≤24h：每日加密备份、35 天保留、manifest/SHA-256 与隔离恢复验真；短信发送能力 business-RTO≤12h 可由新平台恢复，或先完成发送围栏再受控切回旧系统并做最小验收结束 | 隔离数据库恢复仅验证工程恢复预算，其耗时作为 `platform_recovery_elapsed` 单列，不能冒充从 `outage_start` 计算的 business-RTO；无托管 PG、冷备和跨机房备份，不能声称机房级灾备 |
@@ -85,8 +86,8 @@ secret。每个系统只能消费自己服务商的 GetReport/GetReply。
 以下任一项存在即不能激活或扩大生产范围：`isolated-standalone` 的精确最终 SHA、TLS/持久化
 Compose、25 件 secret、三域 ACL 或整 VM 故障恢复证据未闭合；
 生产/测试隔离来源不明；备份年龄或隔离恢复证据不满足平台数据 RPO，或业务回退从
-`outage_start` 到旧/新平台最小验收超过 12 小时；内部 Registry digest/manifest
-不完整；VPN/TLS/主出口未真实读回；企业微信或公司邮件未真实送达；首批范围、旧系统切回或
+`outage_start` 到旧/新平台最小验收超过 12 小时；受控 Registry RepoDigest 路径或临时生产离线
+包的 manifest/签名/四 archive/同包预生产证据不完整；VPN/TLS/主出口未真实读回；企业微信或公司邮件未真实送达；首批范围、旧系统切回或
 至少 3 天观察未落实；存在 migration/recovery/uncertain 等正式门禁失败。
 
 - 文档契约测试只能证明这些文字存在。

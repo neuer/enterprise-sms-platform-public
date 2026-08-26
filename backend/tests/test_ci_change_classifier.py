@@ -247,10 +247,33 @@ def test_backend_security_and_pii_paths_select_backend_and_g2(path: str) -> None
         "deploy/postgres.Dockerfile",
         "deploy/redis.Dockerfile",
         ".github/workflows/release-gate.yml",
+        "scripts/create_offline_image_index.py",
     ],
 )
 def test_dependency_image_and_release_changes_select_security_gate(path: str) -> None:
     assert classify_paths([path]).security is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "deploy/docker-compose.production-restart.yml",
+        "deploy/scripts/offline_image_archive.py",
+        "scripts/create_offline_image_index.py",
+    ],
+)
+def test_offline_release_changes_select_release_control(path: str) -> None:
+    result = classify_paths([path])
+
+    assert result.release_control is True
+    assert (result.backend, result.g2, result.security) == (True, True, True)
+
+
+def test_production_restart_contract_changes_select_release_control() -> None:
+    result = classify_paths(["deploy/docker-compose.production-restart.yml"])
+
+    assert result.release_control is True
+    assert (result.backend, result.g2, result.security) == (True, True, True)
 
 
 def test_empty_and_unknown_changes_fail_closed() -> None:

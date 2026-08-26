@@ -201,6 +201,11 @@ jobs:
             ../scripts/export_public_snapshot.py \
             ../scripts/check_coverage_gates.py \
             ../scripts/release_metadata.py \
+            ../scripts/create_release_manifest.py \
+            ../scripts/create_offline_image_index.py \
+            ../scripts/deploy_release_remote.py \
+            ../deploy/scripts/offline_image_archive.py \
+            ../deploy/scripts/release_manifest.py \
             ../scripts/check_invariants.py \
             ../scripts/check_contract.py ../scripts/security_acceptance.py \
             ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py
@@ -211,6 +216,11 @@ jobs:
             ../scripts/export_public_snapshot.py \
             ../scripts/check_coverage_gates.py \
             ../scripts/release_metadata.py \
+            ../scripts/create_release_manifest.py \
+            ../scripts/create_offline_image_index.py \
+            ../scripts/deploy_release_remote.py \
+            ../deploy/scripts/offline_image_archive.py \
+            ../deploy/scripts/release_manifest.py \
             ../scripts/security_acceptance.py ../scripts/e2e_api.py ../scripts/perf_smoke.py
       - name: Run complete backend tests with independent coverage gates
         env:

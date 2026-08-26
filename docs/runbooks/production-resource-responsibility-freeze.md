@@ -3,7 +3,7 @@
 ## 1. 文档状态、适用范围与完成定义
 
 **当前状态：`draft / external-verification-required`。** 本仓库已经给出申请规格、责任边界、
-失败关闭预检和初始化顺序，但尚未取得任何真实 VMware、网络、TLS、Registry、Git、PKI、备份或
+失败关闭预检和初始化顺序，但尚未取得任何真实 VMware、网络、TLS、制品、Git、PKI、备份或
 人员读回，因此不得把本文件的存在表述为“资源冻结已完成”，更不得据此开始生产安装。
 
 本文把 Phase 0 已确认的单生产 VM 方案转换为可交给 VMware、网络、安全、制品、DBA、监控和
@@ -18,7 +18,7 @@ Phase 0 之前只冻结了 `linux/amd64`、宿主 `/usr/bin/python3` 精确为 3
 
 1. 本文第 11 节每一项都有唯一负责人、完成期限、内部证据编号和状态；
 2. `PLAT` 与 `REV` 是两名不同的自然人，且使用两个独立受控身份；
-3. 生产、预生产、一次性隔离恢复配额、内部 Registry 和内网只读 Git 镜像均已分配；
+3. 生产、预生产、一次性隔离恢复配额、受控离线制品生成/签名/传输资源和内网只读 Git 镜像均已分配；
 4. OS、CPU、内存、五块 VMDK、网络、TLS、固定出口、Redis PKI、25 件 secret、备份材料和
    双渠道告警的真实读回均通过；
 5. 所有 `No-Go` 均为 `closed`，或者明确属于 Phase 0 已接受但不阻断首发的残余风险。
@@ -30,13 +30,12 @@ Phase 0 之前只冻结了 `linux/amd64`、宿主 `/usr/bin/python3` 精确为 3
 
 ```text
 GitHub Actions / 受控构建环境
-       │ 候选 commit、四镜像 RepoDigest、SBOM、Trivy、manifest
+       │ 候选 commit、四镜像 image ID、SBOM、Trivy、attestation
        ▼
-受控制品提升节点 ──▶ 内部 Registry
-       │                    │ 同一组 digest
-       └──▶ 内网只读 Git ───┼─────────────┐
-                            ▼             ▼
-                      应用预生产       生产单 VM
+受控联网签名节点 ──签名封闭包──▶ 应用预生产 ──同一包──▶ 生产单 VM
+       │
+       ├──▶ 内网只读 Git ────────────────────────────────┘
+       └──▶ 未来内部 Registry（建成并演练后退出离线通道）
                                       ├─ Web/API/worker/beat/outbox
 VPN ─▶ 企业 TLS 终结器 ────────────────┤
                                       ├─ PostgreSQL 16
@@ -47,7 +46,8 @@ VPN ─▶ 企业 TLS 终结器 ────────────────
 旧短信系统 ──独立旧服务商，长期并行并可受控切回
 ```
 
-生产不得直连 GitHub、在现场构建镜像或以手工上传代替内部 Git/Registry。生产、PostgreSQL 和
+生产不得直连 GitHub、在现场构建镜像、人工 `docker load` 或以裸上传代替受控 driver。内部
+Registry 尚未建设期间，只允许签名的生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）；内网 Git 仍是硬要求。生产、PostgreSQL 和
 三 Redis 位于同一 VM 是已接受的共同故障域，只能标记为 `isolated-standalone`，不得描述为 HA。
 
 当前容量规划输入为：2022/2023/2024/2025 年月均约 14/23/35/50 万条，以单号码请求为主，
@@ -202,9 +202,9 @@ readback 与另一名自然人复核。
 | 资源 | CPU/内存 | 磁盘 | 网络/用途 | 首发状态 |
 |---|---:|---:|---|---|
 | 生产 VM | 12 vCPU / 48 GiB | 5 VMDK，共 1050 GiB | 单 NIC，生产 VLAN，固定厂商出口 | 必须置备并验收 |
-| 应用预生产 VM | 建议 8 vCPU / 24 GiB | 仍保留 5 个独立 guest VMDK；为完整存储合同演练建议使用同标称容量，可 thin provision | 预生产 VLAN、独立数据/secret、可访问内部 Registry/Git | 必须置备并验收 |
+| 应用预生产 VM | 建议 8 vCPU / 24 GiB | 仍保留 5 个独立 guest VMDK；为完整存储合同演练建议使用同标称容量，可 thin provision | 预生产 VLAN、独立数据/secret、可访问受控离线包/Git | 必须置备并验收 |
 | 一次性隔离恢复机配额 | 建议按生产同规格 12 vCPU / 48 GiB | 独立 5 VMDK，PostgreSQL/Runtime 不得复用生产或共享预生产 VMDK | 无生产厂商 Send 出站；用完整 VM 退役 | 必须预留并验证申请时长 |
-| 制品提升节点 | 建议 4 vCPU / 8 GiB / 200 GiB | 独立制品暂存盘 | 可访问候选制品和内部 Registry；不能访问生产 secret | 必须置备或指定既有受控节点 |
+| 受控联网签名节点 | 建议 4 vCPU / 8 GiB / 200 GiB | 独立制品暂存盘 | 下载 Release Gate 制品、核验 GitHub attestation 并签名；持有私钥但不能访问生产 secret | 必须置备或指定既有受控节点 |
 | 后续冷备 | 未配置 | 未配置 | 首发非硬门禁 | 记录残余风险 |
 
 预生产缩小的是计算资源，不得缩减服务、volume、secret 名、TLS、三 Redis 域或发布合同。若
@@ -317,7 +317,7 @@ RF-22 不能只写“12 vCPU/48 GiB/1050 GiB”。必须按首批应用真实峰
 - 宿主：OS/journal/auth、CPU、内存、网络、数据库连接池和每个 worker RSS；fail2ban 指标仅在
   后续独立安装并启用后纳入。
 
-预生产使用同 digest、真实配置上界和隔离数据，至少验证：API 受理 P95<2000ms；标准性能冒烟
+预生产使用同一签名封闭包、真实配置上界和隔离数据，至少验证：API 受理 P95<2000ms；标准性能冒烟
 停止施压后 active batch/三队列 480 秒内清零；首批应用给出的完整 12 小时积压在批准的厂商 QPS
 下于 12 小时内排空，同时 realtime 预留仍可用、没有自动重发 uncertain。记录 P50/P90/P95/P99、
 吞吐、队列峰值、CPU/RAM/RSS、DB 连接/锁/WAL、三 Redis memory/AOF/latency/blocked clients、
@@ -349,7 +349,8 @@ RF-22 不能只写“12 vCPU/48 GiB/1050 GiB”。必须按首批应用真实峰
 | 公司 NTP | UDP 123 | 仅批准时间源 |
 | 内部 APT 镜像 | TCP 443 | OS 置备/维护窗；生产不访问公共软件源 |
 | 内网只读 Git | TCP 22 或 443 | 只冻结一种协议和精确目标 |
-| 内部 Registry | TCP 443 | 只拉取 digest；不在生产 push/build |
+| 受控离线包入口 | SSH 22（经堡垒机/VPN） | 只由固定 driver 校验上传；禁止裸 scp/rsync、人工 load |
+| 内部 Registry（退出目标） | TCP 443 | 建成后只拉取 digest；不在生产 push/build |
 | 新短信服务商生产 API | TCP 443 | TLS 校验；固定 SNAT IPv4；书面白名单 |
 | `qyapi.weixin.qq.com` | TCP 443 | 只由既有告警实现访问；不继承宿主代理 |
 | 公司 SMTP relay | TCP 25、465 或 587 中的一个 | 冻结精确主机、端口、TLS 模式、发件人 |
@@ -383,25 +384,29 @@ TCP 2375/2376 在所有接口不可达。防火墙验收必须从批准 VPN/TLS 
 
 ## 7. 制品、代码和发布资源
 
-1. `REL` 建设内部 Registry 的生产 namespace、四个镜像仓库、保留/不可变策略和只读生产凭据。
+1. GitHub Release Gate 为候选 commit 生成四个 archive、离线索引及 CI/G2、独立 Trivy、SBOM、
+   可重复构建证据，并 attestation 索引；`REL` 在受控联网签名节点下载并核验后生成 schema v2
+   manifest 与 Ed25519 签名。私钥不得进入仓库、预生产、生产或发布包。
 2. `REL` 建设内网只读 Git 镜像；生产 `/opt/sms-platform` 的 `origin` 只能指向该镜像。
-3. 提升节点验证候选 commit、CI/G2、四镜像独立 Trivy、SBOM、manifest 后，以 RepoDigest 提升；
-   记录源/目标 digest、image ID、manifest SHA-256、操作者与独立复核人。
-4. 预生产拉取将要生产激活的同一组 digest，完成发布、迁移、适用 UAT、容量冒烟、备份/恢复、
+3. 封闭制品必须是**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**，由 driver 校验 manifest/签名文件闭包、离线索引及四 tar 的 SHA-256/size 后
+   上传；release manager 导入后逐镜像读回 image ID、平台和 labels。禁止人工 `docker load`、
+   裸上传、现场构建和 raw Compose。
+   `SEC/PLAT` 通过获批的一次性宿主信任材料置备流程安装 `/etc/sms-platform/offline-release-signing-public.pem` 与
+   `/etc/sms-platform/offline-release-signing-key-id`，均为 `root:root 0644` 普通单链接文件；
+   Ed25519 私钥只在受控联网签名节点，严禁进入 Git、发布包、预生产或生产。
+4. 预生产使用将要生产激活的同一签名封闭包，完成发布、迁移、适用 UAT、容量冒烟、备份/恢复、
    企微+邮件、最小真实厂商链路和旧系统切回演练。
 5. 全新生产主机只执行一次 `release bootstrap --confirm-empty-host`。后续正常更新执行
    `release prepare`→`activate`→`status`；中断后只按状态给出的 `next_step` 执行 `resume`，仅在
-   工具允许的未成功状态执行 `rollback`。`succeeded` 版本不能原地回滚，必须制作保持当前 schema
-   的新候选并执行 prepare-forward-rollback。所有生产 Compose 动作只通过
+   工具允许的未成功状态执行 `rollback`。`succeeded` 版本不能原地回滚；临时离线通道制作新
+   commit、四镜像全新 ID、无迁移整包并走普通 prepare/activate，Registry 路径才使用
+   prepare-forward-rollback。所有生产 Compose 动作只通过
    `sudo /usr/local/sbin/sms-compose`，完整状态机以部署手册为准。
 
-内部 Registry 与内网 Git 镜像缺一不可。CI 成功不代表镜像已提升，预生产成功也不代表生产已
-部署；三类证据必须分别归档。
-
-当前 release 合同要求生产四个 RepoDigest 已经存在于本机，但不会从网络拉取；仓库也尚无受控
-Registry 登录/按 manifest 拉取/凭据清理/RepoDigest 读回入口。生产禁止以裸 `docker login`、
-`docker pull` 或人工上传绕过。ENG-02 未实现前，全新主机 bootstrap 和任何 changed-image 更新均
-为 No-Go。
+内网 Git 镜像不可省略。CI 成功不代表离线包已签发，预生产成功也不代表同一包已上传或部署
+生产；各类证据必须分别归档。上传、验签或导入失败保留 staging、release 状态和已导入镜像，
+禁止无范围 prune。内部 Registry、不可变 namespace、生产只读身份和按 manifest RepoDigest
+拉取入口建成，并以同一候选完成预生产演练后，离线通道退出；Registry 门禁及测试不得删除。
 
 宿主资产安装器是一次性、拒绝覆盖的 bootstrap 工具；常规 application release 只推进 Git 和
 容器状态，不会同步升级复制到 `/etc`、`/usr/local` 的宿主资产。任何候选只要修改安装器 inventory
@@ -415,7 +420,8 @@ Git fast-forward 先改变 wrapper symlink 目标，再继续使用旧的 root-o
 没有已批准的 production env 生成器。ENG-04 必须交付一个由 RF 实值生成、闭集校验、输出
 `root:root 0600` 且不含凭据的受控资产。至少冻结以下非 secret 项：
 
-- 四个 `SMS_*_IMAGE` 均为内部 Registry 的 `image@sha256:RepoDigest`；
+- 四个 `SMS_*_IMAGE` 必须与获批 manifest 精确一致：Registry 路径为
+  `image@sha256:RepoDigest`，临时离线路径由受控 release manager 写入已验签导入的 image ID；
 - `POSTGRES_DB/DB_HOST/DB_PORT/DB_NAME`，全部 DB pool/overflow/timeout/statement-timeout 预算；
 - `REDIS_HA_MODE=isolated-standalone`、三个不同 Redis host、CA 路径与非 secret 连接上限；
 - `VENDOR_BASE_URL` 为真实 HTTPS、`VENDOR_LIVE_TEST_ORIGIN` 与首发模式边界、
@@ -506,7 +512,7 @@ VMDK 仍可读”等故障，不能覆盖整 VM、全部 VMDK 或 datastore 丢�
 | `VMW` | VMware/宿主管理员 | 可由基础设施团队承担 |
 | `NET` | 网络、防火墙、VPN、DNS 管理员 | 负责固定出口和网络读回 |
 | `SEC` | 安全、PKI、密钥和 escrow 保管人 | secret 值只在受控系统内处理 |
-| `REL` | 构建、Registry、Git 镜像、制品提升负责人 | 不获得生产运行 secret |
+| `REL` | 构建、attestation 核验、离线包生成/签名、未来 Registry、Git 镜像负责人 | 不获得生产运行 secret；签名私钥不进入生产 |
 | `DBA` | PostgreSQL、备份和隔离恢复负责人 | `sms_owner` 只在受控动作使用 |
 | `MON` | 监控、值班和告警负责人 | 负责宿主外 VM 心跳 |
 | `APP` | 首批应用负责人 | 每个应用单独指定 |
@@ -520,7 +526,7 @@ VMDK 仍可读”等故障，不能覆盖整 VM、全部 VMDK 或 datastore 丢�
 | OS 模板、生产/预生产/恢复 VM | VMW | PLAT | SEC、DBA | REV、BUS |
 | VMDK 识别、格式化、fstab、挂载 | VMW | PLAT | DBA、REV | BUS |
 | Ubuntu 包锁、Docker/Compose | VMW、REL | PLAT | SEC | REV |
-| 内部 Registry、Git 镜像、提升节点 | REL | REL | SEC、PLAT | REV |
+| 离线包生成/签名、Git 镜像、未来 Registry | REL | REL | SEC、PLAT | REV |
 | VPN、TLS、DNS、防火墙 | NET、SEC | NET | PLAT、APP | REV |
 | 固定出口与厂商白名单 | NET | NET | PLAT、APP | REV |
 | Redis PKI、25 secrets、escrow | SEC | SEC | PLAT、DBA | REV |
@@ -541,13 +547,15 @@ VMDK 仍可读”等故障，不能覆盖整 VM、全部 VMDK 或 datastore 丢�
 | ID | 当前缺口 | 关闭条件 | R/A |
 |---|---|---|---|
 | ENG-01 | 安全日报使用第五个本地构建、裸 Compose、源码/OS 路径且无 access-log rotate/reopen | 纳入受控 digest 发布（或复用四镜像之一）；config/control/access log 固定到 Runtime VMDK并受存储预检；补轮转/reopen、容量与升级验收 | REL/PLAT |
-| ENG-02 | production release 只接受预加载 digest，却没有受控 Registry login/pull/readback/凭据清理入口 | 工具按已批准 manifest 拉取四个 digest、限制输出、不落凭据、核对平台/RepoDigest并留审计；预生产演练通过 | REL/REL |
+| ENG-02 | 内部 Registry 尚未建设，生产镜像不能靠裸上传或人工 load 进入 | 签名 schema v2 封闭包、固定生产公钥/key ID、driver 校验上传、release-manager 验签/受控导入及失败保留均有测试，并以同一包通过预生产；未来 Registry 建成并演练后退出 | REL/REL |
 | ENG-03 | 宿主资产仅可首装，常规更新会推进 symlink checkout 却不升级 root-owned 资产 | 新增受控 host-asset plan/apply/status/rollback 或发布前精确漂移围栏；所有受保护资产、commit、原子切换和失败恢复有测试 | REL/PLAT |
 | ENG-04 | 只有危险的开发 `.env.example`，没有生产生成/闭集校验 | 从 RF 实值生成无 secret 的 0600 文件，拒绝开发默认、未知/重复项、相互矛盾设置和未闭合安全日报路径；release 绑定 | REL/PLAT |
 | ENG-05 | 没有只读的 canonical 25 secrets 精确 inventory | 验证根目录 owner/mode/非链接、恰好 25 个名称、每项 root-owned 0600 非空普通非链接文件及格式；固定输出不读取/泄漏值 | SEC/SEC |
 | ENG-06 | 公司宿主安全基线与独立补丁状态机尚未给出 | 第 3.3 节闭集取得基线 ID/版本、自动化资产、只读 readback、维护/紧急 SLA、预生产与回退证据 | VMW/PLAT |
 
-以上六项当前均为 `open`；本文不声称已经实现它们。ENG-03 未闭合前，只有明确不改变宿主资产
+ENG-02 随本次生产离线包实现进入候选验收，只有定向测试、预生产同包演练和生产信任根读回均
+通过后才可标记 `closed`；其余工程项仍按实际证据收口，本文不因文字修改声称已经实现。ENG-03
+未闭合前，只有明确不改变宿主资产
 inventory 的 application-only release 可进入后续评估。唯一窄例外是 Docker 首次启动前，从固定旧
 commit `555fb20b0d630ece9099a88a463eb1ce1121c012` 执行仅限六个存储预检资产的
 mountinfo credential 修复；它不适用于已 bootstrap 主机，也不关闭 ENG-03。
@@ -666,26 +674,28 @@ storage preflight，再解除 containerd/Docker 的 mask 并启动二者；两�
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/production_host_preflight.py runtime
 ```
 
-runtime 失败时停止 Docker并调查存储/daemon 配置；不得继续预加载镜像或用 raw Compose 验证。
+runtime 失败时停止 Docker并调查存储/daemon 配置；不得继续上传/导入离线包或用 raw Compose 验证。
 
 ### Gate 3：网络、制品和机密材料
 
-1. 完成 VPN/TLS/防火墙、固定出口、内部 Registry、内网 Git、Redis PKI 和双渠道告警。
+1. 完成 VPN/TLS/防火墙、固定出口、内网 Git、Redis PKI、双渠道告警，以及受控离线包
+   受控联网签名/传输链路；内部 Registry 记录为离线通道的退出项目。
 2. 在生产边界独立安装 25 件 secret、备份口令、两个 generation ID。ENG-05 闭合后执行其只读
    inventory；再执行
    `sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/redis_tls_preflight.py`。两者均不得打印
    secret 值、长度、摘要或派生信息；ENG-05 未闭合不得用 `find` 无输出代替通过。
-3. ENG-04 闭合后生成并校验第 7.1 节生产 `.env`；不含凭据。ENG-02 闭合后按正式 manifest
-   预加载四个内部 RepoDigest；任一步失败不得进入 Gate 4。
+3. ENG-04 闭合后生成并校验第 7.1 节生产 `.env`；不含凭据。ENG-02 闭合后由正式 driver
+   `--stage-only` 校验并上传签名封闭包；该动作不执行 Git、prepare、bootstrap 或 secrets 准备。
+   任一步失败不得进入 Gate 4。
 
-### Gate 4：预生产同 digest 演练
+### Gate 4：预生产同签名包演练
 
 完成发布/迁移、适用 UAT、容量冒烟、存储缺盘失败、三 Redis ACL/TLS/AOF、备份/隔离恢复、
 企微+邮件、最小真实厂商链路、12 小时上游积压和旧系统切回。失败必须先修复并生成新候选证据。
 
 ### Gate 5：生产首次引导
 
-1. 双人复核 manifest、同 digest 预生产证据、空主机、挂载、secret、固定出口和 No-Go。
+1. 双人复核 manifest/签名、manifest SHA-256 与闭集逐文件 SHA-256/size、固定公钥/key ID、同包预生产证据、空主机、挂载、secret、固定出口和 No-Go。
 2. 只通过 `sms-compose release bootstrap --manifest ... --confirm-empty-host` 建立首个基线。
 3. 成功后启用平台、分区、备份和 lifecycle-status timer；生产不启用 restore-drill timer。
 4. 仅在 ENG-01 闭合后安装并验证 security-report mailer/collector；collector 固定使用宿主
@@ -711,9 +721,9 @@ raw Compose、通用 `exec`、手工 SQL 恢复、管理员初始化或真实发
 | RF-05 | 预生产 | VM、同拓扑、独立数据/secret、差异清单 | VMW/PLAT | `requested` | 待填 | 待填 |
 | RF-06 | 隔离恢复配额 | 申请 SLA、独立 VMDK、无 Send 出站、退役流程 | VMW/DBA | `requested` | 待填 | 待填 |
 | RF-07 | 宿主包锁与 Docker daemon | 内部 APT snapshot/签名、公司基线 ID/版本、完整包锁、overlay2、日志、cgroup、ulimit、补丁 SOP | VMW/PLAT | `requested` | 待填 | 待填 |
-| RF-08 | 内部 Registry | namespace、不可变策略、四仓库、只读生产身份 | REL/REL | `unassigned` | 待填 | 待填 |
+| RF-08 | 生产制品交付 | 临时离线包生成/签名/固定公钥与 key ID/受控上传及同包预生产证据；未来 Registry namespace、不可变策略、四仓库、只读身份和退出演练 | REL/REL | `unassigned` | 待填 | 待填 |
 | RF-09 | 内网 Git | mirror、同步 SLA、只读生产身份、候选 commit | REL/REL | `unassigned` | 待填 | 待填 |
-| RF-10 | 提升节点 | 资产、网络、认证、审计和证据保留 | REL/REL | `unassigned` | 待填 | 待填 |
+| RF-10 | 受控联网签名节点 | attestation 核验、私钥保管、签名审计和证据保留 | REL/REL | `unassigned` | 待填 | 待填 |
 | RF-11 | VPN/TLS/DNS | VM 静态私网 IP/NIC/VLAN/网关/DNS、VPN CIDR、终结器资产/主机/回源/探针、FQDN、证书与续期 | NET/NET | `unassigned` | 待填 | 待填 |
 | RF-12 | 防火墙与容器网段 | 入/出站矩阵、DOCKER-USER、可分配至少四个 `/24` 的非重叠 address pool、2375/2376 拒绝、真实读回 | NET/NET | `unassigned` | 待填 | 待填 |
 | RF-13 | 厂商出口 | 固定公网 IPv4、书面工单、QPS、号码上限、GetBalance | NET/NET | `unassigned` | 待填 | 待填 |
@@ -733,9 +743,10 @@ raw Compose、通用 `exec`、手工 SQL 恢复、管理员初始化或真实发
 ## 12. No-Go 与已接受残余风险
 
 以下任一项未闭合即不得生产激活：RF-01 至 RF-22 未全部 `approved`；第二名真实复核人；生产
-VM/五 VMDK；签名内部 APT snapshot、宿主安全基线或补丁 SOP；内部 Registry 或内网 Git；
+VM/五 VMDK；签名内部 APT snapshot、宿主安全基线或补丁 SOP；内网 Git，或既无已批准的签名
+离线包通道也无已批准的内部 Registry；
 VPN/真实 TLS 终结器/VM 静态私网 IP/固定出口/厂商书面白名单；Redis TLS/三域/25 secrets；企微
-或公司邮件；同 digest 预生产；首份备份隔离恢复；RPO 故障范围决策；全面容量预算与 12 小时
+或公司邮件；同签名包（Registry 路径则同 digest）预生产；首份备份隔离恢复；RPO 故障范围决策；全面容量预算与 12 小时
 积压演练；首批应用互斥路由和旧系统切回；任何正式 release 门禁失败。
 
 ENG-01、ENG-02、ENG-04、ENG-05、ENG-06 必须 `closed`。ENG-03 必须 `closed`，或者 T0 候选与

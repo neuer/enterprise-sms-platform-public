@@ -298,6 +298,7 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "deploy/database-roles.md",
         # 生产 Phase 0 发布/存储/HA 控制面不进入 api/web 测试镜像。
         "deploy/docker-compose.production-storage.yml",
+        "deploy/docker-compose.production-restart.yml",
         "deploy/docker-compose.redis-tls.yml",
         "deploy/lifecycle.server.example.json",
         "deploy/scripts/continuity_manager.py",

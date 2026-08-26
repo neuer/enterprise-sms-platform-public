@@ -9,7 +9,7 @@
 
 ## 1. 需人工完成清单
 
-- [x] 代码基线 `<redacted-commit>` 已执行 `bash scripts/verify_release.sh`：API 0、Web 0、PostgreSQL 0、Redis 0；当前仓库候选 `<redacted-commit>` 的 CI run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 全部成功。v1.6.14 四镜像/数据持久化候选 `<redacted-commit>` 的证据继续有效。生产仍须把四镜像推送到受控仓库并归档扫描报告、扫描器 digest 与最终镜像 digest（RepoDigest）；P0 最终 SHA 与 run ID 按本节开头的证据边界处理。
+- [x] 代码基线 `<redacted-commit>` 已执行 `bash scripts/verify_release.sh`：API 0、Web 0、PostgreSQL 0、Redis 0；当前仓库候选 `<redacted-commit>` 的 CI run `<redacted-run>` 与 hosted Release Gate run `<redacted-run>` 全部成功。v1.6.14 四镜像/数据持久化候选 `<redacted-commit>` 的证据继续有效。内部 Registry 建成前，生产须生成并签署**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**，归档扫描报告、GitHub attestation、离线索引、四 archive 的 image ID/SHA-256/size、manifest/签名和固定生产公钥 key ID；Registry 建成后的路径仍须归档最终镜像 digest。P0 最终 SHA 与 run ID 按本节开头的证据边界处理。
 - [ ] 配置外部 TLS 终结器的证书、HTTPS 重定向与 HSTS（`max-age>=31536000; includeSubDomains`），按部署手册归档 curl 结果；内部 HTTP Nginx 不设置 HSTS。真实浏览器确认 CSP/Permissions-Policy 生效且控制台无 CSP violation。
 - [ ] 完成一次性 production `release bootstrap --confirm-empty-host`，立即生成首份生产加密备份并在从预生产资源池按需创建的一次性空白隔离恢复机验真；共享应用预生产不得安装生产恢复材料或承担该演练。通过后才执行 `sms-compose init-admin --show-temporary-password` 初始化本地管理员并完成首次改密。首发只启用 local Provider；AD 待地址、CA、bind secret 和组映射齐备后另行验收。生产设置 `DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，禁止运行 `seed-dev`。
 - [ ] 一次性恢复机先停止平台和 lifecycle timers，然后安装完整 25 件 canonical secrets：
@@ -48,7 +48,7 @@
   `AUTH_MOCK=0` 的 local Provider、首批 notice 应用及对应安全/运维边界。AD 登录与角色映射
   延后到 AD Provider 正式启用前独立复验。自动化 20 项历史证据保存在受限归档，不随公开快照发布。
 - [x] 已在隔离主机完成一次**远端 Mock 发布演练**：精确修复提交 `<redacted-commit>` 覆盖 Web-only、API-only、数据镜像验证、配置失败不变、健康失败补偿与 TERM/resume，最终退出 0；恢复后默认 10 个容器 ID 与 4 个卷在最终演练前后逐项一致，公网边界和管理员登录/退出浏览器冒烟通过。首次执行误清理默认 Mock 卷、测试环境重置及整改证据保存在受限归档，不随公开快照发布；不得描述为原测试数据未变化。`release_control_smoke` 只证明控制面，不代表发布就绪，也不替代正式 Trivy `release` 证据。
-- [ ] 为生产统一四镜像发布建立**生产变更单**：绑定 release_id、commit、四个 RepoDigest/image ID、changed subset、迁移兼容性、维护窗口、Trivy/数据/备份恢复证据、执行/复核/回退人和终态；不得写 secret 或手机号。
+- [ ] 为生产统一四镜像发布建立**生产变更单**：绑定 release_id、commit、manifest SHA-256 与闭集逐文件 SHA-256/size、四个 image ID/archive hash+size、changed 标志（临时离线仅全零或全四）、迁移兼容性、维护窗口、Trivy/attestation/数据/备份恢复证据、执行/复核/回退人和终态；不得写 secret 或手机号。
 - [ ] 变更执行人可为唯一技术管理员；复核人必须是另一名具名的业务负责人或变更
   审批人，不要求其持有平台管理员账号，也不得共享凭据。两个 ID 必须对应两名真实人员；
   无第二人可复核时为上线/恢复治理 No-Go，禁止同人使用两个 ID。
@@ -59,9 +59,9 @@
 切换业务顺序以 [PRD.md 第 10 章](PRD.md) 为最高依据，上线前签收项以本文件第 1 节为准，
 具体部署顺序见 [deploy/README.md](deploy/README.md)。执行摘要：
 
-1. 冻结 tag/commit、镜像 digest、执行人和回退决策人；确认新旧系统只轮询各自服务商与各自凭据，任何一方都不得接管另一方的 GetReport/GetReply。
+1. 冻结 tag/commit、manifest SHA-256 与闭集逐文件 SHA-256/size、四镜像 image ID、执行人和回退决策人；确认新旧系统只轮询各自服务商与各自凭据，任何一方都不得接管另一方的 GetReport/GetReply。
 2. 完成 25 件 secrets、主出口、候选在预生产的隔离恢复、企微+公司邮件和基础监控先决条件；AD、备出口和冷备状态按 Phase 0 残余风险记录。此时生产仍为空库，不得声称已有生产备份。
-3. 不手工拆分启动服务；全新空主机用正式 baseline manifest 执行一次 `release bootstrap --confirm-empty-host`，核验 Alembic、分区、owner/app 权限和终态，随后启用 systemd。立即生成首份生产加密备份，并在一次性空白隔离恢复机完成恢复验真；只有该证据通过后，才初始化本地管理员、创建 API Key 或进入 T0。生产不得启用 dev profile。
+3. 不手工拆分启动服务；签名封闭包必须先由 remote driver `--stage-only` 校验上传，禁止裸上传或人工 `docker load`。独立确认内网 Git/宿主资产/固定公钥与 key ID/空主机后，才用正式 baseline manifest 执行一次 `release bootstrap --confirm-empty-host`；stage-only 不得调用 prepare 或 bootstrap。核验 Alembic、分区、owner/app 权限和终态，随后启用 systemd。立即生成首份生产加密备份，并在一次性空白隔离恢复机完成恢复验真；只有该证据通过后，才初始化本地管理员、创建 API Key 或进入 T0。生产不得启用 dev profile。
 4. T0 只接入 1–2 个低风险 notice 应用；每个应用完成 API Key、报告/回复、回调/查询验证并连续观察至少 3 天。verify、market 与更多应用须另行审批，不属于本次首发范围。
 5. 旧系统保持长期并行；只有后续明确完成全部应用收口时，才由厂商重置旧系统密钥。归档 UAT、备份 SHA-256、监控截图与厂商回执。
 6. 任一关键检查失败立即停止。应用切回后，旧系统负责旧服务商的新发送与报告；新平台继续完成自己已提交批次的报告/对账，但不再接收该应用新请求。只有新平台自身无未终结批次且有书面处置时才停止其轮询。
@@ -69,7 +69,7 @@
 ## 3. BLOCKED 与降级清单
 
 - `BLOCKED-D01`（仍生效）：asyncpg prepared statement 不支持在单次 `op.execute` 中执行整份多语句 `schema.sql`。安全降级为首迁移从唯一 `schema.sql` 读取全文，用内置解析器按顶层分号无损切分，并在同一事务逐条执行；重组逐字一致测试与 PostgreSQL 16 双空库结构比对均已通过。若必须坚持单次调用，需批准 migrate 专用同步驱动并重新安全评审。详见 [docs/DECISIONS.md](docs/DECISIONS.md)。
-- `BLOCKED-D02`、`BLOCKED-D019`、`ENV-D03` 与基础镜像漏洞阻塞均已解除；真实四镜像结果为 API 0、Web 0、PostgreSQL 0、Redis 0。外部系统、受控仓库 RepoDigest 与人工验收仍按本清单执行，未完成前不得创建正式发布 tag。
+- `BLOCKED-D02`、`BLOCKED-D019`、`ENV-D03` 与基础镜像漏洞阻塞均已解除；真实四镜像结果为 API 0、Web 0、PostgreSQL 0、Redis 0。签名离线包、同包预生产、固定信任根与人工验收仍按本清单执行，未完成前不得创建正式发布 tag。内部 Registry 建成并完成预生产演练后退出离线通道。
 - 其余 D001–D023 是已落地的保守工程决策；生产变更若与其冲突，先以 PRD 为准并补变更单，禁止静默绕过手机号、密钥、重复下发和审计红线。
 
 ## 4. 运维速查

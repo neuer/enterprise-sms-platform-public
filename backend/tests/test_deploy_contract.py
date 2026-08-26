@@ -591,6 +591,29 @@ def test_production_storage_overlay_binds_all_named_volumes_to_fixed_vmdk_paths(
     }
 
 
+def test_production_restart_overlay_disables_daemon_restart_for_every_runtime_service() -> None:
+    overlay = load_deploy_yaml("docker-compose.production-restart.yml")
+
+    assert overlay == {
+        "services": {
+            name: {"restart": "no"}
+            for name in (
+                "postgres",
+                "redis",
+                "redis-auth",
+                "redis-control",
+                "api",
+                "worker-realtime",
+                "worker-bulk",
+                "worker-callback",
+                "outbox-dispatcher",
+                "beat",
+                "web",
+            )
+        }
+    }
+
+
 def test_isolated_redis_tls_overlay_fixes_server_and_client_identity_contract() -> None:
     overlay = load_deploy_yaml("docker-compose.redis-tls.yml")
     services = overlay["services"]

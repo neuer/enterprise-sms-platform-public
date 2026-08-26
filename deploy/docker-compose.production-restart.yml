@@ -1,0 +1,28 @@
+# Production restart contract.
+#
+# Docker must never restart platform containers before the signed release
+# start-gate has been checked. sms-platform.service starts and stops the stack
+# through the controlled sms-compose lifecycle lock; it is not a supervisor.
+services:
+  postgres:
+    restart: "no"
+  redis:
+    restart: "no"
+  redis-auth:
+    restart: "no"
+  redis-control:
+    restart: "no"
+  api:
+    restart: "no"
+  worker-realtime:
+    restart: "no"
+  worker-bulk:
+    restart: "no"
+  worker-callback:
+    restart: "no"
+  outbox-dispatcher:
+    restart: "no"
+  beat:
+    restart: "no"
+  web:
+    restart: "no"

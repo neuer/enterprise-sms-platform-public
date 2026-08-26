@@ -32,19 +32,17 @@ Ubuntu Server 24.04.4 LTS amd64 是 Phase 0 后新增的建议冻结项，只有
 | 保留期 | 业务消息/回复/号码明细 12 个月；审计 36 个月；raw/unmatched 90 天；导出 7 天；数据库加密备份 35 天 | 策略文档不证明清理、归档、备份或恢复任务已实际运行 |
 | 告警 | 企业微信 + 公司邮件，均须有主接收人和替补 | `log-sink`、Mock 或单元测试不构成真实告警闭环 |
 | 调用方积压 | 首批应用须持久保存至少 12 小时请求，24 小时内复用稳定 `biz_id`，新旧路由互斥且补发需审批 | 平台 RTO≤12h 本身不证明请求不丢、不重复或上游确有持久队列 |
-| 制品 | 可新建内部 Registry；GitHub 连通不稳定；允许建设预生产 | Registry 尚未建设时不能宣称有内网制品供应链；预生产通过不等于生产已部署 |
+| 制品 | 内部 Registry 尚未建设；首发临时使用签名的生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）；允许建设预生产 | 离线包不是 Registry，也不授权裸上传、人工 `docker load`、现场构建或跳过预生产 |
 
 ## Phase 0 目标拓扑
 
 ```text
 GitHub CI / 已验证候选
-        │  四镜像 digest + manifest + SBOM + Trivy 证据
+        │  四镜像 image ID + manifest + SBOM + Trivy + attestation
         ▼
-受控制品提升节点 ─────────▶ 内部 Registry
-                                  │ 同一 digest
-                       ┌──────────┴──────────┐
-                       ▼                     ▼
-                  预生产环境             生产主节点
+受控联网签名节点 ──签名封闭包──▶ 预生产环境 ──同一包──▶ 生产主节点
+        │
+        └─未来 RepoDigest 提升──▶ 内部 Registry（建成并演练后退出离线通道）
                                              │ 固定出口
 VPN ─▶ 企业 TLS/入口 ────────────────────────┤──▶ 新短信服务商
                                              │
@@ -54,31 +52,35 @@ VPN ─▶ 企业 TLS/入口 ─────────────────
 旧短信系统 ──旧服务商（长期并行，首批应用可受控切回）
 ```
 
-内部 Registry、提升节点、预生产和生产资源均须以资产清单和真实读回为准。图中出现某组件只
-表示计划关系，不表示已经创建或验收。
+受控生成/签名节点、预生产和生产资源均须以资产清单和真实读回为准。内部 Registry 是明确的
+退出目标，但不是临时离线首发已存在的事实。图中出现某组件只
+表示计划关系，不表示已经创建或验收；预生产通过不等于生产已部署。
 
 ## 代码发布与更新
 
 1. 选择一个不可变候选 commit，等待正式 CI/G2、四个最终镜像的独立 Trivy、SBOM、可重复
    构建和严格 manifest 证据完成。GitHub 短时不可达只能重试，不能把缺失证据解释为通过。
-2. 由受控制品提升节点按 RepoDigest 将四镜像复制到内部 Registry；同步保存源 digest、目标
-   digest、manifest 哈希、操作者和复核人。Compose、迁移和受控脚本的精确 commit 通过内网
-   只读 Git 镜像 fast-forward 安装；生产不得直连 GitHub、源码构建或手工上传。内部 Git
-   镜像与 Registry 缺一不可，二者都必须绑定同一候选 commit/manifest。
-3. 预生产只拉取内部 Registry 中的同一组 digest，完成安装、迁移、认证、企微+公司邮件告警、
+2. 内部 Registry 建成前，GitHub Release Gate 先生成离线索引与四个 archive 并 attestation 索引；
+   受控联网签名节点下载后核验 attestation，再生成 schema v2 manifest 与 Ed25519 签名。签名私钥不得进入仓库、预生产、生产
+   或发布包；生产只安装固定路径公钥与 key ID。封闭包只能由官方 driver 校验 size/hash 后上传，
+   禁止裸 `scp/rsync`、人工 `docker load`、现场构建或 raw Compose。Compose、迁移和受控脚本的
+   精确 commit 仍通过内网只读 Git 镜像安装；生产不得直连 GitHub。
+3. 预生产使用将要上传生产的**同一签名封闭包**，完成安装、迁移、认证、企微+公司邮件告警、
    备份恢复、旧系统切回和最小真实厂商链路演练。
 4. 全新空主机只执行一次 `release bootstrap --manifest ... --confirm-empty-host` 建立首个
    succeeded 基线；后续使用 `release prepare/activate/status`。已成功发布的版本不能原地或
-   直接切旧 digest 回退，须以新 commit、新 digest、保持当前 schema 的 forward-rollback 候选
-   执行 `prepare-forward-rollback` 后再 activate。所有生产动作都必须经过
+   直接切旧镜像回退。临时离线通道只能制作新 commit、四镜像全新 ID、无迁移的整包并走普通
+   prepare/activate；Registry 路径才使用保持当前 schema 的 forward-rollback 候选。所有生产动作都必须经过
    `sudo /usr/local/sbin/sms-compose`；
    Phase 0 不授权 raw Compose，也不改变迁移失败时 schema 不自动回退的约束。
 5. 常规发布可由唯一技术管理员执行；另一名具名的业务负责人或变更审批人
    以独立身份复核候选、变更窗、备份和回退条件，不要求其持有平台管理员账号，
    也不得共享管理员凭据。两个 ID 必须对应两名真实人员；无第二人可复核时为
    上线/恢复治理 No-Go，禁止同人使用两个 ID。身份与审批记录填写到 `[HANDOVER]`。
-6. 每次更新先在预生产使用**将要激活的同一 digest**验收。生产失败只允许按正式状态机回退
+6. 每次更新先在预生产使用**将要激活的同一签名包**验收。生产失败只允许按正式状态机回退
    应用镜像；若涉及迁移、`recovery_required` 或 Redis 门禁冲突，保持 No-Go/停服处理。
+   上传/验签/导入失败保留 staging、状态和已导入镜像供审计，禁止无范围 prune。内部 Registry
+   建成并完成同候选预生产提升/拉取演练后，停止签发新离线包并恢复 RepoDigest 路径。
 
 ## 生产初始化与隔离
 
@@ -96,7 +98,7 @@ VPN ─▶ 企业 TLS/入口 ─────────────────
    首发已就绪。
 4. 如需模板或非敏感配置，由业务负责人列白名单后在生产重新录入并审计。任何含 secret、PII
    或测试身份的导入包均拒绝。
-5. 留存一份不含值的 test/prod 隔离清单：数据库标识、Registry namespace、VM/volume、网络段、
+5. 留存一份不含值的 test/prod 隔离清单：数据库标识、制品 staging/未来 Registry namespace、VM/volume、网络段、
    secret generation ID、API Key generation ID、Redis 端口/目录/ACL 身份和备份路径。
 
 ## 服务器、Redis 与恢复准备
@@ -110,7 +112,7 @@ VPN ─▶ 企业 TLS/入口 ─────────────────
 | 五个 VMDK | OS 100 / Docker 250 / PostgreSQL 400 / Redis 100 / Runtime 200 GiB | 固定 UUID 挂载；不得搬迁 Docker volume `_data` | `deploy/storage.md` 预检、fstab/findmnt/容量与权限证据 |
 | PostgreSQL | 使用上述同机 400 GiB VMDK | 当前无托管 PostgreSQL；唯一事实源 | 版本、七角色、备份与隔离恢复报告 |
 | 三 Redis 域 | 使用上述同机 100 GiB VMDK 的三个独立目录 | broker/auth/control 三实例；与整机及 Redis VMDK 共享故障域 | 三端点/目录/ACL/AOF/TLS 与整 VM 故障演练 |
-| 应用预生产 | 规格可缩小，但服务、volume、secret 与发布合同必须一致 | 同 digest 发布和业务预验收；不安装生产恢复材料 | 资产读回及与生产差异清单 |
+| 应用预生产 | 规格可缩小，但服务、volume、secret 与发布合同必须一致 | 同签名封闭包发布和业务预验收；不安装生产恢复材料 | 资产读回及与生产差异清单 |
 | 一次性隔离恢复机 | 从预生产资源池按需创建；空白、独立 PostgreSQL/VMDK、无生产发送出站 | 生产快照 full restore；证据归档后整机退役 | marker、恢复报告、退役记录 |
 | 后续冷备 | 首发不配置 | 可按需创建；暂非首发硬门禁 | 资源申请时长与实际恢复耗时 |
 
@@ -139,7 +141,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 ### T-3 天或更早
 
 - 冻结首批 1–2 个低风险 notice 应用、负责人、新旧接口切换方式和观察指标。
-- 在预生产用候选 digest 和预生产自有数据完成发布/迁移、备份恢复、告警、认证和旧系统切回演练；此时生产仍为空库，不得声称已有生产备份。
+- 在预生产用将要上传生产的同一签名封闭包和预生产自有数据完成发布/迁移、备份恢复、告警、认证和旧系统切回演练；此时生产仍为空库，不得声称已有生产备份。
 - 冻结每个应用的独立生产 API Key 申请、权限和交付方案；实际 Key 只能在首份生产备份及隔离
   恢复通过后生成，不迁移测试 Key。
 - 对每个首批应用做停服/重启演练，证明 12 小时持久积压、稳定 `biz_id`、新旧路由互斥和补发审批；证据不足不得首发。
@@ -147,7 +149,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 
 ### T0 激活
 
-1. 复核 release manifest、内部 Registry digest、预生产恢复证据、Redis No-Go 已闭合和双人审批。
+1. 复核 release manifest/签名、manifest SHA-256 与闭集逐文件 SHA-256/size、固定生产公钥与 key ID、同包预生产恢复证据、Redis No-Go 已闭合和双人审批。
 2. 全新空主机通过正式入口执行一次 `release bootstrap --confirm-empty-host`，记录 baseline
    release ID、迁移 head 和运行态读回后再启用 systemd；后续更新才执行 prepare/activate/status。
 3. 在初始化管理员、创建生产 API Key 或开放流量之前，手动触发首份生产加密备份，校验 manifest
@@ -226,8 +228,8 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 - 最近成功备份超过 24 小时、保留不足 35 天、首份生产备份未在隔离资源恢复验真，或业务回退
   从 `outage_start` 到旧/新平台最小验收超过 12 小时；
 - 企微或公司邮件任一渠道仅为 `log-sink`、Mock、无人接收或无替补；
-- 四镜像 digest、manifest、Trivy、SBOM、CI/G2 或内部 Registry 提升证据不完整；
-- 预生产不是同一 digest，或发布/恢复/切回演练失败；
+- 四镜像 image ID/archive hash+size、manifest/签名、离线索引、GitHub attestation、Trivy、SBOM 或 CI/G2 证据不完整；
+- 预生产不是同一签名封闭包，或发布/恢复/切回演练失败；
 - 首批应用超过 2 个、不是低风险 notice、没有旧系统切回卡片，或观察期少于 3 天；
 - 任一首批应用不能证明至少 12 小时持久积压、24 小时稳定 `biz_id`、新旧路由互斥或补发审批；
 - RPO 缺口没有冻结调用方重试、厂商事实核对和未知结果禁止重发的 gap-fence；
@@ -244,8 +246,8 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 |---|---|---|
 | 本文与文档契约测试 | 决策、No-Go、保留期和边界没有文字漂移 | 资源存在、网络可达、任务运行或生产就绪 |
 | 单元/Mock/静态检查 | 对应代码路径和契约在候选 commit 上通过 | 真实 LDAP、厂商、企微、公司邮件、容量或恢复 |
-| CI/G2/Trivy/SBOM/manifest | 指定 commit/镜像候选满足对应构建与扫描门禁 | 镜像已进入内部 Registry或已部署生产 |
-| 预生产同 digest 演练 | 候选在预生产的发布、迁移和业务场景结果 | 生产网络、数据、负载和外部系统完全相同 |
+| CI/G2/Trivy/SBOM/manifest/attestation | 指定 commit/镜像候选满足对应构建、扫描与来源门禁 | 签名包已上传、验签、导入或部署生产 |
+| 预生产同签名包演练 | 候选在预生产的发布、迁移和业务场景结果 | 生产网络、数据、负载和外部系统完全相同 |
 | `[HANDOVER]` 真实读回 | 指定时间、资产、release ID 下的生产事实 | 后续持续满足；必须按周期重新验证 |
 
 所有 `[HANDOVER]` 证据只保存无敏感摘要、时间、状态和负责人，不保存 IP、域名、用户名、
@@ -253,7 +255,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
 
 ## `[HANDOVER]` 首发记录
 
-- 变更单、候选 commit、四镜像源/内部 digest 与 release ID：`[HANDOVER]`
+- 变更单、候选 commit、manifest SHA-256 与闭集逐文件 SHA-256/size、四镜像 image ID 与 release ID：`[HANDOVER]`
 - 生产/测试隔离清单及双人复核：`[HANDOVER]`
 - VMware 资源、VPN/TLS、主出口和厂商白名单读回：`[HANDOVER]`
 - Redis 生产模式闭合方式及整 VM 故障演练：`[HANDOVER]`

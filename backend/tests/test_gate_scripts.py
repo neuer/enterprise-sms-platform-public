@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -477,8 +478,7 @@ def test_release_gate_binds_evidence_to_machine_readable_trivy_results() -> None
 
     assert "mktemp -d" in release
     assert "--format json" in release
-    for name in ("api", "web", "postgres", "redis"):
-        assert f'"$scan_dir/{name}.json"' in release
+    assert 'scan_path="$scan_work_dir/$name.json"' in release
     assert release.index("--format json") < release.index('render_release_evidence.py" release')
     assert "--format cyclonedx" in release
     assert "scripts/canonicalize_sbom.py" in release
@@ -559,7 +559,7 @@ def test_release_gate_does_not_grant_trivy_the_host_docker_socket() -> None:
     release = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
 
     assert "/var/run/docker.sock" not in release
-    assert "docker save" in release
+    assert "docker image save --platform linux/amd64" in release
     assert ':/scan:ro' in release
     assert 'image --input "/scan/$archive_name"' in release
 
@@ -690,10 +690,17 @@ def test_release_and_data_gates_accept_only_optional_absolute_report_path() -> N
 
     assert 'report_path=""' in release
     assert 'sbom_dir=""' in release
+    assert 'archive_dir=""' in release
+    assert 'scan_dir=""' in release
     assert 'while [ "$#" -gt 0 ]; do' in release
     assert "--report)" in release
     assert "--sbom-dir)" in release
-    assert 'for absolute_path in "$report_path" "$sbom_dir"; do' in release
+    assert "--archive-dir)" in release
+    assert "--scan-dir)" in release
+    assert (
+        'for absolute_path in "$report_path" "$sbom_dir" "$archive_dir" "$scan_dir"; do'
+        in release
+    )
     assert 'rm -f -- "$report_path"' in release
     assert "render_release_evidence.py" in release
 
@@ -783,6 +790,16 @@ if [ "${REQUIRE_PUBLIC_SESSION:-0}" = "1" ] && \
 fi
 if [ "$1" = "build" ]; then
   exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "save" ]; then
+  args=("$@")
+  for ((index=0; index < ${#args[@]}; index++)); do
+    if [ "${args[$index]}" = "--output" ]; then
+      printf '%s\n' fake-docker-archive > "${args[$((index + 1))]}"
+      exit 0
+    fi
+  done
+  exit 2
 fi
 if [ "$1" = "run" ]; then
   case "$*" in
@@ -924,6 +941,150 @@ def test_local_release_candidate_runs_in_public_docker_session(tmp_path: Path) -
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_release_gate_retains_one_private_archive_and_raw_scan_per_image(
+    tmp_path: Path,
+) -> None:
+    fake_bin = _write_fake_gate_tools(tmp_path)
+    evidence = tmp_path / "release-evidence"
+    archive_dir = evidence / "images"
+    scan_dir = evidence / "scans"
+    sbom_dir = evidence / "sboms"
+    for directory in (evidence, archive_dir, scan_dir, sbom_dir):
+        directory.mkdir()
+        directory.chmod(0o700)
+    report = evidence / "release-gate.json"
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/verify_release.sh"),
+            "--report",
+            str(report),
+            "--archive-dir",
+            str(archive_dir),
+            "--scan-dir",
+            str(scan_dir),
+            "--sbom-dir",
+            str(sbom_dir),
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REPO_ROOT": str(ROOT),
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {path.name for path in archive_dir.iterdir()} == {
+        f"{name}.tar" for name in ("api", "web", "postgres", "redis")
+    }
+    assert {path.name for path in scan_dir.iterdir()} == {
+        f"{name}.json" for name in ("api", "web", "postgres", "redis")
+    }
+    for path in (*archive_dir.iterdir(), *scan_dir.iterdir()):
+        assert path.is_file()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    release = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
+    assert release.count("docker image save --platform linux/amd64") == 1
+    assert release.count("--scanners vuln") == 1
+
+
+def test_release_gate_removes_offline_outputs_when_scanning_fails(
+    tmp_path: Path,
+) -> None:
+    fake_bin = _write_fake_gate_tools(tmp_path)
+    evidence = tmp_path / "release-evidence"
+    archive_dir = evidence / "images"
+    scan_dir = evidence / "scans"
+    sbom_dir = evidence / "sboms"
+    for directory in (evidence, archive_dir, scan_dir, sbom_dir):
+        directory.mkdir()
+        directory.chmod(0o700)
+    report = evidence / "release-gate.json"
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/verify_release.sh"),
+            "--report",
+            str(report),
+            "--archive-dir",
+            str(archive_dir),
+            "--scan-dir",
+            str(scan_dir),
+            "--sbom-dir",
+            str(sbom_dir),
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REPO_ROOT": str(ROOT),
+            "FAIL_SCAN": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert not report.exists()
+    assert list(archive_dir.iterdir()) == []
+    assert list(scan_dir.iterdir()) == []
+    assert list(sbom_dir.iterdir()) == []
+
+
+def test_registry_promotion_does_not_accept_offline_archive_outputs(
+    tmp_path: Path,
+) -> None:
+    fake_bin = _write_fake_gate_tools(tmp_path)
+    evidence = tmp_path / "release-evidence"
+    archive_dir = evidence / "images"
+    scan_dir = evidence / "scans"
+    sbom_dir = evidence / "sboms"
+    for directory in (evidence, archive_dir, scan_dir, sbom_dir):
+        directory.mkdir()
+        directory.chmod(0o700)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "REPO_ROOT": str(ROOT),
+        "SMS_DOCKER_ACCESS": "authenticated",
+    }
+    for name, character in zip(
+        ("API", "WEB", "POSTGRES", "REDIS"),
+        ("1", "2", "3", "4"),
+        strict=True,
+    ):
+        environment[f"RELEASE_{name}_IMAGE"] = (
+            f"registry.example.com/sms/{name.casefold()}@sha256:" + character * 64
+        )
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/verify_release.sh"),
+            "--report",
+            str(evidence / "release-gate.json"),
+            "--archive-dir",
+            str(archive_dir),
+            "--scan-dir",
+            str(scan_dir),
+            "--sbom-dir",
+            str(sbom_dir),
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Registry promotion" in result.stderr
 
 
 def test_promoted_release_requires_explicit_authenticated_docker_access(

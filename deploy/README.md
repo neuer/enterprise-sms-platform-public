@@ -2,7 +2,7 @@
 
 API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
-`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。三份文件共同定义 volume 与 25 件运行 secrets，禁止操作者自行选择、删减或改序。生产变更必须先在同版本预生产或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
+`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更必须先在同版本预生产或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
 
 ## 权威手册
 
@@ -717,7 +717,9 @@ development archive、G2、快速更新和数据镜像验证会自动进入一�
 全局 Docker 配置、不得解锁 Keychain，也不得在 public 会话执行 login、logout、push
 或 registry output。
 
-推送私有仓库以及对四个最终 production RepoDigest 做不可变身份复验属于 authenticated 通道，
+以下 authenticated 通道只适用于内部 Registry 建成后的 production RepoDigest 路径；临时离线
+路径不得借用它绕过后文的 attestation、索引和签名合同。推送私有仓库以及对四个最终
+RepoDigest 做不可变身份复验
 必须在受控 CI、专用 Linux 发布构建机或操作者已建立认证上下文的交互会话执行，并显式
 设置：
 
@@ -766,7 +768,9 @@ CycloneDX，不重复漏洞扫描；四个 image ID 或四份规范 SBOM 摘要�
 并写 mode `0600` 的 `reproducibility.json`。通用 writer 不再允许只凭 ref/ID 参数重包装
 PASS。
 
-本地候选构建报告必须原样保留，作为后续 promotion 的来源证据。推送到受控仓库后，
+本地候选构建报告必须原样保留。以下 promotion 流程属于内部 Registry 建成后的路径；临时离线
+路径使用 GitHub 生成且 attestation 已核验的非 local candidate report，并保持
+`promotion_source=null`。Registry 路径推送到受控仓库后，
 生产负责人通过 `RELEASE_SOURCE_REPORT` 指向候选报告。脚本以 `linux/amd64` 回拉四个
 最终 RepoDigest，要求 image ID 与候选逐一相等，再复用候选的 Trivy 结果生成最终证据；
 相同内容不重复扫描。最终报告内嵌来源报告摘要、扫描摘要和四镜像绑定。禁止覆盖候选
@@ -783,7 +787,8 @@ SMS_DOCKER_ACCESS=authenticated \
   --report /secure/releases/release-20260715/release-gate.json
 ```
 
-环境变量只放非密钥镜像引用。门禁成功后使用生成器从最终报告写
+环境变量只放非密钥镜像引用。以下 schema v1 生成示例只适用于 Registry 最终报告；临时离线
+schema v2 必须由后文正式离线生成/签名流程机械生成，不得手填。Registry 门禁成功后使用生成器从最终报告写
 `manifest.json`，不要手填四镜像 ref/ID。以下示例是 API/Web 无迁移发布：
 
 ```bash
@@ -803,15 +808,65 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
 
 `gate_type=release_control_smoke` 只由 `scripts/verify_release_control.sh` 在隔离 development project 中生成，用于配置失败、健康失败、自动补偿、TERM 中断和续跑的控制面证据。它明确 `scan_performed=false`，不替代 Trivy，不代表发布就绪，生产 mode 和 `scripts/deploy_release_remote.py` 均拒绝该证据。正式发布只能使用 `release_gate_kind=release`。
 
-### development archive 与 production preloaded digest
+### development archive、production Registry 与临时 production offline
 
 - `development archive`：每个 changed 镜像必须提供清单点名的 tar 和 SHA-256；prepare 校验后执行受控 `docker load`。未变化镜像的 archive 字段必须为 null。此模式用于隔离 Mock/控制面演练，不得作为生产镜像来源。
 - `production preloaded digest`：四个 ref 必须是受控仓库 `image@sha256:RepoDigest`，镜像须在目标主机预先拉取；清单 archive 字段全部为 null，prepare 不拉取网络资源，并逐一核对本地 image ID、`linux/amd64` 与 RepoDigests。PostgreSQL changed 或 migration from/target 不同时都必须附加同 commit 的加密备份变更记录和隔离恢复报告。
+- `production offline`：内部 Registry 建成前的临时通道是**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**。schema v2 封闭包必须恰好包含
+  `manifest.json`、`manifest.sig`、`release-gate.json`、`offline-image-index.json`、四个固定
+  `{api,web,postgres,redis}.tar`，以及 manifest 条件点名的数据/备份证据；每个 tar 的 image ID、
+  SHA-256 和字节数同时受离线索引与 manifest 约束。四镜像即使 `changed=false` 也必须随包交付。
+  只有 release manager 可以在验签和整包验证后执行受控导入；禁止操作者人工 `docker load`、
+  裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
+  该临时通道只覆盖首次 bootstrap、同包恢复，以及 Registry 建成前确有必要的无迁移四镜像
+  整包更新；不实现选择性归档、版本间离线更新迁移、历史包拼装、离线镜像包缓存复用或自动
+  自愈。空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
+
+离线 manifest 使用 Ed25519 签名。生产信任根固定为
+`/etc/sms-platform/offline-release-signing-public.pem`，固定 key ID 文件为
+`/etc/sms-platform/offline-release-signing-key-id`；两者必须 `root:root 0644`、普通单链接文件并由
+获批的一次性宿主信任材料置备流程安装。签名私钥只能存在于获批的受控联网签名节点，**不得进入生产主机、预生产主机、
+Git 仓库、发布包或日志**。任何 key ID、公钥 owner/mode、签名或 manifest 字节漂移都在导入前
+失败关闭。
+
+临时离线链路顺序固定为：GitHub 生成候选四镜像、release gate、离线索引和四个 archive，并对
+索引生成 attestation → 受控联网签名环境核验 attestation，生成 schema v2 manifest 并签名 →
+冻结 manifest SHA-256 与闭集逐文件 SHA-256/size → 预生产使用该**同一包**完成发布/恢复/UAT → 双人审批后受控上传生产 →
+首次空主机独立 bootstrap 或后续 prepare/activate/status。任一阶段失败保留原包、staging、
+release 状态和已导入镜像供审计，禁止无范围 `docker image prune`/`system prune`。内部 Registry
+及只读生产拉取入口建成并用同一候选在预生产演练通过后，离线通道退出；Registry 路径及其
+RepoDigest、认证和不可变策略门禁不因本临时通道而删除。
+
+GitHub Release Gate artifact 必须保留固定 `release-evidence/{images,scans,sboms}` 布局。
+生成器会以固定 repository、workflow 和 candidate commit 参数调用公司批准的 GitHub CLI 核验
+`offline-image-index.json` attestation；核验必须在可访问 GitHub 的受控签名节点完成，生产主机
+不安装 `gh`、不访问 GitHub。下载目录可保持 GitHub artifact 的普通 `0755/0644` 权限，生成器
+只接受当前用户所有的普通单链接文件，按索引重算 hash/size，并把最终封闭包写入新的 `0700`
+目录且文件固定为 `0600`。下面的私钥路径只表示签名环境的受控挂载：
+
+```bash
+python3 scripts/create_release_manifest.py \
+  --release-report /secure/evidence/release-gate.json \
+  --offline-index /secure/evidence/offline-image-index.json \
+  --offline-archive-dir /secure/evidence/images \
+  --signing-private-key /secure/signing/manifest-ed25519-private.pem \
+  --signing-key-id "$APPROVED_SIGNING_KEY_ID" \
+  --output /secure/releases/release-20260826/manifest.json \
+  --release-id release-20260826 \
+  --migration-from "$MIGRATION_HEAD" \
+  --migration-target "$MIGRATION_HEAD" \
+  --baseline
+```
+
+生成器会验证 release gate、attested 索引及全部 SHA-256/size，复制固定闭包并对 manifest 的
+精确字节签名。生产端只把 Docker 当作 archive 格式的权威解析器：四个 archive 全部验签验摘要
+后才按固定命令导入，随后逐镜像读回 image ID、`linux/amd64` 和 OCI labels；任何不一致都不会
+进入 bootstrap/activate。操作者不得在生成后编辑或重新序列化 `manifest.json`。
 
 清单由 `scripts/create_release_manifest.py` 按 `deploy/scripts/release_manifest.py` 的
-exact-field 契约自动生成并用 `0600` 原子落盘。Web-only production 清单只把 Web 标为
-changed；四个镜像仍全部绑定最终 digest。PostgreSQL/Redis changed 必须点名
-`data-images.json`，迁移只允许 `none` 或向后兼容 `expand`。
+exact-field 契约自动生成并用 `0600` 原子落盘。Registry schema v1 可按 changed subset 发布，
+迁移只允许 `none` 或向后兼容 `expand`；临时离线 schema v2 仅允许四镜像全不变的 bootstrap/
+恢复，或四镜像全部 changed 的无迁移整包更新。
 
 ### 本机状态机命令
 
@@ -825,20 +880,25 @@ sudo /usr/local/sbin/sms-compose release resume --release-id release-20260715
 sudo /usr/local/sbin/sms-compose release rollback --release-id release-20260715
 ```
 
-全新空生产主机不先执行普通 `up`。使用四镜像均为目标 digest、全部 `changed=false`、
-migration from=target=head 的基线 manifest，并在人工确认固定 Compose 项目、七个 bind 源目录、
-独立备份目录和 release 根均为空后执行一次：
+全新空生产主机不先执行普通 `up`，也不允许远端 driver 把首次启动偷偷降级为普通 `prepare`。
+使用四镜像全部 `changed=false`、migration from=target=head 的基线 manifest，并在人工确认固定
+Compose 项目、七个 bind 源目录、独立备份目录和 release 根均为空后执行一次。临时离线通道先
+用 driver 的 `--stage-only` 完成封闭包校验、逐文件远端 SHA-256 复核和原子改名；该动作不会
+fast-forward 远端 Git、不会调用 prepare/activate/bootstrap，也不会准备运行 secrets。根 `.env`
+必须已包含四个 `SMS_*_IMAGE` 键且每个恰好出现一次，但无需人工预填本次目标 image ID；bootstrap
+会在四个 archive 全部导入并核验通过后，一次性原子写入四个精确 ID，再执行 Compose 配置校验：
 
 ```bash
-python3 scripts/create_release_manifest.py \
-  --release-report /secure/staging/production-baseline/release-gate.json \
-  --output /secure/staging/production-baseline/manifest.json \
-  --release-id production-baseline \
-  --migration-from "$MIGRATION_HEAD" \
-  --migration-target "$MIGRATION_HEAD" \
-  --baseline
+python3 scripts/deploy_release_remote.py \
+  --manifest /secure/releases/production-baseline/manifest.json \
+  --host "$PRODUCTION_HOST" --user smsdeploy \
+  --platform-root /opt/sms-platform \
+  --runtime-root /home/smsdeploy/.cache/sms-platform/releases \
+  --mode production --remote-ref origin/main --stage-only
+
+# 独立确认内网 Git checkout、root-owned 宿主资产、公钥/key ID、空主机和审批均绑定同一 commit 后：
 sudo /usr/local/sbin/sms-compose release bootstrap \
-  --manifest /secure/staging/production-baseline/manifest.json \
+  --manifest /home/smsdeploy/.cache/sms-platform/releases/production-baseline/manifest.json \
   --confirm-empty-host
 ```
 
@@ -847,7 +907,14 @@ volume、镜像与精确 commit，按数据服务→migration→应用服务顺�
 `succeeded` release。确认参数只表达当次人工确认，不会清理或初始化已有数据；发现任何容器、
 volume、bind 源文件或 release 状态立即失败，失败后必须人工审计，禁止删除状态后重跑。
 
-`release prepare` 是受控准备动作：验证证据、当前 commit/容器、镜像和迁移基线并写入 `/var/lib/sms-platform/releases/<release_id>`，但不改根 `.env` 或容器，也不取得 lifecycle lock；因此必须在没有 systemd/包装器生命周期操作的准备窗口执行。它把 Redis 模式、按序 Compose 文件及 hash、非镜像 `.env` 配置绑定到发布状态，activate/resume/rollback 发现漂移会在 Docker mutation 前失败。`release status` 只读且不取锁。`release activate/resume/rollback` 会准备运行密钥，并与 up/down/rotate/migrate 共用同一个 lifecycle flock；锁冲突时在任何 Docker 或状态修改前退出。成功状态重复调用幂等；succeeded 发布不能原地 rollback，也不能直接切回旧镜像或 downgrade schema。应在新 commit 中做保持当前 schema 的兼容修复或反向应用变更，生成并扫描新的 digest/manifest，再执行：
+`release prepare` 是受控准备动作：验证证据、签名（离线模式）、当前 commit/容器、镜像和迁移
+基线并写入 `/var/lib/sms-platform/releases/<release_id>`，但不改根 `.env` 或容器。production
+prepare 与 up/down/activate/rotate/migrate 共用同一个 lifecycle flock，且**不准备运行 secrets**；
+development prepare 保持原行为。它把 Redis 模式、按序 Compose 文件及 hash、非镜像 `.env` 配置
+绑定到发布状态，activate/resume/rollback 发现漂移会在 Docker mutation 前失败。`release status`
+仍只读且不取锁。`release activate/resume/rollback` 才会准备运行密钥；锁冲突时在任何 Docker 或
+状态修改前退出。成功状态重复调用幂等；succeeded 发布不能原地 rollback，也不能直接切回旧镜像
+或 downgrade schema。以下 `prepare-forward-rollback` 只适用于 Registry schema v1：
 
 ```bash
 sudo /usr/local/sbin/sms-compose release prepare-forward-rollback \
@@ -857,8 +924,11 @@ sudo /usr/local/sbin/sms-compose release activate --release-id release-forward-f
 ```
 
 前向回退候选必须保持 PostgreSQL/Redis 数据镜像与当前 schema，不得把旧 digest 包装成新发布。
+临时离线 schema v2 明确拒绝 `prepare-forward-rollback`；需要修复时制作新 commit、四镜像全新
+ID、无迁移的标准整包，附数据镜像与备份恢复证据后走普通 `prepare`→`activate`。需要 schema
+变化的修复等待内部 Registry 路径，不为临时通道增加离线迁移能力。
 
-systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
+systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。生产容器固定为 `restart: "no"`，因此宿主机或 Docker daemon 恢复后只能由 systemd 的受控 `up` 重新经过 start-gate；单个容器异常退出不会由 Docker 自动拉起，按已批准的 12 小时 RTO 由监控告警后人工执行 `systemctl restart sms-platform.service`，禁止直接 `docker start/restart`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
 
 ### 维护窗口与固定激活顺序
 
@@ -885,8 +955,9 @@ systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机
 
 `首次引导`时，从公司内部只读 Git 镜像把已审核的精确 commit、`deploy/sms-compose`、release
 scripts 和 systemd unit 安装到空的 `/opt/sms-platform`，执行 `systemd-analyze verify`；此时不得
-已有任何本项目容器或数据卷。四个 production digest 只能从内部 Registry 预加载，不在生产
-主机源码构建。生产仓库的 `origin` 必须指向该内部只读镜像，禁止把 GitHub 作为生产主机的
+已有任何本项目容器或数据卷。临时离线模式的四 archive 只能由 release manager 在固定公钥
+验签和整包校验后导入；未来 Registry 模式只能由受控入口按 RepoDigest 预加载。两种模式都不在
+生产主机源码构建。生产仓库的 `origin` 必须指向该内部只读镜像，禁止把 GitHub 作为生产主机的
 直接依赖。发布工具不能自更新或替换自身；首个基线只能使用人工安装的同一精确 commit 执行
 `release bootstrap`。后续才使用统一状态机和远端 driver。
 
@@ -902,13 +973,17 @@ uv run --project backend python scripts/deploy_release_remote.py \
   --public-url https://sms.example.internal/readyz
 ```
 
-driver 只用于首个 bootstrap 成功后的更新，不能承担空主机自举。它只以固定 argv 执行内部
+driver 的普通模式只用于首个 bootstrap 成功后的更新，不能承担空主机自举。唯一首次引导例外
+是 production offline 的 `--stage-only`：它在本地验证精确 Git SHA、封闭包、索引和文件 hash/size，
+逐文件上传并做远端 SHA-256/原子改名后立即返回；不执行远端 Git、prepare、activate、status、
+探针或 secrets 准备。随后 bootstrap 必须按前文由独立变更步骤执行。普通模式只以固定 argv执行内部
 只读 `origin` 的 Git fast-forward、逐文件哈希上传、prepare/activate/status 和 `/readyz` 探针，
 不拼接远端 shell，也不从 GitHub 拉取或在生产主机源码构建。上传前会依次把暂存根和单次发布
 目录收紧为 `0700`，避免首次递归建目录遗留可遍历的中间目录。每个文件始终写入同名固定
 `.part`，`rsync --partial --inplace` 失败时最多自动重试 3 次；因此 macOS `openrsync` 或 SSH
 长连接中断后可从同一个远端文件续传。只有远端 SHA-256 与本地清单一致才原子改名，三次仍
-失败则在 Git、prepare 和 activate 前失败关闭并保留 `.part` 供下一次续传。它会把清单枚举后的
+失败则在 Git、prepare 和 activate 前失败关闭并保留 `.part` 供下一次续传。离线包任何失败都
+保留 staging 和已导入镜像供审计，禁止无范围 prune。普通模式会把清单枚举后的
 `SMS_SECRETS_MODE=development|production` 通过固定 `/usr/bin/env` argv 显式交给 sudo wrapper，
 不依赖 sudo 环境继承；服务器 fetch 后还会要求内部获批 remote ref 精确解析为清单 commit，
 已存在的 rollback ref 只读复核、绝不 force 覆盖。终态必须同时通过
@@ -924,7 +999,10 @@ development 的统一高风险发布还必须处理宿主 `vendor-control-agent.
 批准这一次网络调用；仓库代码无法自行授予沙箱或 SSH 权限。先用 `--dry-run` 审核的输出
 已经脱敏，但 dry-run 不替代真实执行或浏览器验收。
 
-每次生产执行必须有生产变更单，记录 release_id、commit、四个 RepoDigest/image ID、Trivy/数据/备份恢复证据、changed subset、迁移兼容性、维护窗口、执行人、复核人、回退决策人、开始/结束时间和终态；不记录任何 secret 或手机号。
+每次生产执行必须有生产变更单，记录 release_id、commit、交付模式、manifest SHA-256 与闭集逐文件 SHA-256/size、
+签名 key ID、四个 image ID 与 archive hash/size（Registry 模式另记 RepoDigest）、
+Trivy/attestation/数据/备份恢复证据、changed subset、迁移兼容性、维护窗口、执行人、复核人、
+回退决策人、开始/结束时间和终态；不记录任何 secret 或手机号。
 
 `/var/lib/sms-platform/releases` 的发布包、状态、事件、原始 env，以及当前与上一成功版本镜像至少保留到观察期结束和变更单关闭。工具**不自动 prune** 发布目录、旧镜像、数据卷或运行密钥 generation。清理必须是单独审批动作，先证明没有容器/回退点引用；不得执行无范围的 `docker image prune`、删除数据库卷或删除 `recovery_required` 证据。
 
@@ -942,7 +1020,10 @@ bash scripts/verify_release.sh
 
 脚本要求 Git 工作树（含暂存区与未跟踪文件）干净，打印候选 commit，并使用 Docker volume `trivycache` 复用漏洞库缓存；它不读取生产 secrets。归档材料必须包含候选 commit、完整扫描报告、Trivy 镜像 digest、最终 API/Web/PostgreSQL/Redis 镜像 digest 与执行时间。首次运行或缓存失效会联网下载漏洞库，失败时不得把旧报告冒充本次证据。
 
-四个生产镜像引用由 `.env` 的 `SMS_API_IMAGE`、`SMS_WEB_IMAGE`、`SMS_POSTGRES_IMAGE`、`SMS_REDIS_IMAGE` 提供；本地默认标签只用于构建，生产必须替换为受控仓库的 `image@sha256:RepoDigest`。推送前还要对同一候选的数据镜像执行：
+四个生产镜像引用由 `.env` 的 `SMS_API_IMAGE`、`SMS_WEB_IMAGE`、`SMS_POSTGRES_IMAGE`、
+`SMS_REDIS_IMAGE` 提供；本地默认标签只用于构建。Registry 路径必须是受控仓库的
+`image@sha256:RepoDigest`；临时离线路径由 release manager 写入验签并受控导入后的精确 image ID，
+不得手改成本地 tag。生成制品前还要对同一候选的数据镜像执行：
 
 ```bash
 bash scripts/verify_data_images.sh

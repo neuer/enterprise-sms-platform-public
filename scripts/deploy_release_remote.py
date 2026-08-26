@@ -22,6 +22,10 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
+from offline_image_archive import (  # type: ignore[import-not-found,unused-ignore]  # noqa: E402
+    OfflineImageArchiveError,
+    load_offline_image_index_bytes,
+)
 from release_manifest import (  # type: ignore[import-not-found,unused-ignore]  # noqa: E402
     ReleaseManifest,
     ReleaseManifestError,
@@ -80,6 +84,7 @@ _WORKFLOW_REPOSITORY_RE = re.compile(
     r"(?:local|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
 )
 _IMAGE_NAMES = ("api", "web", "postgres", "redis")
+_OFFLINE_IMAGE_SOURCE = "production-offline-docker-archive-v1"
 _RELEASE_REPORT_FIELDS = {
     "schema_version",
     "gate_type",
@@ -189,19 +194,54 @@ def _validate_public_url(value: str) -> None:
         raise RemoteReleaseError("public probe URL must target /readyz")
 
 
+def _is_offline_archive(manifest: ReleaseManifest) -> bool:
+    return (
+        manifest.schema_version == 2
+        and manifest.mode == "production"
+        and manifest.image_source == _OFFLINE_IMAGE_SOURCE
+    )
+
+
+def _stage_only(arguments: argparse.Namespace) -> bool:
+    value = getattr(arguments, "stage_only", False)
+    if type(value) is not bool:
+        raise RemoteReleaseError("invalid stage-only selection")
+    return value
+
+
+def _evidence_file(value: object, context: str) -> str:
+    """Return the basename declared by either v1 or v2 evidence."""
+
+    if type(value) is str:
+        return value
+    if isinstance(value, Mapping) and type(value.get("file")) is str:
+        return str(value["file"])
+    raise RemoteReleaseError(f"invalid {context} evidence mapping")
+
+
 def _expected_bundle_names(manifest: ReleaseManifest) -> set[str]:
     names = {"manifest.json", cast(str, manifest.evidence["release_gate"])}
+    if manifest.signing is not None:
+        names.add(manifest.signing["file"])
+    offline_index = manifest.evidence.get("offline_image_index")
+    if offline_index is not None:
+        if not isinstance(offline_index, Mapping):
+            raise RemoteReleaseError("invalid offline image index evidence mapping")
+        names.add(cast(str, offline_index["file"]))
     for image in manifest.images.values():
         if image.archive_file is not None:
             names.add(image.archive_file)
     data_images = manifest.evidence["data_images"]
     if data_images is not None:
-        names.add(cast(str, data_images))
+        names.add(_evidence_file(data_images, "data image"))
     backup = manifest.evidence["backup_restore_change"]
     if backup is not None:
         if not isinstance(backup, Mapping):
             raise RemoteReleaseError("invalid backup evidence mapping")
-        names.update(backup.values())
+        names.update(
+            _evidence_file(backup[name], f"backup {name}")
+            for name in ("record", "restore_report")
+        )
     return names
 
 
@@ -214,6 +254,69 @@ def _sha256_file(path: Path) -> str:
     except OSError as exc:
         raise RemoteReleaseError("release bundle file is not readable") from exc
     return digest.hexdigest()
+
+
+def _validate_offline_image_index(
+    path: Path,
+    manifest: ReleaseManifest,
+    release_gate_path: Path,
+) -> None:
+    try:
+        payload = path.read_bytes()
+        index = load_offline_image_index_bytes(payload)
+    except (OSError, OfflineImageArchiveError) as exc:
+        raise RemoteReleaseError("offline image index is invalid") from exc
+    if index.candidate_commit != manifest.commit:
+        raise RemoteReleaseError("offline image index is not bound to the manifest")
+    expected_release_gate_hash = cast(str, manifest.evidence["release_gate_sha256"])
+    try:
+        release_gate_size = release_gate_path.stat().st_size
+    except OSError as exc:
+        raise RemoteReleaseError("offline image index release gate is unavailable") from exc
+    if (
+        index.release_gate.sha256 != expected_release_gate_hash
+        or index.release_gate.size != release_gate_size
+    ):
+        raise RemoteReleaseError("offline image index release gate is not bound")
+    for name in _IMAGE_NAMES:
+        image = index.images[name]
+        spec = manifest.images[name]
+        if (
+            image.image_id != spec.image_id
+            or image.archive.sha256 != spec.archive_sha256
+            or image.archive.size != spec.archive_size
+        ):
+            raise RemoteReleaseError("offline image index image is not bound to the manifest")
+
+
+def _validate_bound_evidence(
+    root: Path,
+    value: object,
+    local_hashes: Mapping[Path, str],
+    context: str,
+) -> None:
+    """Verify the signed hash and size attached to one v2 evidence file."""
+
+    if not isinstance(value, Mapping):
+        raise RemoteReleaseError(f"invalid {context} evidence mapping")
+    filename = value.get("file")
+    expected_sha256 = value.get("sha256")
+    expected_size = value.get("size")
+    if (
+        type(filename) is not str
+        or type(expected_sha256) is not str
+        or type(expected_size) is not int
+    ):
+        raise RemoteReleaseError(f"invalid {context} evidence mapping")
+    path = root / filename
+    try:
+        observed_size = path.stat().st_size
+    except OSError as exc:
+        raise RemoteReleaseError(f"{context} evidence is unavailable") from exc
+    if observed_size != expected_size or not hmac.compare_digest(
+        local_hashes[path], expected_sha256
+    ):
+        raise RemoteReleaseError(f"{context} evidence does not match the manifest")
 
 
 def _validate_release_evidence(path: Path, manifest: ReleaseManifest) -> None:
@@ -239,15 +342,27 @@ def _validate_release_evidence(path: Path, manifest: ReleaseManifest) -> None:
         image = images[name]
         if type(image) is not dict or set(image) != _RELEASE_IMAGE_FIELDS:
             raise RemoteReleaseError("release gate image evidence has invalid fields")
+        expected_ref = (
+            f"sms-platform-release-{name}:{manifest.commit}"
+            if _is_offline_archive(manifest)
+            else manifest.images[name].ref
+        )
         if (
-            image["ref"] != manifest.images[name].ref
+            image["ref"] != expected_ref
             or image["image_id"] != manifest.images[name].image_id
+            or (_is_offline_archive(manifest) and image["repo_digests"] != [])
             or type(image["scan_report_sha256"]) is not str
             or _HEX_64_RE.fullmatch(image["scan_report_sha256"]) is None
             or image["scan_passed"] is not True
         ):
             raise RemoteReleaseError("release gate image evidence is not bound to the manifest")
     promotion = report["promotion_source"]
+    if _is_offline_archive(manifest):
+        if promotion is not None:
+            raise RemoteReleaseError(
+                "offline production release evidence cannot use registry promotion"
+            )
+        return
     if manifest.mode == "development":
         if promotion is not None:
             raise RemoteReleaseError("development release evidence cannot be promoted")
@@ -350,10 +465,16 @@ def _validated_bundle(
         if image.archive_file is None:
             continue
         archive_path = manifest_path.parent / image.archive_file
-        if image.archive_sha256 is None or not hmac.compare_digest(
-            local_hashes[archive_path], image.archive_sha256
+        try:
+            archive_size = archive_path.stat().st_size
+        except OSError as exc:
+            raise RemoteReleaseError("image archive is not readable") from exc
+        if (
+            image.archive_sha256 is None
+            or (image.archive_size is not None and archive_size != image.archive_size)
+            or not hmac.compare_digest(local_hashes[archive_path], image.archive_sha256)
         ):
-            raise RemoteReleaseError("development archive does not match the manifest")
+            raise RemoteReleaseError("image archive does not match the manifest")
     release_gate_path = (
         manifest_path.parent / cast(str, manifest.evidence["release_gate"])
     )
@@ -366,6 +487,42 @@ def _validated_bundle(
         expected_release_gate_hash,
     ):
         raise RemoteReleaseError("release gate evidence hash does not match manifest")
+    offline_index = manifest.evidence.get("offline_image_index")
+    if offline_index is not None:
+        if not isinstance(offline_index, Mapping):
+            raise RemoteReleaseError("invalid offline image index evidence mapping")
+        offline_index_path = manifest_path.parent / cast(str, offline_index["file"])
+        expected_index_hash = cast(str, offline_index["sha256"])
+        if not hmac.compare_digest(
+            local_hashes[offline_index_path],
+            expected_index_hash,
+        ):
+            raise RemoteReleaseError("offline image index hash does not match manifest")
+        _validate_offline_image_index(
+            offline_index_path,
+            manifest,
+            release_gate_path,
+        )
+    if manifest.schema_version == 2:
+        data_images = manifest.evidence["data_images"]
+        if data_images is not None:
+            _validate_bound_evidence(
+                manifest_path.parent,
+                data_images,
+                local_hashes,
+                "data image",
+            )
+        backup = manifest.evidence["backup_restore_change"]
+        if backup is not None:
+            if not isinstance(backup, Mapping):
+                raise RemoteReleaseError("invalid backup evidence mapping")
+            for name in ("record", "restore_report"):
+                _validate_bound_evidence(
+                    manifest_path.parent,
+                    backup[name],
+                    local_hashes,
+                    f"backup {name}",
+                )
     _validate_release_evidence(release_gate_path, manifest)
     return manifest, files, local_hashes
 
@@ -386,6 +543,11 @@ def _validated_arguments(
     public_urls = tuple(arguments.public_urls)
     for url in public_urls:
         _validate_public_url(url)
+    stage_only = _stage_only(arguments)
+    if stage_only and not _is_offline_archive(manifest):
+        raise RemoteReleaseError("stage-only is restricted to production offline bundles")
+    if stage_only and public_urls:
+        raise RemoteReleaseError("stage-only cannot claim public probe verification")
     return manifest, target, files, local_hashes
 
 
@@ -455,6 +617,18 @@ def _upload_plan(
                 ssh + ["mv", "--", partial, final],
             ]
         )
+    commands.append(
+        ssh
+        + [
+            "find",
+            bundle,
+            "-maxdepth",
+            "1",
+            "-printf",
+            shlex.quote(r"%P\0%y\0%u\0%m\0%n\0"),
+        ]
+    )
+    commands.extend(ssh + ["sha256sum", "--", f"{bundle}/{path.name}"] for path in files)
     return commands
 
 
@@ -472,18 +646,21 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
         ["git", "rev-parse", arguments.remote_ref],
         ["git", "merge-base", "--is-ancestor", manifest.commit, arguments.remote_ref],
     ]
-    plan.extend(
-        [
-            "docker",
-            "image",
-            "inspect",
-            "--format",
-            "{{.Id}} {{.Os}}/{{.Architecture}}",
-            manifest.images[name].ref,
-        ]
-        for name in _IMAGE_NAMES
-    )
+    if not _is_offline_archive(manifest):
+        plan.extend(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}} {{.Os}}/{{.Architecture}}",
+                manifest.images[name].ref,
+            ]
+            for name in _IMAGE_NAMES
+        )
     plan.extend(_upload_plan(target, manifest.release_id, files))
+    if _stage_only(arguments):
+        return plan
     plan.extend(
         [
             ssh
@@ -682,6 +859,55 @@ def _remote_hash(
     return match.group(1)
 
 
+def _validate_remote_bundle(
+    runner: CommandRunner,
+    target: RemoteTarget,
+    files: Sequence[Path],
+    local_hashes: Mapping[Path, str],
+    bundle: str,
+) -> None:
+    """验收远端最终闭包；不清理或修复未获批准的额外文件。"""
+
+    ssh = _ssh_base(target)
+    result = _run(
+        runner,
+        [
+            *ssh,
+            "find",
+            bundle,
+            "-maxdepth",
+            "1",
+            "-printf",
+            shlex.quote(r"%P\0%y\0%u\0%m\0%n\0"),
+        ],
+        "remote staging inventory",
+    )
+    fields = result.stdout.split("\0")
+    if not fields or fields[-1] != "":
+        raise RemoteReleaseError("remote staging inventory returned invalid output")
+    fields.pop()
+    if len(fields) % 5 != 0:
+        raise RemoteReleaseError("remote staging inventory returned invalid output")
+    entries: dict[str, tuple[str, str, str, str]] = {}
+    for offset in range(0, len(fields), 5):
+        name, kind, owner, mode, links = fields[offset : offset + 5]
+        if name in entries:
+            raise RemoteReleaseError("remote staging inventory contains duplicates")
+        entries[name] = (kind, owner, mode, links)
+    expected = {path.name for path in files}
+    if set(entries) != {"", *expected}:
+        raise RemoteReleaseError("remote staging bundle is not a closed file set")
+    directory = entries[""]
+    if directory[:3] != ("d", target.user, "700"):
+        raise RemoteReleaseError("remote staging directory metadata is unsafe")
+    for path in files:
+        final = f"{bundle}/{path.name}"
+        if entries[path.name] != ("f", target.user, "600", "1"):
+            raise RemoteReleaseError("remote staging file metadata is unsafe")
+        if not hmac.compare_digest(_remote_hash(runner, ssh, final), local_hashes[path]):
+            raise RemoteReleaseError("remote staging file differs from the release bundle")
+
+
 def _validate_local_state(
     runner: CommandRunner,
     manifest: ReleaseManifest,
@@ -710,6 +936,8 @@ def _validate_local_state(
         ["git", "merge-base", "--is-ancestor", manifest.commit, remote_ref],
         "local remote ancestry check",
     )
+    if _is_offline_archive(manifest):
+        return
     for name in _IMAGE_NAMES:
         spec = manifest.images[name]
         result = _run(
@@ -772,6 +1000,7 @@ def _upload_bundle(
         if not hmac.compare_digest(_remote_hash(runner, ssh, partial), local_hashes[path]):
             raise RemoteReleaseError("uploaded remote file failed verification")
         _run(runner, [*ssh, "mv", "--", partial, final], "remote atomic rename")
+    _validate_remote_bundle(runner, target, files, local_hashes, bundle)
 
 
 def _prepare_remote_git(
@@ -968,11 +1197,13 @@ def _reload_vendor_control_agent(runner: CommandRunner, target: RemoteTarget) ->
 
 
 def deploy_release(arguments: argparse.Namespace, runner: CommandRunner) -> None:
-    """执行已验证发布包的上传、prepare、activate 与外部探针。"""
+    """受控上传发布包，并按所选模式继续发布或停在 bootstrap 前。"""
 
     manifest, target, files, local_hashes = _validated_arguments(arguments)
     _validate_local_state(runner, manifest, arguments.remote_ref)
     _upload_bundle(runner, target, manifest, files, local_hashes)
+    if _stage_only(arguments):
+        return
     vendor_agent_changed = _prepare_remote_git(runner, target, manifest, arguments.remote_ref)
     bundle = _remote_bundle(target, manifest.release_id)
     _run(
@@ -1054,6 +1285,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("development", "production"), required=True)
     parser.add_argument("--remote-ref", default="origin/main")
     parser.add_argument("--public-url", action="append", default=[])
+    parser.add_argument(
+        "--stage-only",
+        action="store_true",
+        help="仅校验并上传生产离线包；首次 bootstrap 必须随后独立执行",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 

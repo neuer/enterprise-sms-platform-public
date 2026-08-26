@@ -93,6 +93,7 @@ PUBLIC_BASELINE_ROOT="/opt/sms-platform"
 PUBLIC_BASELINE_RUNTIME_ROOT="/run/sms-platform/secrets"
 BASE_COMPOSE_FILE="$ROOT/deploy/docker-compose.yml"
 PRODUCTION_STORAGE_COMPOSE_FILE="$ROOT/deploy/docker-compose.production-storage.yml"
+PRODUCTION_RESTART_COMPOSE_FILE="$ROOT/deploy/docker-compose.production-restart.yml"
 REDIS_TLS_COMPOSE_FILE="$ROOT/deploy/docker-compose.redis-tls.yml"
 COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$BASE_COMPOSE_FILE")
 PRODUCTION_REDIS_HA_MODE=""
@@ -231,6 +232,7 @@ configure_compose_topology() {
   fi
 
   COMPOSE+=( -f "$PRODUCTION_STORAGE_COMPOSE_FILE" )
+  COMPOSE+=( -f "$PRODUCTION_RESTART_COMPOSE_FILE" )
   COMPOSE+=( -f "$REDIS_TLS_COMPOSE_FILE" )
 }
 
@@ -851,6 +853,10 @@ run_locked_release() {
   local runtime_target=''
   shift
   case "$subcommand" in
+    prepare)
+      [[ $# -eq 2 && "$1" == --manifest ]] || return 2
+      validate_release_manifest_path "$2" || return $?
+      ;;
     activate | resume | rollback)
       [[ $# -eq 2 && "$1" == --release-id ]] || return 2
       validate_release_id "$2" || return $?
@@ -935,8 +941,10 @@ dispatch_release() {
       validate_release_manifest_path "$2" || return $?
       if [[ "$SECRETS_MODE" == production ]]; then
         validate_production_launch release || return $?
+        run_with_lifecycle_lock release prepare --manifest "$2"
+      else
+        run_release_manager prepare --manifest "$2"
       fi
-      run_release_manager prepare --manifest "$2"
       ;;
     status)
       [[ $# -eq 2 && "$1" == --release-id ]] || return 2

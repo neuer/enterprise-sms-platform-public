@@ -5,6 +5,8 @@ umask 077
 original_args=("$@")
 report_path=""
 sbom_dir=""
+archive_dir=""
+scan_dir=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --report)
@@ -17,13 +19,23 @@ while [ "$#" -gt 0 ]; do
       sbom_dir="$2"
       shift 2
       ;;
+    --archive-dir)
+      [ "$#" -ge 2 ] || { echo "--archive-dir 缺少路径" >&2; exit 2; }
+      archive_dir="$2"
+      shift 2
+      ;;
+    --scan-dir)
+      [ "$#" -ge 2 ] || { echo "--scan-dir 缺少路径" >&2; exit 2; }
+      scan_dir="$2"
+      shift 2
+      ;;
     *)
-      echo "用法: scripts/verify_release.sh [--report <absolute-path>] [--sbom-dir <absolute-directory>]" >&2
+      echo "用法: scripts/verify_release.sh [--report <absolute-path>] [--sbom-dir <absolute-directory>] [--archive-dir <absolute-directory> --scan-dir <absolute-directory>]" >&2
       exit 2
       ;;
   esac
 done
-for absolute_path in "$report_path" "$sbom_dir"; do
+for absolute_path in "$report_path" "$sbom_dir" "$archive_dir" "$scan_dir"; do
   if [ -n "$absolute_path" ]; then
     case "$absolute_path" in
       /*) ;;
@@ -38,6 +50,20 @@ done
 if [ -n "$sbom_dir" ] && [ -z "$report_path" ]; then
   echo "--sbom-dir 必须与 --report 同时使用" >&2
   exit 2
+fi
+if [ -n "$archive_dir" ] || [ -n "$scan_dir" ]; then
+  if [ -z "$archive_dir" ] || [ -z "$scan_dir" ]; then
+    echo "--archive-dir 与 --scan-dir 必须同时使用" >&2
+    exit 2
+  fi
+  if [ -z "$report_path" ] || [ -z "$sbom_dir" ]; then
+    echo "离线镜像制品必须同时生成 release gate 与 SBOM" >&2
+    exit 2
+  fi
+  if [ "$archive_dir" = "$scan_dir" ] || [ "$archive_dir" = "$sbom_dir" ] || [ "$scan_dir" = "$sbom_dir" ]; then
+    echo "镜像、扫描与 SBOM 必须使用三个独立目录" >&2
+    exit 2
+  fi
 fi
 if [ -n "$report_path" ]; then
   rm -f -- "$report_path"
@@ -96,12 +122,51 @@ release_metadata="$(python3 scripts/release_metadata.py --root "$root")"
 app_version="$(printf '%s' "$release_metadata" | python3 -c 'import json,sys; print(json.load(sys.stdin)["app_version"])')"
 schema_revision="$(printf '%s' "$release_metadata" | python3 -c 'import json,sys; print(json.load(sys.stdin)["schema_revision"])')"
 trivy_image="aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e"
-scan_dir="$(mktemp -d "${TMPDIR:-/tmp}/sms-release-trivy.XXXXXX")"
-chmod 0700 "$scan_dir"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/sms-release-trivy.XXXXXX")"
+chmod 0700 "$work_dir"
+published=0
 cleanup() {
-  rm -rf -- "$scan_dir"
+  rm -rf -- "$work_dir"
+  if [ "$published" -ne 1 ]; then
+    if [ -n "$report_path" ]; then
+      rm -f -- "$report_path"
+    fi
+    for name in api web postgres redis; do
+      if [ -n "$sbom_dir" ]; then
+        rm -f -- \
+          "$sbom_dir/$name.cdx.json" \
+          "$sbom_dir/$name.cdx.json.part" \
+          "$sbom_dir/$name.cdx.json.raw"
+      fi
+      if [ -n "$archive_dir" ] && [ -n "$scan_dir" ]; then
+        rm -f -- \
+          "$archive_dir/$name.tar" \
+          "$archive_dir/$name.tar.part" \
+          "$scan_dir/$name.json" \
+          "$scan_dir/$name.json.part"
+      fi
+    done
+  fi
 }
 trap cleanup EXIT
+
+private_directory_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+private_directory_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"
+}
+
+require_private_directory() {
+  directory="$1"
+  if [ ! -d "$directory" ] || [ -L "$directory" ] \
+    || [ "$(private_directory_uid "$directory")" != "$(id -u)" ] \
+    || [ "$(private_directory_mode "$directory")" != "700" ]; then
+    echo "离线发布输出目录必须由当前用户持有且权限为 0700: $directory" >&2
+    exit 2
+  fi
+}
 
 if [ "$promoted_count" -eq 0 ]; then
   if [ -n "$report_path" ] && [ -z "$sbom_dir" ]; then
@@ -120,6 +185,18 @@ if [ "$promoted_count" -eq 0 ]; then
         "$sbom_dir/$name.cdx.json.raw"
     done
   fi
+  if [ -n "$archive_dir" ]; then
+    require_private_directory "$archive_dir"
+    require_private_directory "$scan_dir"
+    require_private_directory "$sbom_dir"
+    for name in api web postgres redis; do
+      rm -f -- \
+        "$archive_dir/$name.tar" \
+        "$archive_dir/$name.tar.part" \
+        "$scan_dir/$name.json" \
+        "$scan_dir/$name.json.part"
+    done
+  fi
   if [ -n "${RELEASE_SOURCE_REPORT:-}" ]; then
     echo "本地候选构建不得提供 RELEASE_SOURCE_REPORT" >&2
     exit 2
@@ -129,6 +206,10 @@ if [ "$promoted_count" -eq 0 ]; then
   postgres_image="sms-platform-release-postgres:${candidate}"
   redis_image="sms-platform-release-redis:${candidate}"
 elif [ "$promoted_count" -eq 4 ]; then
+  if [ -n "$archive_dir" ] || [ -n "$scan_dir" ]; then
+    echo "Registry promotion 路径不得生成离线镜像归档" >&2
+    exit 2
+  fi
   if [ -z "${RELEASE_SOURCE_REPORT:-}" ]; then
     echo "最终 RepoDigest 门禁必须提供 RELEASE_SOURCE_REPORT" >&2
     exit 2
@@ -167,6 +248,12 @@ fi
 
 scan_status=0
 if [ "$promoted_count" -eq 0 ]; then
+  archive_work_dir="$work_dir"
+  scan_work_dir="$work_dir"
+  if [ -n "$archive_dir" ]; then
+    archive_work_dir="$archive_dir"
+    scan_work_dir="$scan_dir"
+  fi
   for item in \
     "api|$api_image" \
     "web|$web_image" \
@@ -176,16 +263,20 @@ if [ "$promoted_count" -eq 0 ]; then
     image="${item#*|}"
     printf '\n扫描镜像: %s\n' "$image"
     archive_name="${name}.tar"
-    docker save --output "$scan_dir/$archive_name" "$image"
+    archive_path="$archive_work_dir/$archive_name"
+    scan_path="$scan_work_dir/$name.json"
+    scan_part="$scan_work_dir/$name.json.part"
+    docker image save --platform linux/amd64 --output "$archive_path" "$image"
+    chmod 0600 "$archive_path"
     if docker run --rm \
-      -v "$scan_dir:/scan:ro" \
+      -v "$archive_work_dir:/scan:ro" \
       -v trivycache:/root/.cache/trivy \
       "$trivy_image" image --input "/scan/$archive_name" \
       --scanners vuln \
       --severity HIGH,CRITICAL \
       --exit-code 1 \
       --no-progress \
-      --format json > "$scan_dir/$name.json"; then
+      --format json > "$scan_part"; then
       :
     else
       status=$?
@@ -193,11 +284,13 @@ if [ "$promoted_count" -eq 0 ]; then
         scan_status="$status"
       fi
     fi
+    chmod 0600 "$scan_part"
+    mv "$scan_part" "$scan_path"
     if [ -n "$sbom_dir" ]; then
       sbom_raw="$sbom_dir/$name.cdx.json.raw"
       sbom_part="$sbom_dir/$name.cdx.json.part"
       if docker run --rm \
-        -v "$scan_dir:/scan:ro" \
+        -v "$archive_work_dir:/scan:ro" \
         -v trivycache:/root/.cache/trivy \
         "$trivy_image" image --input "/scan/$archive_name" \
         --format cyclonedx --no-progress > "$sbom_raw" \
@@ -213,7 +306,9 @@ if [ "$promoted_count" -eq 0 ]; then
         fi
       fi
     fi
-    rm -f -- "$scan_dir/$archive_name"
+    if [ -z "$archive_dir" ]; then
+      rm -f -- "$archive_path"
+    fi
   done
 else
   printf '\n复用候选 commit 的 Trivy 结果；最终 RepoDigest 必须保持相同 image ID。\n'
@@ -257,10 +352,10 @@ if [ -n "$report_path" ]; then
       --sbom web "$sbom_dir/web.cdx.json" \
       --sbom postgres "$sbom_dir/postgres.cdx.json" \
       --sbom redis "$sbom_dir/redis.cdx.json" \
-      --image api "$api_image" "$api_id" "$api_digests" "$scan_dir/api.json" \
-      --image web "$web_image" "$web_id" "$web_digests" "$scan_dir/web.json" \
-      --image postgres "$postgres_image" "$postgres_id" "$postgres_digests" "$scan_dir/postgres.json" \
-      --image redis "$redis_image" "$redis_id" "$redis_digests" "$scan_dir/redis.json"
+      --image api "$api_image" "$api_id" "$api_digests" "$scan_work_dir/api.json" \
+      --image web "$web_image" "$web_id" "$web_digests" "$scan_work_dir/web.json" \
+      --image postgres "$postgres_image" "$postgres_id" "$postgres_digests" "$scan_work_dir/postgres.json" \
+      --image redis "$redis_image" "$redis_id" "$redis_digests" "$scan_work_dir/redis.json"
   else
     python3 "$root/scripts/render_release_evidence.py" promote \
       --output "$report_path" \
@@ -272,5 +367,7 @@ if [ -n "$report_path" ]; then
       --image redis "$redis_image" "$redis_id" "$redis_digests"
   fi
 fi
+
+published=1
 
 exit 0
