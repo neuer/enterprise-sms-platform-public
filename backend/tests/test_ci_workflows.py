@@ -367,6 +367,8 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
         "scripts/release_metadata.py",
         "scripts/check_coverage_gates.py",
+        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh",
+        "--cov-append",
         "property or concurrency or fault_injection or authorization or idempotency",
         "uv run bandit",
         "vuln,misconfig,secret,license",
@@ -383,6 +385,9 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "--scan-dir",
     ):
         assert command in release_commands
+    assert release_commands.index("rm -f .coverage") < release_commands.index(
+        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
+    ) < release_commands.index("uv run pytest -q --cov=app --cov-append")
     assert "npm run --prefix frontend typecheck" not in release_commands
     assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
