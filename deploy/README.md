@@ -132,11 +132,59 @@ APT/Git/磁盘/fstab/mount、secret、`.env`、Docker/Compose 或 systemd 生命
 `vendor-control-agent.service`、`lifecycle.json`、`lifecycle.env`，以及 partition、backup、
 restore-drill、lifecycle-status 各自的 service/timer，共 17 个普通文件和一个 wrapper symlink。
 
-该安装器是首装入口，不是宿主资产升级器。常规 release 不会更新上述 17 个 root-owned 文件；
+该安装器的常规路径仍只用于首装；常规 release 不会更新上述 17 个 root-owned 文件。
 `sms-compose` 又是指向 production operator 可写 checkout 的 symlink，因此该 operator 必须按
-root-equivalent 受信身份管理。受控宿主资产升级/漂移围栏闭合前，任何修改该 inventory 或
-wrapper 的生产候选都为 No-Go。security-report collector 不在本 inventory 内，当前不得手工
-补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
+root-equivalent 受信身份管理。当前只额外提供一次、首次 bootstrap 前的 mountinfo credential
+修复入口：旧状态必须精确绑定
+`555fb20b0d630ece9099a88a463eb1ce1121c012`，目标必须是调用时给出的干净精确 commit，且变化
+集合必须恰好为 `storage-preflight`、`storage-unit`、`partition-service`、`backup-service`、
+`restore-drill-service`、`lifecycle-status-service` 六项普通文件。wrapper、配置、timer、drop-in
+或任意第七项发生变化都会失败关闭；五个 unit 必须保持原有 `CapabilityBoundingSet`，不得出现
+`CAP_SYS_PTRACE`，并精确加载 `/proc/1/mountinfo` credential 与受控环境标记。
+
+该窄入口还要求 Docker/containerd 保持 masked/inactive、Docker root 为空，平台与 vendor unit
+以及 partition、backup、lifecycle-status 三个 timer 均 disabled/inactive，restore-drill timer
+保持 static/inactive，四个维护 service inactive，且
+`/var/lib/sms-platform/releases` 不存在或为空。它不适用于已 bootstrap 或已经准备 release 的
+主机，也不关闭通用宿主资产升级 ENG-03。整个 plan/apply/验收/accept 窗口必须由
+同一变更单独占；其他 root 操作者不得并发启动 Docker、平台、vendor、维护 unit 或准备
+release。先把 checkout 切到已审核的 `NEW_COMMIT`，再显式绑定
+旧、新两个 commit：
+
+```bash
+OLD_COMMIT='555fb20b0d630ece9099a88a463eb1ce1121c012'
+NEW_COMMIT='REPLACE_WITH_40_LOWERCASE_HEX_COMMIT'
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
+  --confirm-dedicated-production-host \
+  --confirm-vcenter-storage-reviewed
+```
+
+升级 `apply/resume` 只原子替换六项资产，并在一次写入后不可变、仅 root 可读的 upgrade intent
+中内嵌六项精确旧版本备份，然后返回
+`awaiting_acceptance`；canonical state 仍是旧 commit，`status` 固定返回非零 `upgrading`。
+不得在此时手工覆盖或删除文件。由操作者核对五个 unit 后执行 `daemon-reload`，再启动一次
+`sms-storage-preflight.service`；只有新 InvocationID、`Result=success`、`ExecMainStatus=0`，五个
+unit 均 `NeedDaemonReload=no`，候选固定 `LoadCredential` 行、live 环境标记与 capability 集合均满足
+受控合同，且 live `FragmentPath` 精确指向各自固定 `/etc/systemd/system` 目标，
+才允许提交新 state：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start sms-storage-preflight.service
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
+```
+
+在 `upgrade-accept` 提交新 state 前，中断后只允许用同一 OLD/NEW 执行 `resume`，或带现有确认参数
+执行 `rollback`；rollback 会从 installer-owned 备份恢复精确旧文件。rollback 返回成功后必须再执行
+`sudo systemctl daemon-reload`，使 PID 1 丢弃可能已加载的候选 unit。新 state 一旦持久提交，
+rollback 拒绝，若只剩清理中断则由同参数 `resume` 收敛。该入口不执行 `daemon-reload`、unit
+start/enable、Git 切换、Docker/Compose、secret 或应用发布。security-report collector 仍不在
+本 inventory 内，当前不得手工补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
 
 安装成功后再做只读 unit 验证和显式宿主动作：
 

@@ -7,6 +7,8 @@ RequiresMountsFor=/var/lib/docker /var/lib/sms-platform/postgres /var/lib/sms-pl
 
 [Service]
 Type=oneshot
+LoadCredential=sms-host-mountinfo:/proc/1/mountinfo
+Environment=SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL=1
 ExecStart=/usr/local/sbin/sms-storage-preflight --mode startup
 TimeoutStartSec=45
 UMask=0077
