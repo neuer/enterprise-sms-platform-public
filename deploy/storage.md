@@ -14,27 +14,34 @@
 
 | 角色 | 固定挂载点 | 标称 VMDK | 预检接受的文件系统下限 | 故障域 |
 |---|---|---:|---:|---|
-| OS | `/` | 100 GiB | 98 GiB | OS VMDK |
+| OS 根 | `/` | 100 GiB OS VMDK | 94 GiB，且不少于根 LV 的 97% | OS VMDK |
+| OS `/boot` | `/boot` | 2 GiB 分区 | 1.8 GiB | OS VMDK |
+| OS EFI | `/boot/efi` | 1127219200 B 分区 | 0.98 GiB | OS VMDK |
 | Docker 层 | `/var/lib/docker` | 250 GiB | 245 GiB | Docker VMDK |
 | PostgreSQL | `/var/lib/sms-platform/postgres` | 400 GiB | 392 GiB | PostgreSQL VMDK |
 | Redis | `/var/lib/sms-platform/redis` | 100 GiB | 98 GiB | Redis VMDK |
 | 应用持久态 | `/var/lib/sms-platform/runtime` | 200 GiB | 196 GiB | Runtime VMDK |
 
-五个挂载点必须对应五个不同的 guest block device；OS 只允许 `ext4`，四块数据盘只允许
-`xfs` 且 `ftype=1`。
+五块 VMDK 中，四个数据挂载点必须对应四块不同的数据盘；`/`、`/boot`、`/boot/efi` 是同一
+OS VMDK 上三个不同层级的设备。根与 `/boot` 只允许 `ext4`，EFI 只允许 `vfat`，四块数据盘
+只允许 `xfs` 且 `ftype=1`。
 这只能证明 guest 内磁盘分离；VMDK 所在 datastore、PVSCSI controller 和 vSphere 放置仍须
 在变更单中另附 vCenter 证据。
 
-100 GiB OS VMDK 固定使用 GPT、`512 MiB` EFI System Partition 和占用剩余空间的单一 ext4
-根文件系统；不建独立 `/boot`、swap 分区或 LVM，swap 默认关闭。公司模板若强制额外分区或
-LVM，当前冻结合同和磁盘置备工具会失败关闭；必须先变更决策、实现和预生产证据后重新审批，
-不能只扩大 OS VMDK 或降低预检阈值来适配模板。
+100 GiB OS VMDK 保留现有 Ubuntu 24.04 GPT/LVM 布局：512 B 逻辑扇区；分区 1 从 sector 2048
+开始、1127219200 B、ESP/vfat、挂载 `/boot/efi`；分区 2 从 sector 2203648 开始、2 GiB/ext4、
+挂载 `/boot`；分区 3 从 sector 6397952 开始、`LVM2_member`，覆盖余下空间且盘尾差不超过
+8 MiB。第三分区只能承载一个 `/dev/mapper/ubuntu--vg-ubuntu--lv` 根 LV，PV/LV 容量差不超过
+8 MiB，根 ext4 唯一挂载 `/`。`/swap.img` 固定为根盘上的 8 GiB、`root:root 0600`、非稀疏
+普通文件，并且是唯一活动 swap。初始化器只验证这些 OS 对象，绝不改写它们。
 
 表中的 100/250/400/100/200 GiB 是冻结的标称 VMDK 规格，不是格式化后
-`statvfs` 必须逐字节相等的容量。预检只为 ext4/XFS 元数据保留明确的 2% 小容差；低于标称
-容量 98% 仍失败。JSON 中 `nominal_vmdk_gib` 是冻结期望，
-`filesystem_capacity_gib` 才是 guest 实测值；guest 无法单独证明 vCenter 中的 VMDK
-标称规格，仍须读回 vCenter 证据。容差不能用于下调 vSphere 中的 VMDK 规格。
+`statvfs` 必须逐字节相等的容量。四块数据盘保留 2% 文件系统元数据容差；OS 根、`/boot` 与
+EFI 使用表中按真实 Ubuntu 布局冻结的独立下限。JSON 用 `capacity_kind` 区分 `vmdk` 与
+`partition`，通用标称值是 `nominal_capacity_gib`；兼容字段 `nominal_vmdk_gib` 只在 VMDK
+记录中为数值，在 `/boot` 与 EFI 记录中为 `null`，避免容量看板把同一 OS VMDK 重复相加。
+`filesystem_capacity_gib` 才是 guest 实测值；guest 无法单独证明 vCenter 中的 VMDK 标称规格，
+仍须读回 vCenter 证据。容差不能用于下调 vSphere 中的 VMDK 规格。
 
 生产 Compose override 保留现有命名卷，但必须用 local driver 的 bind 选项映射到下列
 固定源目录；不得把服务改回 DockerRootDir 内的匿名目录：
@@ -54,8 +61,8 @@ LVM，当前冻结合同和磁盘置备工具会失败关闭；必须先变更�
 lifecycle systemd service 通过固定 `ReadWritePaths` 使用；不得回退到旧的
 `/var/lib/sms-platform/backups`。
 
-挂载点本身固定为 `root:root`：`/` 是 `0755`，`/var/lib/docker` 是 `0711`，其余三个
-数据挂载点是 `0750`。预检要求上述 owner/mode 精确匹配；宽松权限同样失败。
+挂载点本身固定为 `root:root`：`/`、`/boot`、`/boot/efi` 是 `0755`，`/var/lib/docker` 是
+`0711`，其余三个数据挂载点是 `0750`。预检要求上述 owner/mode 精确匹配；宽松权限同样失败。
 
 ## 首次置备
 
@@ -76,7 +83,10 @@ UUID 和用途。不得根据易漂移的 `/dev/sdX` 名称猜测目标，更不
    `x-systemd.automount`。以下只是字段模板，尖括号必须替换为已核对 UUID：
 
    ```fstab
-   UUID=<os-uuid>       /                                  ext4 defaults                  0 1
+   /dev/disk/by-id/dm-uuid-LVM-<vg+lv-id> /                ext4 defaults                  0 1
+   /dev/disk/by-uuid/<boot-uuid> /boot                     ext4 defaults                  0 1
+   /dev/disk/by-uuid/<efi-fat-uuid> /boot/efi               vfat defaults                  0 1
+   /swap.img             none                               swap sw                        0 0
    UUID=<docker-uuid>   /var/lib/docker                    xfs  defaults,nodev,nosuid     0 2
    UUID=<postgres-uuid> /var/lib/sms-platform/postgres     xfs  defaults,nodev,nosuid     0 2
    UUID=<redis-uuid>    /var/lib/sms-platform/redis        xfs  defaults,nodev,nosuid     0 2
@@ -85,8 +95,11 @@ UUID 和用途。不得根据易漂移的 `/dev/sdX` 名称猜测目标，更不
 
 3. 逐个挂载并用 `findmnt --target <固定挂载点>` 核对 UUID、文件系统、`rw` 和设备号，并对
    四个 XFS 挂载点逐个用 `xfs_info <固定挂载点>` 核对 `ftype=1`；
-   除 `/` 外，fstab 与实际 mount options 都必须同时含 `nodev,nosuid`。预检会解析
-   `/dev/disk/by-uuid/<uuid>`，并要求其 block device major:minor 与当前 mountinfo 一致。
+   四个数据挂载点的 fstab 与实际 mount options 都必须同时含 `nodev,nosuid`。预检会解析根
+   LVM by-id、`/boot`/EFI by-uuid 和四个数据 UUID，并要求各自 block device major:minor 与当前
+   mountinfo 一致。`findmnt --verify` 必须零错误；零 warning 直接通过，也允许固定 swapfile
+   条目产生唯一的 `non-bind mount source /swap.img is a directory or regular file` warning；
+   其它 warning 或错误均失败关闭。
 4. 仅在挂载核对成功后，由 root 按上表创建固定子目录及 owner/mode。不得让应用预检代建。
 5. 在 Docker 第一次启动前确认 `/var/lib/docker` 确实是 250 GiB VMDK 的挂载点且为空。
 6. 安装只读预检及 production-only systemd 资产：
@@ -113,14 +126,15 @@ UUID 和用途。不得根据易漂移的 `/dev/sdX` 名称猜测目标，更不
 最后一条必须成功后才能启动 Docker 和平台。`docker.service` drop-in 保证 Docker 不会在
 `/var/lib/docker` VMDK 缺失时退回 OS 盘写数据；平台 drop-in 会在每次 Compose 启动前再
 执行一次检查。该只读预检会按角色强制 `/` 为 ext4、四块数据盘为 XFS，并逐盘通过固定
-`/usr/sbin/xfs_info` 验证 `ftype=1`；同时要求 `findmnt --verify` 零错误零警告、根盘
+`/usr/sbin/xfs_info` 验证 `ftype=1`；同时要求 `findmnt --verify` 零错误且至多只有上述已知 warning、根盘
 dump/pass 为 `0 1`、数据盘为 `0 2`、固定挂载均暴露文件系统根，且受管 UUID/设备不得出现
 第二挂载别名。因为 unit 的 `ProtectSystem=strict` 会建立只读私有 mount namespace，脚本固定
 读取 PID 1 的 `/proc/1/mountinfo` 判断宿主真实的 `rw` 状态，并在读取前验证 root、systemd、
 非容器、VMware 和宿主根边界；不得改回 `/proc/self/mountinfo`。unit 保留
-`DevicePolicy=closed`，只为 PVSCSI 的 `findmnt --verify` 增加 `DeviceAllow=block-sd r`，没有
-块设备写入或 `mknod` 权限。备份、恢复演练、生命周期巡检和分区维护这些直接或间接调用
-预检的 hardened unit 必须保持同一只读授权；其中分区维护不得再用会隐藏宿主块设备的
+`DevicePolicy=closed`，只为 PVSCSI 数据盘和 LVM 根卷分别增加 `DeviceAllow=block-sd r`、
+`DeviceAllow=block-device-mapper r`，并只读暴露 `/dev/disk/by-uuid` 与 `/dev/disk/by-id`；
+没有块设备写入或 `mknod` 权限。备份、恢复演练、生命周期巡检和分区维护这些直接或间接
+调用预检的 hardened unit 必须保持同一只读授权；其中分区维护不得再用会隐藏宿主块设备的
 `PrivateDevices=yes`。
 
 Docker 启动后，生产 override 的七个 local-driver bind mount 会在宿主 mountinfo 中表现为同一
@@ -161,14 +175,17 @@ canonical、root 控制且与 `/var/lib/docker` 同一设备；这些控制目�
 
 1. 在 vSphere 只增加已核对角色的 VMDK 容量，不新增或替换设备。
 2. 在 guest 重新扫描该精确设备，并确认 block device 已看到新容量。
-3. 四块整盘 XFS 数据 VMDK 没有 partition/LVM，禁止临时添加；若扩 OS VMDK，只能扩已核对的
-   直接 ext4 根分区，不得照抄未知 `/dev/sdX`。
-4. XFS 对固定挂载点执行 `xfs_growfs <mountpoint>`；OS ext4 对已核对的根分区执行
-   `resize2fs <device>`。两者都不得缩容。
+3. 四块整盘 XFS 数据 VMDK 没有 partition/LVM，禁止临时添加。扩 OS VMDK 时必须保持 GPT、
+   三个 PARTUUID、三个分区起点、EFI 和 `/boot` 大小不变，只扩大最后一个 LVM 分区；不得照抄
+   未核对的 `/dev/sdX`。
+4. OS 按同一身份顺序完成最后分区扩展、`pvresize`、根 LV `lvextend`、根 ext4 `resize2fs`；
+   不得新增 PV/LV 或只完成其中一层。数据 XFS 对固定挂载点执行 `xfs_growfs <mountpoint>`。
+   所有层都只允许扩容，禁止缩容、移动起点或重建 UUID。
 5. 重新运行 `/usr/local/sbin/sms-storage-preflight --mode observe`，确认容量、UUID 对应的
    major:minor、owner/mode 和使用率；
    再运行 `/usr/local/sbin/sms-production-storage-init status`，确认同一设备身份、容量没有缩小，
-   且文件系统已扩到新块设备容量的至少 98%。平台运行期间，status 只接受 production override
+   数据 XFS 已扩到新块设备容量的至少 98%，OS 的 LVM 分区距盘尾、LV 距 PV 均不超过 8 MiB，
+   根 ext4 达到 LV 的至少 97%。平台运行期间，status 只接受 production override
    的七个固定 Docker bind mount；其它附加挂载仍判定为 `drifted`；
    再观察 PostgreSQL、三个 Redis AOF、Docker 与应用目录的读写和告警。
 

@@ -33,6 +33,14 @@ UUIDS = {
     "redis": "33333333-3333-4333-8333-333333333333",
     "runtime": "44444444-4444-4444-8444-444444444444",
 }
+ROOT_LVM_BY_ID = "/dev/disk/by-id/dm-uuid-LVM-" + "A" * 64
+OS_FSTAB = (
+    f"{ROOT_LVM_BY_ID} / ext4 defaults 0 1\n"
+    "/dev/disk/by-uuid/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "
+    "/boot ext4 defaults 0 1\n"
+    "/dev/disk/by-uuid/ABCD-1234 /boot/efi vfat defaults 0 1\n"
+    "/swap.img none swap sw 0 0\n"
+)
 
 
 def manifest_object(*, not_after: datetime | None = None) -> dict[str, object]:
@@ -110,6 +118,12 @@ def test_fixed_production_storage_contract_is_exact() -> None:
         "/var/lib/sms-platform/runtime/raw-spill",
         "/var/lib/sms-platform/runtime/backups",
     ]
+    assert module.LVM_IDENTIFIER_RE.fullmatch(
+        "AAAAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGGGG"
+    )
+    assert module.LVM_IDENTIFIER_RE.fullmatch(
+        "AAAAAA-BBBBBB-CCCCCC-DDDDDD-EEEEEE-FFFFFF-GGGGGG"
+    ) is None
     assert [
         (
             bind.role,
@@ -231,8 +245,7 @@ def test_fstab_render_preserves_original_bytes_and_appends_one_exact_block() -> 
     module = initializer_module()
     manifest = parsed_manifest(module)
     original = (
-        b"# Ubuntu installer\n"
-        b"UUID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa / ext4 defaults 0 1\n"
+        b"# Ubuntu installer\n" + OS_FSTAB.encode()
     )
 
     rendered = module.render_fstab(original, manifest, "f" * 64)
@@ -248,7 +261,7 @@ def test_fstab_render_preserves_original_bytes_and_appends_one_exact_block() -> 
     ]
 
 
-def test_fstab_root_requires_a_canonical_uuid_source() -> None:
+def test_fstab_root_requires_the_frozen_lvm_by_id_source_shape() -> None:
     module = initializer_module()
     original = b"UUID=------------------------------------ / ext4 defaults 0 1\n"
 
@@ -262,7 +275,8 @@ def test_fstab_root_requires_a_canonical_uuid_source() -> None:
 def test_fstab_root_rejects_read_only_or_wrong_fsck_order() -> None:
     module = initializer_module()
     original = (
-        b"UUID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "
+        ROOT_LVM_BY_ID.encode()
+        + b" "
         b"/ ext4 defaults,ro 0 0\n"
     )
 
@@ -299,10 +313,7 @@ def test_fstab_render_rejects_conflicts_and_malformed_input(
     code: str,
 ) -> None:
     module = initializer_module()
-    original = (
-        "UUID=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa / ext4 defaults 0 1\n"
-        + suffix
-    ).encode()
+    original = (OS_FSTAB + suffix).encode()
 
     with pytest.raises(module.StorageInitializationError, match=code):
         module.render_fstab(original, parsed_manifest(module), "e" * 64)
@@ -393,10 +404,59 @@ def test_findmnt_verify_rejects_warnings_even_when_exit_code_is_zero() -> None:
         )
 
 
-def test_findmnt_verify_accepts_only_the_clean_success_summary() -> None:
+def test_findmnt_verify_accepts_clean_or_the_frozen_swapfile_warning() -> None:
     module = initializer_module()
+    expected_stdout = (
+        b"none\n"
+        b"   [W] non-bind mount source /swap.img is a directory or regular file\n"
+    )
+    expected_stderr = b"\n0 parse errors, 0 errors, 1 warning\n"
+
+    assert expected_stdout == module.EXPECTED_FINDMNT_SWAP_WARNING_STDOUT
+    assert expected_stderr == module.EXPECTED_FINDMNT_SWAP_WARNING_STDERR
+    assert module._findmnt_verify_output_is_accepted(b"", b"") is True
+    assert module._findmnt_verify_output_is_accepted(
+        b"Success, no errors or warnings detected\n",
+        b"",
+    ) is True
+    assert module._findmnt_verify_output_is_accepted(
+        expected_stdout,
+        expected_stderr,
+    ) is True
+    assert module._findmnt_verify_output_is_accepted(
+        b"/mnt/alias\n [W] unexpected warning\n",
+        b"\n0 parse errors, 0 errors, 1 warning\n",
+    ) is False
 
     class CleanRunner:
+        def run(  # type: ignore[no-untyped-def]
+            self,
+            argv,
+            *,
+            timeout_seconds: int,
+            pass_fds=(),
+        ):
+            del argv, timeout_seconds, pass_fds
+            return module.CommandResult(
+                0,
+                expected_stdout,
+                expected_stderr,
+            )
+
+    initializer = module.ProductionStorageInitializer(
+        runner=CleanRunner(),
+        effective_uid=0,
+    )
+    initializer._verify_fstab_file(
+        Path("/etc/fstab"),
+        code="fstab_current_verification_failed",
+    )
+
+
+def test_findmnt_verify_accepts_clean_output_when_swapfile_warning_disappears() -> None:
+    module = initializer_module()
+
+    class UnexpectedCleanRunner:
         def run(  # type: ignore[no-untyped-def]
             self,
             argv,
@@ -412,7 +472,7 @@ def test_findmnt_verify_accepts_only_the_clean_success_summary() -> None:
             )
 
     initializer = module.ProductionStorageInitializer(
-        runner=CleanRunner(),
+        runner=UnexpectedCleanRunner(),
         effective_uid=0,
     )
     initializer._verify_fstab_file(
@@ -421,11 +481,294 @@ def test_findmnt_verify_accepts_only_the_clean_success_summary() -> None:
     )
 
 
+def _install_swap_contract_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    *,
+    metadata: SimpleNamespace | None = None,
+    swaps: bytes | None = None,
+) -> list[int]:
+    closed: list[int] = []
+    exact_metadata = metadata or SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_nlink=1,
+        st_uid=0,
+        st_gid=0,
+        st_dev=123,
+        st_size=module.SWAP_FILE_BYTES,
+        st_blocks=module.SWAP_FILE_BYTES // 512,
+    )
+    exact_swaps = (
+        swaps
+        if swaps is not None
+        else (
+            b"Filename Type Size Used Priority\n"
+            b"/swap.img file 8388604 0 -2\n"
+        )
+    )
+
+    def fake_open(path: Path, flags: int) -> int:
+        assert path == module.SWAP_FILE_PATH
+        assert flags & getattr(os, "O_NOFOLLOW", 0)
+        return 91
+
+    def fake_read_secure(path: Path, **kwargs):  # type: ignore[no-untyped-def]
+        assert path == module.PROC_SWAPS_PATH
+        assert kwargs == {
+            "maximum_bytes": 64 * 1024,
+            "expected_uid": 0,
+            "modes": frozenset({0o444, 0o644}),
+        }
+        return exact_swaps, SimpleNamespace()
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(module.os, "fstat", lambda descriptor: exact_metadata)
+    monkeypatch.setattr(module.os, "close", closed.append)
+    monkeypatch.setattr(module, "_read_regular_secure", fake_read_secure)
+    return closed
+
+
+def test_swap_file_contract_accepts_only_exact_allocated_active_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = initializer_module()
+    closed = _install_swap_contract_fakes(monkeypatch, module)
+
+    module.ProductionStorageInitializer(
+        effective_uid=0
+    )._require_swap_file_contract(root_device=123)
+
+    assert closed == [91]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("st_mode", stat.S_IFLNK | 0o600),
+        ("st_mode", stat.S_IFREG | 0o644),
+        ("st_nlink", 2),
+        ("st_uid", 1000),
+        ("st_gid", 1000),
+        ("st_dev", 456),
+        ("st_size", 8 * 1024**3 - 1),
+        ("st_blocks", 8 * 1024**3 // 512 - 1),
+    ),
+)
+def test_swap_file_contract_rejects_metadata_or_allocation_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: int,
+) -> None:
+    module = initializer_module()
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_nlink=1,
+        st_uid=0,
+        st_gid=0,
+        st_dev=123,
+        st_size=module.SWAP_FILE_BYTES,
+        st_blocks=module.SWAP_FILE_BYTES // 512,
+    )
+    setattr(metadata, field, value)
+    _install_swap_contract_fakes(monkeypatch, module, metadata=metadata)
+
+    with pytest.raises(
+        module.StorageInitializationError,
+        match="swap_file_contract_mismatch",
+    ):
+        module.ProductionStorageInitializer(
+            effective_uid=0
+        )._require_swap_file_contract(root_device=123)
+
+
+def test_swap_file_contract_rejects_unopenable_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = initializer_module()
+
+    def fail_open(path: Path, flags: int) -> int:
+        del path, flags
+        raise OSError("blocked")
+
+    monkeypatch.setattr(module.os, "open", fail_open)
+    with pytest.raises(
+        module.StorageInitializationError,
+        match="swap_file_unavailable",
+    ):
+        module.ProductionStorageInitializer(
+            effective_uid=0
+        )._require_swap_file_contract(root_device=123)
+
+
+@pytest.mark.parametrize(
+    ("swaps", "safe_code"),
+    (
+        (b"bad header\n/swap.img file 8388604 0 -2\n", "swap_state_invalid"),
+        (b"Filename Type Size Used Priority\n\xff\n", "swap_state_invalid"),
+        (
+            b"Filename Type Size Used Priority\n"
+            b"/swap.img file 8388604 0 -2\n"
+            b"/other.swap file 1024 0 -3\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/other.swap file 8388604 0 -2\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/swap.img partition 8388604 0 -2\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/swap.img file 8388530 0 -2\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/swap.img file 8388608 0 -2\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/swap.img file 8388604 0 -1\n",
+            "swap_state_contract_mismatch",
+        ),
+        (
+            b"Filename Type Size Used Priority\n/swap.img file 8388604 8388605 -2\n",
+            "swap_state_contract_mismatch",
+        ),
+    ),
+)
+def test_swap_file_contract_rejects_active_swap_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    swaps: bytes,
+    safe_code: str,
+) -> None:
+    module = initializer_module()
+    _install_swap_contract_fakes(monkeypatch, module, swaps=swaps)
+
+    with pytest.raises(module.StorageInitializationError, match=safe_code):
+        module.ProductionStorageInitializer(
+            effective_uid=0
+        )._require_swap_file_contract(root_device=123)
+
+
+def _fstab_contract_initializer(module: ModuleType, *, wrong_target: Path | None = None):
+    source_identities = {
+        ROOT_LVM_BY_ID: "252:0",
+        "/dev/disk/by-uuid/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa": "8:2",
+        "/dev/disk/by-uuid/ABCD-1234": "8:1",
+    }
+    mounted_identities = {
+        Path("/"): "252:0",
+        Path("/boot"): "8:2",
+        Path("/boot/efi"): "8:1",
+    }
+    if wrong_target is not None:
+        mounted_identities[wrong_target] = "9:9"
+
+    class FstabContractInitializer(module.ProductionStorageInitializer):
+        def _fstab_source_major_minor(self, source: str, fs_type: str) -> str:
+            del fs_type
+            return source_identities[source]
+
+        def _findmnt_record(self, target: Path):  # type: ignore[no-untyped-def]
+            return {"maj:min": mounted_identities[target]}
+
+        def _root_filesystem_uuid(self) -> str:
+            return "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        def _verify_current_fstab_semantics(self) -> None:
+            return None
+
+    return FstabContractInitializer(effective_uid=0)
+
+
+def _install_fstab_contract_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    payload: bytes,
+) -> SimpleNamespace:
+    metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_ino=42)
+    monkeypatch.setattr(
+        module,
+        "_read_regular_secure",
+        lambda *args, **kwargs: (payload, metadata),
+    )
+    monkeypatch.setattr(module, "_assert_fstab_target_paths_safe", lambda value: None)
+    return metadata
+
+
+def test_inspect_fstab_accepts_only_exact_current_os_closed_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = initializer_module()
+    metadata = _install_fstab_contract_payload(
+        monkeypatch,
+        module,
+        OS_FSTAB.encode("ascii"),
+    )
+
+    assert _fstab_contract_initializer(module)._inspect_fstab() == (
+        OS_FSTAB.encode("ascii"),
+        metadata,
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        OS_FSTAB.replace(
+            "/dev/disk/by-uuid/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "
+            "/boot ext4 defaults 0 1\n",
+            "",
+        ),
+        OS_FSTAB + "tmpfs /extra tmpfs defaults 0 0\n",
+        OS_FSTAB + "/dev/disk/by-uuid/ABCD-1234 /boot/efi vfat defaults 0 1\n",
+        OS_FSTAB.replace(ROOT_LVM_BY_ID, "/dev/mapper/ubuntu--vg-ubuntu--lv"),
+        OS_FSTAB.replace(
+            "/boot ext4 defaults 0 1",
+            "/boot ext4 defaults,nodev 0 1",
+        ),
+        OS_FSTAB.replace(
+            "/dev/disk/by-uuid/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "/dev/disk/by-uuid/not-a-uuid",
+        ),
+        OS_FSTAB.replace("/boot/efi vfat defaults 0 1", "/boot/efi ext4 defaults 0 1"),
+        OS_FSTAB.replace("/dev/disk/by-uuid/ABCD-1234", "/dev/disk/by-uuid/abcd-1234"),
+    ),
+)
+def test_inspect_fstab_rejects_missing_extra_duplicate_or_malformed_os_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: str,
+) -> None:
+    module = initializer_module()
+    _install_fstab_contract_payload(monkeypatch, module, payload.encode("ascii"))
+
+    with pytest.raises(module.StorageInitializationError):
+        _fstab_contract_initializer(module)._inspect_fstab()
+
+
+def test_inspect_fstab_rejects_source_to_live_mount_identity_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = initializer_module()
+    _install_fstab_contract_payload(monkeypatch, module, OS_FSTAB.encode("ascii"))
+
+    with pytest.raises(
+        module.StorageInitializationError,
+        match="fstab_mount_identity_mismatch",
+    ):
+        _fstab_contract_initializer(
+            module,
+            wrong_target=Path("/boot"),
+        )._inspect_fstab()
+
+
 def lsblk_nodes(module: ModuleType):  # type: ignore[no-untyped-def]
     efi_partition = module.BlockNode(
         Path("/dev/sda1"),
         "part",
-        512 * 1024**2,
+        module.OS_EFI_PARTITION_BYTES,
         "",
         "",
         False,
@@ -437,11 +780,15 @@ def lsblk_nodes(module: ModuleType):  # type: ignore[no-untyped-def]
         ("/boot/efi",),
         (),
         partition_type=module.EFI_SYSTEM_PARTITION_GUID,
+        partition_uuid="11111111-1111-4111-8111-111111111111",
+        partition_number=module.OS_EFI_PARTITION_NUMBER,
+        start_sector=module.OS_EFI_PARTITION_START_SECTOR,
+        logical_sector_size=module.OS_LOGICAL_SECTOR_BYTES,
     )
-    root_partition = module.BlockNode(
+    boot_partition = module.BlockNode(
         Path("/dev/sda2"),
         "part",
-        99 * module.GIB,
+        module.OS_BOOT_PARTITION_BYTES,
         "",
         "",
         False,
@@ -450,9 +797,49 @@ def lsblk_nodes(module: ModuleType):  # type: ignore[no-untyped-def]
         "ext4",
         "",
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-        ("/",),
+        ("/boot",),
         (),
         partition_type=module.LINUX_FILESYSTEM_PARTITION_GUID,
+        partition_uuid="22222222-2222-4222-8222-222222222222",
+        partition_number=module.OS_BOOT_PARTITION_NUMBER,
+        start_sector=module.OS_BOOT_PARTITION_START_SECTOR,
+        logical_sector_size=module.OS_LOGICAL_SECTOR_BYTES,
+    )
+    root_lv = module.BlockNode(
+        module.OS_ROOT_LV_PATH,
+        "lvm",
+        module.OS_ROOT_LV_BASELINE_BYTES,
+        "",
+        "",
+        False,
+        False,
+        "252:0",
+        "ext4",
+        "",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        ("/",),
+        (),
+        logical_sector_size=module.OS_LOGICAL_SECTOR_BYTES,
+    )
+    lvm_partition = module.BlockNode(
+        Path("/dev/sda3"),
+        "part",
+        module.OS_LVM_PARTITION_BASELINE_BYTES,
+        "",
+        "",
+        False,
+        False,
+        "8:3",
+        "LVM2_member",
+        "",
+        "AAAAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGGGG",
+        (),
+        (root_lv,),
+        partition_type=module.LINUX_FILESYSTEM_PARTITION_GUID,
+        partition_uuid="33333333-3333-4333-8333-333333333333",
+        partition_number=module.OS_LVM_PARTITION_NUMBER,
+        start_sector=module.OS_LVM_PARTITION_START_SECTOR,
+        logical_sector_size=module.OS_LOGICAL_SECTOR_BYTES,
     )
     result = [
         module.BlockNode(
@@ -468,8 +855,9 @@ def lsblk_nodes(module: ModuleType):  # type: ignore[no-untyped-def]
             "",
             "",
             (),
-            (efi_partition, root_partition),
+            (efi_partition, boot_partition, lvm_partition),
             partition_table_type="gpt",
+            logical_sector_size=module.OS_LOGICAL_SECTOR_BYTES,
         )
     ]
     for index, role in enumerate(("docker", "postgres", "redis", "runtime"), start=1):
@@ -500,10 +888,10 @@ class TopologyInitializer:  # wrapper avoids depending on a real block host
                 return lsblk_nodes(module)
 
             def _root_major_minor(inner_self) -> str:
-                return "8:2"
+                return "252:0"
 
             def _root_filesystem_capacity(inner_self) -> int:
-                return 99 * module.GIB
+                return 95 * module.GIB
 
             def _resolve_by_id(inner_self, path: Path):  # type: ignore[no-untyped-def]
                 role = path.name.removeprefix("scsi-").removesuffix("-serial")
@@ -548,6 +936,90 @@ def test_device_topology_accepts_os_disk_with_partition_but_only_blank_whole_dat
     }
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda module, disk: replace(
+            disk,
+            children=(
+                disk.children[0],
+                disk.children[1],
+                replace(
+                    disk.children[2],
+                    start_sector=module.OS_LVM_PARTITION_START_SECTOR + 1,
+                ),
+            ),
+        ),
+        lambda module, disk: replace(
+            disk,
+            children=(
+                disk.children[0],
+                disk.children[1],
+                replace(
+                    disk.children[2],
+                    size_bytes=(
+                        module.OS_LVM_PARTITION_BASELINE_BYTES - 16 * 1024**2
+                    ),
+                ),
+            ),
+        ),
+        lambda _module, disk: replace(
+            disk,
+            children=(
+                disk.children[0],
+                disk.children[1],
+                replace(
+                    disk.children[2],
+                    children=(
+                        disk.children[2].children[0],
+                        replace(
+                            disk.children[2].children[0],
+                            path=Path("/dev/mapper/ubuntu--vg-extra--lv"),
+                            major_minor="252:1",
+                            mountpoints=(),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+def test_os_layout_rejects_partition_drift_incomplete_pv_or_extra_lv(
+    mutate,  # type: ignore[no-untyped-def]
+) -> None:
+    module = initializer_module()
+    initializer = TopologyInitializer(module).instance
+    nodes = list(lsblk_nodes(module))
+    nodes[0] = mutate(module, nodes[0])
+    initializer._lsblk = lambda: tuple(nodes)  # type: ignore[method-assign]
+
+    with pytest.raises(
+        module.StorageInitializationError,
+        match="os_disk_layout_invalid",
+    ):
+        initializer._observe_devices(  # type: ignore[attr-defined]
+            parsed_manifest(module),
+            require_blank=frozenset(module.DATA_ROLES),
+        )
+
+
+def test_os_layout_rejects_root_filesystem_not_grown_to_the_lv() -> None:
+    module = initializer_module()
+    initializer = TopologyInitializer(module).instance
+    initializer._root_filesystem_capacity = (  # type: ignore[method-assign]
+        lambda: module.OS_ROOT_FILESYSTEM_MINIMUM_BYTES - 1
+    )
+
+    with pytest.raises(
+        module.StorageInitializationError,
+        match="root_filesystem_not_grown_to_lv",
+    ):
+        initializer._observe_devices(  # type: ignore[attr-defined]
+            parsed_manifest(module),
+            require_blank=frozenset(module.DATA_ROLES),
+        )
+
+
 def test_same_size_redis_alias_cannot_resolve_to_the_os_disk() -> None:
     module = initializer_module()
     initializer = TopologyInitializer(module).instance
@@ -575,8 +1047,16 @@ def test_planned_data_uuid_cannot_reuse_an_existing_os_uuid() -> None:
     initializer = TopologyInitializer(module).instance
     nodes = list(lsblk_nodes(module))
     os_disk = nodes[0]
-    root = replace(os_disk.children[1], filesystem_uuid=UUIDS["docker"])
-    nodes[0] = replace(os_disk, children=(os_disk.children[0], root))
+    lvm_partition = os_disk.children[2]
+    root = replace(lvm_partition.children[0], filesystem_uuid=UUIDS["docker"])
+    nodes[0] = replace(
+        os_disk,
+        children=(
+            os_disk.children[0],
+            os_disk.children[1],
+            replace(lvm_partition, children=(root,)),
+        ),
+    )
     initializer._lsblk = lambda: tuple(nodes)  # type: ignore[method-assign]
 
     with pytest.raises(
