@@ -199,7 +199,15 @@ async def test_request_delivery_supersedes_pending_request_from_old_configuratio
         [
             FakeResult(),
             FakeResult(scalar="3"),
-            FakeResult([{"delivery_status": "pending", "retry_count": 1}]),
+            FakeResult(
+                [
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 1,
+                        "delivery_generation": 1,
+                    }
+                ]
+            ),
             FakeResult(
                 [
                     {
@@ -207,6 +215,8 @@ async def test_request_delivery_supersedes_pending_request_from_old_configuratio
                         "requested_at": requested_at,
                         "state": "pending",
                         "config_version": 2,
+                        "delivery_generation": 1,
+                        "recipient_set_digest": "",
                     }
                 ]
             ),
@@ -250,7 +260,15 @@ async def test_request_delivery_reuses_same_version_pending_request() -> None:
         [
             FakeResult(),
             FakeResult(scalar="3"),
-            FakeResult([{"delivery_status": "pending", "retry_count": 1}]),
+            FakeResult(
+                [
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 1,
+                        "delivery_generation": 1,
+                    }
+                ]
+            ),
             FakeResult(
                 [
                     {
@@ -258,6 +276,8 @@ async def test_request_delivery_reuses_same_version_pending_request() -> None:
                         "requested_at": requested_at,
                         "state": "pending",
                         "config_version": 3,
+                        "delivery_generation": 1,
+                        "recipient_set_digest": "",
                     }
                 ]
             ),
@@ -275,7 +295,9 @@ async def test_request_delivery_reuses_same_version_pending_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_superseded_request_result_cannot_overwrite_current_report() -> None:
+async def test_superseded_request_result_cannot_overwrite_current_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request_id = uuid4()
     repo, connection = repository(
         [
@@ -287,10 +309,23 @@ async def test_superseded_request_result_cannot_overwrite_current_report() -> No
                         "report_date": date(2026, 8, 12),
                         "state": "failed",
                         "error": "安全日报邮件配置已更新，旧投递请求已失效",
+                        "config_version": 2,
+                        "delivery_generation": 1,
                     }
                 ]
             ),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
         ]
+    )
+
+    async def no_audit_bind(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.security_daily_repository.bind_connection_system_audit",
+        no_audit_bind,
     )
 
     await repo.apply_control_result(
@@ -302,9 +337,28 @@ async def test_superseded_request_result_cannot_overwrite_current_report() -> No
         )
     )
 
-    assert len(connection.calls) == 2
-    assert "pg_advisory_xact_lock" in connection.calls[0][0]
-    assert all("UPDATE security_daily_report" not in sql for sql, _ in connection.calls)
+    request_update = next(
+        params
+        for sql, params in connection.calls
+        if "UPDATE security_daily_delivery_request" in sql
+    )
+    assert request_update["state"] == "sent"
+    report_update = next(
+        (sql, params)
+        for sql, params in connection.calls
+        if "UPDATE security_daily_report" in sql
+    )
+    assert "delivery_generation" in report_update[0]
+    assert report_update[1]["delivery_generation"] == 1
+    audit = next(
+        json.loads(params["after"])
+        for sql, params in connection.calls
+        if "INSERT INTO audit_log" in sql
+    )
+    assert audit["state"] == "sent"
+    assert audit["delivery_generation"] == 1
+    assert "re_" not in json.dumps(audit)
+    assert "@" not in json.dumps(audit)
 
 
 @pytest.mark.asyncio
@@ -322,6 +376,8 @@ async def test_writer_race_failed_request_still_accepts_mailer_sent(
                         "report_date": date(2026, 8, 12),
                         "state": "failed",
                         "error": "独立投递器不可用",
+                        "config_version": 3,
+                        "delivery_generation": 1,
                     }
                 ]
             ),
@@ -431,3 +487,115 @@ async def test_pending_delivery_requests_include_unknown_and_writer_race() -> No
     sql = connection.calls[0][0]
     assert "state IN ('pending','unknown')" in sql
     assert "独立投递器不可用" in sql
+    assert "ORDER BY report_date DESC, requested_at DESC" in sql
+
+
+@pytest.mark.asyncio
+async def test_request_delivery_does_not_supersede_claimed_request() -> None:
+    request_id = uuid4()
+    requested_at = datetime(2026, 8, 13, 8, tzinfo=SHANGHAI)
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(scalar="3"),
+            FakeResult(
+                [
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 1,
+                        "delivery_generation": 1,
+                    }
+                ]
+            ),
+            FakeResult(
+                [
+                    {
+                        "request_id": request_id,
+                        "requested_at": requested_at,
+                        "state": "pending",
+                        "config_version": 2,
+                        "delivery_generation": 1,
+                        "recipient_set_digest": "a" * 64,
+                    }
+                ]
+            ),
+        ]
+    )
+
+    request = await repo.request_delivery(
+        report(), "send", system=True, control_evidence="claimed"
+    )
+
+    assert request.request_id == request_id
+    assert request.config_version == 2
+    assert request.delivery_generation == 1
+    assert all("SET state='failed'" not in sql for sql, _ in connection.calls)
+    assert all(
+        "INSERT INTO security_daily_delivery_request" not in sql
+        for sql, _ in connection.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_delivery_opens_new_generation_after_sent_config_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_request_id = uuid4()
+    requested_at = datetime(2026, 8, 13, 8, tzinfo=SHANGHAI)
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(scalar="3"),
+            FakeResult(
+                [
+                    {
+                        "delivery_status": "sent",
+                        "retry_count": 0,
+                        "delivery_generation": 1,
+                    }
+                ]
+            ),
+            FakeResult(
+                [
+                    {
+                        "request_id": old_request_id,
+                        "requested_at": requested_at,
+                        "state": "sent",
+                        "config_version": 2,
+                        "delivery_generation": 1,
+                        "recipient_set_digest": "b" * 64,
+                    }
+                ]
+            ),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+
+    async def no_audit_bind(*_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.security_daily_repository.bind_connection_system_audit",
+        no_audit_bind,
+    )
+
+    request = await repo.request_delivery(report(delivery_status="sent"), "send", system=True)
+
+    assert request.request_id != old_request_id
+    assert request.delivery_generation == 2
+    assert request.config_version == 3
+    assert request.idempotent is False
+    insert = next(
+        params
+        for sql, params in connection.calls
+        if "INSERT INTO security_daily_delivery_request" in sql
+    )
+    assert insert["delivery_generation"] == 2
+    report_update = next(
+        params
+        for sql, params in connection.calls
+        if "SET delivery_status='pending',retry_count" in sql
+    )
+    assert report_update["delivery_generation"] == 2

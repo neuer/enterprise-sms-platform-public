@@ -90,6 +90,7 @@ async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_pa
         state="pending",
         requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
         idempotent=False,
+        recipient_set_digest="a" * 64,
     )
     control = FileSecurityDailyControl(control_dir, config_dir)
 
@@ -111,10 +112,12 @@ async def test_file_control_writes_only_redacted_request_and_reads_result(tmp_pa
     request_path = control_dir / "requests" / f"{request.request_id}.json"
     encoded = request_path.read_text(encoding="utf-8")
     assert "resend" not in encoded.casefold()
-    assert "recipient" not in encoded.casefold()
+    assert "security-owner@example.com" not in encoded
     assert "13800138000" not in encoded
     assert json.loads(encoded)["request_id"] == str(request.request_id)
     assert json.loads(encoded)["config_version"] == 1
+    assert json.loads(encoded)["recipient_set_digest"] == "a" * 64
+    assert json.loads(encoded)["delivery_generation"] == 1
 
     result_path = control_dir / "results" / f"{request.request_id}.json"
     result_path.write_text(
@@ -277,6 +280,13 @@ class FakeRepository:
             and self.record.delivery_status == "sent"
         )
 
+    async def latest_delivery_request(
+        self, report_id: int
+    ) -> SecurityDailyDeliveryRequest | None:
+        if report_id != self.record.id:
+            return None
+        return self.existing_request
+
     async def request_delivery(
         self,
         record: SecurityDailyReportRecord,
@@ -285,7 +295,10 @@ class FakeRepository:
         principal: SecurityPrincipal | None = None,
         ip: str | None = None,
         system: bool = False,
+        control_evidence: str = "missing",
+        recipient_set_digest: str = "",
     ) -> SecurityDailyDeliveryRequest:
+        del control_evidence, recipient_set_digest
         if self.existing_request is not None:
             return self.existing_request
         request = SecurityDailyDeliveryRequest(
@@ -1419,3 +1432,69 @@ def test_request_enospc_before_publish_fails_closed(
     with pytest.raises(SecurityDailyControlError, match="投递请求写入失败"):
         control._write_request(request, payload())
     assert not (control_dir / "requests" / f"{request.request_id}.json").exists()
+
+
+class ClaimedInspectControl(FakeControl):
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        return "claimed"
+
+
+class UnknownInspectControl(FakeControl):
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        return "unknown"
+
+
+@pytest.mark.asyncio
+async def test_claimed_request_is_not_resubmitted_after_config_change() -> None:
+    item = record()
+    existing = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=item.report_date,
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+        config_version=2,
+        delivery_id=str(item.id),
+        delivery_generation=1,
+    )
+    repository = FakeRepository(replace(item, delivery_status="pending"))
+    repository.existing_request = existing
+    repository.config = SecurityDailyConfiguration(
+        enabled=True,
+        api_key="re_test_value",
+        recipients=("security-owner@example.com",),
+        config_version=3,
+    )
+    control = ClaimedInspectControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(1, "send", principal=_admin(), ip="127.0.0.1")
+
+    assert request.request_id == existing.request_id
+    assert control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_delivery_evidence_blocks_resubmit() -> None:
+    item = record()
+    existing = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=item.report_date,
+        action="send",
+        state="unknown",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+        delivery_id=str(item.id),
+    )
+    repository = FakeRepository(replace(item, delivery_status="unknown", last_error="投递结果未知"))
+    repository.existing_request = existing
+    control = UnknownInspectControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(1, "send", principal=_admin(), ip="127.0.0.1")
+
+    assert request.request_id == existing.request_id
+    assert control.submitted == []

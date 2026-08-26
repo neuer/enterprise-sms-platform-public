@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -77,7 +80,7 @@ def test_delivery_uses_exact_endpoint_safe_headers_and_rendered_variants() -> No
     assert headers == {
         "Authorization": "Bearer re_sensitive_value",
         "Content-Type": "application/json",
-        "Idempotency-Key": f"security-daily-2026-07-15-{request_id}",
+        "Idempotency-Key": f"security-daily-2026-07-15-{request_id}-g1",
         "User-Agent": "sms-platform-security-daily/1.0",
     }
     payload = json.loads(encoded)
@@ -119,7 +122,7 @@ def test_transient_failure_retries_with_the_same_idempotent_request() -> None:
     assert transport.requests[0] == transport.requests[1] == transport.requests[2]
     assert (
         transport.requests[0][0]["Idempotency-Key"]
-        == f"security-daily-2026-07-15-{request_id}"
+        == f"security-daily-2026-07-15-{request_id}-g1"
     )
 
 
@@ -422,3 +425,322 @@ def test_sleep_callable_type_is_simple_and_synchronous() -> None:
     annotation = module.ResendClient.__init__.__annotations__["sleep"]
 
     assert annotation == Callable[[float], None] | None
+
+
+SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _write_mailer_request(
+    path: Path,
+    *,
+    request_id: UUID,
+    payload: dict[str, Any],
+    delivery_id: str = "10086",
+    delivery_generation: int = 1,
+    recipient_set_digest: str = "",
+    config_version: int = 1,
+) -> None:
+    body: dict[str, Any] = {
+        "request_id": str(request_id),
+        "report_date": payload["report_date"],
+        "action": "send",
+        "config_version": config_version,
+        "delivery_id": delivery_id,
+        "delivery_generation": delivery_generation,
+        "payload": payload,
+    }
+    if recipient_set_digest:
+        body["recipient_set_digest"] = recipient_set_digest
+    path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_mailer_config(path: Path, *, recipients: list[str] | None = None) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "api_key": "re_test_value",
+                "recipients": recipients or ["security-owner@example.com"],
+                "config_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_claim_before_provider_is_recovered_after_restart(tmp_path: Path) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    result_dir = control_dir / "results"
+    request_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    claim = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    _write_mailer_request(claim, request_id=request_id, payload=payload)
+    config_file = tmp_path / "resend.json"
+    _write_mailer_config(config_file)
+    transport = FakeTransport([(200, b'{"id":"email-recovered"}')])
+
+    recovered = module.recover_stale_claims(
+        request_dir,
+        result_dir,
+        now=datetime.now(SHANGHAI) + timedelta(seconds=60),
+    )
+    assert recovered == 1
+    assert (request_dir / f"{request_id}.json").is_file()
+    assert not claim.exists()
+    assert module.serve_control(
+        control_dir,
+        config_file=config_file,
+        once=True,
+        transport=transport,
+        sleep=lambda _delay: None,
+    ) == 0
+    result = json.loads((result_dir / f"{request_id}.json").read_text(encoding="utf-8"))
+    assert result["state"] == "sent"
+    assert transport.requests[0][0]["Idempotency-Key"].endswith("-10086-g1")
+    encoded = json.dumps(result)
+    assert "re_test_value" not in encoded
+    assert "security-owner@example.com" not in encoded
+
+
+def test_provider_success_without_result_retries_same_delivery_identity(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    result_dir = control_dir / "results"
+    request_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    claim = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    _write_mailer_request(claim, request_id=request_id, payload=payload, delivery_id="10086")
+    config_file = tmp_path / "resend.json"
+    _write_mailer_config(config_file)
+    transport = FakeTransport([(200, b'{"id":"email-same"}')])
+    module.recover_stale_claims(
+        request_dir,
+        result_dir,
+        now=datetime.now(SHANGHAI) + timedelta(minutes=2),
+    )
+    module.serve_control(
+        control_dir,
+        config_file=config_file,
+        once=True,
+        transport=transport,
+        sleep=lambda _delay: None,
+    )
+    assert len(transport.requests) == 1
+    assert transport.requests[0][0]["Idempotency-Key"] == (
+        f"security-daily-{payload['report_date']}-10086-g1"
+    )
+    assert json.loads((result_dir / f"{request_id}.json").read_text())["state"] == "sent"
+
+
+def test_existing_result_cleans_claim_without_second_provider_call(tmp_path: Path) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    result_dir = control_dir / "results"
+    request_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    claim = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    _write_mailer_request(claim, request_id=request_id, payload=payload)
+    (result_dir / f"{request_id}.json").write_text(
+        json.dumps(
+            {
+                "request_id": str(request_id),
+                "report_date": payload["report_date"],
+                "state": "sent",
+                "completed_at": "2026-07-16T08:02:00+08:00",
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    transport = FakeTransport([(200, b'{"id":"should-not-send"}')])
+    recovered = module.recover_stale_claims(request_dir, result_dir)
+    assert recovered == 1
+    assert not claim.exists()
+    module.serve_control(
+        control_dir,
+        config_file=tmp_path / "unused.json",
+        once=True,
+        transport=transport,
+        sleep=lambda _delay: None,
+    )
+    assert transport.requests == []
+
+
+def test_active_claim_lease_is_not_stolen(tmp_path: Path) -> None:
+    module = _module()
+    request_dir = tmp_path / "requests"
+    result_dir = tmp_path / "results"
+    request_dir.mkdir()
+    result_dir.mkdir()
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    claim = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    _write_mailer_request(claim, request_id=request_id, payload=payload)
+    now = datetime(2026, 7, 16, 8, 0, tzinfo=SHANGHAI)
+    body = json.loads(claim.read_text(encoding="utf-8"))
+    body.update(
+        {
+            "claim_id": "active",
+            "claimed_at": now.isoformat(),
+            "lease_expires_at": (now + timedelta(seconds=45)).isoformat(),
+            "boot_generation": "boot-1",
+        }
+    )
+    claim.write_text(json.dumps(body), encoding="utf-8")
+    assert module.recover_stale_claims(request_dir, result_dir, now=now) == 0
+    assert claim.exists()
+    assert not (request_dir / f"{request_id}.json").exists()
+
+
+def test_stale_claim_requeue_is_reentrant(tmp_path: Path) -> None:
+    module = _module()
+    request_dir = tmp_path / "requests"
+    result_dir = tmp_path / "results"
+    request_dir.mkdir()
+    result_dir.mkdir()
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    claim = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    _write_mailer_request(claim, request_id=request_id, payload=payload)
+    future = datetime.now(SHANGHAI) + timedelta(minutes=2)
+    assert module.recover_stale_claims(request_dir, result_dir, now=future) == 1
+    leftover = request_dir / f".{request_id}.{uuid4().hex}.processing"
+    leftover.write_text(
+        (request_dir / f"{request_id}.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    assert module.recover_stale_claims(request_dir, result_dir, now=future) == 1
+    assert (request_dir / f"{request_id}.json").is_file()
+
+
+def test_hundred_stale_claims_do_not_starve_newer_request(tmp_path: Path) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    result_dir = control_dir / "results"
+    request_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    expired = datetime(2026, 7, 16, 7, 0, tzinfo=SHANGHAI)
+    for _ in range(100):
+        stale_id = uuid4()
+        claim = request_dir / f".{stale_id}.{uuid4().hex}.processing"
+        _write_mailer_request(claim, request_id=stale_id, payload=payload, delivery_id="old")
+        os.utime(claim, (1_800_000_000, 1_800_000_000))
+        body = json.loads(claim.read_text(encoding="utf-8"))
+        body["lease_expires_at"] = expired.isoformat()
+        claim.write_text(json.dumps(body), encoding="utf-8")
+    new_id = uuid4()
+    new_path = request_dir / f"{new_id}.json"
+    _write_mailer_request(new_path, request_id=new_id, payload=payload, delivery_id="newest")
+    os.utime(new_path, (1_900_000_000, 1_900_000_000))
+    config_file = tmp_path / "resend.json"
+    _write_mailer_config(config_file)
+    transport = FakeTransport([(200, b'{"id":"email-new"}')] * 20)
+    module.serve_control(
+        control_dir,
+        config_file=config_file,
+        once=True,
+        transport=transport,
+        sleep=lambda _delay: None,
+    )
+    assert transport.requests
+    assert transport.requests[0][0]["Idempotency-Key"].endswith("-newest-g1")
+    assert (result_dir / f"{new_id}.json").is_file()
+    remaining_claims = list(request_dir.glob(".*.processing"))
+    assert len(remaining_claims) == 92
+
+
+def test_control_result_fsyncs_temp_final_and_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    events: list[str] = []
+    real_fsync = os.fsync
+
+    def tracked_fsync(descriptor: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file"
+        events.append(f"fsync:{kind}")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", tracked_fsync)
+    request_id = uuid4()
+    module._write_control_result(tmp_path, request_id, "2026-07-15", "sent")
+    assert events[:3] == ["fsync:file", "fsync:file", "fsync:directory"]
+    restarted = json.loads((tmp_path / "results" / f"{request_id}.json").read_text())
+    assert restarted["state"] == "sent"
+
+
+def test_recipient_digest_mismatch_fails_closed_without_provider(tmp_path: Path) -> None:
+    module = _module()
+    control_dir = tmp_path / "control"
+    request_dir = control_dir / "requests"
+    request_dir.mkdir(parents=True)
+    request_id = uuid4()
+    payload = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    digest = module._recipient_set_digest(("old-owner@example.com",))
+    _write_mailer_request(
+        request_dir / f"{request_id}.json",
+        request_id=request_id,
+        payload=payload,
+        recipient_set_digest=digest,
+    )
+    config_file = tmp_path / "resend.json"
+    _write_mailer_config(config_file)
+    transport = FakeTransport([(200, b'{"id":"should-not-send"}')])
+    assert (
+        module.process_control_request(
+            request_dir / f"{request_id}.json",
+            control_dir=control_dir,
+            config_file=config_file,
+            transport=transport,
+        )
+        == "failed"
+    )
+    assert transport.requests == []
+    result = json.loads((control_dir / "results" / f"{request_id}.json").read_text())
+    assert result["state"] == "failed"
+    assert "re_test_value" not in json.dumps(result)
+    assert "old-owner@example.com" not in json.dumps(result)
+
+
+def test_new_delivery_generation_uses_new_provider_identity() -> None:
+    module = _module()
+    report = module.renderer.load_report(SAMPLE)
+    transport = FakeTransport(
+        [(200, b'{"id":"g1"}'), (200, b'{"id":"g2"}')]
+    )
+    client = module.ResendClient(
+        api_key="re_test_value",
+        transport=transport,
+        sleep=lambda _delay: None,
+    )
+    client.send(
+        report,
+        recipients=("security-owner@example.com",),
+        delivery_id="10086",
+        delivery_generation=1,
+    )
+    client.send(
+        report,
+        recipients=("security-owner@example.com",),
+        delivery_id="10086",
+        delivery_generation=2,
+    )
+    keys = [item[0]["Idempotency-Key"] for item in transport.requests]
+    assert keys == [
+        f"security-daily-{report.report_date}-10086-g1",
+        f"security-daily-{report.report_date}-10086-g2",
+    ]

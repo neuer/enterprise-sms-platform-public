@@ -2,6 +2,7 @@
 """通过固定 Resend HTTPS 端点投递已脱敏的服务器安全日报。"""
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -32,6 +33,11 @@ MAX_RECIPIENTS = 3
 MAX_ATTEMPTS = 3
 MAX_CONTROL_REQUEST_BYTES = 384 * 1024
 MAX_CONTROL_ERROR_LENGTH = 256
+CLAIM_LEASE_SECONDS = 45
+MAX_STALE_CLAIMS_PER_SWEEP = 8
+LEASE_FIELDS = frozenset(
+    {"claim_id", "claimed_at", "lease_expires_at", "boot_generation"}
+)
 RETRY_DELAYS_S = (1.0, 2.0)
 TRANSIENT_STATUSES = frozenset({408, 429, *range(500, 600)})
 DEFAULT_SENDER = "短信平台安全日报 <security-daily@reports.neuer.cn>"
@@ -77,6 +83,8 @@ class ControlRequest:
     config_version: int
     report: renderer.SecurityDailyReport
     delivery_id: str
+    delivery_generation: int = 1
+    recipient_set_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,15 +259,16 @@ class ResendClient:
         recipients: Sequence[str],
         request_id: UUID | None = None,
         delivery_id: str | None = None,
+        delivery_generation: int = 1,
     ) -> DeliveryReceipt:
         normalized_recipients = _validate_recipients(recipients)
         body = _render_payload(report, normalized_recipients)
         identity = delivery_id or (str(request_id) if request_id is not None else "")
+        generation = delivery_generation if delivery_generation >= 1 else 1
         idempotency_key = f"security-daily-{report.report_date}"
         if identity:
-            # 绑定稳定逻辑投递身份：同一份已生成日报的重试复用同一键；
-            # 真正重新生成的新日报使用新的 Generation / report id。
-            idempotency_key = f"{idempotency_key}-{identity}"
+            # 同一 Delivery Generation 复用稳定键；配置变化后的新世代使用新键。
+            idempotency_key = f"{idempotency_key}-{identity}-g{generation}"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -301,7 +310,13 @@ def _control_request(path: Path) -> ControlRequest:
         value = json.loads(path.read_text(encoding="utf-8"))
         fields = set(value)
         required = {"request_id", "report_date", "action", "config_version", "payload"}
-        if not required <= fields or not fields <= required | {"delivery_id"}:
+        optional = {
+            "delivery_id",
+            "delivery_generation",
+            "recipient_set_digest",
+            *LEASE_FIELDS,
+        }
+        if not required <= fields or not fields <= required | optional:
             raise ResendConfigurationError("control request has invalid fields")
         request_id = UUID(str(value["request_id"]))
         report_date = str(value["report_date"])
@@ -326,13 +341,168 @@ def _control_request(path: Path) -> ControlRequest:
         ):
             raise ResendConfigurationError("control request delivery identity is invalid")
         report = renderer.parse_report(value["payload"])
+        raw_generation = value.get("delivery_generation", 1)
+        delivery_generation = int(raw_generation)
+        if (
+            not isinstance(raw_generation, int)
+            or isinstance(raw_generation, bool)
+            or delivery_generation < 1
+        ):
+            raise ResendConfigurationError("control request delivery generation is invalid")
+        recipient_digest = str(value.get("recipient_set_digest", ""))
+        if recipient_digest and (
+            len(recipient_digest) != 64
+            or any(character not in "0123456789abcdef" for character in recipient_digest)
+        ):
+            raise ResendConfigurationError("control request recipient digest is invalid")
     except ResendConfigurationError:
         raise
     except (OSError, UnicodeError, ValueError, TypeError, renderer.ReportValidationError):
         raise ResendConfigurationError("control request is invalid") from None
     if report.report_date != report_date:
         raise ResendConfigurationError("control request date does not match report")
-    return ControlRequest(request_id, report_date, action, config_version, report, delivery_id)
+    return ControlRequest(
+        request_id,
+        report_date,
+        action,
+        config_version,
+        report,
+        delivery_id,
+        delivery_generation,
+        recipient_digest,
+    )
+
+
+def _fsync_path(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _recipient_set_digest(recipients: Sequence[str]) -> str:
+    material = ",".join(sorted(item.strip().casefold() for item in recipients))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _boot_generation(control_dir: Path) -> str:
+    path = control_dir / ".mailer-boot"
+    if path.is_file():
+        value = path.read_text(encoding="utf-8").strip()
+        if value and len(value) <= 64 and " " not in value:
+            return value
+    generation = uuid4().hex
+    path.write_text(generation + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return generation
+
+
+def _request_id_from_claim(path: Path) -> UUID | None:
+    name = path.name
+    if not name.startswith(".") or not name.endswith(".processing"):
+        return None
+    body = name[1 : -len(".processing")]
+    request_part, separator, _claim = body.rpartition(".")
+    if separator != ".":
+        return None
+    try:
+        return UUID(request_part)
+    except ValueError:
+        return None
+
+
+def _requeue_claim(claim: Path, request_id: UUID) -> None:
+    payload = json.loads(claim.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ResendConfigurationError("stale claim is invalid")
+    for field in LEASE_FIELDS:
+        payload.pop(field, None)
+    destination = claim.with_name(f"{request_id}.json")
+    temporary = claim.with_name(f".{request_id}.{uuid4().hex}.requeue")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.chmod(0o600)
+    _fsync_path(temporary)
+    temporary.replace(destination)
+    _fsync_path(destination)
+    with suppress(OSError):
+        claim.unlink(missing_ok=True)
+
+
+def _write_claim_lease(claim: Path, *, claim_id: str, boot_generation: str) -> None:
+    payload = json.loads(claim.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ResendConfigurationError("control request is invalid")
+    now = datetime.now(SHANGHAI_TZ)
+    payload.update(
+        {
+            "claim_id": claim_id,
+            "claimed_at": now.isoformat(),
+            "lease_expires_at": (now + timedelta(seconds=CLAIM_LEASE_SECONDS)).isoformat(),
+            "boot_generation": boot_generation,
+        }
+    )
+    temporary = claim.with_name(f".{claim_id}.lease.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.chmod(0o600)
+    _fsync_path(temporary)
+    temporary.replace(claim)
+    _fsync_path(claim)
+    _fsync_path(claim.parent)
+
+
+def recover_stale_claims(
+    request_dir: Path,
+    result_dir: Path,
+    *,
+    now: datetime | None = None,
+    limit: int = MAX_STALE_CLAIMS_PER_SWEEP,
+) -> int:
+    """回收过期 Claim；活跃租约不动，已有 Result 只清理 Claim。"""
+
+    current = now or datetime.now(SHANGHAI_TZ)
+    recovered = 0
+    claims = sorted(
+        request_dir.glob(".*.processing"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for claim in claims:
+        if recovered >= limit:
+            break
+        request_id = _request_id_from_claim(claim)
+        if request_id is None:
+            continue
+        if (result_dir / f"{request_id}.json").is_file():
+            with suppress(OSError):
+                claim.unlink(missing_ok=True)
+            recovered += 1
+            continue
+        try:
+            payload = json.loads(claim.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            print("security report stale claim unreadable", file=sys.stderr)
+            continue
+        expires_raw = payload.get("lease_expires_at") if isinstance(payload, dict) else None
+        try:
+            expires = (
+                datetime.fromisoformat(str(expires_raw))
+                if expires_raw
+                else current - timedelta(seconds=1)
+            )
+        except ValueError:
+            expires = current - timedelta(seconds=1)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=SHANGHAI_TZ)
+        if expires > current:
+            continue
+        try:
+            _requeue_claim(claim, request_id)
+        except (OSError, ResendConfigurationError):
+            print("security report stale claim recover failed", file=sys.stderr)
+            continue
+        recovered += 1
+    return recovered
 
 
 def _write_control_result(
@@ -363,7 +533,10 @@ def _write_control_result(
     try:
         temporary.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
         temporary.chmod(0o600)
+        _fsync_path(temporary)
         temporary.replace(destination)
+        _fsync_path(destination)
+        _fsync_path(result_dir)
     except OSError as exc:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
@@ -385,6 +558,14 @@ def process_control_request(
         configuration = read_mailer_configuration(config_file)
         if configuration.config_version != request.config_version:
             raise ResendConfigurationError("mailer configuration version mismatch")
+        expected_digest = _recipient_set_digest(configuration.recipients)
+        if (
+            request.recipient_set_digest
+            and request.recipient_set_digest != expected_digest
+        ):
+            raise ResendConfigurationError(
+                "mailer recipient set does not match delivery generation"
+            )
         receipt = ResendClient(
             api_key=configuration.api_key,
             transport=transport,
@@ -394,6 +575,7 @@ def process_control_request(
             recipients=configuration.recipients,
             request_id=request.request_id,
             delivery_id=request.delivery_id,
+            delivery_generation=request.delivery_generation,
         )
     except (ResendConfigurationError, ResendDeliveryError) as exc:
         _write_control_result(
@@ -430,22 +612,33 @@ def serve_control(
         raise ResendConfigurationError("control polling interval is invalid")
     request_dir = control_dir / "requests"
     request_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (control_dir / "results").mkdir(mode=0o700, parents=True, exist_ok=True)
+    result_dir = control_dir / "results"
+    result_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    boot_generation = _boot_generation(control_dir)
     wait = sleep or time.sleep
     while True:
         processed = False
+        recover_stale_claims(request_dir, result_dir)
         try:
-            candidates = sorted(request_dir.glob("*.json"))
+            candidates = sorted(
+                request_dir.glob("*.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
         except OSError as exc:
             raise ResendConfigurationError("control request directory is unavailable") from exc
         for path in candidates:
-            claim = path.with_name(f".{path.stem}.{os.getpid()}.processing")
+            claim_id = uuid4().hex
+            claim = path.with_name(f".{path.stem}.{claim_id}.processing")
             try:
                 path.replace(claim)
             except OSError:
                 continue
             processed = True
             try:
+                _write_claim_lease(
+                    claim, claim_id=claim_id, boot_generation=boot_generation
+                )
                 state = process_control_request(
                     claim,
                     control_dir=control_dir,
@@ -459,8 +652,12 @@ def serve_control(
                 # remove them and leave a generic operator-visible error.
                 print(f"security report control request rejected: {exc}", file=sys.stderr)
             finally:
-                with suppress(OSError):
-                    claim.unlink(missing_ok=True)
+                request_id = _request_id_from_claim(claim)
+                if request_id is not None and (
+                    result_dir / f"{request_id}.json"
+                ).is_file():
+                    with suppress(OSError):
+                        claim.unlink(missing_ok=True)
         if once:
             return 0
         if not processed:
