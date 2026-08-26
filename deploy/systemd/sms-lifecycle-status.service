@@ -9,6 +9,8 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/etc/sms-platform/lifecycle.env
+LoadCredential=sms-host-mountinfo:/proc/1/mountinfo
+Environment=SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL=1
 ExecStartPre=/usr/local/sbin/sms-storage-preflight --mode observe
 ExecStartPre=/usr/bin/python3 /opt/sms-platform/deploy/scripts/host_python_preflight.py lifecycle
 ExecStart=/usr/bin/python3 /opt/sms-platform/deploy/scripts/lifecycle_manager.py backup-status

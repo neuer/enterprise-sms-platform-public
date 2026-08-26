@@ -10,7 +10,7 @@ import re
 import stat
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -20,6 +20,19 @@ FSTAB_PATH = Path("/etc/fstab")
 PROC_SWAPS_PATH = Path("/proc/swaps")
 SWAP_FILE_PATH = Path("/swap.img")
 MOUNTINFO_PATH = Path("/proc/1/mountinfo")
+SYSTEMD_CREDENTIAL_ROOT = Path("/run/credentials")
+HOST_MOUNTINFO_CREDENTIAL_NAME = "sms-host-mountinfo"
+HOST_MOUNTINFO_CREDENTIAL_MARKER = "SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL"
+CREDENTIALS_DIRECTORY_ENVIRONMENT = "CREDENTIALS_DIRECTORY"
+ALLOWED_HOST_MOUNTINFO_CREDENTIAL_UNITS = frozenset(
+    {
+        "sms-storage-preflight.service",
+        "sms-backup.service",
+        "sms-restore-drill.service",
+        "sms-lifecycle-status.service",
+        "sms-partition-maintenance.service",
+    }
+)
 PID1_COMM_PATH = Path("/proc/1/comm")
 PID1_ROOT_PATH = Path("/proc/1/root")
 PID1_MOUNT_NAMESPACE_PATH = Path("/proc/1/ns/mnt")
@@ -360,6 +373,9 @@ class PathStatus(Protocol):
     def st_dev(self) -> int: ...
 
     @property
+    def st_ino(self) -> int: ...
+
+    @property
     def st_nlink(self) -> int: ...
 
     @property
@@ -409,19 +425,40 @@ class Probe(Protocol):
 
 
 class LocalProbe:
+    def __init__(self, environment: Mapping[str, str] | None = None) -> None:
+        active_environment = os.environ if environment is None else environment
+        self._mountinfo_credential = _mountinfo_credential_from_environment(
+            active_environment
+        )
+        self._credential_mountinfo: str | None = None
+
     def assert_host_context(self) -> None:
         if os.geteuid() != 0:
             raise StorageContractError("root privileges are required")
-        try:
-            host_root = Path("/").stat()
-            pid1_root = PID1_ROOT_PATH.stat()
-        except OSError as error:
-            raise StorageContractError("host root identity unavailable") from error
-        if (host_root.st_dev, host_root.st_ino) != (
-            pid1_root.st_dev,
-            pid1_root.st_ino,
-        ):
-            raise StorageContractError("chroot execution is forbidden")
+        if self._mountinfo_credential is None:
+            try:
+                host_root = Path("/").stat()
+                pid1_root = PID1_ROOT_PATH.stat()
+            except OSError as error:
+                raise StorageContractError("host root identity unavailable") from error
+            if (host_root.st_dev, host_root.st_ino) != (
+                pid1_root.st_dev,
+                pid1_root.st_ino,
+            ):
+                raise StorageContractError("chroot execution is forbidden")
+        else:
+            try:
+                host_root = Path("/").stat()
+                credential_mountinfo = _read_mountinfo_credential(
+                    self._mountinfo_credential
+                )
+            except OSError as error:
+                raise StorageContractError("host root identity unavailable") from error
+            _validate_credential_root_mount(
+                credential_mountinfo,
+                root_status=host_root,
+            )
+            self._credential_mountinfo = credential_mountinfo
         if _read_root_owned_text(PID1_COMM_PATH, maximum_bytes=256) != "systemd\n":
             raise StorageContractError("PID 1 is not systemd")
         container = self._detect_virtualization("--quiet", "--container")
@@ -450,6 +487,10 @@ class LocalProbe:
         return _read_root_owned_text(path, maximum_bytes=maximum_bytes)
 
     def read_host_mountinfo(self) -> str:
+        if self._mountinfo_credential is not None:
+            if self._credential_mountinfo is None:
+                raise StorageContractError("host context has not been established")
+            return self._credential_mountinfo
         try:
             namespace_before = os.readlink(PID1_MOUNT_NAMESPACE_PATH)
             contents = _read_root_owned_text(
@@ -581,6 +622,144 @@ class LocalProbe:
 
 class StorageContractError(ValueError):
     """The host storage declarations cannot be interpreted safely."""
+
+
+def _mountinfo_credential_from_environment(
+    environment: Mapping[str, str],
+) -> Path | None:
+    marker = environment.get(HOST_MOUNTINFO_CREDENTIAL_MARKER)
+    if marker is None:
+        return None
+    if marker != "1":
+        raise StorageContractError("host mountinfo credential marker is invalid")
+    raw_directory = environment.get(CREDENTIALS_DIRECTORY_ENVIRONMENT)
+    if raw_directory is None or not raw_directory:
+        raise StorageContractError("host mountinfo credential directory is missing")
+    credential_directory = Path(raw_directory)
+    if (
+        not credential_directory.is_absolute()
+        or str(credential_directory) != raw_directory
+        or credential_directory.parent != SYSTEMD_CREDENTIAL_ROOT
+        or credential_directory.name not in ALLOWED_HOST_MOUNTINFO_CREDENTIAL_UNITS
+    ):
+        raise StorageContractError("host mountinfo credential directory is invalid")
+    return credential_directory / HOST_MOUNTINFO_CREDENTIAL_NAME
+
+
+def _credential_directory_metadata_is_safe(metadata: PathStatus) -> bool:
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == 0
+        and metadata.st_gid == 0
+        and stat.S_IMODE(metadata.st_mode) == 0o500
+        and metadata.st_nlink == 2
+    )
+
+
+def _credential_file_metadata_is_safe(metadata: PathStatus) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == 0
+        and metadata.st_gid == 0
+        and stat.S_IMODE(metadata.st_mode) == 0o400
+        and metadata.st_nlink == 1
+        and 0 < metadata.st_size <= MAX_MOUNTINFO_BYTES
+    )
+
+
+def _read_mountinfo_credential(path: Path) -> str:
+    credential_directory = path.parent
+    try:
+        if credential_directory.resolve(strict=True) != credential_directory:
+            raise StorageContractError(
+                "host mountinfo credential directory is not canonical"
+            )
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        directory_descriptor = os.open(credential_directory, directory_flags)
+        try:
+            if not _credential_directory_metadata_is_safe(
+                os.fstat(directory_descriptor)
+            ):
+                raise StorageContractError(
+                    "host mountinfo credential directory metadata is unsafe"
+                )
+            file_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+            descriptor = os.open(
+                path.name,
+                file_flags,
+                dir_fd=directory_descriptor,
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                if not _credential_file_metadata_is_safe(metadata):
+                    raise StorageContractError(
+                        "host mountinfo credential metadata is unsafe"
+                    )
+                chunks: list[bytes] = []
+                remaining = MAX_MOUNTINFO_BYTES + 1
+                while remaining > 0:
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                final_metadata = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except StorageContractError:
+        raise
+    except OSError as error:
+        raise StorageContractError(
+            "host mountinfo credential is unavailable"
+        ) from error
+
+    payload = b"".join(chunks)
+    if (
+        not _credential_file_metadata_is_safe(final_metadata)
+        or (metadata.st_dev, metadata.st_ino, metadata.st_size)
+        != (final_metadata.st_dev, final_metadata.st_ino, final_metadata.st_size)
+        or len(payload) != metadata.st_size
+        or b"\0" in payload
+    ):
+        raise StorageContractError("host mountinfo credential content is invalid")
+    try:
+        return payload.decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise StorageContractError(
+            "host mountinfo credential encoding is invalid"
+        ) from error
+
+
+def _validate_credential_root_mount(
+    contents: str,
+    *,
+    root_status: PathStatus,
+) -> None:
+    if not stat.S_ISDIR(root_status.st_mode) or root_status.st_ino != 2:
+        raise StorageContractError("service root identity is invalid")
+    root_entry = _single_entry_by_path(parse_mountinfo(contents), Path("/"))
+    if (
+        root_entry is None
+        or root_entry.filesystem_root != Path("/")
+        or root_entry.fs_type != "ext4"
+        or (root_entry.major, root_entry.minor)
+        != (os.major(root_status.st_dev), os.minor(root_status.st_dev))
+    ):
+        raise StorageContractError("credential host root identity is invalid")
 
 
 def _findmnt_verify_output_is_accepted(stdout: bytes, stderr: bytes) -> bool:

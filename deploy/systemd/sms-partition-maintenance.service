@@ -11,6 +11,8 @@ Type=oneshot
 User=root
 Group=root
 EnvironmentFile=/etc/sms-platform/compose.env
+LoadCredential=sms-host-mountinfo:/proc/1/mountinfo
+Environment=SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL=1
 ExecStart=/usr/local/sbin/sms-compose partition-maintenance
 Restart=on-failure
 RestartSec=5min

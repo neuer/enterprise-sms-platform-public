@@ -4,6 +4,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,6 +57,7 @@ class FakeStat:
     st_uid: int
     st_gid: int
     st_dev: int
+    st_ino: int = 2
     st_nlink: int = 1
     st_size: int = 0
     st_blocks: int = 0
@@ -487,6 +489,306 @@ def test_preflight_reads_pid1_mountinfo_not_its_systemd_sandbox_view() -> None:
     assert inspect_storage(probe).passed is True
     assert Path("/proc/1/mountinfo") in probe.read_paths
     assert Path("/proc/self/mountinfo") not in probe.read_paths
+
+
+def test_local_probe_without_marker_keeps_live_pid1_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_status = FakeStat(
+        stat.S_IFDIR | 0o755,
+        0,
+        0,
+        os.makedev(252, 0),
+    )
+    stat_paths: list[Path] = []
+    real_path_stat = Path.stat
+
+    def fake_stat(
+        path: Path,
+        *,
+        follow_symlinks: bool = True,
+    ) -> FakeStat | os.stat_result:
+        if path in {Path("/"), storage_module.PID1_ROOT_PATH}:
+            stat_paths.append(path)
+            return root_status
+        return real_path_stat(path, follow_symlinks=follow_symlinks)
+
+    def fake_read(path: Path, *, maximum_bytes: int) -> str:
+        assert maximum_bytes in {256, storage_module.MAX_MOUNTINFO_BYTES}
+        if path == storage_module.PID1_COMM_PATH:
+            return "systemd\n"
+        if path == storage_module.SYS_VENDOR_PATH:
+            return "VMware, Inc.\n"
+        if path == storage_module.MOUNTINFO_PATH:
+            return "24 1 252:0 / / rw - ext4 /dev/mapper/root rw\n"
+        raise AssertionError(path)
+
+    def fake_detect(
+        _probe: storage_module.LocalProbe,
+        *arguments: str,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if arguments == ("--quiet", "--container"):
+            return subprocess.CompletedProcess(arguments, 1, b"", b"")
+        return subprocess.CompletedProcess(arguments, 0, b"vmware\n", b"")
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(storage_module, "_read_root_owned_text", fake_read)
+    monkeypatch.setattr(
+        storage_module.LocalProbe,
+        "_detect_virtualization",
+        fake_detect,
+    )
+    monkeypatch.setattr(os, "readlink", lambda _path: "mnt:[4026531840]")
+
+    probe = storage_module.LocalProbe(
+        environment={"CREDENTIALS_DIRECTORY": "/run/credentials/unrelated.service"}
+    )
+    probe.assert_host_context()
+
+    assert storage_module.PID1_ROOT_PATH in stat_paths
+    assert probe.read_host_mountinfo().startswith("24 1 252:0")
+
+
+def test_credential_mode_is_exactly_allowlisted_and_skips_pid1_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for unit in storage_module.ALLOWED_HOST_MOUNTINFO_CREDENTIAL_UNITS:
+        directory = f"/run/credentials/{unit}"
+        assert storage_module._mountinfo_credential_from_environment(
+            {
+                storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "1",
+                storage_module.CREDENTIALS_DIRECTORY_ENVIRONMENT: directory,
+            }
+        ) == Path(directory) / storage_module.HOST_MOUNTINFO_CREDENTIAL_NAME
+
+    invalid_environments = (
+        {storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "0"},
+        {storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "1"},
+        {
+            storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "1",
+            storage_module.CREDENTIALS_DIRECTORY_ENVIRONMENT:
+                "/run/credentials/unapproved.service",
+        },
+        {
+            storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "1",
+            storage_module.CREDENTIALS_DIRECTORY_ENVIRONMENT:
+                "/run//credentials/sms-backup.service",
+        },
+    )
+    for environment in invalid_environments:
+        with pytest.raises(storage_module.StorageContractError):
+            storage_module._mountinfo_credential_from_environment(environment)
+
+    mountinfo = "24 1 252:0 / / rw - ext4 /dev/mapper/root rw\n"
+    root_status = FakeStat(
+        stat.S_IFDIR | 0o755,
+        0,
+        0,
+        os.makedev(252, 0),
+    )
+    stat_paths: list[Path] = []
+    real_path_stat = Path.stat
+
+    def fake_stat(
+        path: Path,
+        *,
+        follow_symlinks: bool = True,
+    ) -> FakeStat | os.stat_result:
+        if path == Path("/"):
+            stat_paths.append(path)
+            return root_status
+        return real_path_stat(path, follow_symlinks=follow_symlinks)
+
+    def fake_read(path: Path, *, maximum_bytes: int) -> str:
+        assert maximum_bytes == 256
+        if path == storage_module.PID1_COMM_PATH:
+            return "systemd\n"
+        if path == storage_module.SYS_VENDOR_PATH:
+            return "VMware, Inc.\n"
+        raise AssertionError(path)
+
+    def fake_detect(
+        _probe: storage_module.LocalProbe,
+        *arguments: str,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if arguments == ("--quiet", "--container"):
+            return subprocess.CompletedProcess(arguments, 1, b"", b"")
+        return subprocess.CompletedProcess(arguments, 0, b"vmware\n", b"")
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    monkeypatch.setattr(storage_module, "_read_root_owned_text", fake_read)
+    credential_reads: list[Path] = []
+
+    def fake_credential_read(path: Path) -> str:
+        credential_reads.append(path)
+        return mountinfo
+
+    monkeypatch.setattr(
+        storage_module,
+        "_read_mountinfo_credential",
+        fake_credential_read,
+    )
+    monkeypatch.setattr(
+        storage_module.LocalProbe,
+        "_detect_virtualization",
+        fake_detect,
+    )
+
+    probe = storage_module.LocalProbe(
+        environment={
+            storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER: "1",
+            storage_module.CREDENTIALS_DIRECTORY_ENVIRONMENT:
+                "/run/credentials/sms-storage-preflight.service",
+        }
+    )
+    probe.assert_host_context()
+
+    assert stat_paths == [Path("/")]
+    assert probe.read_host_mountinfo() == mountinfo
+    assert probe.read_host_mountinfo() == mountinfo
+    assert credential_reads == [
+        Path(
+            "/run/credentials/sms-storage-preflight.service/"
+            "sms-host-mountinfo"
+        )
+    ]
+
+
+def test_mountinfo_credential_metadata_content_and_root_identity_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory_metadata = FakeStat(
+        stat.S_IFDIR | 0o500,
+        0,
+        0,
+        os.makedev(0, 1),
+        st_ino=10,
+        st_nlink=2,
+    )
+    payload = b"24 1 252:0 / / rw - ext4 /dev/mapper/root rw\n"
+    file_metadata = FakeStat(
+        stat.S_IFREG | 0o400,
+        0,
+        0,
+        os.makedev(0, 2),
+        st_ino=20,
+        st_nlink=1,
+        st_size=len(payload),
+    )
+    assert storage_module._credential_directory_metadata_is_safe(directory_metadata)
+    assert storage_module._credential_file_metadata_is_safe(file_metadata)
+    for unsafe in (
+        replace(directory_metadata, st_mode=stat.S_IFDIR | 0o700),
+        replace(directory_metadata, st_mode=stat.S_IFLNK | 0o500),
+        replace(directory_metadata, st_uid=1),
+        replace(directory_metadata, st_gid=1),
+        replace(directory_metadata, st_nlink=3),
+    ):
+        assert storage_module._credential_directory_metadata_is_safe(unsafe) is False
+    for unsafe in (
+        replace(file_metadata, st_mode=stat.S_IFREG | 0o600),
+        replace(file_metadata, st_uid=1),
+        replace(file_metadata, st_gid=1),
+        replace(file_metadata, st_nlink=2),
+        replace(file_metadata, st_size=0),
+        replace(file_metadata, st_size=storage_module.MAX_MOUNTINFO_BYTES + 1),
+    ):
+        assert storage_module._credential_file_metadata_is_safe(unsafe) is False
+
+    descriptors = iter((10, 11))
+    reads = iter((payload, b""))
+    file_stats = iter((file_metadata, file_metadata))
+    closed: list[int] = []
+    open_calls: list[tuple[object, int, int | None]] = []
+
+    def fake_open(
+        path: object,
+        flags: int,
+        _mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        open_calls.append((path, flags, dir_fd))
+        return next(descriptors)
+
+    def fake_fstat(descriptor: int) -> FakeStat:
+        return directory_metadata if descriptor == 10 else next(file_stats)
+
+    real_path_resolve = Path.resolve
+
+    def fake_resolve(path: Path, strict: bool = False) -> Path:
+        if path == credential.parent:
+            return path
+        return real_path_resolve(path, strict=strict)
+
+    credential = Path(
+        "/run/credentials/sms-backup.service/sms-host-mountinfo"
+    )
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+    monkeypatch.setattr(os, "open", fake_open)
+    monkeypatch.setattr(os, "fstat", fake_fstat)
+    monkeypatch.setattr(os, "read", lambda _fd, _size: next(reads))
+    monkeypatch.setattr(os, "close", closed.append)
+
+    assert storage_module._read_mountinfo_credential(credential) == payload.decode()
+    assert open_calls[1][0] == storage_module.HOST_MOUNTINFO_CREDENTIAL_NAME
+    assert open_calls[1][2] == 10
+    assert open_calls[1][1] & getattr(os, "O_NOFOLLOW", 0)
+    assert open_calls[1][1] & getattr(os, "O_NONBLOCK", 0)
+    assert closed == [11, 10]
+
+    invalid_payloads = (
+        (payload[:-1], file_metadata),
+        (
+            payload + b"\0",
+            replace(file_metadata, st_size=len(payload) + 1),
+        ),
+        (b"\xff", replace(file_metadata, st_size=1)),
+    )
+    for invalid_payload, invalid_metadata in invalid_payloads:
+        descriptors = iter((10, 11))
+        reads = iter((invalid_payload, b""))
+        file_stats = iter((invalid_metadata, invalid_metadata))
+        with pytest.raises(storage_module.StorageContractError):
+            storage_module._read_mountinfo_credential(credential)
+
+    descriptors = iter((10, 11))
+    reads = iter((payload, b""))
+    file_stats = iter(
+        (
+            file_metadata,
+            replace(file_metadata, st_ino=file_metadata.st_ino + 1),
+        )
+    )
+    with pytest.raises(storage_module.StorageContractError):
+        storage_module._read_mountinfo_credential(credential)
+
+    root_status = FakeStat(
+        stat.S_IFDIR | 0o755,
+        0,
+        0,
+        os.makedev(252, 0),
+    )
+    storage_module._validate_credential_root_mount(
+        payload.decode(),
+        root_status=root_status,
+    )
+    invalid_roots = (
+        ("", root_status),
+        (payload.decode() * 2, root_status),
+        (payload.decode().replace("ext4", "xfs"), root_status),
+        (payload.decode().replace("252:0", "252:1"), root_status),
+        (payload.decode().replace(" / / ", " /subvolume / "), root_status),
+        (payload.decode(), replace(root_status, st_ino=3)),
+    )
+    for invalid_mountinfo, invalid_status in invalid_roots:
+        with pytest.raises(storage_module.StorageContractError):
+            storage_module._validate_credential_root_mount(
+                invalid_mountinfo,
+                root_status=invalid_status,
+            )
 
 
 def test_untrusted_host_context_fails_closed_before_reading_storage() -> None:
@@ -971,6 +1273,31 @@ def test_every_hardened_preflight_caller_has_read_only_pvscsi_access() -> None:
         "ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid "
         "/dev/disk/by-id"
     ) in partition
+
+
+def test_hardened_preflight_callers_use_exact_mountinfo_credential_contract() -> None:
+    expected_capabilities = {
+        PREFLIGHT_UNIT: "CapabilityBoundingSet=",
+        BACKUP_UNIT: "CapabilityBoundingSet=",
+        RESTORE_DRILL_UNIT: "CapabilityBoundingSet=",
+        LIFECYCLE_STATUS_UNIT: "CapabilityBoundingSet=",
+        PARTITION_MAINTENANCE_UNIT:
+            "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER",
+    }
+    for path, capability_line in expected_capabilities.items():
+        unit = path.read_text(encoding="utf-8")
+        assert unit.count(
+            "LoadCredential=sms-host-mountinfo:/proc/1/mountinfo"
+        ) == 1
+        assert unit.count(
+            "Environment=SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL=1"
+        ) == 1
+        assert capability_line in unit.splitlines()
+        assert "CAP_SYS_PTRACE" not in unit
+
+    platform_drop_in = PLATFORM_DROP_IN.read_text(encoding="utf-8")
+    assert "LoadCredential=" not in platform_drop_in
+    assert storage_module.HOST_MOUNTINFO_CREDENTIAL_MARKER not in platform_drop_in
 
 
 def test_runbook_covers_provisioning_thresholds_expansion_and_no_go() -> None:

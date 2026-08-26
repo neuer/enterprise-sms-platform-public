@@ -542,7 +542,9 @@ VMDK 仍可读”等故障，不能覆盖整 VM、全部 VMDK 或 datastore 丢�
 | ENG-06 | 公司宿主安全基线与独立补丁状态机尚未给出 | 第 3.3 节闭集取得基线 ID/版本、自动化资产、只读 readback、维护/紧急 SLA、预生产与回退证据 | VMW/PLAT |
 
 以上六项当前均为 `open`；本文不声称已经实现它们。ENG-03 未闭合前，只有明确不改变宿主资产
-inventory 的 application-only release 可进入后续评估。
+inventory 的 application-only release 可进入后续评估。唯一窄例外是 Docker 首次启动前，从固定旧
+commit `555fb20b0d630ece9099a88a463eb1ce1121c012` 执行仅限六个存储预检资产的
+mountinfo credential 修复；它不适用于已 bootstrap 主机，也不关闭 ENG-03。
 
 ### Gate 0：责任和变更治理
 
@@ -603,6 +605,10 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 ```
 
 尖括号必须替换为将要安装的 40 位候选 commit，不能原样执行。
+若该主机已在固定旧 commit 完成首装，但仍未首次启动 Docker，上述 mountinfo
+credential 窄修复必须使用 [部署手册](../../deploy/README.md#安装受控包装器与-systemd)
+中的固定 OLD/NEW、`apply/resume/rollback/upgrade-accept` 流程；禁止手工覆盖六个目标或直接
+改写 canonical state。
 该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl start/enable、
 secret、`.env` 或 release。安装后人工核对 `/etc/sms-platform/compose.env` 与 lifecycle 配置，运行
 `systemd-analyze verify`、`sms-storage-preflight` 和宿主 Python preflight；首个 bootstrap 前平台与
