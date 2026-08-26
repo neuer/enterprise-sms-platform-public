@@ -90,7 +90,7 @@ Ubuntu 原生提供 systemd、open-vm-tools、XFS/ext4 工具。ISO/生命周期
 | 类别 | 包/能力 | 冻结要求 |
 |---|---|---|
 | 基础 | `ca-certificates curl gnupg jq util-linux tzdata sudo` | 来自公司批准的 Ubuntu 24.04 镜像；`tzdata` 必须含 `Asia/Shanghai` |
-| 存储 | `xfsprogs e2fsprogs` | 与实际文件系统匹配；两者均安装用于诊断/恢复 |
+| 存储 | `xfsprogs e2fsprogs` | 与实际文件系统匹配；两者均安装用于诊断/恢复；置备 UUID 使用固定 Python 3.12，不额外依赖 `uuid-runtime` |
 | 时间 | `chrony` | 只允许公司批准的 NTP；移除公共 pool，不得同时运行多个时间客户端 |
 | VMware | `open-vm-tools` | 发行版包，不安装第三方 ISO tools |
 | 远程运维 | `openssh-server openssh-client rsync` | 仅密钥登录；来源限管理 VPN/堡垒机 |
@@ -210,6 +210,9 @@ readback 与另一名自然人复核。
 - 生产数据库型 VM 建议完整内存预留；若公司不允许，必须记录 balloon/swap/宿主超分风险和告警。
 - 每块 VMDK 单独记录 vCenter 资产 ID、controller/unit、datastore、storage policy、thin/thick、
   标称容量和 guest 设备序列号。guest 内磁盘分离不能证明 datastore 或控制器分离。
+- vCenter 按公司模板启用 VMDK UUID 向 guest 暴露；常见配置是 `disk.EnableUUID=TRUE`，公司采用
+  等价机制时记录其基线 ID。五盘都必须产生唯一且重启稳定的 `/dev/disk/by-id/...` 和 serial，
+  并在预生产调整 SCSI unit 后仍按 VMDK 身份读回；否则磁盘置备为 No-Go。
 - VMware snapshot 只允许短期、经审批的维护用途，不得代替 PostgreSQL 加密备份；必须有创建人、
   到期时间和删除读回，默认不跨过 24 小时。
 
@@ -221,35 +224,40 @@ readback 与另一名自然人复核。
 |---|---:|---|---|---|---:|
 | OS | 100 GiB | ext4 | `/` | `root:root 0755` | 98 GiB |
 | Docker | 250 GiB | XFS，`ftype=1` | `/var/lib/docker` | `root:root 0711` | 245 GiB |
-| PostgreSQL | 400 GiB | XFS | `/var/lib/sms-platform/postgres` | `root:root 0750` | 392 GiB |
-| Redis | 100 GiB | XFS | `/var/lib/sms-platform/redis` | `root:root 0750` | 98 GiB |
-| Runtime | 200 GiB | XFS | `/var/lib/sms-platform/runtime` | `root:root 0750` | 196 GiB |
+| PostgreSQL | 400 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/postgres` | `root:root 0750` | 392 GiB |
+| Redis | 100 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/redis` | `root:root 0750` | 98 GiB |
+| Runtime | 200 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/runtime` | `root:root 0750` | 196 GiB |
 
 OS 盘固定为 GPT：`512 MiB` EFI System Partition，其余空间为单一 ext4 `/`；不建独立 `/boot`、
 swap 分区或 LVM，swap 默认关闭。这样 100 GiB VMDK 的根文件系统仍能满足预检的 98 GiB 下限。
-若公司模板强制独立 `/boot`、LVM 或 swap，必须先扩大 OS VMDK，使 `/` 的实测文件系统容量仍
-不少于 98 GiB，并在预生产验证；不得用下调预检阈值掩盖模板差异。
+若公司模板强制独立 `/boot`、LVM 或 swap，当前冻结合同和磁盘置备工具会失败关闭；必须先变更
+架构决策、脚本和预生产用例后重新审批，不能仅扩大 OS VMDK 或下调预检阈值绕过。
 
-四块数据 VMDK 默认采用“一盘一个 XFS、无 LVM、无额外分区”的简单布局；如果公司标准强制
-LVM，必须先在预生产证明 UUID、major:minor、扩容和现有预检都能准确读回，再变更本决策。
-全盘使用 ext4 也受仓库支持，但必须在资源冻结时统一选择并重新读回，不得在生产临时决定。
+四块数据 VMDK 固定采用“一盘一个 XFS、无 LVM、无额外分区”的简单布局。公司标准若强制
+LVM 或 ext4，当前工具会失败关闭；必须先变更本决策、实现和预生产证据，不得在生产临时决定。
 
 ### 5.2 破坏性步骤的人工边界
 
 磁盘识别、`mkfs`、fstab 写入和首次 mount 是 VMware/宿主管理员的审批变更，**不由任何应用
-初始化脚本自动执行**。固定顺序如下：
+初始化脚本自动执行，也不由代码发布或开机任务执行**。经审批可使用
+[生产宿主磁盘置备工具](../../deploy/production-storage-initialization.md) 作为 root 人工入口；该
+工具不属于应用初始化，必须绑定 root-only 清单、实时计划摘要和控制 TTY 逐盘确认。固定顺序
+如下：
 
 1. 在 vCenter 记录四块新数据 VMDK 的资产 ID、容量、controller/unit 与 datastore；guest 执行
    `lsblk -o NAME,SIZE,TYPE,FSTYPE,UUID,SERIAL,MODEL,MOUNTPOINTS`、`blkid` 和
    `wipefs --no-act <已核对的-by-id设备>`。vCenter 与 guest 必须逐盘双向对应。
+   变更证据目录与 plan/apply/status JSON 必须是 `root:root 0600`，目录 `root:root 0700`；具体
+   留档命令见生产宿主磁盘置备工具手册，禁止让普通 `tee` 按默认 umask 生成 0644 证据。
 2. 只有同时满足“新建、无文件系统签名、无分区、未挂载、变更单明确点名、执行人和复核人已
    确认”的设备才允许格式化。不得按 `/dev/sdX` 顺序猜盘，不使用 `mkfs -f` 覆盖已有签名。
-3. 对已批准的四个稳定 `/dev/disk/by-id/...` 路径执行 XFS 格式化；Docker 盘必须显式
+3. 对已批准的四个稳定 `/dev/disk/by-id/...` 路径执行 XFS 格式化；四盘都必须显式
    `-n ftype=1`。具体设备路径只能从当次受限变更单复制，本文不提供可直接运行的设备名。
 4. 用新文件系统 UUID 写入 `/etc/fstab`。除根盘外固定使用 `defaults,nodev,nosuid`，禁止
    `nofail`、`noauto`、`x-systemd.automount` 和内部 Docker `_data` 的 bind/mount 条目。
-5. `mount -a` 后逐盘用 `findmnt --target`、`lsblk -f`、`df -B1` 和设备 major:minor 读回；
-   Docker XFS 另用 `xfs_info /var/lib/docker` 确认 `ftype=1`。
+5. 置备工具只对四个固定挂载点逐个 mount；禁止用 `mount -a` 触碰 fstab 中无关文件系统。
+   挂载后逐盘用 `findmnt --target`、`lsblk -f`、`df -B1` 和设备 major:minor 读回；四个 XFS
+   挂载点都用 `xfs_info <固定挂载点>` 确认 `ftype=1`。
 6. 只有挂载验真后才创建第 5.3 节八个子目录。随后安装存储 preflight 与 Docker systemd
    drop-in；preflight 成功前 Docker 必须保持 masked/stopped。
 7. Docker 第一次启动后确认 `DockerRootDir=/var/lib/docker`、storage driver 符合公司基线，
@@ -531,15 +539,22 @@ inventory 的 application-only release 可进入后续评估。
 ### Gate 1：OS、VM 与磁盘
 
 1. VMW 用批准 ISO/模板创建生产、预生产，并预留一次性恢复机配额；Docker 保持未启动。
-2. 完成第 5 节人工磁盘识别、格式化、UUID fstab、挂载和固定目录创建。
-3. 在 Docker 包安装前 mask `docker.service`、`docker.socket` 和 `containerd.service`；从公司内部
-   APT snapshot 安装第 3.2 节精确版本包并保存包锁，所有容器服务继续保持 stopped/masked。
-4. 建立固定 production operator（不加入 `docker` 组），由该账号从内网只读 Git 镜像把精确
+2. 从公司内部 APT snapshot 安装第 3.2 节基础、存储、时间、VMware 和 Git 精确版本包；冻结
+   `Asia/Shanghai`、公司 NTP，读回同步状态、VMDK UUID 暴露和五盘稳定 by-id/serial。此时不安装
+   或启动 Docker；如模板已有 Docker unit，先 mask `docker.service`、`docker.socket` 和
+   `containerd.service`。
+3. 建立固定 production operator（不加入 `docker` 组），由该账号从内网只读 Git 镜像把精确
    候选 commit 检出到原本为空的 `/opt/sms-platform`；核对 `origin`、40 位 commit、owner/mode、
    tracked/暂存区干净。该 operator 按第 3.3 节明确作为 root-equivalent 受信发布身份管理。
-5. 网络负责人填写并复核 Docker address pool；安装第 3.2 节 daemon 基线并运行
+4. 从这个已核对 commit 按磁盘置备手册把专用脚本安装到 root 控制路径，完成第 5 节人工
+   plan/apply/status、UUID fstab、挂载和固定目录创建；正式 apply 前必须已有同脚本 SHA 的
+   disposable VMware/PVSCSI 演练证据。
+   演练还必须使用仓库原始 hardened unit 验证 PID 1 宿主 mountinfo、只读 `block-sd` 设备授权、
+   `findmnt --verify` 零警告，以及七个固定 Docker bind 正常通过/任意额外 bind 失败关闭。
+5. 从同一 APT snapshot 安装 Docker 精确版本并保存完整包锁，三个容器 unit 继续
+   stopped/masked。网络负责人填写并复核 Docker address pool；安装第 3.2 节 daemon 基线并运行
    `dockerd --validate`。再由 operator 执行只读宿主 base preflight 和存储 preflight；任一失败
-   不得启动 Docker或进入 Gate 2。
+   不得启动 Docker 或进入 Gate 2。
 
 ```bash
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/production_host_preflight.py base

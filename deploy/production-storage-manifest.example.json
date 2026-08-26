@@ -1,0 +1,32 @@
+{
+  "change_id": "CHG-REPLACE-WITH-ACTUAL-ID",
+  "devices": {
+    "docker": {
+      "by_id": "/dev/disk/by-id/REPLACE-WITH-DOCKER-VMDK-BY-ID",
+      "expected_serial": "REPLACE-WITH-DOCKER-VMDK-SERIAL",
+      "filesystem_uuid": "REPLACE-WITH-NEW-UUIDV4"
+    },
+    "os": {
+      "by_id": "/dev/disk/by-id/REPLACE-WITH-OS-VMDK-BY-ID",
+      "expected_serial": "REPLACE-WITH-OS-VMDK-SERIAL"
+    },
+    "postgres": {
+      "by_id": "/dev/disk/by-id/REPLACE-WITH-POSTGRES-VMDK-BY-ID",
+      "expected_serial": "REPLACE-WITH-POSTGRES-VMDK-SERIAL",
+      "filesystem_uuid": "REPLACE-WITH-NEW-UUIDV4"
+    },
+    "redis": {
+      "by_id": "/dev/disk/by-id/REPLACE-WITH-REDIS-VMDK-BY-ID",
+      "expected_serial": "REPLACE-WITH-REDIS-VMDK-SERIAL",
+      "filesystem_uuid": "REPLACE-WITH-NEW-UUIDV4"
+    },
+    "runtime": {
+      "by_id": "/dev/disk/by-id/REPLACE-WITH-RUNTIME-VMDK-BY-ID",
+      "expected_serial": "REPLACE-WITH-RUNTIME-VMDK-SERIAL",
+      "filesystem_uuid": "REPLACE-WITH-NEW-UUIDV4"
+    }
+  },
+  "not_after": "REPLACE-WITH-ISO8601-TIME-WITHIN-24-HOURS",
+  "reviewer": "REPLACE-WITH-REVIEWER-ID",
+  "schema_version": 1
+}

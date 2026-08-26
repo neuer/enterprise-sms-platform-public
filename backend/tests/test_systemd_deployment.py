@@ -87,6 +87,8 @@ def test_partition_timer_uses_controlled_owner_job_with_retry_and_hardening() ->
         "NoNewPrivileges=yes",
         "ProtectSystem=strict",
         "RestrictAddressFamilies=AF_UNIX",
+        "DevicePolicy=closed",
+        "DeviceAllow=block-sd r",
         "ReadWritePaths=/run/sms-platform /run/docker.sock",
     ):
         assert token in service
@@ -146,6 +148,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
             "RestrictAddressFamilies=AF_UNIX",
             "CapabilityBoundingSet=",
             "DevicePolicy=closed",
+            "DeviceAllow=block-sd r",
             "/dev/disk/by-uuid",
             "ReadWritePaths=/var/lib/sms-platform/runtime/backups",
             "StandardError=journal",
