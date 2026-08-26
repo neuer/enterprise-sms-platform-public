@@ -99,7 +99,7 @@ def test_fixed_production_storage_contract_is_exact() -> None:
         for spec in module.ROLE_SPECS
     ] == [
         ("os", 100, "/", 0o755, None),
-        ("docker", 250, "/var/lib/docker", 0o711, "sms_docker"),
+        ("docker", 250, "/var/lib/docker", 0o710, "sms_docker"),
         ("postgres", 400, "/var/lib/sms-platform/postgres", 0o750, "sms_pg"),
         ("redis", 100, "/var/lib/sms-platform/redis", 0o750, "sms_redis"),
         ("runtime", 200, "/var/lib/sms-platform/runtime", 0o750, "sms_runtime"),

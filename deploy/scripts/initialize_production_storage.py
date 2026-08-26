@@ -269,7 +269,7 @@ class DockerBindMountSpec:
 
 ROLE_SPECS: tuple[RoleSpec, ...] = (
     RoleSpec("os", 100, Path("/"), 0, 0, 0o755, None),
-    RoleSpec("docker", 250, Path("/var/lib/docker"), 0, 0, 0o711, "sms_docker"),
+    RoleSpec("docker", 250, Path("/var/lib/docker"), 0, 0, 0o710, "sms_docker"),
     RoleSpec(
         "postgres",
         400,

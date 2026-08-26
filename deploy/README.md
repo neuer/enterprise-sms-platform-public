@@ -136,7 +136,8 @@ restore-drill、lifecycle-status 各自的 service/timer，共 17 个普通文�
 `sms-compose` 又是指向 production operator 可写 checkout 的 symlink，因此该 operator 必须按
 root-equivalent 受信身份管理。当前只额外提供一次、首次 bootstrap 前的 mountinfo credential
 修复入口：旧状态必须精确绑定
-`555fb20b0d630ece9099a88a463eb1ce1121c012`，目标必须是调用时给出的干净精确 commit，且变化
+`555fb20b0d630ece9099a88a463eb1ce1121c012`，目标固定为最后一个仍使用历史空 data-root
+`0711` 合同的 `109c10865b2aac3989bc4cebf3c60788f44b168c`，且变化
 集合必须恰好为 `storage-preflight`、`storage-unit`、`partition-service`、`backup-service`、
 `restore-drill-service`、`lifecycle-status-service` 六项普通文件。wrapper、配置、timer、drop-in
 或任意第七项发生变化都会失败关闭；五个 unit 必须保持原有 `CapabilityBoundingSet`，不得出现
@@ -149,11 +150,11 @@ root-equivalent 受信身份管理。当前只额外提供一次、首次 bootst
 主机，也不关闭通用宿主资产升级 ENG-03。整个 plan/apply/验收/accept 窗口必须由
 同一变更单独占；其他 root 操作者不得并发启动 Docker、平台、vendor、维护 unit 或准备
 release。先把 checkout 切到已审核的 `NEW_COMMIT`，再显式绑定
-旧、新两个 commit：
+旧、新两个固定 commit：
 
 ```bash
 OLD_COMMIT='555fb20b0d630ece9099a88a463eb1ce1121c012'
-NEW_COMMIT='REPLACE_WITH_40_LOWERCASE_HEX_COMMIT'
+NEW_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
   --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
@@ -197,13 +198,67 @@ enable、Git 切换、Docker/Compose、secret 或应用发布；唯一的 unit �
 `upgrade-accept` 在上述受控合同内同步启动一次 storage preflight。security-report collector 仍不在
 本 inventory 内，当前不得手工补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
 
-若 `upgrading` intent 已由不含该验收修复的旧目标 commit 创建，不得把 checkout 切到新 commit 后
+若 `upgrading` intent 已由不含该验收修复的旧目标 commit 创建，不得把 checkout 切到其它 commit 后
 跨 commit 复用该 intent，也不得手工改写 intent。应先在 intent 绑定的精确 checkout 上用同一
-OLD/NEW 执行官方 `rollback`，随后 `daemon-reload`；再切到已审核的新 commit，重新执行
-plan/apply/daemon-reload/upgrade-accept。这样保留 checkout、intent、六项资产和 canonical state
-始终绑定同一个精确目标 commit 的失败关闭边界。
+OLD/NEW 执行官方 `rollback`，随后 `daemon-reload`；再切到固定 `109c108...`，重新执行
+plan/apply/daemon-reload/upgrade-accept。该历史路径的空 Docker root 仍精确要求 `root:root 0711`，
+仅用于完成 `555fb20...→109c108...`，不得作为新主机或新版本合同。到达 `109c108...` 后，按该
+版本的 Docker 技术首启门禁完成一次首启，使 daemon 将 data-root 收敛为 `0710`；随后停止并重新
+mask Docker/containerd，保持平台未 bootstrap，再使用下述第二 profile 到新合并 SHA。这样保留
+checkout、intent、宿主资产和 canonical state 始终绑定固定阶段，并避免当前 installer 静默重解释
+历史 `0711` 状态。
 
-常规首次安装成功后再做只读 unit 验证和显式宿主动作（上述窄升级已由 `upgrade-accept` 自行运行
+另外只提供一个固定、一次性的 Docker 首启后权限合同修复 profile。它只用于 canonical
+state 精确为 `109c10865b2aac3989bc4cebf3c60788f44b168c`、尚未 bootstrap 的专用生产主机；
+唯一允许变化的宿主资产是 `storage-preflight`，用来把 `/var/lib/docker` 的精确模式合同从
+旧的 `0711` 收敛为全生命周期固定的 `root:root 0710`。候选 Docker Engine 29.7.2 在 daemon
+初始化 data-root 时会使用 `0710`，它比 `0711` 少了 other 执行权限，是更严格的稳态权限。
+不得手工 `chmod 0711` 制造短暂通过，也不得把 29.7.2 由此称为已正式批准。
+候选 `storage-preflight` 还必须与旧 payload 逐字节相同，唯一允许的差异是将唯一一处
+Docker MountRequirement `0o711` 替换为 `0o710`；同一资产内夹带任何其它字节
+变化也必须失败关闭。
+
+该 profile 明确允许 `/var/lib/docker` 保留首启后的非空元数据，安装器不会清理、搬迁或重建
+data-root。但执行窗口内 `docker.service`、`docker.socket`、`containerd.service` 必须全部
+masked/inactive；平台、vendor、四个维护 service 与四个 timer 必须保持首次 bootstrap 前的
+inactive 及 disabled/static 状态，`/var/lib/sms-platform/releases` 不存在或为空。任一边界不符、
+已准备 release 或已 bootstrap 都失败关闭。先将 checkout 切到已审核、干净且 `HEAD`
+精确等于新合并 SHA 的候选，再执行：
+
+```bash
+OLD_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
+NEW_COMMIT='REPLACE_WITH_40_LOWERCASE_HEX_COMMIT'
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
+  --confirm-dedicated-production-host \
+  --confirm-vcenter-storage-reviewed
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
+```
+
+`plan/apply/resume` 会先用已绑定候选 commit 的 preflight 字节做一次内联只读检查，失败时
+不得替换宿主资产。`apply/resume` 仍在 installer 锁内写入 root-only repair intent，只原子
+替换该一项资产，且在
+`upgrade-accept` 成功前继续保留旧 canonical state。`upgrade-accept` 必须在同一锁内新启动一次
+正式 `sms-storage-preflight.service`，确认 unit 静止、PID 1 job 为空、`Result=success` 且
+`ExecMainStatus=0`，并重新核对运行边界和唯一候选资产，才最后提交新 state。失败或
+中断后只能使用同一 OLD/NEW 执行 `resume`、重试 `upgrade-accept`，或在 accept 前执行：
+
+```bash
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py rollback \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
+  --confirm-rollback-this-install
+```
+
+rollback 只会恢复 intent 内那一份精确旧版 preflight，不改 Docker 数据和其它宿主资产。因为
+旧 preflight 会将真实 `0710` 报为错误，rollback 是可审计的安全 **No-Go**，不是恢复启动；
+不得据此解除 Docker mask 或继续 bootstrap。该一次性 profile 不是通用宿主资产更新机制，
+不关闭 ENG-03；RF-07 的包锁/基线批准与 RF-12 的防火墙/容器网段证据仍须独立验证和批准。
+
+常规首次安装成功后再做只读 unit 验证和显式宿主动作（上述两种窄修复已由 `upgrade-accept` 自行运行
 storage preflight，不重复执行这里的手工启动）：
 
 ```bash

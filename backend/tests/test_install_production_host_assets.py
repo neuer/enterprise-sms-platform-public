@@ -24,7 +24,11 @@ def installer_module() -> ModuleType:
 
 
 COMMIT = "555fb20b0d630ece9099a88a463eb1ce1121c012"
-NEW_COMMIT = "c" * 40
+POST_FIRST_START_COMMIT = "109c10865b2aac3989bc4cebf3c60788f44b168c"
+NEW_COMMIT = POST_FIRST_START_COMMIT
+POST_FIRST_START_TARGET_COMMIT = "c" * 40
+OLD_DOCKER_MODE_CONTRACT = b'"docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o711, "xfs", "uuid-tag", 2,'
+NEW_DOCKER_MODE_CONTRACT = b'"docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o710, "xfs", "uuid-tag", 2,'
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,7 @@ class FakeRunner:
                         + "\n"
                     ).encode(),
                 )
+            return self.module.CommandResult(0, b"\n")
         if argv == (
             self.module.SYSTEMCTL_BINARY,
             "--system",
@@ -226,8 +231,8 @@ def make_fixture(tmp_path: Path, *, effective_uid: int = 0) -> Fixture:
     releases_root = tmp_path / "host/var/lib/sms-platform/releases"
     systemd_root.mkdir(parents=True, mode=0o755)
     local_sbin_root.mkdir(parents=True, mode=0o755)
-    docker_root.mkdir(parents=True, mode=0o711)
-    docker_root.chmod(0o711)
+    docker_root.mkdir(parents=True, mode=0o710)
+    docker_root.chmod(0o710)
     specs = module.build_asset_specs(
         source_root=source_root,
         etc_root=etc_root,
@@ -309,9 +314,11 @@ UPGRADE_NAMES = (
 )
 
 
-def seed_legacy_v1_install(fixture: Fixture) -> None:
+def seed_legacy_v1_install(fixture: Fixture, *, source_commit: str = COMMIT) -> None:
     """Write the exact schema-v1 shape deployed by the pre-upgrade installer."""
 
+    if source_commit == COMMIT:
+        fixture.docker_root.chmod(0o711)
     fixture.etc_root.mkdir(parents=True, mode=0o700)
     fixture.etc_root.chmod(0o700)
     (fixture.systemd_root / "docker.service.d").mkdir(mode=0o755)
@@ -340,7 +347,7 @@ def seed_legacy_v1_install(fixture: Fixture) -> None:
             {
                 "assets": assets,
                 "schema_version": 1,
-                "source_commit": COMMIT,
+                "source_commit": source_commit,
             },
             ensure_ascii=True,
             separators=(",", ":"),
@@ -398,6 +405,37 @@ def checkout_upgrade_target(
 def prepare_upgrade(fixture: Fixture) -> None:
     seed_legacy_v1_install(fixture)
     checkout_upgrade_target(fixture)
+
+
+def prepare_post_first_start_repair(fixture: Fixture) -> bytes:
+    """Seed 109c108 state, retain Docker metadata, and change only mode 0711→0710."""
+
+    spec = next(
+        item
+        for item in fixture.installer.assets  # type: ignore[union-attr]
+        if item.name == "storage-preflight"
+    )
+    source = fixture.source_root / spec.source_relative
+    old_payload = b"MOUNT_REQUIREMENTS = (\n    " + OLD_DOCKER_MODE_CONTRACT + b"\n)\n"
+    source.write_bytes(old_payload)
+    source.chmod(int(spec.git_mode[-3:], 8))
+    fixture.runner.tracked[spec.source_relative.as_posix()] = TrackedAsset(
+        mode=spec.git_mode,
+        payload=old_payload,
+    )
+    seed_legacy_v1_install(fixture, source_commit=POST_FIRST_START_COMMIT)
+
+    new_payload = old_payload.replace(OLD_DOCKER_MODE_CONTRACT, NEW_DOCKER_MODE_CONTRACT, 1)
+    source.write_bytes(new_payload)
+    source.chmod(int(spec.git_mode[-3:], 8))
+    fixture.runner.tracked[spec.source_relative.as_posix()] = TrackedAsset(
+        mode=spec.git_mode,
+        payload=new_payload,
+    )
+    fixture.runner.head_commit = POST_FIRST_START_TARGET_COMMIT
+    (fixture.docker_root / "image").mkdir()
+    (fixture.docker_root / "engine-id").write_text("retained\n", encoding="utf-8")
+    return old_payload
 
 
 def set_upgrade_acceptance_evidence(fixture: Fixture) -> None:
@@ -689,7 +727,7 @@ def test_docker_root_symlink_or_wrong_mode_blocks_before_any_write(tmp_path: Pat
     linked = make_fixture(tmp_path / "linked")
     linked.docker_root.rmdir()
     actual = linked.docker_root.parent / "actual-docker"
-    actual.mkdir(mode=0o711)
+    actual.mkdir(mode=0o710)
     linked.docker_root.symlink_to(actual, target_is_directory=True)
     with pytest.raises(linked.module.HostAssetInstallError, match="symlink"):
         apply(linked)
@@ -700,6 +738,14 @@ def test_docker_root_symlink_or_wrong_mode_blocks_before_any_write(tmp_path: Pat
     with pytest.raises(wrong_mode.module.HostAssetInstallError, match="Docker root is unsafe"):
         apply(wrong_mode)
     assert not wrong_mode.etc_root.exists()
+
+    former_contract = make_fixture(tmp_path / "former-0711")
+    former_contract.docker_root.chmod(0o711)
+    with pytest.raises(
+        former_contract.module.HostAssetInstallError, match="Docker root is unsafe"
+    ):
+        apply(former_contract)
+    assert not former_contract.etc_root.exists()
 
 
 def test_apply_installs_exact_modes_symlink_and_commits_state_last(
@@ -1318,6 +1364,291 @@ def test_upgrade_plan_from_legacy_v1_state_is_read_only_and_deterministic(
     assert after == before
 
 
+def test_post_first_start_plan_allows_retained_docker_metadata_only_for_fixed_profile(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+
+    result = fixture.installer.plan(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT, from_commit=POST_FIRST_START_COMMIT
+    )
+
+    assert result == {
+        "action": "plan",
+        "assets": 18,
+        "assets_changed": 1,
+        "changed_assets": ["storage-preflight"],
+        "from_commit": POST_FIRST_START_COMMIT,
+        "mode": "upgrade",
+        "source_commit": POST_FIRST_START_TARGET_COMMIT,
+        "status": "ready",
+    }
+    assert (fixture.docker_root / "engine-id").read_text(encoding="utf-8") == ("retained\n")
+
+    legacy = make_fixture(tmp_path / "legacy")
+    prepare_upgrade(legacy)
+    (legacy.docker_root / "engine-id").write_text("retained\n", encoding="utf-8")
+    with pytest.raises(legacy.module.HostAssetInstallError, match="not empty"):
+        legacy.installer.plan(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+    legacy_mode = make_fixture(tmp_path / "legacy-wrong-0710")
+    prepare_upgrade(legacy_mode)
+    legacy_mode.docker_root.chmod(0o710)
+    with pytest.raises(
+        legacy_mode.module.HostAssetInstallError, match="Docker root is unsafe"
+    ):
+        legacy_mode.installer.plan(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+
+def test_post_first_start_profile_requires_safe_0710_docker_root(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+    fixture.docker_root.chmod(0o711)
+
+    with pytest.raises(fixture.module.HostAssetInstallError, match="Docker root is unsafe"):
+        fixture.installer.plan(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT,
+            from_commit=POST_FIRST_START_COMMIT,
+        )
+
+
+def test_post_first_start_profile_rejects_every_other_from_commit(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+
+    with pytest.raises(fixture.module.HostAssetInstallError, match="fixed source commit"):
+        fixture.installer.plan(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT, from_commit="d" * 40
+        )
+    assert not (
+        fixture.etc_root / "production-host-assets.upgrade.intent.json"
+    ).exists()
+
+
+def test_legacy_prebootstrap_profile_rejects_every_other_target_commit(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.runner.head_commit = POST_FIRST_START_TARGET_COMMIT
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="legacy pre-bootstrap repair requires its fixed target commit",
+    ):
+        fixture.installer.plan(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT, from_commit=COMMIT
+        )
+    assert not (
+        fixture.etc_root / "production-host-assets.upgrade.intent.json"
+    ).exists()
+
+
+@pytest.mark.parametrize("fault", ("extra-byte", "wrong-mode", "extra-asset"))
+def test_post_first_start_profile_rejects_any_change_beyond_exact_mode_repair(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+    if fault in {"extra-byte", "wrong-mode"}:
+        spec = next(
+            item
+            for item in fixture.installer.assets  # type: ignore[union-attr]
+            if item.name == "storage-preflight"
+        )
+        source = fixture.source_root / spec.source_relative
+        payload = source.read_bytes()
+        if fault == "extra-byte":
+            payload += b"# unreviewed\n"
+        else:
+            payload = payload.replace(b"0o710", b"0o700", 1)
+        source.write_bytes(payload)
+        source.chmod(int(spec.git_mode[-3:], 8))
+        fixture.runner.tracked[spec.source_relative.as_posix()] = TrackedAsset(
+            mode=spec.git_mode,
+            payload=payload,
+        )
+    else:
+        spec = next(
+            item
+            for item in fixture.installer.assets  # type: ignore[union-attr]
+            if item.name == "compose-env"
+        )
+        source = fixture.source_root / spec.source_relative
+        payload = source.read_bytes() + b"unreviewed\n"
+        source.write_bytes(payload)
+        source.chmod(int(spec.git_mode[-3:], 8))
+        fixture.runner.tracked[spec.source_relative.as_posix()] = TrackedAsset(
+            mode=spec.git_mode,
+            payload=payload,
+        )
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="only fix|exactly storage-preflight",
+    ):
+        fixture.installer.plan(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT,
+            from_commit=POST_FIRST_START_COMMIT,
+        )
+
+
+def test_post_first_start_apply_accepts_fresh_preflight_then_commits_state_last(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    old_payload = prepare_post_first_start_repair(fixture)
+
+    applied = fixture.installer.apply(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT,
+        from_commit=POST_FIRST_START_COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+
+    assert applied["status"] == "awaiting_acceptance"
+    assert applied["changed_assets"] == ["storage-preflight"]
+    state_before = json.loads(fixture.state_path.read_text(encoding="ascii"))
+    assert state_before["source_commit"] == POST_FIRST_START_COMMIT
+    intent = json.loads(
+        (fixture.etc_root / "production-host-assets.upgrade.intent.json").read_text(
+            encoding="ascii"
+        )
+    )
+    assert intent["changes"] == ["storage-preflight"]
+    assert intent["backups"]["storage-preflight"]
+    assert old_payload != next(
+        spec.destination.read_bytes()
+        for spec in fixture.installer.assets  # type: ignore[union-attr]
+        if spec.name == "storage-preflight"
+    )
+
+    set_upgrade_acceptance_evidence(fixture)
+    accepted = fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT, from_commit=POST_FIRST_START_COMMIT
+    )
+
+    assert accepted["status"] == "installed"
+    assert fixture.runner.storage_start_attempted
+    assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == (
+        POST_FIRST_START_TARGET_COMMIT
+    )
+    assert not (fixture.etc_root / "production-host-assets.upgrade.intent.json").exists()
+    assert (fixture.docker_root / "engine-id").exists()
+
+
+def test_post_first_start_accept_rejects_unverified_unchanged_storage_unit(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT,
+        from_commit=POST_FIRST_START_COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="candidate systemd unit fragment path is not loaded",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT,
+            from_commit=POST_FIRST_START_COMMIT,
+        )
+
+    assert not fixture.runner.storage_start_attempted
+    assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == (
+        POST_FIRST_START_COMMIT
+    )
+
+
+def test_post_first_start_accept_rejects_asset_drift_before_start(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_post_first_start_repair(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT,
+        from_commit=POST_FIRST_START_COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    storage_unit = next(
+        spec.destination
+        for spec in fixture.installer.assets  # type: ignore[union-attr]
+        if spec.name == "storage-unit"
+    )
+    storage_unit.write_text("drifted before acceptance\n", encoding="utf-8")
+    storage_unit.chmod(0o644)
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="unchanged host asset has drifted",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            POST_FIRST_START_TARGET_COMMIT,
+            from_commit=POST_FIRST_START_COMMIT,
+        )
+
+    assert not fixture.runner.storage_start_attempted
+    assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == (
+        POST_FIRST_START_COMMIT
+    )
+
+
+def test_post_first_start_rollback_restores_only_storage_preflight(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    old_payload = prepare_post_first_start_repair(fixture)
+    unchanged_before = {
+        spec.name: spec.destination.read_bytes()
+        for spec in fixture.installer.assets  # type: ignore[union-attr]
+        if spec.kind == "regular" and spec.name != "storage-preflight"
+    }
+    fixture.installer.apply(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT,
+        from_commit=POST_FIRST_START_COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+
+    rolled = fixture.installer.rollback(  # type: ignore[union-attr]
+        POST_FIRST_START_TARGET_COMMIT,
+        from_commit=POST_FIRST_START_COMMIT,
+        confirm_rollback_this_install=True,
+    )
+
+    storage = next(
+        spec
+        for spec in fixture.installer.assets  # type: ignore[union-attr]
+        if spec.name == "storage-preflight"
+    )
+    assert rolled["status"] == "rolled_back"
+    assert rolled["assets_restored"] == 1
+    assert storage.destination.read_bytes() == old_payload
+    assert {
+        spec.name: spec.destination.read_bytes()
+        for spec in fixture.installer.assets  # type: ignore[union-attr]
+        if spec.kind == "regular" and spec.name != "storage-preflight"
+    } == unchanged_before
+    assert fixture.installer.status()["source_commit"] == POST_FIRST_START_COMMIT  # type: ignore[union-attr]
+    assert (fixture.docker_root / "engine-id").exists()
+
+
 def test_upgrade_apply_waits_for_acceptance_then_commits_new_state(
     tmp_path: Path,
 ) -> None:
@@ -1622,8 +1953,10 @@ def test_upgrade_rollback_rechecks_mutable_boundary_before_restoring_assets(
     }
     real_inspect = fixture.installer._inspect_upgrade_readiness  # type: ignore[union-attr]
 
-    def inspect_then_cross_boundary(expected_commit: str):  # type: ignore[no-untyped-def]
-        snapshots = real_inspect(expected_commit)
+    def inspect_then_cross_boundary(  # type: ignore[no-untyped-def]
+        expected_commit: str, *, from_commit: str
+    ):
+        snapshots = real_inspect(expected_commit, from_commit=from_commit)
         fixture.runner.active_service = "sms-backup.service"
         return snapshots
 
