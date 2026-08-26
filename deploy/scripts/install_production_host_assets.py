@@ -38,6 +38,7 @@ PYTHON_BINARY = "/usr/bin/python3"
 SYSTEMCTL_BINARY = "/usr/bin/systemctl"
 FINDMNT_BINARY = "/usr/bin/findmnt"
 COMMAND_TIMEOUT_SECONDS = 30
+UPGRADE_ACCEPTANCE_TIMEOUT_SECONDS = 60
 MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024
 COMMAND_OUTPUT_LIMIT_RETURN_CODE = 125
 MAX_ASSET_BYTES = 2 * 1024 * 1024
@@ -114,6 +115,7 @@ class CommandRunner(Protocol):
         argv: Sequence[str],
         *,
         git_sudo_uid: str | None = None,
+        timeout_seconds: int = COMMAND_TIMEOUT_SECONDS,
     ) -> CommandResult: ...
 
 
@@ -164,6 +166,7 @@ class SubprocessRunner:
         argv: Sequence[str],
         *,
         git_sudo_uid: str | None = None,
+        timeout_seconds: int = COMMAND_TIMEOUT_SECONDS,
     ) -> CommandResult:
         environment = {
             "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -179,6 +182,8 @@ class SubprocessRunner:
             ) is None or not _is_fixed_read_only_git_command(argv):
                 return CommandResult(returncode=126)
             environment["SUDO_UID"] = git_sudo_uid
+        if timeout_seconds <= 0 or timeout_seconds > UPGRADE_ACCEPTANCE_TIMEOUT_SECONDS:
+            return CommandResult(returncode=126)
         try:
             completed = subprocess.run(
                 list(argv),
@@ -186,7 +191,7 @@ class SubprocessRunner:
                 capture_output=True,
                 check=False,
                 shell=False,
-                timeout=COMMAND_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
                 env=environment,
             )
         except FileNotFoundError:
@@ -1066,6 +1071,22 @@ class ProductionHostAssetInstaller:
             raise HostAssetInstallError("storage preflight invocation is invalid")
         return value
 
+    def _require_storage_preflight_quiescent(self, *, allow_failed: bool) -> None:
+        """Require no running process or queued PID 1 job for the storage unit."""
+
+        unit = "sms-storage-preflight.service"
+        state = (
+            self._systemctl_property(unit, "ActiveState"),
+            self._systemctl_property(unit, "SubState"),
+        )
+        allowed_states = {("inactive", "dead")}
+        if allow_failed:
+            allowed_states.add(("failed", "failed"))
+        if state not in allowed_states or self._systemctl_property(unit, "Job"):
+            raise HostAssetInstallError(
+                "storage preflight must be quiescent without a pending systemd job"
+            )
+
     @staticmethod
     def _candidate_capability_set(snapshot: AssetSnapshot) -> set[str]:
         try:
@@ -1085,10 +1106,8 @@ class ProductionHostAssetInstaller:
         self,
         snapshots: Sequence[AssetSnapshot],
         changes: Sequence[UpgradeChange],
-        *,
-        storage_invocation_id_before: str,
     ) -> None:
-        """Verify daemon-reload and a new successful storage preflight invocation."""
+        """Verify the loaded units, then synchronously run the candidate preflight."""
 
         snapshot_by_name = {snapshot.spec.name: snapshot for snapshot in snapshots}
         for change in changes:
@@ -1129,16 +1148,28 @@ class ProductionHostAssetInstaller:
                     raise HostAssetInstallError(
                         "candidate systemd credential marker is not loaded"
                     )
-        invocation_id = self._storage_invocation_id()
-        if (
-            not invocation_id
-            or invocation_id == storage_invocation_id_before
-            or self._systemctl_property("sms-storage-preflight.service", "Result")
-            != "success"
-            or self._systemctl_property(
-                "sms-storage-preflight.service", "ExecMainStatus"
+
+        storage_unit = "sms-storage-preflight.service"
+        self._require_storage_preflight_quiescent(allow_failed=True)
+        started = self.runner.run(
+            (
+                SYSTEMCTL_BINARY,
+                "--system",
+                "--no-ask-password",
+                "--job-mode=fail",
+                "start",
+                storage_unit,
+            ),
+            timeout_seconds=UPGRADE_ACCEPTANCE_TIMEOUT_SECONDS,
+        )
+        if started.returncode != 0:
+            raise HostAssetInstallError(
+                "candidate storage preflight did not start successfully"
             )
-            != "0"
+        self._require_storage_preflight_quiescent(allow_failed=False)
+        if (
+            self._systemctl_property(storage_unit, "Result") != "success"
+            or self._systemctl_property(storage_unit, "ExecMainStatus") != "0"
         ):
             raise HostAssetInstallError(
                 "candidate storage preflight has not completed successfully"
@@ -1202,6 +1233,7 @@ class ProductionHostAssetInstaller:
     def _require_upgrade_runtime_boundary(self) -> None:
         """Recheck mutable pre-bootstrap state while holding the installer lock."""
 
+        self._require_storage_preflight_quiescent(allow_failed=True)
         self._require_upgrade_prebootstrap()
         self._require_empty_docker_root()
 
@@ -1506,6 +1538,8 @@ class ProductionHostAssetInstaller:
             "commit": expected_commit,
             "previous_state_sha256": previous_state_sha256,
             "previous_assets": previous_assets,
+            # Retained in the v1 intent for resume/rollback compatibility. A
+            # fresh synchronous systemctl start is the acceptance proof.
             "storage_invocation_id_before": storage_invocation_id_before,
             "changes": [change.snapshot.spec.name for change in changes],
             "assets": target_assets,
@@ -2109,12 +2143,9 @@ class ProductionHostAssetInstaller:
                 raise HostAssetInstallError("host asset upgrade is incomplete")
             backup_payloads = self._decode_upgrade_backups(intent, changes)
             self._validate_prebootstrap_repair_contract(changes, backup_payloads)
-            storage_before = intent.get("storage_invocation_id_before")
-            assert isinstance(storage_before, str)
             self._require_upgrade_acceptance(
                 snapshots,
                 changes,
-                storage_invocation_id_before=storage_before,
             )
             self._require_upgrade_runtime_boundary()
             self._require_exact_target_assets(snapshots)

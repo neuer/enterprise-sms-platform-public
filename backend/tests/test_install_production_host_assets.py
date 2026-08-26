@@ -69,6 +69,10 @@ class FakeRunner:
         self.storage_invocation_id = "1" * 32
         self.storage_result = "success"
         self.storage_exec_main_status = "0"
+        self.storage_start_returncode = 0
+        self.storage_start_attempted = False
+        self.storage_state_before = ("inactive", "dead", "")
+        self.storage_state_after = ("inactive", "dead", "")
         self.loaded_capabilities: dict[str, str] = {}
         self.loaded_environments: dict[str, str] = {}
         self.loaded_fragment_paths: dict[str, str] = {}
@@ -79,6 +83,7 @@ class FakeRunner:
         argv: tuple[str, ...],
         *,
         git_sudo_uid: str | None = None,
+        timeout_seconds: int = 30,
     ):
         self.calls.append(argv)
         if argv[:3] == (self.module.GIT_BINARY, "-C", str(self.source_root)):
@@ -125,6 +130,18 @@ class FakeRunner:
                     "Result": self.storage_result,
                     "ExecMainStatus": self.storage_exec_main_status,
                 }
+                active_state, sub_state, job = (
+                    self.storage_state_after
+                    if self.storage_start_attempted
+                    else self.storage_state_before
+                )
+                values.update(
+                    {
+                        "ActiveState": active_state,
+                        "SubState": sub_state,
+                        "Job": job,
+                    }
+                )
                 if property_name in values:
                     return self.module.CommandResult(0, f"{values[property_name]}\n".encode())
             if property_name == "CapabilityBoundingSet":
@@ -149,6 +166,18 @@ class FakeRunner:
                         + "\n"
                     ).encode(),
                 )
+        if argv == (
+            self.module.SYSTEMCTL_BINARY,
+            "--system",
+            "--no-ask-password",
+            "--job-mode=fail",
+            "start",
+            "sms-storage-preflight.service",
+        ):
+            assert timeout_seconds == self.module.UPGRADE_ACCEPTANCE_TIMEOUT_SECONDS
+            self.storage_start_attempted = True
+            return self.module.CommandResult(self.storage_start_returncode)
+        assert timeout_seconds == self.module.COMMAND_TIMEOUT_SECONDS
         if argv[:2] == (self.module.SYSTEMCTL_BINARY, "is-active"):
             service = argv[2]
             if service == self.active_service:
@@ -384,7 +413,9 @@ def set_upgrade_acceptance_evidence(fixture: Fixture) -> None:
             token.lower() for token in capability_line.partition("=")[2].split()
         )
         fixture.runner.loaded_fragment_paths[spec.destination.name] = str(spec.destination)
-    fixture.runner.storage_invocation_id = "2" * 32
+    # systemd 255 clears InvocationID after a successful Type=oneshot service
+    # without RemainAfterExit. Acceptance must not depend on that transient field.
+    fixture.runner.storage_invocation_id = ""
 
 
 def test_manifest_is_exactly_seventeen_regular_assets_and_one_wrapper_symlink(
@@ -1303,6 +1334,13 @@ def test_upgrade_apply_waits_for_acceptance_then_commits_new_state(
     assert applied["status"] == "awaiting_acceptance"
     assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == COMMIT
     assert fixture.installer.status()["status"] == "upgrading"  # type: ignore[union-attr]
+    intent = json.loads(
+        (fixture.etc_root / "production-host-assets.upgrade.intent.json").read_text(
+            encoding="ascii"
+        )
+    )
+    assert intent["schema_version"] == 1
+    assert intent["storage_invocation_id_before"] == "1" * 32
     changed_specs = [
         spec
         for spec in fixture.installer.assets  # type: ignore[union-attr]
@@ -1323,6 +1361,174 @@ def test_upgrade_apply_waits_for_acceptance_then_commits_new_state(
     assert fixture.installer.status()["source_commit"] == NEW_COMMIT  # type: ignore[union-attr]
     assert not (fixture.etc_root / "production-host-assets.upgrade.intent.json").exists()
     assert not (fixture.etc_root / "production-host-assets.upgrade").exists()
+    assert (
+        fixture.module.SYSTEMCTL_BINARY,
+        "--system",
+        "--no-ask-password",
+        "--job-mode=fail",
+        "start",
+        "sms-storage-preflight.service",
+    ) in fixture.runner.calls
+    invocation_query = (
+        fixture.module.SYSTEMCTL_BINARY,
+        "show",
+        "--property=InvocationID",
+        "--value",
+        "sms-storage-preflight.service",
+    )
+    assert fixture.runner.calls.count(invocation_query) == 1
+
+
+def test_upgrade_accept_rejects_stale_success_when_fresh_start_fails(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        NEW_COMMIT,
+        from_commit=COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    fixture.runner.storage_result = "success"
+    fixture.runner.storage_exec_main_status = "0"
+    fixture.runner.storage_start_returncode = 1
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="did not start successfully",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+    assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == COMMIT
+    assert fixture.installer.status()["status"] == "upgrading"  # type: ignore[union-attr]
+
+
+def test_upgrade_accept_timeout_preserves_old_state_and_v1_intent(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        NEW_COMMIT,
+        from_commit=COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    intent_path = fixture.etc_root / "production-host-assets.upgrade.intent.json"
+    state_before = fixture.state_path.read_bytes()
+    intent_before = intent_path.read_bytes()
+    fixture.runner.storage_start_returncode = 124
+    fixture.runner.storage_state_after = (
+        "activating",
+        "start-pre",
+        "[99 /org/freedesktop/systemd1/job/99 start waiting]",
+    )
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="did not start successfully",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+    assert fixture.state_path.read_bytes() == state_before
+    assert intent_path.read_bytes() == intent_before
+    assert fixture.installer.status()["status"] == "upgrading"  # type: ignore[union-attr]
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="must be quiescent",
+    ):
+        fixture.installer.rollback(  # type: ignore[union-attr]
+            NEW_COMMIT,
+            from_commit=COMMIT,
+            confirm_rollback_this_install=True,
+        )
+    assert fixture.state_path.read_bytes() == state_before
+    assert intent_path.read_bytes() == intent_before
+
+
+@pytest.mark.parametrize(
+    ("result", "exec_status"),
+    (("", "0"), ("success", ""), ("failed", "0"), ("success", "1")),
+)
+def test_upgrade_accept_rejects_missing_or_failed_fresh_result(
+    tmp_path: Path,
+    result: str,
+    exec_status: str,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        NEW_COMMIT,
+        from_commit=COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    fixture.runner.storage_result = result
+    fixture.runner.storage_exec_main_status = exec_status
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="has not completed successfully",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+    assert fixture.installer.status()["status"] == "upgrading"  # type: ignore[union-attr]
+
+
+def test_upgrade_accept_allows_failed_prior_state_but_requires_inactive_after_start(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        NEW_COMMIT,
+        from_commit=COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    fixture.runner.storage_state_before = ("failed", "failed", "")
+
+    accepted = fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+        NEW_COMMIT, from_commit=COMMIT
+    )
+
+    assert accepted["status"] == "installed"
+
+
+def test_upgrade_accept_rejects_noninactive_state_after_fresh_start(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    prepare_upgrade(fixture)
+    fixture.installer.apply(  # type: ignore[union-attr]
+        NEW_COMMIT,
+        from_commit=COMMIT,
+        confirm_dedicated_production_host=True,
+        confirm_vcenter_storage_reviewed=True,
+    )
+    set_upgrade_acceptance_evidence(fixture)
+    fixture.runner.storage_state_after = ("active", "running", "")
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="must be quiescent",
+    ):
+        fixture.installer.upgrade_accept(  # type: ignore[union-attr]
+            NEW_COMMIT, from_commit=COMMIT
+        )
+
+    assert fixture.installer.status()["status"] == "upgrading"  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("index", range(len(UPGRADE_NAMES)))
@@ -1667,6 +1873,14 @@ def test_upgrade_accept_rejects_unloaded_systemd_contract(
         fixture.installer.upgrade_accept(  # type: ignore[union-attr]
             NEW_COMMIT, from_commit=COMMIT
         )
+    assert (
+        fixture.module.SYSTEMCTL_BINARY,
+        "--system",
+        "--no-ask-password",
+        "--job-mode=fail",
+        "start",
+        "sms-storage-preflight.service",
+    ) not in fixture.runner.calls
     assert json.loads(fixture.state_path.read_text(encoding="ascii"))["source_commit"] == COMMIT
 
 
@@ -1692,8 +1906,17 @@ def test_upgrade_accept_rechecks_assets_after_runtime_evidence(
     )
     real_run = fixture.runner.run
 
-    def run_then_drift(argv: tuple[str, ...], *, git_sudo_uid: str | None = None):  # type: ignore[no-untyped-def]
-        result = real_run(argv, git_sudo_uid=git_sudo_uid)
+    def run_then_drift(  # type: ignore[no-untyped-def]
+        argv: tuple[str, ...],
+        *,
+        git_sudo_uid: str | None = None,
+        timeout_seconds: int = 30,
+    ):
+        result = real_run(
+            argv,
+            git_sudo_uid=git_sudo_uid,
+            timeout_seconds=timeout_seconds,
+        )
         if argv[:4] == (
             fixture.module.SYSTEMCTL_BINARY,
             "show",

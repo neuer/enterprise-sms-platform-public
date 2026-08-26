@@ -165,28 +165,46 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 升级 `apply/resume` 只原子替换六项资产，并在一次写入后不可变、仅 root 可读的 upgrade intent
 中内嵌六项精确旧版本备份，然后返回
 `awaiting_acceptance`；canonical state 仍是旧 commit，`status` 固定返回非零 `upgrading`。
-不得在此时手工覆盖或删除文件。由操作者核对五个 unit 后执行 `daemon-reload`，再启动一次
-`sms-storage-preflight.service`；只有新 InvocationID、`Result=success`、`ExecMainStatus=0`，五个
-unit 均 `NeedDaemonReload=no`，候选固定 `LoadCredential` 行、live 环境标记与 capability 集合均满足
-受控合同，且 live `FragmentPath` 精确指向各自固定 `/etc/systemd/system` 目标，
-才允许提交新 state：
+不得在此时手工覆盖或删除文件。由操作者核对五个 unit 后执行 `daemon-reload`，再调用
+`upgrade-accept`。该命令持有 installer 锁，先确认 storage preflight 未在运行，并核验五个 unit
+均 `NeedDaemonReload=no`、候选固定 `LoadCredential` 行、live 环境标记与 capability 集合均满足
+受控合同，且 live `FragmentPath` 精确指向各自固定 `/etc/systemd/system` 目标；随后由命令自身
+同步启动一次 `sms-storage-preflight.service`。只有该次 `systemctl start` 成功返回，oneshot 最终
+回到 `inactive`，且 `Result=success`、`ExecMainStatus=0`，才允许提交新 state。验收不依赖
+oneshot 退出后 systemd 255 会清空的 `InvocationID` 或 ExecMain 时间戳：
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl start sms-storage-preflight.service
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
   --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
 ```
 
+若 `upgrade-accept` 内部的 storage preflight 启动失败或 60 秒命令等待超时，canonical state 与
+root-owned upgrade intent 均保持原样，结果仍为 `upgrading`。先确认该 unit 已不在
+`active/activating/deactivating` 且 `Job` 为空，排除存储或 systemd 问题后，用完全相同的 OLD/NEW
+重跑 `upgrade-accept`；有进程或 PID 1 pending job 时，accept/resume/rollback 都会失败关闭。
+重跑一定会再同步执行一次新的 preflight，不会把超时后的旧 `Result` 当作成功。若启动已成功但
+命令在提交 state 前中断，同样重跑；不得手工改 state 或 intent。intent v1 中保留的
+`storage_invocation_id_before` 只用于既有 resume/rollback 结构兼容，不再作为 systemd 255 的
+验收证据。
+
 在 `upgrade-accept` 提交新 state 前，中断后只允许用同一 OLD/NEW 执行 `resume`，或带现有确认参数
 执行 `rollback`；rollback 会从 installer-owned 备份恢复精确旧文件。rollback 返回成功后必须再执行
 `sudo systemctl daemon-reload`，使 PID 1 丢弃可能已加载的候选 unit。新 state 一旦持久提交，
 rollback 拒绝，若只剩清理中断则由同参数 `resume` 收敛。该入口不执行 `daemon-reload`、unit
-start/enable、Git 切换、Docker/Compose、secret 或应用发布。security-report collector 仍不在
+enable、Git 切换、Docker/Compose、secret 或应用发布；唯一的 unit 生命周期动作是
+`upgrade-accept` 在上述受控合同内同步启动一次 storage preflight。security-report collector 仍不在
 本 inventory 内，当前不得手工补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
 
-安装成功后再做只读 unit 验证和显式宿主动作：
+若 `upgrading` intent 已由不含该验收修复的旧目标 commit 创建，不得把 checkout 切到新 commit 后
+跨 commit 复用该 intent，也不得手工改写 intent。应先在 intent 绑定的精确 checkout 上用同一
+OLD/NEW 执行官方 `rollback`，随后 `daemon-reload`；再切到已审核的新 commit，重新执行
+plan/apply/daemon-reload/upgrade-accept。这样保留 checkout、intent、六项资产和 canonical state
+始终绑定同一个精确目标 commit 的失败关闭边界。
+
+常规首次安装成功后再做只读 unit 验证和显式宿主动作（上述窄升级已由 `upgrade-accept` 自行运行
+storage preflight，不重复执行这里的手工启动）：
 
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/sms-platform.service
