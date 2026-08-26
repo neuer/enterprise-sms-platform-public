@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -21,11 +22,16 @@ from failover_common import (  # noqa: E402
     read_root_generation_id_file,
 )
 from sync_standby import (  # noqa: E402
+    AmbiguousRemoteCommit,
     BackupCapacityExceeded,
     StandbyTarget,
     SyncConfig,
     SyncService,
     validate_environment_file,
+)
+
+SNAPSHOT_ID_RE = re.compile(
+    r"(?:snapshots|\.incoming)/([0-9]{8}T[0-9]{6}Z_[0-9a-f]{12})"
 )
 
 
@@ -49,6 +55,7 @@ class FakeRunner:
         expire_pipeline_at: float | None = None,
         remote_fail_at: str | None = None,
         existing_remote_same_digest: bool = False,
+        remote_state: dict[str, object] | None = None,
     ) -> None:
         self.dirty = dirty
         self.pipeline_error = pipeline_error
@@ -58,11 +65,24 @@ class FakeRunner:
         self.expire_pipeline_at = expire_pipeline_at
         self.remote_fail_at = remote_fail_at
         self.existing_remote_same_digest = existing_remote_same_digest
+        self.remote_state = remote_state if remote_state is not None else {
+            "snapshots": {},
+            "current": "",
+        }
         self.rev_parse_calls = 0
         self.calls: list[list[str]] = []
         self.pipeline_calls: list[tuple[list[str], list[str], Path]] = []
         self.timeouts: list[tuple[str, float | None]] = []
         self.envs: list[dict[str, str] | None] = []
+
+    def _snapshots(self) -> dict[str, dict[str, object]]:
+        value = self.remote_state.setdefault("snapshots", {})
+        assert isinstance(value, dict)
+        return value
+
+    def _snapshot_id(self, remote: str) -> str | None:
+        match = SNAPSHOT_ID_RE.search(remote)
+        return match.group(1) if match else None
 
     def run(
         self,
@@ -116,10 +136,56 @@ class FakeRunner:
             raise CommandFailure("ssh", 255, "Connection reset")
         if argv[0] == "ssh" and fail_at == "digest_mismatch" and "cmp -s" in remote:
             raise CommandFailure("ssh", 1, "snapshot-digest-mismatch")
+        if argv[0] == "ssh" and "probe-operation" in remote:
+            snapshot_id = self._snapshot_id(remote)
+            snapshots = self._snapshots()
+            current = str(self.remote_state.get("current", ""))
+            if snapshot_id and snapshot_id in snapshots:
+                meta = snapshots[snapshot_id]
+                payload = {
+                    "phase": "snapshot_published",
+                    "operation_id": snapshot_id,
+                    "snapshot_id": snapshot_id,
+                    "ownership": meta.get("ownership", "created"),
+                }
+                encoded = json.dumps(payload, separators=(",", ":"))
+                if current:
+                    encoded += f"\nCURRENT={current}"
+                return encoded.encode()
+            return b'{"phase":"missing"}\n'
+        if argv[0] == "ssh" and "reconcile-inventory" in remote:
+            lines = ["reconcile-inventory"]
+            for name, meta in self._snapshots().items():
+                lines.append(name)
+                if not meta.get("has_operation", True):
+                    lines.append(f"ORPHAN={name}")
+            current = str(self.remote_state.get("current", ""))
+            if current:
+                lines.append(f"CURRENT={current}")
+            return ("\n".join(lines) + "\n").encode()
         if argv[0] == "ssh" and "echo created" in remote and "cmp -s SHA256SUMS" in remote:
-            if self.existing_remote_same_digest:
+            snapshot_id = self._snapshot_id(remote)
+            if snapshot_id and self.existing_remote_same_digest:
+                self._snapshots().setdefault(
+                    snapshot_id,
+                    {"ownership": "reused_existing", "has_operation": True},
+                )
                 return b"reused_existing\n"
+            if snapshot_id:
+                self._snapshots()[snapshot_id] = {
+                    "ownership": "created",
+                    "has_operation": True,
+                }
+            if fail_at == "stage_confirm_lost":
+                raise CommandFailure("ssh", 255, "Connection reset after snapshot commit")
             return b"created\n"
+        if argv[0] == "ssh" and "ln -sfn" in remote:
+            snapshot_id = self._snapshot_id(remote)
+            if snapshot_id:
+                self.remote_state["current"] = f"snapshots/{snapshot_id}"
+            if fail_at == "current_confirm_lost":
+                raise CommandFailure("ssh", 255, "Connection reset after current commit")
+            return b""
         if argv[0] == "git" and argv[1] == "archive":
             output_value = next(
                 item.split("=", 1)[1] for item in argv if item.startswith("--output=")
@@ -759,3 +825,181 @@ def test_rsync_environment_cannot_override_fixed_remote_shell(
     assert runner.calls[rsync_index][runner.calls[rsync_index].index("-e") + 1] == (
         "ssh -p 2222"
     )
+
+
+def _operation_files(config: SyncConfig) -> list[Path]:
+    directory = config.output_dir / "operations"
+    if not directory.is_dir():
+        return []
+    return list(directory.glob("*.json"))
+
+
+def test_stage_confirm_lost_retry_adopts_same_snapshot(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {"snapshots": {}, "current": ""}
+    config = make_config(tmp_path, build_only=False)
+    first = FakeRunner(remote_fail_at="stage_confirm_lost", remote_state=remote_state)
+    with pytest.raises(AmbiguousRemoteCommit):
+        make_sync_service(first).run(config)
+    assert len(first._snapshots()) == 1
+    snapshot_id = next(iter(first._snapshots()))
+    assert not any(
+        call[0] == "ssh"
+        and "readlink current" in call[-1]
+        and "rm -rf" in call[-1]
+        for call in first.calls
+    )
+    second = FakeRunner(remote_state=remote_state)
+    result = make_sync_service(second).run(config)
+    assert result.snapshot_id == snapshot_id
+    assert remote_state["current"] == f"snapshots/{snapshot_id}"
+    assert list(first._snapshots()) == [snapshot_id]
+    operations = _operation_files(config)
+    assert operations
+    payload = json.loads(operations[0].read_text(encoding="utf-8"))
+    assert payload["phase"] == "current_committed"
+    assert payload["snapshot_id"] == snapshot_id
+    encoded = json.dumps(payload)
+    assert "not-a-production-secret" not in encoded
+    assert "BACKUP_PASSPHRASE" not in encoded
+
+
+def test_current_confirm_lost_converges_local_fact(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {"snapshots": {}, "current": ""}
+    runner = FakeRunner(remote_fail_at="current_confirm_lost", remote_state=remote_state)
+    config = make_config(tmp_path, build_only=False)
+    result = make_sync_service(runner).run(config)
+    assert remote_state["current"] == f"snapshots/{result.snapshot_id}"
+    payload = json.loads(_operation_files(config)[0].read_text(encoding="utf-8"))
+    assert payload["phase"] == "current_committed"
+    assert list(runner._snapshots()) == [result.snapshot_id]
+
+
+def test_ssh_drop_before_remote_command_is_not_created(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {"snapshots": {}, "current": ""}
+    runner = FakeRunner(remote_fail_at="ssh_drop", remote_state=remote_state)
+    config = make_config(tmp_path, build_only=False)
+    with pytest.raises(CommandFailure):
+        make_sync_service(runner).run(config)
+    assert runner._snapshots() == {}
+    assert remote_state["current"] == ""
+
+
+def test_same_operation_retry_does_not_create_second_snapshot(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {"snapshots": {}, "current": ""}
+    config = make_config(tmp_path, build_only=False)
+    with pytest.raises(AmbiguousRemoteCommit):
+        make_sync_service(
+            FakeRunner(remote_fail_at="stage_confirm_lost", remote_state=remote_state)
+        ).run(config)
+    make_sync_service(FakeRunner(remote_state=remote_state)).run(config)
+    assert len(remote_state["snapshots"]) == 1  # type: ignore[arg-type]
+
+
+def test_orphan_snapshot_is_inventoried_not_deleted(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {
+        "snapshots": {
+            "20260101T000000Z_bbbbbbbbbbbb": {
+                "ownership": "preexisting",
+                "has_operation": False,
+            }
+        },
+        "current": "",
+    }
+    runner = FakeRunner(remote_state=remote_state)
+    config = make_config(tmp_path, build_only=False)
+    service = make_sync_service(runner)
+    result = service.run(config)
+    assert "20260101T000000Z_bbbbbbbbbbbb" in runner._snapshots()
+    assert result.snapshot_id in runner._snapshots()
+    assert "20260101T000000Z_bbbbbbbbbbbb" in service.last_orphans
+    assert not any(
+        call[0] == "ssh"
+        and "rm -rf" in call[-1]
+        and "20260101T000000Z_bbbbbbbbbbbb" in call[-1]
+        for call in runner.calls
+    )
+
+
+def test_operation_without_snapshot_fails_closed(tmp_path: Path) -> None:
+    config = make_config(tmp_path, build_only=False)
+    service = make_sync_service(FakeRunner())
+    operations = config.output_dir / "operations"
+    operations.mkdir(parents=True)
+    (operations / "missing.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "20260712T050000Z_aaaaaaaaaaaa",
+                "snapshot_id": "20260712T050000Z_aaaaaaaaaaaa",
+                "phase": "snapshot_published",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="no snapshot"):
+        service.run(config)
+
+
+def test_current_drift_fails_closed(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {
+        "snapshots": {
+            "20260712T050000Z_aaaaaaaaaaaa": {
+                "ownership": "created",
+                "has_operation": True,
+            }
+        },
+        "current": "snapshots/other",
+    }
+    config = make_config(tmp_path, build_only=False)
+    service = make_sync_service(FakeRunner(remote_state=remote_state))
+    operations = config.output_dir / "operations"
+    operations.mkdir(parents=True)
+    (operations / "drift.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "20260712T050000Z_aaaaaaaaaaaa",
+                "snapshot_id": "20260712T050000Z_aaaaaaaaaaaa",
+                "phase": "current_committed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        service.run(config)
+
+
+def test_preexisting_recovery_point_is_not_deleted(tmp_path: Path) -> None:
+    remote_state: dict[str, object] = {
+        "snapshots": {
+            "20260101T000000Z_bbbbbbbbbbbb": {
+                "ownership": "preexisting",
+                "has_operation": True,
+            }
+        },
+        "current": "snapshots/20260101T000000Z_bbbbbbbbbbbb",
+    }
+    runner = FakeRunner(remote_state=remote_state)
+    config = make_config(tmp_path, build_only=False)
+    result = make_sync_service(runner).run(config)
+    assert "20260101T000000Z_bbbbbbbbbbbb" in runner._snapshots()
+    assert result.snapshot_id in runner._snapshots()
+    assert not any(
+        call[0] == "ssh"
+        and "rm -rf" in call[-1]
+        and "20260101T000000Z_bbbbbbbbbbbb" in call[-1]
+        for call in runner.calls
+    )
+
+
+def test_remote_matrix_keeps_secrets_out_of_operations_and_logs(tmp_path: Path) -> None:
+    config = make_config(tmp_path, build_only=False)
+    runner = FakeRunner()
+    make_sync_service(runner).run(config)
+    for path in _operation_files(config):
+        text = path.read_text(encoding="utf-8")
+        assert "not-a-production-secret" not in text
+        assert "BACKUP_PASSPHRASE" not in text
+        assert "sms_owner" not in text
+    encoded = json.dumps(runner.calls)
+    assert "not-a-production-secret" not in encoded

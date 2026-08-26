@@ -167,6 +167,27 @@ function deliveryLabel(value: string): string {
   return deliveryLabels[value as DeliveryStatus] ?? "数据不可用"
 }
 
+function isHistoricSupersededSent(report: SecurityDailyReport): boolean {
+  return Boolean(
+    report.delivered_at
+    && (report.last_error ?? "").includes("配置已更新"),
+  )
+}
+
+function reportDeliveryLabel(report: SecurityDailyReport): string {
+  if (report.delivery_status === "sent") return "已投递"
+  if (report.delivery_status === "failed" && isHistoricSupersededSent(report)) {
+    return "历史投递已完成"
+  }
+  return deliveryLabel(report.delivery_status)
+}
+
+function reportDeliveryTagType(report: SecurityDailyReport): "success" | "warning" | "danger" | "info" {
+  if (report.delivery_status === "sent") return "success"
+  if (report.delivery_status === "failed" && isHistoricSupersededSent(report)) return "success"
+  return tagType(report.delivery_status)
+}
+
 function configurationLabel(value: string): string {
   return configurationLabels[value as SecurityDailyConfigurationState] ?? "配置状态不可用"
 }
@@ -515,7 +536,9 @@ function canRetry(report: SecurityDailyReport): boolean {
   return Boolean(
     overview.value?.configuration_state === "ready"
     && report.generation_status === "ready"
-    && report.delivery_status === "failed",
+    && report.delivery_status === "failed"
+    && !(report.last_error ?? "").startsWith("投递结果未知")
+    && !isHistoricSupersededSent(report),
   )
 }
 
@@ -655,7 +678,7 @@ onMounted(() => void refresh())
         <el-table-column label="安全状态" width="105"><template #default="scope"><el-tag :type="tagType(scope.row.status)" size="small">{{ statusLabel(scope.row.status) }}</el-tag></template></el-table-column>
         <el-table-column label="生成方式" width="90"><template #default="scope"><el-tag :type="scope.row.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{ scope.row.generation_source === 'manual' ? '手动' : '自动' }}</el-tag></template></el-table-column>
         <el-table-column label="生成" width="110"><template #default="scope"><el-tag :type="tagType(scope.row.generation_status)" size="small">{{ generationLabel(scope.row.generation_status) }}</el-tag></template></el-table-column>
-        <el-table-column label="投递" width="125"><template #default="scope"><el-tag :type="tagType(scope.row.delivery_status)" size="small">{{ deliveryLabel(scope.row.delivery_status) }}</el-tag></template></el-table-column>
+        <el-table-column label="投递" width="125"><template #default="scope"><el-tag :type="reportDeliveryTagType(scope.row)" size="small">{{ reportDeliveryLabel(scope.row) }}</el-tag></template></el-table-column>
         <el-table-column prop="recipient_count" label="收件人数" width="90" />
         <el-table-column label="生成时间" width="170"><template #default="scope"><time>{{ displayMoment(scope.row.generated_at) }}</time></template></el-table-column>
         <el-table-column label="投递时间" width="170"><template #default="scope"><time>{{ displayMoment(scope.row.delivered_at) }}</time></template></el-table-column>
@@ -691,7 +714,7 @@ onMounted(() => void refresh())
           <div class="security-detail-tags">
             <el-tag :type="selected.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{ selected.generation_source === 'manual' ? '手动生成' : '自动生成' }}</el-tag>
             <el-tag :type="tagType(selected.generation_status)" size="small">{{ generationLabel(selected.generation_status) }}</el-tag>
-            <el-tag :type="tagType(selected.delivery_status)" size="small">{{ deliveryLabel(selected.delivery_status) }}</el-tag>
+            <el-tag :type="reportDeliveryTagType(selected)" size="small">{{ reportDeliveryLabel(selected) }}</el-tag>
           </div>
           <p class="security-detail-period">统计窗口 <time>{{ displayPeriod(selected.period_start, selected.period_end) }}</time></p>
         </div>

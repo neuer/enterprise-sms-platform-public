@@ -50,7 +50,7 @@ def test_resend_idempotency_key_binds_stable_delivery_identity_not_new_request()
     )
     second_key = transport.headers["Idempotency-Key"] if transport.headers else ""
     assert first_key == second_key
-    assert first_key == f"security-daily-{report.report_date}-10086"
+    assert first_key == f"security-daily-{report.report_date}-10086-g1"
     assert str(first_request) not in first_key
     assert str(second_request) not in second_key
     assert "re_test_value" not in first_key

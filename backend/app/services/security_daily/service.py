@@ -30,6 +30,7 @@ from app.services.security_daily.contract import (
     SecurityDailyStateConflict,
     SecurityDailyUnavailable,
     SecurityDailyValidationError,
+    recipient_set_digest,
     validate_security_daily_payload,
 )
 from app.services.security_daily.control import (
@@ -100,6 +101,10 @@ class SecurityDailyRepository(Protocol):
 
     async def exists_sent_delivery(self, report_date: date) -> bool: ...
 
+    async def latest_delivery_request(
+        self, report_id: int
+    ) -> SecurityDailyDeliveryRequest | None: ...
+
     async def request_delivery(
         self,
         report: SecurityDailyReportRecord,
@@ -108,6 +113,8 @@ class SecurityDailyRepository(Protocol):
         principal: SecurityPrincipal | None = None,
         ip: str | None = None,
         system: bool = False,
+        control_evidence: str = "missing",
+        recipient_set_digest: str = "",
     ) -> SecurityDailyDeliveryRequest: ...
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]: ...
@@ -435,13 +442,25 @@ class SecurityDailyService:
             raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
         if action == "retry" and (record.last_error or "").startswith("投递结果未知"):
             raise SecurityDailyStateConflict("投递结果未知，禁止盲目重试")
+        latest = await self.repository.latest_delivery_request(record.id)
+        evidence = "missing"
+        if latest is not None:
+            try:
+                evidence = await self.control.inspect_delivery(latest.request_id)
+            except SecurityDailyControlError:
+                evidence = "unknown"
+        configuration = await self.repository.configuration()
         request = await self.repository.request_delivery(
             record,
             action,
             principal=principal,
             ip=ip,
             system=system,
+            control_evidence=evidence,
+            recipient_set_digest=recipient_set_digest(configuration.recipients),
         )
+        if evidence in {"claimed", "result", "unknown"}:
+            return request
         resubmit_pending = (
             request.idempotent and request.state == "pending" and action == "send"
         )

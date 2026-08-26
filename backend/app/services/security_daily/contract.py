@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -91,6 +92,13 @@ def validate_resend_api_key(value: str, *, allow_empty: bool = True) -> str:
     if any(character.isspace() for character in normalized):
         raise SecurityDailyConfigurationError("Resend Key 不能包含空白字符")
     return normalized
+
+
+def recipient_set_digest(recipients: Sequence[str]) -> str:
+    """对收件人集合做单向摘要；日志和审计只保存 digest，不保存地址。"""
+
+    material = ",".join(sorted(item.strip().casefold() for item in recipients))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def validate_resend_recipients(values: Sequence[str]) -> tuple[str, ...]:
@@ -340,6 +348,8 @@ class SecurityDailyDeliveryRequest:
     idempotent: bool
     config_version: int = 1
     delivery_id: str = ""
+    delivery_generation: int = 1
+    recipient_set_digest: str = ""
 
     def __post_init__(self) -> None:
         if (
@@ -348,11 +358,25 @@ class SecurityDailyDeliveryRequest:
             or self.config_version < 1
         ):
             raise SecurityDailyConfigurationError("安全日报配置版本无效")
+        if (
+            not isinstance(self.delivery_generation, int)
+            or isinstance(self.delivery_generation, bool)
+            or self.delivery_generation < 1
+        ):
+            raise SecurityDailyConfigurationError("安全日报投递世代无效")
         if self.delivery_id and (
             len(self.delivery_id) > 128
             or any(character.isspace() for character in self.delivery_id)
         ):
             raise SecurityDailyConfigurationError("安全日报投递身份无效")
+        if self.recipient_set_digest and (
+            len(self.recipient_set_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.recipient_set_digest
+            )
+        ):
+            raise SecurityDailyConfigurationError("安全日报收件人摘要无效")
 
 
 @dataclass(frozen=True, slots=True)
