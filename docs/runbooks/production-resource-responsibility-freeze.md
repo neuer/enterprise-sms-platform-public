@@ -609,13 +609,18 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 credential 窄修复必须使用 [部署手册](../../deploy/README.md#安装受控包装器与-systemd)
 中的固定 OLD/NEW、`apply/resume/rollback/upgrade-accept` 流程；禁止手工覆盖六个目标或直接
 改写 canonical state。
-该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl start/enable、
-secret、`.env` 或 release。安装后人工核对 `/etc/sms-platform/compose.env` 与 lifecycle 配置，运行
+该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl enable、
+secret、`.env` 或 release；唯一例外是窄升级的 `upgrade-accept` 在 installer 锁内同步启动一次
+`sms-storage-preflight.service`，绝不启动 Docker、平台、vendor 或维护服务。该命令失败或超时会
+保留旧 canonical state 与 upgrade intent；`active/activating/deactivating` 或 `Job` 非空时，
+accept/resume/rollback 均失败关闭。排障并确认 preflight 静止且 PID 1 无 pending job 后，只能用
+相同 OLD/NEW 重试，禁止手工改写状态。安装后人工核对 `/etc/sms-platform/compose.env` 与 lifecycle 配置，运行
 `systemd-analyze verify`、`sms-storage-preflight` 和宿主 Python preflight；首个 bootstrap 前平台与
 四个 timer 保持 disabled/inactive。
 
-完成上述读回后，人工 `daemon-reload`，先启动 storage preflight，再解除 containerd/Docker 的
-mask 并启动二者；立即执行：
+仅常规首次安装路径在完成上述读回后，人工 `daemon-reload` 并先启动一次
+storage preflight，再解除 containerd/Docker 的 mask 并启动二者；窄升级路径已由
+`upgrade-accept` 同步完成该次预检，禁止手工重复启动。随后立即执行：
 
 ```bash
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/production_host_preflight.py runtime
