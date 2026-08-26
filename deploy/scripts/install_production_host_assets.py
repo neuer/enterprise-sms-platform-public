@@ -51,6 +51,7 @@ COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 DECIMAL_UID_RE = re.compile(r"(?:0|[1-9][0-9]*)")
 PREBOOTSTRAP_REPAIR_FROM_COMMIT = "555fb20b0d630ece9099a88a463eb1ce1121c012"
+PREBOOTSTRAP_REPAIR_TARGET_COMMIT = "109c10865b2aac3989bc4cebf3c60788f44b168c"
 PREBOOTSTRAP_REPAIR_ASSETS = frozenset(
     {
         "storage-preflight",
@@ -61,6 +62,8 @@ PREBOOTSTRAP_REPAIR_ASSETS = frozenset(
         "lifecycle-status-service",
     }
 )
+POST_FIRST_START_REPAIR_FROM_COMMIT = "109c10865b2aac3989bc4cebf3c60788f44b168c"
+POST_FIRST_START_REPAIR_ASSETS = frozenset({"storage-preflight"})
 HOST_MOUNTINFO_CREDENTIAL_LINE = b"LoadCredential=sms-host-mountinfo:/proc/1/mountinfo"
 HOST_MOUNTINFO_MARKER_LINE = b"Environment=SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL=1"
 HOST_MOUNTINFO_UNIT_ASSETS = frozenset(
@@ -464,6 +467,7 @@ def _validate_empty_docker_root(
     filesystem: str,
     expected_uid: int,
     expected_gid: int,
+    exact_mode: int,
 ) -> None:
     """固定 Docker 挂载根只允许空目录或 ext4 固有的安全 lost+found。"""
 
@@ -481,7 +485,7 @@ def _validate_empty_docker_root(
             not stat.S_ISDIR(metadata.st_mode)
             or metadata.st_uid != expected_uid
             or metadata.st_gid != expected_gid
-            or stat.S_IMODE(metadata.st_mode) != 0o711
+            or stat.S_IMODE(metadata.st_mode) != exact_mode
         ):
             raise HostAssetInstallError("Docker root is unsafe")
         observed_lost_found = False
@@ -913,7 +917,19 @@ class ProductionHostAssetInstaller:
         if result.returncode != 0:
             raise HostAssetInstallError("production storage preflight did not pass")
 
-    def _require_empty_docker_root(self) -> None:
+    def _require_empty_docker_root(self, *, exact_mode: int = 0o710) -> None:
+        filesystem = self._require_safe_docker_root(exact_mode=exact_mode)
+        _validate_empty_docker_root(
+            self.docker_root,
+            filesystem=filesystem,
+            expected_uid=self.expected_uid,
+            expected_gid=self.expected_gid,
+            exact_mode=exact_mode,
+        )
+
+    def _require_safe_docker_root(self, *, exact_mode: int = 0o710) -> str:
+        """Require the fixed Docker mount ownership and mode without requiring empty."""
+
         result = self.runner.run(
             (
                 FINDMNT_BINARY,
@@ -932,12 +948,17 @@ class ProductionHostAssetInstaller:
             ) from exc
         if result.returncode != 0 or filesystem not in {"ext4", "xfs"}:
             raise HostAssetInstallError("Docker root filesystem is unavailable")
-        _validate_empty_docker_root(
-            self.docker_root,
-            filesystem=filesystem,
-            expected_uid=self.expected_uid,
-            expected_gid=self.expected_gid,
-        )
+        _assert_existing_path_chain_no_symlinks(self.docker_root)
+        try:
+            _validate_existing_directory(
+                self.docker_root,
+                expected_uid=self.expected_uid,
+                expected_gid=self.expected_gid,
+                exact_mode=exact_mode,
+            )
+        except HostAssetInstallError as exc:
+            raise HostAssetInstallError("Docker root is unsafe") from exc
+        return filesystem
 
     def _require_docker_units_masked_inactive(self) -> None:
         for unit in ("docker.service", "docker.socket", "containerd.service"):
@@ -1110,6 +1131,7 @@ class ProductionHostAssetInstaller:
         """Verify the loaded units, then synchronously run the candidate preflight."""
 
         snapshot_by_name = {snapshot.spec.name: snapshot for snapshot in snapshots}
+        unit_snapshots: dict[str, AssetSnapshot] = {}
         for change in changes:
             snapshot = snapshot_by_name[change.snapshot.spec.name]
             destination = snapshot.spec.destination
@@ -1118,13 +1140,22 @@ class ProductionHostAssetInstaller:
                 ".timer",
             }:
                 continue
+            unit_snapshots[snapshot.spec.name] = snapshot
+
+        storage_snapshot = snapshot_by_name.get("storage-unit")
+        if storage_snapshot is None:
+            raise HostAssetInstallError("candidate storage systemd unit is unavailable")
+        unit_snapshots[storage_snapshot.spec.name] = storage_snapshot
+
+        for snapshot in unit_snapshots.values():
+            destination = snapshot.spec.destination
             unit = destination.name
+            if self._systemctl_property(unit, "LoadState") != "loaded":
+                raise HostAssetInstallError("candidate systemd unit is not loaded")
             if self._systemctl_property(unit, "FragmentPath") != str(destination):
                 raise HostAssetInstallError(
                     "candidate systemd unit fragment path is not loaded"
                 )
-            if self._systemctl_property(unit, "LoadState") != "loaded":
-                raise HostAssetInstallError("candidate systemd unit is not loaded")
             if self._systemctl_property(unit, "NeedDaemonReload") != "no":
                 raise HostAssetInstallError(
                     "candidate systemd unit still requires daemon-reload"
@@ -1221,26 +1252,65 @@ class ProductionHostAssetInstaller:
         return snapshots
 
     def _inspect_upgrade_readiness(
-        self, expected_commit: str
+        self, expected_commit: str, *, from_commit: str
     ) -> tuple[AssetSnapshot, ...]:
+        self._require_repair_target(from_commit, expected_commit)
         snapshots = self._source_snapshots(expected_commit)
         self._validate_plan_directories()
         self._require_storage_ready(snapshots)
         self._require_upgrade_prebootstrap()
-        self._require_empty_docker_root()
+        self._require_repair_docker_root(from_commit)
         return snapshots
 
-    def _require_upgrade_runtime_boundary(self) -> None:
+    def _require_upgrade_runtime_boundary(self, *, from_commit: str) -> None:
         """Recheck mutable pre-bootstrap state while holding the installer lock."""
 
         self._require_storage_preflight_quiescent(allow_failed=True)
         self._require_upgrade_prebootstrap()
-        self._require_empty_docker_root()
+        self._require_repair_docker_root(from_commit)
+
+    @staticmethod
+    def _repair_assets(from_commit: str) -> frozenset[str]:
+        """Return the exact reviewed scope for one fixed repair profile."""
+
+        if from_commit == PREBOOTSTRAP_REPAIR_FROM_COMMIT:
+            return PREBOOTSTRAP_REPAIR_ASSETS
+        if from_commit == POST_FIRST_START_REPAIR_FROM_COMMIT:
+            return POST_FIRST_START_REPAIR_ASSETS
+        raise HostAssetInstallError(
+            "host asset repair does not match a fixed source commit"
+        )
+
+    @staticmethod
+    def _repair_requires_empty_docker_root(from_commit: str) -> bool:
+        ProductionHostAssetInstaller._repair_assets(from_commit)
+        return from_commit == PREBOOTSTRAP_REPAIR_FROM_COMMIT
+
+    @staticmethod
+    def _require_repair_target(from_commit: str, expected_commit: str) -> None:
+        """Keep the retired 555 repair bound to its last reviewed target."""
+
+        ProductionHostAssetInstaller._repair_assets(from_commit)
+        if (
+            from_commit == PREBOOTSTRAP_REPAIR_FROM_COMMIT
+            and expected_commit != PREBOOTSTRAP_REPAIR_TARGET_COMMIT
+        ):
+            raise HostAssetInstallError(
+                "legacy pre-bootstrap repair requires its fixed target commit"
+            )
+
+    def _require_repair_docker_root(self, from_commit: str) -> None:
+        if self._repair_requires_empty_docker_root(from_commit):
+            self._require_empty_docker_root(exact_mode=0o711)
+        else:
+            self._require_safe_docker_root()
 
     def _changes_from_manifests(
         self,
         state: InstalledState,
         snapshots: Sequence[AssetSnapshot],
+        *,
+        from_commit: str,
     ) -> tuple[UpgradeChange, ...]:
         by_name = {snapshot.spec.name: snapshot for snapshot in snapshots}
         changes: list[UpgradeChange] = []
@@ -1256,10 +1326,14 @@ class ProductionHostAssetInstaller:
         if not changes:
             raise HostAssetInstallError("host asset upgrade has no changed assets")
         if {change.snapshot.spec.name for change in changes} != set(
-            PREBOOTSTRAP_REPAIR_ASSETS
+            self._repair_assets(from_commit)
         ):
+            if from_commit == PREBOOTSTRAP_REPAIR_FROM_COMMIT:
+                raise HostAssetInstallError(
+                    "pre-bootstrap repair must change exactly the reviewed six assets"
+                )
             raise HostAssetInstallError(
-                "pre-bootstrap repair must change exactly the reviewed six assets"
+                "post-first-start repair must change exactly storage-preflight"
             )
         return tuple(changes)
 
@@ -1292,10 +1366,37 @@ class ProductionHostAssetInstaller:
         self,
         changes: Sequence[UpgradeChange],
         old_payloads: Mapping[str, bytes],
+        *,
+        from_commit: str,
     ) -> None:
         by_name = {change.snapshot.spec.name: change for change in changes}
-        if set(by_name) != set(PREBOOTSTRAP_REPAIR_ASSETS):
-            raise HostAssetInstallError("pre-bootstrap repair scope is invalid")
+        if set(by_name) != set(self._repair_assets(from_commit)):
+            raise HostAssetInstallError("host asset repair scope is invalid")
+        if from_commit == POST_FIRST_START_REPAIR_FROM_COMMIT:
+            change = by_name["storage-preflight"]
+            old_payload = old_payloads.get("storage-preflight")
+            if old_payload is None or hashlib.sha256(old_payload).hexdigest() != str(
+                change.old_item["sha256"]
+            ):
+                raise HostAssetInstallError(
+                    "post-first-start repair old asset has drifted"
+                )
+            old_contract = (
+                b'"docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o711, "xfs", "uuid-tag", 2,'
+            )
+            new_contract = (
+                b'"docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o710, "xfs", "uuid-tag", 2,'
+            )
+            if (
+                old_payload.count(old_contract) != 1
+                or change.snapshot.payload.count(new_contract) != 1
+                or old_payload.replace(old_contract, new_contract, 1)
+                != change.snapshot.payload
+            ):
+                raise HostAssetInstallError(
+                    "post-first-start repair must only fix Docker root mode 0711 to 0710"
+                )
+            return
         for name in HOST_MOUNTINFO_UNIT_ASSETS:
             change = by_name[name]
             old_payload = old_payloads.get(name)
@@ -1337,19 +1438,22 @@ class ProductionHostAssetInstaller:
     def _inspect_upgrade_plan(
         self, from_commit: str, expected_commit: str
     ) -> tuple[tuple[AssetSnapshot, ...], InstalledState, tuple[UpgradeChange, ...]]:
-        if from_commit != PREBOOTSTRAP_REPAIR_FROM_COMMIT:
-            raise HostAssetInstallError(
-                "pre-bootstrap repair does not match its fixed source commit"
-            )
-        snapshots = self._inspect_upgrade_readiness(expected_commit)
+        self._repair_assets(from_commit)
+        snapshots = self._inspect_upgrade_readiness(
+            expected_commit, from_commit=from_commit
+        )
         self._require_upgrade_intent_absent()
         state = self._validated_state_manifest()
         if state.commit != from_commit:
             raise HostAssetInstallError("installed state does not match from commit")
         self._require_state_destinations_exact(state)
-        changes = self._changes_from_manifests(state, snapshots)
+        changes = self._changes_from_manifests(
+            state, snapshots, from_commit=from_commit
+        )
         self._validate_prebootstrap_repair_contract(
-            changes, self._old_payloads_from_destinations(changes)
+            changes,
+            self._old_payloads_from_destinations(changes),
+            from_commit=from_commit,
         )
         return snapshots, state, changes
 
@@ -1812,15 +1916,18 @@ class ProductionHostAssetInstaller:
         raw_previous = intent.get("previous_assets")
         raw_changes = intent.get("changes")
         if (
-            from_commit != PREBOOTSTRAP_REPAIR_FROM_COMMIT
+            not isinstance(from_commit, str)
             or not isinstance(target_commit, str)
             or COMMIT_RE.fullmatch(target_commit) is None
             or not isinstance(raw_targets, list)
             or not isinstance(raw_previous, list)
             or not isinstance(raw_changes, list)
-            or set(raw_changes) != set(PREBOOTSTRAP_REPAIR_ASSETS)
             or _lexists(self._intent_path())
         ):
+            raise HostAssetInstallError("host asset upgrade status is invalid")
+        repair_assets = self._repair_assets(from_commit)
+        self._require_repair_target(from_commit, target_commit)
+        if set(raw_changes) != set(repair_assets):
             raise HostAssetInstallError("host asset upgrade status is invalid")
         targets = {
             str(item.get("name")): item
@@ -1888,7 +1995,7 @@ class ProductionHostAssetInstaller:
             for spec in self.assets
             if previous[spec.name]["sha256"] != targets[spec.name]["sha256"]
         }
-        if observed_changes != set(PREBOOTSTRAP_REPAIR_ASSETS):
+        if observed_changes != set(repair_assets):
             raise HostAssetInstallError("host asset upgrade status is invalid")
         raw_backups = intent.get("backups")
         if not isinstance(raw_backups, dict) or set(raw_backups) != observed_changes:
@@ -1983,11 +2090,8 @@ class ProductionHostAssetInstaller:
         allow_fresh: bool,
         action: str,
     ) -> dict[str, object]:
-        if from_commit != PREBOOTSTRAP_REPAIR_FROM_COMMIT:
-            raise HostAssetInstallError(
-                "pre-bootstrap repair does not match its fixed source commit"
-            )
-        self._require_upgrade_runtime_boundary()
+        self._repair_assets(from_commit)
+        self._require_upgrade_runtime_boundary(from_commit=from_commit)
         intent = self._load_upgrade_intent()
         if _lexists(self._upgrade_intent_path()) and intent is None:
             raise HostAssetInstallError("host asset upgrade intent is invalid")
@@ -2015,14 +2119,18 @@ class ProductionHostAssetInstaller:
             }
         if state.commit != from_commit:
             raise HostAssetInstallError("installed state does not match from commit")
-        changes = self._changes_from_manifests(state, snapshots)
+        changes = self._changes_from_manifests(
+            state, snapshots, from_commit=from_commit
+        )
         state_sha256 = hashlib.sha256(state.payload).hexdigest()
         if intent is None:
             if not allow_fresh:
                 raise HostAssetInstallError("host asset upgrade intent is missing")
             self._require_state_destinations_exact(state)
             backup_payloads = self._old_payloads_from_destinations(changes)
-            self._validate_prebootstrap_repair_contract(changes, backup_payloads)
+            self._validate_prebootstrap_repair_contract(
+                changes, backup_payloads, from_commit=from_commit
+            )
             intent = self._upgrade_intent_payload(
                 from_commit=from_commit,
                 expected_commit=expected_commit,
@@ -2046,7 +2154,9 @@ class ProductionHostAssetInstaller:
                 raise HostAssetInstallError("installed state changed during upgrade")
 
         backup_payloads = self._decode_upgrade_backups(intent, changes)
-        self._validate_prebootstrap_repair_contract(changes, backup_payloads)
+        self._validate_prebootstrap_repair_contract(
+            changes, backup_payloads, from_commit=from_commit
+        )
         destination_states = self._upgrade_destination_states(state, snapshots, changes)
         if all(
             destination_states[change.snapshot.spec.name] == "new" for change in changes
@@ -2097,11 +2207,10 @@ class ProductionHostAssetInstaller:
 
         if self.effective_uid != 0:
             raise HostAssetInstallError("upgrade acceptance requires root")
-        if from_commit != PREBOOTSTRAP_REPAIR_FROM_COMMIT:
-            raise HostAssetInstallError(
-                "pre-bootstrap repair does not match its fixed source commit"
-            )
-        snapshots = self._inspect_upgrade_readiness(expected_commit)
+        self._repair_assets(from_commit)
+        snapshots = self._inspect_upgrade_readiness(
+            expected_commit, from_commit=from_commit
+        )
         with self._exclusive_lock():
             intent = self._load_upgrade_intent()
             if intent is None:
@@ -2119,7 +2228,9 @@ class ProductionHostAssetInstaller:
                 raise HostAssetInstallError(
                     "installed state does not match from commit"
                 )
-            changes = self._changes_from_manifests(state, snapshots)
+            changes = self._changes_from_manifests(
+                state, snapshots, from_commit=from_commit
+            )
             self._validate_upgrade_intent_contract(
                 intent,
                 from_commit=from_commit,
@@ -2142,12 +2253,15 @@ class ProductionHostAssetInstaller:
             ):
                 raise HostAssetInstallError("host asset upgrade is incomplete")
             backup_payloads = self._decode_upgrade_backups(intent, changes)
-            self._validate_prebootstrap_repair_contract(changes, backup_payloads)
+            self._validate_prebootstrap_repair_contract(
+                changes, backup_payloads, from_commit=from_commit
+            )
+            self._require_exact_target_assets(snapshots)
             self._require_upgrade_acceptance(
                 snapshots,
                 changes,
             )
-            self._require_upgrade_runtime_boundary()
+            self._require_upgrade_runtime_boundary(from_commit=from_commit)
             self._require_exact_target_assets(snapshots)
             temporary = _stage_regular(
                 self.state_path,
@@ -2182,13 +2296,12 @@ class ProductionHostAssetInstaller:
     def _rollback_upgrade(
         self, *, from_commit: str, expected_commit: str
     ) -> dict[str, object]:
-        if from_commit != PREBOOTSTRAP_REPAIR_FROM_COMMIT:
-            raise HostAssetInstallError(
-                "pre-bootstrap repair does not match its fixed source commit"
-            )
-        snapshots = self._inspect_upgrade_readiness(expected_commit)
+        self._repair_assets(from_commit)
+        snapshots = self._inspect_upgrade_readiness(
+            expected_commit, from_commit=from_commit
+        )
         with self._exclusive_lock():
-            self._require_upgrade_runtime_boundary()
+            self._require_upgrade_runtime_boundary(from_commit=from_commit)
             intent = self._load_upgrade_intent()
             if intent is None:
                 raise HostAssetInstallError("host asset upgrade intent is missing")
@@ -2199,7 +2312,9 @@ class ProductionHostAssetInstaller:
                 raise HostAssetInstallError(
                     "installed state does not match from commit"
                 )
-            changes = self._changes_from_manifests(state, snapshots)
+            changes = self._changes_from_manifests(
+                state, snapshots, from_commit=from_commit
+            )
             self._validate_upgrade_intent_contract(
                 intent,
                 from_commit=from_commit,
@@ -2215,7 +2330,9 @@ class ProductionHostAssetInstaller:
                 raise HostAssetInstallError("installed state changed during upgrade")
             self._upgrade_destination_states(state, snapshots, changes)
             backups = self._decode_upgrade_backups(intent, changes)
-            self._validate_prebootstrap_repair_contract(changes, backups)
+            self._validate_prebootstrap_repair_contract(
+                changes, backups, from_commit=from_commit
+            )
             restored = 0
             for change in changes:
                 spec = change.snapshot.spec
@@ -2275,7 +2392,9 @@ class ProductionHostAssetInstaller:
                 "both production host confirmations are required"
             )
         if from_commit is not None:
-            snapshots = self._inspect_upgrade_readiness(expected_commit)
+            snapshots = self._inspect_upgrade_readiness(
+                expected_commit, from_commit=from_commit
+            )
             with self._exclusive_lock():
                 return self._upgrade_or_resume(
                     from_commit=from_commit,
@@ -2299,7 +2418,9 @@ class ProductionHostAssetInstaller:
         if self.effective_uid != 0:
             raise HostAssetInstallError("resume requires root")
         if from_commit is not None:
-            snapshots = self._inspect_upgrade_readiness(expected_commit)
+            snapshots = self._inspect_upgrade_readiness(
+                expected_commit, from_commit=from_commit
+            )
             with self._exclusive_lock():
                 return self._upgrade_or_resume(
                     from_commit=from_commit,

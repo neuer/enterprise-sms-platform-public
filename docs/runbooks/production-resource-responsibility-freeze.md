@@ -110,6 +110,10 @@ Docker Engine 29 及以后在全新安装时默认把 image/container snapshot �
 `overlay2`，显式关闭 containerd image store；不得用 symlink/bind 临时搬迁 `/var/lib/containerd`。
 29.7.2 仍须先通过同规格预生产，才能从 `candidate` 变为 `approved`。最终冻结记录必须明确
 Engine/Compose/containerd 完整版本、日志上限、cgroup、ulimit 和 `docker info` 读回。
+当前候选 29.7.2 在 daemon 初始化 data-root 时会将 `/var/lib/docker` 收敛为
+`root:root 0710`。Phase 0 因此把 `0710` 作为初启前后全生命周期唯一合同；它比旧
+`0711` 去掉了 other 执行权限，是更严格的模式。禁止为了让旧预检通过而手工改回
+`0711`；该权限合同的技术验收不能代替上述预生产、RF-07 基线证据或正式批准。
 
 公司网络团队提供不与办公网、VPN、双机房、厂商以及 `172.31.250.0/24` 重叠的 Docker 地址池
 后，生产 `/etc/docker/daemon.json` 必须按下列基线生成；尖括号是阻断占位符，未替换前文件无效，
@@ -230,7 +234,7 @@ readback 与另一名自然人复核。
 | OS 根 | 100 GiB OS VMDK | LVM 上 ext4 | `/` | `root:root 0755` | 94 GiB 且不少于根 LV 的 97% |
 | OS `/boot` | 同一 OS VMDK | 2 GiB ext4 | `/boot` | `root:root 0755` | 1.8 GiB |
 | OS EFI | 同一 OS VMDK | 1127219200 B vfat | `/boot/efi` | `root:root 0755` | 0.98 GiB |
-| Docker | 250 GiB | XFS，`ftype=1` | `/var/lib/docker` | `root:root 0711` | 245 GiB |
+| Docker | 250 GiB | XFS，`ftype=1` | `/var/lib/docker` | `root:root 0710` | 245 GiB |
 | PostgreSQL | 400 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/postgres` | `root:root 0750` | 392 GiB |
 | Redis | 100 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/redis` | `root:root 0750` | 98 GiB |
 | Runtime | 200 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/runtime` | `root:root 0750` | 196 GiB |
@@ -271,10 +275,12 @@ LVM 或 ext4，当前工具会失败关闭；必须先变更本决策、实现�
 5. 置备工具只对四个固定挂载点逐个 mount；禁止用 `mount -a` 触碰 fstab 中无关文件系统。
    挂载后逐盘用 `findmnt --target`、`lsblk -f`、`df -B1` 和设备 major:minor 读回；四个 XFS
    挂载点都用 `xfs_info <固定挂载点>` 确认 `ftype=1`。
-6. 只有挂载验真后才创建第 5.3 节八个子目录。随后安装存储 preflight 与 Docker systemd
+6. 只有挂载验真后才创建第 5.3 节八个子目录，并把 `/var/lib/docker` 固定为
+   `root:root 0710`。随后安装存储 preflight 与 Docker systemd
    drop-in；preflight 成功前 Docker 必须保持 masked/stopped。
 7. Docker 第一次启动后确认 `DockerRootDir=/var/lib/docker`、storage driver 符合公司基线，
-   XFS 时 `Supports d_type: true`。任何 Docker 数据曾落到 OS 盘都必须停机调查，不能由脚本搬迁。
+   XFS 时 `Supports d_type: true`，且挂载点仍精确为 `root:root 0710`。任何 Docker 数据曾落到
+   OS 盘都必须停机调查，不能由脚本搬迁。
 
 fstab 字段模板以 [生产存储手册](../../deploy/storage.md) 为唯一可执行依据。扩容只允许增加
 已核对 VMDK：数据盘执行 `xfs_growfs`；OS 盘必须依次扩大最后分区、同一 PV、同一根 LV 和
@@ -607,8 +613,42 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 尖括号必须替换为将要安装的 40 位候选 commit，不能原样执行。
 若该主机已在固定旧 commit 完成首装，但仍未首次启动 Docker，上述 mountinfo
 credential 窄修复必须使用 [部署手册](../../deploy/README.md#安装受控包装器与-systemd)
-中的固定 OLD/NEW、`apply/resume/rollback/upgrade-accept` 流程；禁止手工覆盖六个目标或直接
-改写 canonical state。
+中固定的 `555fb20b0d630ece9099a88a463eb1ce1121c012` →
+`109c10865b2aac3989bc4cebf3c60788f44b168c`、`apply/resume/rollback/upgrade-accept`
+流程；禁止把 NEW 指向其它 commit、手工覆盖六个目标或直接改写 canonical state。该历史路径
+只接受空 data-root 的 `0711`；到达 `109c108...` 后须在该版本完成一次受控 Docker 技术首启，
+随后停止并重新 mask Docker/containerd、保持平台未 bootstrap，再使用下述第二 profile 收敛到
+当前全生命周期 `0710` 合同和新合并 SHA。
+若主机已在 `109c10865b2aac3989bc4cebf3c60788f44b168c` 完成宿主资产首装并已技术
+首启 Docker，但尚未 bootstrap，旧 preflight 会把 Docker 稳态 `root:root 0710` 报为错误。
+此时只能按部署手册中第二个固定 repair profile，使用下列同一 CLI 参数从该旧 SHA
+升级到已审核、干净的新合并 SHA：
+
+```bash
+OLD_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
+NEW_COMMIT='<40位新合并commit>'
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
+  --confirm-dedicated-production-host --confirm-vcenter-storage-reviewed
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
+  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
+```
+
+该 profile 只允许 `storage-preflight` 一项宿主资产变化；Docker data-root 可非空但必须原样
+保留，Docker/containerd 三个 unit 必须 masked/inactive，平台、vendor、四个维护 service、
+四个 timer 和 release root 必须仍符合 pre-bootstrap 边界。候选 preflight 必须与旧 payload
+逐字节相同，唯一允许的差异是将唯一的 Docker MountRequirement `0o711` 替换为
+`0o710`；同一文件内任何其它字节变化都失败关闭。`apply/resume` 只写 root-only intent
+并原子替换该一项资产；替换前必须先用绑定候选 commit 的字节通过内联只读 preflight。
+`upgrade-accept` 必须新启动正式 preflight，读到
+`Result=success`/`ExecMainStatus=0` 且再次验真全部边界后才最后提交 canonical state。
+accept 前可用同一 OLD/NEW 和 `--confirm-rollback-this-install` 执行 `rollback`；它只恢复
+旧 preflight，因其会继续将 `0710` 报错，所以 rollback 是安全 No-Go，不是恢复启动。
+该一次性修复不关闭 ENG-03，也不得将 29.7.2 改标为 `approved`；RF-07 与 RF-12 仍只能
+依各自受限证据和责任人批准收口。
 该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl enable、
 secret、`.env` 或 release；唯一例外是窄升级的 `upgrade-accept` 在 installer 锁内同步启动一次
 `sms-storage-preflight.service`，绝不启动 Docker、平台、vendor 或维护服务。该命令失败或超时会
@@ -619,7 +659,7 @@ accept/resume/rollback 均失败关闭。排障并确认 preflight 静止且 PID
 四个 timer 保持 disabled/inactive。
 
 仅常规首次安装路径在完成上述读回后，人工 `daemon-reload` 并先启动一次
-storage preflight，再解除 containerd/Docker 的 mask 并启动二者；窄升级路径已由
+storage preflight，再解除 containerd/Docker 的 mask 并启动二者；两种窄修复路径已由
 `upgrade-accept` 同步完成该次预检，禁止手工重复启动。随后立即执行：
 
 ```bash

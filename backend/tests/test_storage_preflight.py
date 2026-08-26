@@ -333,6 +333,37 @@ def test_fixed_storage_contract_matches_approved_vmdks_and_subpaths() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_passed"),
+    (
+        (0o710, True),
+        (0o711, False),
+        (0o755, False),
+    ),
+)
+def test_docker_data_root_mode_is_exact_and_fails_closed(
+    mode: int,
+    expected_passed: bool,
+) -> None:
+    probe = valid_probe()
+    path = Path("/var/lib/docker")
+    probe.stats[path] = fake_stat(mode, 0, 0, 2)
+
+    report = inspect_storage(probe)
+    root_mode_findings = [
+        finding
+        for finding in report.findings
+        if finding.path == path and finding.code == "wrong_mode"
+    ]
+
+    assert report.passed is expected_passed
+    if expected_passed:
+        assert root_mode_findings == []
+    else:
+        assert len(root_mode_findings) == 1
+        assert root_mode_findings[0].detail == f"expected 0710, got {mode:04o}"
+
+
 def test_complete_distinct_storage_layout_passes() -> None:
     report = inspect_storage(valid_probe())
 

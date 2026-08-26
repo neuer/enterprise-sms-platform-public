@@ -161,7 +161,7 @@ MOUNT_REQUIREMENTS = (
         frozenset(),
     ),
     MountRequirement(
-        "docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o711, "xfs", "uuid-tag", 2,
+        "docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o710, "xfs", "uuid-tag", 2,
         frozenset({"nodev", "nosuid"}),
     ),
     MountRequirement(

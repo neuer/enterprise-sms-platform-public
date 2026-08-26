@@ -61,8 +61,12 @@ EFI 使用表中按真实 Ubuntu 布局冻结的独立下限。JSON 用 `capacit
 lifecycle systemd service 通过固定 `ReadWritePaths` 使用；不得回退到旧的
 `/var/lib/sms-platform/backups`。
 
-挂载点本身固定为 `root:root`：`/`、`/boot`、`/boot/efi` 是 `0755`，`/var/lib/docker` 是
-`0711`，其余三个数据挂载点是 `0750`。预检要求上述 owner/mode 精确匹配；宽松权限同样失败。
+挂载点本身固定为 `root:root`：`/`、`/boot`、`/boot/efi` 是 `0755`，`/var/lib/docker` 全生命周期
+唯一允许 `0710`，其余三个数据挂载点是 `0750`。预检要求上述 owner/mode 精确匹配；
+宽松权限同样失败。当前候选 Docker Engine 29.7.2 会在 daemon 初始化 data-root 时将该目录
+收敛为 `0710`；该模式比旧 `0711` 去掉了 other 用户的执行权限，是更严格而不是放宽。
+因此初启前后不做分阶段权限切换，也不得为通过预检手工改回 `0711`。这一技术合同
+不代表 29.7.2 已获生产批准；候选版本仍须完成同规格预生产与受限变更证据。
 
 ## 首次置备
 
@@ -101,7 +105,8 @@ UUID 和用途。不得根据易漂移的 `/dev/sdX` 名称猜测目标，更不
    条目产生唯一的 `non-bind mount source /swap.img is a directory or regular file` warning；
    其它 warning 或错误均失败关闭。
 4. 仅在挂载核对成功后，由 root 按上表创建固定子目录及 owner/mode。不得让应用预检代建。
-5. 在 Docker 第一次启动前确认 `/var/lib/docker` 确实是 250 GiB VMDK 的挂载点且为空。
+5. 在 Docker 第一次启动前确认 `/var/lib/docker` 确实是 250 GiB VMDK 的挂载点、
+   为空，且已是全生命周期固定的 `root:root 0710`。
 6. 安装只读预检及 production-only systemd 资产：
 
    ```bash
@@ -144,6 +149,12 @@ XFS 设备的附加挂载。预检只允许这七个固定 `_data` target，并�
 canonical、root 控制且与 `/var/lib/docker` 同一设备；这些控制目录本身不得成为独立 mount，
 防止卷元数据或目标层静默落到 OS 盘、临时文件系统或其它 VMDK。预检失败不得用
 `ExecStartPre=-...`、临时删除依赖或手工执行 Compose 绕过。
+
+如果专用生产主机已在 `109c10865b2aac3989bc4cebf3c60788f44b168c` 完成宿主资产首装并
+已技术首启 Docker，从而保留了非空 data-root 元数据，但因旧 preflight 期待 `0711` 而失败，
+只能使用 [部署手册](README.md#安装受控包装器与-systemd) 中固定旧 SHA 的一次性、仅
+`storage-preflight` 修复流程。该流程不要求 Docker root 为空，但严禁删除或重建其内容；
+它也不授权手工 `chmod`、直接覆盖预检文件或开始平台 bootstrap。
 
 ## 70/80/90 阈值
 
