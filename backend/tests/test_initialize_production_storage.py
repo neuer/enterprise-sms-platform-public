@@ -5,6 +5,7 @@ import importlib
 import io
 import json
 import os
+import pty
 import stat
 import subprocess
 import sys
@@ -1694,6 +1695,37 @@ class RejectConfirmation:
         del plan
         self.called = True
         raise self.module.StorageInitializationError("interactive_confirmation_failed")
+
+
+def test_tty_confirmation_supports_a_non_seekable_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = initializer_module()
+    master_fd, slave_fd = pty.openpty()
+    plan = SimpleNamespace(
+        observations={
+            role: SimpleNamespace(serial=f"{role}-serial")
+            for role in module.DATA_ROLES
+        },
+        confirmation_token="ERASE-4-DATA-DISKS-host-0123456789abcdef",
+    )
+    answers = [
+        *(f"{role}-serial" for role in module.DATA_ROLES),
+        plan.confirmation_token,
+    ]
+
+    def open_tty(path: str, flags: int) -> int:
+        assert path == "/dev/tty"
+        assert flags & os.O_RDWR
+        return os.dup(slave_fd)
+
+    monkeypatch.setattr(module.os, "open", open_tty)
+    try:
+        os.write(master_fd, ("\n".join(answers) + "\n").encode())
+        module.TtyConfirmationReader().confirm(plan)
+    finally:
+        os.close(master_fd)
+        os.close(slave_fd)
 
 
 def test_apply_confirmation_failure_occurs_before_control_or_destructive_write() -> None:

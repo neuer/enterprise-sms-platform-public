@@ -1337,18 +1337,21 @@ class TtyConfirmationReader:
         try:
             if not os.isatty(descriptor):
                 raise StorageInitializationError("controlling_tty_required")
-            with os.fdopen(descriptor, "r+", encoding="utf-8", closefd=False) as tty:
+            with (
+                os.fdopen(os.dup(descriptor), "r", encoding="utf-8") as tty_input,
+                os.fdopen(os.dup(descriptor), "w", encoding="utf-8") as tty_output,
+            ):
                 for role in DATA_ROLES:
                     observation = plan.observations[role]
-                    tty.write(
+                    tty_output.write(
                         f"确认 {role} 数据盘，输入完整序列号 {observation.serial}: "
                     )
-                    tty.flush()
-                    if tty.readline(512).rstrip("\r\n") != observation.serial:
+                    tty_output.flush()
+                    if tty_input.readline(512).rstrip("\r\n") != observation.serial:
                         raise StorageInitializationError("interactive_confirmation_failed")
-                tty.write(f"最终确认，输入 {plan.confirmation_token}: ")
-                tty.flush()
-                if tty.readline(512).rstrip("\r\n") != plan.confirmation_token:
+                tty_output.write(f"最终确认，输入 {plan.confirmation_token}: ")
+                tty_output.flush()
+                if tty_input.readline(512).rstrip("\r\n") != plan.confirmation_token:
                     raise StorageInitializationError("interactive_confirmation_failed")
         finally:
             os.close(descriptor)
