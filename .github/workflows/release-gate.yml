@@ -90,7 +90,9 @@ jobs:
             ../deploy/scripts/offline_image_archive.py \
             ../deploy/scripts/release_manifest.py \
             ../scripts/verify_reproducible_release.py
-          uv run pytest -q --cov=app --cov-report=term-missing \
+          rm -f .coverage
+          SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh
+          uv run pytest -q --cov=app --cov-append --cov-report=term-missing \
             --cov-report=json:"${{ runner.temp }}/coverage.json"
           uv run python ../scripts/check_coverage_gates.py \
             "${{ runner.temp }}/coverage.json"
