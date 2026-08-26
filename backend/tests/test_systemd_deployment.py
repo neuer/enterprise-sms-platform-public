@@ -89,6 +89,8 @@ def test_partition_timer_uses_controlled_owner_job_with_retry_and_hardening() ->
         "RestrictAddressFamilies=AF_UNIX",
         "DevicePolicy=closed",
         "DeviceAllow=block-sd r",
+        "DeviceAllow=block-device-mapper r",
+        "/dev/disk/by-id",
         "ReadWritePaths=/run/sms-platform /run/docker.sock",
     ):
         assert token in service
@@ -149,7 +151,9 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
             "CapabilityBoundingSet=",
             "DevicePolicy=closed",
             "DeviceAllow=block-sd r",
+            "DeviceAllow=block-device-mapper r",
             "/dev/disk/by-uuid",
+            "/dev/disk/by-id",
             "ReadWritePaths=/var/lib/sms-platform/runtime/backups",
             "StandardError=journal",
         ):
@@ -161,6 +165,9 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
         assert "StateDirectory=" not in service
         assert "/var/lib/sms-platform/backups" not in service
         assert "PrivateDevices=yes" not in service
+        assert "DeviceAllow=block-sd rw" not in service
+        assert "DeviceAllow=block-device-mapper rw" not in service
+        assert "DeviceAllow=block-*" not in service
         assert "Environment=BACKUP_PASSPHRASE" not in service
         assert "AF_INET" not in service
         if operation in {"backup", "drill"}:

@@ -91,10 +91,10 @@ Ubuntu 原生提供 systemd、open-vm-tools、XFS/ext4 工具。ISO/生命周期
 |---|---|---|
 | 基础 | `ca-certificates curl gnupg jq util-linux tzdata sudo` | 来自公司批准的 Ubuntu 24.04 镜像；`tzdata` 必须含 `Asia/Shanghai` |
 | 存储 | `xfsprogs e2fsprogs` | 与实际文件系统匹配；两者均安装用于诊断/恢复；置备 UUID 使用固定 Python 3.12，不额外依赖 `uuid-runtime` |
-| 时间 | `chrony` | 只允许公司批准的 NTP；移除公共 pool，不得同时运行多个时间客户端 |
+| 时间 | systemd 自带 `systemd-timesyncd` | 只允许公司批准的内部 NTP，`FallbackNTP=` 置空；实际地址只进受限变更证据，不提交公开仓库；不得同时运行多个时间客户端 |
 | VMware | `open-vm-tools` | 发行版包，不安装第三方 ISO tools |
-| 远程运维 | `openssh-server openssh-client rsync` | 仅密钥登录；来源限管理 VPN/堡垒机 |
-| 宿主安全日志 | `rsyslog fail2ban logrotate` | `rsyslog` 必须实际生成 `/var/log/auth.log`；规则与轮转进入受限宿主基线 |
+| 远程运维 | `openssh-server openssh-client rsync` | 本阶段保留现状：禁止 root 直接 SSH，普通运维账号可通过管理 VPN/堡垒机使用密码或密钥，再按公司流程提权；SSH 加固不夹带在磁盘置备中 |
+| 宿主安全日志 | `rsyslog logrotate` | `rsyslog` 必须实际生成 `/var/log/auth.log`；规则与轮转进入受限宿主基线；`fail2ban` 暂不作为首发硬前置 |
 | 网络与维护 | `iptables needrestart` | Docker 使用 iptables backend；补丁窗读回重启需求，不允许工具自动重启生产 |
 | 密码学 | `openssl` | 版本写入包基线，不用于打印 secret 派生值 |
 | 数据库客户端 | `postgresql-client-16` | `psql --version` 主版本必须为 16 |
@@ -158,20 +158,25 @@ RF-07 交付一个已签名、可复核的 **Ubuntu 24.04 生产宿主基线 ID 
 
 - APT：精确内部 Ubuntu 与 Docker snapshot、`Signed-By` keyring、签名/有效期验证、移除公共
   source、精确 `apt install package=version` 清单、预生产通过后的 `apt-mark hold` 和包锁读回；
-- 运维身份：固定生产 operator 用户/UID/GID、仅公司 SSH key、仅管理 VPN/堡垒机来源；
-  `PermitRootLogin no`、`PasswordAuthentication no`，禁止加入 `docker` 组；sudoers 只安装经复核
-  的固定入口。由于当前 `/usr/local/sbin/sms-compose` 指向 operator 可写 checkout，`PLAT`
+- 运维身份：固定生产 operator 用户/UID/GID、仅管理 VPN/堡垒机来源；保留当前
+  `PermitRootLogin no`，普通运维账号继续允许密码或密钥认证，其他团队先登录普通账号再提权；
+  禁止 operator 加入 `docker` 组，sudoers 只安装经复核的固定入口。由于当前
+  `/usr/local/sbin/sms-compose` 指向 operator 可写 checkout，`PLAT`
   operator 在本版实际上是 **root-equivalent 的受信管理员**，不能宣传成低权限账号；还要冻结
   SSH key 指纹/轮换撤销、主机 host-key 指纹、发布端 `known_hosts` 发放与非交互 sudo 验收；
-- 时间与日志：唯一 chrony/NTP 实现、`Asia/Shanghai`、rsyslog 真实生成 `/var/log/auth.log`、
-  journald/rsyslog/fail2ban 保留和轮转、日志转发及磁盘上限；
-- SSH 与入侵阻断：公司批准的 `sshd_config`/drop-in、fail2ban jail、紧急解锁与堡垒机回退；
+- 时间与日志：唯一 `systemd-timesyncd` 实现、公司内部 NTP、空 `FallbackNTP=`、
+  `Asia/Shanghai`、rsyslog 真实生成 `/var/log/auth.log`、journald/rsyslog 保留和轮转、日志转发
+  及磁盘上限；
+- SSH 与入侵阻断：首发按上述现状冻结并记录风险接受，不在存储变更中改密码认证、转发、sudo、
+  防火墙或安装 fail2ban；紧急解锁与堡垒机回退仍须由公司运维流程负责。未来若扩大 SSH 来源或
+  取消 VPN 强制边界，必须先独立完成 SSH hardening 变更；
 - 内核与网络：与 Docker cgroup v2/iptables/转发兼容的 sysctl，禁止 ICMP redirect/source route，
   host firewall 与持久化 `DOCKER-USER` 规则，精确允许/拒绝和重启后读回；不得套用会关闭 Docker
   forwarding 或让已发布容器绕过策略的通用模板；至少明确并验证 `net.ipv4.ip_forward=1`、
   `vm.overcommit_memory=1`、Redis THP 关闭，以及 `rp_filter`/IPv6 的公司决策；
-- 文件与日志：OS/journal/auth/fail2ban 日志轮转，以及安全日报 access log 的日轮转、`.1/.1.gz`
-  保留和经验证的 Nginx reopen；不得用 logrotate 操作 Docker 内部 JSON 日志；
+- 文件与日志：OS/journal/auth 日志轮转；若后续独立 SSH hardening 变更安装 fail2ban，再纳入其
+  日志轮转；安全日报 access log 使用日轮转、`.1/.1.gz` 保留和经验证的 Nginx reopen；不得用
+  logrotate 操作 Docker 内部 JSON 日志；
 - 更新：常规补丁周期、CVE 紧急 SLA、维护窗、APT snapshot 保留/回退期、预生产验证、停平台、
   短期 VMware snapshot（若批准）、OS 重启、存储/runtime preflight、业务验收和 snapshot 删除读回。
 
@@ -182,7 +187,7 @@ Engine、Compose、containerd、内核或 systemd 变化，都要按新包锁在
 `apt upgrade` 均禁止。
 
 `production_host_preflight.py base/runtime` 只证明脚本明确列出的 OS/架构/资源/Python/systemd/
-时间/工具和 Docker runtime 子集；退出 0 **不证明** APT 来源、精确 package lock、sshd、chrony
+时间/工具和 Docker runtime 子集；退出 0 **不证明** APT 来源、精确 package lock、sshd、NTP
 来源、fail2ban、sysctl、firewall、日志轮转或补丁 SOP 已合格。这些必须由公司基线自身的只读
 readback 与另一名自然人复核。
 
@@ -222,16 +227,24 @@ readback 与另一名自然人复核。
 
 | 角色 | VMDK | 文件系统 | 挂载点 | 挂载点 owner/mode | 预检容量下限 |
 |---|---:|---|---|---|---:|
-| OS | 100 GiB | ext4 | `/` | `root:root 0755` | 98 GiB |
+| OS 根 | 100 GiB OS VMDK | LVM 上 ext4 | `/` | `root:root 0755` | 94 GiB 且不少于根 LV 的 97% |
+| OS `/boot` | 同一 OS VMDK | 2 GiB ext4 | `/boot` | `root:root 0755` | 1.8 GiB |
+| OS EFI | 同一 OS VMDK | 1127219200 B vfat | `/boot/efi` | `root:root 0755` | 0.98 GiB |
 | Docker | 250 GiB | XFS，`ftype=1` | `/var/lib/docker` | `root:root 0711` | 245 GiB |
 | PostgreSQL | 400 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/postgres` | `root:root 0750` | 392 GiB |
 | Redis | 100 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/redis` | `root:root 0750` | 98 GiB |
 | Runtime | 200 GiB | XFS，`ftype=1` | `/var/lib/sms-platform/runtime` | `root:root 0750` | 196 GiB |
 
-OS 盘固定为 GPT：`512 MiB` EFI System Partition，其余空间为单一 ext4 `/`；不建独立 `/boot`、
-swap 分区或 LVM，swap 默认关闭。这样 100 GiB VMDK 的根文件系统仍能满足预检的 98 GiB 下限。
-若公司模板强制独立 `/boot`、LVM 或 swap，当前冻结合同和磁盘置备工具会失败关闭；必须先变更
-架构决策、脚本和预生产用例后重新审批，不能仅扩大 OS VMDK 或下调预检阈值绕过。
+OS 盘保留已置备的 Ubuntu 24.04 GPT/LVM 结构：512 B 逻辑扇区；分区 1 从 sector 2048 开始、
+1127219200 B、ESP/vfat、挂载 `/boot/efi`；分区 2 从 sector 2203648 开始、2 GiB/ext4、挂载
+`/boot`；分区 3 从 sector 6397952 开始、`LVM2_member`，覆盖余下空间且距盘尾不超过 8 MiB。
+第三分区只允许一个 `/dev/mapper/ubuntu--vg-ubuntu--lv` 根 LV，PV/LV 容量差不超过 8 MiB，
+根 ext4 唯一挂载 `/`。三个 PARTUUID、PV UUID、根 UUID 和固定起点纳入身份校验。
+
+`/swap.img` 固定为根 ext4 上 `root:root 0600`、单链接、非稀疏且已分配的 8 GiB 普通文件，
+并且是唯一活动 swap；fstab 精确为 `/swap.img none swap sw 0 0`。初始化工具只读验证全部 OS
+对象，绝不分区、格式化、扩容或修复它们。后续 OS 扩容只能保持三个 PARTUUID/起点不变，依次
+扩大最后分区、同一 PV、同一根 LV 和同一 ext4；不得新增 PV/LV 或只完成其中一层。
 
 四块数据 VMDK 固定采用“一盘一个 XFS、无 LVM、无额外分区”的简单布局。公司标准若强制
 LVM 或 ext4，当前工具会失败关闭；必须先变更本决策、实现和预生产证据，不得在生产临时决定。
@@ -253,7 +266,7 @@ LVM 或 ext4，当前工具会失败关闭；必须先变更本决策、实现�
    确认”的设备才允许格式化。不得按 `/dev/sdX` 顺序猜盘，不使用 `mkfs -f` 覆盖已有签名。
 3. 对已批准的四个稳定 `/dev/disk/by-id/...` 路径执行 XFS 格式化；四盘都必须显式
    `-n ftype=1`。具体设备路径只能从当次受限变更单复制，本文不提供可直接运行的设备名。
-4. 用新文件系统 UUID 写入 `/etc/fstab`。除根盘外固定使用 `defaults,nodev,nosuid`，禁止
+4. 用新文件系统 UUID 写入 `/etc/fstab`。四个数据挂载点固定使用 `defaults,nodev,nosuid`，禁止
    `nofail`、`noauto`、`x-systemd.automount` 和内部 Docker `_data` 的 bind/mount 条目。
 5. 置备工具只对四个固定挂载点逐个 mount；禁止用 `mount -a` 触碰 fstab 中无关文件系统。
    挂载后逐盘用 `findmnt --target`、`lsblk -f`、`df -B1` 和设备 major:minor 读回；四个 XFS
@@ -264,8 +277,8 @@ LVM 或 ext4，当前工具会失败关闭；必须先变更本决策、实现�
    XFS 时 `Supports d_type: true`。任何 Docker 数据曾落到 OS 盘都必须停机调查，不能由脚本搬迁。
 
 fstab 字段模板以 [生产存储手册](../../deploy/storage.md) 为唯一可执行依据。扩容只允许增加
-已核对 VMDK，再按实际布局执行 `xfs_growfs`/`resize2fs`；禁止缩容、搬迁 Docker `_data`、删除
-WAL/AOF/备份或 prune 来跨过 70/80/90 阈值。
+已核对 VMDK：数据盘执行 `xfs_growfs`；OS 盘必须依次扩大最后分区、同一 PV、同一根 LV 和
+ext4。禁止缩容、搬迁 Docker `_data`、删除 WAL/AOF/备份或 prune 来跨过 70/80/90 阈值。
 
 ### 5.3 固定目录
 
@@ -295,7 +308,8 @@ RF-22 不能只写“12 vCPU/48 GiB/1050 GiB”。必须按首批应用真实峰
 - Docker：四个当前 digest、至少一个前向回退候选、容器可写层和 `20m × 5` 日志轮转的预算；
 - Runtime：imports 24h、exports 7 天、raw-spill 上限、安全日报目录（ENG-01 闭合后）、release
   状态和约 70 个加密备份；
-- 宿主：OS/journal/auth/fail2ban、CPU、内存、网络、数据库连接池和每个 worker RSS。
+- 宿主：OS/journal/auth、CPU、内存、网络、数据库连接池和每个 worker RSS；fail2ban 指标仅在
+  后续独立安装并启用后纳入。
 
 预生产使用同 digest、真实配置上界和隔离数据，至少验证：API 受理 P95<2000ms；标准性能冒烟
 停止施压后 active batch/三队列 480 秒内清零；首批应用给出的完整 12 小时积压在批准的厂商 QPS
@@ -311,7 +325,7 @@ RF-22 不能只写“12 vCPU/48 GiB/1050 GiB”。必须按首批应用真实峰
 
 | 源 | 目标 | 端口 | 规则 |
 |---|---|---:|---|
-| 管理 VPN/堡垒机精确网段 | 生产 VM | TCP 22 | 仅密钥登录；禁止 root 和密码登录 |
+| 管理 VPN/堡垒机精确网段 | 生产 VM | TCP 22 | 禁止 root 直接 SSH；本阶段保留普通账号密码/密钥登录现状，其他团队登录后再按流程提权 |
 | 公司 VPN 精确业务网段 | 企业 TLS 终结器 | TCP 18443 | 唯一浏览器/API 入口；手机也必须先接 VPN |
 | TLS 终结器精确主机 | 生产 VM 专用静态私网 IP 的 Web 上游 | TCP 18080 | 来源必须是逐主机 `/32` 或 `/128` |
 | 本机 | API | TCP 8000 | 只绑定 `127.0.0.1`，不对网络开放 |
@@ -549,8 +563,10 @@ inventory 的 application-only release 可进入后续评估。
 4. 从这个已核对 commit 按磁盘置备手册把专用脚本安装到 root 控制路径，完成第 5 节人工
    plan/apply/status、UUID fstab、挂载和固定目录创建；正式 apply 前必须已有同脚本 SHA 的
    disposable VMware/PVSCSI 演练证据。
-   演练还必须使用仓库原始 hardened unit 验证 PID 1 宿主 mountinfo、只读 `block-sd` 设备授权、
-   `findmnt --verify` 零警告，以及七个固定 Docker bind 正常通过/任意额外 bind 失败关闭。
+   演练还必须使用仓库原始 hardened unit 验证 PID 1 宿主 mountinfo、只读 `block-sd` 与
+   `block-device-mapper` 设备授权、`/dev/disk/by-uuid` 与 `/dev/disk/by-id` 只读可见、
+   `findmnt --verify` 零错误且至多出现固定 `/swap.img` 的一个已知 warning，以及七个固定 Docker
+   bind 正常通过/任意额外 bind 失败关闭。
 5. 从同一 APT snapshot 安装 Docker 精确版本并保存完整包锁，三个容器 unit 继续
    stopped/masked。网络负责人填写并复核 Docker address pool；安装第 3.2 节 daemon 基线并运行
    `dockerd --validate`。再由 operator 执行只读宿主 base preflight 和存储 preflight；任一失败

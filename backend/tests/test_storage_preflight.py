@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -55,6 +56,9 @@ class FakeStat:
     st_uid: int
     st_gid: int
     st_dev: int
+    st_nlink: int = 1
+    st_size: int = 0
+    st_blocks: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,11 +78,16 @@ class FakeProbe:
         mountinfo: str,
         stats: dict[Path, FakeStat],
         filesystems: dict[Path, FakeFilesystem],
+        proc_swaps: str = (
+            "Filename Type Size Used Priority\n"
+            "/swap.img file 8388604 0 -2\n"
+        ),
     ) -> None:
         self.fstab = fstab
         self.mountinfo = mountinfo
         self.stats = stats
         self.filesystems = filesystems
+        self.proc_swaps = proc_swaps
         self.resolved: dict[Path, Path] = {}
         self.uuid_devices: dict[str, tuple[int, int]] = {}
         self.xfs_ftypes: dict[Path, int] = {}
@@ -97,6 +106,8 @@ class FakeProbe:
         self.read_paths.append(path)
         if path == Path("/etc/fstab"):
             return self.fstab
+        if path == Path("/proc/swaps"):
+            return self.proc_swaps
         raise FileNotFoundError(path)
 
     def read_host_mountinfo(self) -> str:
@@ -145,6 +156,8 @@ class FakeProbe:
         self,
         entry: storage_module.FstabEntry,
     ) -> tuple[int, int] | None:
+        if entry.source == "/swap.img" and entry.fs_type == "swap":
+            return None
         try:
             return self.source_devices[entry.source]
         except KeyError as error:
@@ -183,32 +196,60 @@ def valid_probe() -> FakeProbe:
     filesystems: dict[Path, FakeFilesystem] = {}
     mount_devices: dict[Path, int] = {}
     uuid_devices: dict[str, tuple[int, int]] = {}
+    device_numbers = {
+        Path("/"): 1,
+        Path("/boot"): 6,
+        Path("/boot/efi"): 7,
+        Path("/var/lib/docker"): 2,
+        Path("/var/lib/sms-platform/postgres"): 3,
+        Path("/var/lib/sms-platform/redis"): 4,
+        Path("/var/lib/sms-platform/runtime"): 5,
+    }
+    source_by_path = {
+        Path("/"): "/dev/disk/by-id/dm-uuid-LVM-" + "A" * 64,
+        Path("/boot"): "/dev/disk/by-uuid/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        Path("/boot/efi"): "/dev/disk/by-uuid/ABCD-1234",
+    }
     for index, mount_requirement in enumerate(MOUNT_REQUIREMENTS, start=1):
-        uuid = f"00000000-0000-0000-0000-{index:012d}"
-        options = "defaults" if mount_requirement.path == Path("/") else "defaults,nodev,nosuid"
+        device_number = device_numbers[mount_requirement.path]
+        uuid = f"00000000-0000-0000-0000-{device_number:012d}"
+        source = source_by_path.get(mount_requirement.path, f"UUID={uuid}")
+        options = (
+            "defaults,nodev,nosuid"
+            if mount_requirement.required_options
+            else "defaults"
+        )
         active_options = (
-            "rw,relatime"
-            if mount_requirement.path == Path("/")
-            else "rw,relatime,nodev,nosuid"
+            "rw,relatime,nodev,nosuid"
+            if mount_requirement.required_options
+            else "rw,relatime"
         )
         fstab_lines.append(
-            f"UUID={uuid} {mount_requirement.path} {mount_requirement.fs_type} "
-            f"{options} 0 {1 if mount_requirement.path == Path('/') else 2}"
+            f"{source} {mount_requirement.path} {mount_requirement.fs_type} "
+            f"{options} 0 {mount_requirement.pass_number}"
         )
         mountinfo_lines.append(
-            f"{index + 20} 20 8:{index} / {mount_requirement.path} {active_options} "
-            f"- {mount_requirement.fs_type} /dev/disk{index} rw"
+            f"{index + 20} 20 8:{device_number} / {mount_requirement.path} "
+            f"{active_options} - {mount_requirement.fs_type} "
+            f"/dev/disk{device_number} rw"
         )
-        uuid_devices[uuid] = (8, index)
-        mount_devices[mount_requirement.path] = index
+        uuid_devices[uuid] = (8, device_number)
+        mount_devices[mount_requirement.path] = device_number
         stats[mount_requirement.path] = fake_stat(
             mount_requirement.mode,
             mount_requirement.uid,
             mount_requirement.gid,
-            index,
+            device_number,
         )
+        capacity_gib: int | float = mount_requirement.nominal_gib
+        if mount_requirement.path == Path("/"):
+            capacity_gib = 95
+        elif mount_requirement.path == Path("/boot"):
+            capacity_gib = 1.9
+        elif mount_requirement.path == Path("/boot/efi"):
+            capacity_gib = 1.04
         filesystems[mount_requirement.path] = fake_filesystem(
-            mount_requirement.nominal_gib
+            capacity_gib
         )
     for directory_requirement in DIRECTORY_REQUIREMENTS:
         stats[directory_requirement.path] = fake_stat(
@@ -217,16 +258,30 @@ def valid_probe() -> FakeProbe:
             directory_requirement.gid,
             mount_devices[directory_requirement.mount_path],
         )
+    stats[storage_module.SWAP_FILE_PATH] = FakeStat(
+        st_mode=stat.S_IFREG | 0o600,
+        st_uid=0,
+        st_gid=0,
+        st_dev=os.makedev(8, device_numbers[Path("/")]),
+        st_nlink=1,
+        st_size=storage_module.SWAP_FILE_BYTES,
+        st_blocks=storage_module.SWAP_FILE_BYTES // 512,
+    )
     probe = FakeProbe(
-        fstab="\n".join(fstab_lines) + "\n",
+        fstab="\n".join(fstab_lines)
+        + "\n/swap.img none swap sw 0 0\n",
         mountinfo="\n".join(mountinfo_lines) + "\n",
         stats=stats,
         filesystems=filesystems,
     )
     probe.uuid_devices = uuid_devices
-    probe.source_devices = {
-        f"UUID={uuid}": device for uuid, device in uuid_devices.items()
-    }
+    for requirement in MOUNT_REQUIREMENTS:
+        device_number = device_numbers[requirement.path]
+        source = source_by_path.get(
+            requirement.path,
+            f"UUID=00000000-0000-0000-0000-{device_number:012d}",
+        )
+        probe.source_devices[source] = (8, device_number)
     probe.xfs_ftypes = {
         requirement.path: 1
         for requirement in MOUNT_REQUIREMENTS
@@ -245,6 +300,8 @@ def finding_codes(probe: FakeProbe, *, mode: PreflightMode = "startup") -> set[s
 def test_fixed_storage_contract_matches_approved_vmdks_and_subpaths() -> None:
     assert [(str(item.path), item.nominal_gib) for item in MOUNT_REQUIREMENTS] == [
         ("/", 100),
+        ("/boot", 2),
+        ("/boot/efi", 1),
         ("/var/lib/docker", 250),
         ("/var/lib/sms-platform/postgres", 400),
         ("/var/lib/sms-platform/redis", 100),
@@ -265,6 +322,8 @@ def test_fixed_storage_contract_matches_approved_vmdks_and_subpaths() -> None:
     assert FILESYSTEM_METADATA_TOLERANCE_PERCENT == 2
     assert [item.fs_type for item in MOUNT_REQUIREMENTS] == [
         "ext4",
+        "ext4",
+        "vfat",
         "xfs",
         "xfs",
         "xfs",
@@ -277,7 +336,98 @@ def test_complete_distinct_storage_layout_passes() -> None:
 
     assert report.passed is True
     assert report.findings == ()
-    assert len(report.usages) == 5
+    assert len(report.usages) == 7
+
+
+def test_usage_telemetry_does_not_report_boot_partitions_as_vmdks(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    storage_module._emit(inspect_storage(valid_probe()), "observe")
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    usage = {
+        record["mount"]: record
+        for record in records
+        if record["event"] == "storage_preflight_usage"
+    }
+
+    assert usage["boot"]["capacity_kind"] == "partition"
+    assert usage["boot"]["nominal_vmdk_gib"] is None
+    assert usage["efi"]["nominal_capacity_gib"] == 1
+    assert usage["docker"]["capacity_kind"] == "vmdk"
+    assert usage["docker"]["nominal_vmdk_gib"] == 250
+
+
+def test_existing_ubuntu_lvm_root_and_boot_capacity_floors_are_explicit() -> None:
+    probe = valid_probe()
+    probe.filesystems[Path("/")] = fake_filesystem(94)
+    probe.filesystems[Path("/boot")] = fake_filesystem(1.81)
+
+    assert inspect_storage(probe).passed is True
+
+    probe.filesystems[Path("/")] = fake_filesystem(94 - 1 / 1024)
+    assert "filesystem_too_small" in finding_codes(probe)
+
+
+def test_root_fstab_must_keep_the_frozen_dm_lvm_by_id_shape() -> None:
+    probe = valid_probe()
+    root_source = "/dev/disk/by-id/dm-uuid-LVM-" + "A" * 64
+    probe.fstab = probe.fstab.replace(root_source, "UUID=" + "a" * 36)
+
+    assert "fstab_source_contract_mismatch" in finding_codes(probe)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        ("missing-fstab", "swap_fstab_missing"),
+        ("second-active-swap", "swap_state_contract_mismatch"),
+        ("sparse-file", "swap_file_contract_mismatch"),
+        ("wrong-mode", "swap_file_contract_mismatch"),
+    ),
+)
+def test_swapfile_contract_fails_closed(
+    mutation: str,
+    expected_code: str,
+) -> None:
+    probe = valid_probe()
+    if mutation == "missing-fstab":
+        probe.fstab = probe.fstab.replace("/swap.img none swap sw 0 0\n", "")
+    elif mutation == "second-active-swap":
+        probe.proc_swaps += "/dev/sdz1 partition 1048572 0 -3\n"
+    elif mutation == "sparse-file":
+        probe.stats[storage_module.SWAP_FILE_PATH] = replace(
+            probe.stats[storage_module.SWAP_FILE_PATH],
+            st_blocks=1,
+        )
+    else:
+        probe.stats[storage_module.SWAP_FILE_PATH] = replace(
+            probe.stats[storage_module.SWAP_FILE_PATH],
+            st_mode=stat.S_IFREG | 0o644,
+        )
+
+    assert expected_code in finding_codes(probe)
+
+
+def test_findmnt_verify_accepts_clean_or_only_the_known_swap_warning() -> None:
+    known_stdout = (
+        b"none\n"
+        b"   [W] non-bind mount source /swap.img is a directory or regular file\n"
+    )
+    known_stderr = b"\n0 parse errors, 0 errors, 1 warning\n"
+
+    assert storage_module._findmnt_verify_output_is_accepted(b"", b"") is True
+    assert storage_module._findmnt_verify_output_is_accepted(
+        b"Success, no errors or warnings detected\n",
+        b"",
+    ) is True
+    assert storage_module._findmnt_verify_output_is_accepted(
+        known_stdout,
+        known_stderr,
+    ) is True
+    assert storage_module._findmnt_verify_output_is_accepted(
+        b"/mnt/alias\n [W] unexpected warning\n",
+        known_stderr,
+    ) is False
 
 
 def test_unavailable_inspection_returns_failure_by_default(
@@ -315,14 +465,15 @@ def test_fstab_requires_uuid_and_rejects_weak_mount_options() -> None:
 
     codes = finding_codes(probe)
 
-    assert {"fstab_not_uuid", "fstab_weak_dependency"} <= codes
+    assert {"fstab_source_contract_mismatch", "fstab_weak_dependency"} <= codes
 
 
 def test_fstab_rejects_read_only_boot_and_wrong_fsck_order() -> None:
     probe = valid_probe()
+    root_source = "/dev/disk/by-id/dm-uuid-LVM-" + "A" * 64
     probe.fstab = probe.fstab.replace(
-        "UUID=00000000-0000-0000-0000-000000000001 / ext4 defaults 0 1",
-        "UUID=00000000-0000-0000-0000-000000000001 / ext4 defaults,ro 0 0",
+        f"{root_source} / ext4 defaults 0 1",
+        f"{root_source} / ext4 defaults,ro 0 0",
     )
 
     codes = finding_codes(probe)
@@ -401,8 +552,6 @@ def test_tag_source_paths_preserve_case_for_vfat_uuid_and_labels() -> None:
 
 def test_standard_uppercase_vfat_uuid_does_not_block_reverse_scan() -> None:
     probe = valid_probe()
-    probe.fstab += "UUID=ABCD-1234 /boot/efi vfat defaults 0 1\n"
-    probe.source_devices["UUID=ABCD-1234"] = (8, 99)
 
     assert inspect_storage(probe).passed is True
 
@@ -621,7 +770,7 @@ def test_storage_devices_must_remain_distinct() -> None:
 def test_fstab_uuid_must_resolve_to_current_mount_device() -> None:
     probe = valid_probe()
     uuid = "00000000-0000-0000-0000-000000000004"
-    probe.uuid_devices[uuid] = (8, 99)
+    probe.source_devices[f"UUID={uuid}"] = (8, 99)
 
     assert "fstab_mount_identity_mismatch" in finding_codes(probe)
 
@@ -629,7 +778,7 @@ def test_fstab_uuid_must_resolve_to_current_mount_device() -> None:
 def test_unresolvable_fstab_uuid_fails_closed() -> None:
     probe = valid_probe()
     uuid = "00000000-0000-0000-0000-000000000004"
-    del probe.uuid_devices[uuid]
+    del probe.source_devices[f"UUID={uuid}"]
 
     assert "fstab_uuid_unresolved" in finding_codes(probe)
 
@@ -787,8 +936,10 @@ def test_systemd_assets_gate_docker_and_every_platform_start() -> None:
     assert "ProtectSystem=strict" in unit
     assert "DevicePolicy=closed" in unit
     assert "DeviceAllow=block-sd r" in unit
+    assert "DeviceAllow=block-device-mapper r" in unit
+    assert "DeviceAllow=block-device-mapper rw" not in unit
     assert "TimeoutStartSec=45" in unit
-    assert "ReadOnlyPaths=/etc/fstab /dev/disk/by-uuid" in unit
+    assert "ReadOnlyPaths=/etc/fstab /dev/disk/by-uuid /dev/disk/by-id" in unit
     assert "Requires=sms-storage-preflight.service" in docker_drop_in
     assert "After=sms-storage-preflight.service" in docker_drop_in
     assert f"RequiresMountsFor={mounts}" in platform_drop_in
@@ -809,11 +960,17 @@ def test_every_hardened_preflight_caller_has_read_only_pvscsi_access() -> None:
         unit = path.read_text(encoding="utf-8")
         assert "DevicePolicy=closed" in unit
         assert "DeviceAllow=block-sd r" in unit
+        assert "DeviceAllow=block-device-mapper r" in unit
         assert "DeviceAllow=block-sd rw" not in unit
+        assert "DeviceAllow=block-device-mapper rw" not in unit
         assert "DeviceAllow=block-*" not in unit
+        assert "/dev/disk/by-id" in unit
     partition = PARTITION_MAINTENANCE_UNIT.read_text(encoding="utf-8")
     assert "PrivateDevices=yes" not in partition
-    assert "ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid" in partition
+    assert (
+        "ReadOnlyPaths=/opt/sms-platform /etc/sms-platform /dev/disk/by-uuid "
+        "/dev/disk/by-id"
+    ) in partition
 
 
 def test_runbook_covers_provisioning_thresholds_expansion_and_no_go() -> None:

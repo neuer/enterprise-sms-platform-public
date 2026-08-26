@@ -17,6 +17,8 @@ from typing import Literal, Protocol
 
 GIB = 1024**3
 FSTAB_PATH = Path("/etc/fstab")
+PROC_SWAPS_PATH = Path("/proc/swaps")
+SWAP_FILE_PATH = Path("/swap.img")
 MOUNTINFO_PATH = Path("/proc/1/mountinfo")
 PID1_COMM_PATH = Path("/proc/1/comm")
 PID1_ROOT_PATH = Path("/proc/1/root")
@@ -26,7 +28,11 @@ SYSTEMD_DETECT_VIRT_BINARY = "/usr/bin/systemd-detect-virt"
 FINDMNT_BINARY = "/usr/bin/findmnt"
 DOCKER_MOUNT_PATH = Path("/var/lib/docker")
 DOCKER_INTERNAL_VOLUME_ROOT = Path("/var/lib/docker/volumes")
-UUID_SOURCE = re.compile(r"^UUID=[A-Fa-f0-9-]+$")
+CANONICAL_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+FAT_UUID = re.compile(r"^[0-9A-F]{4}-[0-9A-F]{4}$")
+DM_LVM_BY_ID = re.compile(r"^/dev/disk/by-id/dm-uuid-LVM-[A-Za-z0-9]{64}$")
 XFS_INFO_BINARY = "/usr/sbin/xfs_info"
 MAX_XFS_INFO_BYTES = 64 * 1024
 XFS_INFO_TIMEOUT_SECONDS = 5
@@ -35,6 +41,18 @@ FINDMNT_TIMEOUT_SECONDS = 5
 MAX_FSTAB_BYTES = 1024 * 1024
 MAX_MOUNTINFO_BYTES = 4 * 1024 * 1024
 FILESYSTEM_METADATA_TOLERANCE_PERCENT = 2
+OS_ROOT_FILESYSTEM_MINIMUM_BYTES = 94 * GIB
+OS_BOOT_FILESYSTEM_MINIMUM_BYTES = 18 * GIB // 10
+SWAP_FILE_BYTES = 8 * GIB
+SWAP_ACTIVE_HEADER_MAX_BYTES = 64 * 1024
+EXPECTED_FINDMNT_SWAP_WARNING_STDOUT = (
+    b"none\n"
+    b"   [W] non-bind mount source /swap.img is a directory or regular file\n"
+)
+EXPECTED_FINDMNT_SWAP_WARNING_STDERR = (
+    b"\n0 parse errors, 0 errors, 1 warning\n"
+)
+EXPECTED_FINDMNT_CLEAN_SUMMARY = b"Success, no errors or warnings detected"
 PreflightMode = Literal["observe", "release", "startup"]
 PREFLIGHT_MODES: tuple[PreflightMode, ...] = ("observe", "release", "startup")
 PSEUDO_FSTAB_TYPES = frozenset(
@@ -50,10 +68,16 @@ class MountRequirement:
     uid: int
     gid: int
     mode: int
-    fs_type: Literal["ext4", "xfs"]
+    fs_type: Literal["ext4", "vfat", "xfs"]
+    source_kind: Literal["root-lvm-by-id", "by-uuid", "uuid-tag"]
+    pass_number: int
+    required_options: frozenset[str]
+    minimum_bytes_override: int | None = None
 
     @property
     def minimum_filesystem_bytes(self) -> int:
+        if self.minimum_bytes_override is not None:
+            return self.minimum_bytes_override
         return (
             self.nominal_gib
             * GIB
@@ -85,16 +109,59 @@ class DockerBindMountRequirement:
 
 
 MOUNT_REQUIREMENTS = (
-    MountRequirement("os", Path("/"), 100, 0, 0, 0o755, "ext4"),
-    MountRequirement("docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o711, "xfs"),
     MountRequirement(
-        "postgres", Path("/var/lib/sms-platform/postgres"), 400, 0, 0, 0o750, "xfs"
+        "os",
+        Path("/"),
+        100,
+        0,
+        0,
+        0o755,
+        "ext4",
+        "root-lvm-by-id",
+        1,
+        frozenset(),
+        OS_ROOT_FILESYSTEM_MINIMUM_BYTES,
     ),
     MountRequirement(
-        "redis", Path("/var/lib/sms-platform/redis"), 100, 0, 0, 0o750, "xfs"
+        "boot",
+        Path("/boot"),
+        2,
+        0,
+        0,
+        0o755,
+        "ext4",
+        "by-uuid",
+        1,
+        frozenset(),
+        OS_BOOT_FILESYSTEM_MINIMUM_BYTES,
     ),
     MountRequirement(
-        "runtime", Path("/var/lib/sms-platform/runtime"), 200, 0, 0, 0o750, "xfs"
+        "efi",
+        Path("/boot/efi"),
+        1,
+        0,
+        0,
+        0o755,
+        "vfat",
+        "by-uuid",
+        1,
+        frozenset(),
+    ),
+    MountRequirement(
+        "docker", DOCKER_MOUNT_PATH, 250, 0, 0, 0o711, "xfs", "uuid-tag", 2,
+        frozenset({"nodev", "nosuid"}),
+    ),
+    MountRequirement(
+        "postgres", Path("/var/lib/sms-platform/postgres"), 400, 0, 0, 0o750,
+        "xfs", "uuid-tag", 2, frozenset({"nodev", "nosuid"}),
+    ),
+    MountRequirement(
+        "redis", Path("/var/lib/sms-platform/redis"), 100, 0, 0, 0o750,
+        "xfs", "uuid-tag", 2, frozenset({"nodev", "nosuid"}),
+    ),
+    MountRequirement(
+        "runtime", Path("/var/lib/sms-platform/runtime"), 200, 0, 0, 0o750,
+        "xfs", "uuid-tag", 2, frozenset({"nodev", "nosuid"}),
     ),
 )
 
@@ -292,6 +359,15 @@ class PathStatus(Protocol):
     @property
     def st_dev(self) -> int: ...
 
+    @property
+    def st_nlink(self) -> int: ...
+
+    @property
+    def st_size(self) -> int: ...
+
+    @property
+    def st_blocks(self) -> int: ...
+
 
 class FilesystemStatus(Protocol):
     @property
@@ -365,9 +441,13 @@ class LocalProbe:
             raise StorageContractError("VMware DMI identity is required")
 
     def read_text(self, path: Path) -> str:
-        if path != FSTAB_PATH:
+        maximum_bytes = {
+            FSTAB_PATH: MAX_FSTAB_BYTES,
+            PROC_SWAPS_PATH: 64 * 1024,
+        }.get(path)
+        if maximum_bytes is None:
             raise StorageContractError("unexpected text path")
-        return _read_root_owned_text(path, maximum_bytes=MAX_FSTAB_BYTES)
+        return _read_root_owned_text(path, maximum_bytes=maximum_bytes)
 
     def read_host_mountinfo(self) -> str:
         try:
@@ -469,15 +549,22 @@ class LocalProbe:
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise StorageContractError("findmnt verify unavailable") from error
-        if (
-            completed.returncode != 0
-            or completed.stdout.strip()
-            != b"Success, no errors or warnings detected"
-            or completed.stderr
+        if completed.returncode != 0 or not _findmnt_verify_output_is_accepted(
+            completed.stdout,
+            completed.stderr,
         ):
             raise StorageContractError("findmnt verify failed")
 
     def fstab_source_identity(self, entry: FstabEntry) -> tuple[int, int] | None:
+        if (
+            entry.source == str(SWAP_FILE_PATH)
+            and entry.mount_path == Path("none")
+            and entry.fs_type == "swap"
+            and entry.options == frozenset({"sw"})
+            and entry.dump == 0
+            and entry.pass_number == 0
+        ):
+            return None
         path = _fstab_source_path(entry)
         if path is None:
             return None
@@ -494,6 +581,17 @@ class LocalProbe:
 
 class StorageContractError(ValueError):
     """The host storage declarations cannot be interpreted safely."""
+
+
+def _findmnt_verify_output_is_accepted(stdout: bytes, stderr: bytes) -> bool:
+    """Accept a clean result or Noble's sole known swapfile warning."""
+
+    clean = not stderr and stdout.strip() in {b"", EXPECTED_FINDMNT_CLEAN_SUMMARY}
+    known_swap_warning = (
+        stdout == EXPECTED_FINDMNT_SWAP_WARNING_STDOUT
+        and stderr == EXPECTED_FINDMNT_SWAP_WARNING_STDERR
+    )
+    return clean or known_swap_warning
 
 
 def _read_root_owned_text(path: Path, *, maximum_bytes: int) -> str:
@@ -627,6 +725,52 @@ def _single_entry_by_path[T](entries: tuple[T, ...], path: Path) -> T | None:
     return matching[0] if matching else None
 
 
+def _fstab_source_matches_requirement(
+    requirement: MountRequirement,
+    source: str,
+) -> bool:
+    if requirement.source_kind == "root-lvm-by-id":
+        return DM_LVM_BY_ID.fullmatch(source) is not None
+    if requirement.source_kind == "uuid-tag":
+        return (
+            source.startswith("UUID=")
+            and CANONICAL_UUID.fullmatch(source.removeprefix("UUID=")) is not None
+        )
+    path = Path(source)
+    if path.parent != Path("/dev/disk/by-uuid"):
+        return False
+    if requirement.fs_type == "vfat":
+        return FAT_UUID.fullmatch(path.name) is not None
+    return CANONICAL_UUID.fullmatch(path.name) is not None
+
+
+def _swap_state_is_exact(contents: str) -> bool:
+    lines = [line for line in contents.splitlines() if line.strip()]
+    if (
+        len(lines) != 2
+        or lines[0].split() != ["Filename", "Type", "Size", "Used", "Priority"]
+    ):
+        return False
+    fields = lines[1].split()
+    if len(fields) != 5:
+        return False
+    try:
+        active_size_bytes = int(fields[2]) * 1024
+        used_bytes = int(fields[3]) * 1024
+        priority = int(fields[4])
+    except ValueError:
+        return False
+    return (
+        fields[0] == str(SWAP_FILE_PATH)
+        and fields[1] == "file"
+        and SWAP_FILE_BYTES - SWAP_ACTIVE_HEADER_MAX_BYTES
+        <= active_size_bytes
+        < SWAP_FILE_BYTES
+        and 0 <= used_bytes <= active_size_bytes
+        and priority == -2
+    )
+
+
 def _finding(
     code: str,
     path: Path,
@@ -738,6 +882,41 @@ def inspect_storage(
             _finding("fstab_verification_failed", FSTAB_PATH, type(error).__name__)
         )
 
+    swap_entry = _single_entry_by_path(fstab, Path("none"))
+    if swap_entry is None:
+        findings.append(
+            _finding("swap_fstab_missing", SWAP_FILE_PATH, "required swap entry is missing")
+        )
+    elif (
+        swap_entry.source != str(SWAP_FILE_PATH)
+        or swap_entry.fs_type != "swap"
+        or swap_entry.options != frozenset({"sw"})
+        or swap_entry.dump != 0
+        or swap_entry.pass_number != 0
+    ):
+        findings.append(
+            _finding(
+                "swap_fstab_contract_mismatch",
+                SWAP_FILE_PATH,
+                "expected /swap.img none swap sw 0 0",
+            )
+        )
+    try:
+        swap_state = active_probe.read_text(PROC_SWAPS_PATH)
+    except (OSError, StorageContractError) as error:
+        findings.append(
+            _finding("swap_state_unavailable", SWAP_FILE_PATH, type(error).__name__)
+        )
+    else:
+        if not _swap_state_is_exact(swap_state):
+            findings.append(
+                _finding(
+                    "swap_state_contract_mismatch",
+                    SWAP_FILE_PATH,
+                    "the only active swap must be the approved 8 GiB swap file",
+                )
+            )
+
     for entry in fstab:
         source_path = Path(entry.source) if entry.source.startswith("/") else None
         target_is_internal = entry.mount_path == DOCKER_INTERNAL_VOLUME_ROOT or (
@@ -840,18 +1019,20 @@ def inspect_storage(
                 )
             )
         else:
-            if UUID_SOURCE.fullmatch(fstab_entry.source) is None:
+            if not _fstab_source_matches_requirement(
+                mount_requirement,
+                fstab_entry.source,
+            ):
                 findings.append(
                     _finding(
-                        "fstab_not_uuid",
+                        "fstab_source_contract_mismatch",
                         mount_requirement.path,
-                        "block filesystem source must use UUID=",
+                        f"source does not match {mount_requirement.source_kind}",
                     )
                 )
             else:
-                raw_uuid = fstab_entry.source.removeprefix("UUID=")
                 try:
-                    fstab_device = active_probe.block_device_identity(raw_uuid)
+                    fstab_device = active_probe.fstab_source_identity(fstab_entry)
                 except (OSError, StorageContractError) as error:
                     findings.append(
                         _finding(
@@ -909,21 +1090,23 @@ def inspect_storage(
                         f"forbidden fstab option: {','.join(present)}",
                     )
                 )
-            expected_pass_number = 1 if mount_requirement.path == Path("/") else 2
-            if fstab_entry.dump != 0 or fstab_entry.pass_number != expected_pass_number:
+            if (
+                fstab_entry.dump != 0
+                or fstab_entry.pass_number != mount_requirement.pass_number
+            ):
                 findings.append(
                     _finding(
                         "fstab_check_order_mismatch",
                         mount_requirement.path,
                         (
-                            f"expected dump/pass 0 {expected_pass_number}, got "
+                            f"expected dump/pass 0 {mount_requirement.pass_number}, got "
                             f"{fstab_entry.dump} {fstab_entry.pass_number}"
                         ),
                     )
                 )
-            if mount_requirement.path != Path("/"):
+            if mount_requirement.required_options:
                 missing_options = sorted(
-                    {"nodev", "nosuid"} - fstab_entry.options
+                    mount_requirement.required_options - fstab_entry.options
                 )
                 if missing_options:
                     findings.append(
@@ -974,8 +1157,10 @@ def inspect_storage(
                         "filesystem is not writable",
                     )
                 )
-            if mount_requirement.path != Path("/"):
-                missing_options = sorted({"nodev", "nosuid"} - mount_entry.options)
+            if mount_requirement.required_options:
+                missing_options = sorted(
+                    mount_requirement.required_options - mount_entry.options
+                )
                 if missing_options:
                     findings.append(
                         _finding(
@@ -1096,6 +1281,36 @@ def inspect_storage(
                     "filesystem_accounting_failed",
                     mount_requirement.path,
                     type(error).__name__,
+                )
+            )
+
+    try:
+        swap_status = active_probe.lstat(SWAP_FILE_PATH)
+        swap_canonical = active_probe.resolve(SWAP_FILE_PATH)
+    except (OSError, StorageContractError) as error:
+        findings.append(
+            _finding("swap_file_unavailable", SWAP_FILE_PATH, type(error).__name__)
+        )
+    else:
+        root_status = mount_stats.get(Path("/"))
+        if (
+            swap_canonical != SWAP_FILE_PATH
+            or not stat.S_ISREG(swap_status.st_mode)
+            or stat.S_ISLNK(swap_status.st_mode)
+            or swap_status.st_uid != 0
+            or swap_status.st_gid != 0
+            or stat.S_IMODE(swap_status.st_mode) != 0o600
+            or swap_status.st_nlink != 1
+            or swap_status.st_size != SWAP_FILE_BYTES
+            or swap_status.st_blocks * 512 < swap_status.st_size
+            or root_status is None
+            or swap_status.st_dev != root_status.st_dev
+        ):
+            findings.append(
+                _finding(
+                    "swap_file_contract_mismatch",
+                    SWAP_FILE_PATH,
+                    "swap file must be a fully allocated root-owned 0600 8 GiB file on /",
                 )
             )
 
@@ -1266,13 +1481,20 @@ def inspect_storage(
 
 def _emit(report: PreflightReport, mode: PreflightMode) -> None:
     for usage in report.usages:
+        capacity_kind = "partition" if usage.name in {"boot", "efi"} else "vmdk"
         print(
             json.dumps(
                 {
+                    "capacity_kind": capacity_kind,
                     "event": "storage_preflight_usage",
                     "mount": usage.name,
                     "path": str(usage.path),
-                    "nominal_vmdk_gib": usage.nominal_vmdk_gib,
+                    "nominal_capacity_gib": usage.nominal_vmdk_gib,
+                    "nominal_vmdk_gib": (
+                        usage.nominal_vmdk_gib
+                        if capacity_kind == "vmdk"
+                        else None
+                    ),
                     "minimum_filesystem_gib": round(
                         usage.minimum_filesystem_bytes / GIB, 1
                     ),

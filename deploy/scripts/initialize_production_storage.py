@@ -61,6 +61,7 @@ SYS_VENDOR_PATH = Path("/sys/class/dmi/id/sys_vendor")
 PRODUCT_UUID_PATH = Path("/sys/class/dmi/id/product_uuid")
 OS_RELEASE_PATH = Path("/usr/lib/os-release")
 PROC_SWAPS_PATH = Path("/proc/swaps")
+SWAP_FILE_PATH = Path("/swap.img")
 
 LSBLK_BINARY = "/usr/bin/lsblk"
 FINDMNT_BINARY = "/usr/bin/findmnt"
@@ -79,18 +80,45 @@ SAFE_REVIEWER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{1,63}")
 SAFE_IDENTITY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+ /-]{0,127}")
 MAJOR_MINOR_RE = re.compile(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)")
 BY_ID_BASENAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]{2,255}")
+DM_LVM_BY_ID_BASENAME_RE = re.compile(r"dm-uuid-LVM-[A-Za-z0-9]{64}")
 CANONICAL_UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
-UUID_SOURCE_RE = re.compile(
-    r"UUID=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
-)
+FAT_UUID_RE = re.compile(r"[0-9A-F]{4}-[0-9A-F]{4}")
 XFS_UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
+LVM_IDENTIFIER_RE = re.compile(
+    r"[A-Za-z0-9]{6}(?:-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}"
 )
 SAFE_FSTAB_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}")
 EFI_SYSTEM_PARTITION_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 LINUX_FILESYSTEM_PARTITION_GUID = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+OS_LOGICAL_SECTOR_BYTES = 512
+OS_EFI_PARTITION_NUMBER = 1
+OS_EFI_PARTITION_START_SECTOR = 2_048
+OS_EFI_PARTITION_BYTES = 1_127_219_200
+OS_BOOT_PARTITION_NUMBER = 2
+OS_BOOT_PARTITION_START_SECTOR = 2_203_648
+OS_BOOT_PARTITION_BYTES = 2 * GIB
+OS_LVM_PARTITION_NUMBER = 3
+OS_LVM_PARTITION_START_SECTOR = 6_397_952
+OS_LVM_PARTITION_BASELINE_BYTES = 104_097_382_400
+OS_ROOT_LV_BASELINE_BYTES = 104_094_236_672
+OS_LAYOUT_TAIL_TOLERANCE_BYTES = 8 * 1024**2
+OS_ROOT_FILESYSTEM_MINIMUM_BYTES = 94 * GIB
+OS_ROOT_FILESYSTEM_MINIMUM_LV_PERCENT = 97
+OS_ROOT_LV_PATH = Path("/dev/mapper/ubuntu--vg-ubuntu--lv")
+SWAP_FILE_BYTES = 8 * GIB
+SWAP_ACTIVE_HEADER_MAX_BYTES = 64 * 1024
+EXPECTED_FINDMNT_SWAP_WARNING_STDOUT = (
+    b"none\n"
+    b"   [W] non-bind mount source /swap.img is a directory or regular file\n"
+)
+EXPECTED_FINDMNT_SWAP_WARNING_STDERR = (
+    b"\n0 parse errors, 0 errors, 1 warning\n"
+)
+EXPECTED_FINDMNT_CLEAN_SUMMARY = b"Success, no errors or warnings detected"
 PSEUDO_FSTAB_TYPES = frozenset(
     {
         "cgroup",
@@ -123,6 +151,17 @@ class StorageInitializationError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _findmnt_verify_output_is_accepted(stdout: bytes, stderr: bytes) -> bool:
+    """Accept a clean result or Noble's sole known swapfile warning."""
+
+    clean = not stderr and stdout.strip() in {b"", EXPECTED_FINDMNT_CLEAN_SUMMARY}
+    known_swap_warning = (
+        stdout == EXPECTED_FINDMNT_SWAP_WARNING_STDOUT
+        and stderr == EXPECTED_FINDMNT_SWAP_WARNING_STDERR
+    )
+    return clean or known_swap_warning
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +392,10 @@ class BlockNode:
     children: tuple[BlockNode, ...]
     partition_table_type: str = ""
     partition_type: str = ""
+    partition_uuid: str = ""
+    partition_number: int = 0
+    start_sector: int = 0
+    logical_sector_size: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,6 +632,12 @@ def _parse_nonnegative_int(value: object, *, code: str) -> int:
     raise StorageInitializationError(code)
 
 
+def _parse_optional_nonnegative_int(value: object, *, code: str) -> int:
+    if value is None or value == "":
+        return 0
+    return _parse_nonnegative_int(value, code=code)
+
+
 def _parse_mountpoints(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -626,7 +675,16 @@ def _parse_block_node(value: object) -> BlockNode:
     if not isinstance(children_value, list):
         raise StorageInitializationError("lsblk_shape_invalid")
     string_fields: dict[str, str] = {}
-    for field in ("serial", "wwn", "fstype", "label", "uuid", "pttype", "parttype"):
+    for field in (
+        "serial",
+        "wwn",
+        "fstype",
+        "label",
+        "uuid",
+        "pttype",
+        "parttype",
+        "partuuid",
+    ):
         item = value.get(field)
         if item is None:
             string_fields[field] = ""
@@ -650,6 +708,19 @@ def _parse_block_node(value: object) -> BlockNode:
         children=tuple(_parse_block_node(child) for child in children_value),
         partition_table_type=string_fields["pttype"].lower(),
         partition_type=string_fields["parttype"].lower(),
+        partition_uuid=string_fields["partuuid"].lower(),
+        partition_number=_parse_optional_nonnegative_int(
+            value.get("partn"),
+            code="lsblk_partition_number_invalid",
+        ),
+        start_sector=_parse_optional_nonnegative_int(
+            value.get("start"),
+            code="lsblk_partition_start_invalid",
+        ),
+        logical_sector_size=_parse_optional_nonnegative_int(
+            value.get("log-sec"),
+            code="lsblk_sector_size_invalid",
+        ),
     )
 
 
@@ -1036,6 +1107,18 @@ def _directory_identity_without_symlinks(path: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _is_exact_swap_fstab_fields(fields: Sequence[str]) -> bool:
+    return fields == [str(SWAP_FILE_PATH), "none", "swap", "sw", "0", "0"]
+
+
+def _is_root_lvm_fstab_source(source: str) -> bool:
+    path = Path(source)
+    return (
+        path.parent == Path("/dev/disk/by-id")
+        and DM_LVM_BY_ID_BASENAME_RE.fullmatch(path.name) is not None
+    )
+
+
 def _assert_fstab_target_paths_safe(payload: bytes) -> None:
     """Reject non-existent, symlinked, or filesystem-identity-aliased targets."""
 
@@ -1051,6 +1134,10 @@ def _assert_fstab_target_paths_safe(payload: bytes) -> None:
         fields = stripped.split()
         if len(fields) != 6:
             raise StorageInitializationError("fstab_malformed")
+        if fields[2] == "swap" or fields[1] == "none":
+            if not _is_exact_swap_fstab_fields(fields):
+                raise StorageInitializationError("fstab_swap_contract_invalid")
+            continue
         target = fields[1]
         target_path = Path(target)
         if (
@@ -1118,9 +1205,13 @@ def _safe_identity_digest(
             "filesystem": current.filesystem,
             "filesystem_uuid": current.filesystem_uuid,
             "label": current.label,
+            "logical_sector_size": current.logical_sector_size,
             "mountpoints": list(current.mountpoints),
+            "partition_number": current.partition_number,
             "partition_table_type": current.partition_table_type,
             "partition_type": current.partition_type,
+            "partition_uuid": current.partition_uuid,
+            "start_sector": current.start_sector,
             "type": current.device_type,
         }
 
@@ -1161,6 +1252,14 @@ def render_fstab(original: bytes, manifest: StorageManifest, plan_sha256: str) -
         if len(fields) != 6:
             raise StorageInitializationError("fstab_malformed")
         source, target, fs_type, options, dump, pass_number = fields
+        if fs_type == "swap" or target == "none":
+            if not _is_exact_swap_fstab_fields(fields):
+                raise StorageInitializationError("fstab_swap_contract_invalid")
+            if source.casefold() in existing_sources or target in existing_targets:
+                raise StorageInitializationError("fstab_swap_contract_invalid")
+            existing_sources.add(source.casefold())
+            existing_targets.add(target)
+            continue
         target_path = Path(target)
         source_path = Path(source) if source.startswith("/") else None
         if (
@@ -1194,12 +1293,11 @@ def render_fstab(original: bytes, manifest: StorageManifest, plan_sha256: str) -
         if target == "/":
             root_entries += 1
             if (
-                UUID_SOURCE_RE.fullmatch(source) is None
+                not _is_root_lvm_fstab_source(source)
                 or fs_type != "ext4"
+                or set(options.split(",")) != {"defaults"}
                 or dump != "0"
                 or pass_number != "1"
-                or {"nofail", "noauto", "ro", "x-systemd.automount"}
-                & set(options.split(","))
             ):
                 raise StorageInitializationError("fstab_root_contract_invalid")
     if root_entries != 1:
@@ -1566,9 +1664,41 @@ class ProductionStorageInitializer:
             or root.st_uid != 0
             or root.st_gid != 0
             or stat.S_IMODE(root.st_mode) != 0o755
-            or capacity < SPECS_BY_ROLE["os"].nominal_bytes * 98 // 100
+            or capacity < OS_ROOT_FILESYSTEM_MINIMUM_BYTES
         ):
             raise StorageInitializationError("root_filesystem_contract_mismatch")
+        self._require_swap_file_contract(root_device=root.st_dev)
+
+    def _require_swap_file_contract(self, *, root_device: int) -> None:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(SWAP_FILE_PATH, flags)
+        except OSError as exc:
+            raise StorageInitializationError("swap_file_unavailable") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            # Noble's installer-created active swap file uses preallocated extents;
+            # ext4 may report those as SEEK_HOLE even though swapon has accepted them.
+            # Full st_blocks coverage plus the exact active /proc/swaps entry below
+            # is the fail-closed allocation proof for this frozen host contract.
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != 0
+                or metadata.st_gid != 0
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_dev != root_device
+                or metadata.st_size != SWAP_FILE_BYTES
+                or metadata.st_blocks * 512 < metadata.st_size
+            ):
+                raise StorageInitializationError("swap_file_contract_mismatch")
+        finally:
+            os.close(descriptor)
+
         swaps, _ = _read_regular_secure(
             PROC_SWAPS_PATH,
             maximum_bytes=64 * 1024,
@@ -1588,8 +1718,27 @@ class ProductionStorageInitializer:
             or swap_lines[0].split() != ["Filename", "Type", "Size", "Used", "Priority"]
         ):
             raise StorageInitializationError("swap_state_invalid")
-        if len(swap_lines) != 1:
-            raise StorageInitializationError("active_swap_forbidden")
+        if len(swap_lines) != 2:
+            raise StorageInitializationError("swap_state_contract_mismatch")
+        fields = swap_lines[1].split()
+        if len(fields) != 5:
+            raise StorageInitializationError("swap_state_contract_mismatch")
+        try:
+            active_size_bytes = int(fields[2]) * 1024
+            used_bytes = int(fields[3]) * 1024
+            priority = int(fields[4])
+        except ValueError as exc:
+            raise StorageInitializationError("swap_state_contract_mismatch") from exc
+        if (
+            fields[0] != str(SWAP_FILE_PATH)
+            or fields[1] != "file"
+            or active_size_bytes < SWAP_FILE_BYTES - SWAP_ACTIVE_HEADER_MAX_BYTES
+            or active_size_bytes >= SWAP_FILE_BYTES
+            or used_bytes < 0
+            or used_bytes > active_size_bytes
+            or priority != -2
+        ):
+            raise StorageInitializationError("swap_state_contract_mismatch")
 
     def _root_filesystem_capacity(self) -> int:
         try:
@@ -1606,7 +1755,7 @@ class ProductionStorageInitializer:
                 "--json",
                 "--paths",
                 "--output",
-                "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,SERIAL,WWN,RO,RM,MAJ:MIN,PTTYPE,PARTTYPE",
+                "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,SERIAL,WWN,RO,RM,MAJ:MIN,PTTYPE,PARTTYPE,PARTUUID,PARTN,START,LOG-SEC",
             ),
             code="lsblk_failed",
         )
@@ -1821,10 +1970,7 @@ class ProductionStorageInitializer:
             ),
             code=code,
         )
-        if (
-            result.stdout.strip() != b"Success, no errors or warnings detected"
-            or result.stderr
-        ):
+        if not _findmnt_verify_output_is_accepted(result.stdout, result.stderr):
             raise StorageInitializationError(code)
 
     def _inspect_fstab(self) -> tuple[bytes, os.stat_result, str]:
@@ -1857,24 +2003,54 @@ class ProductionStorageInitializer:
             text = payload.decode("utf-8", errors="strict")
         except UnicodeError as exc:
             raise StorageInitializationError("fstab_encoding_invalid") from exc
-        root_uuid: str | None = None
+        required: dict[str, tuple[str, str, str, str, str, str]] = {}
         for raw_line in text.splitlines():
-            fields = raw_line.strip().split()
-            if len(fields) != 6 or fields[1] != "/":
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
                 continue
-            match = UUID_SOURCE_RE.fullmatch(fields[0])
-            if match is None:
-                raise StorageInitializationError("fstab_root_contract_invalid")
-            root_uuid = _parse_any_canonical_uuid(
-                match.group(1),
-                code="fstab_root_contract_invalid",
-            )
-        if root_uuid is None or root_uuid != self._root_filesystem_uuid():
-            raise StorageInitializationError("fstab_root_uuid_mismatch")
+            fields = stripped.split()
+            if len(fields) != 6:
+                raise StorageInitializationError("fstab_malformed")
+            target = fields[1]
+            if target in required:
+                raise StorageInitializationError("fstab_target_reused")
+            required[target] = cast(tuple[str, str, str, str, str, str], tuple(fields))
+        if set(required) != {"/", "/boot", "/boot/efi", "none"}:
+            raise StorageInitializationError("fstab_os_contract_invalid")
+        root_fields = required["/"]
+        boot_fields = required["/boot"]
+        efi_fields = required["/boot/efi"]
+        swap_fields = required["none"]
+        boot_source = Path(boot_fields[0])
+        efi_source = Path(efi_fields[0])
+        if (
+            not _is_root_lvm_fstab_source(root_fields[0])
+            or root_fields[2:] != ("ext4", "defaults", "0", "1")
+            or boot_source.parent != Path("/dev/disk/by-uuid")
+            or CANONICAL_UUID_RE.fullmatch(boot_source.name) is None
+            or boot_fields[2:] != ("ext4", "defaults", "0", "1")
+            or efi_source.parent != Path("/dev/disk/by-uuid")
+            or FAT_UUID_RE.fullmatch(efi_source.name) is None
+            or efi_fields[2:] != ("vfat", "defaults", "0", "1")
+            or not _is_exact_swap_fstab_fields(list(swap_fields))
+        ):
+            raise StorageInitializationError("fstab_os_contract_invalid")
+        for target, fields in (
+            (Path("/"), root_fields),
+            (Path("/boot"), boot_fields),
+            (Path("/boot/efi"), efi_fields),
+        ):
+            source_major_minor = self._fstab_source_major_minor(fields[0], fields[2])
+            mounted = self._findmnt_record(target)
+            if source_major_minor != mounted.get("maj:min"):
+                raise StorageInitializationError("fstab_mount_identity_mismatch")
+        root_uuid = self._root_filesystem_uuid()
         self._verify_current_fstab_semantics()
         return payload, metadata, root_uuid
 
     def _fstab_source_major_minor(self, source: str, fs_type: str) -> str | None:
+        if fs_type == "swap" and source == str(SWAP_FILE_PATH):
+            return None
         path: Path | None = None
         if source.startswith("/dev/"):
             path = Path(source)
@@ -2035,42 +2211,92 @@ class ProductionStorageInitializer:
     ) -> None:
         if (
             os_disk.partition_table_type != "gpt"
-            or len(os_disk.children) != 2
-            or parents.get(root_major_minor) != os_disk.major_minor
+            or os_disk.logical_sector_size != OS_LOGICAL_SECTOR_BYTES
+            or len(os_disk.children) != 3
         ):
             raise StorageInitializationError("os_disk_layout_invalid")
-        root = next(
-            (
-                child
-                for child in os_disk.children
-                if child.major_minor == root_major_minor
-            ),
-            None,
-        )
-        efi_candidates = [
-            child for child in os_disk.children if child.major_minor != root_major_minor
-        ]
-        if root is None or len(efi_candidates) != 1:
+        by_partition_number = {
+            child.partition_number: child for child in os_disk.children
+        }
+        if set(by_partition_number) != {
+            OS_EFI_PARTITION_NUMBER,
+            OS_BOOT_PARTITION_NUMBER,
+            OS_LVM_PARTITION_NUMBER,
+        }:
             raise StorageInitializationError("os_disk_layout_invalid")
-        efi = efi_candidates[0]
+        efi = by_partition_number[OS_EFI_PARTITION_NUMBER]
+        boot = by_partition_number[OS_BOOT_PARTITION_NUMBER]
+        lvm_partition = by_partition_number[OS_LVM_PARTITION_NUMBER]
+        if len(lvm_partition.children) != 1:
+            raise StorageInitializationError("os_disk_layout_invalid")
+        root = lvm_partition.children[0]
+        try:
+            partition_uuids = tuple(
+                str(uuid.UUID(child.partition_uuid)) for child in os_disk.children
+            )
+        except ValueError as exc:
+            raise StorageInitializationError("os_disk_layout_invalid") from exc
+        lvm_partition_end = (
+            lvm_partition.start_sector * OS_LOGICAL_SECTOR_BYTES
+            + lvm_partition.size_bytes
+        )
         if (
-            root.device_type != "part"
-            or root.filesystem != "ext4"
-            or root.partition_type != LINUX_FILESYSTEM_PARTITION_GUID
-            or root.mountpoints != ("/",)
+            len(set(partition_uuids)) != 3
+            or partition_uuids
+            != tuple(child.partition_uuid for child in os_disk.children)
             or efi.device_type != "part"
-            or efi.size_bytes != 512 * 1024**2
+            or efi.logical_sector_size != OS_LOGICAL_SECTOR_BYTES
+            or efi.start_sector != OS_EFI_PARTITION_START_SECTOR
+            or efi.size_bytes != OS_EFI_PARTITION_BYTES
             or efi.filesystem != "vfat"
+            or FAT_UUID_RE.fullmatch(efi.filesystem_uuid.upper()) is None
             or efi.partition_type != EFI_SYSTEM_PARTITION_GUID
             or efi.mountpoints != ("/boot/efi",)
+            or efi.children
+            or boot.device_type != "part"
+            or boot.logical_sector_size != OS_LOGICAL_SECTOR_BYTES
+            or boot.start_sector != OS_BOOT_PARTITION_START_SECTOR
+            or boot.size_bytes != OS_BOOT_PARTITION_BYTES
+            or boot.filesystem != "ext4"
+            or CANONICAL_UUID_RE.fullmatch(boot.filesystem_uuid) is None
+            or boot.partition_type != LINUX_FILESYSTEM_PARTITION_GUID
+            or boot.mountpoints != ("/boot",)
+            or boot.children
+            or lvm_partition.device_type != "part"
+            or lvm_partition.logical_sector_size != OS_LOGICAL_SECTOR_BYTES
+            or lvm_partition.start_sector != OS_LVM_PARTITION_START_SECTOR
+            or lvm_partition.size_bytes < OS_LVM_PARTITION_BASELINE_BYTES
+            or lvm_partition.filesystem != "LVM2_member"
+            or LVM_IDENTIFIER_RE.fullmatch(lvm_partition.filesystem_uuid) is None
+            or lvm_partition.partition_type != LINUX_FILESYSTEM_PARTITION_GUID
+            or lvm_partition.mountpoints
+            or lvm_partition_end > os_disk.size_bytes
+            or os_disk.size_bytes - lvm_partition_end
+            > OS_LAYOUT_TAIL_TOLERANCE_BYTES
+            or root.path != OS_ROOT_LV_PATH
+            or root.device_type != "lvm"
+            or root.logical_sector_size != OS_LOGICAL_SECTOR_BYTES
+            or root.size_bytes < OS_ROOT_LV_BASELINE_BYTES
+            or root.size_bytes > lvm_partition.size_bytes
+            or lvm_partition.size_bytes - root.size_bytes
+            > OS_LAYOUT_TAIL_TOLERANCE_BYTES
+            or root.filesystem != "ext4"
+            or CANONICAL_UUID_RE.fullmatch(root.filesystem_uuid) is None
+            or root.mountpoints != ("/",)
+            or root.children
+            or root.major_minor != root_major_minor
+            or parents.get(root.major_minor) != lvm_partition.major_minor
+            or parents.get(lvm_partition.major_minor) != os_disk.major_minor
         ):
             raise StorageInitializationError("os_disk_layout_invalid")
         capacity = self._root_filesystem_capacity()
         if (
-            capacity < os_disk.size_bytes * 98 // 100
-            or capacity > os_disk.size_bytes
+            capacity < OS_ROOT_FILESYSTEM_MINIMUM_BYTES
+            or capacity
+            < root.size_bytes * OS_ROOT_FILESYSTEM_MINIMUM_LV_PERCENT // 100
+            or capacity > root.size_bytes
         ):
-            raise StorageInitializationError("root_filesystem_not_grown_to_disk")
+            raise StorageInitializationError("root_filesystem_not_grown_to_lv")
 
     def _observe_devices(
         self,
@@ -2211,7 +2437,10 @@ class ProductionStorageInitializer:
         canonical: dict[str, object] = {
             "change_id": manifest.change_id,
             "devices": devices,
-            "filesystem_layout": "one_whole_device_xfs_no_partition_no_lvm",
+            "filesystem_layout": (
+                "ubuntu_gpt_efi_boot_single_pv_single_root_lv_swapfile_"
+                "plus_four_whole_device_xfs_data_disks"
+            ),
             "fstab": {
                 "inode": fstab_metadata.st_ino,
                 "mode": f"{stat.S_IMODE(fstab_metadata.st_mode):04o}",

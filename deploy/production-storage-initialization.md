@@ -9,9 +9,14 @@ root 人工执行。
 脚本尽可能失败关闭，但不能证明 vCenter 管理员没有在格式化瞬间热替换 VMDK，也不能从 guest
 内部绝对证明“无已知签名且抽样为零”的磁盘从未存过未知数据。执行前仍必须由变更单证明四块
 数据 VMDK 是新建盘，并完成 vCenter 资产 ID、controller/unit、datastore、容量、guest by-id 和
-guest serial 的逐盘双向核对。vCenter 必须按公司模板启用 VMDK UUID 向 guest 暴露；常见配置是
-`disk.EnableUUID=TRUE`，若公司模板使用等价机制，则以公司实现为准，但必须实证产生唯一、重启
-稳定的 by-id 与 serial。维护窗内禁止热插拔或调整 SCSI unit。
+guest serial 的逐盘双向核对。vCenter 必须在 VM 级启用 VMDK UUID 向 guest 暴露：完整关闭
+guest 并确认 VM 为 `Powered Off`，进入 **Edit Settings → VM Options → Advanced →
+Configuration Parameters → Edit Configuration**，新增或修改 `disk.EnableUUID=TRUE`，保存后
+`Power On`。普通 guest reboot 不能替代这次关机/开机。变更前记录参数原值，回退也必须关机后
+恢复原值。开机后必须实证产生唯一、重启稳定的直接 by-id 与 serial，并由基础架构管理员把每个
+guest WWID 与 vCenter/ESXi 中的 VMDK UUID 一一映射；只出现 `/dev/sdX` 或手工软链接不合格。
+维护窗内禁止热插拔或调整 SCSI unit。操作依据为 Broadcom 官方 KB 418101；外部链接不写入
+公开仓库，受限变更单中保存当次查阅地址与快照。
 
 脚本不提供 `--force`、`--yes`、`--device`、清签名、分区、LVM、自动停止服务、自动卸载、
 回滚格式化或非交互执行入口。格式化不可回滚；中断后只能 `resume` 同一计划，或停止并走新的
@@ -21,7 +26,7 @@ guest serial 的逐盘双向核对。vCenter 必须按公司模板启用 VMDK UU
 
 | 角色 | 原始 VMDK 精确容量 | 布局 | 文件系统 | 挂载点 |
 |---|---:|---|---|---|
-| OS | 不少于 107374182400 B | GPT：512 MiB EFI + 其余单一根分区；无 LVM/swap/独立 `/boot` | ext4 | `/` |
+| OS | 不少于 107374182400 B | GPT 三分区：固定 EFI、固定 `/boot`、占满余量的单 PV/单根 LV；固定 8 GiB swap file | vfat + ext4 + LVM/ext4 | `/boot/efi`、`/boot`、`/` |
 | Docker | 268435456000 B | 整盘，无分区、无 LVM | XFS，`ftype=1` | `/var/lib/docker` |
 | PostgreSQL | 429496729600 B | 整盘，无分区、无 LVM | XFS，`ftype=1` | `/var/lib/sms-platform/postgres` |
 | Redis | 107374182400 B | 整盘，无分区、无 LVM | XFS，`ftype=1` | `/var/lib/sms-platform/redis` |
@@ -31,8 +36,18 @@ guest serial 的逐盘双向核对。vCenter 必须按公司模板启用 VMDK UU
 用于识别 VMDK。脚本要求 guest 中恰好有五块 `TYPE=disk`：一块明确的 OS 盘和清单点名的四块
 数据盘；存在额外未知磁盘时失败。
 
-OS 盘绝不写入，但 plan 会验证 GPT、512 MiB EFI System Partition、单一直接 ext4 根分区、根
-UUID 与 fstab 一致、无 LVM/独立 `/boot`/活动 swap，且根文件系统已扩到 OS VMDK 的至少 98%。
+OS 盘绝不写入，但 plan 会按当前 Ubuntu 24.04 模板验证以下闭集：512 B 逻辑扇区；分区 1 从
+sector 2048 开始、大小 1127219200 B、ESP GUID、vfat 并唯一挂载 `/boot/efi`；分区 2 从
+sector 2203648 开始、大小 2147483648 B、Linux filesystem GUID、ext4 并唯一挂载 `/boot`；
+分区 3 从 sector 6397952 开始、`LVM2_member`、不小于 104097382400 B 且距 VMDK 尾部不超过
+8 MiB。第三分区必须只有一个 `/dev/mapper/ubuntu--vg-ubuntu--lv`，初始不小于
+104094236672 B、ext4、唯一挂载 `/`，PV 与 LV 的容量差不超过 8 MiB。三个 PARTUUID、PV UUID、
+根文件系统 UUID、分区起点和 LVM 路径进入计划身份摘要；根 ext4 的 `statvfs` 容量必须不少于
+94 GiB 且达到 LV 原始容量的至少 97%。
+
+`/swap.img` 固定为根 ext4 上 `root:root 0600`、单链接、非稀疏且已分配的 8 GiB 普通文件；
+它必须是唯一活动 swap，fstab 必须精确为 `/swap.img none swap sw 0 0`。EFI、`/boot`、LVM、
+swap 均只读验证，初始化器不会创建、调整、格式化或修复它们。
 `/var/lib/sms-platform` 若预先存在，必须已经是 `root:root 0750`；四个挂载点必须不存在或为空且
 精确满足固定 owner/mode。
 
@@ -52,8 +67,12 @@ mkfs.xfs -q -L <固定短标签> -m uuid=<计划UUIDv4> -n ftype=1 <稳定-by-id
 - Ubuntu Server 24.04 LTS（`VERSION_CODENAME=noble`）、固定 `/usr/bin/python3` 3.12、PID 1
   为 systemd，且当前 `/` 与 `/proc/1/root` 必须是同一目录对象；`systemd-detect-virt` 必须明确
   报告 `vmware` 且不属于 container；chroot/container/private mount namespace 一律拒绝。
-- 时区必须是 `Asia/Shanghai`，`timedatectl` 的 `NTPSynchronized=yes`；不满足时 plan 失败。
-- `/` 满足第 2 节 OS 拓扑合同，实测文件系统容量不少于 OS VMDK 的 98%，`root:root 0755`。
+- 时区必须是 `Asia/Shanghai`，使用唯一的 `systemd-timesyncd` 客户端，只配置公司内部 NTP 且
+  `FallbackNTP=` 为空；实际 NTP 地址只进入受限变更证据，不提交公开仓库。`timedatectl` 的
+  `NTPSynchronized=yes`。plan 只自动阻断错误时区或未同步；唯一客户端、精确内网时间源和空
+  fallback 必须由受限变更证据另行读回，不能把“已同步”当作来源证明。
+- `/` 满足第 2 节 OS 拓扑合同，实测容量不少于 94 GiB 且达到根 LV 的 97%，`root:root 0755`；
+  `/boot` 和 `/boot/efi` 必须按固定设备、类型和挂载点在线。
 - 五块 VMDK 已在 vCenter 完成复核；四块数据盘是新建空盘。
 - 每块 VMDK 必须有唯一的直接 `/dev/disk/by-id/...` 和非空 serial；关机重启并调整一次非生产
   SCSI unit 后仍能按同一 VMDK 身份读回。正式维护窗内冻结磁盘拓扑。
@@ -72,7 +91,7 @@ mkfs.xfs -q -L <固定短标签> -m uuid=<计划UUIDv4> -n ftype=1 <稳定-by-id
 
 ```bash
 sudo /usr/bin/lsblk --bytes --paths \
-  --output NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,UUID,SERIAL,WWN,RO,RM,MOUNTPOINTS,PTTYPE,PARTTYPE
+  --output NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,UUID,SERIAL,WWN,RO,RM,MOUNTPOINTS,PTTYPE,PARTTYPE,PARTUUID,PARTN,START,LOG-SEC
 sudo /usr/bin/findmnt --target /
 sudo /usr/sbin/blkid
 sudo /usr/sbin/wipefs --no-act --json /dev/disk/by-id/<逐盘核对的设备>
@@ -173,7 +192,9 @@ PostgreSQL、Redis、Runtime 四盘完整 serial，以及 plan 输出的最终 `
 通过继承的 `/proc/self/fd/N` 处理同一块设备，同时继承初始化锁 → 使用计划 UUID/label 格式化 →
 读回 XFS → 原子准备 fstab →
 用单次 `RENAME_NOREPLACE` 保留并强制落盘 `root:root 0600` 原 fstab 备份 → 拒绝 fstab 目标
-路径 symlink/别名以及非 root 控制的可写路径链 → `findmnt --verify` 必须零错误且零警告 →
+路径 symlink/别名以及非 root 控制的可写路径链 → `findmnt --verify` 必须零错误；零 warning
+直接通过，也允许 Noble 在精确 `/swap.img none swap sw 0 0` 上产生唯一的
+`non-bind mount source /swap.img is a directory or regular file` warning；其它 warning 失败关闭 →
 原子替换并强制落盘 fstab → 只按四个
 固定挂载点逐个 mount → 读回 UUID/major:minor/options/容量 → 设置挂载根权限 → 创建八个固定
 目录 → 逐盘验证四个 XFS 均为 `ftype=1` → 最后写 state → 清除 intent。
@@ -214,10 +235,12 @@ sudo /usr/bin/jq . \
 Docker `_data` bind 视为合法，并逐项校验目标、FSROOT、XFS、设备号及 `rw,nodev,nosuid`；
 其卷控制目录必须仍在 Docker VMDK 上且不得自身成为嵌套挂载。apply、resume 和
 `finalization_required` 状态始终不放宽这一限制。
-完成后若按正式扩容工单增大原 VMDK，status 接受同一 by-id/serial/wwn 且当前容量不低于初始
-合同，并要求 XFS 当前容量位于块设备的 98%–100%；仅增大 VMDK 而未 grow、或文件系统反而
-大于底层设备都会是 `drifted`。工具不写扩容高水位；每次扩容前后容量和“禁止缩容”的历史
-约束必须由正式扩容工单、vCenter 事件和监控证据保留。
+完成后若按正式扩容工单增大原数据 VMDK，status 接受同一 by-id/serial/wwn 且当前容量不低于
+初始合同，并要求 XFS 当前容量位于块设备的 98%–100%。OS VMDK 扩容必须保持三个 PARTUUID 和
+分区起点不变，只扩大最后一个 LVM 分区，然后依次完成同一 PV 的 `pvresize`、同一根 LV 的
+`lvextend` 和同一 ext4 的 `resize2fs`；PV/LV 距底层上限及 ext4/LV 比例任一不闭合都会
+`drifted`。工具不写扩容高水位；每次扩容前后容量和“禁止缩容”的历史约束必须由正式扩容工单、
+vCenter 事件和监控证据保留。
 
 ## 5. 中断恢复
 
@@ -271,7 +294,9 @@ SCSI unit 后 by-id/UUID 读回、移除一块盘后的启动失败关闭、重�
 resume 仍被继承锁阻断、在目录创建/backup/state 原子发布边界分别断电并成功 resume，以及确认
 第五块 decoy 盘从未发生写入。还必须按仓库 unit 原样安装并实际启动
 `sms-storage-preflight.service`，证明 `ProtectSystem=strict` 下读取的是 PID 1 宿主 mountinfo、
-`DeviceAllow=block-sd r` 足以让 `findmnt --verify` 零警告通过且没有块设备写权限；生产 override
+`DeviceAllow=block-sd r` 与 `DeviceAllow=block-device-mapper r` 足以让 `findmnt --verify`
+通过 PVSCSI 数据盘和 LVM 根卷读取，只产生上述一个精确 swapfile warning 且没有块设备写权限；
+同时确认 `/dev/disk/by-uuid`、`/dev/disk/by-id` 均只读可见。生产 override
 创建七个固定 Docker bind 后预检仍通过，增加第八个/错误设备 bind 或把宿主数据盘改为只读时
 必须失败关闭；备份、恢复演练、生命周期巡检和分区维护 unit 中的同一预检也必须实际通过。
 普通 pytest 和 loop device 不能替代这项 VMware/PVSCSI 演练；
