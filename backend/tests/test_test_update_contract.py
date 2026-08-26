@@ -768,6 +768,7 @@ def test_phase0_production_control_paths_are_safe_non_runtime_inputs() -> None:
     change = classify_changed_paths(
         [
             "deploy/docker-compose.production-storage.yml",
+            "deploy/docker-compose.production-restart.yml",
             "deploy/docker-compose.redis-tls.yml",
             "deploy/lifecycle.server.example.json",
             "deploy/scripts/continuity_manager.py",

@@ -50,6 +50,11 @@ run_backend() {
       ../scripts/check_contract.py \
       ../scripts/check_public_readiness.py \
       ../scripts/classify_ci_changes.py \
+      ../scripts/create_release_manifest.py \
+      ../scripts/create_offline_image_index.py \
+      ../scripts/deploy_release_remote.py \
+      ../deploy/scripts/offline_image_archive.py \
+      ../deploy/scripts/release_manifest.py \
       ../scripts/verify_ci_results.py
     ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 \
       uv run pytest -q "${pytest_args[@]}"

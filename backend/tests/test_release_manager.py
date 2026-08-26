@@ -20,6 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
+import release_manager as release_manager_module  # noqa: E402
 from release_manager import (  # noqa: E402
     ReconciliationDecision,
     ReleaseManager,
@@ -116,6 +117,7 @@ def _write_bound_release_report(
 
 def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
     production = manifest["mode"] == "production"
+    offline = manifest.get("image_source") == "production-offline-docker-archive-v1"
     commit = manifest["commit"]
     source = {
         "app_version": "1.6.0",
@@ -138,9 +140,17 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "trivy_image": "aquasec/trivy:0.70.0@sha256:" + "f" * 64,
         "images": {
             name: {
-                "ref": manifest["images"][name]["ref"],
+                "ref": (
+                    f"sms-platform-release-{name}:{commit}"
+                    if offline
+                    else manifest["images"][name]["ref"]
+                ),
                 "image_id": manifest["images"][name]["id"],
-                "repo_digests": ([manifest["images"][name]["ref"]] if production else []),
+                "repo_digests": (
+                    [manifest["images"][name]["ref"]]
+                    if production and not offline
+                    else []
+                ),
                 "scan_report_sha256": "f" * 64,
                 "scan_passed": True,
             }
@@ -160,7 +170,7 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
                     for name in IMAGE_NAMES
                 },
             }
-            if production
+            if production and not offline
             else None
         ),
         "passed": True,
@@ -188,21 +198,30 @@ def _control_smoke_report(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _data_report(manifest: dict[str, Any], *, postgres_major: int = 16) -> dict[str, Any]:
+    offline = manifest.get("image_source") == "production-offline-docker-archive-v1"
     return {
         "schema_version": 1,
         "gate_type": "data_images",
-        "candidate_commit": COMMIT,
+        "candidate_commit": manifest["commit"],
         "generated_at": "2026-07-14T07:05:00Z",
         "images": {
             "postgres": {
-                "ref": manifest["images"]["postgres"]["ref"],
+                "ref": (
+                    f"sms-platform-release-postgres:{manifest['commit']}"
+                    if offline
+                    else manifest["images"]["postgres"]["ref"]
+                ),
                 "image_id": manifest["images"]["postgres"]["id"],
                 "platform": "linux/amd64",
                 "version": f"{postgres_major}.8",
                 "major": postgres_major,
             },
             "redis": {
-                "ref": manifest["images"]["redis"]["ref"],
+                "ref": (
+                    f"sms-platform-release-redis:{manifest['commit']}"
+                    if offline
+                    else manifest["images"]["redis"]["ref"]
+                ),
                 "image_id": manifest["images"]["redis"]["id"],
                 "platform": "linux/amd64",
                 "version": "7.4.2",
@@ -418,6 +437,260 @@ def _bundle(
     return manifest_path, manifest, current_refs
 
 
+def _write_test_docker_archive(
+    path: Path,
+    *,
+    name: str,
+    app_version: str,
+    commit: str,
+    schema_revision: str,
+    large: bool = False,
+) -> tuple[str, str, int]:
+    identity = json.dumps(
+        {
+            "name": name,
+            "version": app_version,
+            "commit": commit,
+            "schema": schema_revision,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    image_id = "sha256:" + hashlib.sha256(identity).hexdigest()
+    payload = b"opaque-docker-save-test-fixture\n" + identity
+    if large:
+        payload += b"x" * (1024 * 1024 + 1)
+    path.write_bytes(payload)
+    path.chmod(0o600)
+    return image_id, hashlib.sha256(payload).hexdigest(), len(payload)
+
+
+def _offline_bundle(
+    tmp_path: Path,
+    *,
+    changed: set[str] | None = None,
+    large_archive: bool = False,
+    migration_changed: bool = False,
+) -> tuple[Path, dict[str, Any], dict[str, str]]:
+    changed = set(IMAGE_NAMES) if changed is None else changed
+    runtime_root = tmp_path / "offline-staging"
+    runtime_root.mkdir(mode=0o700)
+    runtime_root.chmod(0o700)
+    bundle = runtime_root / "offline-release-20260826"
+    bundle.mkdir(mode=0o700)
+    bundle.chmod(0o700)
+    app_version = "1.6.0"
+    schema_revision = "0012_baseline"
+    images: dict[str, dict[str, Any]] = {}
+    for name in IMAGE_NAMES:
+        archive_path = bundle / f"{name}.tar"
+        image_id, archive_sha256, archive_size = _write_test_docker_archive(
+            archive_path,
+            name=name,
+            app_version=app_version,
+            commit=COMMIT,
+            schema_revision=schema_revision,
+            large=large_archive and name == "api",
+        )
+        images[name] = {
+            "ref": image_id,
+            "id": image_id,
+            "archive_file": f"{name}.tar",
+            "archive_sha256": archive_sha256,
+            "archive_size": archive_size,
+            "changed": name in changed,
+        }
+    manifest: dict[str, Any] = {
+        "schema_version": 2,
+        "release_id": "offline-release-20260826",
+        "commit": COMMIT,
+        "mode": "production",
+        "image_source": "production-offline-docker-archive-v1",
+        "signing": {
+            "algorithm": "ed25519",
+            "key_id": "sms-prod-2026",
+            "file": "manifest.sig",
+        },
+        "images": images,
+        "migration": {
+            "from": "0011_baseline" if migration_changed else schema_revision,
+            "target": schema_revision,
+            "compatibility": "expand" if migration_changed else "none",
+        },
+        "evidence": {
+            "release_gate_kind": "release",
+            "release_gate": "release-gate.json",
+            "release_gate_sha256": "0" * 64,
+            "data_images": None,
+            "backup_restore_change": None,
+            "offline_image_index": {
+                "file": "offline-image-index.json",
+                "sha256": "0" * 64,
+            },
+        },
+    }
+    release_gate_path = bundle / "release-gate.json"
+    _write_bound_release_report(
+        release_gate_path,
+        manifest,
+        _release_report(manifest),
+    )
+    if changed & {"postgres", "redis"}:
+        data_path = bundle / "data-images.json"
+        _write_private_json(data_path, _data_report(manifest))
+        manifest["evidence"]["data_images"] = {
+            "file": data_path.name,
+            "sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
+            "size": data_path.stat().st_size,
+        }
+    if "postgres" in changed or migration_changed:
+        restore_path = bundle / "restore-report.json"
+        restore = _restore_report()
+        restore["git_commit"] = manifest["commit"]
+        restore["checks"]["alembic_version"] = manifest["migration"]["target"]
+        _write_private_json(restore_path, restore)
+        record_path = bundle / "backup-change.json"
+        _write_private_json(
+            record_path,
+            _production_change_record(manifest, restore_path),
+        )
+        manifest["evidence"]["backup_restore_change"] = {
+            "record": {
+                "file": record_path.name,
+                "sha256": hashlib.sha256(record_path.read_bytes()).hexdigest(),
+                "size": record_path.stat().st_size,
+            },
+            "restore_report": {
+                "file": restore_path.name,
+                "sha256": hashlib.sha256(restore_path.read_bytes()).hexdigest(),
+                "size": restore_path.stat().st_size,
+            },
+        }
+    index = {
+        "schema_version": 1,
+        "kind": "production_offline_image_index",
+        "candidate_commit": COMMIT,
+        "release_gate": {
+            "file": "release-gate.json",
+            "sha256": manifest["evidence"]["release_gate_sha256"],
+            "size": release_gate_path.stat().st_size,
+        },
+        "reproducibility": {
+            "file": "reproducibility.json",
+            "sha256": "7" * 64,
+            "size": 1,
+        },
+        "images": {
+            name: {
+                "image_id": images[name]["id"],
+                "archive": {
+                    "file": f"images/{name}.tar",
+                    "sha256": images[name]["archive_sha256"],
+                    "size": images[name]["archive_size"],
+                },
+                "scan": {
+                    "file": f"scans/{name}.json",
+                    "sha256": "6" * 64,
+                    "size": 1,
+                },
+                "sbom": {
+                    "candidate": {
+                        "file": f"sboms/{name}.cdx.json",
+                        "sha256": "5" * 64,
+                        "size": 1,
+                    },
+                    "rebuild": {
+                        "file": f"sboms/{name}.rebuild.cdx.json",
+                        "sha256": "4" * 64,
+                        "size": 1,
+                    },
+                },
+            }
+            for name in IMAGE_NAMES
+        },
+    }
+    index_path = bundle / "offline-image-index.json"
+    _write_private_json(index_path, index)
+    manifest["evidence"]["offline_image_index"]["sha256"] = hashlib.sha256(
+        index_path.read_bytes()
+    ).hexdigest()
+    manifest_path = bundle / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
+    signature_path = bundle / "manifest.sig"
+    signature_path.write_bytes(b"s" * 64)
+    signature_path.chmod(0o600)
+    current_refs = {
+        name: (
+            "sha256:" + dict(api="1", web="2", postgres="3", redis="4")[name] * 64
+            if name in changed
+            else images[name]["id"]
+        )
+        for name in IMAGE_NAMES
+    }
+    return manifest_path, manifest, current_refs
+
+
+def _configure_offline_trust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    trust = tmp_path / "offline-trust"
+    trust.mkdir(mode=0o700)
+    public_key = trust / "offline-release-signing-public.pem"
+    key_id = trust / "offline-release-signing-key-id"
+    public_key.write_text("test-ed25519-public-key\n", encoding="ascii")
+    key_id.write_text("sms-prod-2026\n", encoding="ascii")
+    public_key.chmod(0o644)
+    key_id.chmod(0o644)
+    monkeypatch.setattr(
+        release_manager_module,
+        "_OFFLINE_SIGNING_PUBLIC_KEY",
+        public_key,
+    )
+    monkeypatch.setattr(
+        release_manager_module,
+        "_OFFLINE_SIGNING_KEY_ID",
+        key_id,
+    )
+    monkeypatch.setattr(
+        release_manager_module,
+        "_OFFLINE_SIGNING_TRUST_UID",
+        os.geteuid(),
+    )
+    monkeypatch.setattr(
+        release_manager_module,
+        "_OFFLINE_SIGNING_TRUST_GID",
+        os.getegid(),
+    )
+    return public_key, key_id
+
+
+def _rewrite_offline_release_evidence(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    release_gate = manifest_path.parent / "release-gate.json"
+    _write_private_json(release_gate, report)
+    manifest["evidence"]["release_gate_sha256"] = hashlib.sha256(
+        release_gate.read_bytes()
+    ).hexdigest()
+    index_path = manifest_path.parent / "offline-image-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["release_gate"] = {
+        "file": "release-gate.json",
+        "sha256": manifest["evidence"]["release_gate_sha256"],
+        "size": release_gate.stat().st_size,
+    }
+    _write_private_json(index_path, index)
+    manifest["evidence"]["offline_image_index"]["sha256"] = hashlib.sha256(
+        index_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
+
+
 def _platform(
     tmp_path: Path,
     current_refs: dict[str, str],
@@ -428,7 +701,11 @@ def _platform(
     root = tmp_path / "platform"
     (root / "deploy").mkdir(parents=True)
     (root / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    for name in ("docker-compose.production-storage.yml", "docker-compose.redis-tls.yml"):
+    for name in (
+        "docker-compose.production-storage.yml",
+        "docker-compose.production-restart.yml",
+        "docker-compose.redis-tls.yml",
+    ):
         (root / "deploy" / name).write_text(f"# {name}\nservices: {{}}\n", encoding="utf-8")
     versions = root / "backend" / "migrations" / "versions"
     versions.mkdir(parents=True)
@@ -474,11 +751,16 @@ class FakeRunner:
         )
         self.target_id_override: str | None = None
         self.target_repo_digests_override: list[str] | None = None
+        self.signature_valid = True
+        self.loaded_offline_image_ids: set[str] = set()
+        self.offline_identity_override: dict[str, str] = {}
+        self.fail_offline_load_number: int | None = None
+        self.offline_load_count = 0
         self.fail_action: str | None = None
         self.fail_action_number = 1
         self.fail_after_effect = False
         self.fail_compensation = False
-        self.migration_head = "0011"
+        self.migration_head = manifest["migration"]["from"]
         self.migration_head_after_failed_run: str | None = None
         self.migration_head_after_successful_run: str | None = None
         self.failed_once = False
@@ -537,12 +819,43 @@ class FakeRunner:
             return self._result(command)
         if command[0] == "git" and "rev-parse" in command:
             return self._result(command, self.git_commit + "\n")
+        if command[:3] == [
+            str(release_manager_module._OPENSSL),
+            "pkeyutl",
+            "-verify",
+        ]:
+            if self.signature_valid:
+                return self._result(command)
+            return subprocess.CompletedProcess(command, 1, "", "bad signature")
         if command == ["sleep", "31"]:
             return self._result(command)
         if command[:2] == ["docker", "load"]:
             return self._result(command)
+        if command[:3] == ["docker", "image", "load"]:
+            self.offline_load_count += 1
+            if self.fail_offline_load_number == self.offline_load_count:
+                return subprocess.CompletedProcess(command, 1, "", "injected")
+            archive_name = Path(command[-1]).stem
+            self.loaded_offline_image_ids.add(
+                self.manifest["images"][archive_name]["id"]
+            )
+            return self._result(command)
         if command[:3] == ["docker", "image", "inspect"]:
             ref = command[-1]
+            if command[-2] == release_manager_module._OFFLINE_IMAGE_INSPECT_FORMAT:
+                name = next(
+                    name
+                    for name in IMAGE_NAMES
+                    if self.manifest["images"][name]["id"] == ref
+                )
+                if ref not in self.loaded_offline_image_ids:
+                    return subprocess.CompletedProcess(command, 1, "", "No such image")
+                value = self.offline_identity_override.get(
+                    name,
+                    f"{ref}|linux/amd64|1.6.0|{self.manifest['commit']}|"
+                    f"{self.manifest['migration']['target']}",
+                )
+                return self._result(command, value + "\n")
             name = next(name for name in IMAGE_NAMES if self.manifest["images"][name]["ref"] == ref)
             image_id = self.target_id_override or self.manifest["images"][name]["id"]
             digests = (
@@ -1349,6 +1662,388 @@ def test_development_loads_only_changed_archive_and_verifies_target_id(
     assert loads[0][-1].endswith("/artifacts/web.tar")
 
 
+def test_production_offline_import_uses_frozen_archives_and_fixed_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    public_key, _ = _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, current_refs)
+
+    manager.prepare(manifest_path)
+
+    artifacts = release_root / manifest["release_id"] / "artifacts"
+    loads = [
+        command
+        for command in runner.calls
+        if command[:3] == ["docker", "image", "load"]
+    ]
+    assert loads == [
+        [
+            "docker",
+            "image",
+            "load",
+            "--quiet",
+            "--platform",
+            "linux/amd64",
+            "--input",
+            str(artifacts / f"{name}.tar"),
+        ]
+        for name in IMAGE_NAMES
+    ]
+    assert all(str(manifest_path.parent) not in command[-1] for command in loads)
+    assert {
+        command[-1]
+        for command in runner.calls
+        if command[:3] == ["docker", "image", "inspect"]
+        and command[-2] == release_manager_module._OFFLINE_IMAGE_INSPECT_FORMAT
+    } == {manifest["images"][name]["id"] for name in IMAGE_NAMES}
+    signature_commands = [
+        command
+        for command in runner.calls
+        if command[:3]
+        == [str(release_manager_module._OPENSSL), "pkeyutl", "-verify"]
+    ]
+    assert signature_commands == [
+        [
+            str(release_manager_module._OPENSSL),
+            "pkeyutl",
+            "-verify",
+            "-pubin",
+            "-inkey",
+            str(public_key),
+            "-sigfile",
+            str(artifacts / "manifest.sig"),
+            "-rawin",
+            "-in",
+            str(release_root / manifest["release_id"] / "manifest.json"),
+        ]
+    ]
+    events = [
+        json.loads(line)
+        for line in (release_root / manifest["release_id"] / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert sum(
+        event["kind"] == "intent"
+        and event["step"] == "external_command"
+        and event["details"].get("check") == "production offline image load"
+        for event in events
+    ) == 4
+    assert sum(
+        event["kind"] == "observation"
+        and event["step"] == "external_command"
+        and event["details"].get("check") == "production offline image load"
+        and event["details"].get("passed") is True
+        for event in events
+    ) == 4
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+
+
+def test_production_offline_validates_all_four_archives_before_any_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    archive = manifest_path.parent / "redis.tar"
+    payload = archive.read_bytes()
+    archive.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+    archive.chmod(0o600)
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    original_env = (root / ".env").read_bytes()
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+    assert (root / ".env").read_bytes() == original_env
+
+
+def test_production_offline_import_is_idempotent_for_verified_raw_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    runner.loaded_offline_image_ids = {
+        manifest["images"][name]["id"] for name in IMAGE_NAMES
+    }
+
+    manager.prepare(manifest_path)
+
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+    inspections = [
+        command
+        for command in runner.calls
+        if command[:3] == ["docker", "image", "inspect"]
+        and command[-2] == release_manager_module._OFFLINE_IMAGE_INSPECT_FORMAT
+    ]
+    assert len(inspections) == 4
+
+
+def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    runner.fail_offline_load_number = 2
+    original_env = (root / ".env").read_bytes()
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    loads = [
+        command
+        for command in runner.calls
+        if command[:3] == ["docker", "image", "load"]
+    ]
+    assert len(loads) == 2
+    assert (root / ".env").read_bytes() == original_env
+    assert not any(
+        token in {"up", "down", "stop", "rm", "prune"}
+        for command in runner.calls
+        for token in command
+    )
+    assert manager.status(manifest["release_id"])["state"] == "failed"
+
+
+def test_production_offline_full_no_migration_update_can_compensate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.fail_action = "up"
+
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        manager.activate(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "rolled_back"
+
+
+def test_production_offline_signature_failure_precedes_every_docker_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
+    runner.signature_valid = False
+    original_env = (root / ".env").read_bytes()
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(command[0] == "docker" for command in runner.calls)
+    assert (root / ".env").read_bytes() == original_env
+    release_dir = release_root / manifest["release_id"]
+    assert {
+        path.name for path in (release_dir / "artifacts").iterdir()
+    } == {"manifest.sig"}
+    assert (release_dir / "manifest.json").read_bytes() == manifest_path.read_bytes()
+    assert manager.status(manifest["release_id"])["state"] == "failed"
+
+
+@pytest.mark.parametrize("oversized_name", ["release-gate.json", "offline-image-index.json"])
+def test_production_offline_caps_signed_json_before_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    oversized_name: str,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    oversized = manifest_path.parent / oversized_name
+    oversized.write_bytes(b"x" * (release_manager_module._MAX_JSON_BYTES + 1))
+    oversized.chmod(0o600)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, current_refs)
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    artifacts = release_root / manifest["release_id"] / "artifacts"
+    assert not (artifacts / oversized_name).exists()
+    assert not any(command[0] == "docker" for command in runner.calls)
+
+
+@pytest.mark.parametrize(
+    "binding_failure",
+    ["data_hash", "data_size", "backup_record_hash", "backup_report_size"],
+)
+def test_production_offline_v2_condition_evidence_checks_hash_and_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_failure: str,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    if binding_failure == "data_hash":
+        manifest["evidence"]["data_images"]["sha256"] = "0" * 64
+    elif binding_failure == "data_size":
+        manifest["evidence"]["data_images"]["size"] += 1
+    elif binding_failure == "backup_record_hash":
+        manifest["evidence"]["backup_restore_change"]["record"]["sha256"] = (
+            "0" * 64
+        )
+    else:
+        manifest["evidence"]["backup_restore_change"]["restore_report"]["size"] += 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    original_env = (root / ".env").read_bytes()
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+    assert (root / ".env").read_bytes() == original_env
+
+
+@pytest.mark.parametrize(
+    ("changed", "migration_changed"),
+    [({"web"}, False), (set(IMAGE_NAMES), True)],
+)
+def test_production_offline_rejects_selective_or_migration_updates(
+    tmp_path: Path,
+    changed: set[str],
+    migration_changed: bool,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        changed=changed,
+        migration_changed=migration_changed,
+    )
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    original_env = (root / ".env").read_bytes()
+
+    with pytest.raises(ReleaseManagerError):
+        manager.prepare(manifest_path)
+
+    assert not runner.calls
+    assert (root / ".env").read_bytes() == original_env
+
+
+@pytest.mark.parametrize("trust_failure", ["mode", "key_id"])
+def test_production_offline_rejects_untrusted_fixed_signing_material(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trust_failure: str,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    public_key, key_id = _configure_offline_trust(tmp_path, monkeypatch)
+    if trust_failure == "mode":
+        public_key.chmod(0o600)
+    else:
+        key_id.write_text("another-key\n", encoding="ascii")
+        key_id.chmod(0o644)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(command[0] == "docker" for command in runner.calls)
+    assert not any(command[0] == str(release_manager_module._OPENSSL) for command in runner.calls)
+
+
+@pytest.mark.parametrize("invalid_evidence", ["local", "promotion", "ref"])
+def test_production_offline_requires_bound_nonlocal_candidate_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_evidence: str,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    report_path = manifest_path.parent / "release-gate.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if invalid_evidence == "local":
+        report["source"]["workflow_repository"] = "local"
+        report["source"]["workflow_run_id"] = 0
+        report["source"]["workflow_run_attempt"] = 0
+    elif invalid_evidence == "promotion":
+        report["promotion_source"] = {}
+    else:
+        report["images"]["api"]["ref"] = manifest["images"]["api"]["ref"]
+    _rewrite_offline_release_evidence(manifest_path, manifest, report)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+
+
+def test_production_offline_index_must_cross_bind_every_manifest_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    index_path = manifest_path.parent / "offline-image-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["images"]["redis"]["archive"]["size"] += 1
+    _write_private_json(index_path, index)
+    manifest["evidence"]["offline_image_index"]["sha256"] = hashlib.sha256(
+        index_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed"):
+        manager.prepare(manifest_path)
+
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+
+
+def test_production_bootstrap_freezes_archive_larger_than_json_limit_streaming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        changed=set(),
+        large_archive=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, _, _, release_root = _manager(tmp_path, manifest, current_refs)
+    parsed, manifest_bytes, files = release_manager_module._validate_staging_bundle(
+        manifest_path,
+        os.geteuid(),
+    )
+    assert parsed.release_id == manifest["release_id"]
+    assert (manifest_path.parent / "api.tar").stat().st_size > 1024 * 1024
+    store = ReleaseStore(release_root, manifest["release_id"])
+
+    manager._freeze_bootstrap_bundle(
+        manifest_path,
+        manifest_bytes,
+        files,
+        store,
+    )
+
+    frozen = store.release_dir / "artifacts" / "api.tar"
+    assert frozen.stat().st_size == (manifest_path.parent / "api.tar").stat().st_size
+    assert hashlib.sha256(frozen.read_bytes()).hexdigest() == manifest["images"]["api"][
+        "archive_sha256"
+    ]
+
+
 def test_target_image_mismatch_fails_without_lifecycle_mutation(tmp_path: Path) -> None:
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
@@ -1433,6 +2128,10 @@ def test_production_postgres_change_accepts_bound_approval_and_restore_report(
 
     assert manager.status(manifest["release_id"])["state"] == "prepared"
     assert not any(command[:2] == ["docker", "load"] for command in runner.calls)
+    assert not any(
+        command[:3] == ["docker", "image", "load"] for command in runner.calls
+    )
+    assert not any(command[0] == str(release_manager_module._OPENSSL) for command in runner.calls)
     assert not any("pull" in command for command in runner.calls)
 
 
@@ -3158,7 +3857,7 @@ def test_resume_complete_staged_store_is_idempotent(tmp_path: Path) -> None:
     )
     store = release_manager_module.ReleaseStore(release_root, manifest["release_id"])
     store.create(manifest_bytes)
-    manager._copy_bundle(store, manifest_path, files)
+    manager._copy_bundle(store, manifest_path, files, parsed)
     assert parsed.release_id == manifest["release_id"]
 
     manager.resume(manifest["release_id"])
@@ -3231,6 +3930,23 @@ def test_succeeded_release_prepares_bound_forward_rollback_candidate(
     first_calls = list(runner.calls)
     manager.prepare_forward_rollback(source["release_id"], candidate_path)
     assert runner.calls == first_calls
+
+
+def test_forward_rollback_explicitly_rejects_offline_v2_candidate(
+    tmp_path: Path,
+) -> None:
+    manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
+    candidate_root = tmp_path / "offline-forward-candidate"
+    candidate_root.mkdir()
+    candidate_path, candidate, _ = _offline_bundle(candidate_root)
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="do not support forward rollback"):
+        manager.prepare_forward_rollback(source["release_id"], candidate_path)
+
+    assert not runner.calls
 
 
 def test_forward_rollback_rejects_source_topology_drift_before_candidate_work(
@@ -3407,6 +4123,87 @@ def test_production_bootstrap_is_empty_host_only_idempotent_and_seals_release(
         restarted.bootstrap(manifest_path, confirmed_empty_host=True)
 
 
+def test_production_start_gate_rechecks_offline_image_platform_and_labels(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, refs = _offline_bundle(tmp_path, changed=set())
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+    manager.bootstrap(manifest_path, confirmed_empty_host=True)
+    runner.calls.clear()
+    web_id = manifest["images"]["web"]["id"]
+    runner.offline_identity_override["web"] = (
+        f"{web_id}|linux/arm64|1.6.0|{COMMIT}|"
+        f"{manifest['migration']['target']}"
+    )
+
+    with pytest.raises(ReleaseManagerError, match="identity is invalid"):
+        manager.assert_production_start_allowed()
+
+    assert any(
+        command[:3] == ["docker", "image", "inspect"]
+        and command[-1] == web_id
+        and command[-2] == release_manager_module._OFFLINE_IMAGE_INSPECT_FORMAT
+        for command in runner.calls
+    )
+    assert not any("compose" in command for command in runner.calls)
+
+
+def test_offline_bootstrap_writes_target_ids_after_import_from_stage_only_env(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, _ = _offline_bundle(tmp_path, changed=set())
+    _configure_offline_trust(tmp_path, monkeypatch)
+    staged_refs = {
+        name: "sha256:" + marker * 64
+        for name, marker in zip(IMAGE_NAMES, "1234", strict=True)
+    }
+    manager, runner, root, release_root = _manager(tmp_path, manifest, staged_refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+    original_env = (root / ".env").read_bytes()
+
+    state = manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    assert state["status"] == "succeeded"
+    assert manager._root_env_refs() == {
+        name: manifest["images"][name]["id"] for name in IMAGE_NAMES
+    }
+    release_dir = release_root / manifest["release_id"]
+    assert (release_dir / "original.env").read_bytes() == original_env
+    events = [
+        json.loads(line)
+        for line in (release_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    load_observations = [
+        index
+        for index, event in enumerate(events)
+        if event["kind"] == "observation"
+        and event["step"] == "external_command"
+        and event["details"].get("check") == "production offline image load"
+    ]
+    env_intent = next(
+        index
+        for index, event in enumerate(events)
+        if event["kind"] == "intent" and event["step"] == "env_replace"
+    )
+    compose_config_intent = next(
+        index
+        for index, event in enumerate(events)
+        if event["kind"] == "intent"
+        and event["step"] == "external_command"
+        and event["details"].get("check") == "production bootstrap compose_config"
+    )
+    assert len(load_observations) == 4
+    assert max(load_observations) < env_intent < compose_config_intent
+
+
 def test_production_bootstrap_seals_frozen_manifest_after_staging_replacement(
     tmp_path: Path,
     production_storage_bind_paths: tuple[Path, ...],
@@ -3507,10 +4304,54 @@ def test_production_bootstrap_fails_closed_on_existing_volume_and_after_failure(
     assert state["status"] == "failed"
     assert state["phase"] == "contained"
     assert any("stop" in command for command in runner.calls)
+    events = [
+        json.loads(line)
+        for line in (
+            release_root / manifest["release_id"] / "events.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(
+        event["kind"] == "intent" and event["step"] == "env_replace"
+        for event in events
+    )
+    assert any(
+        event["kind"] == "observation"
+        and event["step"] == "env_replace"
+        and event["details"].get("completed") is True
+        for event in events
+    )
     calls = list(runner.calls)
     with pytest.raises(ReleaseManagerError, match="manual recovery"):
         manager.bootstrap(manifest_path, confirmed_empty_host=True)
     assert runner.calls == calls
+
+
+def test_production_bootstrap_records_bundle_freeze_failure(
+    tmp_path: Path,
+    production_storage_bind_paths: tuple[Path, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_root = tmp_path / "baseline-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, _, release_root = _manager(tmp_path, manifest, refs)
+    runner.service_running = {service: False for service in RUNTIME_SERVICES}
+    runner.migration_head = "uninitialized"
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError("injected archive copy failure")
+
+    monkeypatch.setattr(manager, "_copy_bundle", fail_copy)
+
+    with pytest.raises(ReleaseManagerError, match="bootstrap failed"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
+
+    state = json.loads((release_root / "bootstrap-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "failed"
+    assert state["phase"] == "contained"
+    assert manager.status(manifest["release_id"])["state"] == "staged"
+    with pytest.raises(ReleaseManagerError, match="manual recovery"):
+        manager.bootstrap(manifest_path, confirmed_empty_host=True)
 
 
 @pytest.mark.parametrize("path_index", range(8))
@@ -3606,7 +4447,6 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     runner.calls.clear()
     runner.service_running = {service: False for service in RUNTIME_SERVICES}
     restarted.assert_production_start_allowed()
-    assert not any("compose" in command for command in runner.calls)
 
     historical = json.loads(manifest_path.read_text(encoding="utf-8"))
     historical["release_id"] = "release-historical"
@@ -3627,6 +4467,28 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     )
 
     restarted.assert_production_start_allowed()
+
+
+def test_successful_recovery_state_does_not_block_next_prepare(tmp_path: Path) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(tmp_path, root, manifest)
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    _finish_recovery(manager)
+    assert (release_root / "recovery-state.json").is_file()
+
+    candidate_root = tmp_path / "post-recovery-candidate"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(candidate_root, manifest)
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    runner.calls.clear()
+
+    manager.prepare(candidate_path)
+
+    assert manager.status(candidate["release_id"])["state"] == "prepared"
 
 
 @pytest.mark.parametrize(
@@ -3946,6 +4808,40 @@ def test_start_gate_rejects_non_succeeded_current_release(
         manager.assert_production_start_allowed()
 
 
+@pytest.mark.parametrize("terminal_state", ["failed", "rolled_back"])
+def test_start_gate_ignores_same_commit_terminal_noncurrent_records(
+    tmp_path: Path,
+    terminal_state: str,
+) -> None:
+    bundle_root = tmp_path / "recovery-bundle"
+    bundle_root.mkdir()
+    manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
+    evidence = _recovery_evidence(tmp_path, root, manifest)
+    _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
+    _finish_recovery(manager)
+
+    duplicate = json.loads(manifest_path.read_text(encoding="utf-8"))
+    duplicate["release_id"] = f"terminal-{terminal_state}"
+    duplicate_store = ReleaseStore(release_root, duplicate["release_id"])
+    duplicate_store.create(json.dumps(duplicate).encode())
+    if terminal_state == "failed":
+        duplicate_store.transition(ReleaseState.STAGED, ReleaseState.FAILED)
+    else:
+        duplicate_store.transition(ReleaseState.STAGED, ReleaseState.PREPARED)
+        duplicate_store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+        duplicate_store.transition(
+            ReleaseState.ACTIVATING,
+            ReleaseState.ROLLING_BACK,
+        )
+        duplicate_store.transition(
+            ReleaseState.ROLLING_BACK,
+            ReleaseState.ROLLED_BACK,
+        )
+
+    manager.assert_production_start_allowed()
+
+
 @pytest.mark.parametrize("drift", ["missing", "duplicate", "refs", "topology", "migration"])
 def test_start_gate_binds_unique_current_commit_refs_topology_and_migration(
     tmp_path: Path,
@@ -4066,6 +4962,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
     assert production_files == [
         "docker-compose.yml",
         "docker-compose.production-storage.yml",
+        "docker-compose.production-restart.yml",
         "docker-compose.redis-tls.yml",
     ]
 
@@ -4085,6 +4982,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
     assert production_files == [
         "docker-compose.yml",
         "docker-compose.production-storage.yml",
+        "docker-compose.production-restart.yml",
         "docker-compose.redis-tls.yml",
     ]
 
@@ -4103,6 +5001,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
     assert managed_files == [
         "docker-compose.yml",
         "docker-compose.production-storage.yml",
+        "docker-compose.production-restart.yml",
     ]
 
     for invalid in ("standalone", "managed\nREDIS_HA_MODE=managed", ""):
@@ -4152,8 +5051,8 @@ def test_release_mutations_reject_persisted_production_topology_drift(
             encoding="utf-8",
         )
     elif drift == "compose_file":
-        (root / "deploy" / "docker-compose.redis-tls.yml").write_text(
-            "services: {redis: {}}\n",
+        (root / "deploy" / "docker-compose.production-restart.yml").write_text(
+            "services: {api: {restart: unless-stopped}}\n",
             encoding="utf-8",
         )
     elif drift == "non_image_env":
@@ -4229,6 +5128,10 @@ def _recovery_cli_state_result(
                 {
                     "name": "deploy/docker-compose.production-storage.yml",
                     "sha256": "c" * 64,
+                },
+                {
+                    "name": "deploy/docker-compose.production-restart.yml",
+                    "sha256": "e" * 64,
                 },
                 {
                     "name": "deploy/docker-compose.redis-tls.yml",

@@ -1199,3 +1199,43 @@
 - 原因：GET query 依赖访问日志阉割才能避免明文号码落盘；改 POST 后号码离开 URL，与规则 2
   一致，且不削弱时间范围等既有非 PII 筛选。
 - 影响：OpenAPI、Web 查询页、回复列表与查询 API。
+
+## D094 内部 Registry 建成前使用签名的生产离线镜像发布包
+
+- 决策：D041 的“同一候选只扫描一次、生产清单机械生成”继续有效；仅临时增加
+  `image_source=production-offline-docker-archive-v1` 的 schema v2 交付路径。正式制品称为
+  **生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**。
+  封闭包绑定 GitHub 非 local release evidence、attestation、离线索引、四个固定 archive 的
+  image ID/SHA-256/size，以及 Ed25519 `manifest.sig`。签名私钥不得进入仓库、生产、预生产或
+  发布包；生产只信任固定的 root-owned 公钥与 key ID。预生产和生产必须使用 manifest 字节及
+  包摘要完全相同的同一包。禁止人工 `docker load`、裸上传、现场构建、raw Compose 或跳过
+  manifest；上传、验签、导入、bootstrap 和普通更新均走受控入口。首次 bootstrap 仍是独立的
+  空主机流程，不能由 remote driver 偷走普通 prepare。失败保留 staging、release 状态和已导入
+  镜像供审计，禁止自动或人工无范围 prune。
+- 实现边界：该通道只覆盖 bootstrap、同包恢复和可选的无迁移四镜像整包更新；不实现选择性
+  archive、版本间离线更新迁移、历史包拼装、离线镜像包缓存复用或常驻自愈。空库 bootstrap
+  到 manifest head 的首次初始化不属于版本间更新迁移。archive 来源由固定 workflow
+  attestation、离线索引、manifest 签名和 SHA-256 证明；不自研 Docker tar 解析器，受控
+  `docker image load` 后逐镜像读回 ID、平台和 labels 才能继续。
+- 原因：公司内部 Registry 尚未建设，而生产网络不应因此直连 GitHub、Docker Hub 或临时接受
+  手工镜像。签名封闭包可在不降低 CI/G2、Trivy、SBOM、可重复构建、预生产同候选和双人审批
+  边界的前提下完成首发；它不是把 development archive 放宽为生产，也不把 Docker archive
+  误称为 OCI Image Layout。
+- 退出条件：内部 Registry、不可变 namespace、生产只读身份和按 manifest RepoDigest 拉取入口
+  建成；同一候选完成预生产提升/拉取/身份读回/失败恢复演练并获批准后，停止签发新的离线包，
+  恢复 D041 的 Registry promotion 路径。历史离线包和发布状态按审计保留期保存，不因退出而
+  prune。内网只读 Git、raw Compose 禁令、生产不现场构建、精确 commit、预生产、迁移/备份和
+  双人审批边界始终不变。
+
+## D095 生产容器关闭 Docker 自动重启
+
+- 决策：基础 Compose 的 development 行为保持不变；生产受控入口必须额外叠加
+  `docker-compose.production-restart.yml`，把 11 个长驻服务统一覆盖为
+  `restart: "no"`。该文件进入 release manager 的 production topology 哈希与恢复证据。
+  宿主机或 Docker daemon 恢复时仍由现有 `sms-platform.service` 执行受控 `up` 并经过
+  start-gate；单个容器异常退出由监控告警后人工重启平台，禁止直接操作 Docker。
+- 原因：Docker 的 `unless-stopped` 会在 daemon 恢复时绕过签名 release start-gate。
+  当前首发已批准最长 12 小时停服，临时离线阶段不增加自动 supervisor；人工受控恢复符合
+  RTO，且保持实现和宿主资产不扩张。
+- 影响：生产 Compose argv/topology、恢复证据、部署手册与预生产重启验收。内部 Registry
+  建成后仍不得恢复会绕过 start-gate 的 Docker 自动重启策略，除非另行批准并实现等价门禁。

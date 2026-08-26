@@ -40,6 +40,7 @@ CONSUMER_SERVICES = (
 COMPOSE_FILES = (
     "docker-compose.yml",
     "docker-compose.production-storage.yml",
+    "docker-compose.production-restart.yml",
     "docker-compose.redis-tls.yml",
 )
 ENGAGE_FIELDS = frozenset(
@@ -105,8 +106,7 @@ class SubprocessRunner:
             completed = subprocess.run(
                 list(command),
                 check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -708,12 +708,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.mode != "production":
         raise ContinuityError("continuity fence is production-only")
-    if arguments.command in {"engage", "release"}:
-        if (
+    if (
+        arguments.command in {"engage", "release"}
+        and (
             os.environ.get("SMS_LIFECYCLE_LOCKED") != "1"
             or not os.environ.get("SMS_LIFECYCLE_LOCK_FD", "").isdecimal()
-        ):
-            raise ContinuityError("continuity mutation requires lifecycle lock")
+        )
+    ):
+        raise ContinuityError("continuity mutation requires lifecycle lock")
     manager = ContinuityManager(root=arguments.root)
     if arguments.command == "gate":
         result = manager.gate()

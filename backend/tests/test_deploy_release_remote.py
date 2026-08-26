@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -99,6 +100,214 @@ def _bundle(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     return manifest_path, manifest
 
 
+def _offline_bundle(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    bundle = tmp_path / "offline-bundle"
+    bundle.mkdir()
+    archive_metadata: dict[str, tuple[str, int]] = {}
+    for name in ("api", "web", "postgres", "redis"):
+        archive = bundle / f"{name}.tar"
+        archive.write_bytes(f"verified-production-{name}-archive".encode())
+        archive_metadata[name] = (
+            hashlib.sha256(archive.read_bytes()).hexdigest(),
+            archive.stat().st_size,
+        )
+    (bundle / "manifest.sig").write_bytes(b"test-ed25519-signature")
+    release_report = {
+        "schema_version": 1,
+        "gate_type": "release",
+        "candidate_commit": COMMIT,
+        "source": {
+            "app_version": "1.6.0",
+            "git_sha": COMMIT,
+            "schema_revision": "0012",
+            "openapi_sha256": "9" * 64,
+            "workflow_repository": "example/enterprise-sms-platform",
+            "workflow_run_id": 123,
+            "workflow_run_attempt": 1,
+            "sbom_sha256": {name: "8" * 64 for name in ("api", "web", "postgres", "redis")},
+        },
+        "generated_at": "2026-08-26T08:00:00Z",
+        "trivy_image": "aquasec/trivy:0.70.0@sha256:" + "d" * 64,
+        "images": {
+            name: {
+                "ref": f"sms-platform-release-{name}:{COMMIT}",
+                "image_id": IMAGE_ID,
+                "repo_digests": [],
+                "scan_report_sha256": "e" * 64,
+                "scan_passed": True,
+            }
+            for name in ("api", "web", "postgres", "redis")
+        },
+        "promotion_source": None,
+        "passed": True,
+    }
+    release_report_path = bundle / "release-gate.json"
+    release_report_path.write_text(json.dumps(release_report), encoding="utf-8")
+    offline_index = {
+        "schema_version": 1,
+        "kind": "production_offline_image_index",
+        "candidate_commit": COMMIT,
+        "release_gate": {
+            "file": "release-gate.json",
+            "sha256": hashlib.sha256(release_report_path.read_bytes()).hexdigest(),
+            "size": release_report_path.stat().st_size,
+        },
+        "reproducibility": {
+            "file": "reproducibility.json",
+            "sha256": "7" * 64,
+            "size": 1,
+        },
+        "images": {
+            name: {
+                "image_id": IMAGE_ID,
+                "archive": {
+                    "file": f"images/{name}.tar",
+                    "sha256": archive_metadata[name][0],
+                    "size": archive_metadata[name][1],
+                },
+                "scan": {
+                    "file": f"scans/{name}.json",
+                    "sha256": "6" * 64,
+                    "size": 1,
+                },
+                "sbom": {
+                    "candidate": {
+                        "file": f"sboms/{name}.cdx.json",
+                        "sha256": "5" * 64,
+                        "size": 1,
+                    },
+                    "rebuild": {
+                        "file": f"sboms/{name}.rebuild.cdx.json",
+                        "sha256": "4" * 64,
+                        "size": 1,
+                    },
+                },
+            }
+            for name in ("api", "web", "postgres", "redis")
+        },
+    }
+    offline_index_path = bundle / "offline-image-index.json"
+    offline_index_path.write_text(json.dumps(offline_index), encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "release_id": "release-20260826-offline",
+        "commit": COMMIT,
+        "mode": "production",
+        "image_source": "production-offline-docker-archive-v1",
+        "signing": {
+            "algorithm": "ed25519",
+            "key_id": "sms-prod-2026",
+            "file": "manifest.sig",
+        },
+        "images": {
+            name: {
+                "ref": IMAGE_ID,
+                "id": IMAGE_ID,
+                "archive_file": f"{name}.tar",
+                "archive_sha256": archive_metadata[name][0],
+                "archive_size": archive_metadata[name][1],
+                "changed": False,
+            }
+            for name in ("api", "web", "postgres", "redis")
+        },
+        "migration": {"from": "0012", "target": "0012", "compatibility": "none"},
+        "evidence": {
+            "release_gate_kind": "release",
+            "release_gate": "release-gate.json",
+            "release_gate_sha256": hashlib.sha256(release_report_path.read_bytes()).hexdigest(),
+            "offline_image_index": {
+                "file": "offline-image-index.json",
+                "sha256": hashlib.sha256(offline_index_path.read_bytes()).hexdigest(),
+            },
+            "data_images": None,
+            "backup_restore_change": None,
+        },
+    }
+    manifest_path = bundle / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path, manifest
+
+
+def _registry_bundle(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
+    manifest_path, manifest = _bundle(tmp_path)
+    (manifest_path.parent / "web.tar").unlink()
+    source = {
+        "app_version": "1.6.0",
+        "git_sha": COMMIT,
+        "schema_revision": "0012",
+        "openapi_sha256": "9" * 64,
+        "workflow_repository": "example/enterprise-sms-platform",
+        "workflow_run_id": 123,
+        "workflow_run_attempt": 1,
+        "sbom_sha256": {
+            name: "8" * 64 for name in ("api", "web", "postgres", "redis")
+        },
+    }
+    refs = {
+        name: f"registry.example.com/sms/{name}@sha256:{digest * 64}"
+        for name, digest in zip(
+            ("api", "web", "postgres", "redis"),
+            ("a", "b", "c", "d"),
+            strict=True,
+        )
+    }
+    report = {
+        "schema_version": 1,
+        "gate_type": "release",
+        "candidate_commit": COMMIT,
+        "source": source,
+        "generated_at": "2026-08-26T08:00:00Z",
+        "trivy_image": "aquasec/trivy:0.70.0@sha256:" + "d" * 64,
+        "images": {
+            name: {
+                "ref": refs[name],
+                "image_id": IMAGE_ID,
+                "repo_digests": [refs[name]],
+                "scan_report_sha256": "e" * 64,
+                "scan_passed": True,
+            }
+            for name in ("api", "web", "postgres", "redis")
+        },
+        "promotion_source": {
+            "report_sha256": "f" * 64,
+            "candidate_commit": COMMIT,
+            "source": source,
+            "images": {
+                name: {
+                    "ref": f"sms-platform-release-{name}:{COMMIT}",
+                    "image_id": IMAGE_ID,
+                    "scan_report_sha256": "e" * 64,
+                }
+                for name in ("api", "web", "postgres", "redis")
+            },
+        },
+        "passed": True,
+    }
+    report_path = manifest_path.parent / "release-gate.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    manifest["mode"] = "production"
+    manifest["migration"] = {
+        "from": "0012",
+        "target": "0012",
+        "compatibility": "none",
+    }
+    manifest["images"] = {
+        name: {
+            "ref": refs[name],
+            "id": IMAGE_ID,
+            "archive_file": None,
+            "archive_sha256": None,
+            "changed": False,
+        }
+        for name in ("api", "web", "postgres", "redis")
+    }
+    manifest["evidence"]["release_gate_sha256"] = hashlib.sha256(
+        report_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest_path, manifest
+
+
 def _arguments(manifest: Path) -> argparse.Namespace:
     return argparse.Namespace(
         manifest=manifest,
@@ -113,7 +322,31 @@ def _arguments(manifest: Path) -> argparse.Namespace:
         remote_ref="origin/main",
         public_urls=("https://sms.example.com/readyz",),
         dry_run=False,
+        stage_only=False,
     )
+
+
+def _offline_arguments(manifest: Path) -> argparse.Namespace:
+    arguments = _arguments(manifest)
+    arguments.target = RemoteTarget(
+        host="release.example.com",
+        port=22,
+        user="smsdeploy",
+        platform_root="/opt/sms-platform",
+        secrets_mode="production",
+        runtime_root="/home/smsdeploy/.cache/sms-platform/releases",
+    )
+    arguments.public_urls = ()
+    arguments.stage_only = True
+    return arguments
+
+
+def _bind_evidence(path: Path) -> dict[str, object]:
+    return {
+        "file": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "size": path.stat().st_size,
+    }
 
 
 class FakeRunner:
@@ -121,6 +354,7 @@ class FakeRunner:
         self.manifest = manifest
         self.calls: list[list[str]] = []
         self.remote_hashes: dict[str, str] = {}
+        self.remote_metadata: dict[str, tuple[str, str, str, str]] = {}
         self.fail_prepare = False
         self.rsync_failures_remaining = 0
         self.remote_head = "b" * 40
@@ -166,6 +400,20 @@ class FakeRunner:
             path = remote[2]
             digest = self.remote_hashes[path]
             return self._result(command, stdout=f"{digest}  {path}\n")
+        if remote and remote[0] == "find":
+            bundle = remote[1]
+            records = [("", "d", "smsdeploy", "700", "2")]
+            for path in sorted(self.remote_hashes):
+                item = Path(path)
+                if str(item.parent) != bundle:
+                    continue
+                kind, owner, mode, links = self.remote_metadata.get(
+                    path,
+                    ("f", "smsdeploy", "600", "1"),
+                )
+                records.append((item.name, kind, owner, mode, links))
+            output = "".join("\0".join(record) + "\0" for record in records)
+            return self._result(command, stdout=output)
         if remote[:2] == ["mv", "--"]:
             source, destination = remote[2:]
             self.remote_hashes[destination] = self.remote_hashes.pop(source)
@@ -275,6 +523,168 @@ def test_plan_uses_fixed_argv_and_single_remote_actions(tmp_path: Path) -> None:
         ]
         for action in lifecycle_actions
     )
+
+
+def test_offline_stage_only_uploads_closed_bundle_without_docker_or_lifecycle(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    arguments = _offline_arguments(manifest_path)
+    runner = FakeRunner(manifest)
+
+    plan = build_release_plan(arguments)
+    deploy_release(arguments, runner)
+
+    assert not any(command[:3] == ["docker", "image", "inspect"] for command in plan)
+    assert not any(command[:3] == ["docker", "image", "inspect"] for command in runner.calls)
+    planned_remote = [command[8:] for command in plan if command[0] == "ssh"]
+    executed_remote = [command[8:] for command in runner.calls if command[0] == "ssh"]
+    assert not any(action[:2] == ["git", "-C"] for action in planned_remote)
+    assert not any("/usr/local/sbin/sms-compose" in action for action in planned_remote)
+    assert not any(action[:2] == ["git", "-C"] for action in executed_remote)
+    assert not any("/usr/local/sbin/sms-compose" in action for action in executed_remote)
+    assert not any(action[:2] == ["rm", "--"] for action in executed_remote)
+    uploaded_names = {
+        Path(command[-1].split(":", 1)[1]).name.removesuffix(".part")
+        for command in runner.calls
+        if command[0] == "rsync"
+    }
+    assert uploaded_names == {
+        "manifest.json",
+        "manifest.sig",
+        "release-gate.json",
+        "offline-image-index.json",
+        "api.tar",
+        "web.tar",
+        "postgres.tar",
+        "redis.tar",
+    }
+    find_command = next(
+        command[8:]
+        for command in runner.calls
+        if command[0] == "ssh" and command[8:9] == ["find"]
+    )
+    reparsed = shlex.split(" ".join(find_command))
+    assert reparsed[-2:] == ["-printf", r"%P\0%y\0%u\0%m\0%n\0"]
+
+
+def test_offline_full_update_uploads_and_verifies_bound_conditional_evidence(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    bundle = manifest_path.parent
+    data = bundle / "data-images.json"
+    backup = bundle / "backup-change.json"
+    restore = bundle / "restore-report.json"
+    data.write_text('{"passed":true}', encoding="utf-8")
+    backup.write_text('{"backup":true}', encoding="utf-8")
+    restore.write_text('{"restored":true}', encoding="utf-8")
+    for image in manifest["images"].values():
+        image["changed"] = True
+    manifest["evidence"]["data_images"] = _bind_evidence(data)
+    manifest["evidence"]["backup_restore_change"] = {
+        "record": _bind_evidence(backup),
+        "restore_report": _bind_evidence(restore),
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    plan = build_release_plan(_offline_arguments(manifest_path))
+
+    uploaded_names = {
+        Path(command[-1].split(":", 1)[1]).name.removesuffix(".part")
+        for command in plan
+        if command[0] == "rsync"
+    }
+    assert {data.name, backup.name, restore.name} <= uploaded_names
+
+    data.write_text('{"passed":false}', encoding="utf-8")
+    with pytest.raises(RemoteReleaseError, match="data image evidence"):
+        build_release_plan(_offline_arguments(manifest_path))
+
+
+def test_stage_only_is_restricted_to_production_offline_bundle(tmp_path: Path) -> None:
+    manifest_path, _ = _bundle(tmp_path)
+    arguments = _arguments(manifest_path)
+    arguments.stage_only = True
+    arguments.public_urls = ()
+
+    with pytest.raises(RemoteReleaseError, match="production offline"):
+        build_release_plan(arguments)
+
+
+def test_registry_production_keeps_promotion_and_local_docker_contract(
+    tmp_path: Path,
+) -> None:
+    manifest_path, _ = _registry_bundle(tmp_path)
+    arguments = _arguments(manifest_path)
+    arguments.target = RemoteTarget(
+        host="release.example.com",
+        port=22,
+        user="smsdeploy",
+        platform_root="/opt/sms-platform",
+        secrets_mode="production",
+        runtime_root="/home/smsdeploy/.cache/sms-platform/releases",
+    )
+    arguments.public_urls = ()
+
+    plan = build_release_plan(arguments)
+
+    assert sum(command[:3] == ["docker", "image", "inspect"] for command in plan) == 4
+    arguments.stage_only = True
+    with pytest.raises(RemoteReleaseError, match="production offline"):
+        build_release_plan(arguments)
+
+
+def test_offline_archive_size_must_match_before_upload(tmp_path: Path) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    manifest["images"]["web"]["archive_size"] += 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RemoteReleaseError, match="archive does not match"):
+        build_release_plan(_offline_arguments(manifest_path))
+
+
+def test_offline_release_evidence_uses_non_registry_candidate_ref(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    evidence_path = manifest_path.parent / "release-gate.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["images"]["api"]["ref"] = IMAGE_ID
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    manifest["evidence"]["release_gate_sha256"] = hashlib.sha256(
+        evidence_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RemoteReleaseError, match="not bound"):
+        build_release_plan(_offline_arguments(manifest_path))
+
+
+def test_offline_image_index_hash_is_bound_by_manifest(tmp_path: Path) -> None:
+    manifest_path, _ = _offline_bundle(tmp_path)
+    index_path = manifest_path.parent / "offline-image-index.json"
+    index_path.write_bytes(index_path.read_bytes() + b"\n")
+
+    with pytest.raises(RemoteReleaseError, match="index hash"):
+        build_release_plan(_offline_arguments(manifest_path))
+
+
+def test_offline_image_index_archive_metadata_is_bound_to_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    index_path = manifest_path.parent / "offline-image-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["images"]["api"]["archive"]["size"] += 1
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    manifest["evidence"]["offline_image_index"]["sha256"] = hashlib.sha256(
+        index_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RemoteReleaseError, match="image is not bound"):
+        build_release_plan(_offline_arguments(manifest_path))
 
 
 def test_development_dry_run_exposes_fixed_vendor_agent_reload_stage(
@@ -618,6 +1028,31 @@ def test_existing_identical_remote_files_are_idempotently_skipped(tmp_path: Path
     deploy_release(_arguments(manifest_path), runner)
 
     assert not any(command[0] == "rsync" for command in runner.calls)
+
+
+def test_stage_only_rejects_extra_remote_staging_file(tmp_path: Path) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    remote_bundle = (
+        "/home/smsdeploy/.cache/sms-platform/releases/release-20260826-offline"
+    )
+    runner.remote_hashes[f"{remote_bundle}/stale.part"] = "0" * 64
+
+    with pytest.raises(RemoteReleaseError, match="closed file set"):
+        deploy_release(_offline_arguments(manifest_path), runner)
+
+
+def test_stage_only_rejects_unsafe_remote_file_metadata(tmp_path: Path) -> None:
+    manifest_path, manifest = _offline_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    remote_manifest = (
+        "/home/smsdeploy/.cache/sms-platform/releases/"
+        "release-20260826-offline/manifest.json"
+    )
+    runner.remote_metadata[remote_manifest] = ("f", "smsdeploy", "644", "1")
+
+    with pytest.raises(RemoteReleaseError, match="metadata"):
+        deploy_release(_offline_arguments(manifest_path), runner)
 
 
 def test_existing_mismatched_remote_file_is_rejected_without_hash_disclosure(

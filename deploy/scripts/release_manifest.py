@@ -29,6 +29,7 @@ class ImageSpec:
     archive_file: str | None
     archive_sha256: str | None
     changed: bool
+    archive_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -41,16 +42,22 @@ class ReleaseManifest:
     migration_from: str
     migration_target: str
     migration_compatibility: MigrationCompatibility
-    evidence: Mapping[str, str | Mapping[str, str] | None]
+    evidence: Mapping[str, object]
+    image_source: str | None = None
+    signing: Mapping[str, str] | None = None
 
 
 _IMAGE_NAMES = ("api", "web", "postgres", "redis")
-_TOP_LEVEL_FIELDS = frozenset(
+OFFLINE_IMAGE_SOURCE = "production-offline-docker-archive-v1"
+_TOP_LEVEL_FIELDS_V1 = frozenset(
     {"schema_version", "release_id", "commit", "mode", "images", "migration", "evidence"}
 )
-_IMAGE_FIELDS = frozenset({"ref", "id", "archive_file", "archive_sha256", "changed"})
+_TOP_LEVEL_FIELDS_V2 = _TOP_LEVEL_FIELDS_V1 | frozenset({"image_source", "signing"})
+_IMAGE_FIELDS_V1 = frozenset({"ref", "id", "archive_file", "archive_sha256", "changed"})
+_IMAGE_FIELDS_V2 = _IMAGE_FIELDS_V1 | frozenset({"archive_size"})
 _MIGRATION_FIELDS = frozenset({"from", "target", "compatibility"})
-_EVIDENCE_FIELDS = frozenset(
+_SIGNING_FIELDS = frozenset({"algorithm", "key_id", "file"})
+_EVIDENCE_FIELDS_V1 = frozenset(
     {
         "release_gate_kind",
         "release_gate",
@@ -59,7 +66,10 @@ _EVIDENCE_FIELDS = frozenset(
         "backup_restore_change",
     }
 )
+_EVIDENCE_FIELDS_V2 = _EVIDENCE_FIELDS_V1 | frozenset({"offline_image_index"})
 _BACKUP_RESTORE_FIELDS = frozenset({"record", "restore_report"})
+_OFFLINE_INDEX_FIELDS = frozenset({"file", "sha256"})
+_BOUND_EVIDENCE_FIELDS = frozenset({"file", "sha256", "size"})
 _RELEASE_GATE_KINDS = frozenset({"release", "release_control_smoke"})
 _RELEASE_ID_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -69,6 +79,9 @@ _REPOSITORY_COMPONENT_RE = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*")
 _REGISTRY_COMPONENT_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?")
 _TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 _SAFE_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?")
+_MIN_ARCHIVE_BYTES = 1
+_MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
+_MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -161,10 +174,44 @@ def _validate_json_name(value: object, context: str) -> str:
     return name
 
 
-def _parse_image(value: object, *, mode: str, name: str) -> ImageSpec:
+def _parse_bound_evidence(
+    value: object,
+    context: str,
+) -> Mapping[str, str | int]:
+    artifact = _require_object(value, context)
+    _require_exact_fields(artifact, _BOUND_EVIDENCE_FIELDS, context)
+    size = artifact["size"]
+    if type(size) is not int or not 1 <= size <= _MAX_EVIDENCE_BYTES:
+        raise ReleaseManifestError(f"{context}.size has an invalid value")
+    return MappingProxyType(
+        {
+            "file": _validate_json_name(artifact["file"], f"{context}.file"),
+            "sha256": _require_matching_string(
+                artifact["sha256"],
+                _SHA256_RE,
+                f"{context}.sha256",
+            ),
+            "size": size,
+        }
+    )
+
+
+def _parse_image(
+    value: object,
+    *,
+    schema_version: int,
+    mode: str,
+    name: str,
+) -> ImageSpec:
     image = _require_object(value, f"images.{name}")
-    _require_exact_fields(image, _IMAGE_FIELDS, f"images.{name}")
-    if mode == "production":
+    _require_exact_fields(
+        image,
+        _IMAGE_FIELDS_V1 if schema_version == 1 else _IMAGE_FIELDS_V2,
+        f"images.{name}",
+    )
+    if schema_version == 2:
+        ref = _require_matching_string(image["ref"], _IMAGE_ID_RE, f"images.{name}.ref")
+    elif mode == "production":
         ref = _validate_production_ref(image["ref"])
     else:
         ref = _validate_development_ref(image["ref"])
@@ -188,7 +235,23 @@ def _parse_image(value: object, *, mode: str, name: str) -> ImageSpec:
             f"images.{name}.archive_sha256",
         )
     )
-    if mode == "production":
+    archive_size: int | None = None
+    if schema_version == 2:
+        archive_size_value = image["archive_size"]
+        if (
+            type(archive_size_value) is not int
+            or not _MIN_ARCHIVE_BYTES <= archive_size_value <= _MAX_ARCHIVE_BYTES
+        ):
+            raise ReleaseManifestError(
+                f"images.{name}.archive_size must be between 1 byte and 8 GiB"
+            )
+        archive_size = archive_size_value
+        expected_archive = f"{name}.tar"
+        if archive_file != expected_archive or archive_sha256 is None:
+            raise ReleaseManifestError(f"images.{name} must declare the fixed production archive")
+        if ref != image_id:
+            raise ReleaseManifestError(f"images.{name}.ref must equal images.{name}.id")
+    elif mode == "production":
         if archive_file is not None or archive_sha256 is not None:
             raise ReleaseManifestError("production images must not declare archive fields")
     elif changed and (archive_file is None or archive_sha256 is None):
@@ -200,6 +263,7 @@ def _parse_image(value: object, *, mode: str, name: str) -> ImageSpec:
         image_id=image_id,
         archive_file=archive_file,
         archive_sha256=archive_sha256,
+        archive_size=archive_size,
         changed=changed,
     )
 
@@ -215,9 +279,15 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         raise ReleaseManifestError("manifest is not readable strict JSON") from exc
 
     document = _require_object(raw, "manifest")
-    _require_exact_fields(document, _TOP_LEVEL_FIELDS, "manifest")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
-        raise ReleaseManifestError("schema_version must be exactly 1")
+    schema_version_value = document.get("schema_version")
+    if type(schema_version_value) is not int or schema_version_value not in {1, 2}:
+        raise ReleaseManifestError("schema_version must be exactly 1 or 2")
+    schema_version = schema_version_value
+    _require_exact_fields(
+        document,
+        _TOP_LEVEL_FIELDS_V1 if schema_version == 1 else _TOP_LEVEL_FIELDS_V2,
+        "manifest",
+    )
     release_id = _require_matching_string(
         document["release_id"],
         _RELEASE_ID_RE,
@@ -228,10 +298,40 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     if type(mode_value) is not str or mode_value not in {"development", "production"}:
         raise ReleaseManifestError("mode must be development or production")
     mode = cast(Literal["development", "production"], mode_value)
+    if schema_version == 2 and mode != "production":
+        raise ReleaseManifestError("schema_version 2 is only valid for production")
+
+    image_source: str | None = None
+    signing: Mapping[str, str] | None = None
+    if schema_version == 2:
+        if document["image_source"] != OFFLINE_IMAGE_SOURCE:
+            raise ReleaseManifestError("image_source has an invalid value")
+        image_source = OFFLINE_IMAGE_SOURCE
+        signing_value = _require_object(document["signing"], "signing")
+        _require_exact_fields(signing_value, _SIGNING_FIELDS, "signing")
+        if signing_value["algorithm"] != "ed25519":
+            raise ReleaseManifestError("signing.algorithm must be ed25519")
+        if signing_value["file"] != "manifest.sig":
+            raise ReleaseManifestError("signing.file must be manifest.sig")
+        signing = MappingProxyType(
+            {
+                "algorithm": "ed25519",
+                "key_id": _validate_safe_name(signing_value["key_id"], "signing.key_id"),
+                "file": "manifest.sig",
+            }
+        )
 
     images_value = _require_object(document["images"], "images")
     _require_exact_fields(images_value, frozenset(_IMAGE_NAMES), "images")
-    images = {name: _parse_image(images_value[name], mode=mode, name=name) for name in _IMAGE_NAMES}
+    images = {
+        name: _parse_image(
+            images_value[name],
+            schema_version=schema_version,
+            mode=mode,
+            name=name,
+        )
+        for name in _IMAGE_NAMES
+    }
 
     migration = _require_object(document["migration"], "migration")
     _require_exact_fields(migration, _MIGRATION_FIELDS, "migration")
@@ -248,9 +348,21 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         raise ReleaseManifestError(
             "migration.compatibility must be expand exactly when migration changes schema"
         )
+    if schema_version == 2:
+        changed_count = sum(spec.changed for spec in images.values())
+        if migration_changes_schema:
+            raise ReleaseManifestError("offline production release cannot include a migration")
+        if changed_count not in {0, len(_IMAGE_NAMES)}:
+            raise ReleaseManifestError(
+                "offline production release must change either zero or all four images"
+            )
 
     evidence_value = _require_object(document["evidence"], "evidence")
-    _require_exact_fields(evidence_value, _EVIDENCE_FIELDS, "evidence")
+    _require_exact_fields(
+        evidence_value,
+        _EVIDENCE_FIELDS_V1 if schema_version == 1 else _EVIDENCE_FIELDS_V2,
+        "evidence",
+    )
     release_gate_kind = evidence_value["release_gate_kind"]
     if type(release_gate_kind) is not str or release_gate_kind not in _RELEASE_GATE_KINDS:
         raise ReleaseManifestError("evidence.release_gate_kind has an invalid value")
@@ -265,11 +377,13 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         "evidence.release_gate_sha256",
     )
     data_candidate = evidence_value["data_images"]
-    data_images = (
-        None
-        if data_candidate is None
-        else _validate_safe_name(data_candidate, "evidence.data_images")
-    )
+    data_images: str | Mapping[str, str | int] | None
+    if data_candidate is None:
+        data_images = None
+    elif schema_version == 1:
+        data_images = _validate_safe_name(data_candidate, "evidence.data_images")
+    else:
+        data_images = _parse_bound_evidence(data_candidate, "evidence.data_images")
     data_changed = images["postgres"].changed or images["redis"].changed
     if data_changed is (data_images is None):
         raise ReleaseManifestError("evidence.data_images does not match changed data images")
@@ -278,7 +392,7 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     backup_required = mode == "production" and (
         images["postgres"].changed or migration_changes_schema
     )
-    backup_evidence: Mapping[str, str] | None
+    backup_evidence: Mapping[str, object] | None
     if backup_candidate is None:
         backup_evidence = None
     else:
@@ -291,45 +405,98 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
             _BACKUP_RESTORE_FIELDS,
             "evidence.backup_restore_change",
         )
-        backup_evidence = MappingProxyType(
-            {
-                "record": _validate_json_name(
-                    backup_object["record"],
-                    "evidence.backup_restore_change.record",
-                ),
-                "restore_report": _validate_json_name(
-                    backup_object["restore_report"],
-                    "evidence.backup_restore_change.restore_report",
-                ),
-            }
-        )
+        if schema_version == 1:
+            backup_evidence = MappingProxyType(
+                {
+                    "record": _validate_json_name(
+                        backup_object["record"],
+                        "evidence.backup_restore_change.record",
+                    ),
+                    "restore_report": _validate_json_name(
+                        backup_object["restore_report"],
+                        "evidence.backup_restore_change.restore_report",
+                    ),
+                }
+            )
+        else:
+            backup_evidence = MappingProxyType(
+                {
+                    "record": _parse_bound_evidence(
+                        backup_object["record"],
+                        "evidence.backup_restore_change.record",
+                    ),
+                    "restore_report": _parse_bound_evidence(
+                        backup_object["restore_report"],
+                        "evidence.backup_restore_change.restore_report",
+                    ),
+                }
+            )
     if backup_required is (backup_evidence is None):
         raise ReleaseManifestError(
             "evidence.backup_restore_change does not match production "
             "PostgreSQL or migration change"
         )
 
+    offline_index: Mapping[str, str] | None = None
+    if schema_version == 2:
+        offline_index_value = _require_object(
+            evidence_value["offline_image_index"],
+            "evidence.offline_image_index",
+        )
+        _require_exact_fields(
+            offline_index_value,
+            _OFFLINE_INDEX_FIELDS,
+            "evidence.offline_image_index",
+        )
+        if offline_index_value["file"] != "offline-image-index.json":
+            raise ReleaseManifestError(
+                "evidence.offline_image_index.file must be offline-image-index.json"
+            )
+        offline_index = MappingProxyType(
+            {
+                "file": "offline-image-index.json",
+                "sha256": _require_matching_string(
+                    offline_index_value["sha256"],
+                    _SHA256_RE,
+                    "evidence.offline_image_index.sha256",
+                ),
+            }
+        )
+
     bundle_names = ["manifest.json", release_gate]
+    if signing is not None:
+        bundle_names.append(signing["file"])
+    if offline_index is not None:
+        bundle_names.append(offline_index["file"])
     bundle_names.extend(
         spec.archive_file for spec in images.values() if spec.archive_file is not None
     )
     if data_images is not None:
-        bundle_names.append(data_images)
+        bundle_names.append(
+            data_images if isinstance(data_images, str) else str(data_images["file"])
+        )
     if backup_evidence is not None:
-        bundle_names.extend(backup_evidence.values())
+        if schema_version == 1:
+            bundle_names.extend(str(value) for value in backup_evidence.values())
+        else:
+            bundle_names.extend(
+                str(cast(Mapping[str, object], value)["file"]) for value in backup_evidence.values()
+            )
     if len(bundle_names) != len(set(bundle_names)):
         raise ReleaseManifestError("bundle basenames must be globally unique")
 
-    optional_evidence: dict[str, str | Mapping[str, str] | None] = {
+    optional_evidence: dict[str, object] = {
         "release_gate_kind": release_gate_kind,
         "release_gate": release_gate,
         "release_gate_sha256": release_gate_sha256,
         "data_images": data_images,
         "backup_restore_change": backup_evidence,
     }
+    if offline_index is not None:
+        optional_evidence["offline_image_index"] = offline_index
 
     return ReleaseManifest(
-        schema_version=1,
+        schema_version=schema_version,
         release_id=release_id,
         commit=commit,
         mode=mode,
@@ -338,6 +505,8 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         migration_target=migration_target,
         migration_compatibility=compatibility,
         evidence=MappingProxyType(optional_evidence),
+        image_source=image_source,
+        signing=signing,
     )
 
 
@@ -349,6 +518,16 @@ def load_manifest(path: Path) -> ReleaseManifest:
     except OSError as exc:
         raise ReleaseManifestError("manifest is not readable strict JSON") from exc
     return load_manifest_bytes(payload)
+
+
+def release_evidence_ref(manifest: ReleaseManifest, name: str) -> str:
+    """返回 release-gate 中应与指定镜像绑定的引用。"""
+
+    if name not in _IMAGE_NAMES:
+        raise ReleaseManifestError("image name must identify one of the four release images")
+    if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+        return f"sms-platform-release-{name}:{manifest.commit}"
+    return manifest.images[name].ref
 
 
 def validate_changed_images(

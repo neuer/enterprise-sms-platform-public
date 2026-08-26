@@ -31,6 +31,9 @@ def fake_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     (platform_root / "deploy" / "docker-compose.production-storage.yml").write_text(
         "volumes: {}\n", encoding="utf-8"
     )
+    (platform_root / "deploy" / "docker-compose.production-restart.yml").write_text(
+        "services: {}\n", encoding="utf-8"
+    )
     (platform_root / "deploy" / "docker-compose.redis-tls.yml").write_text(
         "services: {}\n", encoding="utf-8"
     )
@@ -369,6 +372,8 @@ def compose_prefix(
             [
                 "-f",
                 str(platform_root / "deploy" / "docker-compose.production-storage.yml"),
+                "-f",
+                str(platform_root / "deploy" / "docker-compose.production-restart.yml"),
             ]
         )
         if redis_ha_mode == "isolated-standalone":
@@ -821,6 +826,63 @@ def test_release_prepare_accepts_only_absolute_manifest_and_calls_manager(
             str(manifest),
         )
     ]
+
+
+def test_production_release_prepare_is_locked_without_preparing_runtime_secrets(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, _ = fake_environment
+    manifest = tmp_path / "staging" / "manifest.json"
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "release",
+        "prepare",
+        "--manifest",
+        str(manifest),
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert command_lines(log) == [
+        expected_release_manager(
+            platform_root,
+            "production",
+            "prepare",
+            "--manifest",
+            str(manifest),
+        )
+    ]
+
+
+def test_production_release_prepare_fails_closed_when_lifecycle_lock_is_held(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    manifest = tmp_path / "staging" / "manifest.json"
+    write_non_secret_env(platform_root)
+    lock_path = Path(f"{environment['SMS_RUNTIME_ROOT']}.lifecycle.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = run_wrapper(
+            fake_environment,
+            "release",
+            "prepare",
+            "--manifest",
+            str(manifest),
+            extra_environment={"SMS_SECRETS_MODE": "production"},
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode != 0
+    assert "lifecycle lock is already held" in result.stderr
+    assert command_lines(log) == []
 
 
 @pytest.mark.parametrize("subcommand", ["activate", "resume", "rollback"])

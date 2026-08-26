@@ -12,9 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
 from release_manifest import (  # noqa: E402
+    OFFLINE_IMAGE_SOURCE,
     MigrationCompatibility,
     ReleaseManifestError,
     load_manifest,
+    release_evidence_ref,
     validate_changed_images,
 )
 
@@ -75,6 +77,30 @@ def _write_manifest(tmp_path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _offline_manifest() -> dict[str, Any]:
+    payload = _manifest(mode="production")
+    payload["schema_version"] = 2
+    payload["image_source"] = OFFLINE_IMAGE_SOURCE
+    payload["signing"] = {
+        "algorithm": "ed25519",
+        "key_id": "production-2026",
+        "file": "manifest.sig",
+    }
+    payload["evidence"]["offline_image_index"] = {
+        "file": "offline-image-index.json",
+        "sha256": "d" * 64,
+    }
+    payload["migration"] = {"from": "0012", "target": "0012", "compatibility": "none"}
+    payload["evidence"]["backup_restore_change"] = None
+    for name, image in payload["images"].items():
+        image["ref"] = image["id"]
+        image["archive_file"] = f"{name}.tar"
+        image["archive_sha256"] = "e" * 64
+        image["archive_size"] = 1024
+        image["changed"] = False
+    return payload
+
+
 def test_manifest_accepts_exact_four_image_schema(tmp_path: Path) -> None:
     manifest = load_manifest(_write_manifest(tmp_path, _manifest()))
 
@@ -83,6 +109,115 @@ def test_manifest_accepts_exact_four_image_schema(tmp_path: Path) -> None:
     assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
     assert tuple(manifest.images) == ("api", "web", "postgres", "redis")
     assert manifest.images["web"].changed is True
+
+
+def test_manifest_accepts_strict_offline_production_v2(tmp_path: Path) -> None:
+    manifest = load_manifest(_write_manifest(tmp_path, _offline_manifest()))
+
+    assert manifest.schema_version == 2
+    assert manifest.image_source == OFFLINE_IMAGE_SOURCE
+    assert manifest.signing == {
+        "algorithm": "ed25519",
+        "key_id": "production-2026",
+        "file": "manifest.sig",
+    }
+    assert manifest.images["api"].archive_file == "api.tar"
+    assert manifest.images["api"].archive_size == 1024
+    assert release_evidence_ref(manifest, "api") == ("sms-platform-release-api:" + manifest.commit)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("mode",), "development"),
+        (("image_source",), "registry"),
+        (("signing", "algorithm"), "rsa"),
+        (("signing", "key_id"), "../unsafe"),
+        (("signing", "file"), "other.sig"),
+        (("images", "api", "archive_file"), "other.tar"),
+        (("images", "api", "archive_size"), 0),
+        (("images", "api", "archive_size"), True),
+        (("images", "api", "ref"), "sha256:" + "f" * 64),
+        (("evidence", "offline_image_index", "file"), "other.json"),
+    ],
+)
+def test_offline_production_v2_rejects_contract_drift(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    payload = _offline_manifest()
+    target: dict[str, Any] = payload
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = value
+
+    with pytest.raises(ReleaseManifestError):
+        load_manifest(_write_manifest(tmp_path, payload))
+
+
+def test_v1_stays_exact_and_does_not_accept_v2_image_fields(tmp_path: Path) -> None:
+    payload = _manifest()
+    payload["images"]["api"]["archive_size"] = 1024
+
+    with pytest.raises(ReleaseManifestError, match="unknown"):
+        load_manifest(_write_manifest(tmp_path, payload))
+
+
+def test_offline_v2_conditionally_binds_data_evidence_bytes(tmp_path: Path) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+    payload["evidence"]["data_images"] = {
+        "file": "data-images.json",
+        "sha256": "2" * 64,
+        "size": 4096,
+    }
+    payload["evidence"]["backup_restore_change"] = {
+        "record": {
+            "file": "backup-change.json",
+            "sha256": "f" * 64,
+            "size": 1024,
+        },
+        "restore_report": {
+            "file": "restore-report.json",
+            "sha256": "1" * 64,
+            "size": 2048,
+        },
+    }
+
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+
+    assert manifest.evidence["data_images"] == {
+        "file": "data-images.json",
+        "sha256": "2" * 64,
+        "size": 4096,
+    }
+
+
+@pytest.mark.parametrize("changed_names", [{"api"}, {"api", "web", "redis"}])
+def test_offline_v2_rejects_selective_changed_sets(
+    tmp_path: Path,
+    changed_names: set[str],
+) -> None:
+    payload = _offline_manifest()
+    for name in changed_names:
+        payload["images"][name]["changed"] = True
+
+    with pytest.raises(ReleaseManifestError, match="zero or all four"):
+        load_manifest(_write_manifest(tmp_path, payload))
+
+
+def test_offline_v2_rejects_migration(tmp_path: Path) -> None:
+    payload = _offline_manifest()
+    payload["migration"] = {"from": "0011", "target": "0012", "compatibility": "expand"}
+    payload["evidence"]["backup_restore_change"] = {
+        "record": {"file": "backup.json", "sha256": "f" * 64, "size": 10},
+        "restore_report": {"file": "restore.json", "sha256": "1" * 64, "size": 10},
+    }
+
+    with pytest.raises(ReleaseManifestError, match="migration"):
+        load_manifest(_write_manifest(tmp_path, payload))
 
 
 def test_manifest_rejects_duplicate_json_keys(tmp_path: Path) -> None:

@@ -27,12 +27,21 @@ from typing import Any, Literal, NoReturn, Protocol, cast
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from offline_image_archive import (  # noqa: E402
+    OfflineImageArchive,
+    OfflineImageArchiveError,
+    OfflineImageIndex,
+    load_offline_image_index_bytes,
+    validate_offline_image_archive,
+)
 from release_manifest import (  # noqa: E402
+    OFFLINE_IMAGE_SOURCE,
     MigrationCompatibility,
     ReleaseManifest,
     ReleaseManifestError,
     load_manifest,
     load_manifest_bytes,
+    release_evidence_ref,
     validate_changed_images,
 )
 from release_store import (  # noqa: E402
@@ -272,7 +281,7 @@ class CommandRunner(Protocol):
 
 
 class SubprocessRunner:
-    """仅通过固定 argv 运行受控只读检查或 development docker load。"""
+    """仅通过固定 argv 运行受控检查和清单授权的镜像导入。"""
 
     def run(
         self,
@@ -300,6 +309,7 @@ _REDIS_HA_MODE_KEY = "REDIS_HA_MODE"
 _PRODUCTION_REDIS_HA_MODES = frozenset({"managed", "isolated-standalone"})
 _BASE_COMPOSE_FILE = "docker-compose.yml"
 _PRODUCTION_STORAGE_COMPOSE_FILE = "docker-compose.production-storage.yml"
+_PRODUCTION_RESTART_COMPOSE_FILE = "docker-compose.production-restart.yml"
 _REDIS_TLS_COMPOSE_FILE = "docker-compose.redis-tls.yml"
 _PRODUCTION_STORAGE_BIND_PATHS = (
     Path("/var/lib/sms-platform/postgres/pgdata"),
@@ -479,6 +489,24 @@ _RESTORE_CRYPTO_PROBE_COVERAGE_VALUE_FIELDS = frozenset(
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _MAX_JSON_BYTES = 1024 * 1024
+_MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
+_MAX_SIGNATURE_BYTES = 1024
+_OFFLINE_SIGNING_PUBLIC_KEY = Path(
+    "/etc/sms-platform/offline-release-signing-public.pem"
+)
+_OFFLINE_SIGNING_KEY_ID = Path(
+    "/etc/sms-platform/offline-release-signing-key-id"
+)
+_OFFLINE_SIGNING_TRUST_UID = 0
+_OFFLINE_SIGNING_TRUST_GID = 0
+_OFFLINE_SIGNING_TRUST_MODE = 0o644
+_OPENSSL = "/usr/bin/openssl"
+_OFFLINE_IMAGE_INSPECT_FORMAT = (
+    '{{.Id}}|{{.Os}}/{{.Architecture}}|'
+    '{{index .Config.Labels "org.opencontainers.image.version"}}|'
+    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+)
 _CONTROL_SMOKE_PURPOSE = "release_control_failure_injection"
 _RUNTIME_ROOT_NAME = "runtime-secrets"
 _BOOTSTRAP_STATE_NAME = "bootstrap-state.json"
@@ -612,6 +640,7 @@ _RECOVERY_CLI_PHASES = frozenset(
 _RECOVERY_CLI_BASE_TOPOLOGY_FILES = (
     f"deploy/{_BASE_COMPOSE_FILE}",
     f"deploy/{_PRODUCTION_STORAGE_COMPOSE_FILE}",
+    f"deploy/{_PRODUCTION_RESTART_COMPOSE_FILE}",
 )
 _RECOVERY_CLI_TLS_TOPOLOGY_FILE = f"deploy/{_REDIS_TLS_COMPOSE_FILE}"
 _SENSITIVE_CLI_RESULT_TOKEN_RE = re.compile(
@@ -1118,6 +1147,76 @@ def _read_safe_bytes(
         os.close(descriptor)
 
 
+def _read_offline_trust_bytes(path: Path, *, maximum: int) -> bytes:
+    """读取固定 root 信任材料，并拒绝任何所有权或元数据漂移。"""
+
+    try:
+        before = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except OSError as exc:
+        raise ReleaseManagerError("offline release trust material is unavailable") from exc
+    try:
+        opened = os.fstat(descriptor)
+        identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        if identity != (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ):
+            raise ReleaseManagerError("offline release trust material changed while opening")
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != _OFFLINE_SIGNING_TRUST_UID
+            or opened.st_gid != _OFFLINE_SIGNING_TRUST_GID
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != _OFFLINE_SIGNING_TRUST_MODE
+            or not 1 <= opened.st_size <= maximum
+        ):
+            raise ReleaseManagerError("offline release trust material is unsafe")
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, min(64 * 1024, maximum + 1 - size)):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > maximum:
+                raise ReleaseManagerError("offline release trust material is oversized")
+        payload = b"".join(chunks)
+        if size != opened.st_size:
+            raise ReleaseManagerError("offline release trust material is incomplete")
+        after = os.fstat(descriptor)
+        if identity != (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_uid,
+            after.st_gid,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ReleaseManagerError("offline release trust material changed while reading")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
 def _parse_json_bytes(raw: bytes, context: str) -> dict[str, Any]:
     try:
         value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
@@ -1135,12 +1234,48 @@ def _read_json(path: Path, context: str) -> dict[str, Any]:
     return _parse_json_bytes(raw, context)
 
 
-def _read_bound_json(path: Path, expected_sha256: str, context: str) -> dict[str, Any]:
-    raw = _read_safe_bytes(path, expected_mode=0o600, maximum=_MAX_JSON_BYTES)
+def _read_bound_json(
+    path: Path,
+    expected_sha256: str,
+    context: str,
+    *,
+    expected_size: int | None = None,
+) -> dict[str, Any]:
+    raw = _read_safe_bytes(
+        path,
+        expected_mode=0o600,
+        maximum=_MAX_EVIDENCE_BYTES if expected_size is not None else _MAX_JSON_BYTES,
+    )
+    if expected_size is not None and len(raw) != expected_size:
+        raise ReleaseManagerError(f"{context} size does not match manifest")
     actual_sha256 = hashlib.sha256(raw).hexdigest()
     if not hmac.compare_digest(actual_sha256, expected_sha256):
         raise ReleaseManagerError(f"{context} hash does not match manifest")
     return _parse_json_bytes(raw, context)
+
+
+def _bound_evidence_metadata(
+    value: object,
+    context: str,
+) -> tuple[str, str, int]:
+    """读取 schema v2 已解析条件证据的文件、摘要和大小绑定。"""
+
+    if not isinstance(value, Mapping) or set(value) != {"file", "sha256", "size"}:
+        raise ReleaseManagerError(f"{context} binding is invalid")
+    filename = value.get("file")
+    sha256 = value.get("sha256")
+    size = value.get("size")
+    if (
+        type(filename) is not str
+        or _SAFE_ID_RE.fullmatch(filename) is None
+        or ".." in filename
+        or type(sha256) is not str
+        or _REPORT_HASH_RE.fullmatch(sha256) is None
+        or type(size) is not int
+        or not 1 <= size <= _MAX_EVIDENCE_BYTES
+    ):
+        raise ReleaseManagerError(f"{context} binding is invalid")
+    return filename, sha256, size
 
 
 def _hash_file(path: Path) -> str:
@@ -1165,19 +1300,62 @@ def _validate_staging_directory(path: Path, expected_uid: int) -> None:
         raise ReleaseManagerError("staging directory ownership or mode is unsafe")
 
 
+def _offline_full_no_migration_update(manifest: ReleaseManifest) -> bool:
+    return (
+        manifest.image_source == OFFLINE_IMAGE_SOURCE
+        and all(image.changed for image in manifest.images.values())
+        and manifest.migration_from == manifest.migration_target
+        and manifest.migration_compatibility is MigrationCompatibility.NONE
+    )
+
+
+def _require_offline_full_update(manifest: ReleaseManifest) -> None:
+    """生产离线普通更新只接受四镜像全量、无迁移的最小合同。"""
+
+    if (
+        manifest.image_source == OFFLINE_IMAGE_SOURCE
+        and not _offline_full_no_migration_update(manifest)
+    ):
+        raise ReleaseManagerError(
+            "offline production update requires all four changed images and no migration"
+        )
+
+
 def _expected_bundle_names(manifest: ReleaseManifest) -> set[str]:
     names = {"manifest.json", cast(str, manifest.evidence["release_gate"])}
+    if manifest.signing is not None:
+        names.add(manifest.signing["file"])
+    offline_index = manifest.evidence.get("offline_image_index")
+    if offline_index is not None:
+        if not isinstance(offline_index, Mapping):
+            raise ReleaseManagerError("staging offline image index mapping is invalid")
+        names.add(offline_index["file"])
     for spec in manifest.images.values():
         if spec.archive_file is not None:
             names.add(spec.archive_file)
     data_name = manifest.evidence["data_images"]
     if data_name is not None:
-        names.add(cast(str, data_name))
+        if manifest.schema_version == 2:
+            filename, _, _ = _bound_evidence_metadata(
+                data_name,
+                "staging data image evidence",
+            )
+            names.add(filename)
+        else:
+            names.add(cast(str, data_name))
     backup = manifest.evidence["backup_restore_change"]
     if backup is not None:
         if not isinstance(backup, Mapping):
             raise ReleaseManagerError("staging backup evidence mapping is invalid")
-        names.update(backup.values())
+        if manifest.schema_version == 2:
+            for label in ("record", "restore_report"):
+                filename, _, _ = _bound_evidence_metadata(
+                    backup.get(label),
+                    f"staging backup evidence {label}",
+                )
+                names.add(filename)
+        else:
+            names.update(cast(str, value) for value in backup.values())
     return names
 
 
@@ -1229,10 +1407,20 @@ def _validate_staging_bundle(
     return manifest, manifest_bytes, [manifest_path.parent / name for name in sorted(expected)]
 
 
-def _copy_atomic(source: Path, destination: Path) -> None:
+def _copy_atomic(
+    source: Path,
+    destination: Path,
+    *,
+    expected_size: int | None = None,
+    maximum_size: int | None = None,
+) -> None:
     source_info = source.lstat()
     if source_info.st_mode is None or not stat.S_ISREG(source_info.st_mode):
         raise ReleaseManagerError("staging source is not a regular file")
+    if expected_size is not None and source_info.st_size != expected_size:
+        raise ReleaseManagerError("staging source size does not match manifest")
+    if maximum_size is not None and source_info.st_size > maximum_size:
+        raise ReleaseManagerError("staging source exceeds the allowed size")
     try:
         destination_info = destination.lstat()
     except FileNotFoundError:
@@ -1240,6 +1428,10 @@ def _copy_atomic(source: Path, destination: Path) -> None:
     if destination_info is not None:
         if stat.S_ISLNK(destination_info.st_mode) or not stat.S_ISREG(destination_info.st_mode):
             raise ReleaseManagerError("stored artifact path is unsafe")
+        if expected_size is not None and destination_info.st_size != expected_size:
+            raise ReleaseManagerError("stored artifact size does not match manifest")
+        if maximum_size is not None and destination_info.st_size > maximum_size:
+            raise ReleaseManagerError("stored artifact exceeds the allowed size")
         if not hmac.compare_digest(_hash_file(source), _hash_file(destination)):
             raise ReleaseManagerError("stored artifact differs from staging")
         return
@@ -1248,7 +1440,12 @@ def _copy_atomic(source: Path, destination: Path) -> None:
     destination_fd = -1
     try:
         opened = os.fstat(source_fd)
-        if (opened.st_dev, opened.st_ino) != (source_info.st_dev, source_info.st_ino):
+        if (
+            (opened.st_dev, opened.st_ino, opened.st_size)
+            != (source_info.st_dev, source_info.st_ino, source_info.st_size)
+            or (expected_size is not None and opened.st_size != expected_size)
+            or (maximum_size is not None and opened.st_size > maximum_size)
+        ):
             raise ReleaseManagerError("staging source changed while opening")
         destination_fd = os.open(
             temporary,
@@ -1256,16 +1453,49 @@ def _copy_atomic(source: Path, destination: Path) -> None:
             0o600,
         )
         os.fchmod(destination_fd, 0o600)
+        copied = 0
         while True:
             chunk = os.read(source_fd, 1024 * 1024)
             if not chunk:
                 break
+            copied += len(chunk)
+            if expected_size is not None and copied > expected_size:
+                raise ReleaseManagerError("staging source changed while copying")
+            if maximum_size is not None and copied > maximum_size:
+                raise ReleaseManagerError("staging source exceeds the allowed size")
             view = memoryview(chunk)
             while view:
                 written = os.write(destination_fd, view)
                 if written <= 0:
                     raise OSError("artifact copy made no progress")
                 view = view[written:]
+        after = os.fstat(source_fd)
+        if (
+            copied != opened.st_size
+            or (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_uid,
+                opened.st_gid,
+                opened.st_nlink,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+        ):
+            raise ReleaseManagerError("staging source changed while copying")
         os.fsync(destination_fd)
         os.close(destination_fd)
         destination_fd = -1
@@ -1372,6 +1602,8 @@ class ReleaseManager:
             [
                 "-f",
                 str(self.root / "deploy" / _PRODUCTION_STORAGE_COMPOSE_FILE),
+                "-f",
+                str(self.root / "deploy" / _PRODUCTION_RESTART_COMPOSE_FILE),
             ]
         )
         self._production_redis_mode = self._production_redis_ha_mode()
@@ -1581,6 +1813,8 @@ class ReleaseManager:
                 raise ReleaseManagerError(
                     "unfinished production release blocks ordinary startup"
                 )
+            if state_value != ReleaseState.SUCCEEDED.value:
+                continue
             manifest = self._stored_manifest(store)
             if hmac.compare_digest(manifest.commit, current_commit):
                 current_records.append((manifest, state))
@@ -1589,8 +1823,6 @@ class ReleaseManager:
                 "production start requires exactly one current succeeded release"
             )
         current_manifest, current_state = current_records[0]
-        if current_state.get("state") != ReleaseState.SUCCEEDED.value:
-            raise ReleaseManagerError("current production release is not succeeded")
         if (
             current_manifest.mode != "production"
             or {name: current_manifest.images[name].ref for name in _IMAGE_NAMES}
@@ -1600,6 +1832,34 @@ class ReleaseManager:
             != current_manifest.migration_target
         ):
             raise ReleaseManagerError("current production release baseline has drifted")
+        if current_manifest.image_source == OFFLINE_IMAGE_SOURCE:
+            current_store = ReleaseStore(
+                self.release_root,
+                current_manifest.release_id,
+            )
+            artifacts = current_store.release_dir / "artifacts"
+            self._verify_offline_manifest_signature(
+                current_manifest,
+                current_store.release_dir / "manifest.json",
+                artifacts,
+                expected_uid=os.geteuid(),
+            )
+            gate_kind, _ = self._validate_release_evidence(
+                current_manifest,
+                artifacts,
+            )
+            if gate_kind != "release":
+                raise ReleaseManagerError(
+                    "production offline release evidence is invalid"
+                )
+            app_version = self._release_app_version(current_manifest, artifacts)
+            for name in _IMAGE_NAMES:
+                self._inspect_offline_image(
+                    current_manifest,
+                    name=name,
+                    app_version=app_version,
+                    allow_missing=False,
+                )
         self._validate_git(current_manifest)
         if (
             self._root_env_refs() != current_refs
@@ -1672,12 +1932,297 @@ class ReleaseManager:
         store: ReleaseStore,
         manifest_path: Path,
         files: Sequence[Path],
+        manifest: ReleaseManifest,
     ) -> None:
         artifacts = store.release_dir / "artifacts"
+        expected_sizes = {
+            spec.archive_file: spec.archive_size
+            for spec in manifest.images.values()
+            if spec.archive_file is not None and spec.archive_size is not None
+        }
+        maximum_sizes = {
+            cast(str, manifest.evidence["release_gate"]): _MAX_JSON_BYTES,
+        }
+        if manifest.signing is not None:
+            expected_sizes[manifest.signing["file"]] = 64
+        offline_index = manifest.evidence.get("offline_image_index")
+        if offline_index is not None:
+            if not isinstance(offline_index, Mapping):
+                raise ReleaseManagerError("offline image index binding is invalid")
+            maximum_sizes[cast(str, offline_index["file"])] = _MAX_JSON_BYTES
+        if manifest.schema_version == 2:
+            data_binding = manifest.evidence["data_images"]
+            if data_binding is not None:
+                filename, _, size = _bound_evidence_metadata(
+                    data_binding,
+                    "data image evidence",
+                )
+                expected_sizes[filename] = size
+            backup_binding = manifest.evidence["backup_restore_change"]
+            if backup_binding is not None:
+                if not isinstance(backup_binding, Mapping):
+                    raise ReleaseManagerError("backup evidence mapping is invalid")
+                for label in ("record", "restore_report"):
+                    filename, _, size = _bound_evidence_metadata(
+                        backup_binding.get(label),
+                        f"backup evidence {label}",
+                    )
+                    expected_sizes[filename] = size
+        else:
+            data_name = manifest.evidence["data_images"]
+            if data_name is not None:
+                maximum_sizes[cast(str, data_name)] = _MAX_JSON_BYTES
+            backup_binding = manifest.evidence["backup_restore_change"]
+            if backup_binding is not None:
+                if not isinstance(backup_binding, Mapping):
+                    raise ReleaseManagerError("backup evidence mapping is invalid")
+                for filename in backup_binding.values():
+                    maximum_sizes[cast(str, filename)] = _MAX_JSON_BYTES
         for source in files:
             if source == manifest_path:
                 continue
-            _copy_atomic(source, artifacts / source.name)
+            _copy_atomic(
+                source,
+                artifacts / source.name,
+                expected_size=expected_sizes.get(source.name),
+                maximum_size=maximum_sizes.get(source.name),
+            )
+
+    def _freeze_offline_signing_closure(
+        self,
+        store: ReleaseStore,
+        manifest: ReleaseManifest,
+        staging_files: Sequence[Path],
+    ) -> None:
+        """只冻结 Ed25519 签名，再允许复制已签名的大闭包。"""
+
+        if manifest.image_source != OFFLINE_IMAGE_SOURCE:
+            return
+        if manifest.signing is None:
+            raise ReleaseManagerError("offline release signing metadata is unavailable")
+        signature_name = manifest.signing["file"]
+        matches = [path for path in staging_files if path.name == signature_name]
+        if len(matches) != 1:
+            raise ReleaseManagerError("offline release signature is unavailable")
+        _copy_atomic(
+            matches[0],
+            store.release_dir / "artifacts" / signature_name,
+            expected_size=64,
+        )
+
+    def _verify_offline_manifest_signature(
+        self,
+        manifest: ReleaseManifest,
+        manifest_path: Path,
+        artifacts: Path,
+        *,
+        expected_uid: int,
+    ) -> None:
+        """用主机固定信任根验证离线清单的确切冻结字节。"""
+
+        if manifest.image_source != OFFLINE_IMAGE_SOURCE:
+            return
+        if manifest.signing is None:
+            raise ReleaseManagerError("offline release signing metadata is unavailable")
+        key_id_payload = _read_offline_trust_bytes(
+            _OFFLINE_SIGNING_KEY_ID,
+            maximum=256,
+        )
+        if key_id_payload.endswith(b"\n"):
+            key_id_payload = key_id_payload[:-1]
+        if (
+            not key_id_payload
+            or b"\n" in key_id_payload
+            or b"\r" in key_id_payload
+        ):
+            raise ReleaseManagerError("offline release signing key ID is invalid")
+        try:
+            key_id = key_id_payload.decode("ascii")
+        except UnicodeError as exc:
+            raise ReleaseManagerError("offline release signing key ID is invalid") from exc
+        if (
+            _SAFE_ID_RE.fullmatch(key_id) is None
+            or ".." in key_id
+            or not hmac.compare_digest(key_id, manifest.signing["key_id"])
+        ):
+            raise ReleaseManagerError("offline release signing key ID is not trusted")
+        _read_offline_trust_bytes(
+            _OFFLINE_SIGNING_PUBLIC_KEY,
+            maximum=_MAX_JSON_BYTES,
+        )
+        _read_safe_bytes(
+            manifest_path,
+            expected_uid=expected_uid,
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        signature_path = artifacts / manifest.signing["file"]
+        signature = _read_safe_bytes(
+            signature_path,
+            expected_uid=expected_uid,
+            expected_mode=0o600,
+            maximum=_MAX_SIGNATURE_BYTES,
+        )
+        if len(signature) != 64:
+            raise ReleaseManagerError("offline release signature is invalid")
+        self._run(
+            [
+                _OPENSSL,
+                "pkeyutl",
+                "-verify",
+                "-pubin",
+                "-inkey",
+                str(_OFFLINE_SIGNING_PUBLIC_KEY),
+                "-sigfile",
+                str(signature_path),
+                "-rawin",
+                "-in",
+                str(manifest_path),
+            ],
+            "offline manifest signature verification",
+        )
+
+    def _release_app_version(
+        self,
+        manifest: ReleaseManifest,
+        artifacts: Path,
+    ) -> str:
+        report = _exact_object(
+            _read_bound_json(
+                artifacts / cast(str, manifest.evidence["release_gate"]),
+                cast(str, manifest.evidence["release_gate_sha256"]),
+                "release evidence",
+            ),
+            _RELEASE_REPORT_FIELDS,
+            "release evidence",
+        )
+        source = self._validate_release_source(
+            report["source"],
+            manifest,
+            "release source evidence",
+        )
+        return cast(str, source["app_version"])
+
+    def _validate_offline_image_index(
+        self,
+        manifest: ReleaseManifest,
+        artifacts: Path,
+    ) -> OfflineImageIndex:
+        binding = manifest.evidence.get("offline_image_index")
+        if not isinstance(binding, Mapping):
+            raise ReleaseManagerError("offline image index binding is unavailable")
+        index_path = artifacts / binding["file"]
+        raw = _read_safe_bytes(
+            index_path,
+            expected_uid=os.geteuid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(
+            hashlib.sha256(raw).hexdigest(),
+            binding["sha256"],
+        ):
+            raise ReleaseManagerError("offline image index hash does not match manifest")
+        try:
+            index = load_offline_image_index_bytes(raw)
+        except OfflineImageArchiveError as exc:
+            raise ReleaseManagerError("offline image index is invalid") from exc
+        release_gate_path = artifacts / cast(str, manifest.evidence["release_gate"])
+        try:
+            release_gate_size = release_gate_path.stat(follow_symlinks=False).st_size
+        except OSError as exc:
+            raise ReleaseManagerError("offline release evidence is unavailable") from exc
+        if (
+            index.candidate_commit != manifest.commit
+            or index.release_gate.file != manifest.evidence["release_gate"]
+            or index.release_gate.sha256 != manifest.evidence["release_gate_sha256"]
+            or index.release_gate.size != release_gate_size
+        ):
+            raise ReleaseManagerError("offline image index is not bound to release evidence")
+        for name in _IMAGE_NAMES:
+            spec = manifest.images[name]
+            image = index.images[name]
+            if (
+                image.image_id != spec.image_id
+                or image.archive.file != f"images/{spec.archive_file}"
+                or image.archive.sha256 != spec.archive_sha256
+                or image.archive.size != spec.archive_size
+            ):
+                raise ReleaseManagerError("offline image index is not bound to manifest")
+        return index
+
+    def _validate_offline_archives(
+        self,
+        manifest: ReleaseManifest,
+        artifacts: Path,
+    ) -> dict[str, OfflineImageArchive]:
+        """在任何导入前一次性验证四个冻结 archive 的文件边界与摘要。"""
+
+        self._validate_offline_image_index(manifest, artifacts)
+        validated: dict[str, OfflineImageArchive] = {}
+        try:
+            for name in _IMAGE_NAMES:
+                spec = manifest.images[name]
+                if (
+                    spec.archive_file is None
+                    or spec.archive_sha256 is None
+                    or spec.archive_size is None
+                ):
+                    raise OfflineImageArchiveError(
+                        "offline release archive declaration is incomplete"
+                    )
+                validated[name] = validate_offline_image_archive(
+                    (artifacts / spec.archive_file).absolute(),
+                    name=name,
+                    expected_sha256=spec.archive_sha256,
+                    expected_size=spec.archive_size,
+                )
+        except OfflineImageArchiveError as exc:
+            raise ReleaseManagerError("offline release archive validation failed") from exc
+        return validated
+
+    def _inspect_offline_image(
+        self,
+        manifest: ReleaseManifest,
+        *,
+        name: str,
+        app_version: str,
+        allow_missing: bool,
+    ) -> bool:
+        spec = manifest.images[name]
+        context = "offline target image inspection"
+        argv = [
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            _OFFLINE_IMAGE_INSPECT_FORMAT,
+            spec.image_id,
+        ]
+        if self._active_store is not None:
+            self._active_store.record_intent("external_command", {"check": context})
+        result = self.runner.run(argv, cwd=self.root)
+        if result.returncode != 0:
+            if allow_missing:
+                if self._active_store is not None:
+                    self._active_store.record_observation(
+                        "external_command",
+                        {"check": context, "present": False},
+                    )
+                return False
+            raise ReleaseManagerError(f"{context} failed")
+        expected = (
+            f"{spec.image_id}|linux/amd64|{app_version}|"
+            f"{manifest.commit}|{manifest.migration_target}"
+        )
+        if not hmac.compare_digest(self._line(result, context), expected):
+            raise ReleaseManagerError("offline target image identity is invalid")
+        if self._active_store is not None:
+            self._active_store.record_observation(
+                "external_command",
+                {"check": context, "passed": True},
+            )
+        return True
 
     def _current_git_commit(self) -> str:
         """读取干净工作树的唯一 HEAD，供发布与启动门禁共同绑定。"""
@@ -1805,7 +2350,10 @@ class ReleaseManager:
             raise ReleaseManagerError("root env must define exactly four image references")
         for ref in refs.values():
             if self.mode == "production":
-                valid = _REPO_DIGEST_RE.fullmatch(ref) is not None
+                valid = (
+                    _REPO_DIGEST_RE.fullmatch(ref) is not None
+                    or _IMAGE_ID_RE.fullmatch(ref) is not None
+                )
             else:
                 valid = (
                     _SAFE_DEVELOPMENT_REF_RE.fullmatch(ref) is not None
@@ -1958,11 +2506,14 @@ class ReleaseManager:
             or _REPO_DIGEST_RE.fullmatch(report["trivy_image"]) is None
         ):
             raise ReleaseManagerError("release evidence scanner is not digest pinned")
+        if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+            self._validate_offline_image_index(manifest, artifacts)
         images = _exact_object(
             report["images"],
             frozenset(_IMAGE_NAMES),
             "release evidence images",
         )
+        offline = manifest.image_source == OFFLINE_IMAGE_SOURCE
         for name in _IMAGE_NAMES:
             image = _exact_object(
                 images[name],
@@ -1976,19 +2527,29 @@ class ReleaseManager:
             ):
                 raise ReleaseManagerError("release RepoDigests evidence is invalid")
             if (
-                image["ref"] != manifest.images[name].ref
+                image["ref"] != release_evidence_ref(manifest, name)
                 or image["image_id"] != manifest.images[name].image_id
                 or type(image["scan_report_sha256"]) is not str
                 or _REPORT_HASH_RE.fullmatch(image["scan_report_sha256"]) is None
                 or image["scan_passed"] is not True
             ):
                 raise ReleaseManagerError("release image evidence is not bound")
-            if self.mode == "production" and manifest.images[name].ref not in repo_digests:
+            if (
+                self.mode == "production"
+                and not offline
+                and manifest.images[name].ref not in repo_digests
+            ):
                 raise ReleaseManagerError("production release evidence lacks target RepoDigest")
         promotion = report["promotion_source"]
         if self.mode == "development":
             if promotion is not None:
                 raise ReleaseManagerError("development release evidence cannot be promoted")
+            return gate_kind, True
+        if offline:
+            if promotion is not None:
+                raise ReleaseManagerError(
+                    "offline release evidence cannot have a promotion source"
+                )
             return gate_kind, True
         source = _exact_object(
             promotion,
@@ -2070,11 +2631,25 @@ class ReleaseManager:
         manifest: ReleaseManifest,
         artifacts: Path,
     ) -> dict[str, dict[str, object]] | None:
-        filename = manifest.evidence["data_images"]
-        if filename is None:
+        binding = manifest.evidence["data_images"]
+        if binding is None:
             return None
+        if manifest.schema_version == 2:
+            filename, expected_sha256, expected_size = _bound_evidence_metadata(
+                binding,
+                "data image evidence",
+            )
+            payload = _read_bound_json(
+                artifacts / filename,
+                expected_sha256,
+                "data image evidence",
+                expected_size=expected_size,
+            )
+        else:
+            filename = cast(str, binding)
+            payload = _read_json(artifacts / filename, "data image evidence")
         report = _exact_object(
-            _read_json(artifacts / cast(str, filename), "data image evidence"),
+            payload,
             _DATA_REPORT_FIELDS,
             "data image evidence",
         )
@@ -2112,7 +2687,7 @@ class ReleaseManager:
             ):
                 raise ReleaseManagerError("data image version evidence is invalid")
             if (
-                image["ref"] != manifest.images[name].ref
+                image["ref"] != release_evidence_ref(manifest, name)
                 or image["image_id"] != manifest.images[name].image_id
                 or image["platform"] != "linux/amd64"
             ):
@@ -2204,10 +2779,36 @@ class ReleaseManager:
             return
         if not isinstance(binding, Mapping):
             raise ReleaseManagerError("backup evidence mapping is invalid")
-        change_path = artifacts / binding["record"]
-        report_path = artifacts / binding["restore_report"]
+        if manifest.schema_version == 2:
+            record_name, record_sha256, record_size = _bound_evidence_metadata(
+                binding.get("record"),
+                "backup change record",
+            )
+            report_name, report_sha256, report_size = _bound_evidence_metadata(
+                binding.get("restore_report"),
+                "backup restore report",
+            )
+            change_path = artifacts / record_name
+            report_path = artifacts / report_name
+            change_payload = _read_bound_json(
+                change_path,
+                record_sha256,
+                "backup change record",
+                expected_size=record_size,
+            )
+            report_payload = _read_bound_json(
+                report_path,
+                report_sha256,
+                "restore report",
+                expected_size=report_size,
+            )
+        else:
+            change_path = artifacts / cast(str, binding["record"])
+            report_path = artifacts / cast(str, binding["restore_report"])
+            change_payload = _read_json(change_path, "backup change record")
+            report_payload = _read_json(report_path, "restore report")
         change = _exact_object(
-            _read_json(change_path, "backup change record"),
+            change_payload,
             _CHANGE_FIELDS,
             "backup change record",
         )
@@ -2235,7 +2836,7 @@ class ReleaseManager:
         if not hmac.compare_digest(_hash_file(report_path), report_hash):
             raise ReleaseManagerError("restore report does not match its change record")
         report = _exact_object(
-            _read_json(report_path, "restore report"),
+            report_payload,
             _RESTORE_REPORT_FIELDS,
             "restore report",
         )
@@ -2303,6 +2904,41 @@ class ReleaseManager:
         manifest: ReleaseManifest,
         artifacts: Path,
     ) -> dict[str, str]:
+        if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+            app_version = self._release_app_version(manifest, artifacts)
+            archives = self._validate_offline_archives(
+                manifest,
+                artifacts,
+            )
+            offline_target_ids: dict[str, str] = {}
+            for name in _IMAGE_NAMES:
+                if not self._inspect_offline_image(
+                    manifest,
+                    name=name,
+                    app_version=app_version,
+                    allow_missing=True,
+                ):
+                    self._run(
+                        [
+                            "docker",
+                            "image",
+                            "load",
+                            "--quiet",
+                            "--platform",
+                            "linux/amd64",
+                            "--input",
+                            str(archives[name].path),
+                        ],
+                        "production offline image load",
+                    )
+                    self._inspect_offline_image(
+                        manifest,
+                        name=name,
+                        app_version=app_version,
+                        allow_missing=False,
+                    )
+                offline_target_ids[name] = manifest.images[name].image_id
+            return offline_target_ids
         if self.mode == "development":
             for spec in manifest.images.values():
                 if spec.changed:
@@ -2526,6 +3162,7 @@ class ReleaseManager:
                 raise ReleaseManagerError("prepared release metadata is invalid")
             extra_fields["production_topology"] = topology
             extra_fields.setdefault("release_kind", "standard")
+            _require_offline_full_update(manifest)
             self._reject_historical_production_images(manifest)
         store = ReleaseStore(self.release_root, manifest.release_id)
         try:
@@ -2549,8 +3186,20 @@ class ReleaseManager:
             elif extra_fields:
                 store.checkpoint(ReleaseState.STAGED, **extra_fields)
             self._active_store = store
-            self._copy_bundle(store, manifest_path, staging_files)
             artifacts = store.release_dir / "artifacts"
+            if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+                self._freeze_offline_signing_closure(
+                    store,
+                    manifest,
+                    staging_files,
+                )
+                self._verify_offline_manifest_signature(
+                    manifest,
+                    store.release_dir / "manifest.json",
+                    artifacts,
+                    expected_uid=os.geteuid(),
+                )
+            self._copy_bundle(store, manifest_path, staging_files, manifest)
             current_commit = self._validate_git(manifest)
             self._validate_migration_direction(manifest)
             current_refs = self._current_refs(manifest)
@@ -2619,7 +3268,11 @@ class ReleaseManager:
             ReleaseState.RECOVERY_REQUIRED.value,
         }
         for entry in entries:
-            if entry.name == _BOOTSTRAP_STATE_NAME or entry.name == candidate.release_id:
+            if entry.name in {
+                _BOOTSTRAP_STATE_NAME,
+                _RECOVERY_STATE_NAME,
+                candidate.release_id,
+            }:
                 continue
             try:
                 info = entry.stat(follow_symlinks=False)
@@ -2684,6 +3337,13 @@ class ReleaseManager:
             manifest_path,
             self._staging_uid(),
         )
+        if (
+            source.image_source == OFFLINE_IMAGE_SOURCE
+            or candidate.image_source == OFFLINE_IMAGE_SOURCE
+        ):
+            raise ReleaseManagerError(
+                "offline production releases do not support forward rollback candidates"
+            )
         self._validate_forward_rollback_candidate(source, snapshot, candidate)
         self._prepare_validated(
             manifest_path,
@@ -2763,6 +3423,7 @@ class ReleaseManager:
         self._reject_historical_production_images(manifest)
         release_kind = state.get("release_kind")
         if release_kind == "standard":
+            _require_offline_full_update(manifest)
             if any(
                 field in state
                 for field in (
@@ -3565,12 +4226,15 @@ class ReleaseManager:
             if self._read_bootstrap_state() is not None:
                 raise ReleaseManagerError("recovery start refuses an initialized release host")
             entries = {entry.name for entry in os.scandir(self.release_root)}
-            if entries - {_RECOVERY_STATE_NAME}:
-                raise ReleaseManagerError("recovery start release root is not isolated")
-            manifest, manifest_bytes, _ = _validate_staging_bundle(
+            manifest, manifest_bytes, staging_files = _validate_staging_bundle(
                 manifest_path,
                 self._staging_uid(),
             )
+            allowed_entries = {_RECOVERY_STATE_NAME}
+            if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+                allowed_entries.add(manifest.release_id)
+            if entries - allowed_entries:
+                raise ReleaseManagerError("recovery start release root is not isolated")
             if (
                 manifest.mode != "production"
                 or any(image.changed for image in manifest.images.values())
@@ -3580,22 +4244,51 @@ class ReleaseManager:
                 raise ReleaseManagerError(
                     "recovery start requires a production no-delta manifest"
                 )
+            self._verify_offline_manifest_signature(
+                manifest,
+                manifest_path,
+                manifest_path.parent,
+                expected_uid=self._staging_uid(),
+            )
             topology = self._production_topology()
             refs = self._root_env_refs()
             if refs != {name: manifest.images[name].ref for name in _IMAGE_NAMES}:
                 raise ReleaseManagerError("recovery start root env does not match manifest")
             self._validate_git(manifest)
             self._validate_migration_direction(manifest)
-            gate_kind, _ = self._validate_release_evidence(
-                manifest,
-                manifest_path.parent,
-            )
-            if gate_kind != "release":
-                raise ReleaseManagerError("recovery start requires release evidence")
-            if self._validate_data_evidence(manifest, manifest_path.parent) is not None:
-                raise ReleaseManagerError("recovery start cannot replace data images")
-            self._validate_backup_evidence(manifest, manifest_path.parent)
-            self._target_images(manifest, manifest_path.parent)
+            evidence_root = manifest_path.parent
+            recovery_store: ReleaseStore | None = None
+            if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+                recovery_store = ReleaseStore(self.release_root, manifest.release_id)
+                self._freeze_bootstrap_bundle(
+                    manifest_path,
+                    manifest_bytes,
+                    staging_files,
+                    recovery_store,
+                )
+                evidence_root = recovery_store.release_dir / "artifacts"
+            previous_store = self._active_store
+            try:
+                self._active_store = recovery_store
+                if recovery_store is not None:
+                    self._verify_offline_manifest_signature(
+                        manifest,
+                        recovery_store.release_dir / "manifest.json",
+                        evidence_root,
+                        expected_uid=os.geteuid(),
+                    )
+                gate_kind, _ = self._validate_release_evidence(
+                    manifest,
+                    evidence_root,
+                )
+                if gate_kind != "release":
+                    raise ReleaseManagerError("recovery start requires release evidence")
+                if self._validate_data_evidence(manifest, evidence_root) is not None:
+                    raise ReleaseManagerError("recovery start cannot replace data images")
+                self._validate_backup_evidence(manifest, evidence_root)
+                self._target_images(manifest, evidence_root)
+            finally:
+                self._active_store = previous_store
             snapshot = self._validate_recovery_snapshot(
                 snapshot_manifest_path,
                 snapshot_manifest_sha256,
@@ -3905,6 +4598,12 @@ class ReleaseManager:
                 raise ReleaseManagerError(
                     "recovery baseline adoption requires a production no-delta manifest"
                 )
+            self._verify_offline_manifest_signature(
+                manifest,
+                manifest_path,
+                manifest_path.parent,
+                expected_uid=self._staging_uid(),
+            )
             topology = self._production_topology()
             refs = self._root_env_refs()
             runtime_secrets_target = self._validate_runtime_secrets_target(
@@ -3915,16 +4614,39 @@ class ReleaseManager:
                 raise ReleaseManagerError("recovery baseline root env does not match manifest")
             self._validate_git(manifest)
             self._validate_migration_direction(manifest)
-            gate_kind, release_scan_performed = self._validate_release_evidence(
-                manifest,
-                manifest_path.parent,
-            )
-            if gate_kind != "release":
-                raise ReleaseManagerError("recovery baseline requires release evidence")
-            if self._validate_data_evidence(manifest, manifest_path.parent) is not None:
-                raise ReleaseManagerError("recovery baseline cannot replace data images")
-            self._validate_backup_evidence(manifest, manifest_path.parent)
-            target_ids = self._target_images(manifest, manifest_path.parent)
+            evidence_root = manifest_path.parent
+            offline_store: ReleaseStore | None = None
+            if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+                offline_store = ReleaseStore(self.release_root, manifest.release_id)
+                self._freeze_bootstrap_bundle(
+                    manifest_path,
+                    manifest_bytes,
+                    staging_files,
+                    offline_store,
+                )
+                evidence_root = offline_store.release_dir / "artifacts"
+            previous_store = self._active_store
+            try:
+                self._active_store = offline_store
+                if offline_store is not None:
+                    self._verify_offline_manifest_signature(
+                        manifest,
+                        offline_store.release_dir / "manifest.json",
+                        evidence_root,
+                        expected_uid=os.geteuid(),
+                    )
+                gate_kind, release_scan_performed = self._validate_release_evidence(
+                    manifest,
+                    evidence_root,
+                )
+                if gate_kind != "release":
+                    raise ReleaseManagerError("recovery baseline requires release evidence")
+                if self._validate_data_evidence(manifest, evidence_root) is not None:
+                    raise ReleaseManagerError("recovery baseline cannot replace data images")
+                self._validate_backup_evidence(manifest, evidence_root)
+                target_ids = self._target_images(manifest, evidence_root)
+            finally:
+                self._active_store = previous_store
             self._assert_recovery_consumers_stopped()
             _, data_image_ids, _ = self._current_runtime(refs, _RECOVERY_DATA_SERVICES)
             if any(
@@ -4451,24 +5173,34 @@ class ReleaseManager:
     ) -> None:
         """在任何生产变更前把已解析闭包复制进受控 release store。"""
 
-        frozen: dict[str, bytes] = {}
-        for path in staging_files:
-            frozen[path.name] = _read_safe_bytes(
-                path,
-                expected_uid=self._staging_uid(),
-                expected_mode=0o600,
-                maximum=_MAX_JSON_BYTES,
-            )
-        if frozen.get(manifest_path.name) != manifest_bytes:
+        current_manifest = _read_safe_bytes(
+            manifest_path,
+            expected_uid=self._staging_uid(),
+            expected_mode=0o600,
+            maximum=_MAX_JSON_BYTES,
+        )
+        if not hmac.compare_digest(current_manifest, manifest_bytes):
             raise ReleaseManagerError(
                 "production bootstrap manifest changed before it could be frozen"
             )
         store.create(manifest_bytes)
-        artifacts = store.release_dir / "artifacts"
-        for name, payload in frozen.items():
-            if name == manifest_path.name:
-                continue
-            ReleaseStore._atomic_write(artifacts / name, payload)
+        try:
+            manifest = load_manifest_bytes(manifest_bytes)
+        except ReleaseManifestError as exc:
+            raise ReleaseManagerError("production bootstrap manifest is invalid") from exc
+        if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+            self._freeze_offline_signing_closure(
+                store,
+                manifest,
+                staging_files,
+            )
+            self._verify_offline_manifest_signature(
+                manifest,
+                store.release_dir / "manifest.json",
+                store.release_dir / "artifacts",
+                expected_uid=os.geteuid(),
+            )
+        self._copy_bundle(store, manifest_path, staging_files, manifest)
 
     def _checkpoint_bootstrap(
         self,
@@ -4525,6 +5257,12 @@ class ReleaseManager:
             or manifest.migration_compatibility is not MigrationCompatibility.NONE
         ):
             raise ReleaseManagerError("production bootstrap requires a no-delta baseline manifest")
+        self._verify_offline_manifest_signature(
+            manifest,
+            manifest_path,
+            manifest_path.parent,
+            expected_uid=self._staging_uid(),
+        )
         production_topology = self._production_topology()
 
         ReleaseStore._ensure_directory(self.release_root)
@@ -4550,10 +5288,18 @@ class ReleaseManager:
         if not release_root_is_empty:
             raise ReleaseManagerError("production bootstrap release root is not empty")
         self._assert_empty_production_storage_sources()
-        current_refs = self._root_env_refs()
         target_refs = {name: manifest.images[name].ref for name in _IMAGE_NAMES}
-        if current_refs != target_refs:
-            raise ReleaseManagerError("production bootstrap root env is not the target baseline")
+        env_path = self.root / ".env"
+        original_env = _read_safe_bytes(
+            env_path,
+            expected_uid=os.geteuid(),
+            maximum=_MAX_JSON_BYTES,
+        )
+        target_env = self._render_target_env(original_env, manifest)
+        try:
+            env_mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
+        except OSError as exc:
+            raise ReleaseManagerError("production bootstrap root env is unavailable") from exc
         self._validate_git(manifest)
         self._validate_migration_direction(manifest)
         compose = self._compose()
@@ -4576,18 +5322,6 @@ class ReleaseManager:
             raise ReleaseManagerError("production bootstrap host is not empty")
 
         store = ReleaseStore(self.release_root, manifest.release_id)
-        self._freeze_bootstrap_bundle(
-            manifest_path,
-            manifest_bytes,
-            staging_files,
-            store,
-        )
-        store.checkpoint(
-            ReleaseState.STAGED,
-            production_topology=production_topology,
-            release_kind="bootstrap",
-        )
-
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         state: dict[str, object] = {
             "schema_version": 1,
@@ -4596,7 +5330,7 @@ class ReleaseManager:
             "commit": manifest.commit,
             "manifest_sha256": manifest_sha256,
             "production_topology": production_topology,
-            "phase": "validated",
+            "phase": "freezing_bundle",
             "started_at": now,
             "updated_at": now,
             "failure_type": None,
@@ -4604,7 +5338,30 @@ class ReleaseManager:
         self._write_bootstrap_state(state)
         self._bootstrap_execution_release_id = manifest.release_id
         try:
+            self._active_store = store
+            self._freeze_bootstrap_bundle(
+                manifest_path,
+                manifest_bytes,
+                staging_files,
+                store,
+            )
+            store.checkpoint(
+                ReleaseState.STAGED,
+                production_topology=production_topology,
+                release_kind="bootstrap",
+            )
+            state = self._checkpoint_bootstrap(
+                state,
+                status="running",
+                phase="validated",
+            )
             artifacts = store.release_dir / "artifacts"
+            self._verify_offline_manifest_signature(
+                manifest,
+                store.release_dir / "manifest.json",
+                artifacts,
+                expected_uid=os.geteuid(),
+            )
             gate_kind, _ = self._validate_release_evidence(manifest, artifacts)
             if gate_kind != "release":
                 raise ReleaseManagerError(
@@ -4618,8 +5375,22 @@ class ReleaseManager:
             self._target_images(manifest, artifacts)
             if self._production_topology() != production_topology:
                 raise ReleaseManagerError("production bootstrap topology drifted")
+            store.snapshot_env(env_path)
+            store.record_intent("env_replace", {"source": "bootstrap_manifest"})
+            ReleaseStore._atomic_write(
+                env_path,
+                target_env,
+                mode=env_mode,
+                private_parent=False,
+            )
+            store.record_observation("env_replace", {"completed": True})
             if self._root_env_refs() != target_refs:
                 raise ReleaseManagerError("production bootstrap root env drifted")
+            state = self._checkpoint_bootstrap(
+                state,
+                status="running",
+                phase="env_configured",
+            )
             commands = (
                 ("compose_config", compose + ["config", "--quiet"]),
                 (
@@ -4690,6 +5461,7 @@ class ReleaseManager:
                 f"production bootstrap failed ({type(exc).__name__})"
             ) from exc
         finally:
+            self._active_store = None
             self._bootstrap_execution_release_id = None
 
     @staticmethod
@@ -4757,16 +5529,22 @@ class ReleaseManager:
                 maximum=_MAX_JSON_BYTES,
             )
             target = self._render_target_env(original, manifest)
-            store.snapshot_env(env_path)
-            mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
-            store.record_intent("env_replace", {"source": "manifest"})
-            ReleaseStore._atomic_write(
-                env_path,
-                target,
-                mode=mode,
-                private_parent=False,
-            )
-            store.record_observation("env_replace", {"completed": True})
+            if self._bootstrap_execution_release_id == release_id:
+                if original != target:
+                    raise ReleaseManagerError(
+                        "bootstrap activation root env is not configured"
+                    )
+            else:
+                store.snapshot_env(env_path)
+                mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
+                store.record_intent("env_replace", {"source": "manifest"})
+                ReleaseStore._atomic_write(
+                    env_path,
+                    target,
+                    mode=mode,
+                    private_parent=False,
+                )
+                store.record_observation("env_replace", {"completed": True})
             self._active_store = store
             self._run(self._compose() + ["config", "--quiet"], "activation configuration")
             store.record_observation("compose_config", {"completed": True})
@@ -5291,6 +6069,25 @@ class ReleaseManager:
     ) -> None:
         snapshot = self._read_snapshot(store)
         store.record_intent("activation_preflight", {"source": "runtime"})
+        if manifest.image_source == OFFLINE_IMAGE_SOURCE:
+            artifacts = store.release_dir / "artifacts"
+            self._verify_offline_manifest_signature(
+                manifest,
+                store.release_dir / "manifest.json",
+                artifacts,
+                expected_uid=os.geteuid(),
+            )
+            gate_kind, _ = self._validate_release_evidence(manifest, artifacts)
+            if gate_kind != "release":
+                raise ReleaseManagerError("offline activation evidence is invalid")
+            app_version = self._release_app_version(manifest, artifacts)
+            for name in _IMAGE_NAMES:
+                self._inspect_offline_image(
+                    manifest,
+                    name=name,
+                    app_version=app_version,
+                    allow_missing=False,
+                )
         commit = self._validate_git(manifest)
         self._validate_migration_direction(manifest)
         refs = self._current_refs(manifest)
@@ -5505,6 +6302,12 @@ class ReleaseManager:
         try:
             self._active_store = store
             artifacts = store.release_dir / "artifacts"
+            self._verify_offline_manifest_signature(
+                manifest,
+                store.release_dir / "manifest.json",
+                artifacts,
+                expected_uid=os.geteuid(),
+            )
             current_commit = self._validate_git(manifest)
             self._validate_migration_direction(manifest)
             current_refs = self._current_refs(manifest)
@@ -5563,6 +6366,25 @@ class ReleaseManager:
         *,
         already_rolling_back: bool = False,
     ) -> None:
+        if (
+            manifest.image_source == OFFLINE_IMAGE_SOURCE
+            and not _offline_full_no_migration_update(manifest)
+        ):
+            current = (
+                ReleaseState.ROLLING_BACK
+                if already_rolling_back
+                else ReleaseState.ACTIVATING
+            )
+            with suppress(Exception):
+                store.transition(
+                    current,
+                    ReleaseState.RECOVERY_REQUIRED,
+                    failure_step=failure.kind.value,
+                    failure_type="offline_automatic_rollback_unsupported",
+                )
+            raise ReleaseManagerError(
+                "offline automatic rollback requires a full no-migration update"
+            )
         if failure.ambiguous:
             current = ReleaseState.ROLLING_BACK if already_rolling_back else ReleaseState.ACTIVATING
             store.transition(
@@ -6015,6 +6837,13 @@ class ReleaseManager:
                 "succeeded release requires a forward rollback candidate"
             )
         manifest = self._stored_manifest(store)
+        if (
+            manifest.image_source == OFFLINE_IMAGE_SOURCE
+            and not _offline_full_no_migration_update(manifest)
+        ):
+            raise ReleaseManagerError(
+                "offline automatic rollback requires a full no-migration update"
+            )
         already_rolling_back = state_value == ReleaseState.ROLLING_BACK.value
         if state_value == ReleaseState.PREPARED.value:
             self._ensure_not_stopped(

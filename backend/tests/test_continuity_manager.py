@@ -13,6 +13,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "deploy" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from continuity_manager import (  # noqa: E402
+    COMPOSE_FILES,
     CONSUMER_SERVICES,
     ContinuityError,
     ContinuityManager,
@@ -20,6 +21,15 @@ from continuity_manager import (  # noqa: E402
 )
 
 NOW = datetime(2026, 8, 24, 2, 0, tzinfo=UTC)
+
+
+def test_continuity_uses_the_complete_production_compose_topology() -> None:
+    assert COMPOSE_FILES == (
+        "docker-compose.yml",
+        "docker-compose.production-storage.yml",
+        "docker-compose.production-restart.yml",
+        "docker-compose.redis-tls.yml",
+    )
 
 
 class FakeRunner:

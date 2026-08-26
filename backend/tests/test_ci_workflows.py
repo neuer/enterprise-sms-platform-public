@@ -373,8 +373,14 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "bash scripts/verify_all.sh",
         "bash scripts/verify_release.sh",
         "bash scripts/verify_reproducible_build.sh",
+        "scripts/create_offline_image_index.py",
         "reproducibility.json",
+        "offline-image-index.json",
+        "release-evidence/images",
+        "release-evidence/scans",
         "--sbom-dir",
+        "--archive-dir",
+        "--scan-dir",
     ):
         assert command in release_commands
     assert "npm run --prefix frontend typecheck" not in release_commands
@@ -385,6 +391,11 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     assert "secrets." not in source
     assert "actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35" in source
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
+    assert (
+        "subject-path: ${{ runner.temp }}/release-evidence/offline-image-index.json"
+        in source
+    )
+    assert "path: ${{ runner.temp }}/release-evidence" in source
 
 
 def test_maintenance_documents_ci_and_release_boundaries() -> None:
