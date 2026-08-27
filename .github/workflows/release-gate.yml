@@ -122,7 +122,10 @@ jobs:
         env:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
-          sudo -u root -g "#$(id -g)" env \
+          runner_gid="$(id -g)"
+          test "$runner_gid" -ne 0
+          test -x /usr/bin/setpriv
+          sudo env \
             PATH="$PATH" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
             UV_PYTHON="$UV_PYTHON" \
@@ -132,6 +135,7 @@ jobs:
             MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
             WEB_PORT="$WEB_PORT" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
+            /usr/bin/setpriv --regid "$runner_gid" --clear-groups \
             bash scripts/verify_all.sh
       - name: Build, scan and bind all release images
         run: |
