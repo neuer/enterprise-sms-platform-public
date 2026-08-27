@@ -388,7 +388,7 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     assert release_commands.index("rm -f .coverage") < release_commands.index(
         "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
     ) < release_commands.index("uv run pytest -q --cov=app --cov-append")
-    assert 'sudo -g "#$(id -g)" env' in release_commands
+    assert 'sudo -u root -g "#$(id -g)" env' in release_commands
     assert "PYTEST_DEBUG_TEMPROOT" not in release_commands
     assert "npm run --prefix frontend typecheck" not in release_commands
     assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
