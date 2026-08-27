@@ -20,6 +20,7 @@ from failover_common import (  # noqa: E402
     CommandFailure,
     DeadlineExceeded,
     read_root_generation_id_file,
+    validate_snapshot_bundle,
 )
 from sync_standby import (  # noqa: E402
     AmbiguousRemoteCommit,
@@ -324,6 +325,11 @@ def test_build_only_creates_encrypted_atomic_snapshot_without_remote_calls(
         "environment",
     }
     assert "not-a-production-secret" not in json.dumps(manifest)
+    assert validate_snapshot_bundle(
+        result.snapshot_dir, now=fixed_clock()
+    ).manifest["snapshot_id"] == result.snapshot_id
+    assert not result.snapshot_dir.joinpath("operation.json").exists()
+    assert not config.output_dir.joinpath("operations").exists()
 
     producer, consumer, output = runner.pipeline_calls[0]
     assert "pg_dump" in producer and "--format=custom" in producer
