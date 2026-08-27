@@ -190,6 +190,8 @@ class CallbackUrlValidator:
         effective_port = port or (443 if parsed.scheme == "https" else 80)
         if effective_port not in self.allowed_ports:
             raise InvalidAppConfig("callback URL 端口超出部署允许范围")
+        if not self.networks:
+            raise InvalidAppConfig("callback 出站未启用")
         try:
             addresses = self.resolver(parsed.hostname)
         except OSError as exc:

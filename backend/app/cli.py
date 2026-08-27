@@ -322,7 +322,7 @@ class SqlInitAdminRepository:
                           jsonb_build_object(
                             'provider_code','local',
                             'username',CAST(:audit_username AS text),
-                            'must_change_password',TRUE
+                            'credential_change_required',TRUE
                           )
                         )
                         """

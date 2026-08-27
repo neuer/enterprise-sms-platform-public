@@ -487,7 +487,7 @@ class SqlUserManagementRepository:
                           :actor,'admin',CAST(:ip AS inet),'local_password_reset',
                           'user_account',:object_id,
                           jsonb_build_object(
-                            'provider_code','local','must_change_password',TRUE
+                            'provider_code','local','credential_change_required',TRUE
                           )
                         )
                         """

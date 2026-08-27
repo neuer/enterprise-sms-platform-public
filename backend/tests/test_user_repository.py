@@ -283,6 +283,8 @@ async def test_local_password_reset_forces_change_and_audit_excludes_hash() -> N
     assert "security_version=security_version+1" in connection.calls[2][0].replace(" ", "")
     audit_sql, audit_params = connection.calls[3]
     assert "local_password_reset" in audit_sql
+    assert "'credential_change_required',TRUE" in audit_sql
+    assert "'must_change_password',TRUE" not in audit_sql
     assert "$argon2id" not in str(audit_params)
 
 
