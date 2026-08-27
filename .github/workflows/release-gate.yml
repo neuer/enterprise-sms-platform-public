@@ -122,7 +122,7 @@ jobs:
         env:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
-          sudo -g "#$(id -g)" env \
+          sudo -u root -g "#$(id -g)" env \
             PATH="$PATH" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
             UV_PYTHON="$UV_PYTHON" \
