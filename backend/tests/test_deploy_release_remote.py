@@ -529,6 +529,9 @@ def test_offline_stage_only_uploads_closed_bundle_without_docker_or_lifecycle(
     tmp_path: Path,
 ) -> None:
     manifest_path, manifest = _offline_bundle(tmp_path)
+    for image in manifest["images"].values():
+        image["changed"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     arguments = _offline_arguments(manifest_path)
     runner = FakeRunner(manifest)
 

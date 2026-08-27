@@ -385,13 +385,23 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     else:
         data_images = _parse_bound_evidence(data_candidate, "evidence.data_images")
     data_changed = images["postgres"].changed or images["redis"].changed
-    if data_changed is (data_images is None):
+    offline_full_no_migration_update = (
+        schema_version == 2
+        and image_source == OFFLINE_IMAGE_SOURCE
+        and all(spec.changed for spec in images.values())
+        and not migration_changes_schema
+    )
+    data_evidence_required = data_changed and not offline_full_no_migration_update
+    if (data_evidence_required and data_images is None) or (
+        not data_changed and data_images is not None
+    ):
         raise ReleaseManifestError("evidence.data_images does not match changed data images")
 
     backup_candidate = evidence_value["backup_restore_change"]
-    backup_required = mode == "production" and (
+    backup_allowed = mode == "production" and (
         images["postgres"].changed or migration_changes_schema
     )
+    backup_required = backup_allowed and not offline_full_no_migration_update
     backup_evidence: Mapping[str, object] | None
     if backup_candidate is None:
         backup_evidence = None
@@ -431,7 +441,9 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
                     ),
                 }
             )
-    if backup_required is (backup_evidence is None):
+    if (backup_required and backup_evidence is None) or (
+        not backup_allowed and backup_evidence is not None
+    ):
         raise ReleaseManifestError(
             "evidence.backup_restore_change does not match production "
             "PostgreSQL or migration change"

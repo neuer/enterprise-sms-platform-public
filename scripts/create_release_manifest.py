@@ -588,6 +588,7 @@ def create_manifest(
     signing_private_key: Path | None = None,
     signing_key_id: str | None = None,
     attestation_bundle: Path | None = None,
+    allow_offline_no_conditional_evidence: bool = False,
 ) -> None:
     """读取最终证据，原子生成 registry v1 或离线归档 v2 清单。"""
 
@@ -617,6 +618,29 @@ def create_manifest(
     ):
         raise ManifestCreationError(
             "offline release must be a no-migration baseline or all-four-image update"
+        )
+    offline_full_no_migration_update = (
+        offline
+        and changed == frozenset(_IMAGES)
+        and migration_from == migration_target
+    )
+    backup_pair = (backup_record is not None, restore_report is not None)
+    if backup_pair not in {(False, False), (True, True)}:
+        raise ManifestCreationError("backup evidence must be provided as a pair")
+    conditional_evidence_missing = data_images is None or not all(backup_pair)
+    if allow_offline_no_conditional_evidence and (
+        not offline_full_no_migration_update or not conditional_evidence_missing
+    ):
+        raise ManifestCreationError(
+            "offline conditional evidence risk acceptance is not applicable"
+        )
+    if (
+        offline_full_no_migration_update
+        and conditional_evidence_missing
+        and not allow_offline_no_conditional_evidence
+    ):
+        raise ManifestCreationError(
+            "missing offline conditional evidence requires explicit risk acceptance"
         )
     if not offline and output.parent != release_report.parent:
         raise ManifestCreationError("manifest and release report must share a directory")
@@ -787,13 +811,16 @@ def create_manifest(
             "data image evidence",
         )
     data_changed = bool(changed & {"postgres", "redis"})
-    if data_changed is (data_evidence is None):
+    data_evidence_required = data_changed and not offline_full_no_migration_update
+    if (data_evidence_required and data_evidence is None) or (
+        not data_changed and data_evidence is not None
+    ):
         raise ManifestCreationError("data image evidence does not match changed images")
-    backup_pair = (backup_record is not None, restore_report is not None)
-    if backup_pair not in {(False, False), (True, True)}:
-        raise ManifestCreationError("backup evidence must be provided as a pair")
-    backup_required = "postgres" in changed or migration_from != migration_target
-    if backup_required is not all(backup_pair):
+    backup_allowed = "postgres" in changed or migration_from != migration_target
+    backup_required = backup_allowed and not offline_full_no_migration_update
+    if (backup_required and not all(backup_pair)) or (
+        not backup_allowed and all(backup_pair)
+    ):
         raise ManifestCreationError("backup evidence does not match PostgreSQL or migration change")
     backup_evidence: dict[str, object] | None
     if not all(backup_pair):
@@ -977,6 +1004,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--signing-private-key", type=Path)
     parser.add_argument("--signing-key-id")
     parser.add_argument("--attestation-bundle", type=Path)
+    parser.add_argument(
+        "--allow-offline-no-conditional-evidence",
+        action="store_true",
+    )
     return parser
 
 
@@ -999,6 +1030,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             signing_private_key=args.signing_private_key,
             signing_key_id=args.signing_key_id,
             attestation_bundle=args.attestation_bundle,
+            allow_offline_no_conditional_evidence=(
+                args.allow_offline_no_conditional_evidence
+            ),
         )
     except ManifestCreationError as exc:
         print(f"release-manifest: {exc}", file=sys.stderr)

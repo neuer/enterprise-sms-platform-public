@@ -131,7 +131,7 @@ scripts/test_update.sh promote --ref origin/main
    HIGH/CRITICAL 扫描并生成候选 SBOM、archive 和单构建检查点；不执行第二次可重复构建，索引
    明确记录 `reproducibility_proven=false`。关闭阶段失败只重跑失败 job，并复用同一检查点。
 3. 临时使用**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**：GitHub 生成候选、核验 attestation 后，由受控
-   签名环境生成并签署封闭包；同一包先通过预生产，再由远端发布 driver 校验并上传。禁止人工
+   签名环境生成并签署封闭包；通常同一包先通过预生产，再由远端发布 driver 校验并上传。禁止人工
    `docker load`、裸上传、现场构建或绕过 manifest。内部 Registry 建成并通过预生产演练后，退出
    离线通道，恢复 RepoDigest 提升路径。
 4. `release-gate` 绑定 VERSION、commit、Alembic head、OpenAPI SHA256、SBOM、workflow run、
@@ -139,12 +139,14 @@ scripts/test_update.sh promote --ref origin/main
    生产只安装固定路径的公钥与 key ID。
 5. 首次空主机由独立 `release bootstrap --confirm-empty-host` 完成；普通更新才执行
    `release prepare`、`release activate`、`release status`。临时离线更新仅允许无迁移四镜像
-   整包；Registry 路径的数据库变更只允许 expand。备份、迁移头、健康、运行镜像和账本检查
-   不得省略。
+   整包；Registry 路径的数据库变更只允许 expand。若提交未变更数据镜像定义/固定基础镜像、
+   初始化脚本、Compose 存储/拓扑、schema 或 Alembic，且操作者明确接受风险，该临时整包可省略
+   本候选专属的数据镜像、备份恢复证据和同包预生产；每日备份、数据卷、迁移头、签名、四镜像
+   完整性、健康、账本检查与失败补偿不得省略。
 
 离线包上传失败、验签失败、导入失败或发布失败时必须保留 staging、release 状态和已导入镜像
-供审计，禁止无范围 `prune`。预生产和生产必须使用 manifest SHA-256 完全相同的同一封闭包；
-审批、维护窗和双人复核边界不因暂时没有 Registry 而放宽。
+供审计，禁止无范围 `prune`。执行前记录 manifest SHA-256；Phase 0 只有一名管理员时允许同一
+具名操作者执行并自复核，但必须如实记录为单人变更，不得伪造第二身份。维护窗口不省略。
 
 管理员初始化、正式厂商 Key 安装/轮换、测试号码管理和真实联调激活都是独立操作，绝不
 夹带进代码发布。数据库、Docker volume、运行态目录和真实联调数据默认永久保留。

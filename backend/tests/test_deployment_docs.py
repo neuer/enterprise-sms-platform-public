@@ -899,6 +899,25 @@ def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     assert "`MAINTENANCE.md` 为准" in documents["PROGRESS.md"]
 
 
+def test_temporary_offline_no_migration_update_documents_narrow_exception() -> None:
+    index = read_required("README.md")
+    maintenance = (ROOT / "MAINTENANCE.md").read_text(encoding="utf-8")
+    handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")
+
+    for token in (
+        "临时离线无迁移整包快速更新",
+        "data_images",
+        "backup_restore_change",
+        "不关闭每日备份",
+        "不删除或重建数据卷",
+        "同一具名操作者执行并自复核",
+    ):
+        assert token in index
+    for document in (maintenance, handover):
+        assert "操作者执行并自复核" in document
+        assert "不得伪造第二身份" in document
+
+
 def test_deployment_index_assigns_hsts_to_the_external_tls_terminator() -> None:
     index = read_required("README.md")
     handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")

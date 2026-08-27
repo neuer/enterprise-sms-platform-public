@@ -2,7 +2,7 @@
 
 API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
-`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更必须先在同版本预生产或隔离环境执行；不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
+`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更通常先在同版本预生产或隔离环境执行；内部 Registry 尚未建成期间，满足下文“临时离线无迁移整包快速更新”条件且操作者明确接受风险时，预生产不作为硬前置。不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
 
 ## 权威手册
 
@@ -812,7 +812,7 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
 - `production preloaded digest`：四个 ref 必须是受控仓库 `image@sha256:RepoDigest`，镜像须在目标主机预先拉取；清单 archive 字段全部为 null，prepare 不拉取网络资源，并逐一核对本地 image ID、`linux/amd64` 与 RepoDigests。PostgreSQL changed 或 migration from/target 不同时都必须附加同 commit 的加密备份变更记录和隔离恢复报告。
 - `production offline`：内部 Registry 建成前的临时通道是**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**。schema v2 封闭包必须恰好包含
   `manifest.json`、`manifest.sig`、`release-gate.json`、`offline-image-index.json`、四个固定
-  `{api,web,postgres,redis}.tar`，以及 manifest 条件点名的数据/备份证据；每个 tar 的 image ID、
+  `{api,web,postgres,redis}.tar`，以及 manifest 实际点名的可选数据/备份证据；每个 tar 的 image ID、
   SHA-256 和字节数同时受离线索引与 manifest 约束。四镜像即使 `changed=false` 也必须随包交付。
   只有 release manager 可以在验签和整包验证后执行受控导入；禁止操作者人工 `docker load`、
   裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
@@ -829,7 +829,7 @@ Git 仓库、发布包或日志**。任何 key ID、公钥 owner/mode、签名�
 
 临时离线链路顺序固定为：GitHub 生成候选四镜像、release gate、离线索引和四个 archive，并对
 索引生成 attestation → 受控联网签名环境核验 attestation，生成 schema v2 manifest 并签名 →
-冻结 manifest SHA-256 与闭集逐文件 SHA-256/size → 预生产使用该**同一包**完成发布/恢复/UAT → 双人审批后受控上传生产 →
+冻结 manifest SHA-256 与闭集逐文件 SHA-256/size → 通常在预生产使用该**同一包**验收 → 受控上传生产 →
 首次空主机独立 bootstrap 或后续 prepare/activate/status。任一阶段失败保留原包、staging、
 release 状态和已导入镜像供审计，禁止无范围 `docker image prune`/`system prune`。内部 Registry
 及只读生产拉取入口建成并用同一候选在预生产演练通过后，离线通道退出；Registry 路径及其
@@ -925,7 +925,7 @@ sudo /usr/local/sbin/sms-compose release activate --release-id release-forward-f
 
 前向回退候选必须保持 PostgreSQL/Redis 数据镜像与当前 schema，不得把旧 digest 包装成新发布。
 临时离线 schema v2 明确拒绝 `prepare-forward-rollback`；需要修复时制作新 commit、四镜像全新
-ID、无迁移的标准整包，附数据镜像与备份恢复证据后走普通 `prepare`→`activate`。需要 schema
+ID、无迁移的标准整包后走普通 `prepare`→`activate`。需要 schema
 变化的修复等待内部 Registry 路径，不为临时通道增加离线迁移能力。
 
 systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。生产容器固定为 `restart: "no"`，因此宿主机或 Docker daemon 恢复后只能由 systemd 的受控 `up` 重新经过 start-gate；单个容器异常退出不会由 Docker 自动拉起，按已批准的 12 小时 RTO 由监控告警后人工执行 `systemctl restart sms-platform.service`，禁止直接 `docker start/restart`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
@@ -1001,8 +1001,18 @@ development 的统一高风险发布还必须处理宿主 `vendor-control-agent.
 
 每次生产执行必须有生产变更单，记录 release_id、commit、交付模式、manifest SHA-256 与闭集逐文件 SHA-256/size、
 签名 key ID、四个 image ID 与 archive hash/size（Registry 模式另记 RepoDigest）、
-Trivy/attestation/数据/备份恢复证据、changed subset、迁移兼容性、维护窗口、执行人、复核人、
+Trivy/attestation、实际提供的数据/备份恢复证据、changed subset、迁移兼容性、维护窗口、执行人、复核方式、
 回退决策人、开始/结束时间和终态；不记录任何 secret 或手机号。
+
+“临时离线无迁移整包快速更新”只适用于 schema v2、四镜像全部 changed、migration
+`from == target`，且提交差异不涉及 PostgreSQL/Redis 镜像定义或固定基础镜像、初始化脚本、
+Compose 存储/拓扑、`schema.sql` 或 Alembic。经操作者明确接受本次不单独证明数据镜像重启/主版本
+与隔离恢复的风险后，`data_images`、`backup_restore_change` 和同包预生产可以省略；若提供这些
+证据，原有 SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，
+也不放宽签名、attestation、四 archive、镜像 ID/platform/OCI labels、无迁移、健康检查和失败补偿。
+生成不附条件证据的签名包时必须显式传入 `--allow-offline-no-conditional-evidence`；默认仍失败关闭。
+Phase 0 只有一名管理员时允许同一具名操作者执行并自复核，但必须如实记录为单人变更，禁止伪造
+第二身份。
 
 `/var/lib/sms-platform/releases` 的发布包、状态、事件、原始 env，以及当前与上一成功版本镜像至少保留到观察期结束和变更单关闭。工具**不自动 prune** 发布目录、旧镜像、数据卷或运行密钥 generation。清理必须是单独审批动作，先证明没有容器/回退点引用；不得执行无范围的 `docker image prune`、删除数据库卷或删除 `recovery_required` 证据。
 

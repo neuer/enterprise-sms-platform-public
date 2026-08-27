@@ -499,6 +499,53 @@ def test_offline_manifest_hash_binds_and_copies_conditional_evidence(
         assert copied.stat().st_mode & 0o777 == 0o600
 
 
+def test_offline_full_no_migration_manifest_allows_missing_conditional_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _offline_inputs(tmp_path)
+    arguments.update(
+        {
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+            "allow_offline_no_conditional_evidence": True,
+        }
+    )
+    _mock_attestation(monkeypatch)
+
+    create_manifest(**arguments)
+
+    output = arguments["output"]
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["evidence"]["data_images"] is None
+    assert manifest["evidence"]["backup_restore_change"] is None
+    assert {path.name for path in output.parent.iterdir()} == {
+        "api.tar",
+        "web.tar",
+        "postgres.tar",
+        "redis.tar",
+        "release-gate.json",
+        "offline-image-index.json",
+        "manifest.json",
+        "manifest.sig",
+    }
+
+
+def test_offline_missing_conditional_evidence_requires_explicit_risk_acceptance(
+    tmp_path: Path,
+) -> None:
+    arguments = _offline_inputs(tmp_path)
+    arguments.update(
+        {
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+        }
+    )
+
+    with pytest.raises(ManifestCreationError, match="explicit risk acceptance"):
+        create_manifest(**arguments)
+
+
 @pytest.mark.parametrize(
     ("changed", "migration_from"),
     [
