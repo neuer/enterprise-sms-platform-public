@@ -11,6 +11,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+DOCKER_PUBLIC_ENVIRONMENT_KEYS = (
+    "DOCKER_CONFIG",
+    "DOCKER_HOST",
+    "SMS_DOCKER_OSXKEYCHAIN_MARKER",
+    "SMS_DOCKER_PUBLIC_CONFIG",
+    "SMS_DOCKER_PUBLIC_DOCKER_BIN",
+    "SMS_DOCKER_PUBLIC_HOST",
+    "SMS_DOCKER_PUBLIC_SESSION",
+)
+
+
+def _environment_without_docker_public_session() -> dict[str, str]:
+    """Return a subprocess environment outside the enclosing public Docker session."""
+
+    environment = os.environ.copy()
+    for name in DOCKER_PUBLIC_ENVIRONMENT_KEYS:
+        environment.pop(name, None)
+    return environment
+
 
 def test_spec_consistency_tracks_only_active_contracts() -> None:
     checker = (ROOT / "scripts/check_spec_consistency.py").read_text(encoding="utf-8")
@@ -1049,12 +1068,14 @@ def test_registry_promotion_does_not_accept_offline_archive_outputs(
     for directory in (evidence, archive_dir, scan_dir, sbom_dir):
         directory.mkdir()
         directory.chmod(0o700)
-    environment = {
-        **os.environ,
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "REPO_ROOT": str(ROOT),
-        "SMS_DOCKER_ACCESS": "authenticated",
-    }
+    environment = _environment_without_docker_public_session()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "REPO_ROOT": str(ROOT),
+            "SMS_DOCKER_ACCESS": "authenticated",
+        }
+    )
     for name, character in zip(
         ("API", "WEB", "POSTGRES", "REDIS"),
         ("1", "2", "3", "4"),
@@ -1263,17 +1284,7 @@ def test_promoted_release_rejects_digest_with_different_candidate_image_id(
     )
     source.chmod(0o600)
     report = tmp_path / "promoted-release.json"
-    environment = os.environ.copy()
-    for name in (
-        "DOCKER_CONFIG",
-        "DOCKER_HOST",
-        "SMS_DOCKER_OSXKEYCHAIN_MARKER",
-        "SMS_DOCKER_PUBLIC_CONFIG",
-        "SMS_DOCKER_PUBLIC_DOCKER_BIN",
-        "SMS_DOCKER_PUBLIC_HOST",
-        "SMS_DOCKER_PUBLIC_SESSION",
-    ):
-        environment.pop(name, None)
+    environment = _environment_without_docker_public_session()
     environment.update(
         {
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
