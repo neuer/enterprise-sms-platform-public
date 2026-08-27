@@ -4,7 +4,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache --upgrade \
+      ca-certificates \
+      libcrypto3=3.5.8-r0 \
+      libssl3=3.5.8-r0 \
     && adduser -D -u 10001 security-report
 
 WORKDIR /app
