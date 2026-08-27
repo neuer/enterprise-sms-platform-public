@@ -47,13 +47,25 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "FROM nginx:stable-alpine@sha256:"
         "0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1" in frontend
     )
-    assert "apk upgrade" not in frontend
-    assert "apk add" not in backend
+    for package in ("libcrypto3=3.5.8-r0", "libssl3=3.5.8-r0"):
+        assert package in backend
+    for package in (
+        "c-ares=1.34.8-r0",
+        "curl=8.20.0-r0",
+        "libcrypto3=3.5.8-r0",
+        "libcurl=8.20.0-r0",
+        "libexpat=2.8.3-r0",
+        "libssl3=3.5.8-r0",
+    ):
+        assert package in frontend
     assert (
         "FROM postgres:16-alpine@sha256:"
         "57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777" in postgres
     )
-    assert "apk add --no-cache su-exec=0.3-r0" in postgres
+    assert "apk add --no-cache --upgrade" in postgres
+    assert "libcrypto3=3.5.8-r0" in postgres
+    assert "libssl3=3.5.8-r0" in postgres
+    assert "su-exec=0.3-r0" in postgres
     assert "rm /usr/local/bin/gosu" in postgres
     assert "ln -s /sbin/su-exec /usr/local/bin/gosu" in postgres
     assert "AS prepared" in postgres

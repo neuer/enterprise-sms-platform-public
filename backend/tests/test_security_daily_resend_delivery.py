@@ -362,6 +362,8 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
         "6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"
         in dockerfile
     )
+    assert "libcrypto3=3.5.8-r0" in dockerfile
+    assert "libssl3=3.5.8-r0" in dockerfile
     assert "USER security-report" in dockerfile
     assert "install -d -m 0755 /app/deploy/scripts /app/deploy/templates" in dockerfile
     assert "pip install" not in dockerfile

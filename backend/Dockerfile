@@ -15,6 +15,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
 
+RUN apk add --no-cache --upgrade \
+      libcrypto3=3.5.8-r0 \
+      libssl3=3.5.8-r0
+
 ARG APP_VERSION
 ARG GIT_SHA=development
 ARG SCHEMA_REVISION=development

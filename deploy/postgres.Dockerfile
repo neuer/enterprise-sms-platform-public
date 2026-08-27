@@ -1,6 +1,9 @@
 FROM postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 AS prepared
 
-RUN apk add --no-cache su-exec=0.3-r0 \
+RUN apk add --no-cache --upgrade \
+      libcrypto3=3.5.8-r0 \
+      libssl3=3.5.8-r0 \
+      su-exec=0.3-r0 \
     && rm /usr/local/bin/gosu \
     && ln -s /sbin/su-exec /usr/local/bin/gosu
 
