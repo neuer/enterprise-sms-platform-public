@@ -330,6 +330,8 @@ def test_init_admin_audit_casts_json_username_for_asyncpg() -> None:
     source = inspect.getsource(module.SqlInitAdminRepository.create_initial_admin)
 
     assert "'username',CAST(:audit_username AS text)" in source
+    assert "'credential_change_required',TRUE" in source
+    assert "'must_change_password',TRUE" not in source
     assert '"audit_username": username' in source
 
 

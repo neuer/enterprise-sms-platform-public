@@ -195,9 +195,15 @@ def ensure_callback_cidrs_within_deployment(
     raw: str,
     deployment_networks: tuple[IPv4Network | IPv6Network, ...],
 ) -> tuple[IPv4Network | IPv6Network, ...]:
-    """运行时 callback 网段必须逐项落在部署者固定的最大边界内。"""
+    """运行时 callback 网段必须逐项落在部署者固定的最大边界内。
+
+    部署边界为空表示 callback 出站关闭；运行配置仍需通过私网格式校验，
+    但不会产生任何有效出站网段。
+    """
 
     networks = parse_private_callback_cidrs(raw)
+    if not deployment_networks:
+        return ()
     for network in networks:
         if isinstance(network, IPv4Network):
             approved = any(

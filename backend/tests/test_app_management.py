@@ -109,6 +109,54 @@ async def test_callback_validator_enforces_deployment_cidr_and_port_ceiling() ->
         await validator.validate_for_save("https://callback.internal:8443/hook")
     assert await validator.validate_for_save("https://callback.internal/hook")
 
+
+@pytest.mark.asyncio
+async def test_callback_validator_empty_deployment_rejects_before_dns() -> None:
+    resolved_hosts: list[str] = []
+
+    def resolver(hostname: str) -> list[str]:
+        resolved_hosts.append(hostname)
+        return ["10.20.1.7"]
+
+    validator = CallbackUrlValidator(
+        "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+        deployment_allow_cidrs=(),
+        deployment_allow_ports=(443,),
+        resolver=resolver,
+    )
+
+    with pytest.raises(InvalidAppConfig, match="出站未启用"):
+        await validator.validate_for_save("https://callback.internal/hook")
+
+    assert resolved_hosts == []
+
+
+@pytest.mark.asyncio
+async def test_app_without_callback_works_when_callback_egress_is_disabled() -> None:
+    repo = FakeRepository()
+    service = AppManagementService(
+        repo,
+        crypto(),
+        CallbackUrlValidator(
+            "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+            deployment_allow_cidrs=(),
+            deployment_allow_ports=(443,),
+        ),
+        secret_generator=lambda: "api-key-plain-once",
+    )
+
+    assert await service.list() == []
+    assert await service.create(
+        AppCreate(name="app-no-callback", dept="研发部"),
+        actor="admin01",
+        ip="10.0.0.8",
+    ) == {
+        "id": 17,
+        "api_key": "api-key-plain-once",
+        "callback_secret": None,
+    }
+
+
 @pytest.mark.asyncio
 async def test_create_returns_secrets_once_but_repository_only_gets_hash_and_ciphertext() -> None:
     repo = FakeRepository()

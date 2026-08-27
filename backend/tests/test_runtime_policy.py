@@ -13,8 +13,10 @@ from app.services.runtime_policy import (
     BOOL_CONFIG_KEYS,
     DEFAULTS,
     INT_CONFIG_KEYS,
+    InvalidRuntimePolicy,
     RuntimePolicy,
     SqlRuntimePolicyLoader,
+    ensure_callback_cidrs_within_deployment,
 )
 
 
@@ -198,6 +200,21 @@ def test_callback_allowlist_rejects_non_approved_private_cidrs(cidrs: str) -> No
 )
 def test_callback_allowlist_accepts_approved_private_subnets(cidrs: str) -> None:
     assert RuntimePolicy.from_mapping({"callback_allow_cidrs": cidrs}).callback_allow_cidrs
+
+
+def test_empty_callback_deployment_boundary_disables_all_egress() -> None:
+    assert (
+        ensure_callback_cidrs_within_deployment(
+            "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+            (),
+        )
+        == ()
+    )
+
+
+def test_empty_callback_deployment_boundary_still_rejects_unsafe_cidrs() -> None:
+    with pytest.raises(InvalidRuntimePolicy, match="私网"):
+        ensure_callback_cidrs_within_deployment("0.0.0.0/0", ())
 
 
 @pytest.mark.asyncio

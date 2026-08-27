@@ -122,6 +122,12 @@ def test_application_audit_guard_rejects_pii_secret_and_request_body(
         validate_audit_payload(payload)
 
 
+def test_application_audit_guard_allows_credential_change_required_flag() -> None:
+    validate_audit_payload(
+        {"provider_code": "local", "credential_change_required": True}
+    )
+
+
 class RecordingConnection:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error

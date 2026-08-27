@@ -271,3 +271,19 @@ async def test_callback_admin_policy_cannot_expand_deployment_maximum() -> None:
         )
 
     assert repository.updates == []
+
+
+@pytest.mark.asyncio
+async def test_empty_callback_deployment_does_not_block_unrelated_config_updates() -> None:
+    repository = FakeRepository()
+
+    await AdminService(
+        repository,
+        callback_egress_networks=(),
+    ).update_configs(
+        (ConfigUpdate("vendor_qps", "8"),),
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+
+    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8"),)
