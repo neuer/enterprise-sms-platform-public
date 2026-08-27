@@ -973,6 +973,12 @@ uv run --project backend python scripts/deploy_release_remote.py \
   --public-url https://sms.example.internal/readyz
 ```
 
+生产活动 checkout 根目录本身必须保持 `root:1000 2770`（`1000` 为固定 operator GID），
+根 `.env` 保持 `root:root 0600`；不得把 checkout 根目录递归改成 operator 所有。
+`backend/`、`deploy/` 与 Git 元数据按既有 operator 合同保留所需读写权限。普通更新前只核对并在
+必要时修正根目录这一层；若根目录不是 root 所有，release manager 会在停服务前拒绝原子替换
+`.env`。修正时禁止递归 `chown`，避免破坏 tracked tree、Git 与 secrets 的独立权限边界。
+
 driver 的普通模式只用于首个 bootstrap 成功后的更新，不能承担空主机自举。唯一首次引导例外
 是 production offline 的 `--stage-only`：它在本地验证精确 Git SHA、封闭包、索引和文件 hash/size，
 逐文件上传并做远端 SHA-256/原子改名后立即返回；不执行远端 Git、prepare、activate、status、
