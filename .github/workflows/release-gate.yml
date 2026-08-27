@@ -49,7 +49,8 @@ jobs:
           test -n "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           echo "$GITHUB_SHA" > "$RUNNER_TEMP/release-sha.txt"
-      - name: Verify exact parent quality evidence for artifact resume
+      - name: Verify exact parent evidence for release resume
+        id: resume
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.resume_quality_run_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,7 +105,6 @@ jobs:
             "Run complete backend quality and coverage gates"
             "Run frontend quality gates"
             "Run SAST, dependency, license, secret and configuration gates"
-            "Run authoritative integration and fault gate"
           )
           for step_name in "${successful_steps[@]}"; do
             # shellcheck disable=SC2016
@@ -114,10 +114,31 @@ jobs:
                 <<<"$jobs_json"
             )" -eq 1
           done
-          test "$(
-            jq "[.jobs[0].steps[] | select(.name == \"Build, scan and bind all release images\" and .status == \"completed\" and .conclusion == \"failure\")] | length" \
+          g2_success="$(
+            jq '[.jobs[0].steps[] | select(.name == "Run authoritative integration and fault gate" and .status == "completed" and .conclusion == "success")] | length' \
               <<<"$jobs_json"
-          )" -eq 1
+          )"
+          g2_failure="$(
+            jq '[.jobs[0].steps[] | select(.name == "Run authoritative integration and fault gate" and .status == "completed" and .conclusion == "failure")] | length' \
+              <<<"$jobs_json"
+          )"
+          build_failure="$(
+            jq '[.jobs[0].steps[] | select(.name == "Build, scan and bind all release images" and .status == "completed" and .conclusion == "failure")] | length' \
+              <<<"$jobs_json"
+          )"
+          build_skipped="$(
+            jq '[.jobs[0].steps[] | select(.name == "Build, scan and bind all release images" and .status == "completed" and .conclusion == "skipped")] | length' \
+              <<<"$jobs_json"
+          )"
+          resume_mode=""
+          if [ "$g2_success" -eq 1 ] && [ "$build_failure" -eq 1 ]; then
+            resume_mode="artifacts"
+          elif [ "$g2_failure" -eq 1 ] && [ "$build_skipped" -eq 1 ]; then
+            resume_mode="g2"
+          else
+            echo "Prior run is not an approved G2 or artifact resume point" >&2
+            exit 1
+          fi
           for step_name in \
             "Independently reproduce image and SBOM identities" \
             "Close and bind the offline image evidence set" \
@@ -131,11 +152,12 @@ jobs:
                 <<<"$jobs_json"
             )" -eq 1
           done
-          printf "Artifact resume: prior run \`%s\` at \`%s\` -> candidate \`%s\`.\n" \
-            "$RESUME_QUALITY_RUN_ID" "$prior_sha" "$GITHUB_SHA" \
+          printf 'mode=%s\n' "$resume_mode" >> "$GITHUB_OUTPUT"
+          printf "Release resume (%s): prior run \`%s\` at \`%s\` -> candidate \`%s\`.\n" \
+            "$resume_mode" "$RESUME_QUALITY_RUN_ID" "$prior_sha" "$GITHUB_SHA" \
             >> "$GITHUB_STEP_SUMMARY"
       - name: Set up Python and uv
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.7.12"
@@ -143,14 +165,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
       - name: Set up Node.js
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Prepare development-only test files
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
         run: bash scripts/local_test.sh prepare
       - name: Check source invariants
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
@@ -217,16 +239,19 @@ jobs:
             --severity HIGH,CRITICAL --exit-code 1 --no-progress \
             --format json --output /evidence/security.json /repo
       - name: Run authoritative integration and fault gate
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
         env:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
           runner_gid="$(id -g)"
           test "$runner_gid" -ne 0
           test -x /usr/bin/setpriv
-          g2_tmpdir="$RUNNER_TEMP/g2-root-tmp"
-          sudo install -d -o root -g "$runner_gid" -m 0700 "$g2_tmpdir"
           host_tmp_before="$(stat -c '%u:%g:%a' /tmp)"
+          g2_tmpdir="/tmp/sms-platform-release-g2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$g2_tmpdir"
+          sudo install -d -o root -g "$runner_gid" -m 0700 "$g2_tmpdir"
+          test "$(stat -c '%u:%g:%a' "$g2_tmpdir")" = "0:$runner_gid:700"
+          g2_status=0
           sudo env \
             PATH="$PATH" \
             TMPDIR="$g2_tmpdir" \
@@ -239,8 +264,11 @@ jobs:
             WEB_PORT="$WEB_PORT" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
             /usr/bin/setpriv --regid "$runner_gid" --clear-groups \
-            bash scripts/verify_all.sh
+            bash scripts/verify_all.sh || g2_status=$?
+          sudo rm -rf -- "$g2_tmpdir"
+          test ! -e "$g2_tmpdir"
           test "$(stat -c '%u:%g:%a' /tmp)" = "$host_tmp_before"
+          exit "$g2_status"
       - name: Build, scan and bind all release images
         run: |
           install -d -m 0700 \
