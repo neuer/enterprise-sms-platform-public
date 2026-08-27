@@ -23,6 +23,12 @@ def installer_module() -> ModuleType:
     return importlib.import_module("install_production_host_assets")
 
 
+def fixture_checkout_uid() -> int:
+    """Return a real non-root owner when the test process itself runs as root."""
+
+    return 1000 if os.geteuid() == 0 else os.geteuid()
+
+
 COMMIT = "555fb20b0d630ece9099a88a463eb1ce1121c012"
 POST_FIRST_START_COMMIT = "109c10865b2aac3989bc4cebf3c60788f44b168c"
 NEW_COMMIT = POST_FIRST_START_COMMIT
@@ -223,6 +229,7 @@ class Fixture:
 
 def make_fixture(tmp_path: Path, *, effective_uid: int = 0) -> Fixture:
     module = installer_module()
+    checkout_uid = fixture_checkout_uid()
     source_root = tmp_path / "source"
     etc_root = tmp_path / "host/etc/sms-platform"
     systemd_root = tmp_path / "host/etc/systemd/system"
@@ -266,6 +273,8 @@ def make_fixture(tmp_path: Path, *, effective_uid: int = 0) -> Fixture:
             mode=spec.git_mode,
             payload=payload,
         )
+    if checkout_uid != os.geteuid():
+        os.chown(source_root, checkout_uid, -1, follow_symlinks=False)
     runner = FakeRunner(module, source_root, tracked)
     state_path = etc_root / "production-host-assets.json"
     installer = module.ProductionHostAssetInstaller(
@@ -280,7 +289,7 @@ def make_fixture(tmp_path: Path, *, effective_uid: int = 0) -> Fixture:
         expected_uid=os.geteuid(),
         expected_gid=os.getegid(),
         effective_uid=effective_uid,
-        invocation_environment={"SUDO_UID": str(os.geteuid())},
+        invocation_environment={"SUDO_UID": str(checkout_uid)},
     )
     return Fixture(
         module=module,
