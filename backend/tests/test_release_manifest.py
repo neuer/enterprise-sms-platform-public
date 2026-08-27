@@ -126,6 +126,21 @@ def test_manifest_accepts_strict_offline_production_v2(tmp_path: Path) -> None:
     assert release_evidence_ref(manifest, "api") == ("sms-platform-release-api:" + manifest.commit)
 
 
+def test_offline_full_no_migration_update_allows_missing_conditional_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+
+    assert all(image.changed for image in manifest.images.values())
+    assert manifest.migration_from == manifest.migration_target
+    assert manifest.evidence["data_images"] is None
+    assert manifest.evidence["backup_restore_change"] is None
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [

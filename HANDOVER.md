@@ -48,10 +48,7 @@
   `AUTH_MOCK=0` 的 local Provider、首批 notice 应用及对应安全/运维边界。AD 登录与角色映射
   延后到 AD Provider 正式启用前独立复验。自动化 20 项历史证据保存在受限归档，不随公开快照发布。
 - [x] 已在隔离主机完成一次**远端 Mock 发布演练**：精确修复提交 `<redacted-commit>` 覆盖 Web-only、API-only、数据镜像验证、配置失败不变、健康失败补偿与 TERM/resume，最终退出 0；恢复后默认 10 个容器 ID 与 4 个卷在最终演练前后逐项一致，公网边界和管理员登录/退出浏览器冒烟通过。首次执行误清理默认 Mock 卷、测试环境重置及整改证据保存在受限归档，不随公开快照发布；不得描述为原测试数据未变化。`release_control_smoke` 只证明控制面，不代表发布就绪，也不替代正式 Trivy `release` 证据。
-- [ ] 为生产统一四镜像发布建立**生产变更单**：绑定 release_id、commit、manifest SHA-256 与闭集逐文件 SHA-256/size、四个 image ID/archive hash+size、changed 标志（临时离线仅全零或全四）、迁移兼容性、维护窗口、Trivy/attestation/数据/备份恢复证据、执行/复核/回退人和终态；不得写 secret 或手机号。
-- [ ] 变更执行人可为唯一技术管理员；复核人必须是另一名具名的业务负责人或变更
-  审批人，不要求其持有平台管理员账号，也不得共享凭据。两个 ID 必须对应两名真实人员；
-  无第二人可复核时为上线/恢复治理 No-Go，禁止同人使用两个 ID。
+- [ ] 为生产统一四镜像发布建立**生产变更单**：绑定 release_id、commit、manifest SHA-256 与闭集逐文件 SHA-256/size、四个 image ID/archive hash+size、changed 标志（临时离线仅全零或全四）、迁移兼容性、维护窗口、Trivy/attestation、实际提供的数据/备份恢复证据、执行/复核方式、回退人和终态；不得写 secret 或手机号。Phase 0 只有一名管理员时允许同一具名操作者执行并自复核，但必须如实记录为单人变更，不得伪造第二身份。
 - [ ] 变更关闭前保留发布包、旧镜像和事件记录，包括 `state.json`、`events.jsonl`、`residual_changes` 与上一成功回退点；发布工具不自动 prune。`recovery_required` 时禁止自动续跑、清理或猜测迁移状态。
 
 ## 2. 生产切换步骤引用

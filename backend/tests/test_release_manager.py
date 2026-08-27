@@ -471,6 +471,7 @@ def _offline_bundle(
     changed: set[str] | None = None,
     large_archive: bool = False,
     migration_changed: bool = False,
+    include_conditional_evidence: bool = True,
 ) -> tuple[Path, dict[str, Any], dict[str, str]]:
     changed = set(IMAGE_NAMES) if changed is None else changed
     runtime_root = tmp_path / "offline-staging"
@@ -535,7 +536,7 @@ def _offline_bundle(
         manifest,
         _release_report(manifest),
     )
-    if changed & {"postgres", "redis"}:
+    if include_conditional_evidence and changed & {"postgres", "redis"}:
         data_path = bundle / "data-images.json"
         _write_private_json(data_path, _data_report(manifest))
         manifest["evidence"]["data_images"] = {
@@ -543,7 +544,7 @@ def _offline_bundle(
             "sha256": hashlib.sha256(data_path.read_bytes()).hexdigest(),
             "size": data_path.stat().st_size,
         }
-    if "postgres" in changed or migration_changed:
+    if include_conditional_evidence and ("postgres" in changed or migration_changed):
         restore_path = bundle / "restore-report.json"
         restore = _restore_report()
         restore["git_commit"] = manifest["commit"]
@@ -1820,7 +1821,10 @@ def test_production_offline_full_no_migration_update_can_compensate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        include_conditional_evidence=False,
+    )
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
