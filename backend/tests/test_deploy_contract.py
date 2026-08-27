@@ -397,7 +397,7 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
         in config
     )
     assert config.count("limit_conn sms_api_concurrency 16;") == 2
-    assert config.count("limit_conn sms_client_concurrency 4;") == 2
+    assert config.count("limit_conn sms_client_concurrency 16;") == 2
     assert "limit_conn sms_import_concurrency 2;" in config
     assert (
         "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"
