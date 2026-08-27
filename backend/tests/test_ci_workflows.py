@@ -350,8 +350,21 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     triggers = workflow_triggers(workflow)
 
     assert set(triggers) == {"workflow_dispatch", "push"}
+    assert triggers["workflow_dispatch"] == {
+        "inputs": {
+            "resume_quality_run_id": {
+                "description": (
+                    "Failed parent Release Gate run whose successful quality steps "
+                    "may be reused"
+                ),
+                "required": False,
+                "type": "string",
+            }
+        }
+    }
     assert triggers["push"]["tags"] == ["v*"]
     assert workflow["permissions"] == {
+        "actions": "read",
         "contents": "read",
         "id-token": "write",
         "attestations": "write",
@@ -361,6 +374,7 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     jobs = workflow["jobs"]
     assert set(jobs) == {"release-gate"}
     release_job = jobs["release-gate"]
+    assert release_job["name"] == "release-gate"
     assert release_job["timeout-minutes"] == 120
     release_commands = job_commands(release_job)
     for command in (
@@ -383,6 +397,11 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "--sbom-dir",
         "--archive-dir",
         "--scan-dir",
+        "RESUME_QUALITY_RUN_ID",
+        'test "$GITHUB_REF" = "refs/heads/main"',
+        'test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"',
+        'TMPDIR="$g2_tmpdir"',
+        "host_tmp_before",
     ):
         assert command in release_commands
     assert release_commands.index("rm -f .coverage") < release_commands.index(
@@ -397,11 +416,29 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     ):
         assert command in release_commands
     assert "PYTEST_DEBUG_TEMPROOT" not in release_commands
+    assert (
+        "$'M\\t.github/workflows/release-gate.yml\\n"
+        "M\\tbackend/tests/test_ci_workflows.py'"
+    ) in release_commands
     assert "npm run --prefix frontend typecheck" not in release_commands
     assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert_actions_are_immutable(workflow)
     source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert source.count(
+        "github.event_name != 'workflow_dispatch' || "
+        "inputs.resume_quality_run_id == ''"
+    ) == 8
+    artifact_steps = {
+        "Build, scan and bind all release images",
+        "Independently reproduce image and SBOM identities",
+        "Close and bind the offline image evidence set",
+        "Attest immutable release evidence",
+        "Upload the closed offline release evidence directory",
+    }
+    for step in release_job["steps"]:
+        if step.get("name") in artifact_steps:
+            assert "if" not in step
     assert "secrets." not in source
     assert "actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35" in source
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
