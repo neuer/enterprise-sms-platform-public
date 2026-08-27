@@ -256,11 +256,12 @@ def _validate_offline_index_closure(
         raise ManifestCreationError("offline image index is not bound to the release gate")
 
     source_root = offline_index_path.parent
-    _validate_index_artifact(
-        source_root,
-        index.reproducibility,
-        "reproducibility evidence",
-    )
+    if index.reproducibility is not None:
+        _validate_index_artifact(
+            source_root,
+            index.reproducibility,
+            "reproducibility evidence",
+        )
     report_images = report["images"]
     source_sboms = source["sbom_sha256"]
     for name in _IMAGES:
@@ -286,12 +287,13 @@ def _validate_offline_index_closure(
             f"candidate SBOM for {name}",
             maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
         )
-        _validate_index_artifact(
-            source_root,
-            index_image.sbom_rebuild,
-            f"rebuild SBOM for {name}",
-            maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
-        )
+        if index_image.sbom_rebuild is not None:
+            _validate_index_artifact(
+                source_root,
+                index_image.sbom_rebuild,
+                f"rebuild SBOM for {name}",
+                maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
+            )
     return index, index_sha256
 
 

@@ -1,12 +1,7 @@
 name: Release Gate
 
 on:
-  workflow_dispatch:
-    inputs:
-      resume_quality_run_id:
-        description: Failed parent Release Gate run whose successful quality steps may be reused
-        required: false
-        type: string
+  workflow_dispatch: {}
   push:
     tags: ["v*"]
 
@@ -22,15 +17,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-gate:
-    name: release-gate
+  build-scan:
+    name: build-scan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      COMPOSE_PROJECT_NAME: sms-platform-release-${{ github.run_id }}-${{ github.run_attempt }}
-      API_PORT: "18100"
-      MOCK_VENDOR_PORT: "19128"
-      WEB_PORT: "18180"
     steps:
       - name: Checkout immutable release candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -43,233 +33,15 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             test "$GITHUB_REF_NAME" = "v$(tr -d '\n' < VERSION)"
           fi
-      - name: Verify release SHA is descendant of protected main
+      - name: Verify release SHA is protected main
         run: |
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           test -n "$GITHUB_SHA"
-          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
-          echo "$GITHUB_SHA" > "$RUNNER_TEMP/release-sha.txt"
-      - name: Verify exact parent evidence for release resume
-        id: resume
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.resume_quality_run_id != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RESUME_QUALITY_RUN_ID: ${{ inputs.resume_quality_run_id }}
-        run: |
-          set -euo pipefail
-          [[ "$RESUME_QUALITY_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          test "$GITHUB_REF" = "refs/heads/main"
-          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
-          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 2
-
-          run_json="$(
-            gh api \
-              "/repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_QUALITY_RUN_ID"
-          )"
-          prior_sha="$(jq -er ".head_sha | select(type == \"string\")" <<<"$run_json")"
-          test "$prior_sha" = "$(git rev-parse HEAD^)"
-          test "$(jq -r ".repository.full_name" <<<"$run_json")" = "$GITHUB_REPOSITORY"
-          test "$(jq -r ".path" <<<"$run_json")" = ".github/workflows/release-gate.yml"
-          test "$(jq -r ".event" <<<"$run_json")" = "workflow_dispatch"
-          test "$(jq -r ".head_branch" <<<"$run_json")" = "main"
-          test "$(jq -r ".status" <<<"$run_json")" = "completed"
-          test "$(jq -r ".conclusion" <<<"$run_json")" = "failure"
-          current_workflow_id="$(
-            gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/release-gate.yml" \
-              --jq ".id"
-          )"
-          test "$(jq -r ".workflow_id" <<<"$run_json")" = "$current_workflow_id"
-          test "$(git diff --name-status "$prior_sha" "$GITHUB_SHA")" = \
-            $'M\t.github/workflows/release-gate.yml\nM\tbackend/tests/test_ci_workflows.py'
-
-          jobs_json="$(
-            gh api \
-              "/repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_QUALITY_RUN_ID/jobs?filter=latest&per_page=100"
-          )"
-          jq -e '
-            .total_count == 1 and
-            (.jobs | length) == 1 and
-            .jobs[0].name == "release-gate" and
-            .jobs[0].status == "completed" and
-            .jobs[0].conclusion == "failure"
-          ' <<<"$jobs_json" >/dev/null
-
-          successful_steps=(
-            "Checkout immutable release candidate"
-            "Bind release to final SHA and version source"
-            "Verify release SHA is descendant of protected main"
-            "Set up Python and uv"
-            "Set up Node.js"
-            "Prepare development-only test files"
-            "Check source invariants"
-            "Run complete backend quality and coverage gates"
-            "Run frontend quality gates"
-            "Run SAST, dependency, license, secret and configuration gates"
-          )
-          for step_name in "${successful_steps[@]}"; do
-            # shellcheck disable=SC2016
-            test "$(
-              jq --arg name "$step_name" \
-                '[.jobs[0].steps[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length' \
-                <<<"$jobs_json"
-            )" -eq 1
-          done
-          g2_success="$(
-            jq '[.jobs[0].steps[] | select(.name == "Run authoritative integration and fault gate" and .status == "completed" and .conclusion == "success")] | length' \
-              <<<"$jobs_json"
-          )"
-          g2_failure="$(
-            jq '[.jobs[0].steps[] | select(.name == "Run authoritative integration and fault gate" and .status == "completed" and .conclusion == "failure")] | length' \
-              <<<"$jobs_json"
-          )"
-          build_failure="$(
-            jq '[.jobs[0].steps[] | select(.name == "Build, scan and bind all release images" and .status == "completed" and .conclusion == "failure")] | length' \
-              <<<"$jobs_json"
-          )"
-          build_skipped="$(
-            jq '[.jobs[0].steps[] | select(.name == "Build, scan and bind all release images" and .status == "completed" and .conclusion == "skipped")] | length' \
-              <<<"$jobs_json"
-          )"
-          resume_mode=""
-          if [ "$g2_success" -eq 1 ] && [ "$build_failure" -eq 1 ]; then
-            resume_mode="artifacts"
-          elif [ "$g2_failure" -eq 1 ] && [ "$build_skipped" -eq 1 ]; then
-            resume_mode="g2"
-          else
-            echo "Prior run is not an approved G2 or artifact resume point" >&2
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            test "$GITHUB_REF" = "refs/heads/main"
           fi
-          for step_name in \
-            "Independently reproduce image and SBOM identities" \
-            "Close and bind the offline image evidence set" \
-            "Attest immutable release evidence" \
-            "Upload the closed offline release evidence directory"
-          do
-            # shellcheck disable=SC2016
-            test "$(
-              jq --arg name "$step_name" \
-                '[.jobs[0].steps[] | select(.name == $name and .status == "completed" and .conclusion == "skipped")] | length' \
-                <<<"$jobs_json"
-            )" -eq 1
-          done
-          printf 'mode=%s\n' "$resume_mode" >> "$GITHUB_OUTPUT"
-          printf "Release resume (%s): prior run \`%s\` at \`%s\` -> candidate \`%s\`.\n" \
-            "$resume_mode" "$RESUME_QUALITY_RUN_ID" "$prior_sha" "$GITHUB_SHA" \
-            >> "$GITHUB_STEP_SUMMARY"
-      - name: Set up Python and uv
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          version: "0.7.12"
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: backend/uv.lock
-      - name: Set up Node.js
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Prepare development-only test files
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
-        run: bash scripts/local_test.sh prepare
-      - name: Check source invariants
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
-        run: |
-          python3 scripts/check_spec_consistency.py
-          python3 scripts/check_invariants.py
-          python3 scripts/check_public_readiness.py
-      - name: Run complete backend quality and coverage gates
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
-        env:
-          ENVIRONMENT: "test"
-          DEBUG: "1"
-          VENDOR_MOCK: "1"
-          AUTH_MOCK: "1"
-        run: |
-          cd backend
-          uv sync --frozen
-          uv run ruff check app migrations scripts_support tests \
-            ../scripts/check_coverage_gates.py ../scripts/release_metadata.py \
-            ../scripts/render_release_evidence.py ../scripts/create_release_manifest.py \
-            ../scripts/canonicalize_sbom.py \
-            ../scripts/create_offline_image_index.py \
-            ../scripts/deploy_release_remote.py \
-            ../deploy/scripts/offline_image_archive.py \
-            ../deploy/scripts/release_manifest.py \
-            ../scripts/verify_reproducible_release.py
-          uv run mypy app migrations scripts_support \
-            ../scripts/check_coverage_gates.py ../scripts/release_metadata.py \
-            ../scripts/render_release_evidence.py ../scripts/create_release_manifest.py \
-            ../scripts/canonicalize_sbom.py \
-            ../scripts/create_offline_image_index.py \
-            ../scripts/deploy_release_remote.py \
-            ../deploy/scripts/offline_image_archive.py \
-            ../deploy/scripts/release_manifest.py \
-            ../scripts/verify_reproducible_release.py
-          rm -f .coverage
-          SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh
-          uv run pytest -q --cov=app --cov-append --cov-report=term-missing \
-            --cov-report=json:"${{ runner.temp }}/coverage.json"
-          uv run python ../scripts/check_coverage_gates.py \
-            "${{ runner.temp }}/coverage.json"
-          uv run pytest -q --strict-markers \
-            -m "property or concurrency or fault_injection or authorization or idempotency"
-          uv run python scripts_support/check_migration.py
-          uv run python ../scripts/check_contract.py ../openapi.yaml
-      - name: Run frontend quality gates
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
-        run: |
-          npm ci --prefix frontend
-          npm audit --prefix frontend --audit-level=high
-          npm run --prefix frontend build
-          npm test --prefix frontend
-      - name: Run SAST, dependency, license, secret and configuration gates
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' }}
-        run: |
-          cd backend
-          uv run bandit -q -r app -lll -iii
-          cd ..
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/repo:ro" \
-            -v "$RUNNER_TEMP:/evidence" \
-            aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e \
-            fs --scanners vuln,misconfig,secret,license \
-            --severity HIGH,CRITICAL --exit-code 1 --no-progress \
-            --format json --output /evidence/security.json /repo
-      - name: Run authoritative integration and fault gate
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}
-        env:
-          G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
-        run: |
-          runner_gid="$(id -g)"
-          test "$runner_gid" -ne 0
-          test -x /usr/bin/setpriv
-          host_tmp_before="$(stat -c '%u:%g:%a' /tmp)"
-          g2_tmpdir="/tmp/sms-platform-release-g2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$g2_tmpdir"
-          sudo install -d -o root -g "$runner_gid" -m 0700 "$g2_tmpdir"
-          test "$(stat -c '%u:%g:%a' "$g2_tmpdir")" = "0:$runner_gid:700"
-          g2_status=0
-          sudo env \
-            PATH="$PATH" \
-            TMPDIR="$g2_tmpdir" \
-            UV_CACHE_DIR="$UV_CACHE_DIR" \
-            UV_PYTHON="$UV_PYTHON" \
-            UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" \
-            COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-            API_PORT="$API_PORT" \
-            MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
-            WEB_PORT="$WEB_PORT" \
-            G2_TIMING_FILE="$G2_TIMING_FILE" \
-            /usr/bin/setpriv --regid "$runner_gid" --clear-groups \
-            bash scripts/verify_all.sh || g2_status=$?
-          sudo rm -rf -- "$g2_tmpdir"
-          test ! -e "$g2_tmpdir"
-          test "$(stat -c '%u:%g:%a' /tmp)" = "$host_tmp_before"
-          exit "$g2_status"
-      - name: Build, scan and bind all release images
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+      - name: Build, scan and bind all release images once
         run: |
           install -d -m 0700 \
             "$RUNNER_TEMP/release-evidence" \
@@ -281,18 +53,46 @@ jobs:
             --archive-dir "$RUNNER_TEMP/release-evidence/images" \
             --scan-dir "$RUNNER_TEMP/release-evidence/scans" \
             --sbom-dir "$RUNNER_TEMP/release-evidence/sboms"
-      - name: Independently reproduce image and SBOM identities
+      - name: Save the single-build release checkpoint
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-checkpoint-${{ github.sha }}
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
+  close-release:
+    name: close-release
+    needs: build-scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout immutable release candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download the single-build release checkpoint
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-checkpoint-${{ github.sha }}
+          path: ${{ runner.temp }}/release-evidence
+      - name: Restore private evidence modes
         run: |
-          bash scripts/verify_reproducible_build.sh \
-            --baseline "$RUNNER_TEMP/release-evidence/release-gate.json" \
-            --report "$RUNNER_TEMP/release-evidence/reproducibility.json" \
-            --sbom-dir "$RUNNER_TEMP/release-evidence/sboms"
+          chmod 0700 \
+            "$RUNNER_TEMP/release-evidence" \
+            "$RUNNER_TEMP/release-evidence/images" \
+            "$RUNNER_TEMP/release-evidence/scans" \
+            "$RUNNER_TEMP/release-evidence/sboms"
+          chmod 0600 \
+            "$RUNNER_TEMP/release-evidence/release-gate.json" \
+            "$RUNNER_TEMP/release-evidence/images/"*.tar \
+            "$RUNNER_TEMP/release-evidence/scans/"*.json \
+            "$RUNNER_TEMP/release-evidence/sboms/"*.cdx.json
       - name: Close and bind the offline image evidence set
         run: |
           python3 scripts/create_offline_image_index.py \
             --commit "$GITHUB_SHA" \
             --release-gate "$RUNNER_TEMP/release-evidence/release-gate.json" \
-            --reproducibility "$RUNNER_TEMP/release-evidence/reproducibility.json" \
             --archive-dir "$RUNNER_TEMP/release-evidence/images" \
             --scan-dir "$RUNNER_TEMP/release-evidence/scans" \
             --sbom-dir "$RUNNER_TEMP/release-evidence/sboms" \
@@ -308,3 +108,4 @@ jobs:
           path: ${{ runner.temp }}/release-evidence
           if-no-files-found: error
           retention-days: 90
+          compression-level: 0

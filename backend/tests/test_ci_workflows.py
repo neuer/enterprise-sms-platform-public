@@ -16,6 +16,7 @@ ALLOWED_ACTIONS = {
     "actions/attest",
     "actions/cache",
     "actions/checkout",
+    "actions/download-artifact",
     "actions/setup-node",
     "actions/upload-artifact",
     "astral-sh/setup-uv",
@@ -350,18 +351,7 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     triggers = workflow_triggers(workflow)
 
     assert set(triggers) == {"workflow_dispatch", "push"}
-    assert triggers["workflow_dispatch"] == {
-        "inputs": {
-            "resume_quality_run_id": {
-                "description": (
-                    "Failed parent Release Gate run whose successful quality steps "
-                    "may be reused"
-                ),
-                "required": False,
-                "type": "string",
-            }
-        }
-    }
+    assert triggers["workflow_dispatch"] == {}
     assert triggers["push"]["tags"] == ["v*"]
     assert workflow["permissions"] == {
         "actions": "read",
@@ -372,137 +362,86 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     }
 
     jobs = workflow["jobs"]
-    assert set(jobs) == {"release-gate"}
-    release_job = jobs["release-gate"]
-    assert release_job["name"] == "release-gate"
-    assert release_job["timeout-minutes"] == 120
-    release_commands = job_commands(release_job)
+    assert set(jobs) == {"build-scan", "close-release"}
+    build_job = jobs["build-scan"]
+    close_job = jobs["close-release"]
+    assert build_job["name"] == "build-scan"
+    assert build_job["timeout-minutes"] == 120
+    assert close_job["name"] == "close-release"
+    assert close_job["needs"] == "build-scan"
+    assert close_job["timeout-minutes"] == 30
+
+    build_commands = job_commands(build_job)
     for command in (
         'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
         "scripts/release_metadata.py",
-        "scripts/check_coverage_gates.py",
-        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh",
-        "--cov-append",
-        "property or concurrency or fault_injection or authorization or idempotency",
-        "uv run bandit",
-        "vuln,misconfig,secret,license",
-        "bash scripts/verify_all.sh",
         "bash scripts/verify_release.sh",
-        "bash scripts/verify_reproducible_build.sh",
-        "scripts/create_offline_image_index.py",
-        "reproducibility.json",
-        "offline-image-index.json",
         "release-evidence/images",
         "release-evidence/scans",
         "--sbom-dir",
         "--archive-dir",
         "--scan-dir",
-        "RESUME_QUALITY_RUN_ID",
         'test "$GITHUB_REF" = "refs/heads/main"',
-        'test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"',
-        'TMPDIR="$g2_tmpdir"',
-        "host_tmp_before",
+        'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main',
     ):
-        assert command in release_commands
-    assert release_commands.index("rm -f .coverage") < release_commands.index(
-        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
-    ) < release_commands.index("uv run pytest -q --cov=app --cov-append")
-    for command in (
-        'runner_gid="$(id -g)"',
-        'test "$runner_gid" -ne 0',
-        "test -x /usr/bin/setpriv",
-        "sudo env",
-        '/usr/bin/setpriv --regid "$runner_gid" --clear-groups',
-    ):
-        assert command in release_commands
-    assert "PYTEST_DEBUG_TEMPROOT" not in release_commands
-    resume = next(step for step in release_job["steps"] if step.get("id") == "resume")
-    assert resume["name"] == "Verify exact parent evidence for release resume"
-    for token in (
-        'resume_mode="artifacts"',
-        'resume_mode="g2"',
-        'printf \'mode=%s\\n\' "$resume_mode" >> "$GITHUB_OUTPUT"',
-        'conclusion == "failure"',
-        'conclusion == "skipped"',
-    ):
-        assert token in resume["run"]
-    assert (
-        "$'M\\t.github/workflows/release-gate.yml\\n"
-        "M\\tbackend/tests/test_ci_workflows.py'"
-    ) in release_commands
-    assert "npm run --prefix frontend typecheck" not in release_commands
-    assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        assert command in build_commands
 
-    assert_actions_are_immutable(workflow)
+    close_commands = job_commands(close_job)
+    for command in (
+        "chmod 0700",
+        "chmod 0600",
+        "scripts/create_offline_image_index.py",
+        "offline-image-index.json",
+    ):
+        assert command in close_commands
+
     source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    normal_only = (
-        "${{ github.event_name != 'workflow_dispatch' || "
-        "inputs.resume_quality_run_id == '' }}"
-    )
-    normal_or_g2 = (
-        "${{ github.event_name != 'workflow_dispatch' || "
-        "inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}"
-    )
-    conditions = {
-        step["name"]: step.get("if")
-        for step in release_job["steps"]
-        if isinstance(step, dict) and "name" in step
-    }
-    for step_name in (
-        "Check source invariants",
-        "Run complete backend quality and coverage gates",
-        "Run frontend quality gates",
-        "Run SAST, dependency, license, secret and configuration gates",
+    assert source.count("bash scripts/verify_release.sh") == 1
+    for removed_contract in (
+        "resume_quality_run_id",
+        "RESUME_QUALITY_RUN_ID",
+        "scripts/verify_all.sh",
+        "scripts/check_coverage_gates.py",
+        "uv run bandit",
+        "npm ci",
+        "verify_reproducible_build.sh",
+        "reproducibility.json",
     ):
-        assert conditions[step_name] == normal_only
-    for step_name in (
-        "Set up Python and uv",
-        "Set up Node.js",
-        "Prepare development-only test files",
-        "Run authoritative integration and fault gate",
-    ):
-        assert conditions[step_name] == normal_or_g2
-    g2_run = next(
-        step["run"]
-        for step in release_job["steps"]
-        if step.get("name") == "Run authoritative integration and fault gate"
-    )
-    for token in (
-        'host_tmp_before="$(stat -c \'%u:%g:%a\' /tmp)"',
-        'g2_tmpdir="/tmp/sms-platform-release-g2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
-        'test ! -e "$g2_tmpdir"',
-        'test "$(stat -c \'%u:%g:%a\' "$g2_tmpdir")" = "0:$runner_gid:700"',
-        'TMPDIR="$g2_tmpdir"',
-        'bash scripts/verify_all.sh || g2_status=$?',
-        'sudo rm -rf -- "$g2_tmpdir"',
-        'exit "$g2_status"',
-    ):
-        assert token in g2_run
-    assert "$RUNNER_TEMP/g2-root-tmp" not in g2_run
-    assert g2_run.index("host_tmp_before") < g2_run.index("sudo install")
-    assert g2_run.index("bash scripts/verify_all.sh") < g2_run.index("sudo rm -rf")
-    final_tmp_check = (
-        'test "$(stat -c \'%u:%g:%a\' /tmp)" = "$host_tmp_before"'
-    )
-    assert g2_run.index("sudo rm -rf") < g2_run.index(final_tmp_check)
-    artifact_steps = {
-        "Build, scan and bind all release images",
-        "Independently reproduce image and SBOM identities",
-        "Close and bind the offline image evidence set",
-        "Attest immutable release evidence",
-        "Upload the closed offline release evidence directory",
-    }
-    for step in release_job["steps"]:
-        if step.get("name") in artifact_steps:
-            assert "if" not in step
+        assert removed_contract not in source
+    assert "continue-on-error" not in source
     assert "secrets." not in source
+    assert_actions_are_immutable(workflow)
+
+    build_steps = {step["name"]: step for step in build_job["steps"]}
+    checkpoint = build_steps["Save the single-build release checkpoint"]
+    assert checkpoint["with"] == {
+        "name": "release-checkpoint-${{ github.sha }}",
+        "path": "${{ runner.temp }}/release-evidence",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+        "compression-level": 0,
+        "overwrite": True,
+    }
+
+    close_steps = {step["name"]: step for step in close_job["steps"]}
+    downloaded = close_steps["Download the single-build release checkpoint"]
+    assert downloaded["with"] == {
+        "name": "release-checkpoint-${{ github.sha }}",
+        "path": "${{ runner.temp }}/release-evidence",
+    }
     assert "actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35" in source
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in source
     assert (
         "subject-path: ${{ runner.temp }}/release-evidence/offline-image-index.json"
         in source
     )
     assert "path: ${{ runner.temp }}/release-evidence" in source
+    final_upload = close_steps["Upload the closed offline release evidence directory"]
+    assert final_upload["with"]["name"] == (
+        "release-evidence-${{ github.sha }}-${{ github.run_attempt }}"
+    )
+    assert final_upload["with"]["compression-level"] == 0
 
 
 def test_maintenance_documents_ci_and_release_boundaries() -> None:
@@ -513,9 +452,10 @@ def test_maintenance_documents_ci_and_release_boundaries() -> None:
         "required `ci-gate`",
         "受保护变更进入 G2 integration",
         "origin/main",
-        "完整质量、安全与 G2 门禁",
+        "Release Gate 只负责制品生成",
         "Trivy",
         "SBOM",
+        "reproducibility_proven=false",
     ):
         assert token in documentation
     development = documentation.split("## 日常开发", maxsplit=1)[1].split(

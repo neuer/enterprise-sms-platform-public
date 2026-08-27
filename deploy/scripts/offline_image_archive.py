@@ -45,14 +45,16 @@ class OfflineIndexImage:
     archive: EvidenceArtifact
     scan: EvidenceArtifact
     sbom_candidate: EvidenceArtifact
-    sbom_rebuild: EvidenceArtifact
+    sbom_rebuild: EvidenceArtifact | None
 
 
 @dataclass(frozen=True)
 class OfflineImageIndex:
+    schema_version: int
     candidate_commit: str
+    verification_mode: str
     release_gate: EvidenceArtifact
-    reproducibility: EvidenceArtifact
+    reproducibility: EvidenceArtifact | None
     images: Mapping[str, OfflineIndexImage]
 
 
@@ -63,7 +65,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_METADATA_BYTES = 16 * 1024 * 1024
 _MAX_SCAN_OR_SBOM_BYTES = 64 * 1024 * 1024
-_INDEX_FIELDS = frozenset(
+_INDEX_V1_FIELDS = frozenset(
     {
         "schema_version",
         "kind",
@@ -73,9 +75,22 @@ _INDEX_FIELDS = frozenset(
         "images",
     }
 )
+_INDEX_V2_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "candidate_commit",
+        "verification",
+        "release_gate",
+        "images",
+    }
+)
 _INDEX_IMAGE_FIELDS = frozenset({"image_id", "archive", "scan", "sbom"})
 _INDEX_ARTIFACT_FIELDS = frozenset({"file", "sha256", "size"})
-_INDEX_SBOM_FIELDS = frozenset({"candidate", "rebuild"})
+_INDEX_V1_SBOM_FIELDS = frozenset({"candidate", "rebuild"})
+_INDEX_V2_SBOM_FIELDS = frozenset({"candidate"})
+_INDEX_VERIFICATION_FIELDS = frozenset({"mode", "reproducibility_proven"})
+_SINGLE_BUILD_MODE = "single_build_temporary_exception"
 
 
 def candidate_image_ref(name: str, commit: str) -> str:
@@ -145,13 +160,40 @@ def load_offline_image_index_bytes(payload: bytes) -> OfflineImageIndex:
         _decode_json(payload, "offline image index"),
         "offline image index",
     )
+    schema_version = document.get("schema_version")
     if (
-        set(document) != _INDEX_FIELDS
-        or type(document.get("schema_version")) is not int
-        or document["schema_version"] != 1
+        type(schema_version) is not int
+        or schema_version not in {1, 2}
         or document.get("kind") != "production_offline_image_index"
     ):
         raise OfflineImageArchiveError("offline image index header is invalid")
+    if schema_version == 1:
+        if set(document) != _INDEX_V1_FIELDS:
+            raise OfflineImageArchiveError("offline image index header is invalid")
+        verification_mode = "independent_rebuild"
+        reproducibility = _parse_index_artifact(
+            document.get("reproducibility"),
+            expected_file="reproducibility.json",
+            context="offline image index reproducibility evidence",
+            maximum_size=_MAX_METADATA_BYTES,
+        )
+        expected_sbom_fields = _INDEX_V1_SBOM_FIELDS
+    else:
+        if set(document) != _INDEX_V2_FIELDS:
+            raise OfflineImageArchiveError("offline image index header is invalid")
+        verification = _require_mapping(
+            document.get("verification"),
+            "offline image index verification",
+        )
+        if (
+            set(verification) != _INDEX_VERIFICATION_FIELDS
+            or verification.get("mode") != _SINGLE_BUILD_MODE
+            or verification.get("reproducibility_proven") is not False
+        ):
+            raise OfflineImageArchiveError("offline image index verification is invalid")
+        verification_mode = _SINGLE_BUILD_MODE
+        reproducibility = None
+        expected_sbom_fields = _INDEX_V2_SBOM_FIELDS
     commit = document.get("candidate_commit")
     if type(commit) is not str or _COMMIT_RE.fullmatch(commit) is None:
         raise OfflineImageArchiveError("offline image index commit is invalid")
@@ -159,12 +201,6 @@ def load_offline_image_index_bytes(payload: bytes) -> OfflineImageIndex:
         document.get("release_gate"),
         expected_file="release-gate.json",
         context="offline image index release gate",
-        maximum_size=_MAX_METADATA_BYTES,
-    )
-    reproducibility = _parse_index_artifact(
-        document.get("reproducibility"),
-        expected_file="reproducibility.json",
-        context="offline image index reproducibility evidence",
         maximum_size=_MAX_METADATA_BYTES,
     )
     images_value = _require_mapping(document.get("images"), "offline image index images")
@@ -181,7 +217,7 @@ def load_offline_image_index_bytes(payload: bytes) -> OfflineImageIndex:
         ):
             raise OfflineImageArchiveError(f"offline image index images.{name} is invalid")
         sbom = _require_mapping(image.get("sbom"), f"offline image index images.{name}.sbom")
-        if set(sbom) != _INDEX_SBOM_FIELDS:
+        if set(sbom) != expected_sbom_fields:
             raise OfflineImageArchiveError(
                 f"offline image index images.{name}.sbom fields are invalid"
             )
@@ -205,15 +241,21 @@ def load_offline_image_index_bytes(payload: bytes) -> OfflineImageIndex:
                 context=f"offline image index images.{name}.sbom.candidate",
                 maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
             ),
-            sbom_rebuild=_parse_index_artifact(
-                sbom["rebuild"],
-                expected_file=f"sboms/{name}.rebuild.cdx.json",
-                context=f"offline image index images.{name}.sbom.rebuild",
-                maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
+            sbom_rebuild=(
+                _parse_index_artifact(
+                    sbom["rebuild"],
+                    expected_file=f"sboms/{name}.rebuild.cdx.json",
+                    context=f"offline image index images.{name}.sbom.rebuild",
+                    maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
+                )
+                if schema_version == 1
+                else None
             ),
         )
     return OfflineImageIndex(
+        schema_version=schema_version,
         candidate_commit=commit,
+        verification_mode=verification_mode,
         release_gate=release_gate,
         reproducibility=reproducibility,
         images=MappingProxyType(images),

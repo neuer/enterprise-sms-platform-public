@@ -183,8 +183,6 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
     report["promotion_source"] = None
 
     index_images: dict[str, object] = {}
-    rebuild_sbom_hashes: dict[str, str] = {}
-    image_ids: dict[str, str] = {}
     for name in ("api", "web", "postgres", "redis"):
         archive = source / "images" / f"{name}.tar"
         image_id, archive_hash, archive_size = _offline_archive(
@@ -211,10 +209,6 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
             source / "sboms" / f"{name}.cdx.json",
             {"bomFormat": "CycloneDX", "name": name},
         )
-        rebuild_sbom = _private_json(
-            source / "sboms" / f"{name}.rebuild.cdx.json",
-            {"bomFormat": "CycloneDX", "name": name},
-        )
         report["images"][name] = {
             "ref": f"sms-platform-release-{name}:" + "c" * 40,
             "image_id": image_id,
@@ -225,8 +219,6 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
         report["source"]["sbom_sha256"][name] = hashlib.sha256(
             candidate_sbom.read_bytes()
         ).hexdigest()
-        rebuild_sbom_hashes[name] = hashlib.sha256(rebuild_sbom.read_bytes()).hexdigest()
-        image_ids[name] = image_id
         index_images[name] = {
             "image_id": image_id,
             "archive": {
@@ -237,40 +229,20 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
             "scan": _artifact(scan, f"scans/{name}.json"),
             "sbom": {
                 "candidate": _artifact(candidate_sbom, f"sboms/{name}.cdx.json"),
-                "rebuild": _artifact(
-                    rebuild_sbom,
-                    f"sboms/{name}.rebuild.cdx.json",
-                ),
             },
         }
     _private_json(release_report, report)
-    reproducibility = _private_json(
-        source / "reproducibility.json",
-        {
-            "schema_version": 1,
-            "gate_type": "release_reproducibility",
-            "candidate_commit": "c" * 40,
-            "passed": True,
-            "source": {
-                "sbom_sha256": rebuild_sbom_hashes,
-                "baseline_report_sha256": hashlib.sha256(release_report.read_bytes()).hexdigest(),
-            },
-            "images": {
-                name: {"image_id": image_ids[name]} for name in ("api", "web", "postgres", "redis")
-            },
-        },
-    )
     offline_index = _private_json(
         source / "offline-image-index.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "production_offline_image_index",
             "candidate_commit": "c" * 40,
             "release_gate": _artifact(release_report, "release-gate.json"),
-            "reproducibility": _artifact(
-                reproducibility,
-                "reproducibility.json",
-            ),
+            "verification": {
+                "mode": "single_build_temporary_exception",
+                "reproducibility_proven": False,
+            },
             "images": index_images,
         },
     )

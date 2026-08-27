@@ -737,7 +737,7 @@ RELEASE_SOURCE_REPORT=/secure/releases/release-20260715/candidate-build-gate.jso
 registry 凭据不得进入聊天、命令参数、日志、发布证据或仓库；认证不可用时停止并转到
 受控执行面，禁止回退到匿名结果或临时修改全局 Docker 配置。
 
-### 证据生成与两类门禁
+### 证据生成
 
 正式候选对四镜像执行一次 Trivy，并把成功报告直接写入封闭发布目录；报告路径必须是
 绝对路径。只有 PostgreSQL 或 Redis 镜像实际变化时才运行数据镜像门禁：
@@ -745,13 +745,11 @@ registry 凭据不得进入聊天、命令参数、日志、发布证据或仓�
 ```bash
 install -d -m 0700 \
   /secure/releases/release-20260715 \
-  /secure/releases/release-20260715/sboms
+  /secure/releases/release-20260715/{images,scans,sboms}
 bash scripts/verify_release.sh \
-  --report /secure/releases/release-20260715/candidate-build-gate.json \
-  --sbom-dir /secure/releases/release-20260715/sboms
-bash scripts/verify_reproducible_build.sh \
-  --baseline /secure/releases/release-20260715/candidate-build-gate.json \
-  --report /secure/releases/release-20260715/reproducibility.json \
+  --report /secure/releases/release-20260715/release-gate.json \
+  --archive-dir /secure/releases/release-20260715/images \
+  --scan-dir /secure/releases/release-20260715/scans \
   --sbom-dir /secure/releases/release-20260715/sboms
 POSTGRES_IMAGE="$POSTGRES_DIGEST_REF" REDIS_IMAGE="$REDIS_DIGEST_REF" \
   CANDIDATE_SHA="$CANDIDATE_COMMIT" \
@@ -762,11 +760,11 @@ POSTGRES_IMAGE="$POSTGRES_DIGEST_REF" REDIS_IMAGE="$REDIS_DIGEST_REF" \
 `scripts/verify_release.sh` 会让 Trivy 输出四份机器可读 JSON，并生成去除时间与 UUID、稳定
 排序的 CycloneDX，再由 `scripts/render_release_evidence.py` 核对每份报告的镜像 ref、
 image ID 与零发现结果；最终 `gate_type=release` 报告为每个镜像记录
-`scan_report_sha256`。`verify_reproducible_build.sh` 随后以同一 commit、固定基础镜像
-digest、`linux/amd64`、无缓存和 `SOURCE_DATE_EPOCH=0` 独立重建四镜像，只重新生成
-CycloneDX，不重复漏洞扫描；四个 image ID 或四份规范 SBOM 摘要任一不一致即失败关闭，
-并写 mode `0600` 的 `reproducibility.json`。通用 writer 不再允许只凭 ref/ID 参数重包装
-PASS。
+`scan_report_sha256`。内部 Registry 建成前的临时 Release Gate 不再执行第二次构建，也不生成
+rebuild SBOM 或 `reproducibility.json`；schema v2 离线索引固定记录
+`mode=single_build_temporary_exception` 与 `reproducibility_proven=false`。四镜像的首次构建、
+Trivy、候选 SBOM 和 archive 完成后立即上传检查点；后续索引、attestation 或最终上传失败时，
+只重跑关闭 job 并复用该检查点。
 
 本地候选构建报告必须原样保留。以下 promotion 流程属于内部 Registry 建成后的路径；临时离线
 路径使用 GitHub 生成且 attestation 已核验的非 local candidate report，并保持
@@ -838,6 +836,8 @@ release 状态和已导入镜像供审计，禁止无范围 `docker image prune`
 RepoDigest、认证和不可变策略门禁不因本临时通道而删除。
 
 GitHub Release Gate artifact 必须保留固定 `release-evidence/{images,scans,sboms}` 布局。
+临时单构建 schema v2 的 `sboms` 目录只包含四个 `{api,web,postgres,redis}.cdx.json`，不包含
+rebuild SBOM。
 生成器会以固定 repository、workflow 和 candidate commit 参数调用公司批准的 GitHub CLI 核验
 `offline-image-index.json` attestation；核验必须在可访问 GitHub 的受控签名节点完成，生产主机
 不安装 `gh`、不访问 GitHub。下载目录可保持 GitHub artifact 的普通 `0755/0644` 权限，生成器

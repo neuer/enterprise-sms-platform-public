@@ -97,14 +97,45 @@ def _json(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
 
 
+def _single_build_index() -> dict[str, Any]:
+    index = _index()
+    index["schema_version"] = 2
+    index["verification"] = {
+        "mode": "single_build_temporary_exception",
+        "reproducibility_proven": False,
+    }
+    del index["reproducibility"]
+    for image in index["images"].values():
+        del image["sbom"]["rebuild"]
+    return index
+
+
 def test_offline_image_index_parser_is_exact_and_typed() -> None:
     index = load_offline_image_index_bytes(_json(_index()))
 
+    assert index.schema_version == 1
+    assert index.verification_mode == "independent_rebuild"
+    assert index.reproducibility is not None
     assert index.candidate_commit == COMMIT
     assert index.release_gate.file == "release-gate.json"
     assert index.images["api"].archive.file == "images/api.tar"
+    assert index.images["api"].sbom_rebuild is not None
 
     invalid = _index()
     invalid["unknown"] = True
     with pytest.raises(OfflineImageArchiveError, match="header"):
+        load_offline_image_index_bytes(_json(invalid))
+
+
+def test_offline_image_index_parser_accepts_honest_single_build_v2() -> None:
+    index = load_offline_image_index_bytes(_json(_single_build_index()))
+
+    assert index.schema_version == 2
+    assert index.verification_mode == "single_build_temporary_exception"
+    assert index.reproducibility is None
+    assert index.images["api"].sbom_rebuild is None
+
+    invalid = _single_build_index()
+    invalid["verification"]["reproducibility_proven"] = True
+    with pytest.raises(OfflineImageArchiveError, match="verification"):
         load_offline_image_index_bytes(_json(invalid))

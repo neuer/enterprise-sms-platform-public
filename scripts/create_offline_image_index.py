@@ -77,14 +77,6 @@ _IMAGE_FIELDS = {
     "scan_report_sha256",
     "scan_passed",
 }
-_REPRO_FIELDS = {
-    "schema_version",
-    "gate_type",
-    "candidate_commit",
-    "passed",
-    "source",
-    "images",
-}
 
 
 def _identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -272,42 +264,6 @@ def _validate_release_gate(
     return rendered, sbom_hashes
 
 
-def _validate_reproducibility(
-    document: dict[str, Any],
-    *,
-    commit: str,
-    release_gate_sha256: str,
-    images: dict[str, dict[str, str]],
-) -> dict[str, str]:
-    if (
-        set(document) != _REPRO_FIELDS
-        or document.get("schema_version") != 1
-        or document.get("gate_type") != "release_reproducibility"
-        or document.get("candidate_commit") != commit
-        or document.get("passed") is not True
-    ):
-        raise OfflineImageIndexError("reproducibility evidence is not release-bound")
-    source = document.get("source")
-    values = document.get("images")
-    if (
-        type(source) is not dict
-        or set(source) != {"sbom_sha256", "baseline_report_sha256"}
-        or source.get("baseline_report_sha256") != release_gate_sha256
-        or type(source.get("sbom_sha256")) is not dict
-        or set(source["sbom_sha256"]) != set(IMAGES)
-        or type(values) is not dict
-        or set(values) != set(IMAGES)
-    ):
-        raise OfflineImageIndexError("reproducibility evidence is not release-bound")
-    for name in IMAGES:
-        if type(values[name]) is not dict or values[name] != {"image_id": images[name]["image_id"]}:
-            raise OfflineImageIndexError(f"reproducibility image {name} is invalid")
-    return {
-        name: _sha(source["sbom_sha256"][name], f"rebuilt SBOM hash for {name}")
-        for name in IMAGES
-    }
-
-
 def _record(artifact: Artifact) -> dict[str, object]:
     return {"file": artifact.relative, "sha256": artifact.sha256, "size": artifact.size}
 
@@ -352,7 +308,6 @@ def create_index(
     *,
     commit: str,
     release_gate_path: Path,
-    reproducibility_path: Path,
     archive_dir: Path,
     scan_dir: Path,
     sbom_dir: Path,
@@ -365,7 +320,6 @@ def create_index(
     parent = output.parent
     expected_paths = {
         release_gate_path: parent / "release-gate.json",
-        reproducibility_path: parent / "reproducibility.json",
         archive_dir: parent / "images",
         scan_dir: parent / "scans",
         sbom_dir: parent / "sboms",
@@ -382,20 +336,13 @@ def create_index(
         (sbom_dir, "SBOM directory"),
     ):
         _require_directory(directory, context)
-    _require_closed(
-        parent,
-        {"release-gate.json", "reproducibility.json", "images", "scans", "sboms"},
-        "release evidence directory",
-    )
+    parent_files = {"release-gate.json", "images", "scans", "sboms"}
+    _require_closed(parent, parent_files, "release evidence directory")
     _require_closed(archive_dir, {f"{name}.tar" for name in IMAGES}, "image archive directory")
     _require_closed(scan_dir, {f"{name}.json" for name in IMAGES}, "Trivy scan directory")
     _require_closed(
         sbom_dir,
-        {
-            filename
-            for name in IMAGES
-            for filename in (f"{name}.cdx.json", f"{name}.rebuild.cdx.json")
-        },
+        {f"{name}.cdx.json" for name in IMAGES},
         "SBOM directory",
     )
 
@@ -410,20 +357,6 @@ def create_index(
         _decode_json(release_gate, "release gate"),
         commit=commit,
     )
-    reproducibility = _read_artifact(
-        reproducibility_path,
-        relative="reproducibility.json",
-        maximum_size=_MAX_JSON_BYTES,
-        context="reproducibility evidence",
-        keep_payload=True,
-    )
-    rebuilt_sboms = _validate_reproducibility(
-        _decode_json(reproducibility, "reproducibility evidence"),
-        commit=commit,
-        release_gate_sha256=release_gate.sha256,
-        images=release_images,
-    )
-
     rendered_images: dict[str, object] = {}
     for name in IMAGES:
         scan = _read_artifact(
@@ -438,18 +371,10 @@ def create_index(
             maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
             context=f"candidate SBOM for {name}",
         )
-        rebuilt = _read_artifact(
-            sbom_dir / f"{name}.rebuild.cdx.json",
-            relative=f"sboms/{name}.rebuild.cdx.json",
-            maximum_size=_MAX_SCAN_OR_SBOM_BYTES,
-            context=f"rebuilt SBOM for {name}",
-        )
         if scan.sha256 != release_images[name]["scan_sha256"]:
             raise OfflineImageIndexError(f"Trivy scan hash for {name} does not match")
-        if candidate.sha256 != candidate_sboms[name] or rebuilt.sha256 != rebuilt_sboms[name]:
+        if candidate.sha256 != candidate_sboms[name]:
             raise OfflineImageIndexError(f"SBOM hash for {name} does not match")
-        if candidate.sha256 != rebuilt.sha256:
-            raise OfflineImageIndexError(f"SBOM for {name} is not reproducible")
         try:
             archive = validate_offline_image_archive(
                 (archive_dir / f"{name}.tar").absolute(),
@@ -465,32 +390,28 @@ def create_index(
                 "size": archive.size,
             },
             "scan": _record(scan),
-            "sbom": {"candidate": _record(candidate), "rebuild": _record(rebuilt)},
+            "sbom": {"candidate": _record(candidate)},
         }
 
-    _require_closed(
-        parent,
-        {"release-gate.json", "reproducibility.json", "images", "scans", "sboms"},
-        "release evidence directory",
-    )
-    _write_index(
-        output,
-        {
-            "schema_version": 1,
-            "kind": "production_offline_image_index",
-            "candidate_commit": commit,
-            "release_gate": _record(release_gate),
-            "reproducibility": _record(reproducibility),
-            "images": rendered_images,
-        },
-    )
+    _require_closed(parent, parent_files, "release evidence directory")
+    document: dict[str, object] = {
+        "schema_version": 2,
+        "kind": "production_offline_image_index",
+        "candidate_commit": commit,
+        "release_gate": _record(release_gate),
+        "images": rendered_images,
+    }
+    document["verification"] = {
+        "mode": "single_build_temporary_exception",
+        "reproducibility_proven": False,
+    }
+    _write_index(output, document)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--release-gate", required=True, type=Path)
-    parser.add_argument("--reproducibility", required=True, type=Path)
     parser.add_argument("--archive-dir", required=True, type=Path)
     parser.add_argument("--scan-dir", required=True, type=Path)
     parser.add_argument("--sbom-dir", required=True, type=Path)
@@ -504,7 +425,6 @@ def main() -> int:
         create_index(
             commit=arguments.commit,
             release_gate_path=arguments.release_gate,
-            reproducibility_path=arguments.reproducibility,
             archive_dir=arguments.archive_dir,
             scan_dir=arguments.scan_dir,
             sbom_dir=arguments.sbom_dir,

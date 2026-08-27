@@ -384,8 +384,9 @@ TCP 2375/2376 在所有接口不可达。防火墙验收必须从批准 VPN/TLS 
 
 ## 7. 制品、代码和发布资源
 
-1. GitHub Release Gate 为候选 commit 生成四个 archive、离线索引及 CI/G2、独立 Trivy、SBOM、
-   可重复构建证据，并 attestation 索引；`REL` 在受控联网签名节点下载并核验后生成 schema v2
+1. CI/G2 在日常合并流程完成；临时 GitHub Release Gate 不再重复运行。它为受保护 `main` 的
+   精确候选 commit 单次构建四镜像，生成四个 archive、独立 Trivy、候选 SBOM、离线索引并
+   attestation 索引；索引明确记录未证明可重复构建。`REL` 在受控联网签名节点下载并核验后生成 schema v2
    manifest 与 Ed25519 签名。私钥不得进入仓库、预生产、生产或发布包。
 2. `REL` 建设内网只读 Git 镜像；生产 `/opt/sms-platform` 的 `origin` 只能指向该镜像。
 3. 封闭制品必须是**生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout）**，由 driver 校验 manifest/签名文件闭包、离线索引及四 tar 的 SHA-256/size 后

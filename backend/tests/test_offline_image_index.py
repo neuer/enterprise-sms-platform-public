@@ -73,9 +73,7 @@ def _prepare_evidence(root: Path) -> tuple[Path, dict[str, str]]:
             }
         )
         candidate_sbom = sboms_dir / f"{name}.cdx.json"
-        rebuilt_sbom = sboms_dir / f"{name}.rebuild.cdx.json"
         _write_private(candidate_sbom, sbom)
-        _write_private(rebuilt_sbom, sbom)
         sbom_hashes[name] = _sha256(candidate_sbom)
 
         scan = _json_bytes(
@@ -128,23 +126,6 @@ def _prepare_evidence(root: Path) -> tuple[Path, dict[str, str]]:
         "passed": True,
     }
     _write_private(release_gate, _json_bytes(release_document))
-    reproducibility = root / "reproducibility.json"
-    _write_private(
-        reproducibility,
-        _json_bytes(
-            {
-                "schema_version": 1,
-                "gate_type": "release_reproducibility",
-                "candidate_commit": COMMIT,
-                "passed": True,
-                "source": {
-                    "sbom_sha256": sbom_hashes,
-                    "baseline_report_sha256": _sha256(release_gate),
-                },
-                "images": {name: {"image_id": image_ids[name]} for name in IMAGES},
-            }
-        ),
-    )
     return root / "offline-image-index.json", image_ids
 
 
@@ -152,7 +133,6 @@ def _create(output: Path) -> None:
     create_index(
         commit=COMMIT,
         release_gate_path=output.parent / "release-gate.json",
-        reproducibility_path=output.parent / "reproducibility.json",
         archive_dir=output.parent / "images",
         scan_dir=output.parent / "scans",
         sbom_dir=output.parent / "sboms",
@@ -171,12 +151,16 @@ def test_offline_image_index_binds_the_exact_private_evidence_set(tmp_path: Path
         "kind",
         "candidate_commit",
         "release_gate",
-        "reproducibility",
+        "verification",
         "images",
     }
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["kind"] == "production_offline_image_index"
     assert document["candidate_commit"] == COMMIT
+    assert document["verification"] == {
+        "mode": "single_build_temporary_exception",
+        "reproducibility_proven": False,
+    }
     assert set(document["images"]) == set(IMAGES)
     for name in IMAGES:
         image = document["images"][name]
@@ -186,7 +170,7 @@ def test_offline_image_index_binds_the_exact_private_evidence_set(tmp_path: Path
         assert image["archive"]["size"] > 0
         assert image["scan"]["file"] == f"scans/{name}.json"
         assert image["sbom"]["candidate"]["file"] == f"sboms/{name}.cdx.json"
-        assert image["sbom"]["rebuild"]["file"] == (f"sboms/{name}.rebuild.cdx.json")
+        assert set(image["sbom"]) == {"candidate"}
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert output.read_bytes().endswith(b"\n")
 

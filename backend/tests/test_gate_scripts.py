@@ -506,7 +506,7 @@ def test_release_gate_binds_evidence_to_machine_readable_trivy_results() -> None
     assert "--workflow-repository" in release
 
 
-def test_release_gate_independently_rebuilds_without_duplicate_vulnerability_scan() -> None:
+def test_reproducible_build_helper_is_not_in_the_temporary_release_workflow() -> None:
     rebuild_path = ROOT / "scripts/verify_reproducible_build.sh"
     rebuild = rebuild_path.read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/release-gate.yml").read_text(
@@ -528,8 +528,9 @@ def test_release_gate_independently_rebuilds_without_duplicate_vulnerability_sca
     assert "--format cyclonedx" in rebuild
     assert "--severity HIGH,CRITICAL" not in rebuild
     assert "--scanners vuln" not in rebuild
-    assert "bash scripts/verify_reproducible_build.sh" in workflow
-    assert "reproducibility.json" in workflow
+    assert "bash scripts/verify_reproducible_build.sh" not in workflow
+    assert "reproducibility.json" not in workflow
+    assert workflow.count("bash scripts/verify_release.sh") == 1
     assert os.access(rebuild_path, os.X_OK)
 
 
