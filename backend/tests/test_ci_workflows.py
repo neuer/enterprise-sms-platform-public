@@ -416,6 +416,16 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     ):
         assert command in release_commands
     assert "PYTEST_DEBUG_TEMPROOT" not in release_commands
+    resume = next(step for step in release_job["steps"] if step.get("id") == "resume")
+    assert resume["name"] == "Verify exact parent evidence for release resume"
+    for token in (
+        'resume_mode="artifacts"',
+        'resume_mode="g2"',
+        'printf \'mode=%s\\n\' "$resume_mode" >> "$GITHUB_OUTPUT"',
+        'conclusion == "failure"',
+        'conclusion == "skipped"',
+    ):
+        assert token in resume["run"]
     assert (
         "$'M\\t.github/workflows/release-gate.yml\\n"
         "M\\tbackend/tests/test_ci_workflows.py'"
@@ -425,10 +435,56 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
 
     assert_actions_are_immutable(workflow)
     source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    assert source.count(
-        "github.event_name != 'workflow_dispatch' || "
-        "inputs.resume_quality_run_id == ''"
-    ) == 8
+    normal_only = (
+        "${{ github.event_name != 'workflow_dispatch' || "
+        "inputs.resume_quality_run_id == '' }}"
+    )
+    normal_or_g2 = (
+        "${{ github.event_name != 'workflow_dispatch' || "
+        "inputs.resume_quality_run_id == '' || steps.resume.outputs.mode == 'g2' }}"
+    )
+    conditions = {
+        step["name"]: step.get("if")
+        for step in release_job["steps"]
+        if isinstance(step, dict) and "name" in step
+    }
+    for step_name in (
+        "Check source invariants",
+        "Run complete backend quality and coverage gates",
+        "Run frontend quality gates",
+        "Run SAST, dependency, license, secret and configuration gates",
+    ):
+        assert conditions[step_name] == normal_only
+    for step_name in (
+        "Set up Python and uv",
+        "Set up Node.js",
+        "Prepare development-only test files",
+        "Run authoritative integration and fault gate",
+    ):
+        assert conditions[step_name] == normal_or_g2
+    g2_run = next(
+        step["run"]
+        for step in release_job["steps"]
+        if step.get("name") == "Run authoritative integration and fault gate"
+    )
+    for token in (
+        'host_tmp_before="$(stat -c \'%u:%g:%a\' /tmp)"',
+        'g2_tmpdir="/tmp/sms-platform-release-g2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+        'test ! -e "$g2_tmpdir"',
+        'test "$(stat -c \'%u:%g:%a\' "$g2_tmpdir")" = "0:$runner_gid:700"',
+        'TMPDIR="$g2_tmpdir"',
+        'bash scripts/verify_all.sh || g2_status=$?',
+        'sudo rm -rf -- "$g2_tmpdir"',
+        'exit "$g2_status"',
+    ):
+        assert token in g2_run
+    assert "$RUNNER_TEMP/g2-root-tmp" not in g2_run
+    assert g2_run.index("host_tmp_before") < g2_run.index("sudo install")
+    assert g2_run.index("bash scripts/verify_all.sh") < g2_run.index("sudo rm -rf")
+    final_tmp_check = (
+        'test "$(stat -c \'%u:%g:%a\' /tmp)" = "$host_tmp_before"'
+    )
+    assert g2_run.index("sudo rm -rf") < g2_run.index(final_tmp_check)
     artifact_steps = {
         "Build, scan and bind all release images",
         "Independently reproduce image and SBOM identities",
