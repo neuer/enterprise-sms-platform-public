@@ -122,14 +122,8 @@ jobs:
         env:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
         run: |
-          G2_PYTEST_ROOT="$RUNNER_TEMP/g2-pytest-temp"
-          runner_gid="$(id -g)"
-          test "$runner_gid" -ne 0
-          sudo install -d -o root -g "$runner_gid" -m 2770 "$G2_PYTEST_ROOT"
-          test "$(stat -c '%u:%g:%a' "$G2_PYTEST_ROOT")" = "0:$runner_gid:2770"
-          sudo env \
+          sudo -g "#$(id -g)" env \
             PATH="$PATH" \
-            PYTEST_DEBUG_TEMPROOT="$G2_PYTEST_ROOT" \
             UV_CACHE_DIR="$UV_CACHE_DIR" \
             UV_PYTHON="$UV_PYTHON" \
             UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" \

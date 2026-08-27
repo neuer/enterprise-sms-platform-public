@@ -388,18 +388,8 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
     assert release_commands.index("rm -f .coverage") < release_commands.index(
         "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
     ) < release_commands.index("uv run pytest -q --cov=app --cov-append")
-    assert 'G2_PYTEST_ROOT="$RUNNER_TEMP/g2-pytest-temp"' in release_commands
-    assert 'runner_gid="$(id -g)"' in release_commands
-    assert 'test "$runner_gid" -ne 0' in release_commands
-    assert (
-        'sudo install -d -o root -g "$runner_gid" -m 2770 "$G2_PYTEST_ROOT"'
-        in release_commands
-    )
-    assert (
-        'test "$(stat -c \'%u:%g:%a\' "$G2_PYTEST_ROOT")" = '
-        '"0:$runner_gid:2770"' in release_commands
-    )
-    assert 'PYTEST_DEBUG_TEMPROOT="$G2_PYTEST_ROOT"' in release_commands
+    assert 'sudo -g "#$(id -g)" env' in release_commands
+    assert "PYTEST_DEBUG_TEMPROOT" not in release_commands
     assert "npm run --prefix frontend typecheck" not in release_commands
     assert "continue-on-error" not in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
