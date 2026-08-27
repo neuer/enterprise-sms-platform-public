@@ -1076,21 +1076,22 @@ class SyncService:
             durability_barrier("payload_durable", staging)
             self._remaining(deadline)
             operation_id = snapshot_id
-            atomic_write_json(
-                staging / "operation.json",
-                {
-                    "schema_version": 1,
-                    "operation_id": operation_id,
-                    "snapshot_id": snapshot_id,
-                    "phase": "verified",
-                },
-            )
-            self._write_local_operation(
-                config,
-                operation_id=operation_id,
-                snapshot_id=snapshot_id,
-                phase="intent_created",
-            )
+            if target is not None:
+                atomic_write_json(
+                    staging / "operation.json",
+                    {
+                        "schema_version": 1,
+                        "operation_id": operation_id,
+                        "snapshot_id": snapshot_id,
+                        "phase": "verified",
+                    },
+                )
+                self._write_local_operation(
+                    config,
+                    operation_id=operation_id,
+                    snapshot_id=snapshot_id,
+                    phase="intent_created",
+                )
 
             if target is not None:
                 try:
