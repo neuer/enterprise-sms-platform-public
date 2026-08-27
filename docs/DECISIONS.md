@@ -1239,3 +1239,20 @@
   RTO，且保持实现和宿主资产不扩张。
 - 影响：生产 Compose argv/topology、恢复证据、部署手册与预生产重启验收。内部 Registry
   建成后仍不得恢复会绕过 start-gate 的 Docker 自动重启策略，除非另行批准并实现等价门禁。
+
+## D096 临时离线首发采用单构建检查点
+
+- 决策：本决策在内部 Registry 建成前取代 D043、D094 中 Release Gate 的重复质量门禁和
+  可重复构建要求。Release Gate 不再运行 source/backend/frontend/security/G2，不再接受父 Run
+  续跑参数，也不再执行第二次镜像构建、rebuild SBOM 或生成 `reproducibility.json`。它只对受保护
+  `main` 的精确 SHA 构建四镜像一次，逐镜像执行 Trivy HIGH/CRITICAL、生成候选 SBOM 与 archive，
+  随即上传固定检查点；独立关闭 job 从该检查点生成并 attestation schema v2 离线索引。关闭失败
+  只重跑失败 job，不重复构建和扫描。
+- 证据边界：schema v2 索引固定记录 `mode=single_build_temporary_exception` 和
+  `reproducibility_proven=false`，不得伪造可重复构建结论。精确 commit、四镜像 image ID、Trivy
+  结果、候选 SBOM、archive SHA-256/size、GitHub attestation、Ed25519 manifest、预生产同包和
+  生产受控导入继续保留。旧 schema v1 包仍可严格读取，但新 Release Gate 不再生成 v1。
+- 原因：临时离线发布的首要目标是尽快形成一个可验签、可受控导入的完整包；把已经完成的质量
+  工作和同一候选的镜像构建重复执行，会增加失败面，并在关闭阶段失败时丢失已完成制品。
+- 退出条件：内部 Registry 和 RepoDigest 提升路径完成预生产验收后，停止临时离线单构建流程；
+  是否恢复可重复构建作为独立决策处理，不阻塞当前首发。
