@@ -26,11 +26,11 @@
 
 ## 功能
 
-- 发送：verify / notice / market，直接内容或模板（ID + 参数），可选签名、
+- 发送：verify / notice / market，直接内容或全局平台模板（平台 ID + 参数，不能填写厂商编号），可选签名、
   `biz_id`（幂等键）与定时时间；
 - 受控真实联调 UAT：在 `development-vendor-live` 环境向已登记测试号码发送
   真实短信（仅 notice、单号码、必填 `biz_id`，每日 100 计费条）；
-- UAT 模板模式：uat-send 支持已审核模板（`template_id` + `template_params`），
+- UAT 模板模式：uat-send 支持已审核的全局平台模板（`template_id` + `template_params`），
   与普通发送同规则（参数个数与 `{1}..{n}` 一致、每参数 ≤ max_len、渲染后 ≤500）；
 - 批次：按 `batch_no` 查询、明细、取消、改期、重发失败；
 - 最近 8 个批次保存在页面内存，点击即可回查；

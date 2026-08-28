@@ -27,6 +27,8 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert 'id="uatSendBtn"' in source
     assert 'id="uatModeTemplate"' in source
     assert 'id="uatTemplateId"' in source
+    assert "平台模板 ID（非厂商编号）" in source
+    assert "模板是全局资源" in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None
     assert re.search(r"<script(?:\s[^>]*)?>", source, re.IGNORECASE) is not None
 

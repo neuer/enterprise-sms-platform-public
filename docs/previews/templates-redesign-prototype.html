@@ -189,7 +189,7 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
   <li><b>详情抽屉加审核轨迹</b>：已提交 → 已绑定厂商编号 → 审核结果 三段步骤条，驳回原因 verm 块置顶；附「厂商格式预览」（平台 <code>{n}</code> → 厂商 <code>{s最大长度}</code> 的确定性转换展示，唯一转换实现仍在服务端 <code>services/template.py</code>，前端只做预览）。<span class="need calc">前端</span></li>
   <li><b>编辑器变量自动识别</b>：变量行随内容实时增删并保留已设 max_len，取消手动「从内容识别 / 添加变量」按钮；非法占位与断档编号内联报错；抽屉内嵌厂商格式实时预览；驳回后重交时顶部 verm 条展示上次驳回原因，按钮文案「重新提交审核」并如实告知将生成新厂商编号。<span class="need calc">前端</span></li>
   <li><b>已通过模板给出路</b>：行操作「用于发送」跳 <code>/send?template_id=N</code> 预选该模板（SendView 读取 query，纯前端路由扩展，评审不过则砍掉）。<span class="need ext">前端扩展</span></li>
-  <li><b>部门列仅 admin 可见</b>：operator/approver 响应恒为本部门，该列无信息量；admin 跨部门视图才渲染。<span class="need calc">前端</span></li>
+  <li><b>模板全局共享</b>：operator/approver/admin 读取同一模板库，不渲染历史兼容的部门字段。<span class="need calc">前端</span></li>
   <li><b>删除确认如实告知</b>：已通过或已被批次引用的模板不可删除（服务端 409 裁决，按钮显隐只是提示）；删除行为与操作人写入审计，toast 同步提示留痕。移动端合并为单一数据源卡片流。<span class="need ok">现有</span></li>
 </ul>
 
@@ -197,7 +197,7 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 <div class="stage-label">SCREEN A · 默认列表（operator 视角 · 全量要素）</div>
 <div class="variant-caption">
   状态 seg 计数来自全量列表前端统计；内容与变量合一列；待审核区分「提交厂商中 / 厂商审核中」；已拒绝行内显示驳回原因摘要。
-  operator/approver 不渲染部门列（恒为本部门），viewer 无本页权限（接口读门槛 operator+）。
+  模板不渲染部门列，viewer 无本页权限（接口读门槛 operator+）。
 </div>
 <div class="viewport"><div class="screen">
   <div class="page-head">
@@ -360,13 +360,13 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
       <h3>操作 × 状态矩阵<small>按钮显隐 = UX 提示，409 仍为服务端最终裁决</small></h3>
       <table class="mini-tbl">
         <tr><th>厂商状态</th><th>编辑</th><th>删除</th><th>同步</th><th>用于发送</th></tr>
-        <tr><td><span class="tag verdi">已通过</span></td><td class="n">—（不可变更）</td><td class="n">—</td><td class="n">—</td><td class="y">✓ 跳发送页预选</td></tr>
+        <tr><td><span class="tag verdi">已通过</span></td><td class="n">—（不可变更）</td><td class="n">—</td><td class="y">✓</td><td class="y">✓ 跳发送页预选</td></tr>
         <tr><td><span class="tag amb">待审核 · 已绑定</span></td><td class="n">—</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td></tr>
         <tr><td><span class="tag amb">待审核 · 提交中</span></td><td class="n">—</td><td class="y">✓</td><td class="n">—（无厂商编号）</td><td class="n">—</td></tr>
-        <tr><td><span class="tag verm">已拒绝</span></td><td class="y">✓ 重交</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
+        <tr><td><span class="tag verm">已拒绝</span></td><td class="y">✓ 重交</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td></tr>
         <tr><td><span class="tag gray">草稿</span></td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td class="n">—</td></tr>
       </table>
-      <p class="hint">依据：update 仅 draft/rejected（409 STATE_CONFLICT）；delete 限 draft/pending/rejected 且未被 sms_batch 引用；sync 仅 pending 且返回 202 入队；「已通过」无任何写入口。草稿态当前仅库表默认值 / 历史数据存在，新建即送审（create 直落 pending）。</p>
+      <p class="hint">依据：update 仅 draft/rejected（409 STATE_CONFLICT）；delete 限 draft/pending/rejected 且未被 sms_batch 引用；sync 覆盖已绑定厂商编号的 pending/approved/rejected 并返回 202 入队；已通过模板不可编辑或删除，但仍可同步审核状态。草稿态当前仅库表默认值 / 历史数据存在，新建即送审（create 直落 pending）。</p>
       <h3 style="margin-top:18px">轨迹推导规则</h3>
       <table class="mini-tbl">
         <tr><td>① 已提交送审</td><td class="y">创建 / 重交成功即达成</td></tr>
@@ -411,7 +411,7 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
       <dl class="fact-grid">
         <div><dt>平台编号</dt><dd class="mono">1009</dd></div>
         <div><dt>厂商编号</dt><dd class="mono">88156</dd></div>
-        <div><dt>所属部门</dt><dd>运营部</dd></div>
+        <div><dt>使用范围</dt><dd>全局模板</dd></div>
         <div><dt>变量声明</dt><dd class="mono">{1} ≤5 字</dd></div>
       </dl>
 
@@ -486,11 +486,11 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 
 <ul class="notes" style="margin-bottom:28px">
   <h2>契约核对</h2>
-  <li>列表与详情字段全部来自 <code>GET /api/v1/web/templates</code> 现有响应（id / name / content / var_specs / dept / vendor_template_id / vendor_state / vendor_reject_reason）；接口无时间戳与创建人，界面一律不展示。<span class="need ok">现有</span></li>
+  <li>列表与详情字段全部来自 <code>GET /api/v1/web/templates</code> 现有响应（id / name / content / var_specs / dept / vendor_template_id / vendor_state / vendor_reject_reason）；dept 仅为历史兼容字段，界面不展示；接口无时间戳与创建人，界面一律不虚构。<span class="need ok">现有</span></li>
   <li>状态计数、关键词过滤、待审核双阶段、审核轨迹、厂商格式预览均为前端推导或确定性转换展示；<code>{n}→{s最大长度}</code> 唯一转换与校验实现仍在 <code>services/template.py</code>（规则 23），前端预览不另造转换逻辑、以同一函数语义为准。<span class="need calc">前端</span></li>
   <li>「用于发送」为纯前端路由扩展：<code>/send?template_id=N</code>，SendView 挂载时读取并预选，不新增接口、不改契约；评审不过则整项砍掉。<span class="need ext">前端扩展</span></li>
-  <li>角色与数据边界不变：读 operator/approver/admin、写 operator/admin；非 admin 响应恒为本部门，故部门列仅 admin 渲染；写操作审计沿用 <code>template_create/update/delete/sync</code>，读取记 <code>template_content_read</code> 条数（规则 14/21）。<span class="need ok">现有</span></li>
-  <li>状态机不变：create/update 直落 pending 并入 Outbox 绑定意图（realtime worker 持凭据执行 BindTemplate）；delete 受「已通过 / 已被 sms_batch 引用」409 约束；sync 仅 pending 返回 202。草稿态仅库表默认 / 历史数据，界面保留展示不新增入口。<span class="need ok">现有</span></li>
+  <li>角色边界不变：读 operator/approver/admin、写 operator/admin；模板数据全局共享且不渲染部门列；写操作审计沿用 <code>template_create/update/delete/sync</code>，读取记 <code>template_content_read</code> 条数（规则 14/21）。<span class="need ok">现有</span></li>
+  <li>状态机不变：create/update 直落 pending 并入 Outbox 绑定意图（realtime worker 持凭据执行 BindTemplate）；delete 受「已通过 / 已被 sms_batch 引用」409 约束；sync 覆盖已绑定厂商编号的 pending/approved/rejected 并返回 202。草稿态仅库表默认 / 历史数据，界面保留展示不新增入口。<span class="need ok">现有</span></li>
   <li>模板名称与内容属加密列（name_enc / content_enc），读取走既有受控解密与 <code>template_content_read</code> 审计；本页不涉及手机号，无掩码 / 解密边界问题（规则 2）。<span class="need ok">现有</span></li>
 </ul>
 

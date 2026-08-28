@@ -110,12 +110,12 @@ def test_idempotency_fingerprint_survives_rotation_and_distinguishes_equal_masks
     )
 
 
-def test_template_renderer_requires_authoritative_department() -> None:
+def test_template_renderer_keeps_compatible_signature_but_uses_global_scope() -> None:
     signature = inspect.signature(SqlTemplateRenderer.render)
     source = inspect.getsource(SqlTemplateRenderer.render)
 
     assert "dept" in signature.parameters
-    assert "dept=:dept" in source
+    assert "dept=:dept" not in source
 
 
 @pytest.mark.asyncio

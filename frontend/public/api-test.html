@@ -107,10 +107,11 @@
         <textarea id="content" rows="3" placeholder="测试通知：平台 API 接口验证"></textarea>
       </div>
       <div id="templatePanel" hidden>
-        <label for="templateId">模板 ID</label>
+        <label for="templateId">平台模板 ID（非厂商编号）</label>
         <input id="templateId" type="number" min="1" inputmode="numeric" placeholder="如 12">
         <label for="templateParams">模板参数（逗号分隔）</label>
         <input id="templateParams" placeholder="参数1,参数2" autocomplete="off">
+        <p class="hint">模板是全局资源；请填写平台模板编号，且模板须已审核通过。</p>
       </div>
       <label for="signName">签名（可选，默认用应用签名）</label>
       <input id="signName" autocomplete="off">
@@ -151,12 +152,12 @@
         <textarea id="uatContent" rows="2" placeholder="真实联调 UAT 通知"></textarea>
       </div>
       <div id="uatTemplatePanel" hidden>
-        <label for="uatTemplateId">模板 ID（平台已审核通过的模板）</label>
+        <label for="uatTemplateId">平台模板 ID（非厂商编号，须已审核通过）</label>
         <input id="uatTemplateId" type="number" min="1" inputmode="numeric" placeholder="如 12">
         <label for="uatTemplateParams">模板参数（逗号分隔，个数与 {1}..{n} 一致）</label>
         <input id="uatTemplateParams" placeholder="张三,123456" autocomplete="off">
       </div>
-      <p class="hint">模板模式通过 uat-send 携带 template_id 与参数，由平台渲染；模板须已审核通过，参数规则与普通发送一致。</p>
+      <p class="hint">模板是全局资源；模板模式通过 uat-send 携带平台 template_id 与参数，由平台渲染。模板须已审核通过，参数规则与普通发送一致。</p>
       <label for="uatSignName">签名（可选，默认用应用签名）</label>
       <input id="uatSignName" autocomplete="off">
       <label for="uatBizId">biz_id（必填，1–32 位，24h 幂等）</label>

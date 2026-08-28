@@ -148,8 +148,22 @@ async def test_create_validates_placeholders_without_using_vendor_client() -> No
         actor="operator01",
     )
     assert vendor.bound == []
+    assert record.dept == ""
     assert record.vendor_template_id is None
     assert record.vendor_state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_template_visibility_ignores_department_scope() -> None:
+    repository = FakeRepository()
+    service = TemplateManagementService(repository)
+
+    records = await service.list_all(dept="其他业务部")
+    record = await service.get(1, dept="其他业务部")
+
+    assert [item.id for item in records] == [1]
+    assert record.id == 1
+    assert record.dept == "平台部"
 
 
 @pytest.mark.asyncio

@@ -67,25 +67,25 @@ class SqlTemplateRepository:
         return database_engine(self.settings.database_url)
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
-        where = "" if dept is None else "WHERE dept=:dept"
+        # dept 仅为历史兼容列，不再作为模板访问范围。
+        del dept
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(f"{SELECT_FIELDS} {where} ORDER BY updated_at DESC"), {"dept": dept}
-                )
+                result = await connection.execute(text(f"{SELECT_FIELDS} ORDER BY updated_at DESC"))
                 return [_record(row, self._crypto()) for row in result.mappings()]
         finally:
             await engine.dispose()
 
     async def get(self, template_id: int, *, dept: str | None = None) -> TemplateRecord | None:
-        dept_sql = "" if dept is None else "AND dept=:dept"
+        # 保留 dept 形参以避免扰动既有调用方，但查询始终按全局 ID。
+        del dept
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
-                    text(f"{SELECT_FIELDS} WHERE id=:id {dept_sql}"),
-                    {"id": template_id, "dept": dept},
+                    text(f"{SELECT_FIELDS} WHERE id=:id"),
+                    {"id": template_id},
                 )
                 row = result.mappings().one_or_none()
                 return _record(row, self._crypto()) if row is not None else None
@@ -101,9 +101,11 @@ class SqlTemplateRepository:
         dept: str,
         actor: str,
     ) -> TemplateRecord:
+        # dept 列暂留作数据库兼容字段，新模板不再归属部门。
+        del dept
         values: dict[str, Any] = {
             "var_specs": var_specs,
-            "dept": dept,
+            "dept": "",
             "actor": actor,
         }
         engine = self._engine()

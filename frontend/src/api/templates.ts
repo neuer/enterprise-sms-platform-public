@@ -7,6 +7,7 @@ export interface SmsTemplate {
   name: string
   content: string
   var_specs: VarSpec[]
+  /** 历史兼容字段；模板为全局资源，不参与权限或发送判断。 */
   dept: string
   vendor_template_id: string | null
   vendor_state: TemplateState

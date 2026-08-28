@@ -102,7 +102,7 @@ DEV_TEMPLATE = DevTemplate(
     name="开发验证码模板",
     content="您的验证码是{1}，5分钟内有效。",
     var_specs=({"pos": 1, "max_len": 8},),
-    dept="平台技术部",
+    dept="",
     vendor_state="approved",
 )
 DEV_SIGN = DevSign(name="青鸾平台", vendor_state="approved")
@@ -613,10 +613,10 @@ async def seed_dev_template(
             """
             SELECT id FROM sms_template
             WHERE created_by='seed-dev'
-              AND dept=CAST(:dept AS varchar(128))
+            ORDER BY id
+            LIMIT 1
             """
-        ),
-        {"dept": DEV_TEMPLATE.dept},
+        )
     )
     if existing_id is not None:
         return
@@ -656,7 +656,7 @@ async def seed_dev_template(
             "name_enc": name_enc,
             "content_enc": content_enc,
             "var_specs": json.dumps(DEV_TEMPLATE.var_specs, ensure_ascii=False),
-            "dept": DEV_TEMPLATE.dept,
+            "dept": "",
             "vendor_state": DEV_TEMPLATE.vendor_state,
         },
     )
