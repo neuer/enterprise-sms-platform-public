@@ -11,17 +11,25 @@ from sqlalchemy import text
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
-from app.core.sensitive_text import mask_phone_in_text
 from app.services.content_protection import decrypt_template_content, decrypt_template_name
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
-from app.services.template_management import TemplateRecord, TemplateStateUpdate
+from app.services.template_management import (
+    TemplateRecord,
+    TemplateStateConflict,
+    TemplateStateUpdate,
+)
+from app.services.vendor_review import (
+    VENDOR_REVIEW_STATES,
+    normalize_vendor_reject_reason,
+)
 from app.settings import Settings, get_settings
 
 SELECT_FIELDS = """
 SELECT id,name_enc,content_enc,COALESCE(var_specs,'[]'::jsonb) var_specs,dept,
-  vendor_template_id,vendor_state,vendor_reject_reason
+  vendor_template_id,vendor_state,vendor_reject_reason,
+  xmin::text::bigint AS row_version
 FROM sms_template
 """
 
@@ -37,6 +45,7 @@ def _record(row: Any, crypto: CryptoService) -> TemplateRecord:
         str(row["vendor_template_id"]) if row["vendor_template_id"] is not None else None,
         str(row["vendor_state"]),
         str(row["vendor_reject_reason"]) if row["vendor_reject_reason"] is not None else None,
+        int(row["row_version"]),
     )
 
 
@@ -186,13 +195,18 @@ class SqlTemplateRepository:
                 changed = await connection.execute(
                     text(
                         """
-                        UPDATE sms_template SET name='[encrypted]',name_enc=:name_enc,
+                        UPDATE sms_template AS t SET name='[encrypted]',name_enc=:name_enc,
                           content='[encrypted]',
                           content_enc=:content_enc,
                           var_specs=CAST(:var_specs AS jsonb),
                           vendor_template_id=NULL,
                           vendor_state='pending',vendor_reject_reason=NULL,updated_at=now()
-                        WHERE id=:id AND vendor_state IN ('draft','rejected') RETURNING id
+                        WHERE t.id=:id AND t.vendor_state IN ('draft','rejected')
+                          AND t.vendor_template_id IS NULL
+                          AND NOT EXISTS(
+                            SELECT 1 FROM sms_batch b WHERE b.template_id=t.id
+                          )
+                        RETURNING t.id
                         """
                     ),
                     {"id": template_id, **values, "var_specs": json.dumps(values["var_specs"])},
@@ -217,6 +231,7 @@ class SqlTemplateRepository:
                         """
                         DELETE FROM sms_template t WHERE t.id=:id
                           AND t.vendor_state IN ('draft','pending','rejected')
+                          AND t.vendor_template_id IS NULL
                           AND NOT EXISTS(SELECT 1 FROM sms_batch b WHERE b.template_id=t.id)
                         RETURNING id
                         """
@@ -231,7 +246,7 @@ class SqlTemplateRepository:
             await engine.dispose()
 
     async def syncable(self, template_id: int | None = None) -> list[TemplateRecord]:
-        """返回仍需跟踪厂商审核结果的模板。"""
+        """返回全部已有厂商编号、需要持续跟踪审核结果的模板。"""
 
         id_filter = "" if template_id is None else "AND id=:id"
         engine = self._engine()
@@ -239,8 +254,9 @@ class SqlTemplateRepository:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text(
-                        f"{SELECT_FIELDS} WHERE vendor_state IN ('pending','rejected') "
-                        f"AND vendor_template_id IS NOT NULL {id_filter}"
+                        f"{SELECT_FIELDS} WHERE vendor_state IN "
+                        f"('pending','approved','rejected') "
+                        f"AND vendor_template_id IS NOT NULL {id_filter} ORDER BY id"
                     ),
                     {"id": template_id},
                 )
@@ -255,15 +271,25 @@ class SqlTemplateRepository:
         try:
             async with engine.begin() as connection:
                 applied = 0
-                for template_id, expected_vendor_template_id, state, reason in states:
-                    reason = mask_phone_in_text(reason)
+                for (
+                    template_id,
+                    expected_vendor_template_id,
+                    expected_row_version,
+                    state,
+                    reason,
+                ) in states:
+                    if state not in VENDOR_REVIEW_STATES:
+                        raise ValueError("invalid vendor template state")
+                    reason = normalize_vendor_reject_reason(state, reason)
                     changed = await connection.execute(
                         text(
                             """
                             UPDATE sms_template SET vendor_state=:state,
                               vendor_reject_reason=:reason,updated_at=now()
-                            WHERE id=:id AND vendor_state IN ('pending','rejected')
+                            WHERE id=:id AND vendor_state IN
+                              ('pending','approved','rejected')
                               AND vendor_template_id=:expected_vendor_template_id
+                              AND xmin::text::bigint=:expected_row_version
                               AND (
                                 vendor_state IS DISTINCT FROM :state
                                 OR vendor_reject_reason IS DISTINCT FROM :reason
@@ -274,6 +300,7 @@ class SqlTemplateRepository:
                         {
                             "id": template_id,
                             "expected_vendor_template_id": expected_vendor_template_id,
+                            "expected_row_version": expected_row_version,
                             "state": state,
                             "reason": reason,
                         },
@@ -329,6 +356,11 @@ class SqlTemplateRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await self._lock_vendor_binding(
+                    connection,
+                    template_id,
+                    vendor_template_id,
+                )
                 changed = await connection.execute(
                     text(
                         """
@@ -366,6 +398,34 @@ class SqlTemplateRepository:
                 return True
         finally:
             await engine.dispose()
+
+    @staticmethod
+    async def _lock_vendor_binding(
+        connection: Any,
+        template_id: int,
+        vendor_template_id: str,
+    ) -> None:
+        """串行绑定同一厂商编号，并拒绝跨本地模板重复关联。"""
+
+        await connection.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended('sms_template:' || CAST(:vendor_template_id AS text),0))"
+            ),
+            {"vendor_template_id": vendor_template_id},
+        )
+        duplicate = await connection.execute(
+            text(
+                """
+                SELECT id FROM sms_template
+                WHERE vendor_template_id=:vendor_template_id AND id<>:id
+                LIMIT 1
+                """
+            ),
+            {"id": template_id, "vendor_template_id": vendor_template_id},
+        )
+        if duplicate.scalar_one_or_none() is not None:
+            raise TemplateStateConflict("厂商模板编号已关联其他本地模板")
 
     @staticmethod
     async def _enqueue_binding(connection: Any, template_id: int) -> None:

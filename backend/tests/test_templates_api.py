@@ -14,7 +14,15 @@ from app.services.template_management import TemplateRecord
 class FakeFacade:
     async def verify(self, token: str) -> JwtClaims:
         assert token == "jwt"
-        return JwtClaims("operator01", "操作员", "平台部", "operator")
+        return JwtClaims(
+            1,
+            11,
+            "local",
+            "operator01",
+            "操作员",
+            "平台部",
+            "operator",
+        )
 
 
 class FakeService:
@@ -62,9 +70,11 @@ class FakeService:
 class FakeSender:
     def __init__(self) -> None:
         self.sent: list[int] = []
+        self.principals: list[str] = []
 
-    async def send_template(self, template_id: int) -> None:
+    async def send_template(self, template_id: int, **values: object) -> None:
         self.sent.append(template_id)
+        self.principals.append(values["principal"].login_name)  # type: ignore[attr-defined]
 
 
 class FakeAuditor:
@@ -119,10 +129,30 @@ def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None
 
     assert response.status_code == 202
     assert sender.sent == [1]
+    assert sender.principals == ["operator01"]
 
 
 def test_manual_template_sync_allows_rejected_template_with_vendor_id() -> None:
     service = FakeService(vendor_state="rejected")
+    sender = FakeSender()
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    app.dependency_overrides[api.get_template_job_sender] = lambda: sender
+
+    response = TestClient(app).post(
+        "/api/v1/web/templates/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 202
+    assert sender.sent == [1]
+
+
+def test_manual_template_sync_allows_approved_template_with_vendor_id() -> None:
+    service = FakeService(vendor_state="approved")
     sender = FakeSender()
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
@@ -159,7 +189,7 @@ def test_manual_template_sync_rejects_template_without_vendor_id() -> None:
     assert sender.sent == []
 
 
-@pytest.mark.parametrize("vendor_state", ["approved", "draft"])
+@pytest.mark.parametrize("vendor_state", ["draft"])
 def test_manual_template_sync_rejects_non_syncable_state(vendor_state: str) -> None:
     service = FakeService(vendor_state=vendor_state)
     sender = FakeSender()

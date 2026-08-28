@@ -10,14 +10,20 @@ from sqlalchemy import text
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
-from app.core.sensitive_text import mask_phone_in_text
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.sign import format_sign_name
-from app.services.sign_management import SignRecord, SignStateConflict
+from app.services.sign_management import SignRecord, SignStateConflict, SignStateUpdate
+from app.services.vendor_review import (
+    VENDOR_REVIEW_STATES,
+    normalize_vendor_reject_reason,
+)
 from app.settings import Settings, get_settings
 
-FIELDS = "id,name,vendor_sign_id,vendor_state,vendor_reject_reason"
+FIELDS = (
+    "id,name,vendor_sign_id,vendor_state,vendor_reject_reason,"
+    "xmin::text::bigint AS row_version"
+)
 
 
 def _record(row: Any) -> SignRecord:
@@ -27,6 +33,7 @@ def _record(row: Any) -> SignRecord:
         str(row["vendor_sign_id"]) if row["vendor_sign_id"] is not None else None,
         str(row["vendor_state"]),
         str(row["vendor_reject_reason"]) if row["vendor_reject_reason"] is not None else None,
+        int(row["row_version"]),
     )
 
 
@@ -61,13 +68,20 @@ class SqlSignRepository:
             await engine.dispose()
 
     async def is_approved(self, plain_name: str) -> bool:
+        binding_guard = (
+            "" if bool(getattr(self.settings, "vendor_mock", False))
+            else """ AND vendor_sign_id ~ '^[1-9][0-9]{0,9}$'
+              AND (length(vendor_sign_id)<10
+                OR vendor_sign_id<='2147483647')"""
+        )
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text(
                         "SELECT EXISTS(SELECT 1 FROM sms_sign "
-                        "WHERE name=:name AND vendor_state='approved')"
+                        "WHERE name=:name AND vendor_state='approved'"
+                        f"{binding_guard})"
                     ),
                     {"name": plain_name},
                 )
@@ -107,9 +121,18 @@ class SqlSignRepository:
                 changed = await connection.execute(
                     text(
                         """
-                        UPDATE sms_sign SET name=:name,vendor_sign_id=NULL,
+                        UPDATE sms_sign AS s SET name=:name,vendor_sign_id=NULL,
                           vendor_state='pending',vendor_reject_reason=NULL
-                        WHERE id=:id AND vendor_state='rejected' RETURNING id
+                        WHERE s.id=:id AND s.vendor_state='rejected'
+                          AND NOT EXISTS(
+                            SELECT 1 FROM app a
+                            WHERE a.default_sign IN (s.name,'【' || s.name || '】')
+                          )
+                          AND NOT EXISTS(
+                            SELECT 1 FROM sms_batch b
+                            WHERE b.sign_name IN (s.name,'【' || s.name || '】')
+                          )
+                        RETURNING s.id
                         """
                     ),
                     {"id": sign_id, "name": name},
@@ -140,7 +163,8 @@ class SqlSignRepository:
                     text(
                         """
                         DELETE FROM sms_sign s WHERE s.id=:id AND s.vendor_state<>'approved'
-                          AND NOT EXISTS(SELECT 1 FROM app a WHERE a.default_sign=s.name)
+                          AND NOT EXISTS(SELECT 1 FROM app a
+                            WHERE a.default_sign IN (s.name,'【' || s.name || '】'))
                           AND NOT EXISTS(SELECT 1 FROM sms_batch b
                             WHERE b.sign_name IN (s.name,:formatted)) RETURNING id
                         """
@@ -154,37 +178,64 @@ class SqlSignRepository:
         finally:
             await engine.dispose()
 
-    async def pending(self, sign_id: int | None = None) -> list[SignRecord]:
+    async def syncable(self, sign_id: int | None = None) -> list[SignRecord]:
+        """返回全部已有厂商编号、需要持续跟踪审核结果的签名。"""
+
         id_filter = "" if sign_id is None else "AND id=:id"
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
-                    text(f"SELECT {FIELDS} FROM sms_sign WHERE vendor_state='pending' {id_filter}"),
+                    text(
+                        f"SELECT {FIELDS} FROM sms_sign WHERE vendor_state IN "
+                        f"('pending','approved','rejected') "
+                        f"AND vendor_sign_id IS NOT NULL {id_filter} ORDER BY id"
+                    ),
                     {"id": sign_id},
                 )
                 return [_record(row) for row in result.mappings()]
         finally:
             await engine.dispose()
 
-    async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int:
+    async def apply_states(self, states: list[SignStateUpdate]) -> int:
         if not states:
             return 0
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 applied = 0
-                for sign_id, state, reason in states:
-                    reason = mask_phone_in_text(reason)
+                for (
+                    sign_id,
+                    expected_vendor_sign_id,
+                    expected_row_version,
+                    state,
+                    reason,
+                ) in states:
+                    if state not in VENDOR_REVIEW_STATES:
+                        raise ValueError("invalid vendor sign state")
+                    reason = normalize_vendor_reject_reason(state, reason)
                     changed = await connection.execute(
                         text(
                             """
                             UPDATE sms_sign SET vendor_state=:state,vendor_reject_reason=:reason
-                            WHERE id=:id AND vendor_state='pending'
+                            WHERE id=:id AND vendor_state IN
+                              ('pending','approved','rejected')
+                              AND vendor_sign_id=:expected_vendor_sign_id
+                              AND xmin::text::bigint=:expected_row_version
+                              AND (
+                                vendor_state IS DISTINCT FROM :state
+                                OR vendor_reject_reason IS DISTINCT FROM :reason
+                              )
                             RETURNING id
                             """
                         ),
-                        {"id": sign_id, "state": state, "reason": reason},
+                        {
+                            "id": sign_id,
+                            "expected_vendor_sign_id": expected_vendor_sign_id,
+                            "expected_row_version": expected_row_version,
+                            "state": state,
+                            "reason": reason,
+                        },
                     )
                     if changed.scalar_one_or_none() is None:
                         continue
@@ -237,6 +288,7 @@ class SqlSignRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await self._lock_vendor_binding(connection, sign_id, vendor_sign_id)
                 changed = await connection.execute(
                     text(
                         """
@@ -285,7 +337,7 @@ class SqlSignRepository:
 
         if vendor_state not in {"pending", "approved", "rejected"}:
             raise ValueError("invalid vendor sign state")
-        reason = mask_phone_in_text(vendor_reject_reason)
+        reason = normalize_vendor_reject_reason(vendor_state, vendor_reject_reason)
         engine = self._engine()
         try:
             async with engine.begin() as connection:

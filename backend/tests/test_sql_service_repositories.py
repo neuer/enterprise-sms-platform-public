@@ -35,6 +35,7 @@ from app.services.report_repository import SqlReportRepository
 from app.services.resend import SqlResendRepository
 from app.services.scheduling_repository import SqlSchedulingRepository
 from app.services.sensitive_repository import SqlSensitiveWordRepository
+from app.services.sign_repository import SqlSignRepository
 from app.services.template_repository import SqlTemplateRepository
 from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
@@ -208,7 +209,32 @@ async def test_template_renderer_binds_authoritative_department(
     assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
     sql, params = connection.calls[0]
     assert "dept=:dept" in sql
+    assert "vendor_template_id ~ '^[1-9][0-9]{0,9}$'" in sql
+    assert "vendor_template_id<='2147483647'" in sql
     assert params == {"template_id": 17, "dept": "平台技术部"}
+
+
+@pytest.mark.asyncio
+async def test_sign_approval_requires_vendor_binding_outside_mock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult(scalar=True)])
+    repository = SqlSignRepository(
+        cast(
+            Any,
+            SimpleNamespace(
+                database_url="postgresql+asyncpg://unused",
+                vendor_mock=False,
+            ),
+        )
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    assert await repository.is_approved("青鸾平台") is True
+    sql, params = connection.calls[0]
+    assert "vendor_sign_id ~ '^[1-9][0-9]{0,9}$'" in sql
+    assert "vendor_sign_id<='2147483647'" in sql
+    assert params == {"name": "青鸾平台"}
 
 
 @pytest.mark.asyncio
@@ -265,6 +291,7 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
                         "vendor_template_id": None,
                         "vendor_state": "pending",
                         "vendor_reject_reason": None,
+                        "row_version": 41,
                     }
                 ]
             ),
@@ -287,6 +314,8 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
     assert record is not None and record.content == "验证码{1}"
     update_sql, update_params = connection.calls[0]
     assert "content='[encrypted]'" in update_sql
+    assert "vendor_template_id IS NULL" in update_sql
+    assert "NOT EXISTS" in update_sql and "FROM sms_batch" in update_sql
     assert "验证码{1}" not in str(update_params)
     assert "验证码" not in str(update_params)
     assert isinstance(update_params, dict)
@@ -308,6 +337,24 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
             object_id="17",
         ),
     ) == "验证码"
+
+
+@pytest.mark.asyncio
+async def test_template_repository_delete_requires_unbound_unreferenced_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult()])
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        content_crypto(),
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    assert await repository.delete(17, actor="operator01") is False
+    delete_sql, params = connection.calls[0]
+    assert "vendor_template_id IS NULL" in delete_sql
+    assert "NOT EXISTS" in delete_sql and "FROM sms_batch" in delete_sql
+    assert params == {"id": 17}
 
 
 @pytest.mark.asyncio

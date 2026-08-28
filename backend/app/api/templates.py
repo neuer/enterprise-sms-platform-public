@@ -218,6 +218,7 @@ async def delete_template(
 @audited("template_sync")
 async def sync_template(
     id: int,
+    request: Request,
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
     sender: Annotated[TemplateSyncSender, Depends(get_template_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
@@ -227,11 +228,15 @@ async def sync_template(
     try:
         current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
         if (
-            current.vendor_state not in {"pending", "rejected"}
+            current.vendor_state not in {"pending", "approved", "rejected"}
             or current.vendor_template_id is None
         ):
-            raise TemplateStateConflict("仅待审核或已拒绝且已有厂商编号的模板可同步")
-        await sender.send_template(current.id)
+            raise TemplateStateConflict("仅已有厂商编号的模板可同步")
+        await sender.send_template(
+            current.id,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
+        )
         return Response(status_code=202)
     except Exception as error:
         raise _error(error) from None

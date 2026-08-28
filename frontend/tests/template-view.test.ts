@@ -130,7 +130,7 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("已拒绝且保留厂商编号时可手动同步，草稿与已通过不显示同步入口", async () => {
+  it("所有已绑定厂商编号的审核状态均可手动同步，草稿不显示入口", async () => {
     const rejectedTemplate = {
       ...template,
       id: 2,
@@ -154,7 +154,7 @@ describe("模板管理", () => {
 
     expect(wrapper.get("[data-testid='template-sync-2']").text()).toContain("同步")
     expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
-    expect(wrapper.find("[data-testid='template-sync-4']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='template-sync-4']").text()).toContain("同步")
 
     await wrapper.get("[data-testid='template-sync-2']").trigger("click")
     await flushPromises()
@@ -202,7 +202,7 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("已通过模板提供「用于发送」跳转且无其它写操作", async () => {
+  it("已通过模板可用于发送并可同步厂商状态，但不可编辑或删除", async () => {
     mockList([{ ...template, id: 3, vendor_state: "approved" }])
     const push = vi.fn()
     const pinia = applyRole("operator")
@@ -213,7 +213,7 @@ describe("模板管理", () => {
     })
     await flushPromises()
 
-    expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='template-sync-3']").text()).toContain("同步")
     expect(wrapper.find("[data-testid='template-edit-3']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='template-delete-3']").exists()).toBe(false)
     const use = wrapper.get("[data-testid='template-use-3']")
@@ -283,19 +283,19 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("驳回模板重新提交时回显上次厂商驳回原因", async () => {
+  it("已绑定的驳回模板保留原因且要求新建", async () => {
     mockList([{ ...template, id: 7, vendor_state: "rejected", vendor_reject_reason: "含未报备营销内容" }])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.get(".template-table").text()).toContain("含未报备营销内容")
-    await wrapper.get("[data-testid='template-edit-7']").trigger("click")
+    expect(wrapper.find("[data-testid='template-edit-7']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-delete-7']").exists()).toBe(false)
+    await wrapper.get("[data-testid='template-detail-7']").trigger("click")
     await flushPromises()
-    expect(document.body.textContent).toContain("上次厂商驳回：含未报备营销内容")
-    expect(document.body.textContent).toContain("重新提交审核")
-    expect(document.body.textContent).toContain("平台 #7 · 重新提交将生成新的厂商编号")
-    expect(document.body.textContent).toContain("提交后进入厂商人工审核，期间不可编辑")
+    expect(document.body.textContent).toContain("不能原地修改；请新建模板")
+    expect(document.body.textContent).toContain("被拒绝或撤销后请新建模板")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
@@ -322,7 +322,13 @@ describe("模板管理", () => {
   })
 
   it("取消删除确认框不发起请求也不报错", async () => {
-    const rejectedTemplate = { ...template, id: 2, name: "通知", vendor_state: "rejected" }
+    const rejectedTemplate = {
+      ...template,
+      id: 2,
+      name: "通知",
+      vendor_template_id: null,
+      vendor_state: "rejected",
+    }
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: { get: () => null }, json: async () => [rejectedTemplate],
     })
@@ -339,7 +345,7 @@ describe("模板管理", () => {
     expect(ElMessageBox.confirm).toHaveBeenCalled()
     const confirmMessage = vnodeText(vi.mocked(ElMessageBox.confirm).mock.calls[0][0])
     expect(confirmMessage).toContain("写入审计日志")
-    expect(confirmMessage).toContain("已被批次引用的模板不可删除")
+    expect(confirmMessage).toContain("已绑定厂商编号或已被批次引用的模板不可删除")
     expect(error).not.toHaveBeenCalled()
     expect(
       fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,

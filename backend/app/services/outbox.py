@@ -226,6 +226,26 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.args[0] in MANUAL_JOB_TASK_NAMES
         else False
     )
+    exact_sign_sync_reference = (
+        spec.task_name == "app.tasks.outbox.trigger_job"
+        and spec.event_type == "job.trigger"
+        and spec.aggregate_type == "sms_sign"
+        and spec.queue == "realtime"
+        and spec.max_attempts == 3
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and int(spec.aggregate_id) <= 2_147_483_647
+        and spec.args == ("app.tasks.sync_signs", int(spec.aggregate_id))
+        and spec.dedup_key.startswith(
+            f"job.trigger:sync_signs:{spec.aggregate_id}:"
+        )
+        and spec.dedup_key.removeprefix(
+            f"job.trigger:sync_signs:{spec.aggregate_id}:"
+        ).isdecimal()
+        and not spec.dedup_key.removeprefix(
+            f"job.trigger:sync_signs:{spec.aggregate_id}:"
+        ).startswith("0")
+    )
     vendor_binding_reference = (
         spec.task_name in {"app.tasks.bind_template", "app.tasks.bind_sign"}
         and spec.event_type
@@ -272,7 +292,9 @@ def validate_spec(spec: OutboxEventSpec) -> None:
     )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
-    if spec.task_name == "app.tasks.outbox.trigger_job" and not manual_job_reference:
+    if spec.task_name == "app.tasks.outbox.trigger_job" and not (
+        manual_job_reference or exact_sign_sync_reference
+    ):
         raise ValueError("invalid manual job outbox contract")
     if spec.task_name in {"app.tasks.bind_template", "app.tasks.bind_sign"} and not (
         vendor_binding_reference
@@ -285,6 +307,7 @@ def validate_spec(spec: OutboxEventSpec) -> None:
     if (
         not usage_release_reference
         and not manual_job_reference
+        and not exact_sign_sync_reference
         and not vendor_binding_reference
         and not template_sync_reference
         and not sign_adoption_reference

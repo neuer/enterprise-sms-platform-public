@@ -213,19 +213,29 @@ describe("签名管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("已通过签名操作列显示不可变更且无可用写操作", async () => {
+  it("已通过签名仍可同步厂商状态，但不可编辑或删除", async () => {
     mockFetch([approvedSign])
     const pinia = applyRole("admin")
     const wrapper = mount(SignView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.find("[data-testid='sign-sync-2']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='sign-sync-2']").text()).toContain("同步")
     expect(wrapper.find("[data-testid='sign-edit-2']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='sign-delete-2']").exists()).toBe(false)
     const actionCell = wrapper.get(".sign-table .el-table__row td:last-child")
-    expect(actionCell.text()).toBe("不可变更")
+    expect(actionCell.text()).toContain("不可编辑/删除")
     expect(actionCell.get(".muted").attributes("title")).toContain("已通过审核")
-    expect(wrapper.get(".sign-mobile-list article footer").text()).toContain("不可变更")
+    expect(wrapper.get(".sign-mobile-list article footer").text()).toContain("不可编辑/删除")
+    vi.unstubAllGlobals()
+  })
+
+  it("已拒绝签名保留厂商编号时仍可手动同步", async () => {
+    mockFetch([{ ...rejectedSign, vendor_sign_id: "22" }])
+    const pinia = applyRole("admin")
+    const wrapper = mount(SignView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='sign-sync-3']").text()).toContain("同步")
     vi.unstubAllGlobals()
   })
 
@@ -353,7 +363,7 @@ describe("签名管理", () => {
       [
         { id: 1, name: "订单中心", default_sign: "青鸾平台", status: 1 },
         { id: 2, name: "物流通知", default_sign: "其他签名", status: 1 },
-        { id: 3, name: "会员服务", default_sign: "青鸾平台", status: 0 },
+        { id: 3, name: "会员服务", default_sign: "【青鸾平台】", status: 0 },
       ],
     )
     const pinia = applyRole("admin")
