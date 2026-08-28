@@ -22,3 +22,9 @@ export const deleteSign = (id: number) =>
   apiRequest<void>("/signs/" + id, { method: "DELETE" })
 export const syncSign = (id: number) =>
   apiRequest<void>("/signs/" + id + "/sync", { method: "POST" })
+export const adoptExistingSign = (id: number, vendorSignId: number, confirmedName: string) =>
+  apiRequest<void>("/signs/" + id + "/adopt-existing", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vendor_sign_id: vendorSignId, confirmed_name: confirmedName }),
+  })

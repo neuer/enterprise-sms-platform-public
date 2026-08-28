@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.6.42 |
-| 日期 | 2026-08-24 |
+| 文档版本 | v1.6.43 |
+| 日期 | 2026-08-28 |
 | 状态 | 已评审定稿 |
 | 上游依赖 | 智慧信息-企信版短信网关（vendor.example.invalid，接口文档 V2.1.2） |
 | 开发方式 | 维护期按 MAINTENANCE.md / AGENTS.md 协作，契约由 openapi.yaml / schema.sql 约束 |
@@ -26,6 +26,7 @@
 | v1.6.40 | **安全日报配置 UI 化**：管理员页面配置 Resend Key、收件人和启停状态，API 同步独立 mailer 配置文件；不再要求手工维护 Docker secret 与收件人文件 |
 | v1.6.41 | **会话边界契约回填**：与已落地实现及 D048 修订对齐——access JWT 仅内存 + Bearer；refresh JWT 改 HttpOnly Cookie 并要求 refresh/logout 同源校验；高风险短期令牌仍仅组件局部易失内存 |
 | v1.6.42 | **生产 Phase 0 决策基线**：生产与测试空库、数据和 secrets 完全隔离；首发经 VPN 接入，旧短信系统（不同服务商）长期并行且可切回；短信发送能力的业务 RTO≤12h、平台数据 RPO≤24h，冷备与备出口暂非首发硬门禁；Core、PostgreSQL 与 broker/auth/control 三个 isolated-standalone Redis 实例合并部署在单台生产 VM，明确接受整机共同故障域；首批仅 1–2 个低风险 notice 应用并观察至少 3 天；统一保留期与企微+公司邮件告警边界。业务 RTO 从最早业务不可用或受控关闭新入口的 `outage_start` 计起，可由新平台恢复或旧系统受控切回并完成最小验收结束；新平台恢复耗时另记。该条只记录决策，不证明生产基础设施、运行配置或发布证据已经满足。 |
+| v1.6.43 | **复用厂商已有签名**：管理员可为本地待审核签名提交厂商已有正整数签名 ID，并再次确认本地签名名称；API 只把精确关联意图排入 realtime worker，worker 仅调用 GetSignState 复核并回写，不重复 BindSign、不发送短信；202 仅代表受理排队。 |
 
 ---
 
@@ -209,7 +210,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 ### 5.5 模板与签名管理
 
 #### FR-12 模板：CRUD + `{n}` 占位规范（每变量登记最大长度 var_specs）+ BindTemplate/GetTemplateState 同步；**提交厂商时按序转换为厂商 `{s最大长度}` 格式（v1.3）**；Bind 意图必须与模板变更同事务进入 PostgreSQL Outbox，由持有厂商凭据的 realtime worker 执行，API 不挂载厂商凭据且不直接出站；仅厂商通过可用；渲染时校验参数个数与各参数长度 ≤ max_len，见 FR-01 与 docs/vendor-api.md 1.5 节
-#### FR-13 签名：CRUD + BindSign/GetSignState；Bind 意图同样经事务性 Outbox 交给 realtime worker，API 仅返回 pending；应用默认签名；自动拼接与一致性校验
+#### FR-13 签名：CRUD + BindSign/GetSignState；Bind 意图同样经事务性 Outbox 交给 realtime worker，API 仅返回 pending；应用默认签名；自动拼接与一致性校验。管理员可将本地待审核签名与厂商已有正整数签名 ID 精确关联，但必须再次提交与本地记录完全一致的签名名称；API 只将该关联意图排入 realtime worker，由 worker 仅调用 GetSignState 复核并回写本地状态，不调用 BindSign、不发送短信。HTTP 202 只表示排队成功，不表示关联或厂商审核状态同步完成
 
 ### 5.6 告警与监控
 

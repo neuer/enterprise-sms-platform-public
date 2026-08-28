@@ -10,7 +10,12 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.services import ops_dispatch as ops_dispatch_module
 from app.services.ops import JobNotFound, JobOpsService, JobRecord, JobRoute
-from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender, TemplateSyncSender
+from app.services.ops_dispatch import (
+    OutboxBatchSender,
+    OutboxJobSender,
+    SignAdoptionSender,
+    TemplateSyncSender,
+)
 from app.services.ops_repository import SqlOpsRepository
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
@@ -244,6 +249,7 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
 ) -> None:
     engines: list[FakeTransactionEngine] = []
     specs: list[Any] = []
+    audits: list[tuple[str, Any]] = []
 
     def engine(_database_url: object) -> FakeTransactionEngine:
         selected = FakeTransactionEngine()
@@ -253,8 +259,20 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     async def enqueue(_connection: object, spec: Any) -> None:
         specs.append(spec)
 
+    async def bind_audit(_connection: object, **values: object) -> None:
+        audits.append(("bind", values))
+
+    async def insert_audit(_connection: object, event: object) -> None:
+        audits.append(("insert", event))
+
     monkeypatch.setattr(ops_dispatch_module, "database_engine", engine)
     monkeypatch.setattr(ops_dispatch_module, "enqueue_outbox", enqueue)
+    monkeypatch.setattr(
+        ops_dispatch_module,
+        "bind_connection_audit_subject",
+        bind_audit,
+    )
+    monkeypatch.setattr(ops_dispatch_module, "insert_audit", insert_audit)
     settings = type("SettingsStub", (), {"database_url": "postgresql://test"})()
 
     await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
@@ -262,9 +280,23 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     await OutboxJobSender(settings).send("app.tasks.expire_approvals", "realtime")
     await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
     await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
+    await SignAdoptionSender(settings).send_sign(
+        9,
+        112074,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
     await OutboxBatchSender(settings).send_batch("a" * 32, "realtime")
 
-    first_poll, second_poll, job, template_sync, repeated_template_sync, batch = specs
+    (
+        first_poll,
+        second_poll,
+        job,
+        template_sync,
+        repeated_template_sync,
+        sign_adoption,
+        batch,
+    ) = specs
     assert first_poll.task_name == "app.tasks.outbox.trigger_job"
     assert first_poll.args == ("app.tasks.poll_report",)
     assert first_poll.dedup_key.startswith("job.trigger:poll_report:")
@@ -281,6 +313,21 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     assert template_sync.args == (7,)
     assert template_sync.max_attempts == 3
     assert repeated_template_sync.dedup_key == template_sync.dedup_key
+    assert sign_adoption.event_type == "sign.adopt"
+    assert sign_adoption.aggregate_type == "sms_sign"
+    assert sign_adoption.aggregate_id == "9"
+    assert sign_adoption.task_name == "app.tasks.adopt_sign"
+    assert sign_adoption.queue == "realtime"
+    assert sign_adoption.args == (9, 112074)
+    assert sign_adoption.max_attempts == 3
+    assert sign_adoption.dedup_key.startswith("sign.adopt:9:")
+    assert audits[0][0] == "bind"
+    assert audits[1][0] == "insert"
+    assert audits[1][1].action == "sign_adopt"
+    assert audits[1][1].after == {
+        "status": "requested",
+        "vendor_sign_id": 112074,
+    }
     assert batch.task_name == "app.tasks.send.process_batch"
     assert batch.args == ("a" * 32,)
     assert batch.dedup_key.startswith("batch.ready:")

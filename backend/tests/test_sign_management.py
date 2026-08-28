@@ -16,6 +16,7 @@ class FakeRepository:
     def __init__(self) -> None:
         self.record = SignRecord(1, "青鸾平台", "21", "pending", None)
         self.states: list[tuple[int, str, str | None]] = []
+        self.adoptions: list[tuple[int, str, str, str | None]] = []
 
     async def create(self, **values: object) -> SignRecord:
         return SignRecord(2, str(values["name"]), None, "pending", None)
@@ -47,6 +48,27 @@ class FakeRepository:
         )
         return True
 
+    async def adopt_existing(
+        self,
+        sign_id: int,
+        vendor_sign_id: str,
+        vendor_state: str,
+        vendor_reject_reason: str | None,
+    ) -> bool:
+        if sign_id != self.record.id or self.record.vendor_sign_id is not None:
+            return False
+        self.adoptions.append(
+            (sign_id, vendor_sign_id, vendor_state, vendor_reject_reason)
+        )
+        self.record = SignRecord(
+            self.record.id,
+            self.record.name,
+            vendor_sign_id,
+            vendor_state,
+            vendor_reject_reason,
+        )
+        return True
+
     async def update(self, sign_id: int, **values: object) -> SignRecord | None:
         if sign_id != self.record.id:
             return None
@@ -64,16 +86,32 @@ class FakeRepository:
 
 
 class FakeVendor:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        state_id: int = 21,
+        check_type: int = 2,
+        reason: str | None = "材料不足",
+    ) -> None:
         self.bound: list[str] = []
+        self.state_id = state_id
+        self.check_type = check_type
+        self.reason = reason
+        self.queried: list[list[int]] = []
 
     async def bind_sign(self, sign_name: str) -> int:
         self.bound.append(sign_name)
         return 22
 
     async def get_sign_state(self, sign_ids: list[int]) -> list[dict[str, Any]]:
-        assert sign_ids == [21]
-        return [{"id": 21, "checkType": 2, "checkRemark": "材料不足"}]
+        self.queried.append(sign_ids)
+        return [
+            {
+                "id": self.state_id,
+                "checkType": self.check_type,
+                "checkRemark": self.reason,
+            }
+        ]
 
 
 @pytest.mark.asyncio
@@ -120,3 +158,41 @@ async def test_manual_sync_rejects_nonpending_sign() -> None:
     repository.record = SignRecord(1, "青鸾平台", "21", "approved", None)
     with pytest.raises(SignStateConflict):
         await SignManagementService(repository, FakeVendor()).sync_pending(sign_id=1)
+
+
+@pytest.mark.asyncio
+async def test_prepare_adoption_requires_unbound_pending_and_exact_name() -> None:
+    repository = FakeRepository()
+    repository.record = SignRecord(1, "厦门钨业", None, "pending", None)
+    service = SignManagementService(repository)
+
+    assert (await service.prepare_adoption(1, confirmed_name="厦门钨业")).id == 1
+    with pytest.raises(SignStateConflict, match="名称"):
+        await service.prepare_adoption(1, confirmed_name="其他签名")
+
+    repository.record = SignRecord(1, "厦门钨业", "112074", "pending", None)
+    with pytest.raises(SignStateConflict, match="尚未绑定"):
+        await service.prepare_adoption(1, confirmed_name="厦门钨业")
+
+
+@pytest.mark.asyncio
+async def test_adopt_existing_queries_exact_id_and_applies_vendor_state() -> None:
+    repository = FakeRepository()
+    repository.record = SignRecord(1, "厦门钨业", None, "pending", None)
+    vendor = FakeVendor(state_id=112074, check_type=1, reason=None)
+
+    assert await SignManagementService(repository, vendor).adopt_existing(1, 112074) == 1
+    assert vendor.queried == [[112074]]
+    assert repository.adoptions == [(1, "112074", "approved", None)]
+    assert repository.record.vendor_state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_adopt_existing_rejects_mismatched_vendor_response() -> None:
+    repository = FakeRepository()
+    repository.record = SignRecord(1, "厦门钨业", None, "pending", None)
+    vendor = FakeVendor(state_id=112075, check_type=1, reason=None)
+
+    with pytest.raises(ValueError, match="adoption item"):
+        await SignManagementService(repository, vendor).adopt_existing(1, 112074)
+    assert repository.adoptions == []

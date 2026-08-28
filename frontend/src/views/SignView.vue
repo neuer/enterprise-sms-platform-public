@@ -6,6 +6,7 @@ import { computed, h, onMounted, ref } from "vue"
 
 import { listApps, type ManagedApp } from "../api/apps"
 import {
+  adoptExistingSign,
   createSign,
   deleteSign,
   listSigns,
@@ -43,6 +44,10 @@ const keyword = ref("")
 const detail = ref<SmsSign | null>(null)
 const detailOpen = ref(false)
 const editorOpen = ref(false)
+const adoptOpen = ref(false)
+const adopting = ref(false)
+const adoptingSign = ref<SmsSign | null>(null)
+const vendorSignId = ref("")
 /** 编辑入口的源签名：驳回重交时用于回显上次厂商驳回原因。 */
 const editingSource = ref<SmsSign | null>(null)
 const name = ref("")
@@ -117,6 +122,8 @@ function detailHeadMeta(item: SmsSign): string {
 
 const canSync = (item: SmsSign) =>
   item.vendor_state === "pending" && item.vendor_sign_id !== null
+const canAdopt = (item: SmsSign) =>
+  canWrite.value && item.vendor_state === "pending" && item.vendor_sign_id === null
 const canEdit = (item: SmsSign) => item.vendor_state === "rejected"
 const canDelete = (item: SmsSign) => item.vendor_state !== "approved"
 
@@ -248,6 +255,41 @@ async function sync(item: SmsSign): Promise<void> {
   }
 }
 
+function openAdopt(item: SmsSign): void {
+  if (!canAdopt(item)) return
+  adoptingSign.value = item
+  vendorSignId.value = ""
+  adoptOpen.value = true
+}
+
+async function adopt(): Promise<void> {
+  const item = adoptingSign.value
+  const value = vendorSignId.value.trim()
+  if (!item || !/^\d+$/.test(value)) {
+    ElMessage.warning("请输入正整数厂商签名 ID")
+    return
+  }
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 2147483647) {
+    ElMessage.warning("请输入正整数厂商签名 ID")
+    return
+  }
+  adopting.value = true
+  try {
+    await adoptExistingSign(item.id, parsed, item.name)
+    ElMessage.success("关联已有厂商签名与审核状态查询已入队")
+    adoptOpen.value = false
+    await load()
+    if (detail.value?.id === item.id) {
+      detail.value = items.value.find((candidate) => candidate.id === item.id) ?? detail.value
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "关联已有厂商签名失败")
+  } finally {
+    adopting.value = false
+  }
+}
+
 async function remove(item: SmsSign): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -351,10 +393,11 @@ onMounted(load)
           <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</span>
         </template>
       </el-table-column>
-      <el-table-column v-if="canWrite" label="操作" width="150" fixed="right">
+      <el-table-column v-if="canWrite" label="操作" width="230" fixed="right">
         <template #default="{ row }">
           <div @click.stop>
             <el-button v-if="canSync(row)" :data-testid="`sign-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
+            <el-button v-if="canAdopt(row)" :data-testid="`sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
             <el-button v-if="canEdit(row)" :data-testid="`sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
             <el-button v-if="canDelete(row)" :data-testid="`sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
             <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可变更或删除">不可变更</span>
@@ -380,6 +423,7 @@ onMounted(load)
         <p class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</p>
         <footer v-if="canWrite">
           <el-button v-if="canSync(row)" :data-testid="`mobile-sign-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
+          <el-button v-if="canAdopt(row)" :data-testid="`mobile-sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
           <el-button v-if="canEdit(row)" :data-testid="`mobile-sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
           <el-button v-if="canDelete(row)" :data-testid="`mobile-sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
           <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可变更或删除">不可变更</span>
@@ -447,11 +491,45 @@ onMounted(load)
       <div v-if="canWrite" class="sign-detail-actions">
         <el-button v-if="canEdit(detail)" data-testid="sign-detail-edit" type="primary" @click="editFromDetail">修改并重新提交</el-button>
         <el-button v-if="canSync(detail)" data-testid="sign-detail-sync" :loading="syncingId === detail.id" @click="sync(detail)">同步审核状态</el-button>
+        <el-button v-if="canAdopt(detail)" data-testid="sign-detail-adopt" type="primary" @click="openAdopt(detail)">关联已有签名</el-button>
         <el-button v-if="canDelete(detail)" data-testid="sign-detail-delete" link type="danger" @click="remove(detail)">删除签名</el-button>
         <p class="why">已通过审核的签名不可变更或删除；如需调整请申请新签名，默认签名请在应用管理中维护。</p>
       </div>
     </template>
   </el-drawer>
+
+  <el-dialog
+    v-model="adoptOpen"
+    title="关联已有厂商签名"
+    width="min(520px, 92vw)"
+    :close-on-click-modal="false"
+  >
+    <template v-if="adoptingSign">
+      <el-alert
+        :title="`请先在厂商后台核对：厂商签名 ID 必须对应规范签名【${adoptingSign.name}】`"
+        description="此操作只关联已有签名并发起审核状态查询，不会新建厂商签名，也不代表审核已经通过。"
+        type="warning"
+        :closable="false"
+      />
+      <el-form label-position="top" class="sign-form">
+        <el-form-item label="本地规范签名（固定）">
+          <el-input :model-value="`【${adoptingSign.name}】`" disabled data-testid="sign-adopt-confirmed-name" />
+        </el-form-item>
+        <el-form-item label="厂商签名 ID">
+          <el-input
+            v-model="vendorSignId"
+            data-testid="sign-adopt-vendor-id"
+            inputmode="numeric"
+            placeholder="请输入正整数 ID"
+          />
+        </el-form-item>
+      </el-form>
+    </template>
+    <template #footer>
+      <el-button @click="adoptOpen = false">取消</el-button>
+      <el-button data-testid="sign-adopt-submit" type="primary" :loading="adopting" @click="adopt">确认关联并查询状态</el-button>
+    </template>
+  </el-dialog>
 
   <el-drawer v-model="editorOpen" class="sign-drawer" size="min(440px, 92vw)">
     <template #header>

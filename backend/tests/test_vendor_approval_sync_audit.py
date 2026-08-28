@@ -9,6 +9,7 @@ import app.services.template_repository as template_repository_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
+from app.services.sign_management import SignStateConflict
 from app.services.sign_repository import SqlSignRepository
 from app.services.template_repository import SqlTemplateRepository
 
@@ -126,6 +127,62 @@ async def test_vendor_binding_result_is_system_audited_without_vendor_id_in_payl
     assert audit_params == {"id": 7}
     assert "private-vendor-reference" not in audit_sql
     assert "private-vendor-reference" not in str(audit_params)
+
+
+@pytest.mark.asyncio
+async def test_existing_sign_adoption_is_cas_bound_and_system_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(
+        [FakeResult(), FakeResult(None), FakeResult(7), FakeResult()]
+    )
+    repository = SqlSignRepository()
+    repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+    bindings: list[tuple[str, str]] = []
+
+    async def bind_system(
+        _connection: object, *, actor_name: str, action: str
+    ) -> None:
+        bindings.append((actor_name, action))
+
+    monkeypatch.setattr(
+        sign_repository_module,
+        "bind_connection_system_audit",
+        bind_system,
+    )
+
+    applied = await repository.adopt_existing(
+        7,
+        "112074",
+        "approved",
+        None,
+    )
+
+    assert applied is True
+    assert bindings == [("vendor-state-sync", "sign_adopt")]
+    assert "pg_advisory_xact_lock" in connection.calls[0][0]
+    assert "vendor_sign_id=:vendor_sign_id" in connection.calls[2][0]
+    assert "vendor_state='pending'" in connection.calls[2][0]
+    audit_sql, audit_params = connection.calls[3]
+    assert "'sign_adopt'" in audit_sql
+    assert audit_params == {
+        "id": 7,
+        "vendor_state": "approved",
+        "vendor_sign_id": "112074",
+    }
+    assert "vendor_sign_id" in audit_sql
+
+
+@pytest.mark.asyncio
+async def test_existing_vendor_sign_id_cannot_be_adopted_twice() -> None:
+    connection = FakeConnection([FakeResult(), FakeResult(8)])
+    repository = SqlSignRepository()
+    repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+
+    with pytest.raises(SignStateConflict, match="其他本地签名"):
+        await repository.adopt_existing(7, "112074", "approved", None)
+
+    assert len(connection.calls) == 2
 
 
 @pytest.mark.parametrize(

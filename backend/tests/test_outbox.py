@@ -141,6 +141,34 @@ def test_outbox_contract_allows_only_exact_template_sync_references() -> None:
             validate_spec(malformed)
 
 
+def test_outbox_contract_allows_only_exact_sign_adoption_references() -> None:
+    request_id = "c0a80101-0000-4000-8000-000000000139"
+    spec = event_spec(
+        event_type="sign.adopt",
+        aggregate_type="sms_sign",
+        aggregate_id="9",
+        task_name="app.tasks.adopt_sign",
+        queue="realtime",
+        args=(9, 112074),
+        dedup_key=f"sign.adopt:9:{request_id}",
+        max_attempts=3,
+    )
+
+    validate_spec(spec)
+    for malformed in (
+        replace(spec, event_type="job.trigger"),
+        replace(spec, aggregate_id="10"),
+        replace(spec, args=(10, 112074)),
+        replace(spec, args=(9, 0)),
+        replace(spec, args=(9, 2_147_483_648)),
+        replace(spec, queue="bulk"),
+        replace(spec, max_attempts=12),
+        replace(spec, dedup_key="sign.adopt:9:not-a-uuid"),
+    ):
+        with pytest.raises(ValueError, match="sign adoption"):
+            validate_spec(malformed)
+
+
 def test_outbox_contract_accepts_phone_shaped_digits_inside_opaque_batch_id() -> None:
     batch_no = "13800138000" + "a" * 21
 
