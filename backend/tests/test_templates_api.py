@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.templates as api
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
+from app.core.errors import ApiError, api_error_handler
 from app.services.template_management import TemplateRecord
 
 
@@ -16,8 +18,15 @@ class FakeFacade:
 
 
 class FakeService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        vendor_state: str = "pending",
+        vendor_template_id: str | None = "21",
+    ) -> None:
         self.created = False
+        self.vendor_state = vendor_state
+        self.vendor_template_id = vendor_template_id
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
         assert dept == "平台部"
@@ -44,8 +53,8 @@ class FakeService:
             "验证码{1}",
             [{"pos": 1, "max_len": 6}],
             "平台部",
-            None,
-            "pending",
+            self.vendor_template_id,
+            self.vendor_state,
             None,
         )
 
@@ -97,6 +106,7 @@ def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None
     service = FakeService()
     sender = FakeSender()
     app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
     app.dependency_overrides[api.get_template_service] = lambda: service
@@ -109,6 +119,64 @@ def test_manual_template_sync_enqueues_only_the_authorized_template_id() -> None
 
     assert response.status_code == 202
     assert sender.sent == [1]
+
+
+def test_manual_template_sync_allows_rejected_template_with_vendor_id() -> None:
+    service = FakeService(vendor_state="rejected")
+    sender = FakeSender()
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    app.dependency_overrides[api.get_template_job_sender] = lambda: sender
+
+    response = TestClient(app).post(
+        "/api/v1/web/templates/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 202
+    assert sender.sent == [1]
+
+
+def test_manual_template_sync_rejects_template_without_vendor_id() -> None:
+    service = FakeService(vendor_template_id=None)
+    sender = FakeSender()
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    app.dependency_overrides[api.get_template_job_sender] = lambda: sender
+
+    response = TestClient(app).post(
+        "/api/v1/web/templates/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 409
+    assert sender.sent == []
+
+
+@pytest.mark.parametrize("vendor_state", ["approved", "draft"])
+def test_manual_template_sync_rejects_non_syncable_state(vendor_state: str) -> None:
+    service = FakeService(vendor_state=vendor_state)
+    sender = FakeSender()
+    app = FastAPI()
+    app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    app.dependency_overrides[api.get_template_job_sender] = lambda: sender
+
+    response = TestClient(app).post(
+        "/api/v1/web/templates/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 409
+    assert sender.sent == []
 
 
 def test_template_detail_records_sensitive_read_audit() -> None:

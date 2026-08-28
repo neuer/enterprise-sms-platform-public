@@ -79,9 +79,12 @@ async def test_automatic_approval_sync_audits_only_effective_transition(
 
     monkeypatch.setattr(repository_module, "bind_connection_system_audit", bind_system)
 
-    applied = await repository.apply_states(
-        [(7, "approved", None), (8, "rejected", "vendor detail")]
+    states = (
+        [(7, "21", "approved", None), (8, "22", "rejected", "vendor detail")]
+        if object_type == "template"
+        else [(7, "approved", None), (8, "rejected", "vendor detail")]
     )
+    applied = await repository.apply_states(states)  # type: ignore[arg-type]
 
     assert applied == 1
     assert bindings == [("vendor-state-sync", f"{object_type}_sync")]
@@ -91,6 +94,69 @@ async def test_automatic_approval_sync_audits_only_effective_transition(
     assert f"'{object_type}'" in audit_sql
     assert audit_params == {"id": 7, "state": "approved"}
     assert "vendor detail" not in str(audit_params)
+
+
+@pytest.mark.asyncio
+async def test_template_sync_sql_allows_rejected_and_skips_exact_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult(None)])
+    repository = SqlTemplateRepository()
+    repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+    bindings: list[tuple[str, str]] = []
+
+    async def bind_system(
+        _connection: object, *, actor_name: str, action: str
+    ) -> None:
+        bindings.append((actor_name, action))
+
+    monkeypatch.setattr(
+        template_repository_module,
+        "bind_connection_system_audit",
+        bind_system,
+    )
+
+    applied = await repository.apply_states([(7, "21", "rejected", "材料不足")])
+
+    assert applied == 0
+    update_sql = connection.calls[0][0]
+    assert "vendor_state IN ('pending','rejected')" in update_sql
+    assert "vendor_template_id=:expected_vendor_template_id" in update_sql
+    assert "vendor_state IS DISTINCT FROM :state" in update_sql
+    assert "vendor_reject_reason IS DISTINCT FROM :reason" in update_sql
+    assert connection.calls[0][1]["expected_vendor_template_id"] == "21"
+    assert bindings == []
+
+
+@pytest.mark.asyncio
+async def test_template_sync_drops_old_vendor_result_after_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧厂商编号返回结果时，新编号已绑定则 CAS 不更新也不审计。"""
+
+    connection = FakeConnection([FakeResult(None)])
+    repository = SqlTemplateRepository()
+    repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+    bindings: list[tuple[str, str]] = []
+
+    async def bind_system(
+        _connection: object, *, actor_name: str, action: str
+    ) -> None:
+        bindings.append((actor_name, action))
+
+    monkeypatch.setattr(
+        template_repository_module,
+        "bind_connection_system_audit",
+        bind_system,
+    )
+
+    applied = await repository.apply_states([(7, "21", "approved", None)])
+
+    assert applied == 0
+    update_sql, params = connection.calls[0]
+    assert "vendor_template_id=:expected_vendor_template_id" in update_sql
+    assert params["expected_vendor_template_id"] == "21"
+    assert bindings == []
 
 
 @pytest.mark.parametrize(
@@ -202,7 +268,12 @@ async def test_manual_approval_sync_uses_stable_human_attribution(
     principal = SecurityPrincipal(3, 4, "admin01", "平台部", "admin")
 
     with audit_principal_scope(principal), correlation_scope():
-        applied = await repository.apply_states([(9, "rejected", "材料不足")])
+        states = (
+            [(9, "21", "rejected", "材料不足")]
+            if action == "template_sync"
+            else [(9, "rejected", "材料不足")]
+        )
+        applied = await repository.apply_states(states)  # type: ignore[arg-type]
 
     assert applied == 1
     audit_sql, audit_params = connection.calls[1]

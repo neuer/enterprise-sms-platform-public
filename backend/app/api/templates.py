@@ -226,8 +226,11 @@ async def sync_template(
     claims = await _user(facade, credentials, write=True)
     try:
         current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
-        if current.vendor_state != "pending":
-            raise TemplateStateConflict("仅待审核模板可同步")
+        if (
+            current.vendor_state not in {"pending", "rejected"}
+            or current.vendor_template_id is None
+        ):
+            raise TemplateStateConflict("仅待审核或已拒绝且已有厂商编号的模板可同步")
         await sender.send_template(current.id)
         return Response(status_code=202)
     except Exception as error:

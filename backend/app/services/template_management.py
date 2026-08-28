@@ -30,6 +30,9 @@ class TemplateRecord:
     vendor_reject_reason: str | None
 
 
+TemplateStateUpdate = tuple[int, str, str, str | None]
+
+
 class TemplateRepository(Protocol):
     async def create(
         self,
@@ -57,9 +60,9 @@ class TemplateRepository(Protocol):
 
     async def delete(self, template_id: int, *, actor: str) -> bool: ...
 
-    async def pending(self, template_id: int | None = None) -> list[TemplateRecord]: ...
+    async def syncable(self, template_id: int | None = None) -> list[TemplateRecord]: ...
 
-    async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int: ...
+    async def apply_states(self, states: list[TemplateStateUpdate]) -> int: ...
 
     async def apply_binding(self, template_id: int, vendor_template_id: str) -> bool: ...
 
@@ -166,20 +169,22 @@ class TemplateManagementService:
             raise TemplateStateConflict("模板已通过、已被引用或不存在")
 
     async def sync_pending(self, template_id: int | None = None) -> int:
-        pending = await self.repository.pending(template_id)
-        if template_id is not None and not pending:
+        """同步待审核或已拒绝模板，保留旧方法名以兼容任务入口。"""
+
+        syncable = await self.repository.syncable(template_id)
+        if template_id is not None and not syncable:
             if await self.repository.get(template_id) is None:
                 raise TemplateNotFound("模板不存在")
-            raise TemplateStateConflict("仅待审核模板可同步")
+            raise TemplateStateConflict("仅待审核或已拒绝且已有厂商编号的模板可同步")
         vendor_to_local = {
-            int(item.vendor_template_id): item.id
-            for item in pending
+            int(item.vendor_template_id): item
+            for item in syncable
             if item.vendor_template_id is not None
         }
         if not vendor_to_local:
             return 0
         response = await self._vendor().get_template_state(list(vendor_to_local))
-        states: list[tuple[int, str, str | None]] = []
+        states: list[TemplateStateUpdate] = []
         for item in response:
             vendor_id = item.get("id")
             check_type = item.get("checkType")
@@ -192,11 +197,16 @@ class TemplateManagementService:
                 or (remark is not None and not isinstance(remark, str))
             ):
                 raise ValueError("invalid GetTemplateState item")
-            local_id = vendor_to_local.get(vendor_id)
-            if local_id is not None:
-                states.append(
-                    (local_id, map_vendor_template_state(check_type), mask_phone_in_text(remark))
-                )
+            local = vendor_to_local.get(vendor_id)
+            if local is not None:
+                expected_vendor_template_id = local.vendor_template_id
+                if expected_vendor_template_id is None:
+                    continue
+                state = map_vendor_template_state(check_type)
+                reason = mask_phone_in_text(remark)
+                if state == local.vendor_state and reason == local.vendor_reject_reason:
+                    continue
+                states.append((local.id, expected_vendor_template_id, state, reason))
         return await self.repository.apply_states(states)
 
     async def bind(self, template_id: int) -> int:

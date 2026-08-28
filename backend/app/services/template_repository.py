@@ -16,7 +16,7 @@ from app.services.content_protection import decrypt_template_content, decrypt_te
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
-from app.services.template_management import TemplateRecord
+from app.services.template_management import TemplateRecord, TemplateStateUpdate
 from app.settings import Settings, get_settings
 
 SELECT_FIELDS = """
@@ -230,38 +230,53 @@ class SqlTemplateRepository:
         finally:
             await engine.dispose()
 
-    async def pending(self, template_id: int | None = None) -> list[TemplateRecord]:
+    async def syncable(self, template_id: int | None = None) -> list[TemplateRecord]:
+        """返回仍需跟踪厂商审核结果的模板。"""
+
         id_filter = "" if template_id is None else "AND id=:id"
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
-                    text(f"{SELECT_FIELDS} WHERE vendor_state='pending' {id_filter}"),
+                    text(
+                        f"{SELECT_FIELDS} WHERE vendor_state IN ('pending','rejected') "
+                        f"AND vendor_template_id IS NOT NULL {id_filter}"
+                    ),
                     {"id": template_id},
                 )
                 return [_record(row, self._crypto()) for row in result.mappings()]
         finally:
             await engine.dispose()
 
-    async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int:
+    async def apply_states(self, states: list[TemplateStateUpdate]) -> int:
         if not states:
             return 0
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 applied = 0
-                for template_id, state, reason in states:
+                for template_id, expected_vendor_template_id, state, reason in states:
                     reason = mask_phone_in_text(reason)
                     changed = await connection.execute(
                         text(
                             """
                             UPDATE sms_template SET vendor_state=:state,
                               vendor_reject_reason=:reason,updated_at=now()
-                            WHERE id=:id AND vendor_state='pending'
+                            WHERE id=:id AND vendor_state IN ('pending','rejected')
+                              AND vendor_template_id=:expected_vendor_template_id
+                              AND (
+                                vendor_state IS DISTINCT FROM :state
+                                OR vendor_reject_reason IS DISTINCT FROM :reason
+                              )
                             RETURNING id
                             """
                         ),
-                        {"id": template_id, "state": state, "reason": reason},
+                        {
+                            "id": template_id,
+                            "expected_vendor_template_id": expected_vendor_template_id,
+                            "state": state,
+                            "reason": reason,
+                        },
                     )
                     if changed.scalar_one_or_none() is None:
                         continue
