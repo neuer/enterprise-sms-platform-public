@@ -93,6 +93,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0078_system_raw_replay_audit_producer",
         "0079_security_daily_publish_outbox",
         "0080_security_daily_delivery_generation",
+        "0081_sign_adoption_contract",
     ]
 
 

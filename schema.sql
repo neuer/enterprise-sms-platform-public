@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.67  2026-08-28
+-- v1.6.67：允许精确关联已有厂商签名的 Outbox 任务，并授权 realtime
+--          vendor-state-sync 写入 sign_adopt 系统审计。
 -- v1.6.66  2026-08-24
 -- v1.6.66：sms_send+realtime 允许 system-reconcile/raw_replay 系统审计；
 --          人工终态不得更新 system_replay_audit_state
@@ -1373,6 +1376,7 @@ CREATE TABLE outbox_event (
                    CHECK (task_name IN (
                      'app.tasks.bind_sign',
                      'app.tasks.bind_template',
+                     'app.tasks.adopt_sign',
                      'app.tasks.sync_template',
                      'app.tasks.send.process_batch',
                      'app.tasks.deliver_callback',
@@ -1424,6 +1428,15 @@ CREATE TABLE outbox_event (
           AND jsonb_array_length(args)=1
           AND jsonb_typeof(args->0)='number'
           AND args->>0 ~ '^[1-9][0-9]*$'
+        )
+        OR (
+          task_name='app.tasks.adopt_sign'
+          AND jsonb_array_length(args)=2
+          AND jsonb_typeof(args->0)='number'
+          AND args->>0 ~ '^[1-9][0-9]*$'
+          AND jsonb_typeof(args->1)='number'
+          AND args->>1 ~ '^[1-9][0-9]*$'
+          AND (args->>1)::bigint <= 2147483647
         )
         OR (
           task_name='app.tasks.send.process_batch'
@@ -1482,6 +1495,7 @@ CREATE TABLE outbox_event (
           task_name IN (
             'app.tasks.bind_sign',
             'app.tasks.bind_template',
+            'app.tasks.adopt_sign',
             'app.tasks.sync_template'
           )
           AND aggregate_id ~ '^[1-9][0-9]*$'
@@ -1519,7 +1533,7 @@ CREATE TABLE outbox_event (
           || 'callback[:][1-9][0-9]*[:]attempt[:][0-9]+|'
           || 'alert[:][1-9][0-9]*[:](wecom|smtp)|'
           || 'template[.]sync[:][1-9][0-9]*[:][1-9][0-9]*|'
-          || '(template[.]bind|sign[.]bind)[:][1-9][0-9]*[:]'
+          || '(template[.]bind|sign[.]bind|sign[.]adopt)[:][1-9][0-9]*[:]'
           || '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
           || '[89ab][0-9a-f]{3}-[0-9a-f]{12}|'
           || 'usage[.]release[:][0-9a-f]{8}-[0-9a-f]{4}-'
@@ -2163,7 +2177,7 @@ BEGIN
                 AND NEW.action='usage_projection_rebuild')))))
       OR (context_domain='realtime' AND session_user='sms_send' AND (
           (NEW.actor='vendor-state-sync'
-           AND NEW.action IN ('template_sync','sign_sync'))
+           AND NEW.action IN ('template_sync','sign_sync','sign_adopt'))
           OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
             'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
           OR (NEW.actor='system-reconcile' AND NEW.action='raw_replay')
