@@ -816,9 +816,11 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
   SHA-256 和字节数同时受离线索引与 manifest 约束。四镜像即使 `changed=false` 也必须随包交付。
   只有 release manager 可以在验签和整包验证后执行受控导入；禁止操作者人工 `docker load`、
   裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
-  该临时通道只覆盖首次 bootstrap、同包恢复，以及 Registry 建成前确有必要的无迁移四镜像
-  整包更新；不实现选择性归档、版本间离线更新迁移、历史包拼装、离线镜像包缓存复用或自动
-  自愈。空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
+  该临时通道只覆盖首次 bootstrap、同包恢复、Registry 建成前确有必要的无迁移四镜像
+  整包更新，以及经明确批准的一次性
+  `0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 全四镜像 expand 更新；
+  不实现选择性归档、其他版本间离线迁移、历史包拼装、离线镜像包缓存复用或自动自愈。
+  空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
 
 离线 manifest 使用 Ed25519 签名。生产信任根固定为
 `/etc/sms-platform/offline-release-signing-public.pem`，固定 key ID 文件为
@@ -866,7 +868,8 @@ python3 scripts/create_release_manifest.py \
 清单由 `scripts/create_release_manifest.py` 按 `deploy/scripts/release_manifest.py` 的
 exact-field 契约自动生成并用 `0600` 原子落盘。Registry schema v1 可按 changed subset 发布，
 迁移只允许 `none` 或向后兼容 `expand`；临时离线 schema v2 仅允许四镜像全不变的 bootstrap/
-恢复，或四镜像全部 changed 的无迁移整包更新。
+恢复、四镜像全部 changed 的无迁移整包更新，或上述精确 `0080`→`0081`
+expand 整包更新。其他 from/target、选择性镜像或 destructive 迁移继续失败关闭。
 
 ### 本机状态机命令
 
@@ -926,7 +929,7 @@ sudo /usr/local/sbin/sms-compose release activate --release-id release-forward-f
 前向回退候选必须保持 PostgreSQL/Redis 数据镜像与当前 schema，不得把旧 digest 包装成新发布。
 临时离线 schema v2 明确拒绝 `prepare-forward-rollback`；需要修复时制作新 commit、四镜像全新
 ID、无迁移的标准整包后走普通 `prepare`→`activate`。需要 schema
-变化的修复等待内部 Registry 路径，不为临时通道增加离线迁移能力。
+变化的修复等待内部 Registry 路径，不为临时通道增加上述一次性例外之外的离线迁移能力。
 
 systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。生产容器固定为 `restart: "no"`，因此宿主机或 Docker daemon 恢复后只能由 systemd 的受控 `up` 重新经过 start-gate；单个容器异常退出不会由 Docker 自动拉起，按已批准的 12 小时 RTO 由监控告警后人工执行 `systemctl restart sms-platform.service`，禁止直接 `docker start/restart`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
 
@@ -1006,10 +1009,15 @@ Trivy/attestation、实际提供的数据/备份恢复证据、changed subset、
 
 “临时离线无迁移整包快速更新”只适用于 schema v2、四镜像全部 changed、migration
 `from == target`，且提交差异不涉及 PostgreSQL/Redis 镜像定义或固定基础镜像、初始化脚本、
-Compose 存储/拓扑、`schema.sql` 或 Alembic。经操作者明确接受本次不单独证明数据镜像重启/主版本
-与隔离恢复的风险后，`data_images`、`backup_restore_change` 和同包预生产可以省略；若提供这些
-证据，原有 SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，
-也不放宽签名、attestation、四 archive、镜像 ID/platform/OCI labels、无迁移、健康检查和失败补偿。
+Compose 存储/拓扑、`schema.sql` 或 Alembic。另有一个精确授权例外：全四镜像
+`0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 可以执行向后兼容
+`expand`，但不得扩展到其他 from/target。无迁移全量更新维持原有显式风险例外，可省略
+`data_images`、`backup_restore_change` 和同包预生产；本次 expand 则仍必须执行数据镜像验证并
+绑定 `data_images`，显式风险参数只允许省略已获批准的 `backup_restore_change`。任何已提供证据的
+SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，也不放宽签名、
+attestation、四 archive、镜像 ID/platform/OCI labels、迁移兼容性、健康检查和失败补偿。
+该 expand 在失败补偿时允许恢复旧应用但保留已向前到 `0081_sign_adoption_contract` 的数据库
+schema，不尝试 destructive downgrade。
 生成不附条件证据的签名包时必须显式传入 `--allow-offline-no-conditional-evidence`；默认仍失败关闭。
 Phase 0 只有一名管理员时允许同一具名操作者执行并自复核，但必须如实记录为单人变更，禁止伪造
 第二身份。

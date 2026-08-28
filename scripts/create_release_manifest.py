@@ -27,7 +27,11 @@ from offline_image_archive import (  # noqa: E402
     load_offline_image_index_bytes,
     validate_offline_image_archive,
 )
-from release_manifest import OFFLINE_IMAGE_SOURCE, load_manifest_bytes  # noqa: E402
+from release_manifest import (  # noqa: E402
+    OFFLINE_EXPAND_MIGRATION,
+    OFFLINE_IMAGE_SOURCE,
+    load_manifest_bytes,
+)
 
 _IMAGES = ("api", "web", "postgres", "redis")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
@@ -613,30 +617,41 @@ def create_manifest(
         raise ManifestCreationError(
             "attestation bundle is only valid for an offline archive release"
         )
+    offline_full_update = offline and changed == frozenset(_IMAGES)
+    offline_full_no_migration_update = (
+        offline_full_update and migration_from == migration_target
+    )
+    offline_expand_update = (
+        offline_full_update
+        and (migration_from, migration_target) == OFFLINE_EXPAND_MIGRATION
+    )
     if offline and (
-        migration_from != migration_target or changed not in {frozenset(), frozenset(_IMAGES)}
+        changed not in {frozenset(), frozenset(_IMAGES)}
+        or (migration_from != migration_target and not offline_expand_update)
     ):
         raise ManifestCreationError(
-            "offline release must be a no-migration baseline or all-four-image update"
+            "offline release must be a baseline, all-four no-migration update, "
+            "or approved all-four expand update"
         )
-    offline_full_no_migration_update = (
-        offline
-        and changed == frozenset(_IMAGES)
-        and migration_from == migration_target
-    )
     backup_pair = (backup_record is not None, restore_report is not None)
     if backup_pair not in {(False, False), (True, True)}:
         raise ManifestCreationError("backup evidence must be provided as a pair")
     conditional_evidence_missing = data_images is None or not all(backup_pair)
+    approved_expand_backup_missing = offline_expand_update and not all(backup_pair)
     if allow_offline_no_conditional_evidence and (
-        not offline_full_no_migration_update or not conditional_evidence_missing
+        not (
+            (offline_full_no_migration_update and conditional_evidence_missing)
+            or approved_expand_backup_missing
+        )
     ):
         raise ManifestCreationError(
             "offline conditional evidence risk acceptance is not applicable"
         )
     if (
-        offline_full_no_migration_update
-        and conditional_evidence_missing
+        (
+            (offline_full_no_migration_update and conditional_evidence_missing)
+            or approved_expand_backup_missing
+        )
         and not allow_offline_no_conditional_evidence
     ):
         raise ManifestCreationError(
@@ -817,7 +832,9 @@ def create_manifest(
     ):
         raise ManifestCreationError("data image evidence does not match changed images")
     backup_allowed = "postgres" in changed or migration_from != migration_target
-    backup_required = backup_allowed and not offline_full_no_migration_update
+    backup_required = backup_allowed and not (
+        offline_full_no_migration_update or offline_expand_update
+    )
     if (backup_required and not all(backup_pair)) or (
         not backup_allowed and all(backup_pair)
     ):

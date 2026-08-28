@@ -30,7 +30,7 @@ from release_manager import (  # noqa: E402
     RuntimeObservation,
     reconcile_release,
 )
-from release_manifest import load_manifest  # noqa: E402
+from release_manifest import OFFLINE_EXPAND_MIGRATION, load_manifest  # noqa: E402
 
 COMMIT = "c" * 40
 IMAGE_NAMES = ("api", "web", "postgres", "redis")
@@ -481,7 +481,11 @@ def _offline_bundle(
     bundle.mkdir(mode=0o700)
     bundle.chmod(0o700)
     app_version = "1.6.0"
-    schema_revision = "0012_baseline"
+    migration_from, schema_revision = (
+        OFFLINE_EXPAND_MIGRATION
+        if migration_changed
+        else ("0012_baseline", "0012_baseline")
+    )
     images: dict[str, dict[str, Any]] = {}
     for name in IMAGE_NAMES:
         archive_path = bundle / f"{name}.tar"
@@ -514,7 +518,7 @@ def _offline_bundle(
         },
         "images": images,
         "migration": {
-            "from": "0011_baseline" if migration_changed else schema_revision,
+            "from": migration_from,
             "target": schema_revision,
             "compatibility": "expand" if migration_changed else "none",
         },
@@ -1836,6 +1840,230 @@ def test_production_offline_full_no_migration_update_can_compensate(
     assert manager.status(manifest["release_id"])["state"] == "rolled_back"
 
 
+def test_production_offline_full_expand_update_can_activate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    manager.prepare(manifest_path)
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+
+    manager.activate(manifest["release_id"])
+
+    state = manager.status(manifest["release_id"])
+    assert state["state"] == "succeeded"
+    assert state["verified_migration_head"] == manifest["migration"]["target"]
+    assert runner.migration_head == manifest["migration"]["target"]
+    with pytest.raises(ReleaseManagerError, match="requires a forward rollback candidate"):
+        manager.rollback(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+
+
+def test_succeeded_offline_expand_source_still_rejects_forward_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    manager.activate(manifest["release_id"])
+    candidate_root = tmp_path / "registry-forward-candidate"
+    candidate_root.mkdir()
+    candidate_path, _, _ = _bundle(candidate_root, mode="production")
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="do not support forward rollback"):
+        manager.prepare_forward_rollback(manifest["release_id"], candidate_path)
+
+    assert not runner.calls
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+
+
+def test_production_offline_full_expand_staged_resume_revalidates_and_activates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, _, _, _ = _manager(tmp_path, manifest, current_refs)
+    validate_git = manager._validate_git
+    interrupted = False
+
+    def interrupt_after_bundle_copy(parsed: Any) -> str:
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        return validate_git(parsed)
+
+    monkeypatch.setattr(manager, "_validate_git", interrupt_after_bundle_copy)
+    with pytest.raises(KeyboardInterrupt):
+        manager.prepare(manifest_path)
+
+    assert manager.status(manifest["release_id"])["state"] == "staged"
+    monkeypatch.setattr(manager, "_validate_git", validate_git)
+
+    manager.resume(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("observed_head", "expected_state", "residual"),
+    [
+        (OFFLINE_EXPAND_MIGRATION[0], "rolled_back", []),
+        (
+            OFFLINE_EXPAND_MIGRATION[1],
+            "rolled_back",
+            [
+                "image:postgres",
+                "image:redis",
+                f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
+            ],
+        ),
+        ("0080_partial", "recovery_required", None),
+    ],
+)
+def test_production_offline_expand_migrate_failure_uses_observed_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observed_head: str,
+    expected_state: str,
+    residual: list[str] | None,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.fail_action = "run"
+    runner.migration_head_after_failed_run = observed_head
+
+    with pytest.raises(ReleaseManagerError, match=expected_state):
+        manager.activate(manifest["release_id"])
+
+    state = manager.status(manifest["release_id"])
+    assert state["state"] == expected_state
+    if residual is None:
+        assert "residual_changes" not in state
+        return
+    assert state["residual_changes"] == residual
+    expected_refs = current_refs.copy()
+    if observed_head == manifest["migration"]["target"]:
+        expected_refs.update(
+            {
+                name: manifest["images"][name]["ref"]
+                for name in ("postgres", "redis")
+            }
+        )
+    assert manager._root_env_refs() == expected_refs
+    assert runner.runtime_refs == expected_refs
+
+
+def test_production_offline_expand_backend_failure_retains_schema_and_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.fail_action = "up"
+    runner.fail_action_number = 3
+    runner.fail_after_effect = True
+
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        manager.activate(manifest["release_id"])
+
+    expected_refs = current_refs.copy()
+    expected_refs.update(
+        {
+            name: manifest["images"][name]["ref"]
+            for name in ("postgres", "redis")
+        }
+    )
+    state = manager.status(manifest["release_id"])
+    assert state["state"] == "rolled_back"
+    assert state["residual_changes"] == [
+        "image:postgres",
+        "image:redis",
+        f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
+    ]
+    assert runner.migration_head == manifest["migration"]["target"]
+    assert manager._root_env_refs() == expected_refs
+    assert runner.runtime_refs == expected_refs
+
+
+def test_production_offline_expand_explicit_rollback_retains_schema_and_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_changed=True,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+
+    def interrupt_after_migrate(action: str, _count: int) -> None:
+        if action == "run":
+            manager.request_stop(signal.SIGTERM, None)
+
+    runner.after_action = interrupt_after_migrate
+    with pytest.raises(ReleaseManagerError, match="interrupted"):
+        manager.activate(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "activating"
+    assert runner.migration_head == manifest["migration"]["target"]
+    runner.after_action = None
+    resumed = ReleaseManager(
+        root=root,
+        release_root=release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        resumed.rollback(manifest["release_id"])
+
+    expected_refs = current_refs.copy()
+    expected_refs.update(
+        {
+            name: manifest["images"][name]["ref"]
+            for name in ("postgres", "redis")
+        }
+    )
+    state = resumed.status(manifest["release_id"])
+    assert state["state"] == "rolled_back"
+    assert state["residual_changes"] == [
+        "image:postgres",
+        "image:redis",
+        f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
+    ]
+    assert resumed._root_env_refs() == expected_refs
+    assert runner.runtime_refs == expected_refs
+
+
 def test_production_offline_signature_failure_precedes_every_docker_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1916,19 +2144,26 @@ def test_production_offline_v2_condition_evidence_checks_hash_and_size(
 
 
 @pytest.mark.parametrize(
-    ("changed", "migration_changed"),
-    [({"web"}, False), (set(IMAGE_NAMES), True)],
+    ("changed", "migration_changed", "compatibility"),
+    [
+        ({"web"}, False, "none"),
+        (set(IMAGE_NAMES), True, "manual"),
+    ],
 )
-def test_production_offline_rejects_selective_or_migration_updates(
+def test_production_offline_rejects_selective_or_unsupported_migration_updates(
     tmp_path: Path,
     changed: set[str],
     migration_changed: bool,
+    compatibility: str,
 ) -> None:
     manifest_path, manifest, current_refs = _offline_bundle(
         tmp_path,
         changed=changed,
         migration_changed=migration_changed,
     )
+    manifest["migration"]["compatibility"] = compatibility
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_path.chmod(0o600)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     original_env = (root / ".env").read_bytes()
 

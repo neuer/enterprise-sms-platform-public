@@ -138,11 +138,14 @@ scripts/test_update.sh promote --ref origin/main
    四个 image ID、archive 摘要/大小、离线索引及 attestation；Ed25519 私钥不得进入仓库或生产，
    生产只安装固定路径的公钥与 key ID。
 5. 首次空主机由独立 `release bootstrap --confirm-empty-host` 完成；普通更新才执行
-   `release prepare`、`release activate`、`release status`。临时离线更新仅允许无迁移四镜像
-   整包；Registry 路径的数据库变更只允许 expand。若提交未变更数据镜像定义/固定基础镜像、
-   初始化脚本、Compose 存储/拓扑、schema 或 Alembic，且操作者明确接受风险，该临时整包可省略
-   本候选专属的数据镜像、备份恢复证据和同包预生产；每日备份、数据卷、迁移头、签名、四镜像
-   完整性、健康、账本检查与失败补偿不得省略。
+   `release prepare`、`release activate`、`release status`。临时离线更新默认仅允许无迁移四镜像
+   整包；唯一已批准例外是 `0080_security_daily_delivery_generation`→
+   `0081_sign_adoption_contract` 全四镜像 expand，其他离线迁移仍拒绝。无迁移候选若未变更数据镜像
+   定义/固定基础镜像、初始化脚本、Compose 存储/拓扑、schema 或 Alembic，可在显式传入
+   `--allow-offline-no-conditional-evidence` 时省略本候选专属的数据镜像、备份恢复证据和同包
+   预生产。上述一次性 expand 仍必须提供并绑定 `data_images`，显式风险参数只允许省略
+   `backup_restore_change`；每日备份、数据卷、迁移头、签名、四镜像完整性、健康、账本检查与
+   失败补偿不得省略。
 
 离线包上传失败、验签失败、导入失败或发布失败时必须保留 staging、release 状态和已导入镜像
 供审计，禁止无范围 `prune`。执行前记录 manifest SHA-256；Phase 0 只有一名管理员时允许同一

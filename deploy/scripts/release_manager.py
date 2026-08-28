@@ -35,6 +35,7 @@ from offline_image_archive import (  # noqa: E402
     validate_offline_image_archive,
 )
 from release_manifest import (  # noqa: E402
+    OFFLINE_EXPAND_MIGRATION,
     OFFLINE_IMAGE_SOURCE,
     MigrationCompatibility,
     ReleaseManifest,
@@ -1300,24 +1301,34 @@ def _validate_staging_directory(path: Path, expected_uid: int) -> None:
         raise ReleaseManagerError("staging directory ownership or mode is unsafe")
 
 
-def _offline_full_no_migration_update(manifest: ReleaseManifest) -> bool:
+def _offline_full_update(manifest: ReleaseManifest) -> bool:
+    """离线普通更新只接受四镜像整包与明确的 NONE/EXPAND 迁移合同。"""
+
+    migration_is_supported = (
+        manifest.migration_from == manifest.migration_target
+        and manifest.migration_compatibility is MigrationCompatibility.NONE
+    ) or (
+        (manifest.migration_from, manifest.migration_target)
+        == OFFLINE_EXPAND_MIGRATION
+        and manifest.migration_compatibility is MigrationCompatibility.EXPAND
+    )
     return (
         manifest.image_source == OFFLINE_IMAGE_SOURCE
         and all(image.changed for image in manifest.images.values())
-        and manifest.migration_from == manifest.migration_target
-        and manifest.migration_compatibility is MigrationCompatibility.NONE
+        and migration_is_supported
     )
 
 
 def _require_offline_full_update(manifest: ReleaseManifest) -> None:
-    """生产离线普通更新只接受四镜像全量、无迁移的最小合同。"""
+    """生产离线普通更新只接受四镜像全量与 NONE/EXPAND 迁移合同。"""
 
     if (
         manifest.image_source == OFFLINE_IMAGE_SOURCE
-        and not _offline_full_no_migration_update(manifest)
+        and not _offline_full_update(manifest)
     ):
         raise ReleaseManagerError(
-            "offline production update requires all four changed images and no migration"
+            "offline production update requires all four changed images "
+            "and a none or expand migration"
         )
 
 
@@ -6368,7 +6379,7 @@ class ReleaseManager:
     ) -> None:
         if (
             manifest.image_source == OFFLINE_IMAGE_SOURCE
-            and not _offline_full_no_migration_update(manifest)
+            and not _offline_full_update(manifest)
         ):
             current = (
                 ReleaseState.ROLLING_BACK
@@ -6383,7 +6394,7 @@ class ReleaseManager:
                     failure_type="offline_automatic_rollback_unsupported",
                 )
             raise ReleaseManagerError(
-                "offline automatic rollback requires a full no-migration update"
+                "offline automatic rollback requires a supported all-four update"
             )
         if failure.ambiguous:
             current = ReleaseState.ROLLING_BACK if already_rolling_back else ReleaseState.ACTIVATING
@@ -6839,10 +6850,10 @@ class ReleaseManager:
         manifest = self._stored_manifest(store)
         if (
             manifest.image_source == OFFLINE_IMAGE_SOURCE
-            and not _offline_full_no_migration_update(manifest)
+            and not _offline_full_update(manifest)
         ):
             raise ReleaseManagerError(
-                "offline automatic rollback requires a full no-migration update"
+                "offline automatic rollback requires a supported all-four update"
             )
         already_rolling_back = state_value == ReleaseState.ROLLING_BACK.value
         if state_value == ReleaseState.PREPARED.value:
