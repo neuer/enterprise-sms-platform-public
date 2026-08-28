@@ -14,7 +14,7 @@ from app.core.sensitive_text import mask_phone_in_text
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.sign import format_sign_name
-from app.services.sign_management import SignRecord
+from app.services.sign_management import SignRecord, SignStateConflict
 from app.settings import Settings, get_settings
 
 FIELDS = "id,name,vendor_sign_id,vendor_state,vendor_reject_reason"
@@ -273,6 +273,103 @@ class SqlSignRepository:
                 return True
         finally:
             await engine.dispose()
+
+    async def adopt_existing(
+        self,
+        sign_id: int,
+        vendor_sign_id: str,
+        vendor_state: str,
+        vendor_reject_reason: str | None,
+    ) -> bool:
+        """原子采用已核验厂商 ID 与真实审核状态，并写系统审计。"""
+
+        if vendor_state not in {"pending", "approved", "rejected"}:
+            raise ValueError("invalid vendor sign state")
+        reason = mask_phone_in_text(vendor_reject_reason)
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await self._lock_vendor_binding(connection, sign_id, vendor_sign_id)
+                changed = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_sign
+                        SET vendor_sign_id=:vendor_sign_id,
+                            vendor_state=:vendor_state,
+                            vendor_reject_reason=:vendor_reject_reason
+                        WHERE id=:id AND vendor_state='pending'
+                          AND vendor_sign_id IS NULL
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "id": sign_id,
+                        "vendor_sign_id": vendor_sign_id,
+                        "vendor_state": vendor_state,
+                        "vendor_reject_reason": reason,
+                    },
+                )
+                if changed.scalar_one_or_none() is None:
+                    return False
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name="vendor-state-sync",
+                    action="sign_adopt",
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,action,object_type,
+                          object_id,after_val
+                        ) VALUES(
+                          'vendor-state-sync','system','system','sign_adopt',
+                          'sign',CAST(CAST(:id AS bigint) AS text),
+                          jsonb_build_object(
+                            'vendor_binding','adopted',
+                            'vendor_state',CAST(:vendor_state AS text),
+                            'vendor_sign_id',CAST(:vendor_sign_id AS text)
+                          )
+                        )
+                        """
+                    ),
+                    {
+                        "id": sign_id,
+                        "vendor_state": vendor_state,
+                        "vendor_sign_id": vendor_sign_id,
+                    },
+                )
+                return True
+        finally:
+            await engine.dispose()
+
+    @staticmethod
+    async def _lock_vendor_binding(
+        connection: Any,
+        sign_id: int,
+        vendor_sign_id: str,
+    ) -> None:
+        """按厂商 ID 串行绑定，并拒绝跨本地签名重复关联。"""
+
+        await connection.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended('sms_sign:' || CAST(:vendor_sign_id AS text),0))"
+            ),
+            {"vendor_sign_id": vendor_sign_id},
+        )
+        duplicate = await connection.execute(
+            text(
+                """
+                SELECT id FROM sms_sign
+                WHERE vendor_sign_id=:vendor_sign_id AND id<>:id
+                LIMIT 1
+                """
+            ),
+            {"id": sign_id, "vendor_sign_id": vendor_sign_id},
+        )
+        if duplicate.scalar_one_or_none() is not None:
+            raise SignStateConflict("厂商签名编号已关联其他本地签名")
 
     @staticmethod
     async def _enqueue_binding(connection: Any, sign_id: int) -> None:

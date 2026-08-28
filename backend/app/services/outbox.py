@@ -36,6 +36,7 @@ STRUCTURED_REFERENCE = re.compile(
     r")$"
 )
 TASK_NAMES = {
+    "app.tasks.adopt_sign",
     "app.tasks.bind_sign",
     "app.tasks.bind_template",
     "app.tasks.sync_template",
@@ -252,6 +253,23 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.dedup_key.rsplit(":", 1)[-1].isdecimal()
         and not spec.dedup_key.rsplit(":", 1)[-1].startswith("0")
     )
+    sign_adoption_reference = (
+        spec.task_name == "app.tasks.adopt_sign"
+        and spec.event_type == "sign.adopt"
+        and spec.aggregate_type == "sms_sign"
+        and spec.queue == "realtime"
+        and spec.max_attempts == 3
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and len(spec.args) == 2
+        and spec.args[0] == int(spec.aggregate_id)
+        and isinstance(spec.args[1], int)
+        and not isinstance(spec.args[1], bool)
+        and spec.args[1] > 0
+        and spec.args[1] <= 2_147_483_647
+        and spec.dedup_key.startswith(f"sign.adopt:{spec.aggregate_id}:")
+        and UUID_REFERENCE.fullmatch(spec.dedup_key.rsplit(":", 1)[-1]) is not None
+    )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
     if spec.task_name == "app.tasks.outbox.trigger_job" and not manual_job_reference:
@@ -262,11 +280,14 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         raise ValueError("invalid vendor binding outbox contract")
     if spec.task_name == "app.tasks.sync_template" and not template_sync_reference:
         raise ValueError("invalid template sync outbox contract")
+    if spec.task_name == "app.tasks.adopt_sign" and not sign_adoption_reference:
+        raise ValueError("invalid sign adoption outbox contract")
     if (
         not usage_release_reference
         and not manual_job_reference
         and not vendor_binding_reference
         and not template_sync_reference
+        and not sign_adoption_reference
     ):
         _assert_safe(spec.aggregate_id)
         _assert_safe(spec.args)

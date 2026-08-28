@@ -22,6 +22,7 @@ info:
     - v1.6.34：生产 callback 强制 HTTPS；签名密钥/协议版本按事件固化；敏感密文与导出帧绑定业务上下文
     - v1.6.39：服务器安全日报脱敏事实、预览与独立 mailer 受控投递
     - v1.6.40：安全日报管理员页面配置 Resend Key、收件人与启停状态，API 同步独立 mailer 配置
+    - v1.6.43：管理员可将本地待审核签名与厂商已有签名 ID 精确关联；realtime worker 仅调用 GetSignState 复核，不重复 BindSign
 
 servers:
   - url: https://sms.example.com
@@ -1161,6 +1162,38 @@ paths:
         '202': { description: 已写入事务性任务队列 }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/signs/{id}/adopt-existing:
+    post:
+      tags: [signs]
+      summary: 排队关联厂商已有签名（admin）
+      description: |
+        仅管理员可用。只将本地签名、厂商签名正整数 ID 与操作人确认的签名名称组成的
+        精确关联意图排入 realtime worker；worker 仅调用 GetSignState 复核并回写本地状态，
+        不发送短信，也不调用 BindSign。202 只表示意图已受理排队，不表示关联或状态同步完成。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [vendor_sign_id, confirmed_name]
+              properties:
+                vendor_sign_id: { type: integer, minimum: 1.0, maximum: 2147483647.0, description: 厂商已有签名的正整数 ID }
+                confirmed_name: { type: string, minLength: 1, maxLength: 20, description: 操作人再次确认的本地签名名称，必须与目标记录精确一致 }
+      responses:
+        '202': { description: 精确关联意图已排入 realtime worker；不表示关联或厂商审核状态同步已经完成 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { description: INTERNAL_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: DEPENDENCY_UNAVAILABLE；精确关联意图无法安全排入队列, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   # ───────────────────────── 回复 ─────────────────────────
   /api/v1/web/replies:

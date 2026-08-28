@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.signs as api
+from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler
@@ -16,7 +17,15 @@ class FakeFacade:
 
     async def verify(self, token: str) -> JwtClaims:
         assert token == "jwt"
-        return JwtClaims("admin01", "管理员", "平台部", self.role)  # type: ignore[arg-type]
+        return JwtClaims(
+            1,
+            11,
+            "local",
+            "admin01",
+            "管理员",
+            "平台部",
+            self.role,  # type: ignore[arg-type]
+        )
 
 
 class FakeService:
@@ -35,6 +44,16 @@ class FakeService:
         assert sign_id == 1
         return SignRecord(1, "青鸾平台", None, "pending", None)
 
+    async def prepare_adoption(
+        self,
+        sign_id: int,
+        *,
+        confirmed_name: str,
+    ) -> SignRecord:
+        assert sign_id == 1
+        assert confirmed_name == "青鸾平台"
+        return SignRecord(1, "青鸾平台", None, "pending", None)
+
 
 class FakeSender:
     def __init__(self) -> None:
@@ -42,6 +61,21 @@ class FakeSender:
 
     async def send(self, task_name: str, queue: str) -> None:
         self.sent.append((task_name, queue))
+
+
+class FakeAdoptionSender:
+    def __init__(self) -> None:
+        self.sent: list[tuple[int, int, str, str]] = []
+
+    async def send_sign(
+        self,
+        sign_id: int,
+        vendor_sign_id: int,
+        *,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> None:
+        self.sent.append((sign_id, vendor_sign_id, principal.login_name, ip))
 
 
 def client(service: FakeService, role: str = "admin") -> TestClient:
@@ -82,3 +116,55 @@ def test_manual_sign_sync_only_enqueues_fixed_worker_job() -> None:
 
     assert response.status_code == 202
     assert sender.sent == [("app.tasks.sync_signs", "realtime")]
+
+
+def test_admin_can_enqueue_exact_existing_sign_adoption() -> None:
+    service = FakeService()
+    sender = FakeAdoptionSender()
+    app_client = client(service)
+    app_client.app.dependency_overrides[api.get_sign_adoption_sender] = lambda: sender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/adopt-existing",
+        headers={"Authorization": "Bearer jwt"},
+        json={"vendor_sign_id": 112074, "confirmed_name": "青鸾平台"},
+    )
+
+    assert response.status_code == 202
+    assert sender.sent == [(1, 112074, "admin01", "0.0.0.0")]
+
+
+def test_non_admin_cannot_adopt_existing_sign() -> None:
+    service = FakeService()
+    sender = FakeAdoptionSender()
+    app_client = client(service, "operator")
+    app_client.app.dependency_overrides[api.get_sign_adoption_sender] = lambda: sender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/adopt-existing",
+        headers={"Authorization": "Bearer jwt"},
+        json={"vendor_sign_id": 112074, "confirmed_name": "青鸾平台"},
+    )
+
+    assert response.status_code == 403
+    assert sender.sent == []
+
+
+def test_adoption_persistence_failure_is_a_structured_503() -> None:
+    service = FakeService()
+
+    class FailingSender(FakeAdoptionSender):
+        async def send_sign(self, *args: object, **kwargs: object) -> None:
+            raise api.SignAdoptionUnavailable("database unavailable")
+
+    app_client = client(service)
+    app_client.app.dependency_overrides[api.get_sign_adoption_sender] = FailingSender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/adopt-existing",
+        headers={"Authorization": "Bearer jwt"},
+        json={"vendor_sign_id": 112074, "confirmed_name": "青鸾平台"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "DEPENDENCY_UNAVAILABLE"
