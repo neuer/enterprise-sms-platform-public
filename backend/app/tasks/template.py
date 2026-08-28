@@ -1,4 +1,4 @@
-"""待审核模板状态同步任务。"""
+"""可跟踪模板的厂商审核状态同步任务。"""
 
 from __future__ import annotations
 

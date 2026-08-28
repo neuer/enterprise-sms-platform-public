@@ -207,7 +207,7 @@ function syncVariablesFromContent(): void {
 watch(() => form.content, syncVariablesFromContent)
 
 const canSync = (item: SmsTemplate) =>
-  item.vendor_state === "pending" && item.vendor_template_id !== null
+  ["pending", "rejected"].includes(item.vendor_state) && item.vendor_template_id !== null
 const canEdit = (item: SmsTemplate) => ["draft", "rejected"].includes(item.vendor_state)
 const canDelete = (item: SmsTemplate) => item.vendor_state !== "approved"
 const canUse = (item: SmsTemplate) => item.vendor_state === "approved"

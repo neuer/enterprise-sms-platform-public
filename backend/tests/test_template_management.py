@@ -8,6 +8,7 @@ from app.services.template_management import (
     TemplateManagementService,
     TemplateRecord,
     TemplateStateConflict,
+    TemplateStateUpdate,
     map_vendor_template_state,
 )
 
@@ -27,7 +28,7 @@ class FakeRepository:
             )
         }
         self.created: tuple[object, ...] | None = None
-        self.states: list[tuple[int, str, str | None]] = []
+        self.states: list[TemplateStateUpdate] = []
 
     async def create(self, **values: object) -> TemplateRecord:
         self.created = tuple(values.values())
@@ -51,14 +52,16 @@ class FakeRepository:
         record = self.records.get(template_id)
         return record if record is not None and (dept is None or record.dept == dept) else None
 
-    async def pending(self, template_id: int | None = None) -> list[TemplateRecord]:
+    async def syncable(self, template_id: int | None = None) -> list[TemplateRecord]:
         return [
             item
             for item in self.records.values()
-            if item.vendor_state == "pending" and (template_id is None or item.id == template_id)
+            if item.vendor_state in {"pending", "rejected"}
+            and item.vendor_template_id is not None
+            and (template_id is None or item.id == template_id)
         ]
 
-    async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int:
+    async def apply_states(self, states: list[TemplateStateUpdate]) -> int:
         self.states.extend(states)
         return len(states)
 
@@ -100,8 +103,11 @@ class FakeRepository:
 
 
 class FakeVendor:
-    def __init__(self) -> None:
+    def __init__(self, *, check_type: int = 1, remark: str | None = None) -> None:
         self.bound: list[str] = []
+        self.check_type = check_type
+        self.remark = remark
+        self.queried: list[list[int]] = []
 
     async def bind_template(self, template_content: str) -> int:
         self.bound.append(template_content)
@@ -109,7 +115,8 @@ class FakeVendor:
 
     async def get_template_state(self, template_ids: list[int]) -> list[dict[str, Any]]:
         assert template_ids == [21]
-        return [{"id": 21, "checkType": 1, "checkRemark": None}]
+        self.queried.append(template_ids)
+        return [{"id": 21, "checkType": self.check_type, "checkRemark": self.remark}]
 
 
 @pytest.mark.asyncio
@@ -148,11 +155,11 @@ async def test_bind_worker_converts_placeholders_and_applies_vendor_id() -> None
 
 
 @pytest.mark.asyncio
-async def test_sync_queries_pending_only_and_maps_vendor_state() -> None:
+async def test_sync_queries_syncable_templates_and_maps_vendor_state() -> None:
     repository = FakeRepository()
     count = await TemplateManagementService(repository, FakeVendor()).sync_pending()
     assert count == 1
-    assert repository.states == [(1, "approved", None)]
+    assert repository.states == [(1, "21", "approved", None)]
 
 
 def test_vendor_template_state_mapping_is_strict() -> None:
@@ -163,8 +170,9 @@ def test_vendor_template_state_mapping_is_strict() -> None:
         map_vendor_template_state(9)
 
 
+@pytest.mark.parametrize("vendor_state", ["approved", "draft"])
 @pytest.mark.asyncio
-async def test_manual_sync_rejects_non_pending_template() -> None:
+async def test_manual_sync_rejects_non_syncable_template(vendor_state: str) -> None:
     repository = FakeRepository()
     repository.records[1] = TemplateRecord(
         1,
@@ -173,11 +181,53 @@ async def test_manual_sync_rejects_non_pending_template() -> None:
         [{"pos": 1, "max_len": 6}],
         "平台部",
         "21",
-        "approved",
+        vendor_state,
         None,
     )
     with pytest.raises(TemplateStateConflict):
         await TemplateManagementService(repository, FakeVendor()).sync_pending(template_id=1)
+
+
+@pytest.mark.asyncio
+async def test_rejected_template_can_refresh_to_approved() -> None:
+    repository = FakeRepository()
+    repository.records[1] = TemplateRecord(
+        1,
+        "验证码",
+        "验证码{1}",
+        [{"pos": 1, "max_len": 6}],
+        "平台部",
+        "21",
+        "rejected",
+        "材料不足",
+    )
+
+    count = await TemplateManagementService(repository, FakeVendor()).sync_pending(template_id=1)
+
+    assert count == 1
+    assert repository.states == [(1, "21", "approved", None)]
+
+
+@pytest.mark.asyncio
+async def test_sync_skips_unchanged_vendor_state_and_reason() -> None:
+    repository = FakeRepository()
+    repository.records[1] = TemplateRecord(
+        1,
+        "验证码",
+        "验证码{1}",
+        [{"pos": 1, "max_len": 6}],
+        "平台部",
+        "21",
+        "rejected",
+        "材料不足",
+    )
+    vendor = FakeVendor(check_type=2, remark="材料不足")
+
+    count = await TemplateManagementService(repository, vendor).sync_pending()
+
+    assert count == 0
+    assert vendor.queried == [[21]]
+    assert repository.states == []
 
 
 @pytest.mark.asyncio

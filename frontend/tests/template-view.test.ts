@@ -130,6 +130,42 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
+  it("已拒绝且保留厂商编号时可手动同步，草稿与已通过不显示同步入口", async () => {
+    const rejectedTemplate = {
+      ...template,
+      id: 2,
+      vendor_state: "rejected",
+      vendor_reject_reason: "初次审核未通过",
+    }
+    const draftTemplate = { ...template, id: 3, vendor_state: "draft" }
+    const approvedTemplate = { ...template, id: 4, vendor_state: "approved" }
+    const templates = [rejectedTemplate, draftTemplate, approvedTemplate]
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      status: String(input).endsWith("/templates/2/sync") ? 202 : 200,
+      headers: { get: () => null },
+      json: async () => templates,
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+    vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='template-sync-2']").text()).toContain("同步")
+    expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-sync-4']").exists()).toBe(false)
+
+    await wrapper.get("[data-testid='template-sync-2']").trigger("click")
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/web/templates/2/sync",
+      expect.objectContaining({ method: "POST" }),
+    )
+    vi.unstubAllGlobals()
+  })
+
   it("状态筛选包含草稿选项并展示各状态计数", async () => {
     mockList([template, { ...template, id: 5, vendor_state: "draft" }])
     const pinia = applyRole("operator")
