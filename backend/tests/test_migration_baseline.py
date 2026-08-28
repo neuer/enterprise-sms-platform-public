@@ -660,6 +660,20 @@ def test_template_sync_outbox_contract_is_in_schema_and_current_migration() -> N
         assert "template[.]sync[:][1-9][0-9]*[:][1-9][0-9]*" in contract
 
 
+def test_sign_adoption_contract_is_in_schema_and_followup_migration() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0081_sign_adoption_contract.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.67：" in schema
+    for contract in (schema, source):
+        assert contract.count("'app.tasks.adopt_sign'") >= 3
+        assert "sign[.]adopt" in contract
+        assert "'template_sync','sign_sync','sign_adopt'" in contract
+    assert 'revision = "0081_sign_adoption_contract"' in source
+    assert 'down_revision = "0080_security_daily_delivery_generation"' in source
+
+
 def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"
