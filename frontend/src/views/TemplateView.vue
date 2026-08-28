@@ -207,9 +207,11 @@ function syncVariablesFromContent(): void {
 watch(() => form.content, syncVariablesFromContent)
 
 const canSync = (item: SmsTemplate) =>
-  ["pending", "rejected"].includes(item.vendor_state) && item.vendor_template_id !== null
-const canEdit = (item: SmsTemplate) => ["draft", "rejected"].includes(item.vendor_state)
-const canDelete = (item: SmsTemplate) => item.vendor_state !== "approved"
+  item.vendor_state !== "draft" && item.vendor_template_id !== null
+const canEdit = (item: SmsTemplate) =>
+  ["draft", "rejected"].includes(item.vendor_state) && item.vendor_template_id === null
+const canDelete = (item: SmsTemplate) =>
+  item.vendor_state !== "approved" && item.vendor_template_id === null
 const canUse = (item: SmsTemplate) => item.vendor_state === "approved"
 
 /** 详情抽屉审核轨迹：三态全部由 vendor_template_id 与 vendor_state 前端推导。 */
@@ -324,7 +326,7 @@ async function remove(item: SmsTemplate): Promise<void> {
       h("div", { class: "template-delete-dialog" }, [
         h(
           "p",
-          `确认删除模板「${item.name}」？删除后不可恢复；已通过审核或已被批次引用的模板不可删除。`,
+          `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
         ),
         h("p", { class: "template-delete-audit" }, "删除行为与操作人将写入审计日志。"),
       ]),
@@ -520,7 +522,7 @@ onMounted(load)
       <el-alert
         v-if="detail.vendor_state === 'rejected' && detail.vendor_reject_reason"
         :title="`厂商驳回原因：${detail.vendor_reject_reason}`"
-        description="修改内容或变量后重新提交，将生成新的厂商编号并重新进入审核。"
+        description="该模板已绑定厂商编号，不能原地修改；请新建模板并重新提交审核。"
         type="error"
         :closable="false"
         class="template-reject-banner"
@@ -557,7 +559,7 @@ onMounted(load)
         <el-button v-if="canUse(detail)" data-testid="template-detail-use" type="primary" @click="useForSend(detail)">用于发送</el-button>
         <el-button v-if="canSync(detail)" data-testid="template-detail-sync" :loading="syncingId === detail.id" @click="sync(detail)">同步审核状态</el-button>
         <el-button v-if="canDelete(detail)" data-testid="template-detail-delete" link type="danger" @click="remove(detail)">删除模板</el-button>
-        <p class="why">已通过审核的模板不可变更；重新提交后旧厂商编号作废。</p>
+        <p class="why">已绑定厂商编号的模板不可编辑或删除，但仍可同步厂商状态；被拒绝或撤销后请新建模板。</p>
       </div>
     </template>
   </el-drawer>

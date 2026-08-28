@@ -128,14 +128,31 @@ async def _release_usage(
 async def _trigger_job(
     task_name: str,
     event_id: str,
+    *,
+    sign_id: int | None = None,
 ) -> int:
     async def effect(claim: OutboxClaim) -> int:
-        if claim.args != (task_name,) or task_name not in MANUAL_JOB_TASK_NAMES:
+        exact_sign_sync = (
+            task_name == "app.tasks.sync_signs"
+            and sign_id is not None
+            and not isinstance(sign_id, bool)
+            and 1 <= sign_id <= 2_147_483_647
+        )
+        expected_args = (task_name, sign_id) if exact_sign_sync else (task_name,)
+        if (
+            claim.args != expected_args
+            or task_name not in MANUAL_JOB_TASK_NAMES
+            or (sign_id is not None and not exact_sign_sync)
+        ):
             raise ValueError("manual job outbox args mismatch")
         task = celery_app.tasks.get(task_name)
         if task is None:
             raise ValueError("manual job task is unavailable")
-        result = await asyncio.to_thread(task.run)
+        if exact_sign_sync:
+            assert sign_id is not None
+            result = await _sync_exact_sign(sign_id)
+        else:
+            result = await asyncio.to_thread(task.run)
         return int(result or 0)
 
     return await OutboxExecutor(SqlOutboxRepository(get_settings())).run(
@@ -143,6 +160,14 @@ async def _trigger_job(
         expected_type="job.trigger",
         effect=effect,
     )
+
+
+async def _sync_exact_sign(sign_id: int) -> int:
+    """执行单条人工同步，不冒充 beat 全量任务心跳。"""
+
+    from app.tasks.sign import _sync
+
+    return await _sync(sign_id)
 
 
 @celery_app.task(name="app.tasks.outbox.compensate_quota")  # type: ignore[untyped-decorator]
@@ -194,8 +219,23 @@ def deliver_alert(
 @celery_app.task(name="app.tasks.outbox.trigger_job")  # type: ignore[untyped-decorator]
 def trigger_job(
     task_name: str,
-    outbox_event_id: str,
+    reference_or_event_id: int | str,
+    outbox_event_id: str | None = None,
 ) -> int:
     """只执行固定任务白名单；event ID 提供持久化租约与重复投递幂等。"""
 
-    return run_worker_async(_trigger_job(task_name, outbox_event_id))
+    if outbox_event_id is None:
+        if not isinstance(reference_or_event_id, str):
+            raise ValueError("invalid manual job outbox reference")
+        return run_worker_async(_trigger_job(task_name, reference_or_event_id))
+    if not isinstance(reference_or_event_id, int) or isinstance(
+        reference_or_event_id, bool
+    ):
+        raise ValueError("invalid manual job outbox reference")
+    return run_worker_async(
+        _trigger_job(
+            task_name,
+            outbox_event_id,
+            sign_id=reference_or_event_id,
+        )
+    )

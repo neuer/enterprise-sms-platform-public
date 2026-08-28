@@ -559,13 +559,20 @@ class SqlTemplateRenderer:
         params: Sequence[str],
         dept: str,
     ) -> str:
+        binding_guard = (
+            "" if bool(getattr(self.settings, "vendor_mock", False))
+            else """AND vendor_template_id ~ '^[1-9][0-9]{0,9}$'
+              AND (length(vendor_template_id)<10
+                OR vendor_template_id<='2147483647')"""
+        )
         async with database_engine(self.settings.database_url).connect() as connection:
             result = await connection.execute(
                 text(
-                    """
+                    f"""
                         SELECT content_enc, var_specs FROM sms_template
                         WHERE id=:template_id AND dept=:dept
                           AND vendor_state='approved'
+                          {binding_guard}
                         """
                 ),
                 {"template_id": template_id, "dept": dept},

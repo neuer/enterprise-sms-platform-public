@@ -121,7 +121,7 @@ function detailHeadMeta(item: SmsSign): string {
 }
 
 const canSync = (item: SmsSign) =>
-  item.vendor_state === "pending" && item.vendor_sign_id !== null
+  item.vendor_sign_id !== null
 const canAdopt = (item: SmsSign) =>
   canWrite.value && item.vendor_state === "pending" && item.vendor_sign_id === null
 const canEdit = (item: SmsSign) => item.vendor_state === "rejected"
@@ -192,7 +192,14 @@ async function loadSignApps(signName: string): Promise<void> {
   try {
     const apps = await listApps()
     // 停用应用同样计入删除约束（服务端 NOT EXISTS 不过滤 status），这里一并列出。
-    signApps.value = apps.filter((app) => app.default_sign === signName)
+    signApps.value = apps.filter((app) => {
+      const configured = app.default_sign?.trim()
+      if (!configured) return false
+      const normalized = configured.startsWith("【") && configured.endsWith("】")
+        ? configured.slice(1, -1).trim()
+        : configured
+      return normalized === signName
+    })
   } catch {
     signAppsError.value = true
     signApps.value = []
@@ -400,7 +407,7 @@ onMounted(load)
             <el-button v-if="canAdopt(row)" :data-testid="`sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
             <el-button v-if="canEdit(row)" :data-testid="`sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
             <el-button v-if="canDelete(row)" :data-testid="`sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
-            <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可变更或删除">不可变更</span>
+            <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除">不可编辑/删除</span>
           </div>
         </template>
       </el-table-column>
@@ -426,7 +433,7 @@ onMounted(load)
           <el-button v-if="canAdopt(row)" :data-testid="`mobile-sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
           <el-button v-if="canEdit(row)" :data-testid="`mobile-sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
           <el-button v-if="canDelete(row)" :data-testid="`mobile-sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
-          <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可变更或删除">不可变更</span>
+          <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除">不可编辑/删除</span>
         </footer>
       </article>
       <EmptyState v-if="!loading && !filtered.length" :title="emptyTitle" :description="emptyDescription" />
@@ -493,7 +500,7 @@ onMounted(load)
         <el-button v-if="canSync(detail)" data-testid="sign-detail-sync" :loading="syncingId === detail.id" @click="sync(detail)">同步审核状态</el-button>
         <el-button v-if="canAdopt(detail)" data-testid="sign-detail-adopt" type="primary" @click="openAdopt(detail)">关联已有签名</el-button>
         <el-button v-if="canDelete(detail)" data-testid="sign-detail-delete" link type="danger" @click="remove(detail)">删除签名</el-button>
-        <p class="why">已通过审核的签名不可变更或删除；如需调整请申请新签名，默认签名请在应用管理中维护。</p>
+        <p class="why">已通过审核的签名不可编辑或删除，但仍可同步厂商状态；已被应用或批次引用的驳回签名请新建。</p>
       </div>
     </template>
   </el-drawer>

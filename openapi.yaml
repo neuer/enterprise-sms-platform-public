@@ -1035,7 +1035,8 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [templates]
-      summary: 修改草稿或被拒模板并重新排队提交审核
+      summary: 修改尚未绑定厂商编号的可编辑模板并重新排队提交审核
+      description: 模板一旦取得厂商编号即不可原地编辑或重新绑定；被拒绝或撤销后应新建模板。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1062,7 +1063,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
     delete:
       tags: [templates]
-      summary: 删除未通过且未被批次引用的模板
+      summary: 删除未绑定厂商编号且未被批次引用的模板
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1074,7 +1075,7 @@ paths:
     post:
       tags: [templates]
       summary: 排队手动同步厂商审核状态（GetTemplateState）
-      description: 仅待审核或已拒绝且已有厂商编号的模板可同步；仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。
+      description: 已有厂商编号的待审核、已通过或已拒绝模板均可同步；仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。厂商状态可双向变化，HTTP 202 仅表示任务已入队。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1155,6 +1156,7 @@ paths:
     post:
       tags: [signs]
       summary: 排队手动同步厂商签名审核状态（GetSignState）
+      description: 已有厂商编号的待审核、已通过或已拒绝签名均可同步；请求与人类审计原子写入事务性 Outbox，仅查询当前签名，同一签名在同一 UTC 分钟内重复请求会合并。厂商状态可双向变化，HTTP 202 仅表示任务已入队。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1170,7 +1172,9 @@ paths:
       description: |
         仅管理员可用。只将本地签名、厂商签名正整数 ID 与操作人确认的签名名称组成的
         精确关联意图排入 realtime worker；worker 仅调用 GetSignState 复核并回写本地状态，
-        不发送短信，也不调用 BindSign。202 只表示意图已受理排队，不表示关联或状态同步完成。
+        不发送短信，也不调用 BindSign。尚未发布的自动 BindSign 会在同一事务中撤销；若自动
+        绑定已经发布或执行，或已有活动关联意图，则返回 409。202 只表示意图已受理排队，
+        不表示关联或状态同步完成。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }

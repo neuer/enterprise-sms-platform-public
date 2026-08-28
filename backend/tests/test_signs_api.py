@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -29,8 +31,15 @@ class FakeFacade:
 
 
 class FakeService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        vendor_state: str = "pending",
+        vendor_sign_id: str | None = "21",
+    ) -> None:
         self.created = False
+        self.vendor_state = vendor_state
+        self.vendor_sign_id = vendor_sign_id
 
     async def list_all(self) -> list[SignRecord]:
         return [SignRecord(1, "青鸾平台", "21", "approved", None)]
@@ -42,7 +51,13 @@ class FakeService:
 
     async def get(self, sign_id: int) -> SignRecord:
         assert sign_id == 1
-        return SignRecord(1, "青鸾平台", None, "pending", None)
+        return SignRecord(
+            1,
+            "青鸾平台",
+            self.vendor_sign_id,
+            self.vendor_state,
+            None,
+        )
 
     async def prepare_adoption(
         self,
@@ -57,10 +72,12 @@ class FakeService:
 
 class FakeSender:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
+        self.sent: list[int] = []
+        self.principals: list[str] = []
 
-    async def send(self, task_name: str, queue: str) -> None:
-        self.sent.append((task_name, queue))
+    async def send_sign(self, sign_id: int, **values: object) -> None:
+        self.sent.append(sign_id)
+        self.principals.append(values["principal"].login_name)  # type: ignore[attr-defined]
 
 
 class FakeAdoptionSender:
@@ -76,6 +93,10 @@ class FakeAdoptionSender:
         ip: str,
     ) -> None:
         self.sent.append((sign_id, vendor_sign_id, principal.login_name, ip))
+
+
+def sender_dependency(sender: FakeSender) -> Callable[[], FakeSender]:
+    return lambda: sender
 
 
 def client(service: FakeService, role: str = "admin") -> TestClient:
@@ -103,7 +124,7 @@ def test_operator_plus_can_list_but_only_admin_can_create() -> None:
     assert service.created
 
 
-def test_manual_sign_sync_only_enqueues_fixed_worker_job() -> None:
+def test_manual_sign_sync_enqueues_exact_authorized_sign() -> None:
     service = FakeService()
     sender = FakeSender()
     app_client = client(service)
@@ -115,7 +136,37 @@ def test_manual_sign_sync_only_enqueues_fixed_worker_job() -> None:
     )
 
     assert response.status_code == 202
-    assert sender.sent == [("app.tasks.sync_signs", "realtime")]
+    assert sender.sent == [1]
+    assert sender.principals == ["admin01"]
+
+
+def test_manual_sign_sync_allows_approved_and_rejected_bound_states() -> None:
+    headers = {"Authorization": "Bearer jwt"}
+    for state in ("approved", "rejected"):
+        service = FakeService(vendor_state=state)
+        sender = FakeSender()
+        app_client = client(service)
+        app_client.app.dependency_overrides[api.get_sign_job_sender] = sender_dependency(sender)
+
+        response = app_client.post("/api/v1/web/signs/1/sync", headers=headers)
+
+        assert response.status_code == 202
+        assert sender.sent == [1]
+
+
+def test_manual_sign_sync_rejects_unbound_sign() -> None:
+    service = FakeService(vendor_sign_id=None)
+    sender = FakeSender()
+    app_client = client(service)
+    app_client.app.dependency_overrides[api.get_sign_job_sender] = lambda: sender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/sync",
+        headers={"Authorization": "Bearer jwt"},
+    )
+
+    assert response.status_code == 409
+    assert sender.sent == []
 
 
 def test_admin_can_enqueue_exact_existing_sign_adoption() -> None:
@@ -168,3 +219,23 @@ def test_adoption_persistence_failure_is_a_structured_503() -> None:
 
     assert response.status_code == 503
     assert response.json()["code"] == "DEPENDENCY_UNAVAILABLE"
+
+
+def test_adoption_race_is_a_structured_409() -> None:
+    service = FakeService()
+
+    class RacingSender(FakeAdoptionSender):
+        async def send_sign(self, *args: object, **kwargs: object) -> None:
+            raise api.SignAdoptionConflict("签名自动提交正在执行，请稍后刷新")
+
+    app_client = client(service)
+    app_client.app.dependency_overrides[api.get_sign_adoption_sender] = RacingSender
+
+    response = app_client.post(
+        "/api/v1/web/signs/1/adopt-existing",
+        headers={"Authorization": "Bearer jwt"},
+        json={"vendor_sign_id": 112074, "confirmed_name": "青鸾平台"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"

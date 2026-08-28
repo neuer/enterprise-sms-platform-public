@@ -15,9 +15,10 @@ from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.ops_dispatch import (
-    OutboxJobSender,
+    SignAdoptionConflict,
     SignAdoptionSender,
     SignAdoptionUnavailable,
+    SignSyncSender,
 )
 from app.services.sign_management import (
     SignManagementService,
@@ -55,8 +56,8 @@ def get_sign_service() -> SignManagementService:
     return SignManagementService(SqlSignRepository(settings))
 
 
-def get_sign_job_sender() -> OutboxJobSender:
-    return OutboxJobSender(get_settings())
+def get_sign_job_sender() -> SignSyncSender:
+    return SignSyncSender(get_settings())
 
 
 def get_sign_adoption_sender() -> SignAdoptionSender:
@@ -83,6 +84,8 @@ def _model(record: SignRecord) -> SignModel:
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, SignAdoptionConflict):
+        return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(error, SignAdoptionUnavailable):
         return ApiError(
             503,
@@ -217,17 +220,25 @@ async def adopt_existing_sign(
 @audited("sign_sync")
 async def sync_sign(
     id: int,
+    request: Request,
     service: Annotated[SignManagementService, Depends(get_sign_service)],
-    sender: Annotated[OutboxJobSender, Depends(get_sign_job_sender)],
+    sender: Annotated[SignSyncSender, Depends(get_sign_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    await _user(facade, credentials, admin=True)
+    claims = await _user(facade, credentials, admin=True)
     try:
         current = await service.get(id)
-        if current.vendor_state != "pending":
-            raise SignStateConflict("仅待审核签名可同步")
-        await sender.send("app.tasks.sync_signs", "realtime")
+        if (
+            current.vendor_state not in {"pending", "approved", "rejected"}
+            or current.vendor_sign_id is None
+        ):
+            raise SignStateConflict("仅已有厂商编号的签名可同步")
+        await sender.send_sign(
+            current.id,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
+        )
     except Exception as error:
         raise _error(error) from None
     return Response(status_code=202)

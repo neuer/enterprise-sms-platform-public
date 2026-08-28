@@ -143,13 +143,13 @@ async def test_blacklist_and_approval_reject_phone_embedded_in_metadata() -> Non
 async def test_vendor_rejection_reasons_are_masked_before_repository() -> None:
     class TemplateRepository:
         def __init__(self) -> None:
-            self.states: list[tuple[int, str, str, str | None]] = []
+            self.states: list[tuple[int, str, int, str, str | None]] = []
 
         async def syncable(self, _template_id: int | None = None) -> list[TemplateRecord]:
             return [TemplateRecord(1, "模板", "通知", [], "平台部", "21", "pending", None)]
 
         async def apply_states(
-            self, states: list[tuple[int, str, str, str | None]]
+            self, states: list[tuple[int, str, int, str, str | None]]
         ) -> int:
             self.states = states
             return len(states)
@@ -163,16 +163,20 @@ async def test_vendor_rejection_reasons_are_masked_before_repository() -> None:
         template_repository,  # type: ignore[arg-type]
         TemplateVendor(),  # type: ignore[arg-type]
     ).sync_pending()
-    assert template_repository.states == [(1, "21", "rejected", "联系***********")]
+    assert template_repository.states == [
+        (1, "21", 0, "rejected", "联系***********")
+    ]
 
     class SignRepository:
         def __init__(self) -> None:
-            self.states: list[tuple[int, str, str | None]] = []
+            self.states: list[tuple[int, str, int, str, str | None]] = []
 
-        async def pending(self, _sign_id: int | None = None) -> list[SignRecord]:
+        async def syncable(self, _sign_id: int | None = None) -> list[SignRecord]:
             return [SignRecord(1, "签名", "31", "pending", None)]
 
-        async def apply_states(self, states: list[tuple[int, str, str | None]]) -> int:
+        async def apply_states(
+            self, states: list[tuple[int, str, int, str, str | None]]
+        ) -> int:
             self.states = states
             return len(states)
 
@@ -185,7 +189,7 @@ async def test_vendor_rejection_reasons_are_masked_before_repository() -> None:
         sign_repository,  # type: ignore[arg-type]
         SignVendor(),  # type: ignore[arg-type]
     ).sync_pending()
-    assert sign_repository.states == [(1, "rejected", "回拨***********")]
+    assert sign_repository.states == [(1, "31", 0, "rejected", "回拨***********")]
 
 
 def test_schema_requires_encrypted_template_content_and_blocks_phone_metadata() -> None:
