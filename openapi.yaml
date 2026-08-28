@@ -23,6 +23,7 @@ info:
     - v1.6.39：服务器安全日报脱敏事实、预览与独立 mailer 受控投递
     - v1.6.40：安全日报管理员页面配置 Resend Key、收件人与启停状态，API 同步独立 mailer 配置
     - v1.6.43：管理员可将本地待审核签名与厂商已有签名 ID 精确关联；realtime worker 仅调用 GetSignState 复核，不重复 BindSign
+    - v1.6.45：模板为全局资源，不按部门隔离；发送接口的 template_id 始终是平台模板 ID，不能填写厂商编号
 
 servers:
   - url: https://sms.example.com
@@ -168,7 +169,7 @@ paths:
                   minItems: 1
                   maxItems: 10000
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID（非厂商ID），配合 template_params }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），配合 template_params }
                 template_params:
                   anyOf:
                     - { type: array, items: { type: string, maxLength: 200 }, maxItems: 20 }
@@ -250,7 +251,7 @@ paths:
                   minItems: 1
                   maxItems: 1
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID，须已审核通过 }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params:
                   anyOf:
                     - { type: array, maxItems: 20, items: { type: string, maxLength: 200 } }
@@ -573,7 +574,7 @@ paths:
                 mobiles: { anyOf: [{ type: array, minItems: 1, maxItems: 50000, items: { type: string, pattern: '^1\d{10}$' } }, { type: 'null' }], description: 与 import_id 二选一 }
                 import_id: { anyOf: [{ type: string, format: uuid }, { type: 'null' }], description: 引用导入任务号码包 }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
@@ -630,7 +631,7 @@ paths:
               properties:
                 category: { type: string, enum: [notice, market] }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }] }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 accepted_count: { type: integer, minimum: 0, maximum: 50000 }
@@ -986,7 +987,7 @@ paths:
   /api/v1/web/templates:
     get:
       tags: [templates]
-      summary: 模板列表
+      summary: 全局模板列表
       security: [{ BearerAuth: [] }]
       responses:
         '200':
@@ -998,7 +999,7 @@ paths:
                 items: { $ref: '#/components/schemas/Template' }
     post:
       tags: [templates]
-      summary: 新建模板并排队提交厂商审核（BindTemplate）
+      summary: 新建全局模板并排队提交厂商审核（BindTemplate）
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -3207,6 +3208,7 @@ components:
             - { type: string, minLength: 1, maxLength: 500 }
             - { type: 'null' }
         template_id:
+          description: 全局平台模板 ID（非厂商 ID）
           anyOf:
             - { type: integer, exclusiveMinimum: 0 }
             - { type: 'null' }
@@ -3243,6 +3245,7 @@ components:
             - { type: string, minLength: 1, maxLength: 500 }
             - { type: 'null' }
         template_id:
+          description: 全局平台模板 ID（非厂商 ID）
           anyOf:
             - { type: integer, exclusiveMinimum: 0 }
             - { type: 'null' }
@@ -3939,7 +3942,7 @@ components:
             properties:
               pos: { type: integer, minimum: 1 }
               max_len: { type: integer, minimum: 1, maximum: 100 }
-        dept: { type: string }
+        dept: { type: string, deprecated: true, description: 历史兼容字段；模板为全局资源，该值不参与查询、授权或发送判断 }
         vendor_template_id: { anyOf: [{ type: string }, { type: 'null' }] }
         vendor_state: { type: string, enum: [draft, pending, approved, rejected] }
         vendor_reject_reason: { anyOf: [{ type: string }, { type: 'null' }] }

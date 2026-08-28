@@ -115,10 +115,14 @@ class TemplateManagementService:
         return self.vendor
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
-        return await self.repository.list_all(dept=dept)
+        # 保留参数以兼容既有端口，模板自此作为平台全局资源。
+        del dept
+        return await self.repository.list_all(dept=None)
 
     async def get(self, template_id: int, *, dept: str | None) -> TemplateRecord:
-        record = await self.repository.get(template_id, dept=dept)
+        # 部门不再参与模板可见性或权限判断。
+        del dept
+        record = await self.repository.get(template_id, dept=None)
         if record is None:
             raise TemplateNotFound("模板不存在")
         return record
@@ -133,11 +137,13 @@ class TemplateManagementService:
         actor: str,
     ) -> TemplateRecord:
         to_vendor_template(content, var_specs)
+        # dept 列暂留作数据库兼容字段，新模板统一写空值。
+        del dept
         return await self.repository.create(
             name=name,
             content=content,
             var_specs=_normalized_specs(var_specs),
-            dept=dept,
+            dept="",
             actor=actor,
         )
 

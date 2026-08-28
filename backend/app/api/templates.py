@@ -54,7 +54,10 @@ class TemplateModel(BaseModel):
     name: str
     content: str
     var_specs: list[VarSpecModel]
-    dept: str
+    dept: str = Field(
+        deprecated=True,
+        description="历史兼容字段；模板为全局资源，该值不参与查询、授权或发送判断",
+    )
     vendor_template_id: str | None
     vendor_state: Literal["draft", "pending", "approved", "rejected"]
     vendor_reject_reason: str | None
@@ -108,8 +111,8 @@ async def list_templates(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[TemplateModel]:
-    claims = await _user(facade, credentials, write=False)
-    records = await service.list_all(dept=None if claims.role == "admin" else claims.dept)
+    await _user(facade, credentials, write=False)
+    records = await service.list_all(dept=None)
     await auditor.record(
         action="template_content_read",
         object_type="template_page",
@@ -135,7 +138,7 @@ async def create_template(
                 name=payload.name,
                 content=payload.content,
                 var_specs=[item.model_dump() for item in payload.var_specs],
-                dept=claims.dept,
+                dept="",
                 actor=claims.username,
             )
         )
@@ -152,9 +155,9 @@ async def get_template(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> TemplateModel:
-    claims = await _user(facade, credentials, write=False)
+    await _user(facade, credentials, write=False)
     try:
-        record = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
+        record = await service.get(id, dept=None)
     except TemplateNotFound as error:
         raise _error(error) from None
     await auditor.record(
@@ -178,7 +181,7 @@ async def update_template(
 ) -> TemplateModel:
     claims = await _user(facade, credentials, write=True)
     try:
-        current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
+        current = await service.get(id, dept=None)
         return _model(
             await service.update(
                 current.id,
@@ -202,7 +205,7 @@ async def delete_template(
 ) -> Response:
     claims = await _user(facade, credentials, write=True)
     try:
-        current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
+        current = await service.get(id, dept=None)
         await service.delete(current.id, actor=claims.username)
     except Exception as error:
         raise _error(error) from None
@@ -226,7 +229,7 @@ async def sync_template(
 ) -> Response:
     claims = await _user(facade, credentials, write=True)
     try:
-        current = await service.get(id, dept=None if claims.role == "admin" else claims.dept)
+        current = await service.get(id, dept=None)
         if (
             current.vendor_state not in {"pending", "approved", "rejected"}
             or current.vendor_template_id is None

@@ -74,7 +74,7 @@ const syncLabels: Record<UserSyncStatus, string> = {
 const roleDescriptions: Record<UserRole, string> = {
   admin: "全部功能，含账号维护、角色覆盖、队列恢复与强制下线",
   approver: "审批（不能审本人提交），查看全量记录与报表",
-  operator: "Web 人工发送（通知/营销），本部门记录与模板",
+  operator: "Web 人工发送（通知/营销），本部门记录与全局模板维护",
   viewer: "本部门记录与报表",
 }
 const LOCAL_LOGIN_RE = /^[a-z0-9._-]{3,64}$/

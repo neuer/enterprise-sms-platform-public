@@ -397,7 +397,7 @@ class VendorTestUatService:
 
 
 class VendorTestUatPreviewService:
-    """按所选应用部门复用服务端模板、签名、合规与计费口径。"""
+    """复用全局模板及所选应用的签名、合规与计费口径。"""
 
     def __init__(
         self,
@@ -450,6 +450,8 @@ class VendorTestUatPreviewService:
             notice_threshold=policy.approval_threshold,
             market_threshold=policy.market_approval_threshold,
         )
+
+
 def build_vendor_test_uat_service() -> VendorTestUatService:
     """组装既有模板、合规、计费、频控、配额、队列与 callback 关联链路。"""
 

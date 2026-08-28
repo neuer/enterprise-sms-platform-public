@@ -58,8 +58,6 @@ const editorOpen = ref(false)
 const editingSource = ref<SmsTemplate | null>(null)
 const form = reactive<TemplatePayload>({ name: "", content: "", var_specs: [] })
 const canWrite = computed(() => session.role === "operator" || session.role === "admin")
-/** 非 admin 的响应恒为本部门，部门列只在 admin 跨部门视图渲染。 */
-const isAdmin = computed(() => session.role === "admin")
 
 const STATE_FILTERS: { label: string; value: TemplateState | "all" }[] = [
   { label: "全部", value: "all" },
@@ -120,11 +118,10 @@ function stateSub(item: SmsTemplate): StateSub {
   }
 }
 
-/** 详情抽屉标题副行：平台编号 / 已绑定厂商编号 / 部门，缺项省略。 */
+/** 详情抽屉标题副行：平台编号 / 已绑定厂商编号。 */
 function detailHeadMeta(item: SmsTemplate): string {
   const parts = [`平台 #${item.id}`]
   if (item.vendor_template_id) parts.push(`厂商 #${item.vendor_template_id}`)
-  if (item.dept) parts.push(item.dept)
   return parts.join(" · ")
 }
 
@@ -367,7 +364,7 @@ onMounted(load)
     <div>
       <p class="eyebrow">ASSETS / 内容治理</p>
       <h1>模板管理</h1>
-      <p>以 {1}..{n} 占位并登记变量最大长度，提交后统一转厂商 {s长度} 格式送审；仅审核通过可用于发送。</p>
+      <p>模板为全局资源，所有应用均可引用；以 {1}..{n} 占位并登记变量最大长度，仅审核通过可用于发送。</p>
     </div>
     <el-button v-if="canWrite" data-testid="new-template" type="primary" @click="resetEditor()">新建模板</el-button>
   </section>
@@ -435,9 +432,6 @@ onMounted(load)
           </span>
         </template>
       </el-table-column>
-      <el-table-column v-if="isAdmin" label="部门" width="110">
-        <template #default="{ row }"><span :class="{ muted: !row.dept }">{{ row.dept || "—" }}</span></template>
-      </el-table-column>
       <el-table-column label="厂商状态" width="170">
         <template #default="{ row }">
           <StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" />
@@ -481,9 +475,6 @@ onMounted(load)
           </template>
         </p>
         <p class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</p>
-        <dl v-if="isAdmin">
-          <div><dt>所属部门</dt><dd :class="{ muted: !row.dept }">{{ row.dept || "—" }}</dd></div>
-        </dl>
         <footer v-if="canWrite" @click.stop>
           <el-button v-if="canUse(row)" :data-testid="`template-mobile-use-${row.id}`" link type="primary" @click="useForSend(row)">用于发送</el-button>
           <el-button v-if="canSync(row)" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
@@ -548,7 +539,6 @@ onMounted(load)
       <dl class="template-fact-grid">
         <div><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div>
         <div><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_template_id || "—" }}</dd></div>
-        <div><dt>所属部门</dt><dd :class="{ muted: !detail.dept }">{{ detail.dept || "—" }}</dd></div>
         <div>
           <dt>变量声明</dt>
           <dd class="mono-id">{{ detail.var_specs.length ? varSpecsLine(detail.var_specs) : "无变量" }}</dd>

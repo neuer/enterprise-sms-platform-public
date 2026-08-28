@@ -228,7 +228,7 @@ live-test 模式下，现有普通 API/Web 发送入口一律返回 `VENDOR_TEST
 
 `POST /api/v1/messages/uat-send` 仅用于验证 `X-Api-Key → API → pipeline → queue → carrier` 真实接入链路。调用前必须确认页面仍显示受控联调中、目标应用已启用且允许通知、目标号码仍为 active，并对本次真实短信再次明确授权。
 
-请求合同固定为：仅通知（`category=notice`）、一个已登记号码、直接内容、可选签名和必填 `biz_id`。`biz_id` 为同一应用 24 小时幂等键，长度 1–32；同一个测试动作重试必须复用原值。模板、定时、验证码、营销、第二个号码和任何额外字段都返回 `INVALID_PARAM`。所有调用先消费应用每分钟限流并校验通知权限，未获授权的 Key 不进入号码 HMAC 查询；控制状态损坏或过期会用 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则返回 `CONTROL_AGENT_PAUSE_UNAVAILABLE` 并保持发送关闭。入口继续受应用/部门配额、每日 100 个计费条、uncertain 占额和所有 critical/daily pause 约束；HTTP 超时或网络异常严禁自动重发。
+请求合同固定为：仅通知（`category=notice`）、一个已登记号码、直接内容或已审核的全局平台模板（`template_id` + `template_params`）二选一、可选签名和必填 `biz_id`。`template_id` 只能填写平台模板编号，不能填写厂商编号。`biz_id` 为同一应用 24 小时幂等键，长度 1–32；同一个测试动作重试必须复用原值。定时、验证码、营销、第二个号码和任何额外字段都返回 `INVALID_PARAM`。所有调用先消费应用每分钟限流并校验通知权限，未获授权的 Key 不进入号码 HMAC 查询；控制状态损坏或过期会用 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则返回 `CONTROL_AGENT_PAUSE_UNAVAILABLE` 并保持发送关闭。入口继续受应用/部门配额、每日 100 个计费条、uncertain 占额和所有 critical/daily pause 约束；HTTP 超时或网络异常严禁自动重发。
 
 fish 终端使用下列纯标准库脚本。它只接受 `https://<临时 HTTPS 地址>` 且域名必须为当前
 Quick Tunnel 的 `*.trycloudflare.com`；TLS 使用系统默认 CA 严格校验。Key 与完整手机号均由

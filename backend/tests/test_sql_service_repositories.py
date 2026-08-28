@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,10 +11,12 @@ from uuid import UUID
 
 import pytest
 
+import app.api.messages as messages_api_module
 import app.services.pipeline_repository as pipeline_repository_module
 import app.services.reconcile_repository as reconcile_repository_module
 import app.services.report_repository as report_repository_module
 import app.services.uncertain_repository as uncertain_repository_module
+import app.services.vendor_test_uat as vendor_test_uat_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.services.approval_repository import SqlApprovalRepository, record_pending_approval_alert
@@ -176,7 +179,7 @@ def protected_report() -> ProtectedReport:
 
 
 @pytest.mark.asyncio
-async def test_template_renderer_binds_authoritative_department(
+async def test_template_renderer_uses_global_template_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = FakeConnection(
@@ -208,10 +211,154 @@ async def test_template_renderer_binds_authoritative_department(
 
     assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
     sql, params = connection.calls[0]
-    assert "dept=:dept" in sql
+    assert "dept=:dept" not in sql
     assert "vendor_template_id ~ '^[1-9][0-9]{0,9}$'" in sql
     assert "vendor_template_id<='2147483647'" in sql
-    assert params == {"template_id": 17, "dept": "平台技术部"}
+    assert params == {"template_id": 17}
+
+
+def test_api_and_uat_factories_assemble_global_template_renderer() -> None:
+    sources = (
+        inspect.getsource(messages_api_module._pipeline),
+        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_service),
+        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_preview_service),
+    )
+
+    assert all("SqlTemplateRenderer(settings)" in source for source in sources)
+
+
+@pytest.mark.asyncio
+async def test_template_repository_list_and_get_ignore_department_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    row = {
+        "id": 17,
+        "name_enc": crypto.encrypt_bound_packed_text(
+            "全局通知",
+            EncryptionContext(
+                domain="sms-template-name",
+                table="sms_template",
+                column="name_enc",
+                object_id="17",
+            ),
+        ),
+        "content_enc": crypto.encrypt_bound_packed_text(
+            "通知{1}",
+            EncryptionContext(
+                domain="sms-template-content",
+                table="sms_template",
+                column="content_enc",
+                object_id="17",
+            ),
+        ),
+        "var_specs": [{"pos": 1, "max_len": 10}],
+        "dept": "历史部门",
+        "vendor_template_id": "21",
+        "vendor_state": "approved",
+        "vendor_reject_reason": None,
+        "row_version": 1,
+    }
+    connection = FakeConnection([FakeResult(rows=[row]), FakeResult(rows=[row])])
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    records = await repository.list_all(dept="其他业务部")
+    record = await repository.get(17, dept="其他业务部")
+
+    assert [item.id for item in records] == [17]
+    assert record is not None and record.dept == "历史部门"
+    list_sql, list_params = connection.calls[0]
+    get_sql, get_params = connection.calls[1]
+    assert "dept=:dept" not in list_sql
+    assert "dept=:dept" not in get_sql
+    assert list_params is None
+    assert get_params == {"id": 17}
+
+
+@pytest.mark.asyncio
+async def test_template_repository_create_writes_empty_compat_department(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    encrypted = crypto.encrypt_bound_packed_text(
+        "验证码{1}",
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    )
+    encrypted_name = crypto.encrypt_bound_packed_text(
+        "验证码",
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    )
+    outbox_id = UUID("20000000-0000-4000-8000-000000000017")
+    connection = FakeConnection(
+        [
+            FakeResult(),
+            FakeResult(),
+            FakeResult(
+                rows=[
+                    {
+                        "id": outbox_id,
+                        "event_type": "template.bind",
+                        "aggregate_type": "sms_template",
+                        "aggregate_id": "17",
+                        "task_name": "app.tasks.bind_template",
+                        "queue": "realtime",
+                        "args": [17],
+                        "max_attempts": 1,
+                        "correlation_id": None,
+                    }
+                ]
+            ),
+            FakeResult(
+                rows=[
+                    {
+                        "id": 17,
+                        "name_enc": encrypted_name,
+                        "content_enc": encrypted,
+                        "var_specs": [{"pos": 1, "max_len": 6}],
+                        "dept": "",
+                        "vendor_template_id": None,
+                        "vendor_state": "pending",
+                        "vendor_reject_reason": None,
+                        "row_version": 41,
+                    }
+                ]
+            ),
+        ],
+        scalar_values=[17],
+    )
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    record = await repository.create(
+        name="验证码",
+        content="验证码{1}",
+        var_specs=[{"pos": 1, "max_len": 6}],
+        dept="调用方历史部门",
+        actor="operator01",
+    )
+
+    insert_sql, insert_params = connection.calls[1]
+    assert "INSERT INTO sms_template" in insert_sql
+    assert isinstance(insert_params, dict)
+    assert insert_params["dept"] == ""
+    assert record.dept == ""
 
 
 @pytest.mark.asyncio

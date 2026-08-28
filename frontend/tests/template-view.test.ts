@@ -223,24 +223,22 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("部门列仅 admin 渲染，为空时列表与移动卡片均显示占位", async () => {
-    mockList([{ ...template, id: 4, dept: "" }])
+  it("模板作为全局资源时不展示兼容 dept 字段", async () => {
+    mockList([{ ...template, id: 4, dept: "历史部门" }])
     const operatorPinia = applyRole("operator")
     const operatorWrapper = mount(TemplateView, { global: { plugins: [operatorPinia, ElementPlus] } })
     await flushPromises()
     expect(operatorWrapper.get(".template-table thead").text()).not.toContain("部门")
     expect(operatorWrapper.find(".template-mobile-list dl").exists()).toBe(false)
+    expect(operatorWrapper.text()).not.toContain("历史部门")
     operatorWrapper.unmount()
 
     const adminPinia = applyRole("admin")
     const wrapper = mount(TemplateView, { global: { plugins: [adminPinia, ElementPlus] } })
     await flushPromises()
-
-    // 列序：名称 / 内容 / 部门 / 厂商状态 / 操作
-    const deptCell = wrapper.get(".template-table .el-table__row td:nth-child(3)")
-    expect(deptCell.text()).toBe("—")
-    expect(deptCell.get("span").classes()).toContain("muted")
-    expect(wrapper.get(".template-mobile-list dl > div:last-child dd").text()).toBe("—")
+    expect(wrapper.get(".template-table thead").text()).not.toContain("部门")
+    expect(wrapper.find(".template-mobile-list dl").exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("历史部门")
     vi.unstubAllGlobals()
   })
 

@@ -32,39 +32,58 @@ class FakeService:
         vendor_state: str = "pending",
         vendor_template_id: str | None = "21",
     ) -> None:
-        self.created = False
+        self.created: dict[str, object] | None = None
         self.vendor_state = vendor_state
         self.vendor_template_id = vendor_template_id
+        self.updated: list[int] = []
+        self.deleted: list[int] = []
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
-        assert dept == "平台部"
+        assert dept is None
         return []
 
-    async def create(self, **_: object) -> TemplateRecord:
-        self.created = True
+    async def create(self, **values: object) -> TemplateRecord:
+        self.created = values
         return TemplateRecord(
             1,
             "验证码",
             "验证码{1}",
             [{"pos": 1, "max_len": 6}],
-            "平台部",
+            "",
             None,
             "pending",
             None,
         )
 
     async def get(self, template_id: int, *, dept: str | None) -> TemplateRecord:
-        assert template_id == 1 and dept == "平台部"
+        assert template_id == 1 and dept is None
         return TemplateRecord(
             1,
             "验证码",
             "验证码{1}",
             [{"pos": 1, "max_len": 6}],
-            "平台部",
+            "其他业务部",
             self.vendor_template_id,
             self.vendor_state,
             None,
         )
+
+    async def update(self, template_id: int, **values: object) -> TemplateRecord:
+        self.updated.append(template_id)
+        return TemplateRecord(
+            template_id,
+            str(values["name"]),
+            str(values["content"]),
+            values["var_specs"],  # type: ignore[arg-type]
+            "其他业务部",
+            None,
+            "pending",
+            None,
+        )
+
+    async def delete(self, template_id: int, *, actor: str) -> None:
+        assert actor == "operator01"
+        self.deleted.append(template_id)
 
 
 class FakeSender:
@@ -107,7 +126,8 @@ def test_operator_can_list_and_create_template() -> None:
     )
     assert created.status_code == 200
     assert created.json()["vendor_state"] == "pending"
-    assert service.created
+    assert service.created is not None
+    assert service.created["dept"] == ""
     assert auditor.calls[0]["action"] == "template_content_read"
     assert auditor.calls[0]["count"] == 0
 
@@ -226,3 +246,30 @@ def test_template_detail_records_sensitive_read_audit() -> None:
     assert response.status_code == 200
     assert auditor.calls[0]["action"] == "template_content_read"
     assert auditor.calls[0]["object_id"] == "1"
+
+
+def test_operator_can_update_and_delete_template_from_another_department() -> None:
+    service = FakeService(vendor_state="draft", vendor_template_id=None)
+    app = FastAPI()
+    app.include_router(api.router)
+    app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
+    app.dependency_overrides[api.get_template_service] = lambda: service
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer jwt"}
+
+    updated = client.put(
+        "/api/v1/web/templates/1",
+        headers=headers,
+        json={
+            "name": "跨部门通知",
+            "content": "通知{1}",
+            "var_specs": [{"pos": 1, "max_len": 10}],
+        },
+    )
+    removed = client.delete("/api/v1/web/templates/1", headers=headers)
+
+    assert updated.status_code == 200
+    assert updated.json()["dept"] == "其他业务部"
+    assert removed.status_code == 204
+    assert service.updated == [1]
+    assert service.deleted == [1]
