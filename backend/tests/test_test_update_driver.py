@@ -379,10 +379,13 @@ def test_driver_preflights_github_auth_before_mutation() -> None:
         "\n}", maxsplit=1
     )[0]
 
-    assert (
-        '"$COMMAND" != apply && "$COMMAND" != rebaseline && '
-        '"$COMMAND" != promote'
-    ) in preflight
+    for command in (
+        '"$COMMAND" != apply',
+        '"$COMMAND" != rebaseline',
+        '"$COMMAND" != recover-rebaseline-prepare',
+        '"$COMMAND" != promote',
+    ):
+        assert command in preflight
     assert "gh auth status --hostname github.com" in preflight
     assert 'gh api "repos/$LOCAL_REPOSITORY" --jq .full_name' in preflight
     assert "auth token" not in preflight
@@ -398,7 +401,7 @@ def test_rebaseline_is_narrower_than_daily_apply_and_requires_exact_ci_gate() ->
     source = DRIVER.read_text(encoding="utf-8")
 
     assert (
-        "[plan|build|apply|rebaseline|recover-rebaseline-verify|status|promote]"
+        "[plan|build|apply|rebaseline|recover-rebaseline-prepare|recover-rebaseline-verify|status|promote]"
         in source
     )
     assert "rebaseline 只允许 origin/main" in source
@@ -411,6 +414,10 @@ def test_rebaseline_is_narrower_than_daily_apply_and_requires_exact_ci_gate() ->
     assert 'REQUEST_OPERATION="apply"' in source
     assert 'REQUEST_OPERATION="rebaseline"' in source
     assert '"operation":operation' in source
+    assert "remote_bootstrap_sms_compose test-update recover-rebaseline-prepare" in source
+    assert source.index('if [[ "$COMMAND" == recover-rebaseline-prepare ]]') < source.index(
+        'docker buildx build --platform linux/amd64 --load'
+    )
 
     result = subprocess.run(
         ["bash", str(DRIVER), "rebaseline", "--ref", "origin/feature"],

@@ -100,6 +100,14 @@ _PUBLIC_CUTOVER_RESULT_FIELDS = frozenset(
 _SOURCE_FETCH_BACKOFF_SECONDS = (1.0, 2.0)
 _REBASELINE_MIGRATION_FROM = "0053_idempotency_scope"
 _REBASELINE_MIGRATION_TARGET = "0061_vendor_binding_outbox"
+_REBASELINE_RESUME_MIGRATION_FROM = "0079_security_daily_publish_outbox"
+_REBASELINE_RESUME_MIGRATION_TARGET = "0081_sign_adoption_contract"
+_APPROVED_REBASELINE_MIGRATIONS = frozenset(
+    {
+        (_REBASELINE_MIGRATION_FROM, _REBASELINE_MIGRATION_TARGET),
+        (_REBASELINE_RESUME_MIGRATION_FROM, _REBASELINE_RESUME_MIGRATION_TARGET),
+    }
+)
 _REBASELINE_VERIFY_STEPS = frozenset(
     {
         "environment_mode",
@@ -150,6 +158,16 @@ _REBASELINE_NEW_SECRET_NAMES = frozenset(
 )
 _REBASELINE_DEV_SECRET = "dev-apikeys.txt"
 _MAX_SECRET_BYTES = 1024 * 1024
+
+
+def _needs_legacy_rebaseline_secret_expansion(
+    migration_from: str,
+    migration_target: str,
+) -> bool:
+    return (migration_from, migration_target) == (
+        _REBASELINE_MIGRATION_FROM,
+        _REBASELINE_MIGRATION_TARGET,
+    )
 
 
 class TestUpdateManagerError(RuntimeError):
@@ -1012,7 +1030,10 @@ class TestUpdateManager:
                 raise TestUpdateManagerError("encrypted checkpoint is invalid")
             step = "migration_check"
             self.operations.check_expand_migration(migration_from, migration_target)
-            if operation == "rebaseline":
+            if operation == "rebaseline" and _needs_legacy_rebaseline_secret_expansion(
+                migration_from,
+                migration_target,
+            ):
                 step = "secret_expansion"
                 self.operations.expand_rebaseline_secrets()
             step = "pause_owner"
@@ -1565,12 +1586,25 @@ class HostTestUpdateOperations:
                 )
             shutil.rmtree(temporary_root, ignore_errors=True)
 
-    def _require_exact_rebaseline_migration(self) -> None:
+    def _require_approved_rebaseline_migration(self) -> None:
         if (
             self.request.operation != "rebaseline"
-            or self.request.migration_from != _REBASELINE_MIGRATION_FROM
-            or self.request.migration_target != _REBASELINE_MIGRATION_TARGET
+            or (
+                self.request.migration_from,
+                self.request.migration_target,
+            )
+            not in _APPROVED_REBASELINE_MIGRATIONS
             or self.request.migration_compatibility != "expand"
+        ):
+            raise TestUpdateManagerError(
+                "rebaseline migration scope is invalid"
+            )
+
+    def _require_legacy_rebaseline_secret_migration(self) -> None:
+        self._require_approved_rebaseline_migration()
+        if not _needs_legacy_rebaseline_secret_expansion(
+            self.request.migration_from,
+            self.request.migration_target,
         ):
             raise TestUpdateManagerError(
                 "rebaseline secret expansion scope is invalid"
@@ -1579,7 +1613,7 @@ class HostTestUpdateOperations:
     def expand_rebaseline_secrets(self) -> None:
         """在精确 18 件旧清单上可恢复地追加本次所需的六件随机密钥。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_legacy_rebaseline_secret_migration()
         source = self.root / "deploy/secrets"
         try:
             metadata = source.lstat()
@@ -1927,6 +1961,30 @@ class HostTestUpdateOperations:
             if component not in _IMAGE_ENV_KEYS:
                 raise TestUpdateManagerError("image component is invalid")
 
+    def require_loaded_request_images(self) -> None:
+        """复核 prepare 已加载的镜像仍与不可变请求完全一致。"""
+
+        for component, image in self.request.images.items():
+            if component not in _IMAGE_ENV_KEYS:
+                raise TestUpdateManagerError("image component is invalid")
+            observed = self._command(
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                (
+                    "{{.Id}}|{{.Architecture}}|"
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                ),
+                image.ref,
+            )
+            if observed != (
+                f"{image.image_id}|amd64|{self.request.commit}|"
+                f"{self.request.migration_target}"
+            ):
+                raise TestUpdateManagerError("loaded image identity is invalid")
+
     def _activate_source_and_image(self, component: str) -> None:
         image = self.request.images[component]
         self._command(
@@ -1948,7 +2006,12 @@ class HostTestUpdateOperations:
     def _prepare_rebaseline_runtime_secrets(self) -> None:
         if self.request.operation != "rebaseline":
             return
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
+        if not _needs_legacy_rebaseline_secret_expansion(
+            self.request.migration_from,
+            self.request.migration_target,
+        ):
+            return
         command = [
             "/usr/bin/python3",
             str(self.root / "deploy/scripts/prepare_runtime_secrets.py"),
@@ -2296,13 +2359,88 @@ class HostTestUpdateOperations:
                     "rollback image cleanup did not verify"
                 )
 
+    def recover_blocked_rebaseline_prepare(
+        self,
+        store: TestUpdateStore,
+    ) -> None:
+        """越过已误用的旧密钥扩展门禁，复用同一 checkpoint 与镜像。"""
+
+        self._require_approved_rebaseline_migration()
+        if (
+            self.request.migration_from != _REBASELINE_RESUME_MIGRATION_FROM
+            or self.request.migration_target != _REBASELINE_RESUME_MIGRATION_TARGET
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline prepare recovery scope is invalid"
+            )
+        self.require_lifecycle_lock()
+        state = store.read_consistent_state()
+        if (
+            state.get("state") != TestUpdateState.BLOCKED.value
+            or state.get("step") != "secret_expansion"
+            or state.get("error_type") != "validation_failed"
+            or state.get("actual_commit") != self.request.commit
+            or state.get("actual_migration_head") != self.request.migration_from
+            or state.get("event_sequence") != 2
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline prepare recovery state is invalid"
+            )
+        if self.host_source_commit is None:
+            raise TestUpdateManagerError(
+                "blocked rebaseline prepare recovery snapshot is invalid"
+            )
+        secret_contract_diff = self._command(
+            "git",
+            "-C",
+            str(self.root),
+            "diff",
+            "--name-only",
+            "--no-renames",
+            self.request.base_commit,
+            self.request.commit,
+            "--",
+            "deploy/docker-compose.yml",
+            "deploy/scripts/prepare_runtime_secrets.py",
+            "deploy/scripts/vendor_runtime_reset.py",
+        )
+        if secret_contract_diff:
+            raise TestUpdateManagerError(
+                "blocked rebaseline prepare recovery secret contract changed"
+            )
+        head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
+        git_status = self._command(
+            "git", "-C", str(self.root), "status", "--porcelain"
+        )
+        if (
+            head != self.request.base_commit
+            or git_status
+            or self.current_migration_head() != self.request.migration_from
+        ):
+            raise TestUpdateManagerError(
+                "blocked rebaseline prepare recovery identity is invalid"
+            )
+        self.require_owned_update_pauses(self.request.update_id)
+        _require_no_unsafe_chunks(
+            self.unsafe_status_counts(),
+            include_uncertain=True,
+        )
+        self.require_loaded_request_images()
+        store.transition(
+            TestUpdateState.BLOCKED,
+            TestUpdateState.CHECKPOINTED,
+            step="recover_prepare",
+            actual_commit=self.request.commit,
+            actual_migration_head=self.request.migration_from,
+        )
+
     def recover_blocked_rebaseline_before_migration(
         self,
         store: TestUpdateStore,
     ) -> None:
         """幂等恢复尚未迁移的 rebaseline checkout/image 指针，保持暂停与日志。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
         self.require_lifecycle_lock()
         state = store.read_consistent_state()
         if (
@@ -2402,7 +2540,7 @@ class HostTestUpdateOperations:
     ) -> str:
         """仅为迁移后 GetBalance 阻断重开同一 update 的完整 verify。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
         self.require_lifecycle_lock()
         if self.host_source_commit is None:
             raise TestUpdateManagerError(
@@ -2526,7 +2664,7 @@ class HostTestUpdateOperations:
     def recover_backend_services(self) -> None:
         """GetBalance 成功后仅重启被 fail-closed 停止的既有后端服务。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
         self.require_owned_update_pauses(self.request.update_id)
         self.host._run(
             "up",
@@ -2538,13 +2676,13 @@ class HostTestUpdateOperations:
     def restore_operator_git_read_access(self) -> None:
         """在 root 恢复动作后安全恢复 operator 的 Git 只读路径。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
         _restore_operator_git_read_access(self.root)
 
     def recover_verified_rebaseline_services(self) -> None:
         """幂等收尾 verified 恢复遗留的成对 update 暂停。"""
 
-        self._require_exact_rebaseline_migration()
+        self._require_approved_rebaseline_migration()
         script = (
             "local a=redis.call('get',KEYS[1]); "
             "local b=redis.call('get',KEYS[2]); "
@@ -2642,6 +2780,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "status",
             "capability",
             "recover-rebaseline",
+            "recover-rebaseline-prepare",
             "recover-rebaseline-verify",
         ),
     )
@@ -2736,6 +2875,21 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "status": "recovered",
+                        "update_id": request.update_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "recover-rebaseline-prepare":
+            operations.recover_blocked_rebaseline_prepare(store)
+            print(
+                json.dumps(
+                    {
+                        "commit": request.commit,
+                        "migration_target": request.migration_target,
+                        "status": "checkpointed",
                         "update_id": request.update_id,
                     },
                     separators=(",", ":"),

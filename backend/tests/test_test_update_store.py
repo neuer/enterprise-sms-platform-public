@@ -643,6 +643,17 @@ def test_only_declared_fix_forward_state_transitions_are_accepted(tmp_path: Path
             step="again",
         )
 
+    prepare_recovery_id = "test-20260829T120940Z-fa28fa63f496"
+    prepare_recovery = _store(tmp_path, prepare_recovery_id)
+    prepare_recovery.create(_request(prepare_recovery_id))
+    prepare_recovery.fail(UpdateState.PREPARED, step="secret_expansion")
+    prepare_recovery.transition(
+        UpdateState.BLOCKED,
+        UpdateState.CHECKPOINTED,
+        step="recover_prepare",
+    )
+    assert prepare_recovery.read_state()["state"] == "checkpointed"
+
     failed = _store(tmp_path, FAILED_ID)
     failed.create(_request(FAILED_ID))
     failed.fail(UpdateState.PREPARED, step="prepare")
