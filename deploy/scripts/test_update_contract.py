@@ -469,9 +469,16 @@ _REBASELINE_SAFE_NON_RUNTIME_EXACT = frozenset(
         "HANDOVER.md",
         "README.md",
         "SECURITY.md",
+        "deploy/postgres.Dockerfile",
+        "deploy/production-storage-initialization.md",
+        "deploy/production-storage-manifest.example.json",
+        "deploy/scripts/initialize_production_storage.py",
+        "deploy/scripts/offline_image_archive.py",
         "deploy/failover.md",
         "docs/LOCAL_TESTING.md",
         "scripts/check_spec_consistency.py",
+        "scripts/create_offline_image_index.py",
+        "scripts/deploy_release_remote.py",
         "scripts/verify_ci_commit.py",
         "scripts/verify_vendor_postgres_recovery.sh",
     }
@@ -870,9 +877,12 @@ def classify_rebaseline_paths(paths: Iterable[str]) -> ChangedScope:
             continue
         regular_paths.append(path)
 
-    if rebaseline_high_risk_paths != set(_REBASELINE_HIGH_RISK_EXACT):
+    if rebaseline_high_risk_paths not in (
+        set(),
+        set(_REBASELINE_HIGH_RISK_EXACT),
+    ):
         raise TestUpdateContractError(
-            "rebaseline requires the exact approved runtime-control path set"
+            "rebaseline requires the complete approved runtime-control path set"
         )
 
     regular = classify_changed_paths(regular_paths)

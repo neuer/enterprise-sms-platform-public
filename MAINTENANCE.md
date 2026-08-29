@@ -101,8 +101,9 @@ bundle/API/Web 三个大产物，但保留 manifest/request、test-update store 
 scripts/test_update.sh rebaseline --ref origin/main
 ```
 
-该入口不放宽日常分类器，只接受合同中枚举的两个运行控制脚本、固定非运行态文件和普通
-快速更新路径；必须同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
+该入口不放宽日常分类器，只接受合同中枚举的固定历史非运行态文件和普通快速更新路径；
+两个旧运行控制脚本如出现在差异中必须成对出现，未发生差异时不要求制造伪变更。入口必须
+同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
 [`deploy/README.md`](deploy/README.md) 的“一次性主机安装”把 root-owned host-control
 快照绑定到同一目标 commit，且目标 commit 的 `backend`、`frontend`、`security`、`g2`
 与 `ci-gate` 五个 GitHub Actions check 必须全部成功。后续仍走 high-risk 的暂停、
