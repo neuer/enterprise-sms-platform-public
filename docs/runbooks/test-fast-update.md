@@ -175,11 +175,27 @@ prepare/apply/verify/status 和 operator Git 复核。当前唯一批准的
 复核，合法的 private-first 中断可续写公钥；缺件、额外文件、错误权限、重复审计 key、
 public-only 或不匹配 keypair 一律失败关闭。密文 checkpoint 完成后才扩展权威清单，切换
 目标源码后再由目标提交的固定预处理器原子生成新 runtime generation，然后才允许迁移。
+已经运行到 `0079_security_daily_publish_outbox` 的测试环境使用现有完整运行密钥清单；批准的
+`0079_security_daily_publish_outbox → 0081_sign_adoption_contract` 重对齐不新增运行密钥，
+因此不得再次套用上述 18→24 件历史扩展，也不得重复生成 runtime generation。
 
 无共同历史继续使用独立 public baseline 流程；无迁移、非 `origin/main`、缺少精确
 `ci-gate`、
 host-control commit 不一致或出现任意额外禁止路径时，`rebaseline` 必须失败关闭。完成本次
 重对齐后恢复日常 `apply`，不得把该入口用于普通分类器拒绝的未来变更。
+
+若上述 `0079 → 0081` 请求已完成 unsafe 检查、密文 checkpoint 与 expand-only 检查，却因
+旧密钥扩展合同误用而精确停在 `blocked/secret_expansion`，先安装包含恢复修正的不可变
+host-control 快照，再执行：
+
+```bash
+scripts/test_update.sh recover-rebaseline-prepare
+```
+
+该入口只接受原 update 的连续事件链、原 pause、实际 base checkout、`0079` 数据库头和已
+加载的原请求镜像；同时复核三类 unsafe 状态仍为 0，且 base→target 未修改 Compose 或运行
+密钥准备/撤销合同。它只把原状态推进到 `checkpointed/recover_prepare`，随后复用原镜像执行
+apply、verify、operator Git 与终态验收；不构建、不上传、不新建 checkpoint，也不修改密钥。
 
 如果这一唯一重对齐在目标 checkout 已激活、但数据库迁移尚未开始时阻断，状态必须是
 `blocked/migrate`，实际 migration head 仍为 `0053_idempotency_scope`，两条 update pause

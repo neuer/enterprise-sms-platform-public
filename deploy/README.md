@@ -663,6 +663,11 @@ scripts/test_update.sh rebaseline --ref origin/main
 key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
 这是历史固定迁移，不能代生成 Phase 0 新增的第 25 件 `redis_tls_server_key`；该私钥必须走
 独立运行密钥变更，并与内部 PKI 证书在预生产验真后才能更新目标版本。
+已经到达 `0079_security_daily_publish_outbox` 的测试环境在批准的 `0079 → 0081` 重对齐中
+复用现有完整运行密钥清单，不再执行上述旧密钥扩展或重复生成 runtime generation。若原请求
+已经精确阻断在 `blocked/secret_expansion`，按 `docs/runbooks/test-fast-update.md` 执行
+`scripts/test_update.sh recover-rebaseline-prepare`，复用原 checkpoint、镜像和上传包继续；
+该恢复入口不构建、不上传、不新增 checkpoint。
 若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
 按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
 指针并保持 pause；该入口可在已回到请求 base 后幂等重放，并在最终 root Git 校验后恢复

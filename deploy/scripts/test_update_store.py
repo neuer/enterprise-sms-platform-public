@@ -69,7 +69,9 @@ _TRANSITIONS: Mapping[TestUpdateState, frozenset[TestUpdateState]] = {
     ),
     TestUpdateState.VERIFIED: frozenset(),
     TestUpdateState.ROLLED_BACK: frozenset(),
-    TestUpdateState.BLOCKED: frozenset({TestUpdateState.VERIFYING}),
+    TestUpdateState.BLOCKED: frozenset(
+        {TestUpdateState.CHECKPOINTED, TestUpdateState.VERIFYING}
+    ),
 }
 _UPDATE_ID_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?")
 _STEP_RE = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")

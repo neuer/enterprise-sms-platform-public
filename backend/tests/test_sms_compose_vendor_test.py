@@ -356,6 +356,42 @@ def test_rebaseline_verify_recovery_requires_host_bootstrap(
     assert not log.exists()
 
 
+def test_rebaseline_prepare_recovery_requires_host_bootstrap(
+    control_environment: tuple[dict[str, str], Path],
+) -> None:
+    environment, log = control_environment
+
+    result = _run(environment, "test-update", "recover-rebaseline-prepare")
+
+    assert result.returncode == 2
+    assert not log.exists()
+
+
+def test_host_rebaseline_prepare_recovery_inherits_the_verified_lock(
+    control_environment: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    environment, log = control_environment
+    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
+
+    result = _run_wrapper(
+        wrapper,
+        environment,
+        "test-update",
+        "recover-rebaseline-prepare",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert asset_log.exists()
+    lines = log.read_text(encoding="utf-8").splitlines()
+    manager = next(
+        line
+        for line in lines
+        if "test_update_manager.py|recover-rebaseline-prepare|" in line
+    )
+    assert "|locked=1|fd=" in manager
+
+
 def test_host_rebaseline_verify_recovery_inherits_the_verified_lock(
     control_environment: tuple[dict[str, str], Path],
     tmp_path: Path,
