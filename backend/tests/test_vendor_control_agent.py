@@ -248,6 +248,18 @@ def test_fixed_runner_never_accepts_or_appends_caller_arguments() -> None:
     assert calls[0][1]["shell"] is False
     assert calls[0][1]["timeout"] == 180
     assert runner.run("reset-runtime").returncode == 1
+    assert calls[1][0] == [
+        agent_module.sys.executable,
+        agent_module.LIFECYCLE_LOCK_RUNNER,
+        "--runtime-root",
+        agent_module.RUNTIME_ROOT,
+        "--wrapper",
+        agent_module.MOCK_RESET_WRAPPER,
+        "--operation",
+        "vendor-test",
+        "--",
+        "reset-to-mock",
+    ]
     assert calls[1][1]["timeout"] == 300
     with pytest.raises(agent_module.UnsupportedAgentOperation):
         runner.run("status --path /tmp")
@@ -1554,7 +1566,18 @@ def test_fixed_runner_accepts_only_exact_runtime_revocation_projection(
     result = agent_module.FixedWrapperRunner(command_runner=run).run("reset-runtime")
 
     assert calls == [
-        ["/usr/local/sbin/sms-compose", "vendor-test", "reset-runtime"]
+        [
+            agent_module.sys.executable,
+            agent_module.LIFECYCLE_LOCK_RUNNER,
+            "--runtime-root",
+            agent_module.RUNTIME_ROOT,
+            "--wrapper",
+            agent_module.MOCK_RESET_WRAPPER,
+            "--operation",
+            "vendor-test",
+            "--",
+            "reset-to-mock",
+        ]
     ]
     assert result.returncode == expected_returncode
     assert result.body == ({"runtime_revoked": True} if expected_returncode == 0 else {})

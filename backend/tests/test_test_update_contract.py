@@ -493,7 +493,6 @@ def test_each_migration_source_sets_migration_changed(
         "deploy/scripts/vendor_control_reload.py",
         "deploy/scripts/vendor_control_protocol.py",
         "deploy/scripts/vendor_credential_store.py",
-        "deploy/scripts/vendor_runtime_reset.py",
         "deploy/scripts/vendor_seal_sessions.py",
         "deploy/systemd/vendor-control-agent.service",
         "deploy/scripts/install_test_secure_access.py",
@@ -1685,7 +1684,9 @@ def test_public_cutover_keeps_retired_static_paths_as_deletion_tombstones() -> N
             classify_changed_paths([path])
 
 
-def test_public_cutover_does_not_weaken_unknown_path_rejection() -> None:
+def test_public_cutover_does_not_weaken_normal_or_unknown_path_rejection() -> None:
+    with pytest.raises(ContractError, match="fast update forbidden"):
+        classify_changed_paths(["deploy/scripts/vendor_runtime_reset.py"])
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_public_cutover_paths(["scripts/future_runtime.py"])
 

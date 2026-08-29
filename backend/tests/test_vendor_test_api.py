@@ -155,11 +155,20 @@ class FakeSecurityAudit:
 
 
 class FakeOperations:
-    def __init__(self, *, start_conflict: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        start_conflict: bool = False,
+        record: VendorTestOperation | None = None,
+        recovery_due: bool = False,
+    ) -> None:
         self.calls: list[dict[str, object]] = []
         self.started: list[dict[str, object]] = []
         self.background: list[dict[str, object]] = []
         self.start_conflict = start_conflict
+        self.record = record
+        self.recovery_due = recovery_due
+        self.reconcile_calls = 0
 
     async def execute(self, **values: object) -> VendorTestOperation:
         self.calls.append(values)
@@ -220,6 +229,19 @@ class FakeOperations:
 
     async def execute_background(self, **values: object) -> None:
         self.background.append(values)
+
+    async def get(self, operation_id: str) -> VendorTestOperation | None:
+        if self.record is None or self.record.operation_id != operation_id:
+            return None
+        return self.record
+
+    def reset_recovery_due(self, record: VendorTestOperation) -> bool:
+        assert record is self.record
+        return self.recovery_due
+
+    async def reconcile_once(self) -> int:
+        self.reconcile_calls += 1
+        return 0
 
 
 class FakeRecipients:
@@ -446,6 +468,35 @@ def test_reset_accepts_safe_state_without_recipient_payload_and_runs_in_backgrou
     assert response.json()["operation_id"] == operations.started[0]["operation_id"]
     assert operations.background == [operations.started[0]]
     assert "recipient" not in response.text.casefold()
+    _assert_safe(response)
+
+
+def test_polling_stale_running_reset_schedules_same_operation_recovery() -> None:
+    http, _, _, operations, _ = client()
+    operations.record = VendorTestOperation(
+        operation_id="c0a80101-0000-4000-8000-000000000099",
+        operation_type="reset_configuration",
+        actor="admin",
+        status="running",
+        safe_code=None,
+        batch_no=None,
+        checkpoint_id=None,
+        requested_at=NOW,
+        completed_at=None,
+        actor_account_id=8,
+        actor_identity_id=18,
+    )
+    operations.recovery_due = True
+
+    response = http.get(
+        "/api/v1/web/admin/vendor-test/operations/"
+        "c0a80101-0000-4000-8000-000000000099",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    assert operations.reconcile_calls == 1
     _assert_safe(response)
 
 

@@ -192,15 +192,15 @@ GetBalance 是唯一允许的无消费预检。GetReport 与 GetReply 具有“�
 
 管理员必须先阅读删除与保留边界，完成当前 Provider 二次认证，并精确输入“切回Mock”。单用途凭证只绑定本次 reset；普通 API 只提交该凭证，不创建 seal session，也不接收厂商凭据、测试号码或确认短语。此操作只作用于当前测试主机，**不会修改生产环境的配置、凭据、服务或数据**。
 
-root agent 先把同一 operation 的 `reset_authorized` 持久化，再调用 development-only、零参数固定 wrapper `vendor-test reset-runtime`。wrapper 在与 release 共用的 lifecycle lock 内停止 API、beat、realtime/bulk/callback worker 与 Outbox dispatcher，并逐一确认这些服务不再运行。已停止的消费者无法自行收敛数据库 backlog，因此 reset 不再等待 `queued`/`scheduled`/`pending`/`submitting`/`retrying` 清零；既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。
+root agent 先把同一 operation 的 `reset_authorized` 持久化，再调用 development-only、零参数固定操作 `vendor-test reset-runtime`。这是 agent 内部操作名，不是给操作者手工执行的命令；agent 会把它固定映射到 lifecycle lock 下的 `vendor_test_mock_reset.py reset-to-mock`。wrapper 在与 release 共用的 lifecycle lock 内停止 API、beat、realtime/bulk/callback worker 与 Outbox dispatcher，并逐一确认这些服务不再运行。已停止的消费者无法自行收敛数据库 backlog，因此 reset 不再等待 `queued`/`scheduled`/`pending`/`submitting`/`retrying` 清零；既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。
 
-旧消费者全部停止并通过复核后，wrapper 原子恢复固定纯 Mock dotenv，创建不含旧 Key 派生信息的 revocation tombstone generation，验证 Compose，启动并验证 `mock-vendor`，再强制重建 API、三个 worker、Outbox dispatcher 与 beat。所有后端服务必须逐一读回 `VENDOR_MOCK=1`、固定 Mock URL 与 dev profile，realtime/bulk 还必须读回 tombstone；未全部通过不得继续清理。
+旧消费者全部停止并通过复核后，wrapper 原子恢复固定纯 Mock dotenv，创建不含旧 Key 派生信息的 revocation tombstone generation，验证 Compose，启动并验证 `mock-vendor`，再强制重建 API、三个 worker、Outbox dispatcher、beat 与 Web。所有后端服务必须逐一读回 `VENDOR_MOCK=1`、固定 Mock URL 与 dev profile，realtime/bulk 还必须读回 tombstone；Web 必须通过自身 Nginx 代理访问新 API 的存活探针，未全部通过不得继续清理。
 
 只有纯 Mock 服务已经运行并通过复核，wrapper 才在**同一个 lifecycle lock** 内删除 root credential store，清理 stale runtime generations，并再次复核 Mock、tombstone、当前 generation 与 credential store 均安全。live marker 是最后删除的 commit marker。wrapper 成功只输出固定 `{"status":"runtime_revoked"}`；agent 随后只读确认 credential store 为 unconfigured，再把 root journal 推进到 durable `runtime_revoked`。agent 不再单独调用 credential store reset，避免锁外删除或顺序反转。
 
 成功后页面最终刷新为 `setup_required`。保留全部加密测试收件人及其索引投影，也保留管理员账号、短信业务数据、审计记录、当日 UAT 用量、uncertain 占额、PostgreSQL、Docker volume、运行态根目录和非厂商 secret；后续重新安装凭据后可以继续复用既有测试号码。这不是系统初始化。切换前已发送、待回执、uncertain、`unmatched_report`、无关联回复或已被错误环境拉走的历史状态不会自动修复，必须另行盘点处置。
 
-任一步失败或进程中断都保持同一 journal operation 可重放，不恢复旧真实凭据、旧 generation 或 live 消费者，也不创建第二个 reset。页面必须提示测试环境可能处于部分切换状态，要求停止发送并按安全代码恢复**同一 operation id**；错误不得包含 Key、generation 或子进程输出。锁与 release 冲突时在 Docker/runtime 修改前 fail closed。reset 不得夹带到快速更新、bootstrap、迁移或管理员初始化中。
+任一步失败或进程中断都保持同一 journal operation 可重放，不恢复旧真实凭据、旧 generation 或 live 消费者，也不创建第二个 reset。失败路径只尝试恢复不持有厂商凭据的 API 与 Web；页面恢复轮询后，对超过 60 秒仍未终结的同一 reset 自动安排后台对账并继续原 operation id。页面必须提示测试环境可能处于部分切换状态，要求停止发送；错误不得包含 Key、generation 或子进程输出。锁与 release 冲突时在 Docker/runtime 修改前 fail closed。reset 不得夹带到快速更新、bootstrap、迁移或管理员初始化中。
 
 ## 100 个计费条硬上限
 

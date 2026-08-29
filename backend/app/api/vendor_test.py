@@ -976,6 +976,7 @@ async def resume(
 async def get_operation(
     request: Request,
     operation_id: UUID,
+    background_tasks: BackgroundTasks,
     operations: Annotated[
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
@@ -987,6 +988,8 @@ async def get_operation(
     record = await operations.get(str(operation_id))
     if record is None:
         raise ApiError(404, "NOT_FOUND", "控制操作不存在", None)
+    if operations.reset_recovery_due(record):
+        background_tasks.add_task(operations.reconcile_once)
     return _operation_model(record)
 
 

@@ -12,6 +12,7 @@ import socket
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
@@ -56,6 +57,9 @@ CREDENTIAL_ROOT = Path("/var/lib/sms-platform/vendor-test/credentials")
 JOURNAL_ROOT = Path("/var/lib/sms-platform/vendor-test/journal")
 CONTROL_STATE = Path("/var/lib/sms-platform/vendor-test/control-state.json")
 WRAPPER = "/usr/local/sbin/sms-compose"
+LIFECYCLE_LOCK_RUNNER = "/opt/sms-platform/deploy/scripts/run_with_lifecycle_lock.py"
+MOCK_RESET_WRAPPER = "/opt/sms-platform/deploy/scripts/vendor_test_mock_reset.py"
+RUNTIME_ROOT = "/run/sms-platform/secrets"
 HEARTBEAT_INTERVAL_SECONDS = 10
 DAILY_LIMIT = 100
 _WRAPPER_OPERATIONS = frozenset({"activate", "pause", "resume"})
@@ -140,7 +144,7 @@ class ControlJournal(Protocol):
 
 
 class FixedWrapperRunner:
-    """只执行固定 wrapper 三元组，不接受 argv/path/env。"""
+    """只执行代码内固定的 wrapper argv，不接受请求提供的 path/env。"""
 
     def __init__(
         self,
@@ -258,9 +262,23 @@ class FixedWrapperRunner:
     def run(self, operation: str) -> WrapperResult:
         if operation not in _FIXED_WRAPPER_OPERATIONS:
             raise UnsupportedAgentOperation("不支持的控制操作")
+        command = [WRAPPER, "vendor-test", operation]
+        if operation == "reset-runtime":
+            command = [
+                sys.executable,
+                LIFECYCLE_LOCK_RUNNER,
+                "--runtime-root",
+                RUNTIME_ROOT,
+                "--wrapper",
+                MOCK_RESET_WRAPPER,
+                "--operation",
+                "vendor-test",
+                "--",
+                "reset-to-mock",
+            ]
         try:
             result = self.command_runner(
-                [WRAPPER, "vendor-test", operation],
+                command,
                 check=False,
                 text=True,
                 capture_output=True,

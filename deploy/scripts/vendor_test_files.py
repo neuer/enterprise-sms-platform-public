@@ -12,7 +12,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlsplit
 
 VENDOR_ORIGIN = os.environ.get(
     "SMS_VENDOR_LIVE_TEST_ORIGIN",
@@ -41,9 +40,6 @@ PURE_MOCK_DOTENV_VALUES: Mapping[str, str] = {
     "VENDOR_BASE_URL": "http://mock-vendor:9028",
     "COMPOSE_PROFILES": "dev",
 }
-LIVE_ONLY_DOTENV_KEYS = frozenset(
-    set(LIVE_DOTENV_VALUES) - set(PURE_MOCK_DOTENV_VALUES)
-)
 RETIRED_PROVIDER_DOTENV_KEYS = frozenset(
     {
         "BOOTSTRAP_ADMIN_USERS",
@@ -65,10 +61,6 @@ _MARKER_FIELDS = frozenset(
         "timezone",
         "backup_config",
     }
-)
-_VENDOR_HOST = re.compile(
-    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 )
 _DOTENV_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@+*,-]*)")
 _DOTENV_INLINE_COMMENT_LINE = re.compile(
@@ -156,111 +148,27 @@ def _atomic_replace(path: Path, payload: bytes, *, expected_uid: int) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         path.chmod(0o600)
-        _fsync_controlled_parent(path, expected_uid=expected_uid)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _fsync_controlled_parent(path: Path, *, expected_uid: int) -> None:
-    parent = path.parent
-    try:
-        parent_info = parent.lstat()
-        if (
-            not stat.S_ISDIR(parent_info.st_mode)
-            or stat.S_ISLNK(parent_info.st_mode)
-            or parent_info.st_uid != expected_uid
-        ):
-            raise VendorTestFileError("controlled file parent is unsafe")
-        directory_fd = os.open(
-            parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
+        directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-    except VendorTestFileError:
-        raise
-    except OSError as exc:
-        raise VendorTestFileError("controlled file parent is unavailable") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _safe_vendor_origin(value: object) -> str:
-    if type(value) is not str:
-        raise VendorTestFileError("vendor origin is invalid")
-    try:
-        parsed = urlsplit(value)
-        _ = parsed.port
-    except ValueError as exc:
-        raise VendorTestFileError("vendor origin is invalid") from exc
-    if (
-        parsed.scheme != "https"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.hostname is None
-        or _VENDOR_HOST.fullmatch(parsed.hostname) is None
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-        or value != parsed.geturl()
-    ):
-        raise VendorTestFileError("vendor origin is invalid")
-    return value
-
-
-def _live_dotenv_values(vendor_origin: str) -> dict[str, str]:
-    values = dict(LIVE_DOTENV_VALUES)
-    values["VENDOR_BASE_URL"] = vendor_origin
-    values["VENDOR_LIVE_TEST_ORIGIN"] = vendor_origin
-    return values
-
-
-def _live_vendor_origin(values: Mapping[str, str]) -> str:
-    base_url = values.get("VENDOR_BASE_URL")
-    live_origin = values.get("VENDOR_LIVE_TEST_ORIGIN")
-    if base_url != live_origin:
-        raise VendorTestFileError("live vendor origins do not match")
-    return _safe_vendor_origin(live_origin)
-
-
-def read_live_vendor_origin(path: Path, *, expected_uid: int = 0) -> str:
-    """只从受控 live dotenv 读取相等的厂商 HTTPS origin。"""
-
-    _validate_private_file(path, expected_uid=expected_uid)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise VendorTestFileError("dotenv is unavailable") from exc
-    lines, positions = _parse_dotenv(raw)
-    values = {
-        key: lines[index].split("=", 1)[1] for key, index in positions.items()
-    }
-    vendor_origin = _live_vendor_origin(values)
-    if {
-        key: values.get(key) for key in LIVE_DOTENV_VALUES
-    } != _live_dotenv_values(vendor_origin):
-        raise VendorTestFileError("dotenv is not in controlled live mode")
-    return vendor_origin
-
-
-def _marker_payload(vendor_origin: str = VENDOR_ORIGIN) -> dict[str, object]:
-    vendor_origin = _safe_vendor_origin(vendor_origin)
+def _marker_payload() -> dict[str, object]:
     return {
         "schema_version": 1,
         "mode": VENDOR_TEST_MODE,
-        "vendor_origin": vendor_origin,
+        "vendor_origin": VENDOR_ORIGIN,
         "daily_segment_limit": DAILY_SEGMENT_LIMIT,
         "timezone": TIMEZONE,
         "backup_config": str(BACKUP_CONFIG_FILE),
     }
 
 
-def read_vendor_test_marker(
-    path: Path,
-    *,
-    expected_uid: int = 0,
-    expected_vendor_origin: str | None = VENDOR_ORIGIN,
-) -> VendorTestMarker:
+def read_vendor_test_marker(path: Path, *, expected_uid: int = 0) -> VendorTestMarker:
     """读取 root marker，任何字段或固定值漂移均 fail closed。"""
 
     _validate_private_file(path, expected_uid=expected_uid)
@@ -287,21 +195,12 @@ def read_vendor_test_marker(
         for field in _MARKER_FIELDS - {"schema_version", "daily_segment_limit"}
     ):
         raise VendorTestFileError("marker contract values are invalid")
-    try:
-        actual_vendor_origin = _safe_vendor_origin(payload["vendor_origin"])
-        vendor_origin = (
-            actual_vendor_origin
-            if expected_vendor_origin is None
-            else _safe_vendor_origin(expected_vendor_origin)
-        )
-    except VendorTestFileError:
-        raise VendorTestFileError("marker contract values are invalid") from None
-    if payload != _marker_payload(vendor_origin):
+    if payload != _marker_payload():
         raise VendorTestFileError("marker contract values are invalid")
     return VendorTestMarker(
         1,
         VENDOR_TEST_MODE,
-        actual_vendor_origin,
+        VENDOR_ORIGIN,
         DAILY_SEGMENT_LIMIT,
         TIMEZONE,
         BACKUP_CONFIG_FILE,
@@ -316,36 +215,6 @@ def write_vendor_test_marker(path: Path, *, expected_uid: int = 0) -> VendorTest
         expected_uid=expected_uid,
     )
     return read_vendor_test_marker(path, expected_uid=expected_uid)
-
-
-def remove_vendor_test_marker(
-    path: Path,
-    *,
-    expected_uid: int = 0,
-    expected_vendor_origin: str | None = VENDOR_ORIGIN,
-) -> bool:
-    """仅删除通过完整固定合同校验的 live marker；缺失时幂等成功。"""
-
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        _fsync_controlled_parent(path, expected_uid=expected_uid)
-        return False
-    except OSError as exc:
-        raise VendorTestFileError("marker is unavailable") from exc
-    read_vendor_test_marker(
-        path,
-        expected_uid=expected_uid,
-        expected_vendor_origin=expected_vendor_origin,
-    )
-    try:
-        path.unlink()
-        _fsync_controlled_parent(path, expected_uid=expected_uid)
-    except VendorTestFileError:
-        raise
-    except OSError as exc:
-        raise VendorTestFileError("marker removal failed") from exc
-    return True
 
 
 def read_vendor_test_allowlist_count(
@@ -515,79 +384,6 @@ def activate_vendor_live_dotenv(path: Path, *, expected_uid: int = 0) -> None:
         ("\n".join(lines) + "\n").encode(),
         expected_uid=expected_uid,
     )
-
-
-def require_restored_pure_mock_dotenv(
-    path: Path,
-    *,
-    expected_uid: int = 0,
-) -> None:
-    """严格确认 live-only 键已移除且固定运行键已回到纯 Mock。"""
-
-    _validate_private_file(path, expected_uid=expected_uid)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise VendorTestFileError("dotenv is unavailable") from exc
-    lines, positions = _parse_dotenv(raw)
-    selected = {
-        key: lines[positions[key]].split("=", 1)[1] if key in positions else None
-        for key in PURE_MOCK_DOTENV_VALUES
-    }
-    if selected != dict(PURE_MOCK_DOTENV_VALUES) or any(
-        key in positions for key in LIVE_ONLY_DOTENV_KEYS
-    ):
-        raise VendorTestFileError("dotenv must be restored to pure Mock mode")
-
-
-def restore_pure_mock_dotenv(path: Path, *, expected_uid: int = 0) -> bool:
-    """原子把固定 live 配置回切为纯 Mock，保留其余严格 dotenv 行。"""
-
-    _validate_private_file(path, expected_uid=expected_uid)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise VendorTestFileError("dotenv is unavailable") from exc
-    lines, positions = _parse_dotenv(raw)
-    values = {
-        key: lines[index].split("=", 1)[1] for key, index in positions.items()
-    }
-    pure_selected = {
-        key: values.get(key) for key in PURE_MOCK_DOTENV_VALUES
-    } == dict(PURE_MOCK_DOTENV_VALUES)
-    if pure_selected:
-        live_selected = not any(key in values for key in LIVE_ONLY_DOTENV_KEYS)
-    else:
-        try:
-            vendor_origin = _live_vendor_origin(values)
-        except VendorTestFileError:
-            live_selected = False
-        else:
-            live_selected = {
-                key: values.get(key) for key in LIVE_DOTENV_VALUES
-            } == _live_dotenv_values(vendor_origin)
-    if not live_selected:
-        raise VendorTestFileError("dotenv cannot be safely restored to pure Mock mode")
-
-    restored: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            restored.append(line)
-            continue
-        key = line.split("=", 1)[0]
-        if key in LIVE_ONLY_DOTENV_KEYS:
-            continue
-        if key in PURE_MOCK_DOTENV_VALUES:
-            restored.append(f"{key}={PURE_MOCK_DOTENV_VALUES[key]}")
-        else:
-            restored.append(line)
-    payload = ("\n".join(restored) + "\n").encode()
-    changed = payload != raw.encode()
-    if changed:
-        _atomic_replace(path, payload, expected_uid=expected_uid)
-    require_restored_pure_mock_dotenv(path, expected_uid=expected_uid)
-    return changed
 
 
 def require_pii_free_evidence(value: object) -> None:
