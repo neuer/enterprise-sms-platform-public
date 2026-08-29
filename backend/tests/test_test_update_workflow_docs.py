@@ -131,11 +131,12 @@ def test_rebaseline_is_documented_as_a_strict_one_time_exception() -> None:
         "密文 checkpoint",
         "operator Git",
         "不放宽日常",
+        "精确 `ci-gate`",
     ):
         assert phrase in combined
     assert "D063 同历史测试基线重对齐使用独立严格入口" in decisions
     assert "classify-rebaseline-nul" in script
-    assert "--require-full" in script
+    assert "--require-full" not in script
     assert "rebaseline 只允许 origin/main" in script
 
 

@@ -648,7 +648,7 @@ commit 间的 host-control 字节未变可复用既有快照，发生变化则�
 
 同历史旧测试基线若仍是目标 `origin/main` 的祖先、包含真实迁移前移，且普通 `apply` 仅被
 合同枚举的旧运行凭据准备/撤销脚本与固定历史非运行态文件阻断，可在重装同一目标 commit 的
-host-control 快照、确认完整五项 CI check 成功后执行：
+host-control 快照、确认合并提交的精确 `ci-gate` 成功后执行：
 
 ```bash
 scripts/test_update.sh rebaseline --ref origin/main

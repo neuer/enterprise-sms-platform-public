@@ -478,8 +478,7 @@ elif [[ "$COMMAND" == apply && "$CI_REQUIRED" == 1 ]]; then
 elif [[ "$COMMAND" == rebaseline ]]; then
   python3 "$ROOT/scripts/verify_ci_commit.py" \
     --repository "$LOCAL_REPOSITORY" \
-    --commit "$TARGET_COMMIT" \
-    --require-full
+    --commit "$TARGET_COMMIT"
 fi
 if [[ "$RISK" == high-risk &&
       ("$COMMAND" == apply || "$COMMAND" == rebaseline) ]]; then
