@@ -32,10 +32,6 @@ from app.services.vendor_test_operation import VendorTestOperationService
 from app.services.vendor_test_operation_repository import (
     SqlVendorTestOperationRepository,
 )
-from app.services.vendor_test_recipient_repository import (
-    SqlVendorTestRecipientRepository,
-)
-from app.services.vendor_test_reset import VendorTestResetFinalizer
 from app.services.vendor_test_uat import VendorTestUatReconciler
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
@@ -103,11 +99,6 @@ async def _reconcile() -> int:
         return await VendorTestOperationService(
             SqlVendorTestOperationRepository(settings),
             VendorControlClient(),
-            finalizers={
-                "reset_configuration": VendorTestResetFinalizer(
-                    SqlVendorTestRecipientRepository(settings)
-                ),
-            },
         ).reconcile_once()
 
     async def vendor_uat() -> int:

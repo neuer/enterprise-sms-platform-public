@@ -77,30 +77,29 @@ def test_controlled_real_vendor_runbook_documents_reset_contract() -> None:
     runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(
         encoding="utf-8"
     )
-    heading = "## 页面清空联调设置"
+    heading = "## 页面切回 Mock"
     assert heading in runbook
     reset_section = runbook.split(heading, maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
 
     for phrase in (
-        "`/configs` 的「真实联调」页是清空联调设置的唯一入口",
-        "只在已配置凭据的 `inactive` 状态且没有暂停投影时",
-        "`setup_required` 不允许创建新的 reset operation",
-        "原 operation id",
-        "运行中 operation 时动作仍显示但禁用，不得重复提交",
+        "`/configs` 的「真实联调」页是测试环境从真实厂商切回纯 Mock 的唯一入口",
+        "当前投影为 `controlled` 或 `inactive`",
+        "`blocked`、`setup_required` 或任意 pause 均拒绝",
+        "存在运行中 operation 时按钮禁用，不得重复提交",
         "当前 Provider 二次认证",
-        "精确输入“清空联调设置”",
-        "全部凭据 generation",
-        "全部加密测试收件人",
-        "保留管理员账号、短信业务数据和审计记录",
-        "保留当日 UAT 用量与 uncertain 占额",
-        "保留数据库、Docker volume 和运行态目录",
-        "最终安全状态必须是 `setup_required`",
-        "部分设置可能已经清理",
-        "不得夹带到快速更新",
-        "不得夹带管理员初始化",
+        "精确输入“切回Mock”",
         "不创建 seal session",
-        "不得手工恢复 generation",
-        "不得自动调用 reset",
+        "不会修改生产环境的配置、凭据、服务或数据",
+        "不再等待 `queued`/`scheduled`/`pending`/`submitting`/`retrying` 清零",
+        "遗留 submitting 按既有恢复规则转 uncertain",
+        "uncertain 仍禁止自动重发",
+        "revocation tombstone generation",
+        "live marker 是最后删除的 commit marker",
+        "最终刷新为 `setup_required`",
+        "保留全部加密测试收件人及其索引投影",
+        "同一 journal operation 可重放",
+        "不恢复旧真实凭据、旧 generation 或 live 消费者",
+        "reset 不得夹带到快速更新、bootstrap、迁移或管理员初始化中",
     ):
         assert phrase in reset_section
 
