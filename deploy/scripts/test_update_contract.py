@@ -179,6 +179,7 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "deploy/scripts/vendor_control_protocol.py",
             "deploy/scripts/vendor_credential_store.py",
             "deploy/scripts/vendor_control_reload.py",
+            "deploy/scripts/vendor_runtime_reset.py",
             "deploy/scripts/vendor_seal_sessions.py",
             "deploy/systemd/vendor-control-agent.service",
             "deploy/scripts/install_test_secure_access.py",
