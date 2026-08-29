@@ -647,14 +647,15 @@ commit 间的 host-control 字节未变可复用既有快照，发生变化则�
 凭据 generation、测试号码和运行态数据；任何初始化仍须操作者明确确认。
 
 同历史旧测试基线若仍是目标 `origin/main` 的祖先、包含真实迁移前移，且普通 `apply` 仅被
-合同枚举的旧运行凭据准备/撤销脚本与固定非运行态文件阻断，可在重装同一目标 commit 的
+合同枚举的旧运行凭据准备/撤销脚本与固定历史非运行态文件阻断，可在重装同一目标 commit 的
 host-control 快照、确认完整五项 CI check 成功后执行：
 
 ```bash
 scripts/test_update.sh rebaseline --ref origin/main
 ```
 
-这是一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
+两个旧运行凭据脚本如出现在差异中必须成对出现；两者均未变更时不要求制造伪差异。这是
+一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
 密文 checkpoint、expand-only 迁移、verify 与 operator Git 复核；不接受分支、无迁移、
 跨历史或任意未枚举路径。当前批准的 `0053_idempotency_scope →
 0061_vendor_binding_outbox` 路径还会在 checkpoint 后由服务器本机把精确旧 18 件权威密钥
