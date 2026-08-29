@@ -1295,13 +1295,23 @@ async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
     row: dict[str, object] = {
         "batch_no": "batch-1",
         "display_content_enc": batch_content("batch-1", "验证码******"),
+        "pending": 0,
+        "sent": 1,
+        "other": 0,
     }
     connection = FakeConnection([FakeResult(rows=[row])])
     bind_engine(monkeypatch, service, connection)
     assert await service.get_batch("batch-1", BatchAccessScope(app_id=7)) == {
         "batch_no": "batch-1",
         "content": "验证码******",
+        "pending": 0,
+        "sent": 1,
+        "other": 0,
     }
+    batch_sql = connection.calls[0][0]
+    assert "count(*) FILTER (WHERE m.status='pending')" in batch_sql
+    assert "count(*) FILTER (WHERE m.status='sent')" in batch_sql
+    assert "count(*) FILTER (WHERE m.status='other')" in batch_sql
 
     connection = FakeConnection([FakeResult()])
     bind_engine(monkeypatch, service, connection)
@@ -1368,6 +1378,10 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     assert "GROUP BY b.status" in counts_sql
     assert ":statuses" not in counts_sql
     assert counts_params == {"scope_dept": "业务一部"}
+    rows_sql = connection.calls[2][0]
+    assert "count(*) FILTER (WHERE m.status='pending')" in rows_sql
+    assert "count(*) FILTER (WHERE m.status='sent')" in rows_sql
+    assert "count(*) FILTER (WHERE m.status='other')" in rows_sql
 
 
 @pytest.mark.asyncio

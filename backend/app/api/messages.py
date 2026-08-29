@@ -208,6 +208,9 @@ class BatchModel(BaseModel):
     delivered: int
     failed: int
     unknown: int
+    pending: int
+    sent: int
+    other: int
     scheduled_at: datetime | None
     created_at: datetime
 

@@ -3820,7 +3820,7 @@ components:
 
     Batch:
       type: object
-      required: [batch_no, category, channel, app_name, creator, dept, content, status, deferred_reason, resend_of, is_test, segments, quota_cost, total, removed_freq_limit, delivered, failed, unknown, scheduled_at, created_at]
+      required: [batch_no, category, channel, app_name, creator, dept, content, status, deferred_reason, resend_of, is_test, segments, quota_cost, total, removed_freq_limit, delivered, failed, unknown, pending, sent, other, scheduled_at, created_at]
       properties:
         batch_no: { type: string }
         category: { type: string, enum: [verify, notice, market] }
@@ -3841,7 +3841,10 @@ components:
         removed_freq_limit: { type: integer }
         delivered: { type: integer }
         failed: { type: integer }
-        unknown: { type: integer }
+        unknown: { type: integer, description: 结果未知终态数量，不表示等待回执 }
+        pending: { type: integer, description: 消息明细状态为 pending；可能尚待提交、重试，或对应分片处于结果未知状态 }
+        sent: { type: integer, description: 已提交厂商、等待状态回执的消息数量 }
+        other: { type: integer, description: 厂商其他终态数量 }
         scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         created_at: { type: string, format: date-time }
 

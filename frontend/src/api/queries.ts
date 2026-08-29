@@ -16,9 +16,12 @@ export interface BatchItem {
   quota_cost: number
   total: number
   removed_freq_limit: number
+  pending: number
+  sent: number
   delivered: number
   failed: number
   unknown: number
+  other: number
   scheduled_at: string | null
   created_at: string
 }

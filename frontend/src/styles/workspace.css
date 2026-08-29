@@ -5237,10 +5237,12 @@ main {
 
 .compose { display: flex; gap: 1px; height: 5px; margin-top: 3px; overflow: hidden; background: var(--sink); border-radius: 3px; }
 .compose i { display: block; height: 100%; }
+.compose-p { background: var(--tx-3); }
+.compose-s { background: var(--slate); }
 .compose-d { background: var(--verdi-l); }
 .compose-f { background: var(--verm); }
-.compose-u { background: var(--slate); }
-.compose-p { background: var(--tx-3); }
+.compose-u { background: var(--amber); }
+.compose-o { background: color-mix(in srgb, var(--tx-3) 45%, var(--panel)); }
 .compose--lg { height: 9px; margin-top: 0; border-radius: 4px; }
 .compose-nums { display: flex; justify-content: space-between; gap: 8px; color: var(--tx-3); font: 10.5px var(--mono); }
 .compose-nums b { color: var(--tx); font-weight: 400; }
@@ -5258,7 +5260,7 @@ main {
 .batch-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
 .batch-actions-why { flex-basis: 100%; margin: 2px 0 0; color: var(--tx-3); font-size: 10.5px; line-height: 1.6; }
 .batch-hero { display: grid; gap: 12px; padding: 14px 16px; margin-bottom: 12px; border: 1px solid var(--hair); border-radius: 10px; background: linear-gradient(180deg, var(--panel-2), var(--sink)); }
-.batch-hero-nums { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.batch-hero-nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .batch-hero-nums span { display: block; color: var(--tx-3); font-size: 10px; }
 .batch-hero-nums b { display: block; color: var(--tx-hi); font: 600 18px var(--mono); font-variant-numeric: tabular-nums; }
 .batch-hero-nums b.is-failed { color: var(--verm); }

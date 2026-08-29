@@ -67,6 +67,20 @@ class BatchQueryService:
         )
         return values
 
+    @staticmethod
+    def _message_status_counts_join() -> str:
+        """按批次一次聚合未持久化在 sms_batch 上的消息状态计数。"""
+
+        return """
+            LEFT JOIN LATERAL (
+              SELECT
+                CAST(count(*) FILTER (WHERE m.status='pending') AS integer) AS pending,
+                CAST(count(*) FILTER (WHERE m.status='sent') AS integer) AS sent,
+                CAST(count(*) FILTER (WHERE m.status='other') AS integer) AS other
+              FROM sms_message m WHERE m.batch_id=b.id
+            ) message_counts ON TRUE
+        """
+
     async def list_batches(
         self,
         *,
@@ -140,15 +154,18 @@ class BatchQueryService:
                 )
                 rows_result = await connection.execute(
                     text(
-                        """
+                        f"""
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
                           a.name AS app_name,b.creator,b.dept,b.display_content_enc,b.status,
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
                           b.is_test,b.segments,b.quota_cost,b.total,
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
-                          b.unknown_cnt AS unknown,b.scheduled_at,b.created_at
+                          b.unknown_cnt AS unknown,message_counts.pending,
+                          message_counts.sent,message_counts.other,
+                          b.scheduled_at,b.created_at
                         FROM sms_batch b LEFT JOIN app a ON a.id=b.app_id
                         LEFT JOIN sms_batch original ON original.id=b.resend_of
+                        {self._message_status_counts_join()}
                         WHERE """
                         + where
                         + " ORDER BY b.created_at DESC,b.id DESC LIMIT :limit OFFSET :offset"
@@ -183,10 +200,13 @@ class BatchQueryService:
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
                           b.is_test,b.segments,b.quota_cost,b.total,
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
-                          b.unknown_cnt AS unknown,b.scheduled_at,b.created_at
+                          b.unknown_cnt AS unknown,message_counts.pending,
+                          message_counts.sent,message_counts.other,
+                          b.scheduled_at,b.created_at
                         FROM sms_batch b
                         LEFT JOIN app a ON a.id=b.app_id
                         LEFT JOIN sms_batch original ON original.id=b.resend_of
+                        {self._message_status_counts_join()}
                         WHERE b.batch_no=:batch_no AND {predicate}
                         """
                     ),
