@@ -161,9 +161,10 @@ scripts/test_update.sh rebaseline --ref origin/main
 ```
 
 执行前必须按 `deploy/README.md` 的“一次性主机安装”重装目标 commit 的 root-owned
-host-control 快照，并确认该 commit 的 `backend`、`frontend`、`security`、`g2`、
-`ci-gate` 五个 check 全部由 GitHub Actions 成功完成。入口使用独立严格分类器，要求两个
-固定运行控制路径和至少一个迁移路径同时存在、迁移头真实前移，并强制 API/Web 双镜像；
+host-control 快照，并确认该合并 commit 的精确 `ci-gate` 成功；该 gate 已将同树 PR head 的
+`backend`、`frontend`、`security`、`g2` 成功证据绑定到该 commit。入口使用独立严格分类器，
+两个固定运行控制路径如出现在差异中必须完整成对出现，并要求至少一个迁移路径、迁移头真实
+前移，且强制 API/Web 双镜像；
 随后完整复用 high-risk 的暂停、`uncertain` 拦截、密文 checkpoint、expand-only 检查、
 prepare/apply/verify/status 和 operator Git 复核。当前唯一批准的
 `0053_idempotency_scope → 0061_vendor_binding_outbox` 重对齐还会在 lifecycle lock 内把
@@ -175,7 +176,8 @@ prepare/apply/verify/status 和 operator Git 复核。当前唯一批准的
 public-only 或不匹配 keypair 一律失败关闭。密文 checkpoint 完成后才扩展权威清单，切换
 目标源码后再由目标提交的固定预处理器原子生成新 runtime generation，然后才允许迁移。
 
-无共同历史继续使用独立 public baseline 流程；无迁移、非 `origin/main`、缺少完整 CI、
+无共同历史继续使用独立 public baseline 流程；无迁移、非 `origin/main`、缺少精确
+`ci-gate`、
 host-control commit 不一致或出现任意额外禁止路径时，`rebaseline` 必须失败关闭。完成本次
 重对齐后恢复日常 `apply`，不得把该入口用于普通分类器拒绝的未来变更。
 

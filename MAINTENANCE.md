@@ -106,7 +106,7 @@ scripts/test_update.sh rebaseline --ref origin/main
 同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
 [`deploy/README.md`](deploy/README.md) 的“一次性主机安装”把 root-owned host-control
 快照绑定到同一目标 commit，且目标 commit 的 `backend`、`frontend`、`security`、`g2`
-与 `ci-gate` 五个 GitHub Actions check 必须全部成功。后续仍走 high-risk 的暂停、
+PR 证据必须已由合并提交的精确 `ci-gate` 绑定并验证成功。后续仍走 high-risk 的暂停、
 `uncertain` 拦截、密文数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 和
 operator Git 复核；无共同历史、无迁移、任意新增禁止路径或非 `origin/main` 一律拒绝。
 

@@ -394,7 +394,7 @@ def test_driver_preflights_github_auth_before_mutation() -> None:
     )
 
 
-def test_rebaseline_is_narrower_than_daily_apply_and_requires_full_ci() -> None:
+def test_rebaseline_is_narrower_than_daily_apply_and_requires_exact_ci_gate() -> None:
     source = DRIVER.read_text(encoding="utf-8")
 
     assert (
@@ -405,7 +405,7 @@ def test_rebaseline_is_narrower_than_daily_apply_and_requires_full_ci() -> None:
     assert "merge-base --is-ancestor" in source
     assert "classify-rebaseline-nul" in source
     assert 'CLASSIFY_ACTION="classify-nul"' in source
-    assert "--require-full" in source
+    assert "--require-full" not in source
     assert "rebaseline 要求服务器迁移头真实前移" in source
     assert 'components=${PLANNED_COMPONENTS[*]}' in source
     assert 'REQUEST_OPERATION="apply"' in source
