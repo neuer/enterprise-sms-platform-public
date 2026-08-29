@@ -682,12 +682,11 @@ async def test_credential_reservation_blocks_concurrent_reset(
     assert SENTINEL not in repr(repository.records)
 
 
-def test_api_factory_injects_reset_finalizer(
+def test_api_factory_does_not_register_destructive_reset_finalizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.api import vendor_test as vendor_test_api
 
-    recipient_repository = object()
     captured: dict[str, object] = {}
 
     class CapturingService:
@@ -696,22 +695,16 @@ def test_api_factory_injects_reset_finalizer(
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
-            captured.update(finalizers)
+            captured["finalizers"] = finalizers
 
     monkeypatch.setattr(vendor_test_api, "get_settings", lambda: "settings")
-    monkeypatch.setattr(
-        vendor_test_api,
-        "SqlVendorTestRecipientRepository",
-        lambda settings: recipient_repository,
-    )
     monkeypatch.setattr(vendor_test_api, "VendorTestOperationService", CapturingService)
 
     vendor_test_api.get_vendor_operation_service()
 
-    finalizer = captured["reset_configuration"]
-    assert finalizer.repository is recipient_repository
+    assert captured == {"finalizers": None}
 
 
 @pytest.mark.asyncio

@@ -14,11 +14,13 @@ sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 import vendor_test_files as files  # noqa: E402
 
 
-def _marker() -> dict[str, object]:
+def _marker(
+    vendor_origin: str = "https://vendor.example.invalid",
+) -> dict[str, object]:
     return {
         "schema_version": 1,
         "mode": "development-vendor-live",
-        "vendor_origin": "https://vendor.example.invalid",
+        "vendor_origin": vendor_origin,
         "daily_segment_limit": 100,
         "timezone": "Asia/Shanghai",
         "backup_config": "/etc/sms-platform/test-update-backup.json",
@@ -288,6 +290,175 @@ def test_dotenv_update_changes_only_fixed_live_keys_and_preserves_images(
     assert "SMS_API_IMAGE=registry/api@sha256:abc" in rendered
     assert "POSTGRES_DB=sms" in rendered
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_restore_pure_mock_dotenv_reverses_only_fixed_live_keys(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        "# keep\n"
+        "ENVIRONMENT=development\nDEBUG=1\nAUTH_MOCK=1\nVENDOR_MOCK=0\n"
+        "VENDOR_BASE_URL=https://vendor.example.invalid\n"
+        "VENDOR_LIVE_TEST_ORIGIN=https://vendor.example.invalid\n"
+        "COMPOSE_PROFILES=\n"
+        "SMS_VENDOR_TEST_STATE_DIR=/var/lib/sms-platform/vendor-test\n"
+        "SMS_VENDOR_CONTROL_SOCKET_DIR=/run/sms-platform/vendor-control\n"
+        "SMS_API_IMAGE=registry/api@sha256:abc\nPOSTGRES_DB=sms\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+    assert files.restore_pure_mock_dotenv(path, expected_uid=os.geteuid()) is True
+
+    rendered = path.read_text(encoding="utf-8")
+    assert "ENVIRONMENT=development\n" in rendered
+    assert "DEBUG=1\n" in rendered
+    assert "AUTH_MOCK=1\n" in rendered
+    assert "VENDOR_MOCK=1\n" in rendered
+    assert "VENDOR_BASE_URL=http://mock-vendor:9028\n" in rendered
+    assert "COMPOSE_PROFILES=dev\n" in rendered
+    assert "VENDOR_LIVE_TEST_ORIGIN=" not in rendered
+    assert "SMS_VENDOR_TEST_STATE_DIR=" not in rendered
+    assert "SMS_VENDOR_CONTROL_SOCKET_DIR=" not in rendered
+    assert "SMS_API_IMAGE=registry/api@sha256:abc\n" in rendered
+    assert "POSTGRES_DB=sms\n" in rendered
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    files.require_restored_pure_mock_dotenv(path, expected_uid=os.geteuid())
+
+
+def test_restore_uses_actual_controlled_vendor_origin_not_shell_default(
+    tmp_path: Path,
+) -> None:
+    vendor_origin = "https://carrier.example.com"
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "ENVIRONMENT=development\nDEBUG=1\nAUTH_MOCK=1\nVENDOR_MOCK=0\n"
+        f"VENDOR_BASE_URL={vendor_origin}\n"
+        f"VENDOR_LIVE_TEST_ORIGIN={vendor_origin}\n"
+        "COMPOSE_PROFILES=\n"
+        "SMS_VENDOR_TEST_STATE_DIR=/var/lib/sms-platform/vendor-test\n"
+        "SMS_VENDOR_CONTROL_SOCKET_DIR=/run/sms-platform/vendor-control\n",
+        encoding="utf-8",
+    )
+    dotenv.chmod(0o600)
+    marker = tmp_path / "test-environment"
+    _write_marker(marker, _marker(vendor_origin))
+
+    actual_origin = files.read_live_vendor_origin(
+        dotenv,
+        expected_uid=os.geteuid(),
+    )
+
+    assert actual_origin == vendor_origin
+    assert files.restore_pure_mock_dotenv(
+        dotenv,
+        expected_uid=os.geteuid(),
+    )
+    assert files.remove_vendor_test_marker(
+        marker,
+        expected_uid=os.geteuid(),
+        expected_vendor_origin=actual_origin,
+    )
+
+
+def test_restore_pure_mock_dotenv_is_byte_stable_when_already_restored(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        "# keep\n"
+        "ENVIRONMENT=development\nDEBUG=1\nAUTH_MOCK=1\nVENDOR_MOCK=1\n"
+        "VENDOR_BASE_URL=http://mock-vendor:9028\nCOMPOSE_PROFILES=dev\n"
+        "SMS_API_IMAGE=registry/api@sha256:abc\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    before = path.read_bytes()
+
+    assert files.restore_pure_mock_dotenv(path, expected_uid=os.geteuid()) is False
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "unsafe_line",
+    [
+        "VENDOR_BASE_URL=https://unexpected.example.invalid",
+        "VENDOR_LIVE_TEST_ORIGIN=https://unexpected.example.invalid",
+        "SMS_VENDOR_TEST_STATE_DIR=/tmp/unexpected",
+        "VENDOR_SECRET_KEY=must-not-be-in-dotenv",
+    ],
+)
+def test_restore_pure_mock_dotenv_rejects_drift_without_write(
+    tmp_path: Path,
+    unsafe_line: str,
+) -> None:
+    lines = [
+        "ENVIRONMENT=development",
+        "DEBUG=1",
+        "AUTH_MOCK=1",
+        "VENDOR_MOCK=0",
+        "VENDOR_BASE_URL=https://vendor.example.invalid",
+        "VENDOR_LIVE_TEST_ORIGIN=https://vendor.example.invalid",
+        "COMPOSE_PROFILES=",
+        "SMS_VENDOR_TEST_STATE_DIR=/var/lib/sms-platform/vendor-test",
+        "SMS_VENDOR_CONTROL_SOCKET_DIR=/run/sms-platform/vendor-control",
+    ]
+    key = unsafe_line.split("=", 1)[0]
+    lines = [line for line in lines if not line.startswith(f"{key}=")]
+    lines.append(unsafe_line)
+    path = tmp_path / ".env"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    before = path.read_bytes()
+
+    with pytest.raises(files.VendorTestFileError):
+        files.restore_pure_mock_dotenv(path, expected_uid=os.geteuid())
+
+    assert path.read_bytes() == before
+
+
+def test_remove_vendor_test_marker_validates_then_unlinks_idempotently(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "test-environment"
+    _write_marker(path)
+
+    assert files.remove_vendor_test_marker(path, expected_uid=os.geteuid()) is True
+    assert not path.exists()
+    assert files.remove_vendor_test_marker(path, expected_uid=os.geteuid()) is False
+
+    payload = _marker()
+    payload["vendor_origin"] = "https://unexpected.example.invalid"
+    _write_marker(path, payload)
+    with pytest.raises(files.VendorTestFileError):
+        files.remove_vendor_test_marker(path, expected_uid=os.geteuid())
+    assert path.exists()
+
+
+def test_marker_removal_replay_fsyncs_parent_after_unlink_fsync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "test-environment"
+    _write_marker(path)
+    real_fsync = files.os.fsync
+    calls = 0
+
+    def fail_first_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated directory fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(files.os, "fsync", fail_first_fsync)
+    with pytest.raises(files.VendorTestFileError, match="parent is unavailable"):
+        files.remove_vendor_test_marker(path, expected_uid=os.geteuid())
+    assert not path.exists()
+
+    assert files.remove_vendor_test_marker(path, expected_uid=os.geteuid()) is False
+    assert calls == 2
 
 
 @pytest.mark.parametrize(

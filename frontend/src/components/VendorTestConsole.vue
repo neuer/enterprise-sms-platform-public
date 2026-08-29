@@ -53,7 +53,7 @@ let disposed = false
 let pollFailureNotified = false
 
 const OPERATION_SESSION_KEY = "sms-platform:vendor-test:operation:v1"
-const RESET_CONFIRMATION = "清空联调设置"
+const RESET_CONFIRMATION = "切回Mock"
 const OPERATION_TYPES = new Set<VendorTestOperation["operation_type"]>([
   "install_credentials",
   "rotate_credentials",
@@ -80,7 +80,8 @@ const credentialOperation = computed(() =>
 const resetAvailable = computed(() => {
   if (!status.value) return false
   if (status.value.pause_kind !== null) return false
-  return status.value.mode === "inactive" && status.value.credential_configured
+  return ["inactive", "controlled"].includes(status.value.mode)
+    && status.value.credential_configured
 })
 const resetOperationPending = computed(() =>
   activeOperation.value?.operation_type === "reset_configuration"
@@ -254,8 +255,8 @@ function finishOperation(operation: VendorTestOperation): void {
   if (operation.status === "failed") {
     if (operation.operation_type === "reset_configuration") {
       ElMessage.error(
-        `清空联调设置未确认完成：${operation.safe_code || "RESET_FAILED"}；`
-        + "部分设置可能已清理，真实出口保持关闭，请修复后重试",
+        `切回 Mock 未确认完成：${operation.safe_code || "RESET_FAILED"}；`
+        + "测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
       )
     } else if (operation.vendor_code !== null) {
       ElMessage.error(`运营商返回错误代码 ${operation.vendor_code}`)
@@ -267,7 +268,7 @@ function finishOperation(operation: VendorTestOperation): void {
       operation.operation_type === "uat_send"
         ? "真实 UAT 已被运营商受理"
         : operation.operation_type === "reset_configuration"
-          ? "联调设置已清空，请重新完成设置"
+          ? "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变"
           : "受控操作成功",
     )
   }
@@ -562,7 +563,7 @@ onBeforeUnmount(() => {
             plain
             :disabled="operationBusy || controlBusy"
             @click="requestReset"
-          >清空联调设置</el-button>
+          >切回 Mock</el-button>
           <el-button
             v-if="isControlled"
             data-testid="vendor-pause"
@@ -640,10 +641,10 @@ onBeforeUnmount(() => {
       <div v-if="activeOperation.safe_code"><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div>
       <div v-if="activeOperation.vendor_code !== null"><span>运营商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div>
       <p v-if="resetOperationPending" class="vendor-operation-guidance">
-        清空处理中，真实出口保持关闭，请勿重复操作。
+        正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留。
       </p>
       <p v-if="resetOperationFailed" class="vendor-operation-guidance is-danger">
-        清空未确认完成，部分设置可能已清理；真实出口保持关闭，请按安全代码修复后重试。
+        切回 Mock 未确认完成，测试环境可能处于部分切换状态；请勿发送，并按安全代码恢复同一操作。
       </p>
     </section>
 
@@ -694,7 +695,7 @@ onBeforeUnmount(() => {
       :title="stepUpAction === 'activate'
         ? '二次认证激活'
         : stepUpAction === 'reset_configuration'
-          ? '清空联调设置'
+          ? '切回 Mock'
           : '二次认证恢复'"
       width="440px"
       destroy-on-close
@@ -710,14 +711,19 @@ onBeforeUnmount(() => {
         <el-alert
           v-if="stepUpAction === 'reset_configuration'"
           id="vendor-reset-consequences"
-          title="此操作不可撤销"
+          title="仅影响测试环境的厂商连接，操作不可撤销"
           type="error"
           :closable="false"
           show-icon
         >
           <p>
-            仅删除正式厂商凭据的全部版本和全部测试号码；保留管理员、短信业务数据、审计记录、
-            当日 UAT 用量、uncertain 占额、数据库、Docker volume 和运行态目录。这不是系统初始化。
+            测试环境将停止真实发送与厂商状态/回复拉取，切回本机 Mock，并删除测试环境的正式厂商凭据
+            全部版本。生产环境的配置、凭据、服务和数据不受影响。
+          </p>
+          <p>
+            保留全部加密测试号码及其索引，也保留管理员、短信业务数据、审计记录、当日 UAT 用量、
+            uncertain 占额、数据库、Docker volume 和运行态目录；切换前已发送、待回执、uncertain
+            或被错误环境消费的历史状态不会自动修复。这不是系统初始化。
           </p>
         </el-alert>
         <p>请输入当前登录账号密码。认证令牌五分钟内单次有效，不写入浏览器存储。</p>
@@ -736,7 +742,7 @@ onBeforeUnmount(() => {
           </el-form-item>
           <el-form-item
             v-if="stepUpAction === 'reset_configuration'"
-            label="输入“清空联调设置”确认"
+            :label="`输入“${RESET_CONFIRMATION}”确认`"
             required
           >
             <el-input
@@ -764,7 +770,7 @@ onBeforeUnmount(() => {
           {{ stepUpAction === 'activate'
             ? '验证并激活'
             : stepUpAction === 'reset_configuration'
-              ? '验证并清空'
+              ? '验证并切回 Mock'
               : '验证并恢复' }}
         </el-button>
       </template>

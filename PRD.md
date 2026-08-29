@@ -275,6 +275,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 测试号码按 `phone_enc/phone_hmac/phone_mask/key_version` 存 PostgreSQL；页面只展示备注与掩码。live-test 模式下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`，控制台 UAT 每次只选择一个 active recipient
 - 应用侧唯一真实联调例外为 `POST /api/v1/messages/uat-send`：有效 `X-Api-Key`、仅通知、单个 active 已登记号码、直接内容或已审核模板与必填 1–32 位 `biz_id`；禁止定时、验证码、营销及额外字段。API 必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码且要求所有保留版本 digest 与当次输入完全匹配，只把既有加密四元组交给同一 pipeline；worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，queued/sending 测试批次作为维护租约，终态前禁止停用或删除。控制状态损坏或过期必须以 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则保持 503 且不继续；复用 24h 幂等、每日 100 个计费条和 uncertain 占额
 - 继续执行上海自然日 100 个计费条硬上限、uncertain 持续占额、1010/鉴权/余额等 critical pause 和 GetBalance-only 激活预检；CI/G2 始终使用 Mock/FakeCarrier
+- 已配置且无暂停的测试环境允许管理员二次认证后从 `controlled|inactive` 切回内置 Mock：先停止并确认测试侧真实发送与报告/回复消费者均不再运行，再删除测试环境正式厂商凭据并重建纯 Mock 服务；不等待已停止消费者无法自行收敛的测试 backlog，既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发；保留加密测试号码、短信业务数据、审计、当日 UAT/uncertain 事实、数据库与 volume；不得修改生产环境，也不得自动修复切换前历史未决状态
 #### FR-19b 安全日报配置与投递（v1.6.40）
 - admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
 - 配置写入 `sys_config.security_daily_resend_api_key` 与 `security_daily_recipient`，配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer

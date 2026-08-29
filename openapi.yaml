@@ -2040,7 +2040,12 @@ paths:
   /api/v1/web/admin/vendor-test/reset:
     post:
       tags: [admin]
-      summary: 异步清空真实联调设置并恢复待设置状态
+      summary: 异步将测试环境切回 Mock 并撤销正式厂商凭据
+      description: |
+        仅允许管理员在正式凭据已配置、无暂停且状态为 `controlled` 或 `inactive` 时，
+        使用绑定 `reset_configuration` 的单次二次认证令牌启动。操作停止测试侧真实发送及
+        报告/回复拉取，恢复内置 Mock，并删除测试环境正式厂商凭据；保留加密测试号码、历史短信、
+        审计、当日 UAT/uncertain 事实、数据库和 volume，不修改生产环境，也不自动修复历史未决状态。
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true

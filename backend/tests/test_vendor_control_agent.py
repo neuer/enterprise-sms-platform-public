@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,11 +23,13 @@ class FakeRunner:
         safe_code: str | None = None,
         body: dict[str, object] | None = None,
         runtime_returncode: int = 0,
+        runtime_effect: Callable[[], None] | None = None,
     ) -> None:
         self.returncode = returncode
         self.safe_code = safe_code
         self.body = body or {}
         self.runtime_returncode = runtime_returncode
+        self.runtime_effect = runtime_effect
         self.calls: list[str] = []
 
     def run(self, operation: str):
@@ -34,6 +37,8 @@ class FakeRunner:
 
         self.calls.append(operation)
         if operation == "reset-runtime":
+            if self.runtime_returncode == 0 and self.runtime_effect is not None:
+                self.runtime_effect()
             return agent_module.WrapperResult(
                 self.runtime_returncode,
                 None if self.runtime_returncode == 0 else "CONTROL_COMMAND_FAILED",
@@ -98,6 +103,10 @@ class FakeCredentialStore:
         self.configured = False
         self.reset_needed = False
         return self.status()
+
+    def revoke_from_runtime(self) -> None:
+        self.configured = False
+        self.reset_needed = False
 
 
 class FakeSealSessions:
@@ -238,6 +247,8 @@ def test_fixed_runner_never_accepts_or_appends_caller_arguments() -> None:
     ]
     assert calls[0][1]["shell"] is False
     assert calls[0][1]["timeout"] == 180
+    assert runner.run("reset-runtime").returncode == 1
+    assert calls[1][1]["timeout"] == 300
     with pytest.raises(agent_module.UnsupportedAgentOperation):
         runner.run("status --path /tmp")
 
@@ -351,7 +362,10 @@ def test_reset_configuration_is_journaled_and_replay_does_not_reset_again(
     operation_id = "c0a80101-0000-4000-8000-000000000021"
     store = FakeCredentialStore(configured=True)
     journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
-    runner = FakeRunner(body=_host_state())
+    runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     first_agent = agent_module.VendorControlAgent(
         runner=runner,
         credential_store=store,
@@ -383,7 +397,7 @@ def test_reset_configuration_is_journaled_and_replay_does_not_reset_again(
     assert first.status == "ok"
     assert replay.status == "ok"
     assert replay.body == {"operation_status": "succeeded"}
-    assert store.events == ["reset"]
+    assert store.events == []
     recorded = journal.get(operation_id)
     assert recorded is not None
     assert recorded.operation == "reset_configuration"
@@ -392,7 +406,8 @@ def test_reset_configuration_is_journaled_and_replay_does_not_reset_again(
     assert runner.calls == ["status", "reset-runtime"]
 
 
-def test_reset_configuration_clears_source_before_fixed_runtime_revocation(
+def test_reset_configuration_authorizes_wrapper_before_marking_runtime_revoked(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     import vendor_control_agent as agent_module
@@ -404,20 +419,41 @@ def test_reset_configuration_clears_source_before_fixed_runtime_revocation(
     operation_id = "c0a80101-0000-4000-8000-000000000221"
     events: list[str] = []
 
-    class Store(FakeCredentialStore):
-        def reset(self):
-            events.append("source_reset")
-            return super().reset()
-
     class Runner(FakeRunner):
         def run(self, operation: str):
             events.append(operation)
             return super().run(operation)
 
+    class Store(FakeCredentialStore):
+        def reset(self):
+            raise AssertionError("agent must not delete the root credential store")
+
+        def revoke_from_runtime(self) -> None:
+            events.append("runtime_store_reset")
+            super().revoke_from_runtime()
+
     store = Store(configured=True)
     journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
+    real_authorize = journal.authorize_reset
+    real_mark = journal.mark_runtime_revoked
+
+    def authorize_reset(value: str):
+        record = real_authorize(value)
+        events.append("authorize")
+        return record
+
+    def mark_runtime_revoked(value: str):
+        record = real_mark(value)
+        events.append("mark")
+        return record
+
+    monkeypatch.setattr(journal, "authorize_reset", authorize_reset)
+    monkeypatch.setattr(journal, "mark_runtime_revoked", mark_runtime_revoked)
     response = agent_module.VendorControlAgent(
-        runner=Runner(body=_host_state()),
+        runner=Runner(
+            body=_host_state(),
+            runtime_effect=store.revoke_from_runtime,
+        ),
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -430,12 +466,18 @@ def test_reset_configuration_clears_source_before_fixed_runtime_revocation(
     )
 
     assert response.status == "ok"
-    assert events == ["status", "source_reset", "reset-runtime"]
+    assert events == [
+        "status",
+        "authorize",
+        "reset-runtime",
+        "runtime_store_reset",
+        "mark",
+    ]
     assert store.status() == CredentialStatus(False, "setup_required", None)
     assert journal.get(operation_id).phase == "runtime_revoked"  # type: ignore[union-attr]
 
 
-def test_runtime_wrapper_failure_after_source_reset_stays_running_and_replays(
+def test_runtime_wrapper_failure_stays_running_and_replays_same_operation(
     tmp_path: Path,
 ) -> None:
     import vendor_control_agent as agent_module
@@ -457,7 +499,10 @@ def test_runtime_wrapper_failure_after_source_reset_stays_running_and_replays(
         journal=journal,
     ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
 
-    replay_runner = FakeRunner(body=_host_state())
+    replay_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     replay = agent_module.VendorControlAgent(
         runner=replay_runner,
         credential_store=store,
@@ -470,7 +515,7 @@ def test_runtime_wrapper_failure_after_source_reset_stays_running_and_replays(
     assert first.safe_code == "CONTROL_RESULT_UNKNOWN"
     assert first.body == {"operation_status": "running"}
     assert replay.status == "ok"
-    assert store.events == ["reset"]
+    assert store.events == []
     assert replay_runner.calls == ["status", "reset-runtime"]
     assert journal.get(operation_id).status == "succeeded"  # type: ignore[union-attr]
     assert journal.get(operation_id).phase == "runtime_revoked"  # type: ignore[union-attr]
@@ -500,7 +545,10 @@ def test_runtime_phase_write_failure_replays_probe_before_success(
         return real_mark(value)
 
     monkeypatch.setattr(journal, "mark_runtime_revoked", fail_once)
-    first_runner = FakeRunner(body=_host_state())
+    first_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     first = agent_module.VendorControlAgent(
         runner=first_runner,
         credential_store=store,
@@ -509,7 +557,10 @@ def test_runtime_phase_write_failure_replays_probe_before_success(
         expected_gid=os.getgid(),
         journal=journal,
     ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-    replay_runner = FakeRunner(body=_host_state())
+    replay_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     replay = agent_module.VendorControlAgent(
         runner=replay_runner,
         credential_store=store,
@@ -747,131 +798,13 @@ def test_interrupted_reset_after_authorization_replays_partial_inventory(
     recorded = journal.get(operation_id)
     assert response.status == "ok"
     assert response.body == {"operation_status": "succeeded"}
-    assert store.events == ["reset"]
+    assert store.events == []
     assert runner.calls == ["status", "reset-runtime"]
     assert recorded is not None and recorded.status == "succeeded"
     assert recorded.phase == "runtime_revoked"
 
 
-def test_authorized_reset_partial_failure_stays_running_and_replays_same_operation(
-    tmp_path: Path,
-) -> None:
-    import vendor_control_agent as agent_module
-    from vendor_control_journal import VendorControlJournal
-    from vendor_credential_store import CredentialStoreError
-
-    from vendor_control_protocol import ControlRequest
-
-    class PartialFailureStore(FakeCredentialStore):
-        def __init__(self) -> None:
-            super().__init__(configured=True)
-            self.failures = 1
-
-        def reset(self):
-            if self.failures:
-                self.events.append("reset")
-                self.configured = False
-                self.reset_needed = True
-                self.failures -= 1
-                raise CredentialStoreError("private-partial-reset-detail")
-            return super().reset()
-
-    operation_id = "c0a80101-0000-4000-8000-000000000129"
-    request = ControlRequest(operation_id, "reset_configuration", {})
-    journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
-    store = PartialFailureStore()
-
-    first = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
-        credential_store=store,
-        seal_sessions=FakeSealSessions(),
-        expected_uid=os.getuid(),
-        expected_gid=os.getgid(),
-        journal=journal,
-    ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-    running = journal.get(operation_id)
-    replay = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
-        credential_store=store,
-        seal_sessions=FakeSealSessions(),
-        expected_uid=os.getuid(),
-        expected_gid=os.getgid(),
-        journal=journal,
-    ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-    terminal = journal.get(operation_id)
-
-    assert first.status == "error"
-    assert first.safe_code == "CONTROL_RESULT_UNKNOWN"
-    assert first.body == {"operation_status": "running"}
-    assert "private-partial-reset-detail" not in repr(first)
-    assert running is not None
-    assert running.status == "running"
-    assert running.phase == "reset_authorized"
-    assert replay.status == "ok"
-    assert replay.body == {"operation_status": "succeeded"}
-    assert store.events == ["reset", "reset"]
-    assert terminal is not None
-    assert terminal.status == "succeeded"
-    assert terminal.phase == "runtime_revoked"
-
-
-def test_real_store_partial_deletion_replays_same_authorized_operation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    import vendor_control_agent as agent_module
-    import vendor_credential_store as store_module
-    from vendor_control_journal import VendorControlJournal
-
-    from vendor_control_protocol import ControlRequest
-
-    store = store_module.VendorCredentialStore(tmp_path / "credentials")
-    store.install(store_module.VendorCredentials("test-name", "test-key"))
-    real_rmtree = store_module.shutil.rmtree
-    failed = False
-
-    def fail_once(path: Path) -> None:
-        nonlocal failed
-        if not failed:
-            failed = True
-            (Path(path) / "vendor_secret_key").unlink()
-            raise OSError("private-real-store-removal-detail")
-        real_rmtree(path)
-
-    monkeypatch.setattr(store_module.shutil, "rmtree", fail_once)
-    operation_id = "c0a80101-0000-4000-8000-000000000131"
-    request = ControlRequest(operation_id, "reset_configuration", {})
-    journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
-
-    first = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
-        credential_store=store,
-        seal_sessions=FakeSealSessions(),
-        expected_uid=os.getuid(),
-        expected_gid=os.getgid(),
-        journal=journal,
-    ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-    running = journal.get(operation_id)
-    replay = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
-        credential_store=store,
-        seal_sessions=FakeSealSessions(),
-        expected_uid=os.getuid(),
-        expected_gid=os.getgid(),
-        journal=journal,
-    ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-
-    assert first.safe_code == "CONTROL_RESULT_UNKNOWN"
-    assert first.body == {"operation_status": "running"}
-    assert "private-real-store-removal-detail" not in repr(first)
-    assert running is not None
-    assert running.status == "running"
-    assert running.phase == "reset_authorized"
-    assert replay.status == "ok"
-    assert list(store.root.iterdir()) == []
-
-
-def test_legacy_running_reset_with_configured_store_reauthorizes_before_reset(
+def test_legacy_running_reset_with_configured_store_reauthorizes_before_wrapper(
     tmp_path: Path,
 ) -> None:
     import vendor_control_agent as agent_module
@@ -884,7 +817,10 @@ def test_legacy_running_reset_with_configured_store_reauthorizes_before_reset(
     running, _ = journal.begin(operation_id, "reset_configuration")
     assert running.phase is None
     store = FakeCredentialStore(configured=True)
-    runner = FakeRunner(body=_host_state())
+    runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
 
     response = agent_module.VendorControlAgent(
         runner=runner,
@@ -901,7 +837,7 @@ def test_legacy_running_reset_with_configured_store_reauthorizes_before_reset(
 
     recorded = journal.get(operation_id)
     assert response.status == "ok"
-    assert store.events == ["reset"]
+    assert store.events == []
     assert runner.calls == ["status", "reset-runtime"]
     assert recorded is not None
     assert recorded.status == "succeeded"
@@ -911,13 +847,12 @@ def test_legacy_running_reset_with_configured_store_reauthorizes_before_reset(
 @pytest.mark.parametrize(
     ("returncode", "body"),
     (
-        (0, _host_state("controlled")),
         (0, _host_state("blocked", pause_kind="critical")),
         (1, {}),
         (0, {}),
     ),
 )
-def test_authorized_reset_stays_running_for_unverified_or_noninactive_host(
+def test_authorized_reset_stays_running_for_unverified_or_blocked_host(
     tmp_path: Path,
     returncode: int,
     body: dict[str, object],
@@ -957,7 +892,7 @@ def test_authorized_reset_stays_running_for_unverified_or_noninactive_host(
     assert recorded.phase == "reset_authorized"
 
 
-def test_authorized_reset_recovers_after_host_becomes_inactive(tmp_path: Path) -> None:
+def test_authorized_reset_runs_while_host_is_controlled(tmp_path: Path) -> None:
     import vendor_control_agent as agent_module
     from vendor_control_journal import VendorControlJournal
 
@@ -970,16 +905,9 @@ def test_authorized_reset_recovers_after_host_becomes_inactive(tmp_path: Path) -
     journal.authorize_reset(operation_id)
     store = FakeCredentialStore(configured=False, reset_needed=True)
 
-    first = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state("controlled")),
-        credential_store=store,
-        seal_sessions=FakeSealSessions(),
-        expected_uid=os.getuid(),
-        expected_gid=os.getgid(),
-        journal=journal,
-    ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
-    replay = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state("inactive")),
+    runner = FakeRunner(body=_host_state("controlled"))
+    response = agent_module.VendorControlAgent(
+        runner=runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -987,10 +915,10 @@ def test_authorized_reset_recovers_after_host_becomes_inactive(tmp_path: Path) -
         journal=journal,
     ).handle(request, peer_uid=os.getuid(), peer_gid=os.getgid())
 
-    assert first.safe_code == "CONTROL_RESULT_UNKNOWN"
-    assert first.body == {"operation_status": "running"}
-    assert replay.status == "ok"
-    assert store.events == ["reset"]
+    assert response.status == "ok"
+    assert response.body == {"operation_status": "succeeded"}
+    assert runner.calls == ["status", "reset-runtime"]
+    assert store.events == []
 
 
 def test_authorized_reset_stays_running_for_corrupt_credential_inventory(
@@ -1040,7 +968,6 @@ def test_authorized_reset_stays_running_for_corrupt_credential_inventory(
 @pytest.mark.parametrize(
     ("returncode", "body"),
     (
-        (0, _host_state("controlled")),
         (0, _host_state("blocked", pause_kind="critical")),
         (1, {}),
         (0, {}),
@@ -1086,8 +1013,10 @@ def test_reset_configuration_rejects_stale_or_unverified_host_mode(
     assert runner.calls == ["status"]
 
 
-def test_reset_configuration_refreshes_configured_store_to_inactive_before_reset(
+@pytest.mark.parametrize("mode", ("inactive", "controlled"))
+def test_reset_configuration_refreshes_safe_host_before_wrapper(
     tmp_path: Path,
+    mode: str,
 ) -> None:
     import vendor_control_agent as agent_module
     from vendor_control_journal import VendorControlJournal
@@ -1095,7 +1024,10 @@ def test_reset_configuration_refreshes_configured_store_to_inactive_before_reset
     from vendor_control_protocol import ControlRequest
 
     store = FakeCredentialStore(configured=True)
-    runner = FakeRunner(body=_host_state())
+    runner = FakeRunner(
+        body=_host_state(mode),
+        runtime_effect=store.revoke_from_runtime,
+    )
     agent = agent_module.VendorControlAgent(
         runner=runner,
         credential_store=store,
@@ -1121,7 +1053,7 @@ def test_reset_configuration_refreshes_configured_store_to_inactive_before_reset
     )
 
     assert response.status == "ok"
-    assert store.events == ["reset"]
+    assert store.events == []
     assert runner.calls == ["status", "reset-runtime"]
 
 
@@ -1155,7 +1087,7 @@ def test_configured_reset_without_durable_journal_fails_closed() -> None:
     assert runner.calls == []
 
 
-def test_reset_authorization_phase_is_persisted_before_credential_reset(
+def test_reset_authorization_phase_is_persisted_before_runtime_wrapper(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1166,10 +1098,10 @@ def test_reset_authorization_phase_is_persisted_before_credential_reset(
 
     events: list[str] = []
 
-    class TrackingStore(FakeCredentialStore):
-        def reset(self):
-            events.append("reset")
-            return super().reset()
+    class TrackingRunner(FakeRunner):
+        def run(self, operation: str):
+            events.append(operation)
+            return super().run(operation)
 
     operation_id = "c0a80101-0000-4000-8000-000000000126"
     journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
@@ -1181,10 +1113,14 @@ def test_reset_authorization_phase_is_persisted_before_credential_reset(
         return record
 
     monkeypatch.setattr(journal, "authorize_reset", authorize_reset)
-    store = TrackingStore(configured=True)
+    store = FakeCredentialStore(configured=True)
+    runner = TrackingRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
 
     response = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1197,10 +1133,11 @@ def test_reset_authorization_phase_is_persisted_before_credential_reset(
     )
 
     assert response.status == "ok"
-    assert events == ["authorize", "reset"]
+    assert events == ["status", "authorize", "reset-runtime"]
+    assert store.events == []
 
 
-def test_reset_authorization_phase_write_failure_prevents_credential_reset(
+def test_reset_authorization_phase_write_failure_prevents_runtime_wrapper(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1217,9 +1154,10 @@ def test_reset_authorization_phase_write_failure_prevents_credential_reset(
 
     monkeypatch.setattr(journal, "authorize_reset", fail_authorization)
     store = FakeCredentialStore(configured=True)
+    runner = FakeRunner(body=_host_state())
 
     response = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1234,6 +1172,7 @@ def test_reset_authorization_phase_write_failure_prevents_credential_reset(
     assert response.status == "error"
     assert response.safe_code == "CONTROL_OPERATION_REJECTED"
     assert store.events == []
+    assert runner.calls == ["status"]
     assert "private-phase-write-detail" not in repr(response)
 
 
@@ -1278,8 +1217,12 @@ def test_reset_configuration_persists_safe_setup_required_projection(
 
     store = FakeCredentialStore(configured=True)
     state_path = tmp_path / "control-state.json"
+    runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     agent = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1320,8 +1263,12 @@ def test_reset_configuration_reports_control_state_sync_failure(
     from vendor_control_protocol import ControlRequest
 
     store = FakeCredentialStore(configured=True)
+    runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     agent = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1351,7 +1298,7 @@ def test_reset_configuration_reports_control_state_sync_failure(
     assert response.status == "error"
     assert response.safe_code == "CONTROL_STATE_SYNC_FAILED"
     assert response.body == {"operation_status": "running"}
-    assert store.events == ["reset"]
+    assert store.events == []
     assert "private-state-write-detail" not in repr(response)
 
 
@@ -1371,7 +1318,10 @@ def test_reset_state_failure_journal_replay_converges_without_second_reset(
     store = FakeCredentialStore(configured=True)
     journal = VendorControlJournal(tmp_path / "journal", expected_uid=os.getuid())
     state_path = tmp_path / "control-state.json"
-    runner = FakeRunner(body=_host_state())
+    runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     real_write = agent_module.write_control_state
     writes = 0
 
@@ -1397,7 +1347,10 @@ def test_reset_state_failure_journal_replay_converges_without_second_reset(
         peer_uid=os.getuid(),
         peer_gid=os.getgid(),
     )
-    replay_runner = FakeRunner(body=_host_state())
+    replay_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     replay = agent_module.VendorControlAgent(
         runner=replay_runner,
         credential_store=store,
@@ -1422,7 +1375,7 @@ def test_reset_state_failure_journal_replay_converges_without_second_reset(
     assert recorded is not None
     assert recorded.status == "succeeded"
     assert recorded.safe_code is None
-    assert store.events == ["reset"]
+    assert store.events == []
     assert runner.calls == ["status", "reset-runtime", "status"]
     assert replay_runner.calls == ["status", "reset-runtime", "status"]
     assert writes == 2
@@ -1452,8 +1405,14 @@ def test_reset_state_failure_remains_running_across_restarts_without_second_rese
     monkeypatch.setattr(agent_module, "write_control_state", fail_state_write)
     responses = []
     for runner in (
-        FakeRunner(body=_host_state()),
-        FakeRunner(body=_host_state()),
+        FakeRunner(
+            body=_host_state(),
+            runtime_effect=store.revoke_from_runtime,
+        ),
+        FakeRunner(
+            body=_host_state(),
+            runtime_effect=store.revoke_from_runtime,
+        ),
     ):
         responses.append(
             agent_module.VendorControlAgent(
@@ -1482,7 +1441,7 @@ def test_reset_state_failure_remains_running_across_restarts_without_second_rese
         for response in responses
     )
     assert recorded is not None and recorded.status == "running"
-    assert store.events == ["reset"]
+    assert store.events == []
 
 
 def test_reset_journal_finish_failure_is_recoverable_and_not_cached(
@@ -1509,8 +1468,12 @@ def test_reset_journal_finish_failure_is_recoverable_and_not_cached(
         return real_finish(*args, **kwargs)
 
     monkeypatch.setattr(journal, "finish", fail_once)
+    first_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     first_agent = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=first_runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1524,8 +1487,12 @@ def test_reset_journal_finish_failure_is_recoverable_and_not_cached(
         peer_uid=os.getuid(),
         peer_gid=os.getgid(),
     )
+    replay_runner = FakeRunner(
+        body=_host_state(),
+        runtime_effect=store.revoke_from_runtime,
+    )
     replay = agent_module.VendorControlAgent(
-        runner=FakeRunner(body=_host_state()),
+        runner=replay_runner,
         credential_store=store,
         seal_sessions=FakeSealSessions(),
         expected_uid=os.getuid(),
@@ -1545,7 +1512,7 @@ def test_reset_journal_finish_failure_is_recoverable_and_not_cached(
     assert replay.status == "ok"
     assert replay.body == {"operation_status": "succeeded"}
     assert recorded is not None and recorded.status == "succeeded"
-    assert store.events == ["reset"]
+    assert store.events == []
     assert operation_id not in first_agent._completed
 
 

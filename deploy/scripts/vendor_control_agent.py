@@ -265,7 +265,7 @@ class FixedWrapperRunner:
                 text=True,
                 capture_output=True,
                 shell=False,
-                timeout=180,
+                timeout=300 if operation == "reset-runtime" else 180,
             )
         except subprocess.TimeoutExpired:
             return WrapperResult(1, "CONTROL_COMMAND_FAILED", {})
@@ -613,7 +613,10 @@ class VendorControlAgent:
                     {},
                 )
             self._refresh_host_state()
-            allowed = self._mode == "inactive" and self._pause_kind is None
+            allowed = (
+                self._mode in {"inactive", "controlled"}
+                and self._pause_kind is None
+            )
             if not allowed:
                 return ControlResponse(
                     request.operation_id,
@@ -632,18 +635,6 @@ class VendorControlAgent:
                     "CONTROL_OPERATION_REJECTED",
                     {},
                 )
-            reset = (
-                self.credential_store.reset()
-                if self.credential_store.reset_required()
-                else current
-            )
-            if reset.configured or self.credential_store.status().configured:
-                return ControlResponse(
-                    request.operation_id,
-                    "error",
-                    "CONTROL_OPERATION_REJECTED",
-                    {},
-                )
             runtime = self.runner.run("reset-runtime")
             if runtime.returncode != 0 or runtime.body != {"runtime_revoked": True}:
                 return ControlResponse(
@@ -652,7 +643,8 @@ class VendorControlAgent:
                     runtime.safe_code or "CONTROL_COMMAND_FAILED",
                     {},
                 )
-            if self.credential_store.status().configured:
+            reset = self.credential_store.status()
+            if reset.configured:
                 return ControlResponse(
                     request.operation_id,
                     "error",

@@ -893,7 +893,7 @@ describe("系统配置页真实联调控制台", () => {
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
     expect(wrapper.get("[data-testid='vendor-reset']").attributes("disabled")).toBeUndefined()
-    expect(wrapper.text()).toContain("部分设置可能已清理")
+    expect(wrapper.text()).toContain("测试环境可能处于部分切换状态")
     wrapper.unmount()
   })
 
@@ -939,7 +939,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("刷新恢复 succeeded reset 后在完成态刷新返回前继续禁用清空动作", async () => {
+  it("刷新恢复 succeeded reset 后在完成态刷新返回前继续禁用切回动作", async () => {
     const operation = {
       operation_id: "00000000-0000-4000-8000-000000000077",
       operation_type: "reset_configuration",
@@ -953,7 +953,6 @@ describe("系统配置页真实联调控制台", () => {
     }
     const completionStatus = deferred<ReturnType<typeof response>>()
     let statusLookups = 0
-    let recipientLookups = 0
     sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
       operation_id: operation.operation_id,
       operation_type: operation.operation_type,
@@ -967,8 +966,7 @@ describe("系统配置页真实联调控制台", () => {
         return statusLookups === 1 ? response(baseStatus) : completionStatus.promise
       }
       if (url.endsWith("/vendor-test/recipients")) {
-        recipientLookups += 1
-        return response(recipientLookups === 1 ? recipients : [])
+        return response(recipients)
       }
       return undefined
     }))
@@ -986,7 +984,7 @@ describe("系统配置页真实联调控制台", () => {
       ...baseStatus,
       mode: "setup_required",
       credential_configured: false,
-      active_recipient_count: 0,
+      active_recipient_count: 1,
     }))
     await flushPromises()
 
@@ -1128,7 +1126,7 @@ describe("系统配置页真实联调控制台", () => {
       [{ ...recipients[0], status: "disabled" }],
       false,
     ],
-    ["controlled", { ...baseStatus, mode: "controlled" as const }, recipients, false],
+    ["controlled 已配置", { ...baseStatus, mode: "controlled" as const }, recipients, true],
     [
       "inactive 但仍有暂停投影",
       { ...baseStatus, mode: "inactive" as const, pause_kind: "manual" as const },
@@ -1164,7 +1162,7 @@ describe("系统配置页真实联调控制台", () => {
       [{ ...recipients[0], status: "disabled" }],
       false,
     ],
-  ])("仅在安全可清空状态显示动作：%s", async (_scenario, currentStatus, projectedRecipients, visible) => {
+  ])("仅在安全可切回状态显示动作：%s", async (_scenario, currentStatus, projectedRecipients, visible) => {
     vi.stubGlobal("fetch", consoleFetch(currentStatus, (url) => {
       if (url.endsWith("/vendor-test/recipients")) return response(projectedRecipients)
       return undefined
@@ -1177,7 +1175,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("存在运行中操作时清空动作禁用且不能打开确认流程", async () => {
+  it("存在运行中操作时切回动作禁用且不能打开确认流程", async () => {
     vi.useFakeTimers()
     const operation = {
       operation_id: "00000000-0000-4000-8000-000000000055",
@@ -1210,7 +1208,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("精确确认后二次认证清空并轮询终态，成功后刷新为待完成设置且清除旧号码", async () => {
+  it("受控联调精确确认后切回 Mock，成功时保留测试号码且说明生产不变", async () => {
     vi.useFakeTimers()
     sessionStorage.setItem("sms_token", "admin.jwt")
     let resetCompleted = false
@@ -1225,16 +1223,16 @@ describe("系统配置页真实联调控制台", () => {
       requested_at: "2026-07-17T09:31:00+08:00",
       completed_at: null,
     }
-    const fetch = consoleFetch(baseStatus, (url, init) => {
+    const fetch = consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
       if (url.endsWith("/vendor-test/status") && resetCompleted) {
         return response({
           ...baseStatus,
           mode: "setup_required",
           credential_configured: false,
-          active_recipient_count: 0,
+          active_recipient_count: 1,
         })
       }
-      if (url.endsWith("/vendor-test/recipients") && resetCompleted) return response([])
+      if (url.endsWith("/vendor-test/recipients") && resetCompleted) return response(recipients)
       if (url.endsWith("/vendor-test/step-up")) {
         return response({ token: "single-use-reset-token", expires_in: 300 })
       }
@@ -1252,15 +1250,22 @@ describe("系统配置页真实联调控制台", () => {
       return undefined
     })
     vi.stubGlobal("fetch", fetch)
+    const success = vi.spyOn(ElMessage, "success")
     const wrapper = mountConsole()
     await flushPromises()
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    expect(document.body.textContent).toContain("仅删除正式厂商凭据的全部版本和全部测试号码")
+    expect(document.body.textContent).toContain("测试环境将停止真实发送与厂商状态/回复拉取")
+    expect(document.body.textContent).toContain("生产环境的配置、凭据、服务和数据不受影响")
+    expect(document.body.textContent).toContain("保留全部加密测试号码及其索引")
     expect(document.body.textContent).toContain("保留管理员、短信业务数据、审计记录")
-    expect(document.body.textContent).toContain("当日 UAT 用量、uncertain 占额")
+    expect(document.body.textContent).toContain("当日 UAT 用量")
+    expect(document.body.textContent).toContain("uncertain 占额")
     expect(document.body.textContent).toContain("数据库、Docker volume 和运行态目录")
+    expect(document.body.textContent).toContain(
+      "切换前已发送、待回执、uncertain 或被错误环境消费的历史状态不会自动修复",
+    )
     expect(document.body.textContent).toContain("这不是系统初始化")
 
     fillResetDialog("current-password", "错误短语")
@@ -1274,7 +1279,7 @@ describe("系统配置页真实联调控制台", () => {
       "[data-testid='vendor-reset-confirmation']",
     ) as HTMLInputElement).value).toBe("")
 
-    fillResetDialog("current-password", "清空联调设置")
+    fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
     await flushPromises()
 
@@ -1288,7 +1293,7 @@ describe("系统配置页真实联调控制台", () => {
       step_up_token: "single-use-reset-token",
     })
     expect(String(resetCall?.[1].body)).not.toContain("password")
-    expect(String(resetCall?.[1].body)).not.toContain("清空联调设置")
+    expect(String(resetCall?.[1].body)).not.toContain("切回Mock")
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/vendor-test/seal-sessions"))).toBe(false)
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/vendor-test/credentials"))).toBe(false)
     expect(document.querySelector("[data-testid='vendor-reset-password']")).toBeNull()
@@ -1298,8 +1303,10 @@ describe("系统配置页真实联调控制台", () => {
 
     expect(wrapper.text()).toContain("待完成设置")
     expect(wrapper.text()).toContain("未激活")
-    expect(wrapper.text()).toContain("尚未登记测试号码")
-    expect(wrapper.text()).not.toContain("139****0001")
+    expect(wrapper.text()).toContain("139****0001")
+    expect(success).toHaveBeenCalledWith(
+      "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变",
+    )
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
     expect(JSON.stringify(sessionStorage)).not.toContain("single-use-reset-token")
@@ -1332,7 +1339,7 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("current-password", "清空联调设置")
+    fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
     clickResetSubmit()
 
@@ -1350,7 +1357,7 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("close-password", "清空联调设置")
+    fillResetDialog("close-password", "切回Mock")
     const stepUpDialog = wrapper.findAllComponents(ElDialog).find(
       (dialog) => dialog.props("modelValue") === true,
     )
@@ -1365,7 +1372,7 @@ describe("系统配置页真实联调控制台", () => {
     expect((document.querySelector(
       "[data-testid='vendor-reset-confirmation']",
     ) as HTMLInputElement).value).toBe("")
-    expect(document.body.textContent).toContain("此操作不可撤销")
+    expect(document.body.textContent).toContain("仅影响测试环境的厂商连接，操作不可撤销")
     wrapper.unmount()
   })
 
@@ -1382,7 +1389,7 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("cancel-password", "清空联调设置")
+    fillResetDialog("cancel-password", "切回Mock")
     const cancel = document.querySelector("[data-testid='vendor-reset-cancel']") as HTMLButtonElement
     cancel.click()
     expect(setupState.stepUpPassword).toBe("")
@@ -1391,7 +1398,7 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("unmount-password", "清空联调设置")
+    fillResetDialog("unmount-password", "切回Mock")
     wrapper.unmount()
 
     expect(setupState.stepUpPassword).toBe("")
@@ -1420,7 +1427,7 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("expired-password", "清空联调设置")
+    fillResetDialog("expired-password", "切回Mock")
     clickResetSubmit()
     await flushPromises()
 
@@ -1468,7 +1475,7 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("current-password", "清空联调设置")
+    fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
     await flushPromises()
 
@@ -1552,7 +1559,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(vendorTestConsoleSource).toContain("flex: 1 1 100%")
   })
 
-  it("清空操作 pending 与失败状态提示部分设置可能已清理", async () => {
+  it("切回操作 pending 与失败状态提示保持 fail-closed", async () => {
     vi.useFakeTimers()
     const operation = {
       operation_id: "00000000-0000-4000-8000-000000000044",
@@ -1587,21 +1594,23 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
-    fillResetDialog("current-password", "清空联调设置")
+    fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
     await flushPromises()
-    expect(wrapper.text()).toContain("清空处理中，真实出口保持关闭，请勿重复操作")
+    expect(wrapper.text()).toContain(
+      "正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留",
+    )
 
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
     expect(wrapper.text()).toContain(
-      "清空未确认完成，部分设置可能已清理；真实出口保持关闭，请按安全代码修复后重试",
+      "切回 Mock 未确认完成，测试环境可能处于部分切换状态；请勿发送，并按安全代码恢复同一操作",
     )
     expect(wrapper.text()).not.toContain("原状")
     expect(wrapper.text()).not.toContain("现状保持不变")
     expect(wrapper.text()).toContain("RESET_FAILED")
     expect(error).toHaveBeenCalledWith(
-      "清空联调设置未确认完成：RESET_FAILED；部分设置可能已清理，真实出口保持关闭，请修复后重试",
+      "切回 Mock 未确认完成：RESET_FAILED；测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
     )
     wrapper.unmount()
   })

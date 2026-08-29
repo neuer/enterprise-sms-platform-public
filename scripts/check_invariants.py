@@ -325,10 +325,10 @@ def check_vendor_live_invariants() -> None:
     fixed_runner = agent.split("class FixedWrapperRunner:", maxsplit=1)[-1].split(
         "def secure_socket(", maxsplit=1
     )[0]
-    if "timeout=180" not in fixed_runner:
+    if 'timeout=300 if operation == "reset-runtime" else 180' not in fixed_runner:
         fail(
             ROOT / "deploy/scripts/vendor_control_agent.py",
-            "控制代理 wrapper 必须 timeout=180，超时视为失败",
+            "控制代理普通 wrapper 必须 timeout=180，reset-runtime 必须 timeout=300",
         )
 
     credential_store = require_fragments(

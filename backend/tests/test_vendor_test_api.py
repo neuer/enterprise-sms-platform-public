@@ -419,8 +419,11 @@ def test_step_up_account_lock_uses_explicit_423_contract() -> None:
     _assert_safe(response)
 
 
-def test_reset_accepts_inactive_state_and_runs_empty_body_in_background() -> None:
-    state = VendorControlState("inactive", NOW, True, 3, None, 100)
+@pytest.mark.parametrize("mode", ("inactive", "controlled"))
+def test_reset_accepts_safe_state_without_recipient_payload_and_runs_in_background(
+    mode: str,
+) -> None:
+    state = VendorControlState(mode, NOW, True, 3, None, 100)
     http, step_up, _, operations, _ = client(control_state=state)
 
     response = http.post(
@@ -442,7 +445,7 @@ def test_reset_accepts_inactive_state_and_runs_empty_body_in_background() -> Non
     assert operations.started[0]["body"] == {}
     assert response.json()["operation_id"] == operations.started[0]["operation_id"]
     assert operations.background == [operations.started[0]]
-    assert "purge" not in response.text.casefold()
+    assert "recipient" not in response.text.casefold()
     _assert_safe(response)
 
 
@@ -466,7 +469,6 @@ def test_reset_rejects_generic_setup_required_without_starting_new_operation() -
 
 def test_reset_rejects_unsafe_or_inconsistent_control_projection() -> None:
     states = (
-        VendorControlState("controlled", NOW, True, 1, None, 100),
         VendorControlState("blocked", NOW, True, 1, "critical", 100),
         VendorControlState("inactive", NOW, False, 1, None, 100),
         VendorControlState("inactive", NOW, True, 1, "manual", 100),
