@@ -62,11 +62,52 @@ class ReleaseManagerError(RuntimeError):
 
 
 _PRODUCTION_RELEASE_ROOT = Path("/var/lib/sms-platform/releases")
+_PRODUCTION_ENVIRONMENT_FILE = Path("/etc/sms-platform/platform.env")
+_PRODUCTION_ENVIRONMENT_UID = 0
+_PRODUCTION_ENVIRONMENT_GID = 0
 _SMOKE_PARENT_RE = re.compile(r"sms-platform-release-control-[A-Za-z0-9]{8,32}\Z")
 
 
 def _release_root_error() -> ReleaseManagerError:
     return ReleaseManagerError("release root is invalid")
+
+
+def _is_normalized_absolute_root(path: Path) -> bool:
+    raw = str(path)
+    return (
+        path.is_absolute()
+        and ".." not in path.parts
+        and not any(ord(character) < 32 or ord(character) == 127 for character in raw)
+    )
+
+
+def _validate_production_environment_file(
+    path: Path,
+    *,
+    expected_uid: int,
+    expected_gid: int,
+) -> Path:
+    """验证生产环境文件及其不可由 operator 替换的父目录。"""
+
+    try:
+        parent_info = path.parent.lstat()
+        file_info = path.lstat()
+    except OSError as exc:
+        raise ReleaseManagerError("production environment file is invalid") from exc
+    if (
+        not _is_normalized_absolute_root(path)
+        or stat.S_ISLNK(parent_info.st_mode)
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or parent_info.st_uid != expected_uid
+        or stat.S_IMODE(parent_info.st_mode) & 0o022
+        or stat.S_ISLNK(file_info.st_mode)
+        or not stat.S_ISREG(file_info.st_mode)
+        or file_info.st_uid != expected_uid
+        or file_info.st_gid != expected_gid
+        or stat.S_IMODE(file_info.st_mode) != 0o600
+    ):
+        raise ReleaseManagerError("production environment file is invalid")
+    return path
 
 
 def _validate_cli_release_root(
@@ -278,6 +319,10 @@ class CommandRunner(Protocol):
         argv: Sequence[str],
         *,
         cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -289,12 +334,20 @@ class SubprocessRunner:
         argv: Sequence[str],
         *,
         cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             list(argv),
             cwd=cwd,
             check=False,
             capture_output=True,
+            env=None if env is None else dict(env),
+            user=user,
+            group=group,
+            extra_groups=None if extra_groups is None else tuple(extra_groups),
             text=True,
         )
 
@@ -312,6 +365,13 @@ _BASE_COMPOSE_FILE = "docker-compose.yml"
 _PRODUCTION_STORAGE_COMPOSE_FILE = "docker-compose.production-storage.yml"
 _PRODUCTION_RESTART_COMPOSE_FILE = "docker-compose.production-restart.yml"
 _REDIS_TLS_COMPOSE_FILE = "docker-compose.redis-tls.yml"
+_PRODUCTION_OPERATOR_UID = 1000
+_PRODUCTION_OPERATOR_GID = 1000
+_GIT_SAFE_CONFIG = (
+    ("core.fsmonitor", "false"),
+    ("core.hooksPath", os.devnull),
+    ("core.untrackedCache", "false"),
+)
 _PRODUCTION_STORAGE_BIND_PATHS = (
     Path("/var/lib/sms-platform/postgres/pgdata"),
     Path("/var/lib/sms-platform/redis/broker"),
@@ -740,8 +800,9 @@ def activation_commands(
     plan: Sequence[ReleaseStep],
     *,
     compose: Sequence[str] | None = None,
+    no_build: bool = False,
 ) -> list[list[str]]:
-    """把纯计划映射为固定 argv；不执行命令。"""
+    """把纯计划映射为固定 argv；compose 缺省仅保留开发兼容。"""
 
     compose_argv = list(compose) if compose is not None else [
         "docker",
@@ -765,6 +826,7 @@ def activation_commands(
         }:
             command = compose_argv + [
                 "up",
+                *(["--no-build"] if no_build else []),
                 "-d",
                 "--no-deps",
                 "--force-recreate",
@@ -1543,13 +1605,57 @@ class ReleaseManager:
     def __init__(
         self,
         *,
-        root: Path,
+        platform_root: Path | None = None,
+        control_root: Path | None = None,
+        root: Path | None = None,
+        environment_file: Path | None = None,
         release_root: Path,
         mode: Literal["development", "production"],
         runner: CommandRunner | None = None,
         expected_staging_uid: int | None = None,
     ) -> None:
-        self.root = root.absolute()
+        if root is not None:
+            if (
+                mode != "development"
+                or platform_root is not None
+                or control_root is not None
+            ):
+                raise ReleaseManagerError("legacy root is only valid for development")
+            platform_root = root
+            control_root = root
+        elif platform_root is None or control_root is None:
+            raise ReleaseManagerError("platform and control roots are required")
+        if mode == "production":
+            if (
+                not _is_normalized_absolute_root(platform_root)
+                or not _is_normalized_absolute_root(control_root)
+            ):
+                raise ReleaseManagerError("production roots are invalid")
+            if platform_root == control_root:
+                raise ReleaseManagerError(
+                    "production platform and control roots must be distinct"
+                )
+        self.platform_root = platform_root.absolute()
+        self.control_root = control_root.absolute()
+        self.root = self.platform_root
+        if mode == "production":
+            if environment_file is None:
+                raise ReleaseManagerError("production environment file is required")
+            if environment_file != _PRODUCTION_ENVIRONMENT_FILE:
+                raise ReleaseManagerError("production environment file is invalid")
+            self.environment_file = _validate_production_environment_file(
+                environment_file,
+                expected_uid=_PRODUCTION_ENVIRONMENT_UID,
+                expected_gid=_PRODUCTION_ENVIRONMENT_GID,
+            ).absolute()
+        else:
+            expected_development_file = self.platform_root / ".env"
+            if (
+                environment_file is not None
+                and environment_file.absolute() != expected_development_file
+            ):
+                raise ReleaseManagerError("development environment file is invalid")
+            self.environment_file = expected_development_file
         self.release_root = release_root.absolute()
         self.mode = mode
         self.runner = runner or SubprocessRunner()
@@ -1559,6 +1665,69 @@ class ReleaseManager:
         self._compose_argv: tuple[str, ...] | None = None
         self._production_redis_mode: str | None = None
         self._bootstrap_execution_release_id: str | None = None
+
+    def _environment_path(self) -> Path:
+        """返回当前环境权威路径，并在生产每次使用前重验元数据。"""
+
+        if self.mode == "production":
+            return _validate_production_environment_file(
+                self.environment_file,
+                expected_uid=_PRODUCTION_ENVIRONMENT_UID,
+                expected_gid=_PRODUCTION_ENVIRONMENT_GID,
+            )
+        return self.environment_file
+
+    def _read_environment_bytes(self) -> bytes:
+        """有界、no-follow 读取当前环境权威文件。"""
+
+        path = self._environment_path()
+        try:
+            return _read_safe_bytes(
+                path,
+                expected_uid=(
+                    _PRODUCTION_ENVIRONMENT_UID
+                    if self.mode == "production"
+                    else os.geteuid()
+                ),
+                expected_mode=0o600 if self.mode == "production" else None,
+                maximum=_MAX_JSON_BYTES,
+            )
+        except ReleaseManagerError as exc:
+            raise ReleaseManagerError("root env is unavailable") from exc
+
+    def _snapshot_environment(self, store: ReleaseStore) -> None:
+        """验证后保存环境原件；生产父目录边界消除 operator rename 竞态。"""
+
+        path = self._environment_path()
+        self._read_environment_bytes()
+        store.snapshot_env(path)
+        self._environment_path()
+
+    def _replace_environment(self, content: bytes) -> None:
+        """原子替换环境权威文件，并在生产强制恢复 root:root 0600 合同。"""
+
+        path = self._environment_path()
+        if self.mode == "production":
+            mode = 0o600
+        else:
+            try:
+                mode = stat.S_IMODE(path.stat(follow_symlinks=False).st_mode)
+            except OSError as exc:
+                raise ReleaseManagerError("root env is unavailable") from exc
+        ReleaseStore._atomic_write(
+            path,
+            content,
+            mode=mode,
+            private_parent=False,
+        )
+        self._environment_path()
+
+    def _restore_environment(self, store: ReleaseStore) -> None:
+        """恢复保存的环境原件，并重验生产权威元数据。"""
+
+        path = self._environment_path()
+        store.restore_env(path)
+        self._environment_path()
 
     def request_stop(self, signum: int, _frame: object | None) -> None:
         """信号处理器只记录停止请求；持久化发生在安全步骤边界。"""
@@ -1596,15 +1765,16 @@ class ReleaseManager:
         return os.geteuid()
 
     def _compose(self) -> list[str]:
+        environment_file = self._environment_path()
         if self._compose_argv is not None:
             return list(self._compose_argv)
         command = [
             "docker",
             "compose",
             "--env-file",
-            str(self.root / ".env"),
+            str(environment_file),
             "-f",
-            str(self.root / "deploy" / _BASE_COMPOSE_FILE),
+            str(self.control_root / "deploy" / _BASE_COMPOSE_FILE),
         ]
         if self.mode == "development":
             self._compose_argv = tuple(command)
@@ -1612,9 +1782,9 @@ class ReleaseManager:
         command.extend(
             [
                 "-f",
-                str(self.root / "deploy" / _PRODUCTION_STORAGE_COMPOSE_FILE),
+                str(self.control_root / "deploy" / _PRODUCTION_STORAGE_COMPOSE_FILE),
                 "-f",
-                str(self.root / "deploy" / _PRODUCTION_RESTART_COMPOSE_FILE),
+                str(self.control_root / "deploy" / _PRODUCTION_RESTART_COMPOSE_FILE),
             ]
         )
         self._production_redis_mode = self._production_redis_ha_mode()
@@ -1622,7 +1792,7 @@ class ReleaseManager:
             command.extend(
                 [
                     "-f",
-                    str(self.root / "deploy" / _REDIS_TLS_COMPOSE_FILE),
+                    str(self.control_root / "deploy" / _REDIS_TLS_COMPOSE_FILE),
                 ]
             )
         self._compose_argv = tuple(command)
@@ -1630,12 +1800,8 @@ class ReleaseManager:
 
     def _production_redis_ha_mode(self) -> str:
         try:
-            lines = _read_safe_bytes(
-                self.root / ".env",
-                expected_uid=os.geteuid(),
-                maximum=_MAX_JSON_BYTES,
-            ).decode("utf-8").splitlines()
-        except (OSError, UnicodeError) as exc:
+            lines = self._read_environment_bytes().decode("utf-8").splitlines()
+        except (ReleaseManagerError, UnicodeError) as exc:
             raise ReleaseManagerError("root env is unavailable") from exc
         values: list[str] = []
         for line in lines:
@@ -1662,7 +1828,7 @@ class ReleaseManager:
                 continue
             try:
                 path = Path(compose[index + 1])
-                relative = path.relative_to(self.root).as_posix()
+                relative = path.relative_to(self.control_root).as_posix()
                 digest = hashlib.sha256(
                     _read_safe_bytes(path, maximum=_MAX_JSON_BYTES)
                 ).hexdigest()
@@ -1689,13 +1855,9 @@ class ReleaseManager:
 
     def _root_env_non_image_sha256(self) -> str:
         try:
-            raw = _read_safe_bytes(
-                self.root / ".env",
-                expected_uid=os.geteuid(),
-                maximum=_MAX_JSON_BYTES,
-            )
+            raw = self._read_environment_bytes()
             lines = raw.decode("utf-8").splitlines(keepends=True)
-        except (OSError, UnicodeError) as exc:
+        except (ReleaseManagerError, UnicodeError) as exc:
             raise ReleaseManagerError("root env is unavailable") from exc
         image_keys = frozenset(_ENV_IMAGE_KEYS.values())
         retained: list[str] = []
@@ -1913,13 +2075,68 @@ class ReleaseManager:
                 if descriptor >= 0:
                     os.close(descriptor)
 
-    def _run(self, argv: Sequence[str], context: str) -> subprocess.CompletedProcess[str]:
+    def _git_argv(self, *arguments: str) -> list[str]:
+        """构造不触发 checkout 本地 fsmonitor 或 hooks 的固定 Git argv。"""
+
+        command = ["git", "--no-optional-locks", "--no-replace-objects"]
+        for key, value in _GIT_SAFE_CONFIG:
+            command.extend(("-c", f"{key}={value}"))
+        command.extend(
+            (
+                "-c",
+                f"safe.directory={self.root}",
+                "-C",
+                str(self.root),
+                *arguments,
+            )
+        )
+        return command
+
+    @staticmethod
+    def _git_environment() -> dict[str, str]:
+        """隔离 root/operator 的 Git 用户与系统配置。"""
+
+        return {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "HOME": "/nonexistent",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+
+    def _run(
+        self,
+        argv: Sequence[str],
+        context: str,
+        *,
+        git: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
         if self._active_store is not None:
             self._active_store.record_intent(
                 "external_command",
                 {"check": context},
             )
-        result = self.runner.run(argv, cwd=self.root)
+        if git:
+            if self.mode == "production" and os.geteuid() == 0:
+                result = self.runner.run(
+                    argv,
+                    cwd=self.root,
+                    env=self._git_environment(),
+                    user=_PRODUCTION_OPERATOR_UID,
+                    group=_PRODUCTION_OPERATOR_GID,
+                    extra_groups=(),
+                )
+            else:
+                result = self.runner.run(
+                    argv,
+                    cwd=self.root,
+                    env=self._git_environment(),
+                )
+        else:
+            result = self.runner.run(argv, cwd=self.root)
         if result.returncode != 0:
             raise ReleaseManagerError(f"{context} failed")
         if self._active_store is not None:
@@ -2239,23 +2456,21 @@ class ReleaseManager:
         """读取干净工作树的唯一 HEAD，供发布与启动门禁共同绑定。"""
 
         status = self._run(
-            [
-                "git",
-                "--no-optional-locks",
-                "-C",
-                str(self.root),
+            self._git_argv(
                 "status",
                 "--porcelain",
                 "--untracked-files=normal",
-            ],
+            ),
             "Git cleanliness check",
+            git=True,
         )
         if status.stdout:
             raise ReleaseManagerError("Git worktree is not clean")
         commit = self._line(
             self._run(
-                ["git", "--no-optional-locks", "-C", str(self.root), "rev-parse", "HEAD"],
+                self._git_argv("rev-parse", "HEAD"),
                 "Git commit check",
+                git=True,
             ),
             "Git commit check",
         )
@@ -2264,6 +2479,11 @@ class ReleaseManager:
         return commit
 
     def _validate_git(self, manifest: ReleaseManifest) -> str:
+        if self.mode == "production" and not hmac.compare_digest(
+            self.control_root.name,
+            manifest.commit,
+        ):
+            raise ReleaseManagerError("control snapshot does not match the manifest")
         commit = self._current_git_commit()
         if not hmac.compare_digest(commit, manifest.commit):
             raise ReleaseManagerError("Git commit does not match the manifest")
@@ -2272,7 +2492,7 @@ class ReleaseManager:
     def _validate_migration_direction(self, manifest: ReleaseManifest) -> None:
         """静态证明 target 沿 Alembic down_revision 链向前继承自 from。"""
 
-        versions = self.root / "backend" / "migrations" / "versions"
+        versions = self.control_root / "backend" / "migrations" / "versions"
         try:
             metadata = versions.lstat()
             paths = sorted(versions.glob("*.py"))
@@ -2339,8 +2559,8 @@ class ReleaseManager:
 
     def _root_env_refs(self) -> dict[str, str]:
         try:
-            lines = (self.root / ".env").read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError) as exc:
+            lines = self._read_environment_bytes().decode("utf-8").splitlines()
+        except (ReleaseManagerError, UnicodeError) as exc:
             raise ReleaseManagerError("root env is unavailable") from exc
         by_key = {value: name for name, value in _ENV_IMAGE_KEYS.items()}
         refs: dict[str, str] = {}
@@ -3788,7 +4008,7 @@ class ReleaseManager:
 
         environment = verified["environment"]
         if not hmac.compare_digest(
-            _hash_file(self.root / ".env"),
+            hashlib.sha256(self._read_environment_bytes()).hexdigest(),
             cast(str, environment["sha256"]),
         ):
             raise ReleaseManagerError("recovery snapshot environment has drifted")
@@ -4372,6 +4592,7 @@ class ReleaseManager:
                     self._compose()
                     + [
                         "up",
+                        "--no-build",
                         "-d",
                         "--no-deps",
                         "--wait",
@@ -5045,6 +5266,7 @@ class ReleaseManager:
                     self._compose()
                     + [
                         "up",
+                        "--no-build",
                         "-d",
                         "--no-deps",
                         "--wait",
@@ -5300,17 +5522,8 @@ class ReleaseManager:
             raise ReleaseManagerError("production bootstrap release root is not empty")
         self._assert_empty_production_storage_sources()
         target_refs = {name: manifest.images[name].ref for name in _IMAGE_NAMES}
-        env_path = self.root / ".env"
-        original_env = _read_safe_bytes(
-            env_path,
-            expected_uid=os.geteuid(),
-            maximum=_MAX_JSON_BYTES,
-        )
+        original_env = self._read_environment_bytes()
         target_env = self._render_target_env(original_env, manifest)
-        try:
-            env_mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
-        except OSError as exc:
-            raise ReleaseManagerError("production bootstrap root env is unavailable") from exc
         self._validate_git(manifest)
         self._validate_migration_direction(manifest)
         compose = self._compose()
@@ -5386,14 +5599,9 @@ class ReleaseManager:
             self._target_images(manifest, artifacts)
             if self._production_topology() != production_topology:
                 raise ReleaseManagerError("production bootstrap topology drifted")
-            store.snapshot_env(env_path)
+            self._snapshot_environment(store)
             store.record_intent("env_replace", {"source": "bootstrap_manifest"})
-            ReleaseStore._atomic_write(
-                env_path,
-                target_env,
-                mode=env_mode,
-                private_parent=False,
-            )
+            self._replace_environment(target_env)
             store.record_observation("env_replace", {"completed": True})
             if self._root_env_refs() != target_refs:
                 raise ReleaseManagerError("production bootstrap root env drifted")
@@ -5409,6 +5617,7 @@ class ReleaseManager:
                     compose
                     + [
                         "up",
+                        "--no-build",
                         "-d",
                         "--no-deps",
                         "--wait",
@@ -5426,6 +5635,7 @@ class ReleaseManager:
                     compose
                     + [
                         "up",
+                        "--no-build",
                         "-d",
                         "--no-deps",
                         "--wait",
@@ -5522,7 +5732,7 @@ class ReleaseManager:
 
         self._assert_bootstrap_mutation_allowed(release_id)
         store = ReleaseStore(self.release_root, release_id)
-        env_path = self.root / ".env"
+        self._environment_path()
         try:
             state = store.read_state()
             if state.get("state") not in {
@@ -5534,11 +5744,7 @@ class ReleaseManager:
             if manifest.mode != self.mode:
                 raise ReleaseManagerError("stored manifest mode does not match manager mode")
             self._current_refs(manifest)
-            original = _read_safe_bytes(
-                env_path,
-                expected_uid=os.geteuid(),
-                maximum=_MAX_JSON_BYTES,
-            )
+            original = self._read_environment_bytes()
             target = self._render_target_env(original, manifest)
             if self._bootstrap_execution_release_id == release_id:
                 if original != target:
@@ -5546,15 +5752,9 @@ class ReleaseManager:
                         "bootstrap activation root env is not configured"
                     )
             else:
-                store.snapshot_env(env_path)
-                mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
+                self._snapshot_environment(store)
                 store.record_intent("env_replace", {"source": "manifest"})
-                ReleaseStore._atomic_write(
-                    env_path,
-                    target,
-                    mode=mode,
-                    private_parent=False,
-                )
+                self._replace_environment(target)
                 store.record_observation("env_replace", {"completed": True})
             self._active_store = store
             self._run(self._compose() + ["config", "--quiet"], "activation configuration")
@@ -5562,7 +5762,7 @@ class ReleaseManager:
             return build_activation_plan(manifest)
         except Exception as exc:
             with suppress(Exception):
-                store.restore_env(env_path)
+                self._restore_environment(store)
             if isinstance(exc, ReleaseManagerError) and "configuration" in str(exc):
                 raise
             raise ReleaseManagerError(
@@ -6004,15 +6204,8 @@ class ReleaseManager:
             expected_mode=0o600,
             maximum=_MAX_JSON_BYTES,
         )
-        env_path = self.root / ".env"
-        mode = stat.S_IMODE(env_path.stat(follow_symlinks=False).st_mode)
         store.record_intent("compensation_env", {"retained_data": sorted(keep_data)})
-        ReleaseStore._atomic_write(
-            env_path,
-            self._render_env_refs(original, refs),
-            mode=mode,
-            private_parent=False,
-        )
+        self._replace_environment(self._render_env_refs(original, refs))
         store.record_observation("compensation_env", {"completed": True})
         config = self.runner.run(self._compose() + ["config", "--quiet"], cwd=self.root)
         if config.returncode != 0:
@@ -6218,7 +6411,12 @@ class ReleaseManager:
             raise ReleaseManagerError("release resume ended in recovery_required")
 
         plan = build_activation_plan(manifest)
-        commands = activation_commands(self.root, plan, compose=self._compose())
+        commands = activation_commands(
+            self.root,
+            plan,
+            compose=self._compose(),
+            no_build=self.mode == "production",
+        )
         completed = self._completed_steps(store)
         recreation = {
             ReleaseStepKind.RECREATE_POSTGRES,
@@ -6493,6 +6691,7 @@ class ReleaseManager:
                     self.root,
                     [step],
                     compose=self._compose(),
+                    no_build=self.mode == "production",
                 )[0]
                 self._ensure_not_stopped(
                     store,
@@ -6688,6 +6887,8 @@ class ReleaseManager:
             raise ReleaseManagerError("release is not prepared for activation")
         self._assert_production_topology(state)
         manifest = self._stored_manifest(store)
+        if self.mode == "production":
+            self._validate_git(manifest)
         self._ensure_not_stopped(
             store,
             ReleaseState.PREPARED,
@@ -6716,7 +6917,12 @@ class ReleaseManager:
                 _ActivationStepError(ReleaseStepKind.VERIFY),
             )
             raise ReleaseManagerError("release activation failed") from exc
-        commands = activation_commands(self.root, plan, compose=self._compose())
+        commands = activation_commands(
+            self.root,
+            plan,
+            compose=self._compose(),
+            no_build=self.mode == "production",
+        )
         for step, command in zip(plan, commands, strict=True):
             self._ensure_not_stopped(
                 store,
@@ -6760,6 +6966,8 @@ class ReleaseManager:
         if state_value == ReleaseState.FAILED.value:
             raise ReleaseManagerError("failed release cannot be resumed")
         manifest = self._stored_manifest(store)
+        if self.mode == "production":
+            self._validate_git(manifest)
         if state_value == ReleaseState.STAGED.value:
             if self.mode == "production":
                 self._validate_staged_production_release(store, manifest, state)
@@ -6848,6 +7056,8 @@ class ReleaseManager:
                 "succeeded release requires a forward rollback candidate"
             )
         manifest = self._stored_manifest(store)
+        if self.mode == "production":
+            self._validate_git(manifest)
         if (
             manifest.image_source == OFFLINE_IMAGE_SOURCE
             and not _offline_full_update(manifest)
@@ -6862,7 +7072,7 @@ class ReleaseManager:
                 ReleaseState.PREPARED,
                 next_step="rollback",
             )
-            store.snapshot_env(self.root / ".env")
+            self._snapshot_environment(store)
             store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
         elif state_value not in {
             ReleaseState.ACTIVATING.value,
@@ -6891,9 +7101,58 @@ class ReleaseManager:
         )
 
 
+def _resolve_cli_roots(
+    *,
+    root: Path | None,
+    platform_root: Path | None,
+    control_root: Path | None,
+    mode: Literal["development", "production"],
+) -> tuple[Path, Path]:
+    """开发保留单根兼容；生产必须显式绑定两个不同的绝对根。"""
+
+    if root is not None:
+        if (
+            mode != "development"
+            or platform_root is not None
+            or control_root is not None
+        ):
+            raise ReleaseManagerError("release roots are invalid")
+        return root, root
+    if platform_root is None or control_root is None:
+        raise ReleaseManagerError("release roots are invalid")
+    if mode == "production" and (
+        not _is_normalized_absolute_root(platform_root)
+        or not _is_normalized_absolute_root(control_root)
+        or platform_root.absolute() == control_root.absolute()
+    ):
+        raise ReleaseManagerError("release roots are invalid")
+    return platform_root, control_root
+
+
+def _resolve_cli_environment_file(
+    *,
+    environment_file: Path | None,
+    platform_root: Path,
+    mode: Literal["development", "production"],
+) -> Path:
+    """生产固定 root-owned 权威文件；开发固定 checkout 内 .env。"""
+
+    if mode == "production":
+        if environment_file != _PRODUCTION_ENVIRONMENT_FILE:
+            raise ReleaseManagerError("production environment file is invalid")
+        return _PRODUCTION_ENVIRONMENT_FILE
+    expected = platform_root.absolute() / ".env"
+    if environment_file is not None and environment_file.absolute() != expected:
+        raise ReleaseManagerError("development environment file is invalid")
+    return expected
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="四镜像统一发布状态机")
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--platform-root", type=Path)
+    parser.add_argument("--control-root", type=Path)
+    parser.add_argument("--environment-file", type=Path)
     parser.add_argument("--release-root", required=True, type=Path)
     parser.add_argument("--mode", choices=("development", "production"), required=True)
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -6962,16 +7221,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     arguments = parser.parse_args(argv)
     try:
+        platform_root, control_root = _resolve_cli_roots(
+            root=arguments.root,
+            platform_root=arguments.platform_root,
+            control_root=arguments.control_root,
+            mode=arguments.mode,
+        )
+        environment_file = _resolve_cli_environment_file(
+            environment_file=arguments.environment_file,
+            platform_root=platform_root,
+            mode=arguments.mode,
+        )
         release_root = _validate_cli_release_root(
             arguments.release_root,
             mode=arguments.mode,
-            platform_root=arguments.root,
+            platform_root=platform_root,
         )
     except ReleaseManagerError as exc:
         print(f"sms-compose: {exc}", file=sys.stderr)
         return 1
     manager = ReleaseManager(
-        root=arguments.root,
+        platform_root=platform_root,
+        control_root=control_root,
+        environment_file=environment_file,
         release_root=release_root,
         mode=arguments.mode,
     )

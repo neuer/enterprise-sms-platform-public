@@ -26,9 +26,22 @@ from render_security_daily_report import parse_report
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
 MAX_LOG_BYTES = 256 * 1024 * 1024
+MAX_DECOMPRESSED_LOG_BYTES = 256 * 1024 * 1024
+MAX_LOG_LINE_BYTES = 64 * 1024
+MAX_LOG_LINES = 2_000_000
+MAX_DISTINCT_AGGREGATION_KEYS = 4_096
+AGGREGATION_OVERFLOW_KEY = "<overflow>"
 DEFAULT_OWNER_UID = 10001
 DEFAULT_WEB_LOG = Path("/opt/sms-platform/deploy/security-report-nginx/access.log")
 DEFAULT_DOCKER_ROOT = Path("/var/lib/docker")
+PRODUCTION_OUTPUT_DIR = Path(
+    "/var/lib/sms-platform/security-report/control/incoming"
+)
+PRODUCTION_OUTPUT_UID = 0
+PRODUCTION_OUTPUT_GID = 10001
+PRODUCTION_READER_UID = 10001
+PRODUCTION_SNAPSHOT_UID = 0
+PRODUCTION_SNAPSHOT_GID = 10001
 SYSLOG_PREFIX = re.compile(r"^(?P<month>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+")
 ISO_PREFIX = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})T")
 SPACE_ISO_PREFIX = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})\s")
@@ -79,6 +92,15 @@ class CollectorError(RuntimeError):
     """采集输入或输出不满足安全边界。"""
 
 
+def _increment_bounded(counter: Counter[str], key: str) -> None:
+    """限制外部可控聚合键基数，超限后只增加固定 overflow 桶。"""
+
+    if key in counter or len(counter) < MAX_DISTINCT_AGGREGATION_KEYS:
+        counter[key] += 1
+    else:
+        counter[AGGREGATION_OVERFLOW_KEY] += 1
+
+
 @dataclass(frozen=True, slots=True)
 class LogCounts:
     available: bool
@@ -88,6 +110,12 @@ class LogCounts:
     third: int = 0
     top_sources: tuple[tuple[str, int], ...] = ()
     unattributed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OpenLogFile:
+    descriptor: int
+    compressed: bool
 
 
 def _line_matches_date(line: str, report_date: date) -> bool:
@@ -113,40 +141,115 @@ def _line_matches_date(line: str, report_date: date) -> bool:
     return False
 
 
-def _log_file_paths(path: Path) -> list[Path]:
-    """枚举主日志、昨日轮转文件与压缩轮转文件，只接受普通文件。"""
+def _log_file_paths(path: Path) -> list[OpenLogFile]:
+    """以父目录 FD 固定主日志及轮转文件，拒绝链接和多硬链接。"""
 
     candidates = (
         path,
         path.with_name(path.name + ".1"),
         path.with_name(path.name + ".1.gz"),
     )
-    files: list[Path] = []
-    for candidate in candidates:
-        try:
-            metadata = candidate.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise CollectorError("security evidence log is unavailable") from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            continue
-        if metadata.st_size > MAX_LOG_BYTES:
-            raise CollectorError("security evidence log is too large")
-        files.append(candidate)
+    files: list[OpenLogFile] = []
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as error:
+        if isinstance(error, FileNotFoundError):
+            return []
+        raise CollectorError("security evidence log directory is unavailable") from error
+    try:
+        for candidate in candidates:
+            try:
+                descriptor = os.open(
+                    candidate.name,
+                    os.O_RDONLY
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_descriptor,
+                )
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # Symlinks, special files and transient rotations are not evidence.
+                continue
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    os.close(descriptor)
+                    continue
+                if metadata.st_size > MAX_LOG_BYTES:
+                    raise CollectorError("security evidence log is too large")
+                files.append(
+                    OpenLogFile(
+                        descriptor=descriptor,
+                        compressed=candidate.suffix == ".gz",
+                    )
+                )
+            except BaseException:
+                if all(item.descriptor != descriptor for item in files):
+                    os.close(descriptor)
+                raise
+    except BaseException:
+        for item in files:
+            with contextlib.suppress(OSError):
+                os.close(item.descriptor)
+        raise
+    finally:
+        os.close(parent_descriptor)
     return files
 
 
-def _iter_lines(paths: Sequence[Path]) -> Iterator[str]:
-    """按给定顺序读取普通日志文件；gz 文件透明解压。"""
+def _iter_lines(paths: Sequence[OpenLogFile]) -> Iterator[str]:
+    """从已固定 inode 流式读取，约束解压字节、单行和总行数。"""
 
-    for candidate in paths:
-        opener = gzip.open if candidate.suffix == ".gz" else open
-        try:
-            with opener(candidate, "rt", encoding="utf-8", errors="replace") as source:
-                yield from source
-        except (OSError, UnicodeError) as error:
-            raise CollectorError("security evidence log is unavailable") from error
+    total_bytes = 0
+    total_lines = 0
+    pending = list(paths)
+    try:
+        while pending:
+            opened = pending.pop(0)
+            try:
+                try:
+                    raw_file = os.fdopen(opened.descriptor, "rb", closefd=True)
+                except OSError:
+                    os.close(opened.descriptor)
+                    raise
+                with raw_file as raw_stream:
+                    stream = (
+                        gzip.GzipFile(fileobj=raw_stream, mode="rb")
+                        if opened.compressed
+                        else raw_stream
+                    )
+                    try:
+                        while True:
+                            raw_line = stream.readline(MAX_LOG_LINE_BYTES + 1)
+                            if not raw_line:
+                                break
+                            if len(raw_line) > MAX_LOG_LINE_BYTES:
+                                raise CollectorError("security evidence log line is too large")
+                            total_bytes += len(raw_line)
+                            total_lines += 1
+                            if total_bytes > MAX_DECOMPRESSED_LOG_BYTES:
+                                raise CollectorError(
+                                    "security evidence decompressed log is too large"
+                                )
+                            if total_lines > MAX_LOG_LINES:
+                                raise CollectorError("security evidence log has too many lines")
+                            yield raw_line.decode("utf-8", errors="replace")
+                    finally:
+                        if opened.compressed:
+                            stream.close()
+            except (OSError, EOFError, UnicodeError) as error:
+                raise CollectorError("security evidence log is unavailable") from error
+    finally:
+        for opened in pending:
+            with contextlib.suppress(OSError):
+                os.close(opened.descriptor)
 
 
 def _first_ip(line: str) -> str | None:
@@ -224,7 +327,7 @@ def _scan_log(
         if source_pattern is not None and source_pattern.search(line):
             source = _first_ip(line)
             if source is not None:
-                sources[source] += 1
+                _increment_bounded(sources, source)
     top_sources = tuple(
         sorted(sources.items(), key=lambda item: (-item[1], item[0]))[:5]
     )
@@ -381,11 +484,11 @@ def _scan_web(
         if 400 <= status < 500:
             count_4xx += 1
             if uri is not None:
-                four_xx[uri] += 1
+                _increment_bounded(four_xx, uri)
         elif 500 <= status < 600:
             count_5xx += 1
             if uri is not None:
-                five_xx[uri] += 1
+                _increment_bounded(five_xx, uri)
         if uri is not None and SENSITIVE_PATH.search(uri):
             sensitive += 1
             normalized_uri = uri.casefold()
@@ -393,7 +496,9 @@ def _scan_web(
                 if marker in normalized_uri:
                     sensitive_paths[marker] += 1
     for candidate in docker_logs:
-        for line in _iter_lines([candidate]):
+        # Docker JSON 日志同样只能经 dirfd/openat 固定 inode；不得在枚举后
+        # 再按可替换路径重开。轮转文件沿用宿主日志的相同资源上限。
+        for line in _iter_lines(_log_file_paths(candidate)):
             observe(_docker_log_line_date_obj(line))
             if not _docker_log_line_date(line, report_date):
                 continue
@@ -408,11 +513,11 @@ def _scan_web(
             if 400 <= status < 500:
                 count_4xx += 1
                 if uri is not None:
-                    four_xx[uri] += 1
+                    _increment_bounded(four_xx, uri)
             elif 500 <= status < 600:
                 count_5xx += 1
                 if uri is not None:
-                    five_xx[uri] += 1
+                    _increment_bounded(five_xx, uri)
             if uri is not None and SENSITIVE_PATH.search(uri):
                 sensitive += 1
                 normalized_uri = uri.casefold()
@@ -841,8 +946,173 @@ def collect_report(
     return payload
 
 
-def write_snapshot(payload: dict[str, Any], output_dir: Path, *, owner_uid: int) -> Path:
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise CollectorError("security evidence snapshot could not be written")
+        offset += written
+
+
+def _safe_production_snapshot_metadata(
+    metadata: os.stat_result,
+    *,
+    allow_legacy_reader_owner: bool,
+) -> bool:
+    """只接受 root 快照；原子覆盖时兼容一次旧 reader-owned inode。"""
+
+    allowed_uids = {PRODUCTION_SNAPSHOT_UID}
+    if allow_legacy_reader_owner:
+        allowed_uids.add(PRODUCTION_READER_UID)
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid in allowed_uids
+        and metadata.st_gid == PRODUCTION_SNAPSHOT_GID
+        and stat.S_IMODE(metadata.st_mode) == 0o640
+        and metadata.st_nlink == 1
+    )
+
+
+def _write_fixed_production_snapshot(
+    payload: dict[str, Any],
+    output_dir: Path,
+    *,
+    owner_uid: int,
+) -> Path:
+    """在预建且不可由容器重命名的目录中原子写生产快照。"""
+
+    if (
+        os.geteuid() != 0
+        or output_dir != PRODUCTION_OUTPUT_DIR
+        or owner_uid != PRODUCTION_READER_UID
+    ):
+        raise CollectorError("production security evidence output contract is invalid")
+    try:
+        if output_dir.resolve(strict=True) != output_dir:
+            raise CollectorError("production security evidence output directory is unsafe")
+        directory_descriptor = os.open(
+            output_dir,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except (OSError, CollectorError) as error:
+        if isinstance(error, CollectorError):
+            raise
+        raise CollectorError(
+            "production security evidence output directory is unavailable"
+        ) from error
+
+    temporary_name: str | None = None
+    try:
+        metadata = os.fstat(directory_descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != PRODUCTION_OUTPUT_UID
+            or metadata.st_gid != PRODUCTION_OUTPUT_GID
+            or stat.S_IMODE(metadata.st_mode) != 0o750
+        ):
+            raise CollectorError("production security evidence output directory is unsafe")
+
+        report_date = str(payload["report_date"])
+        try:
+            if date.fromisoformat(report_date).isoformat() != report_date:
+                raise ValueError
+        except (TypeError, ValueError) as error:
+            raise CollectorError("security evidence report date is invalid") from error
+        destination_name = f"{report_date}.json"
+        temporary_name = f".{report_date}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            temporary_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(temporary_metadata.st_mode)
+                or temporary_metadata.st_nlink != 1
+            ):
+                raise CollectorError("security evidence snapshot file is unsafe")
+            if (
+                temporary_metadata.st_uid != PRODUCTION_SNAPSHOT_UID
+                or temporary_metadata.st_gid != PRODUCTION_SNAPSHOT_GID
+            ):
+                os.fchown(
+                    descriptor,
+                    PRODUCTION_SNAPSHOT_UID,
+                    PRODUCTION_SNAPSHOT_GID,
+                )
+            os.fchmod(descriptor, 0o640)
+            if not _safe_production_snapshot_metadata(
+                os.fstat(descriptor),
+                allow_legacy_reader_owner=False,
+            ):
+                raise CollectorError("security evidence snapshot file is unsafe")
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            _write_all(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+        try:
+            destination_metadata = os.stat(
+                destination_name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            if not _safe_production_snapshot_metadata(
+                destination_metadata,
+                allow_legacy_reader_owner=True,
+            ):
+                raise CollectorError("existing security evidence snapshot is unsafe")
+        os.replace(
+            temporary_name,
+            destination_name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        temporary_name = None
+        os.fsync(directory_descriptor)
+        return output_dir / destination_name
+    except OSError as error:
+        raise CollectorError("security evidence snapshot could not be written") from error
+    finally:
+        if temporary_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary_name, dir_fd=directory_descriptor)
+        os.close(directory_descriptor)
+
+
+def write_snapshot(
+    payload: dict[str, Any],
+    output_dir: Path,
+    *,
+    owner_uid: int,
+    fixed_production: bool = False,
+) -> Path:
     """以固定权限原子写入指定日期快照。"""
+
+    if fixed_production:
+        return _write_fixed_production_snapshot(
+            payload,
+            output_dir,
+            owner_uid=owner_uid,
+        )
 
     try:
         if output_dir.exists() and output_dir.is_symlink():
@@ -893,6 +1163,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--web-log", type=Path, default=DEFAULT_WEB_LOG)
     parser.add_argument("--docker-root", type=Path, default=DEFAULT_DOCKER_ROOT)
     parser.add_argument("--owner-uid", type=int, default=DEFAULT_OWNER_UID)
+    parser.add_argument("--fixed-production-output", action="store_true")
     return parser
 
 
@@ -909,7 +1180,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             web_log=args.web_log,
             docker_root=args.docker_root,
         )
-        destination = write_snapshot(payload, args.output_dir, owner_uid=args.owner_uid)
+        destination = write_snapshot(
+            payload,
+            args.output_dir,
+            owner_uid=args.owner_uid,
+            fixed_production=args.fixed_production_output,
+        )
     except (CollectorError, ValueError):
         print("security evidence collection blocked", file=sys.stderr)
         return 1

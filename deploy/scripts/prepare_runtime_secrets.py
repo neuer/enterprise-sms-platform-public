@@ -143,12 +143,24 @@ def _lstat(path: Path, label: str) -> os.stat_result:
         raise RuntimeSecretsError(f"{label} is unavailable") from exc
 
 
-def _read_source_file(path: Path, logical_name: str) -> bytes:
+def _read_source_file(
+    path: Path,
+    logical_name: str,
+    *,
+    expected_owner: tuple[int, int] | None = None,
+) -> bytes:
     metadata = _lstat(path, f"secret {logical_name}")
     if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
         raise RuntimeSecretsError(f"secret {logical_name} must be a regular file")
     if _mode(metadata) != 0o600:
         raise RuntimeSecretsError(f"secret {logical_name} mode must be 0600")
+    if expected_owner is not None and (
+        metadata.st_uid,
+        metadata.st_gid,
+    ) != expected_owner:
+        raise RuntimeSecretsError(
+            f"secret {logical_name} owner must match the production contract"
+        )
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -163,6 +175,13 @@ def _read_source_file(path: Path, logical_name: str) -> bytes:
             raise RuntimeSecretsError(f"secret {logical_name} changed during validation")
         if _mode(opened) != 0o600:
             raise RuntimeSecretsError(f"secret {logical_name} mode must remain 0600")
+        if expected_owner is not None and (
+            opened.st_uid,
+            opened.st_gid,
+        ) != expected_owner:
+            raise RuntimeSecretsError(
+                f"secret {logical_name} owner changed during validation"
+            )
 
         value = bytearray()
         while len(value) <= MAX_SECRET_BYTES:
@@ -181,12 +200,24 @@ def _read_source_file(path: Path, logical_name: str) -> bytes:
         os.close(descriptor)
 
 
-def _validate_source_inventory(source_dir: Path, mode: str) -> None:
+def _validate_source_inventory(
+    source_dir: Path,
+    mode: str,
+    *,
+    production_owner: tuple[int, int] = (0, 0),
+) -> None:
     metadata = _lstat(source_dir, "source directory")
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
         raise RuntimeSecretsError("source directory must be a non-symlink directory")
     if _mode(metadata) != 0o700:
         raise RuntimeSecretsError("source directory mode must be 0700")
+    if mode == "production" and (
+        metadata.st_uid,
+        metadata.st_gid,
+    ) != production_owner:
+        raise RuntimeSecretsError(
+            "production source directory owner must be root:root"
+        )
 
     try:
         names = {path.name for path in source_dir.iterdir()}
@@ -199,10 +230,24 @@ def _validate_source_inventory(source_dir: Path, mode: str) -> None:
         raise RuntimeSecretsError("source directory inventory violates policy")
 
 
-def _validate_source(source_dir: Path, mode: str) -> dict[str, bytes]:
-    _validate_source_inventory(source_dir, mode)
+def _validate_source(
+    source_dir: Path,
+    mode: str,
+    *,
+    production_owner: tuple[int, int] = (0, 0),
+) -> dict[str, bytes]:
+    _validate_source_inventory(
+        source_dir,
+        mode,
+        production_owner=production_owner,
+    )
+    expected_owner = production_owner if mode == "production" else None
     values = {
-        name: _read_source_file(source_dir / name, name)
+        name: _read_source_file(
+            source_dir / name,
+            name,
+            expected_owner=expected_owner,
+        )
         for name in sorted(CANONICAL_SECRET_NAMES)
     }
     _validate_security_key_material(values)
@@ -707,6 +752,7 @@ def prepare(
     redis_tls_ca_path: Path = REDIS_TLS_CA_PATH,
     redis_tls_certificate_path: Path = REDIS_TLS_CERTIFICATE_PATH,
     redis_tls_public_owner: tuple[int, int] = (0, 0),
+    production_source_owner: tuple[int, int] = (0, 0),
 ) -> None:
     """校验核心凭据与 Redis ACL secrets 并原子生成服务级只读副本。"""
 
@@ -724,11 +770,17 @@ def prepare(
         raise RuntimeSecretsError("runtime owner violates policy")
     if any(value < 0 for value in redis_tls_public_owner):
         raise RuntimeSecretsError("Redis TLS public material owner violates policy")
+    if any(value < 0 for value in production_source_owner):
+        raise RuntimeSecretsError("production source owner violates policy")
 
     runtime_root = Path(runtime_root)
     _ensure_runtime_root(runtime_root)
     with _runtime_lock(runtime_root):
-        values = _validate_source(Path(source_dir), mode)
+        values = _validate_source(
+            Path(source_dir),
+            mode,
+            production_owner=production_source_owner,
+        )
         redis_tls_metadata = None
         if mode == "production":
             redis_tls_metadata = _redis_tls_public_metadata(
@@ -923,9 +975,15 @@ def verify_ordinary_redis_tls_rotation(
             current = _validated_generation_path(runtime_root, current_target_value)
 
             source_dir = Path(source_dir)
-            _validate_source_inventory(source_dir, "production")
+            _validate_source_inventory(
+                source_dir,
+                "production",
+                production_owner=expected_metadata_owner,
+            )
             source_key = _read_source_file(
-                source_dir / "redis_tls_server_key", "redis_tls_server_key"
+                source_dir / "redis_tls_server_key",
+                "redis_tls_server_key",
+                expected_owner=expected_metadata_owner,
             )
             _validate_redis_tls_server_key(source_key)
             host_metadata = _redis_tls_public_metadata(

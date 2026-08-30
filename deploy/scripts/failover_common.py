@@ -166,6 +166,9 @@ class CommandRunner:
         env: Mapping[str, str] | None = None,
         input_bytes: bytes | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> bytes:
         argv = self._argv(command)
         bounded_timeout = self._timeout(timeout)
@@ -177,6 +180,9 @@ class CommandRunner:
             stdin=subprocess.PIPE if input_bytes is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            user=user,
+            group=group,
+            extra_groups=extra_groups,
         )
         try:
             stdout, stderr = process.communicate(
@@ -210,6 +216,9 @@ class CommandRunner:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> None:
         """把 producer stdout 直接交给 consumer，并原子拒绝半成品。"""
 
@@ -230,6 +239,9 @@ class CommandRunner:
                     env=dict(env) if env is not None else None,
                     stdout=subprocess.PIPE,
                     stderr=left_error,
+                    user=user,
+                    group=group,
+                    extra_groups=extra_groups,
                 )
                 processes.append(left)
                 assert left.stdout is not None
@@ -240,6 +252,9 @@ class CommandRunner:
                     stdin=left.stdout,
                     stdout=output,
                     stderr=right_error,
+                    user=user,
+                    group=group,
+                    extra_groups=extra_groups,
                 )
                 processes.append(right)
                 left.stdout.close()

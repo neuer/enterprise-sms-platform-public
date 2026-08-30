@@ -400,12 +400,12 @@ def test_cli_failure_is_structured_and_does_not_echo_internal_exception(
 ) -> None:
     marker = "private-key-material-must-never-be-printed"
 
-    def fail() -> object:
+    def fail(**_kwargs: object) -> object:
         raise ValueError(marker)
 
     monkeypatch.setattr(module, "validate_redis_tls", fail)
 
-    assert module.main() == 1
+    assert module.main([]) == 1
     captured = capsys.readouterr()
     payload = json.loads(captured.err)
     assert captured.out == ""
@@ -449,14 +449,28 @@ def test_tls_healthcheck_uses_service_name_for_connection_and_sni() -> None:
     assert source.index('--sni "$server_name"') < source.index('-h "$server_name"')
 
 
-def test_fixed_production_paths_and_openssl_binary_are_not_cli_overridable(
+def test_public_production_paths_stay_fixed_and_private_key_uses_platform_secrets(
     module: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert Path("/etc/sms-platform/redis-tls/ca.pem") == module.CA_PATH
     assert Path("/etc/sms-platform/redis-tls/server.pem") == module.CERTIFICATE_PATH
     assert ROOT / "deploy" / "secrets" / "redis_tls_server_key" == module.PRIVATE_KEY_PATH
     assert Path("/usr/bin/openssl") == module.OPENSSL_BINARY
-    assert "argparse" not in SCRIPT.read_text(encoding="utf-8")
+
+    captured: dict[str, Path] = {}
+
+    def validate(**kwargs: Path) -> TLSReport:
+        captured.update(kwargs)
+        return cast(
+            TLSReport,
+            module.RedisTLSPreflightReport(checks=("file_contract",), san_names=()),
+        )
+
+    monkeypatch.setattr(module, "validate_redis_tls", validate)
+    assert module.main(["--secrets-dir", str(tmp_path)]) == 0
+    assert captured == {"private_key_path": tmp_path / "redis_tls_server_key"}
 
 
 def test_file_modes_are_expressed_as_exact_permissions() -> None:

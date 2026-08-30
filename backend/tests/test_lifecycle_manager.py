@@ -245,6 +245,7 @@ def make_service(
     timer: ManualTimer | None = None,
     generation_reader=None,
     marker_validator=lambda: None,
+    control_root: Path | None = None,
 ) -> LifecycleService:
     repository = tmp_path / "repo"
     repository.mkdir(exist_ok=True)
@@ -258,6 +259,7 @@ def make_service(
     return LifecycleService(
         repository,
         passphrase,
+        control_root=control_root,
         sync_service=sync,
         restore_service=restore or FakeRestore(),
         clock=fixed_clock,
@@ -323,6 +325,75 @@ def run_main_with_drill_result(
     return lifecycle_manager_module.main()
 
 
+def test_main_accepts_distinct_platform_and_control_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    platform_root = tmp_path / "platform"
+    control_root = tmp_path / "immutable-control"
+    passphrase = tmp_path / "backup-passphrase"
+    captured: dict[str, object] = {}
+
+    class StubLifecycleService:
+        def __init__(
+            self,
+            selected_platform_root: Path,
+            selected_passphrase: Path,
+            *,
+            control_root: Path | None,
+        ) -> None:
+            captured.update(
+                platform_root=selected_platform_root,
+                passphrase=selected_passphrase,
+                control_root=control_root,
+            )
+
+        def drill(self, _config: LifecycleConfig) -> Mapping[str, object]:
+            return valid_drill_cli_result()
+
+    monkeypatch.setattr(
+        lifecycle_manager_module,
+        "_runtime_config",
+        lambda: (make_config(tmp_path), passphrase),
+    )
+    monkeypatch.setattr(
+        lifecycle_manager_module, "LifecycleService", StubLifecycleService
+    )
+
+    assert (
+        lifecycle_manager_module.main(
+            [
+                "drill",
+                "--platform-root",
+                str(platform_root),
+                "--control-root",
+                str(control_root),
+            ]
+        )
+        == 0
+    )
+    assert captured == {
+        "platform_root": platform_root,
+        "passphrase": passphrase,
+        "control_root": control_root,
+    }
+    assert json.loads(capsys.readouterr().out)["snapshot_id"] == SNAPSHOT_THREE
+
+
+def test_default_lifecycle_backup_enables_production_git_boundary(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    passphrase = tmp_path / "backup-passphrase"
+    passphrase.write_text("outside-repository", encoding="utf-8")
+    passphrase.chmod(0o600)
+
+    service = LifecycleService(repository, passphrase)
+
+    assert isinstance(service.sync_service, lifecycle_manager_module.SyncService)
+    assert service.sync_service.secure_production_git is True
+
+
 def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> None:
     path = tmp_path / "lifecycle.json"
     value = {
@@ -346,27 +417,45 @@ def test_load_config_requires_exact_0600_path_only_contract(tmp_path: Path) -> N
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
 
-    config = load_config(path)
+    config = load_config(
+        path,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
 
     assert config.retention_days == 35
     assert config.max_backup_seconds == 14400
     path.chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
-        load_config(path)
+        load_config(
+            path,
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        )
     path.chmod(0o600)
     value["extra"] = "forbidden"
     path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ValueError, match="fields"):
-        load_config(path)
+        load_config(
+            path,
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        )
 
 
 def test_runtime_config_fixes_production_backup_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "lifecycle.json"
+    environment_file = tmp_path / "platform.env"
+    environment_file.write_text("ENVIRONMENT=production\n", encoding="utf-8")
+    environment_file.chmod(0o600)
+    passphrase_file = tmp_path / "backup-passphrase"
+    passphrase_file.write_text("test-passphrase\n", encoding="utf-8")
+    passphrase_file.chmod(0o600)
     value = {
         "schema_version": 1,
-        "environment_file": "/etc/sms-platform/production.env",
+        "environment_file": str(environment_file),
         "output_root": str(PRODUCTION_BACKUP_ROOT),
         "recovery_crypto_generation_id_file": str(
             RECOVERY_CRYPTO_GENERATION_ID_FILE
@@ -384,17 +473,34 @@ def test_runtime_config_fixes_production_backup_root(
     }
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
+    monkeypatch.setattr(lifecycle_manager_module, "PRODUCTION_LIFECYCLE_CONFIG", path)
+    monkeypatch.setattr(
+        lifecycle_manager_module,
+        "PRODUCTION_PLATFORM_ENVIRONMENT",
+        environment_file,
+    )
+    monkeypatch.setattr(
+        lifecycle_manager_module,
+        "PRODUCTION_BACKUP_PASSPHRASE",
+        passphrase_file,
+    )
     monkeypatch.setenv("SMS_LIFECYCLE_CONFIG", str(path))
-    monkeypatch.setenv("BACKUP_PASSPHRASE_FILE", "/run/backup-secrets/passphrase")
+    monkeypatch.setenv("BACKUP_PASSPHRASE_FILE", str(passphrase_file))
 
-    config, _ = _runtime_config()
+    config, _ = _runtime_config(
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
 
     assert config.output_root == PRODUCTION_BACKUP_ROOT
     value["output_root"] = "/var/lib/sms-platform/backups"
     path.write_text(json.dumps(value), encoding="utf-8")
     path.chmod(0o600)
     with pytest.raises(ValueError, match="output root is fixed"):
-        _runtime_config()
+        _runtime_config(
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        )
 
 
 def test_backup_records_integrity_but_is_unavailable_until_restore(
@@ -443,7 +549,11 @@ def test_load_config_rejects_backup_deadline_without_outer_cleanup_margin(
     path.chmod(0o600)
 
     with pytest.raises(ValueError, match="max backup seconds"):
-        load_config(path)
+        load_config(
+            path,
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        )
 
 
 def test_backup_status_checks_latest_backup_rpo_without_counting_restore(
@@ -503,7 +613,7 @@ def test_backup_rejects_repository_output_and_symlink_children_before_sync(
 ) -> None:
     sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
     service = make_service(tmp_path, sync)
-    config = replace(make_config(tmp_path), output_root=service.repository_root / "backup")
+    config = replace(make_config(tmp_path), output_root=service.platform_root / "backup")
     with pytest.raises(ValueError, match="outside"):
         service.backup(config)
     assert sync.calls == []
@@ -516,6 +626,40 @@ def test_backup_rejects_repository_output_and_symlink_children_before_sync(
     with pytest.raises(ValueError, match="symlink"):
         service.backup(config)
     assert sync.calls == []
+
+
+def test_backup_and_drill_split_platform_and_control_roots(tmp_path: Path) -> None:
+    sync = FakeSync([(SNAPSHOT_THREE, datetime(2026, 7, 12, 5, 0, tzinfo=UTC))])
+    restore = FakeRestore()
+    control_root = tmp_path / "immutable-control"
+    control_root.joinpath("deploy").mkdir(parents=True)
+    compose_file = control_root / "deploy/docker-compose.yml"
+    compose_file.write_text("services: {}\n", encoding="utf-8")
+    service = make_service(
+        tmp_path,
+        sync,
+        restore,
+        control_root=control_root,
+    )
+    environment_file = service.platform_root / ".env"
+    environment_file.write_text(
+        "ENVIRONMENT=production\nDEBUG=0\nAUTH_MOCK=0\nVENDOR_MOCK=0\n",
+        encoding="utf-8",
+    )
+    environment_file.chmod(0o600)
+    config = replace(make_config(tmp_path), environment_file=environment_file)
+
+    service.backup(config)
+    service.drill(config)
+
+    assert sync.calls[0].repository_root == service.platform_root
+    assert sync.calls[0].compose_file == compose_file
+    assert sync.calls[0].environment_file == environment_file
+    assert sync.calls[0].output_dir == config.output_root
+    assert restore.calls[0].repository_root == service.platform_root
+    assert restore.calls[0].compose_file == compose_file
+    assert restore.calls[0].environment_file == environment_file
+    assert restore.calls[0].report_file.is_relative_to(config.output_root)
 
 
 def test_latest_restore_makes_same_snapshot_available_with_engineering_evidence(

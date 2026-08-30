@@ -1,0 +1,46 @@
+flowchart LR
+  GH["GitHub Release Gate"] --> BRIDGE["Controlled bridge"]
+  OSCHANGE["Independent OS change approval"]
+
+  subgraph OPS["Ops VM"]
+    GIT["Internal Git mirror\nexact commit"]
+    REG["Private Registry\n4 immutable RepoDigests"]
+    EVID["Release evidence store\nexact commit + 4 RepoDigests"]
+    OBS["Monitoring + redacted logs +\nencrypted backup"]
+  end
+
+  BRIDGE --> GIT
+  BRIDGE --> REG
+  BRIDGE --> EVID
+
+  subgraph PROD["Single production VM"]
+    OP["Operator checkout\nGit evidence/data only"]
+    LAUNCH["Stable root-owned launcher\nlocks before resolving current"]
+    APPROVE["Root-owned OS approval markers\none exact commit per marker"]
+    SNAP["Root-owned full tracked-tree snapshots\ncurrent -> versions/<commit>"]
+    STATE["Existing lifecycle lock +\nReleaseStore / recovery_required"]
+    DOCKER["Docker / Compose root authority"]
+    RUNTIME["Core + PostgreSQL +\nRedis broker/auth/control"]
+
+    OP -. "never imported or executed as root" .-> SNAP
+    APPROVE -->|"authorizes; does not select"| SNAP
+    LAUNCH --> SNAP
+    SNAP --> STATE
+    SNAP --> DOCKER
+    STATE --> DOCKER
+    DOCKER --> RUNTIME
+  end
+
+  GIT -->|"operator fetches exact commit"| OP
+  GIT -->|"driver prepares exact commit bytes"| SNAP
+  OSCHANGE -->|"creates root-owned marker"| APPROVE
+  REG -->|"production read-only pull by digest"| DOCKER
+  EVID -->|"ordinary release gate"| STATE
+  RUNTIME -->|"telemetry + encrypted backup export"| OBS
+
+  classDef trusted fill:#d9ead3,stroke:#38761d,color:#111;
+  classDef control fill:#cfe2f3,stroke:#0b5394,color:#111;
+  classDef data fill:#fff2cc,stroke:#8a6d00,color:#111;
+  class LAUNCH,APPROVE,SNAP trusted;
+  class GIT,REG,EVID,STATE control;
+  class OP data;

@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import stat
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
+import collect_security_daily_evidence as collector  # noqa: E402
 from collect_security_daily_evidence import (  # noqa: E402
     CollectorError,
     collect_report,
@@ -20,6 +24,44 @@ from collect_security_daily_evidence import (  # noqa: E402
 SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
 REPORT_DATE = date(2026, 8, 1)
 GENERATED_AT = datetime(2026, 8, 2, 7, 50, tzinfo=SHANGHAI)
+
+
+def test_production_snapshot_contract_is_root_owned_and_reader_group_only() -> None:
+    assert collector.PRODUCTION_READER_UID == 10_001
+    assert collector.PRODUCTION_SNAPSHOT_UID == 0
+    assert collector.PRODUCTION_SNAPSHOT_GID == 10_001
+
+    metadata = {
+        "st_mode": stat.S_IFREG | 0o640,
+        "st_gid": collector.PRODUCTION_SNAPSHOT_GID,
+        "st_nlink": 1,
+    }
+    root_owned = SimpleNamespace(
+        **metadata,
+        st_uid=collector.PRODUCTION_SNAPSHOT_UID,
+    )
+    legacy_reader_owned = SimpleNamespace(
+        **metadata,
+        st_uid=collector.PRODUCTION_READER_UID,
+    )
+    runtime_owned_by_other_uid = SimpleNamespace(**metadata, st_uid=10_002)
+
+    assert collector._safe_production_snapshot_metadata(
+        root_owned,
+        allow_legacy_reader_owner=False,
+    )
+    assert not collector._safe_production_snapshot_metadata(
+        legacy_reader_owned,
+        allow_legacy_reader_owner=False,
+    )
+    assert collector._safe_production_snapshot_metadata(
+        legacy_reader_owned,
+        allow_legacy_reader_owner=True,
+    )
+    assert not collector._safe_production_snapshot_metadata(
+        runtime_owned_by_other_uid,
+        allow_legacy_reader_owner=True,
+    )
 
 
 def _logs(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -84,6 +126,171 @@ def test_collector_writes_only_aggregated_redacted_evidence(tmp_path: Path) -> N
     destination = write_snapshot(payload, tmp_path, owner_uid=10_001)
     assert json.loads(destination.read_text(encoding="utf-8"))["report_date"] == "2026-08-01"
     assert destination.stat().st_mode & 0o007 == 0
+
+
+def test_fixed_production_writer_uses_precreated_dirfd_and_rejects_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth, fail2ban, web = _logs(tmp_path)
+    payload = collect_report(
+        REPORT_DATE,
+        generated_at=GENERATED_AT,
+        auth_log=auth,
+        fail2ban_log=fail2ban,
+        web_log=web,
+        docker_root=tmp_path,
+    )
+    incoming = tmp_path / "incoming"
+    incoming.mkdir(mode=0o750)
+    incoming.chmod(0o750)
+    current_uid = os.getuid()
+    current_gid = os.getgid()
+    monkeypatch.setattr(collector, "PRODUCTION_OUTPUT_DIR", incoming)
+    monkeypatch.setattr(collector, "PRODUCTION_OUTPUT_UID", current_uid)
+    monkeypatch.setattr(collector, "PRODUCTION_OUTPUT_GID", current_gid)
+    monkeypatch.setattr(collector, "PRODUCTION_READER_UID", current_uid)
+    monkeypatch.setattr(collector, "PRODUCTION_SNAPSHOT_UID", current_uid)
+    monkeypatch.setattr(collector, "PRODUCTION_SNAPSHOT_GID", current_gid)
+    monkeypatch.setattr(collector.os, "geteuid", lambda: 0)
+
+    destination = write_snapshot(
+        payload,
+        incoming,
+        owner_uid=current_uid,
+        fixed_production=True,
+    )
+    metadata = destination.lstat()
+    assert stat.S_ISREG(metadata.st_mode)
+    assert stat.S_IMODE(metadata.st_mode) == 0o640
+    assert metadata.st_uid == current_uid
+    assert metadata.st_gid == current_gid
+
+    destination.unlink()
+    victim = tmp_path / "victim"
+    victim.write_text("unchanged", encoding="utf-8")
+    destination.symlink_to(victim)
+    with pytest.raises(CollectorError, match="existing security evidence snapshot is unsafe"):
+        write_snapshot(
+            payload,
+            incoming,
+            owner_uid=current_uid,
+            fixed_production=True,
+        )
+    assert victim.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_log_reader_rejects_symlinks_and_bounds_gzip_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    victim = tmp_path / "victim.log"
+    victim.write_text("Aug 1 01:00:00 host sshd: Failed password\n", encoding="utf-8")
+    linked = tmp_path / "auth.log"
+    linked.symlink_to(victim)
+    assert collector._log_file_paths(linked) == []
+
+    compressed = tmp_path / "access.log.1.gz"
+    with gzip.open(compressed, "wb") as stream:
+        stream.write(b"2026-08-01T04:00:00+08:00 GET /health 200\n" * 8)
+    monkeypatch.setattr(collector, "MAX_DECOMPRESSED_LOG_BYTES", 64)
+    opened = collector._log_file_paths(tmp_path / "access.log")
+    with pytest.raises(CollectorError, match="decompressed log is too large"):
+        list(collector._iter_lines(opened))
+
+
+def test_log_reader_bounds_individual_lines_and_total_line_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "auth.log"
+    path.write_bytes(b"a" * 65)
+    monkeypatch.setattr(collector, "MAX_LOG_LINE_BYTES", 64)
+    with pytest.raises(CollectorError, match="log line is too large"):
+        list(collector._iter_lines(collector._log_file_paths(path)))
+
+    path.write_bytes(b"a\nb\nc\n")
+    monkeypatch.setattr(collector, "MAX_LOG_LINE_BYTES", 64 * 1024)
+    monkeypatch.setattr(collector, "MAX_LOG_LINES", 2)
+    with pytest.raises(CollectorError, match="too many lines"):
+        list(collector._iter_lines(collector._log_file_paths(path)))
+
+
+def test_external_aggregation_key_cardinality_uses_fixed_overflow_bucket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(collector, "MAX_DISTINCT_AGGREGATION_KEYS", 4)
+    web = tmp_path / "access.log"
+    web.write_text(
+        "".join(
+            f"2026-08-01T04:00:{index:02d}+08:00 GET /missing-{index} 404\n"
+            for index in range(20)
+        ),
+        encoding="utf-8",
+    )
+
+    counts = collector._scan_web(web, tmp_path / "missing-docker", REPORT_DATE)
+
+    assert counts.count_4xx == 20
+    assert len(counts.top_4xx) == 5
+    assert (collector.AGGREGATION_OVERFLOW_KEY, 16) in counts.top_4xx
+
+    auth = tmp_path / "auth.log"
+    auth.write_text(
+        "".join(
+            "Aug 1 01:00:00 host sshd[1]: Failed password from "
+            f"198.51.100.{index} port 22\n"
+            for index in range(1, 11)
+        ),
+        encoding="utf-8",
+    )
+    log_counts = collector._scan_log(
+        auth,
+        REPORT_DATE,
+        (collector.FAILED_SSH,),
+        source_pattern=collector.FAILED_SSH,
+        message_required=collector.SSHD_MESSAGE_RE,
+    )
+
+    assert (collector.AGGREGATION_OVERFLOW_KEY, 6) in log_counts.top_sources
+
+
+def test_web_container_log_fallback_does_not_follow_log_symlinks(tmp_path: Path) -> None:
+    docker_root = tmp_path / "docker"
+    container_dir = docker_root / "containers" / "web01"
+    container_dir.mkdir(parents=True)
+    container_dir.joinpath("config.v2.json").write_text(
+        json.dumps(
+            {
+                "Name": "/sms-platform-web-1",
+                "State": {"Running": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "attacker-controlled.log"
+    outside.write_text(
+        json.dumps(
+            {
+                "log": "203.0.113.9 GET /.env 500 23\n",
+                "time": "2026-08-01T04:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    container_dir.joinpath("web01-json.log").symlink_to(outside)
+
+    result = collector._scan_web(
+        tmp_path / "missing-web.log",
+        docker_root,
+        REPORT_DATE,
+    )
+
+    assert result.available is False
+    assert result.count_5xx == 0
+    assert result.sensitive == 0
 
 
 def test_collector_keeps_missing_sources_as_explicit_coverage_gaps(tmp_path: Path) -> None:

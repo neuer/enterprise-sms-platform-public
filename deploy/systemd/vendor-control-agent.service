@@ -1,5 +1,6 @@
 [Unit]
 Description=Enterprise SMS Platform vendor test control agent
+ConditionPathExists=/etc/sms-platform/test-host
 Requires=docker.service
 After=docker.service
 Before=sms-platform.service
@@ -17,6 +18,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 StateDirectory=sms-platform/vendor-test
 StateDirectoryMode=0710
+ExecStartPre=/usr/local/sbin/sms-compose vendor-agent-preflight
 ExecStart=/opt/sms-platform/backend/.venv/bin/python /opt/sms-platform/deploy/scripts/vendor_control_agent.py --api-runtime-uid 10001 --api-runtime-gid 10001 --worker-runtime-uid 10001 --worker-runtime-gid 10002
 Restart=on-failure
 RestartSec=5s

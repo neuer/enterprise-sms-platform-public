@@ -1,5 +1,17 @@
 # 生产运行 secrets 手册
 
+> **V1 固定 OS 权威路径（优先于本文后续 checkout 相对路径）：**
+> 生产 25 件权威 secret 的根目录是 `/etc/sms-platform/secrets`，必须由独立
+> OS 变更预建为 `root:root 0700`，规范清单中的每个普通单链接文件为
+> `root:root 0600`；非密钥平台环境文件固定为
+> `/etc/sms-platform/platform.env` (`root:root 0600`)。同一采用变更还必须预建
+> `/var/lib/sms-platform/security-report`的审核后所有权/模式，并在 root-owned
+> commit 批准标记已存在的前提下，先就绪完整 tracked-tree snapshot 与
+> `current`，最后原子替换 stable launcher。后文 `deploy/secrets/<name>`、项目根
+> `.env` 及 checkout 内目录只保留历史/开发/兼容语境，不再构成 V1 生产权威。
+> V1 目标正常发布使用内部 Git + 私有 Registry + 发布证据，离线通道仅兼容。
+> 详见 [P0-A 生产控制加固](../docs/security-hardening/p0a-production-control/hardening.md)。
+
 ## 硬性边界
 
 所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 25 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。

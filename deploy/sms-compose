@@ -27,30 +27,75 @@ if [[ ! -f "$WRAPPER_PATH" ]]; then
   echo "sms-compose: wrapper target is unavailable" >&2
   exit 1
 fi
-if [[ -n "${SMS_PLATFORM_ROOT:-}" ]]; then
-  ROOT="$(cd -- "$SMS_PLATFORM_ROOT" && pwd -P)"
-else
-  ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
-fi
-
 RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-/run/sms-platform/secrets}"
 SECRETS_MODE="${SMS_SECRETS_MODE:-production}"
-PREPROCESSOR="$ROOT/deploy/scripts/prepare_runtime_secrets.py"
-LOCK_RUNNER="$ROOT/deploy/scripts/run_with_lifecycle_lock.py"
-RELEASE_MANAGER="$ROOT/deploy/scripts/release_manager.py"
-CONTINUITY_MANAGER="$ROOT/deploy/scripts/continuity_manager.py"
-VENDOR_TEST_MANAGER="$ROOT/deploy/scripts/vendor_test_manager.py"
-VENDOR_TEST_BOOTSTRAP="$ROOT/deploy/scripts/vendor_test_bootstrap.py"
-VENDOR_RUNTIME_RESET="$ROOT/deploy/scripts/vendor_runtime_reset.py"
-VENDOR_CONTROL_RELOAD="$ROOT/deploy/scripts/vendor_control_reload.py"
-TEST_UPDATE_MANAGER="$ROOT/deploy/scripts/test_update_manager.py"
-TEST_UPDATE_PROMOTE="$ROOT/deploy/scripts/test_update_promote.py"
-PUBLIC_CUTOVER_BOOTSTRAP="$ROOT/deploy/scripts/public_cutover_bootstrap.py"
+PRODUCTION_CONTROL_BASE="/usr/local/libexec/sms-platform/production-control"
+PRODUCTION_CONTROL_SNAPSHOT=0
+PRODUCTION_CONTROL_COMMIT=""
+PRODUCTION_CONTROL_SMOKE="${SMS_PRODUCTION_CONTROL_SMOKE:-0}"
+if [[ "$WRAPPER_PATH" =~ ^$PRODUCTION_CONTROL_BASE/versions/([0-9a-f]{40})/deploy/sms-compose$ ]]; then
+  PRODUCTION_CONTROL_COMMIT="${BASH_REMATCH[1]}"
+  CONTROL_ROOT="$PRODUCTION_CONTROL_BASE/versions/$PRODUCTION_CONTROL_COMMIT"
+  PRODUCTION_CONTROL_SNAPSHOT=1
+elif [[ "$PRODUCTION_CONTROL_SMOKE" == 1 &&
+        "$WRAPPER_PATH" =~ ^(.*/production-control/versions/[0-9a-f]{40})/deploy/sms-compose$ ]]; then
+  # Non-/opt smoke fixtures exercise the same root/control-root split without
+  # creating host paths.  The production guard below makes this unusable on a
+  # real /opt/sms-platform checkout.
+  CONTROL_ROOT="${BASH_REMATCH[1]}"
+  PRODUCTION_CONTROL_COMMIT="${CONTROL_ROOT##*/}"
+  PRODUCTION_CONTROL_SNAPSHOT=1
+else
+  CONTROL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+fi
+if [[ -n "${SMS_PLATFORM_ROOT:-}" ]]; then
+  ROOT="$(cd -- "$SMS_PLATFORM_ROOT" && pwd -P)"
+elif [[ "$PRODUCTION_CONTROL_SNAPSHOT" == 1 ]]; then
+  ROOT="/opt/sms-platform"
+else
+  ROOT="$CONTROL_ROOT"
+fi
+if [[ "$PRODUCTION_CONTROL_SNAPSHOT" == 0 && -n "${SMS_PLATFORM_ROOT:-}" &&
+      ("$SECRETS_MODE" == development || "$PRODUCTION_CONTROL_SMOKE" == 1) ]]; then
+  # Development and explicit non-/opt smoke fixtures may relocate the whole
+  # source tree together.  Production never accepts this representation.
+  CONTROL_ROOT="$ROOT"
+fi
+
+INTERNAL_COMPOSE_ENV_NAME="SMS_INTERNAL_PLATFORM_ENV_FILE"
+INTERNAL_COMPOSE_ENV_WAS_SET=0
+[[ ${SMS_INTERNAL_PLATFORM_ENV_FILE+x} ]] && INTERNAL_COMPOSE_ENV_WAS_SET=1
+SOURCE_SECRETS_OVERRIDE_NAME="SMS_SOURCE_SECRETS_ROOT"
+SOURCE_SECRETS_OVERRIDE_WAS_SET=0
+[[ ${SMS_SOURCE_SECRETS_ROOT+x} ]] && SOURCE_SECRETS_OVERRIDE_WAS_SET=1
+SECURITY_REPORT_PATH_OVERRIDE_WAS_SET=0
+for SECURITY_REPORT_PATH_NAME in \
+  SMS_SECURITY_REPORT_CONTROL_DIR \
+  SMS_SECURITY_REPORT_CONFIG_DIR \
+  SMS_SECURITY_REPORT_NGINX_DIR; do
+  [[ ${!SECURITY_REPORT_PATH_NAME+x} ]] && SECURITY_REPORT_PATH_OVERRIDE_WAS_SET=1
+done
+
+PREPROCESSOR="$CONTROL_ROOT/deploy/scripts/prepare_runtime_secrets.py"
+LOCK_RUNNER="$CONTROL_ROOT/deploy/scripts/run_with_lifecycle_lock.py"
+RELEASE_MANAGER="$CONTROL_ROOT/deploy/scripts/release_manager.py"
+CONTINUITY_MANAGER="$CONTROL_ROOT/deploy/scripts/continuity_manager.py"
+PRODUCTION_CONTROL_MANAGER="$CONTROL_ROOT/deploy/scripts/production_control_snapshot.py"
+HOST_PYTHON_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/host_python_preflight.py"
+LIFECYCLE_MANAGER="$CONTROL_ROOT/deploy/scripts/lifecycle_manager.py"
+SECURITY_REPORT_COLLECTOR="$CONTROL_ROOT/deploy/scripts/collect_security_daily_evidence.py"
+VENDOR_TEST_MANAGER="$CONTROL_ROOT/deploy/scripts/vendor_test_manager.py"
+VENDOR_TEST_BOOTSTRAP="$CONTROL_ROOT/deploy/scripts/vendor_test_bootstrap.py"
+VENDOR_RUNTIME_RESET="$CONTROL_ROOT/deploy/scripts/vendor_runtime_reset.py"
+VENDOR_CONTROL_RELOAD="$CONTROL_ROOT/deploy/scripts/vendor_control_reload.py"
+TEST_UPDATE_MANAGER="$CONTROL_ROOT/deploy/scripts/test_update_manager.py"
+TEST_UPDATE_PROMOTE="$CONTROL_ROOT/deploy/scripts/test_update_promote.py"
+PUBLIC_CUTOVER_BOOTSTRAP="$CONTROL_ROOT/deploy/scripts/public_cutover_bootstrap.py"
 PUBLIC_BASELINE_MANAGER=""
-STORAGE_PREFLIGHT="$ROOT/deploy/scripts/storage_preflight.py"
-VOLUME_CONTRACT_PREFLIGHT="$ROOT/deploy/scripts/volume_contract_preflight.py"
-REDIS_TLS_PREFLIGHT="$ROOT/deploy/scripts/redis_tls_preflight.py"
-REDIS_TLS_ROTATION_GUARD="$ROOT/deploy/scripts/redis_tls_rotation_guard.py"
+STORAGE_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/storage_preflight.py"
+VOLUME_CONTRACT_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/volume_contract_preflight.py"
+REDIS_TLS_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/redis_tls_preflight.py"
+REDIS_TLS_ROTATION_GUARD="$CONTROL_ROOT/deploy/scripts/redis_tls_rotation_guard.py"
 HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
 TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
 CLOUDFLARE_TUNNEL_MANAGER="$HOST_CONTROL_ROOT/cloudflare_tunnel_manager.py"
@@ -74,11 +119,11 @@ if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
 fi
 if [[ "${SMS_SECURE_ACCESS_MANAGER_SMOKE:-0}" == 1 &&
       "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
-  TEST_SECURE_ACCESS_MANAGER="$ROOT/deploy/scripts/test_secure_access_manager.py"
+  TEST_SECURE_ACCESS_MANAGER="$CONTROL_ROOT/deploy/scripts/test_secure_access_manager.py"
 fi
 if [[ "${SMS_CLOUDFLARE_TUNNEL_MANAGER_SMOKE:-0}" == 1 &&
       "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
-  CLOUDFLARE_TUNNEL_MANAGER="$ROOT/deploy/scripts/cloudflare_tunnel_manager.py"
+  CLOUDFLARE_TUNNEL_MANAGER="$CONTROL_ROOT/deploy/scripts/cloudflare_tunnel_manager.py"
 fi
 DEFAULT_RELEASE_ROOT="/var/lib/sms-platform/releases"
 RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
@@ -91,21 +136,126 @@ TEST_UPDATE_REQUEST="$TEST_UPDATE_STATE_ROOT/incoming/request.json"
 PUBLIC_BASELINE_MANIFEST="$TEST_UPDATE_STATE_ROOT/incoming/baseline-manifest.json"
 PUBLIC_BASELINE_ROOT="/opt/sms-platform"
 PUBLIC_BASELINE_RUNTIME_ROOT="/run/sms-platform/secrets"
-BASE_COMPOSE_FILE="$ROOT/deploy/docker-compose.yml"
-PRODUCTION_STORAGE_COMPOSE_FILE="$ROOT/deploy/docker-compose.production-storage.yml"
-PRODUCTION_RESTART_COMPOSE_FILE="$ROOT/deploy/docker-compose.production-restart.yml"
-REDIS_TLS_COMPOSE_FILE="$ROOT/deploy/docker-compose.redis-tls.yml"
-COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$BASE_COMPOSE_FILE")
+BASE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.yml"
+PRODUCTION_STORAGE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-storage.yml"
+PRODUCTION_RESTART_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-restart.yml"
+REDIS_TLS_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.redis-tls.yml"
+PLATFORM_ENV_FILE="$ROOT/.env"
+SOURCE_SECRETS_ROOT="$ROOT/deploy/secrets"
+if [[ "$SECRETS_MODE" == production && "$PRODUCTION_CONTROL_SNAPSHOT" == 1 &&
+      "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
+  PLATFORM_ENV_FILE="/etc/sms-platform/platform.env"
+  SOURCE_SECRETS_ROOT="/etc/sms-platform/secrets"
+fi
+COMPOSE=(docker compose --env-file "$PLATFORM_ENV_FILE" -f "$BASE_COMPOSE_FILE")
 PRODUCTION_REDIS_HA_MODE=""
 EXPECTED_PRODUCTION_METRICS_ALLOWED_CIDRS="172.31.250.1/32"
+PRODUCTION_SECURITY_REPORT_ROOT="/var/lib/sms-platform/security-report"
+PRODUCTION_SECURITY_REPORT_CONTROL_DIR="$PRODUCTION_SECURITY_REPORT_ROOT/control"
+PRODUCTION_SECURITY_REPORT_CONFIG_DIR="$PRODUCTION_SECURITY_REPORT_ROOT/config"
+PRODUCTION_SECURITY_REPORT_NGINX_DIR="$PRODUCTION_SECURITY_REPORT_ROOT/nginx"
+PRODUCTION_SECURITY_REPORT_INCOMING_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR/incoming"
+PRODUCTION_SECURITY_REPORT_REQUESTS_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR/requests"
+PRODUCTION_SECURITY_REPORT_RESULTS_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR/results"
 ROTATE_WAIT_TIMEOUT=120
 BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-bulk worker-callback outbox-dispatcher beat)
 export SMS_RUNTIME_SECRETS_DIR="$RUNTIME_ROOT/current"
 
+CONTROL_PYTHON=(python3)
+if [[ "$PRODUCTION_CONTROL_SNAPSHOT" == 1 && "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
+  CONTROL_PYTHON=(
+    /usr/bin/env
+    -u PYTHONHOME
+    -u PYTHONPATH
+    -u PYTHONSTARTUP
+    -u PYTHONUSERBASE
+    PYTHONNOUSERSITE=1
+    /usr/bin/python3
+  )
+  LOCK_PYTHON=("${CONTROL_PYTHON[@]}")
+fi
+
+validate_control_entry() {
+  if [[ "$SECRETS_MODE" != production ]]; then
+    return 0
+  fi
+  if [[ "$PRODUCTION_CONTROL_SNAPSHOT" == 1 ]]; then
+    if [[ "$PRODUCTION_CONTROL_SMOKE" == 1 ]]; then
+      [[ "$ROOT" != /opt/sms-platform ]] || {
+        echo "sms-compose: production control smoke mode is forbidden for /opt/sms-platform" >&2
+        return 1
+      }
+    else
+      if [[ "$ROOT" != /opt/sms-platform ]]; then
+        echo "sms-compose: production project root must be /opt/sms-platform" >&2
+        return 1
+      fi
+      if [[ "${SMS_LIFECYCLE_LOCKED:-}" != 1 ||
+            ! "${SMS_LIFECYCLE_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+        echo "sms-compose: production snapshot must be entered through the stable launcher" >&2
+        return 1
+      fi
+    fi
+    return 0
+  fi
+  if [[ "$PRODUCTION_CONTROL_SMOKE" == 1 && "$ROOT" != /opt/sms-platform &&
+        "$CONTROL_ROOT" == "$ROOT" ]]; then
+    return 0
+  fi
+  echo "sms-compose: production actions require the immutable production-control snapshot entry" >&2
+  return 1
+}
+
+validate_control_state_binding() {
+  local action="$1"
+  shift
+  if [[ "$SECRETS_MODE" != production || "$PRODUCTION_CONTROL_SMOKE" == 1 ]]; then
+    return 0
+  fi
+  if [[ "$action" == host-control ||
+        ("$action" == __locked && "${1:-}" == release && "${2:-}" == __host-control) ]]; then
+    return 0
+  fi
+  if ! run_production_control_manager status >/dev/null; then
+    echo "sms-compose: production control snapshot state is not verified" >&2
+    return 1
+  fi
+}
+
+configure_internal_compose_env() {
+  local line
+  if [[ "$INTERNAL_COMPOSE_ENV_WAS_SET" == 1 ]]; then
+    echo "sms-compose: shell override of $INTERNAL_COMPOSE_ENV_NAME is forbidden" >&2
+    return 1
+  fi
+  if [[ "$SECRETS_MODE" == production && "$PRODUCTION_CONTROL_SMOKE" != 1 &&
+        "$SOURCE_SECRETS_OVERRIDE_WAS_SET" == 1 ]]; then
+    echo "sms-compose: shell override of $SOURCE_SECRETS_OVERRIDE_NAME is forbidden" >&2
+    return 1
+  fi
+  if [[ -f "$PLATFORM_ENV_FILE" && ! -L "$PLATFORM_ENV_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*SMS_INTERNAL_PLATFORM_ENV_FILE[[:space:]]*= ]]; then
+        echo "sms-compose: root .env override of $INTERNAL_COMPOSE_ENV_NAME is forbidden" >&2
+        return 1
+      fi
+      if [[ "$SECRETS_MODE" == production && "$PRODUCTION_CONTROL_SMOKE" != 1 &&
+            "$line" =~ ^[[:space:]]*SMS_SOURCE_SECRETS_ROOT[[:space:]]*= ]]; then
+        echo "sms-compose: root .env override of $SOURCE_SECRETS_OVERRIDE_NAME is forbidden" >&2
+        return 1
+      fi
+    done < "$PLATFORM_ENV_FILE"
+  fi
+  export SMS_INTERNAL_PLATFORM_ENV_FILE="$PLATFORM_ENV_FILE"
+}
+
 usage() {
-  echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes (development only)] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs [args...]" >&2
+  echo "usage: sms-compose up [args...] | down [--remove-orphans] [-v|--volumes (development only)] | rotate backend | run --rm migrate | partition-maintenance [--dry-run] | init-admin --show-temporary-password [--username NAME] [--display-name NAME] | config|ps|logs [development args...]" >&2
   echo "release prepare|bootstrap|start-recovery|observe-recovery|adopt-recovery|resume-recovery|prepare-forward-rollback|activate|status|resume|rollback: use the documented exact arguments" >&2
   echo "production only: continuity engage|release --evidence FILE --evidence-sha256 SHA256; continuity status" >&2
+  echo "production host control: host-control plan|prepare|activate --expected-commit COMMIT; host-control status" >&2
+  echo "production root units only: host-lifecycle backup|drill|backup-status; security-report" >&2
+  echo "development root unit only: vendor-agent-preflight" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
   echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|recover-rebaseline-prepare|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
@@ -149,31 +299,111 @@ trim_non_secret_value() {
   printf '%s' "$value"
 }
 
+validate_production_security_report_directory() {
+  local path="$1"
+  local expected_metadata="$2"
+  local metadata
+  if [[ ! -d "$path" || -L "$path" || "$(readlink -f -- "$path")" != "$path" ]]; then
+    echo "sms-compose: production security-report directory is unsafe: $path" >&2
+    return 1
+  fi
+  metadata="$(stat -c '%u:%g:%a:%F' -- "$path")" || {
+    echo "sms-compose: production security-report directory metadata is unavailable: $path" >&2
+    return 1
+  }
+  if [[ "$metadata" != "$expected_metadata" ]]; then
+    echo "sms-compose: production security-report directory metadata is unsafe: $path" >&2
+    return 1
+  fi
+}
+
+configure_security_report_paths() {
+  if [[ "$SECRETS_MODE" != production || "$PRODUCTION_CONTROL_SMOKE" == 1 ]]; then
+    export SMS_SECURITY_REPORT_CONTROL_DIR="$ROOT/deploy/security-report-control"
+    export SMS_SECURITY_REPORT_CONFIG_DIR="$ROOT/deploy/security-report-config"
+    export SMS_SECURITY_REPORT_NGINX_DIR="$ROOT/deploy/security-report-nginx"
+    return 0
+  fi
+
+  local parent_metadata
+  if [[ ! -d "$PRODUCTION_SECURITY_REPORT_ROOT" ||
+        -L "$PRODUCTION_SECURITY_REPORT_ROOT" ||
+        "$(readlink -f -- "$PRODUCTION_SECURITY_REPORT_ROOT")" != "$PRODUCTION_SECURITY_REPORT_ROOT" ]]; then
+    echo "sms-compose: production security-report state root is unsafe" >&2
+    return 1
+  fi
+  parent_metadata="$(stat -c '%u:%g:%a:%F' -- "$PRODUCTION_SECURITY_REPORT_ROOT")" || {
+    echo "sms-compose: production security-report state root metadata is unavailable" >&2
+    return 1
+  }
+  if [[ "$parent_metadata" != "0:0:755:directory" ]]; then
+    echo "sms-compose: production security-report state root metadata is unsafe" >&2
+    return 1
+  fi
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_CONTROL_DIR" "0:0:755:directory" || return $?
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_INCOMING_DIR" "0:10001:750:directory" || return $?
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_REQUESTS_DIR" "10001:10001:700:directory" || return $?
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_RESULTS_DIR" "10001:10001:700:directory" || return $?
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_CONFIG_DIR" "10001:10001:700:directory" || return $?
+  validate_production_security_report_directory \
+    "$PRODUCTION_SECURITY_REPORT_NGINX_DIR" "101:101:750:directory" || return $?
+
+  export SMS_SECURITY_REPORT_CONTROL_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR"
+  export SMS_SECURITY_REPORT_CONFIG_DIR="$PRODUCTION_SECURITY_REPORT_CONFIG_DIR"
+  export SMS_SECURITY_REPORT_NGINX_DIR="$PRODUCTION_SECURITY_REPORT_NGINX_DIR"
+}
+
 configure_compose_topology() {
-  COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$BASE_COMPOSE_FILE")
+  COMPOSE=(docker compose --env-file "$PLATFORM_ENV_FILE" -f "$BASE_COMPOSE_FILE")
   PRODUCTION_REDIS_HA_MODE=""
   if [[ "$SECRETS_MODE" != production ]]; then
     return 0
   fi
 
-  local env_file="$ROOT/.env"
+  local env_file="$PLATFORM_ENV_FILE"
   local line value
   local seen_redis_ha_mode=0 seen_metrics_allowed_cidrs=0
-  if [[ ! -f "$env_file" || -L "$env_file" ]]; then
-    echo "sms-compose: production requires a regular root .env file" >&2
+  if [[ ! -f "$env_file" || -L "$env_file" ||
+        "$(readlink -f -- "$env_file")" != "$env_file" ]]; then
+    echo "sms-compose: production requires a regular platform environment file" >&2
     return 1
+  fi
+  if [[ "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
+    local env_parent="${env_file%/*}"
+    local parent_metadata parent_uid parent_gid parent_mode parent_type
+    if [[ ! -d "$env_parent" || -L "$env_parent" ||
+          "$(readlink -f -- "$env_parent")" != "$env_parent" ]]; then
+      echo "sms-compose: production platform environment parent is unsafe" >&2
+      return 1
+    fi
+    parent_metadata="$(stat -c '%u:%g:%a:%F' -- "$env_parent")" || {
+      echo "sms-compose: production platform environment parent metadata is unavailable" >&2
+      return 1
+    }
+    IFS=: read -r parent_uid parent_gid parent_mode parent_type <<< "$parent_metadata"
+    if [[ "$parent_uid" != 0 || "$parent_gid" != 0 ||
+          "$parent_type" != directory || ! "$parent_mode" =~ ^[0-7]{3}$ ||
+          $((8#$parent_mode & 8#022)) -ne 0 ]]; then
+      echo "sms-compose: production platform environment parent is unsafe" >&2
+      return 1
+    fi
   fi
   local env_metadata
   env_metadata="$(stat -c '%u:%g:%a:%F' -- "$env_file")" || {
-    echo "sms-compose: production root .env metadata is unavailable" >&2
+    echo "sms-compose: production platform environment metadata is unavailable" >&2
     return 1
   }
   if [[ "$env_metadata" != "0:0:600:regular file" ]]; then
-    echo "sms-compose: production root .env must be root:root mode 0600" >&2
+    echo "sms-compose: production platform environment must be root:root mode 0600" >&2
     return 1
   fi
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[[:space:]]*(COMPOSE_FILE|COMPOSE_PROJECT_NAME)[[:space:]]*= ]]; then
+    if [[ "$line" =~ ^[[:space:]]*(COMPOSE_FILE|COMPOSE_PROJECT_NAME|SMS_SECURITY_REPORT_CONTROL_DIR|SMS_SECURITY_REPORT_CONFIG_DIR|SMS_SECURITY_REPORT_NGINX_DIR)[[:space:]]*= ]]; then
       echo "sms-compose: production Compose topology overrides are forbidden" >&2
       return 1
     fi
@@ -230,6 +460,12 @@ configure_compose_topology() {
     echo "sms-compose: shell METRICS_ALLOWED_CIDRS override is forbidden in production" >&2
     return 1
   fi
+  if [[ "$SECURITY_REPORT_PATH_OVERRIDE_WAS_SET" == 1 ]]; then
+    echo "sms-compose: shell security-report path overrides are forbidden in production" >&2
+    return 1
+  fi
+
+  configure_security_report_paths || return $?
 
   COMPOSE+=( -f "$PRODUCTION_STORAGE_COMPOSE_FILE" )
   COMPOSE+=( -f "$PRODUCTION_RESTART_COMPOSE_FILE" )
@@ -245,23 +481,24 @@ run_production_infrastructure_preflights() {
       return 2
       ;;
   esac
-  if ! python3 "$STORAGE_PREFLIGHT" --mode "$storage_mode"; then
+  if ! "${CONTROL_PYTHON[@]}" "$STORAGE_PREFLIGHT" --mode "$storage_mode"; then
     echo "sms-compose: production storage preflight failed" >&2
     return 1
   fi
   if [[ "$PRODUCTION_REDIS_HA_MODE" == isolated-standalone ]] &&
-     ! python3 "$REDIS_TLS_PREFLIGHT"; then
+     ! "${CONTROL_PYTHON[@]}" "$REDIS_TLS_PREFLIGHT" \
+       --secrets-dir "$SOURCE_SECRETS_ROOT"; then
     echo "sms-compose: isolated Redis TLS preflight failed" >&2
     return 1
   fi
-  if ! python3 "$VOLUME_CONTRACT_PREFLIGHT"; then
+  if ! "${CONTROL_PYTHON[@]}" "$VOLUME_CONTRACT_PREFLIGHT"; then
     echo "sms-compose: production volume contract preflight failed" >&2
     return 1
   fi
 }
 
 load_development_web_transport() {
-  local env_file="$ROOT/.env"
+  local env_file="$PLATFORM_ENV_FILE"
   local line key raw value
   local seen_external_tls_mode=0 seen_trusted_proxy_cidrs=0
   local seen_trusted_proxy_conf=0
@@ -318,7 +555,7 @@ load_development_web_transport() {
 
 validate_production_launch() {
   local storage_mode="${1:-startup}"
-  local env_file="$ROOT/.env"
+  local env_file="$PLATFORM_ENV_FILE"
   local line key raw value shell_value
   local seen_environment=0 seen_debug=0 seen_auth_mock=0 seen_vendor_mock=0
   local seen_compose_profiles=0 seen_web_bind_ip=0 seen_external_tls_mode=0
@@ -446,7 +683,7 @@ validate_production_launch() {
   effective_web_bind_ip="${WEB_BIND_IP-$env_web_bind_ip}"
   effective_external_tls_mode="${SMS_EXTERNAL_TLS_MODE-$env_external_tls_mode}"
   effective_trusted_proxy_cidrs="${SMS_TRUSTED_PROXY_CIDRS-$env_trusted_proxy_cidrs}"
-  if ! python3 "$ROOT/scripts/verify_web_transport.py" \
+  if ! "${CONTROL_PYTHON[@]}" "$CONTROL_ROOT/scripts/verify_web_transport.py" \
     --validate-bind-only \
     --web-bind-ip "$effective_web_bind_ip" \
     --external-tls-mode "$effective_external_tls_mode" \
@@ -454,7 +691,7 @@ validate_production_launch() {
     echo "sms-compose: production Web plaintext bind is unsafe" >&2
     return 1
   fi
-  if ! python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
+  if ! "${CONTROL_PYTHON[@]}" "$CONTROL_ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
     --mode "$effective_external_tls_mode" \
     --cidrs "$effective_trusted_proxy_cidrs" \
     --validate-only; then
@@ -543,15 +780,15 @@ prepare_runtime_secrets() {
   fi
   if [[ "$SECRETS_MODE" == development && ! -f "$VENDOR_CREDENTIAL_ROOT/active" ]]; then
     command=(
-      python3 "$PREPROCESSOR" revoke-vendor
-      --source-dir "$ROOT/deploy/secrets"
+      "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" revoke-vendor
+      --source-dir "$SOURCE_SECRETS_ROOT"
       --runtime-root "$RUNTIME_ROOT"
       --mode development
     )
   else
     command=(
-      python3 "$PREPROCESSOR" prepare
-      --source-dir "$ROOT/deploy/secrets"
+      "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" prepare
+      --source-dir "$SOURCE_SECRETS_ROOT"
       --runtime-root "$RUNTIME_ROOT"
       --mode "$SECRETS_MODE"
     )
@@ -561,8 +798,8 @@ prepare_runtime_secrets() {
   fi
   "${command[@]}" || return $?
   if [[ "$SECRETS_MODE" == production && -n "$baseline_target" ]]; then
-    python3 "$REDIS_TLS_ROTATION_GUARD" \
-      --source-dir "$ROOT/deploy/secrets" \
+    "${CONTROL_PYTHON[@]}" "$REDIS_TLS_ROTATION_GUARD" \
+      --source-dir "$SOURCE_SECRETS_ROOT" \
       --runtime-root "$RUNTIME_ROOT" \
       --baseline-target "$baseline_target" || guard_status=$?
     if ((guard_status != 0)); then
@@ -577,24 +814,28 @@ prepare_runtime_secrets() {
 }
 
 cleanup_runtime_secrets() {
-  python3 "$PREPROCESSOR" cleanup \
+  "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" cleanup \
     --runtime-root "$RUNTIME_ROOT" \
     --all
 }
 
 current_runtime_target() {
-  python3 "$PREPROCESSOR" current-target \
+  "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" current-target \
     --runtime-root "$RUNTIME_ROOT"
 }
 
 activate_runtime_target() {
-  python3 "$PREPROCESSOR" activate \
+  "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" activate \
     --runtime-root "$RUNTIME_ROOT" \
     --target "$1"
 }
 
 recreate_backend_services() {
-  "${COMPOSE[@]}" up -d --no-deps --force-recreate \
+  local build_guard=()
+  if [[ "$SECRETS_MODE" == production ]]; then
+    build_guard=(--no-build)
+  fi
+  "${COMPOSE[@]}" up -d "${build_guard[@]}" --no-deps --force-recreate \
     --wait --wait-timeout "$ROTATE_WAIT_TIMEOUT" \
     "${BACKEND_SERVICES[@]}"
 }
@@ -637,7 +878,9 @@ rotate_backend() {
 
 start_stack() {
   local external_tls_mode trusted_proxy_cidrs trusted_proxy_conf
+  local build_guard=()
   if [[ "$SECRETS_MODE" == production ]]; then
+    build_guard=(--no-build)
     external_tls_mode="$PRODUCTION_EXTERNAL_TLS_MODE"
     trusted_proxy_cidrs="$PRODUCTION_TRUSTED_PROXY_CIDRS"
     trusted_proxy_conf="${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
@@ -648,12 +891,12 @@ start_stack() {
     trusted_proxy_conf="$DEVELOPMENT_TRUSTED_PROXY_CONF"
   fi
   prepare_runtime_secrets
-  python3 "$ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
+  "${CONTROL_PYTHON[@]}" "$CONTROL_ROOT/deploy/scripts/render_trusted_proxy_conf.py" \
     --mode "$external_tls_mode" \
     --cidrs "$trusted_proxy_cidrs" \
     --output "$trusted_proxy_conf"
   "${COMPOSE[@]}" config --quiet
-  "${COMPOSE[@]}" up "$@"
+  "${COMPOSE[@]}" up "${build_guard[@]}" "$@"
 }
 
 stop_stack() {
@@ -783,18 +1026,39 @@ validate_sha256() {
 }
 
 run_release_manager() {
-  python3 "$RELEASE_MANAGER" \
-    --root "$ROOT" \
-    --release-root "$RELEASE_ROOT" \
-    --mode "$SECRETS_MODE" \
-    "$@"
+  if [[ "$SECRETS_MODE" == production ]]; then
+    "${CONTROL_PYTHON[@]}" "$RELEASE_MANAGER" \
+      --platform-root "$ROOT" \
+      --control-root "$CONTROL_ROOT" \
+      --environment-file "$PLATFORM_ENV_FILE" \
+      --release-root "$RELEASE_ROOT" \
+      --mode "$SECRETS_MODE" \
+      "$@"
+  else
+    "${CONTROL_PYTHON[@]}" "$RELEASE_MANAGER" \
+      --root "$ROOT" \
+      --environment-file "$PLATFORM_ENV_FILE" \
+      --release-root "$RELEASE_ROOT" \
+      --mode "$SECRETS_MODE" \
+      "$@"
+  fi
 }
 
 run_continuity_manager() {
-  python3 "$CONTINUITY_MANAGER" \
-    --root "$ROOT" \
-    --mode "$SECRETS_MODE" \
-    "$@"
+  if [[ "$SECRETS_MODE" == production ]]; then
+    "${CONTROL_PYTHON[@]}" "$CONTINUITY_MANAGER" \
+      --root "$ROOT" \
+      --control-root "$CONTROL_ROOT" \
+      --environment-file "$PLATFORM_ENV_FILE" \
+      --mode "$SECRETS_MODE" \
+      "$@"
+  else
+    "${CONTROL_PYTHON[@]}" "$CONTINUITY_MANAGER" \
+      --root "$ROOT" \
+      --environment-file "$PLATFORM_ENV_FILE" \
+      --mode "$SECRETS_MODE" \
+      "$@"
+  fi
 }
 
 run_locked_continuity() {
@@ -840,8 +1104,18 @@ dispatch_continuity() {
 }
 
 exec_release_manager() {
-  exec python3 "$RELEASE_MANAGER" \
+  if [[ "$SECRETS_MODE" == production ]]; then
+    exec "${CONTROL_PYTHON[@]}" "$RELEASE_MANAGER" \
+      --platform-root "$ROOT" \
+      --control-root "$CONTROL_ROOT" \
+      --environment-file "$PLATFORM_ENV_FILE" \
+      --release-root "$RELEASE_ROOT" \
+      --mode "$SECRETS_MODE" \
+      "$@"
+  fi
+  exec "${CONTROL_PYTHON[@]}" "$RELEASE_MANAGER" \
     --root "$ROOT" \
+    --environment-file "$PLATFORM_ENV_FILE" \
     --release-root "$RELEASE_ROOT" \
     --mode "$SECRETS_MODE" \
     "$@"
@@ -989,6 +1263,17 @@ dispatch_release() {
 run_with_lifecycle_lock() {
   local operation="$1"
   shift
+  if [[ "${SMS_LIFECYCLE_LOCKED:-}" == 1 &&
+        "${SMS_LIFECYCLE_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+    run_locked_operation "$operation" "$@"
+    return
+  fi
+  # The child recomputes this wrapper-owned interpolation binding.  Do not
+  # propagate it as though it were a caller-supplied override.
+  unset SMS_INTERNAL_PLATFORM_ENV_FILE
+  unset SMS_SECURITY_REPORT_CONTROL_DIR
+  unset SMS_SECURITY_REPORT_CONFIG_DIR
+  unset SMS_SECURITY_REPORT_NGINX_DIR
   "${LOCK_PYTHON[@]}" "$LOCK_RUNNER" \
     --runtime-root "$RUNTIME_ROOT" \
     --wrapper "$WRAPPER_PATH" \
@@ -1010,24 +1295,24 @@ run_vendor_test_manager() {
   SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
   SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
   SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
-    python3 "$VENDOR_TEST_MANAGER" "$command" \
+    "${CONTROL_PYTHON[@]}" "$VENDOR_TEST_MANAGER" "$command" \
       --root "$ROOT" \
       --runtime-root "$RUNTIME_ROOT" \
       --state-dir "$VENDOR_TEST_STATE_DIR" \
       --marker-file "$VENDOR_TEST_MARKER" \
-      --dotenv-file "$ROOT/.env"
+      --dotenv-file "$PLATFORM_ENV_FILE"
 }
 
 run_vendor_test_bootstrap() {
   SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
   SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    python3 "$VENDOR_TEST_BOOTSTRAP"
+    "${CONTROL_PYTHON[@]}" "$VENDOR_TEST_BOOTSTRAP"
 }
 
 run_vendor_runtime_reset() {
   SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
   SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    python3 "$VENDOR_RUNTIME_RESET" \
+    "${CONTROL_PYTHON[@]}" "$VENDOR_RUNTIME_RESET" \
       --root "$ROOT" \
       --runtime-root "$RUNTIME_ROOT"
 }
@@ -1035,12 +1320,12 @@ run_vendor_runtime_reset() {
 run_vendor_control_reload() {
   SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
   SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    python3 "$VENDOR_CONTROL_RELOAD"
+    "${CONTROL_PYTHON[@]}" "$VENDOR_CONTROL_RELOAD"
 }
 
 run_test_update_manager() {
   local command="$1"
-  local python_path="$ROOT/deploy/scripts"
+  local python_path="$CONTROL_ROOT/deploy/scripts"
   local host_source_commit=''
   if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
     local asset_status
@@ -1313,6 +1598,118 @@ dispatch_cloudflare_tunnel() {
     /usr/bin/python3 "$CLOUDFLARE_TUNNEL_MANAGER" "$command" "$@"
 }
 
+validate_production_control_commit() {
+  if [[ ! "$1" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "sms-compose: invalid production-control expected commit" >&2
+    return 2
+  fi
+}
+
+run_production_control_manager() {
+  "${CONTROL_PYTHON[@]}" "$PRODUCTION_CONTROL_MANAGER" "$@"
+}
+
+run_locked_host_control() {
+  local command="$1"
+  shift
+  [[ "$SECRETS_MODE" == production ]] || return 2
+  case "$command" in
+    prepare | activate)
+      [[ $# -eq 2 && "$1" == --expected-commit ]] || return 2
+      validate_production_control_commit "$2" || return $?
+      run_production_control_manager "$command" "$@"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+dispatch_host_control() {
+  local command="${1:-}"
+  shift || true
+  [[ "$SECRETS_MODE" == production ]] || return 2
+  case "$command" in
+    plan)
+      [[ $# -eq 2 && "$1" == --expected-commit ]] || return 2
+      validate_production_control_commit "$2" || return $?
+      run_production_control_manager plan "$@"
+      ;;
+    prepare | activate)
+      [[ $# -eq 2 && "$1" == --expected-commit ]] || return 2
+      validate_production_control_commit "$2" || return $?
+      # Reuse the established global lifecycle lock carrier.  The private
+      # marker is accepted only after run_with_lifecycle_lock verifies its fd.
+      run_with_lifecycle_lock release __host-control "$command" "$@"
+      ;;
+    status)
+      [[ $# -eq 0 ]] || return 2
+      run_production_control_manager status
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+run_locked_host_lifecycle() {
+  local command="$1"
+  [[ $# -eq 1 && "$SECRETS_MODE" == production ]] || return 2
+  case "$command" in
+    backup | drill | backup-status) ;;
+    *) return 2 ;;
+  esac
+  "${CONTROL_PYTHON[@]}" "$HOST_PYTHON_PREFLIGHT" lifecycle
+  "${CONTROL_PYTHON[@]}" "$LIFECYCLE_MANAGER" \
+    --root "$ROOT" \
+    --control-root "$CONTROL_ROOT" \
+    "$command"
+}
+
+dispatch_host_lifecycle() {
+  [[ "$SECRETS_MODE" == production && $# -eq 1 ]] || return 2
+  case "$1" in
+    backup | drill | backup-status)
+      run_with_lifecycle_lock release __host-lifecycle "$1"
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+}
+
+run_locked_security_report() {
+  [[ "$SECRETS_MODE" == production && $# -eq 0 ]] || return 2
+  configure_security_report_paths || return $?
+  local fixed_output=()
+  if [[ "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
+    fixed_output=(--fixed-production-output)
+  fi
+  "${CONTROL_PYTHON[@]}" "$SECURITY_REPORT_COLLECTOR" \
+    --auth-log /var/log/auth.log \
+    --web-log "$SMS_SECURITY_REPORT_NGINX_DIR/access.log" \
+    --output-dir "$SMS_SECURITY_REPORT_CONTROL_DIR/incoming" \
+    "${fixed_output[@]}"
+}
+
+dispatch_security_report() {
+  [[ "$SECRETS_MODE" == production && $# -eq 0 ]] || return 2
+  run_with_lifecycle_lock release __security-report
+}
+
+dispatch_vendor_agent_preflight() {
+  [[ $# -eq 0 ]] || return 2
+  if [[ "$SECRETS_MODE" == production ]]; then
+    echo "sms-compose: vendor control agent is forbidden in production mode" >&2
+    return 1
+  fi
+  if [[ ! -f /etc/sms-platform/test-host &&
+        "$ROOT" == /opt/sms-platform && "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
+    echo "sms-compose: vendor control agent requires the test-host marker" >&2
+    return 1
+  fi
+}
+
 run_locked_operation() {
   local operation="$1"
   local lock_fd="${SMS_LIFECYCLE_LOCK_FD:-}"
@@ -1374,7 +1771,24 @@ run_locked_operation() {
         run_locked_continuity "$lock_fd" "$@"
       ;;
     release)
-      run_locked_release "$@"
+      case "${1:-}" in
+        __host-control)
+          shift
+          SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
+            run_locked_host_control "$@"
+          ;;
+        __host-lifecycle)
+          shift
+          run_locked_host_lifecycle "$@"
+          ;;
+        __security-report)
+          shift
+          run_locked_security_report "$@"
+          ;;
+        *)
+          run_locked_release "$@"
+          ;;
+      esac
       ;;
     vendor-test)
       SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
@@ -1404,6 +1818,17 @@ fi
 ACTION="$1"
 shift
 
+# The stable production launcher intentionally hands every public invocation a
+# verified inherited lock.  That carrier must never turn the private recursive
+# helper action into a caller-facing dispatcher bypass.  Real production uses
+# the public action directly; only development/test bootstrap recursion needs
+# __locked.
+if [[ "$ACTION" == __locked && "$SECRETS_MODE" == production &&
+      "$PRODUCTION_CONTROL_SMOKE" != 1 && "$HOST_BOOTSTRAP" != 1 ]]; then
+  echo "sms-compose: direct private locked entry is forbidden in production" >&2
+  exit 2
+fi
+
 if [[ "$HOST_BOOTSTRAP" == 1 &&
       "$ACTION" != test-update && "$ACTION" != __locked ]]; then
   echo "sms-compose: bootstrap wrapper only permits test-update" >&2
@@ -1417,6 +1842,10 @@ case "$SECRETS_MODE" in
     exit 2
     ;;
 esac
+
+validate_control_entry
+validate_control_state_binding "$ACTION" "$@"
+configure_internal_compose_env
 
 case "$ACTION" in
   up | down | rotate | run | partition-maintenance | init-admin | continuity | release | vendor-test | test-update | __locked)
@@ -1542,8 +1971,50 @@ case "$ACTION" in
       exit "$control_status"
     fi
     ;;
+  host-control)
+    if dispatch_host_control "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  host-lifecycle)
+    if dispatch_host_lifecycle "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  security-report)
+    if dispatch_security_report "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
+  vendor-agent-preflight)
+    if dispatch_vendor_agent_preflight "$@"; then
+      :
+    else
+      control_status=$?
+      usage
+      exit "$control_status"
+    fi
+    ;;
   config | ps | logs)
     if [[ "$SECRETS_MODE" == production ]]; then
+      if [[ "$ACTION" == config && $# -eq 1 && "$1" == --quiet ]]; then
+        :
+      elif [[ $# -ne 0 ]]; then
+        echo "sms-compose: production diagnostics do not accept arguments" >&2
+        exit 2
+      fi
       configure_compose_topology
     fi
     "${COMPOSE[@]}" "$ACTION" "$@"

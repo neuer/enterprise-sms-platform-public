@@ -92,6 +92,7 @@ def test_partition_timer_uses_controlled_owner_job_with_retry_and_hardening() ->
         "DeviceAllow=block-device-mapper r",
         "/dev/disk/by-id",
         "ReadWritePaths=/run/sms-platform /run/docker.sock",
+        "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID",
     ):
         assert token in service
     for token in (
@@ -133,14 +134,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
         service = read_asset(path)
         for token in (
             "EnvironmentFile=/etc/sms-platform/lifecycle.env",
-            (
-                "ExecStart=/usr/bin/python3 /opt/sms-platform/deploy/scripts/"
-                f"lifecycle_manager.py {operation}"
-            ),
-            (
-                "ExecStartPre=/usr/bin/python3 /opt/sms-platform/deploy/scripts/"
-                "host_python_preflight.py lifecycle"
-            ),
+            f"ExecStart=/usr/local/sbin/sms-compose host-lifecycle {operation}",
             "Restart=on-failure",
             "RestartSec=5min",
             "RequiresMountsFor=/var/lib/sms-platform/runtime",
@@ -148,7 +142,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
             "ProtectSystem=strict",
             "ProtectHome=yes",
             "RestrictAddressFamilies=AF_UNIX",
-            "CapabilityBoundingSet=",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
             "DevicePolicy=closed",
             "DeviceAllow=block-sd r",
             "DeviceAllow=block-device-mapper r",
@@ -165,6 +159,8 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
         assert "StateDirectory=" not in service
         assert "/var/lib/sms-platform/backups" not in service
         assert "PrivateDevices=yes" not in service
+        assert "CAP_SETUID CAP_SETGID" in service
+        assert "CAP_SETUID CAP_SETGID " not in service
         assert "DeviceAllow=block-sd rw" not in service
         assert "DeviceAllow=block-device-mapper rw" not in service
         assert "DeviceAllow=block-*" not in service
@@ -173,6 +169,7 @@ def test_backup_restore_services_are_fail_closed_retried_and_hardened() -> None:
         if operation in {"backup", "drill"}:
             assert "Requisite=sms-platform.service" in service
             assert "Requires=docker.service sms-platform.service" not in service
+        assert "/opt/sms-platform/deploy/scripts" not in service
 
     drill_service = read_asset(DRILL_SERVICE)
     assert "ConditionPathExists=/etc/sms-platform/preproduction-restore-host" in drill_service
@@ -200,7 +197,7 @@ def test_lifecycle_examples_contain_only_paths_and_recovery_targets() -> None:
     config = json.loads(read_asset(LIFECYCLE_CONFIG))
     assert config == {
         "schema_version": 1,
-        "environment_file": "/opt/sms-platform/.env",
+        "environment_file": "/etc/sms-platform/platform.env",
         "output_root": "/var/lib/sms-platform/runtime/backups",
         "recovery_crypto_generation_id_file": ("/etc/sms-platform/recovery-crypto-generation-id"),
         "backup_passphrase_generation_id_file": ("/etc/sms-platform/backup-secrets/generation-id"),
@@ -253,16 +250,40 @@ def test_persistent_timer_jobs_never_implicitly_restart_stopped_platform() -> No
         assert "Requires=sms-platform.service" not in service
 
 
-def test_security_collector_uses_the_host_python_and_ubuntu_auth_log() -> None:
+def test_security_collector_uses_the_snapshot_wrapper_and_ubuntu_auth_log() -> None:
     service = read_asset(SECURITY_COLLECTOR_SERVICE)
 
-    assert (
-        "ExecStart=/usr/bin/python3 "
-        "/opt/sms-platform/deploy/scripts/collect_security_daily_evidence.py "
-        "--auth-log /var/log/auth.log" in service
-    )
+    assert "ExecStart=/usr/local/sbin/sms-compose security-report" in service
+    assert "/opt/sms-platform/deploy/scripts" not in service
     assert "backend/.venv" not in service
     assert "ReadOnlyPaths=-/var/log/auth.log" in service
+    assert "ReadOnlyPaths=/var/lib/sms-platform/security-report/nginx" in service
+    assert "MemoryMax=384M" in service
+    assert (
+        "CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER "
+        "CAP_SETUID CAP_SETGID"
+    ) in service
+    assert (
+        "ReadWritePaths=/var/lib/sms-platform/security-report/control/incoming"
+        in service
+    )
+    assert "/opt/sms-platform/deploy/security-report-control/incoming" not in service
+
+
+def test_root_timer_units_execute_only_the_fixed_snapshot_launcher() -> None:
+    for path in (BACKUP_SERVICE, DRILL_SERVICE, STATUS_SERVICE, SECURITY_COLLECTOR_SERVICE):
+        service = read_asset(path)
+        executable_lines = [
+            line
+            for line in service.splitlines()
+            if line.startswith(("ExecStart=", "ExecStartPre="))
+        ]
+        assert executable_lines
+        assert all("/opt/sms-platform/deploy/scripts" not in line for line in executable_lines)
+        assert any(
+            line.startswith("ExecStart=/usr/local/sbin/sms-compose ")
+            for line in executable_lines
+        )
 
 
 def test_systemd_unit_rate_limits_restart_on_start_failure() -> None:
@@ -332,6 +353,8 @@ def test_vendor_control_agent_unit_is_root_only_uds_and_hardened() -> None:
         "Group=root",
         "EnvironmentFile=/etc/sms-platform/compose.env",
         "Before=sms-platform.service",
+        "ConditionPathExists=/etc/sms-platform/test-host",
+        "ExecStartPre=/usr/local/sbin/sms-compose vendor-agent-preflight",
         "ExecStart=/opt/sms-platform/backend/.venv/bin/python",
         "deploy/scripts/vendor_control_agent.py",
         "--api-runtime-uid 10001",

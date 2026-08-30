@@ -52,6 +52,46 @@ REMOTE_INCOMING_TTL_MINUTES = 24 * 60
 REMOTE_ENV_BLOCKLIST = frozenset(
     {"RSYNC_RSH", "GIT_SSH_COMMAND", "RSYNC_CONNECT_PROG", "RSYNC_PROXY"}
 )
+PRODUCTION_OPERATOR_UID = 1000
+PRODUCTION_OPERATOR_GID = 1000
+PRODUCTION_GIT_ENV = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/nonexistent",
+    "XDG_CONFIG_HOME": "/nonexistent",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/false",
+    "SSH_ASKPASS": "/bin/false",
+    "GIT_PAGER": "cat",
+    "PAGER": "cat",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+}
+PRODUCTION_GIT_PREFIX = (
+    "/usr/bin/git",
+    "--no-pager",
+    "--no-optional-locks",
+    "--no-replace-objects",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "pager.status=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "protocol.ext.allow=never",
+)
 
 
 class Runner(Protocol):
@@ -63,6 +103,9 @@ class Runner(Protocol):
         env: dict[str, str] | None = None,
         input_bytes: bytes | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> bytes: ...
 
     def pipeline_to_file(
@@ -74,6 +117,9 @@ class Runner(Protocol):
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> None: ...
 
 
@@ -245,17 +291,26 @@ class SyncService:
         timer: Callable[[], float] = time.monotonic,
         capacity_reader: Callable[[Path], tuple[int, int]] = _filesystem_capacity,
         generation_reader: Callable[[Path], str] = read_root_generation_id_file,
+        secure_production_git: bool = False,
     ) -> None:
         self.runner = runner
         self.clock = clock
         self.timer = timer
         self.capacity_reader = capacity_reader
         self.generation_reader = generation_reader
+        self.secure_production_git = secure_production_git
         self.last_orphans: list[str] = []
 
     @staticmethod
     def _compose(config: SyncConfig) -> list[str]:
-        return ["docker", "compose", "-f", str(config.compose_file)]
+        return [
+            "docker",
+            "compose",
+            "--env-file",
+            str(config.environment_file),
+            "-f",
+            str(config.compose_file),
+        ]
 
     def _remaining(self, deadline: float) -> float:
         remaining = deadline - self.timer()
@@ -284,6 +339,41 @@ class SyncService:
         self._remaining(deadline)
         return output
 
+    @staticmethod
+    def _production_git_command(
+        arguments: Sequence[str], config: SyncConfig
+    ) -> list[str]:
+        return [
+            *PRODUCTION_GIT_PREFIX,
+            "-c",
+            f"safe.directory={config.repository_root}",
+            *arguments,
+        ]
+
+    def _run_git_command(
+        self,
+        arguments: Sequence[str],
+        config: SyncConfig,
+        deadline: float,
+    ) -> bytes:
+        if not self.secure_production_git:
+            return self._run_command(["git", *arguments], config, deadline)
+        try:
+            output = self.runner.run(
+                self._production_git_command(arguments, config),
+                cwd=config.repository_root,
+                env=dict(PRODUCTION_GIT_ENV),
+                timeout=self._remaining(deadline),
+                user=PRODUCTION_OPERATOR_UID,
+                group=PRODUCTION_OPERATOR_GID,
+                extra_groups=(),
+            )
+        except BaseException:
+            self._remaining(deadline)
+            raise
+        self._remaining(deadline)
+        return output
+
     def _pipeline_to_file(
         self,
         producer: Sequence[str],
@@ -291,6 +381,11 @@ class SyncService:
         output_path: Path,
         config: SyncConfig,
         deadline: float,
+        *,
+        env: dict[str, str] | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> None:
         try:
             self.runner.pipeline_to_file(
@@ -298,7 +393,11 @@ class SyncService:
                 list(consumer),
                 output_path,
                 cwd=config.repository_root,
+                env=env,
                 timeout=self._remaining(deadline),
+                user=user,
+                group=group,
+                extra_groups=extra_groups,
             )
         except BaseException:
             self._remaining(deadline)
@@ -873,15 +972,15 @@ class SyncService:
                         if not snapshot_dir.is_dir():
                             snapshot_dir = self._operation_dir(config)
                         return SyncResult(snapshot_id, snapshot_dir, True)
-            status = self._run_command(
-                ["git", "status", "--porcelain", "--untracked-files=no"],
+            status = self._run_git_command(
+                ["status", "--porcelain", "--untracked-files=no"],
                 config,
                 deadline,
             )
             if status.strip():
                 raise ValueError("每日同步要求 tracked 工作树干净")
-            commit = self._run_command(
-                ["git", "rev-parse", "HEAD"],
+            commit = self._run_git_command(
+                ["rev-parse", "HEAD"],
                 config,
                 deadline,
             ).decode().strip()
@@ -955,17 +1054,34 @@ class SyncService:
             durability_barrier("dump_fsync", backup)
 
             archive = staging / f"repository_{snapshot_id}.tar.gz"
-            self._run_command(
-                [
-                    "git",
-                    "archive",
-                    "--format=tar.gz",
-                    f"--output={archive}",
-                    commit,
-                ],
-                config,
-                deadline,
-            )
+            if self.secure_production_git:
+                # tar.gz 的 format helper 可由仓库 config 改写为任意命令；生产仅
+                # 让降权后的 Git 输出原始 tar，再交给固定 gzip。
+                self._pipeline_to_file(
+                    self._production_git_command(
+                        ["archive", "--format=tar", commit], config
+                    ),
+                    ["/usr/bin/gzip", "-n", "-c"],
+                    archive,
+                    config,
+                    deadline,
+                    env=dict(PRODUCTION_GIT_ENV),
+                    user=PRODUCTION_OPERATOR_UID,
+                    group=PRODUCTION_OPERATOR_GID,
+                    extra_groups=(),
+                )
+            else:
+                self._run_command(
+                    [
+                        "git",
+                        "archive",
+                        "--format=tar.gz",
+                        f"--output={archive}",
+                        commit,
+                    ],
+                    config,
+                    deadline,
+                )
             if not archive.is_file():
                 raise RuntimeError("git archive was not created")
             archive.chmod(0o600)
@@ -977,13 +1093,13 @@ class SyncService:
             _write_bytes_0600(environment, environment_bytes)
             self._remaining(deadline)
 
-            final_status = self._run_command(
-                ["git", "status", "--porcelain", "--untracked-files=no"],
+            final_status = self._run_git_command(
+                ["status", "--porcelain", "--untracked-files=no"],
                 config,
                 deadline,
             )
-            final_commit = self._run_command(
-                ["git", "rev-parse", "HEAD"],
+            final_commit = self._run_git_command(
+                ["rev-parse", "HEAD"],
                 config,
                 deadline,
             ).decode().strip()
@@ -1224,7 +1340,10 @@ def main() -> int:
     parser.add_argument("--max-backup-seconds", type=float, default=14400)
     args = parser.parse_args()
     try:
-        result = SyncService(CommandRunner()).run(_config_from_args(args))
+        result = SyncService(
+            CommandRunner(),
+            secure_production_git=True,
+        ).run(_config_from_args(args))
     except (OSError, RuntimeError, ValueError) as error:
         print(json.dumps({"status": "failed", "error": type(error).__name__}))
         return 1

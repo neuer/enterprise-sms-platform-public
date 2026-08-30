@@ -101,6 +101,7 @@ class Runner(Protocol):
 class RestoreConfig:
     repository_root: Path
     compose_file: Path
+    environment_file: Path
     backup_file: Path
     manifest_file: Path
     passphrase_file: Path
@@ -321,7 +322,14 @@ class RestoreService:
 
     @staticmethod
     def _compose(config: RestoreConfig) -> list[str]:
-        return ["docker", "compose", "-f", str(config.compose_file)]
+        return [
+            "docker",
+            "compose",
+            "--env-file",
+            str(config.environment_file),
+            "-f",
+            str(config.compose_file),
+        ]
 
     @staticmethod
     def _query(compose: list[str], database: str, sql: str) -> list[str]:
@@ -812,6 +820,7 @@ def _config_from_args(args: argparse.Namespace) -> RestoreConfig:
     return RestoreConfig(
         repository_root=root,
         compose_file=root / "deploy/docker-compose.yml",
+        environment_file=root / ".env",
         backup_file=Path(args.backup),
         manifest_file=Path(args.manifest),
         passphrase_file=Path(passphrase_value),

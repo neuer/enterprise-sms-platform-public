@@ -341,6 +341,20 @@ def _offline_arguments(manifest: Path) -> argparse.Namespace:
     return arguments
 
 
+def _registry_arguments(manifest: Path) -> argparse.Namespace:
+    arguments = _arguments(manifest)
+    arguments.target = RemoteTarget(
+        host="release.example.com",
+        port=22,
+        user="smsdeploy",
+        platform_root="/opt/sms-platform",
+        secrets_mode="production",
+        runtime_root="/home/smsdeploy/.cache/sms-platform/releases",
+    )
+    arguments.public_urls = ()
+    return arguments
+
+
 def _bind_evidence(path: Path) -> dict[str, object]:
     return {
         "file": path.name,
@@ -356,6 +370,9 @@ class FakeRunner:
         self.remote_hashes: dict[str, str] = {}
         self.remote_metadata: dict[str, tuple[str, str, str, str]] = {}
         self.fail_prepare = False
+        self.host_control_failure: str | None = None
+        self.host_control_overrides: dict[str, dict[str, Any]] = {}
+        self.host_control_active_commit = "b" * 40
         self.rsync_failures_remaining = 0
         self.remote_head = "b" * 40
         self.remote_ref_commit = COMMIT
@@ -478,6 +495,41 @@ class FakeRunner:
             if "status" in remote:
                 return self._result(command, stdout='{"state":"succeeded"}\n')
             return self._result(command)
+        production_prefix = [
+            "sudo",
+            "--",
+            "/usr/bin/env",
+            "SMS_SECRETS_MODE=production",
+            "/usr/local/sbin/sms-compose",
+        ]
+        if remote[:5] == production_prefix:
+            entrypoint = remote[5]
+            operation = remote[6]
+            if entrypoint == "host-control":
+                if self.host_control_failure == operation:
+                    return self._result(command, returncode=1)
+                if operation == "activate":
+                    self.host_control_active_commit = COMMIT
+                response = self.host_control_overrides.get(operation)
+                if response is None:
+                    active = operation != "prepare"
+                    response = {
+                        "bytes": 4096,
+                        "commit": (self.host_control_active_commit if active else COMMIT),
+                        "current_target": (
+                            f"versions/{self.host_control_active_commit}" if active else None
+                        ),
+                        "files": 12,
+                        "status": "active" if active else "prepared",
+                        "tree": "f" * 40,
+                    }
+                return self._result(command, stdout=json.dumps(response) + "\n")
+            if entrypoint == "release":
+                if operation == "prepare" and self.fail_prepare:
+                    return self._result(command, returncode=1)
+                if operation == "status":
+                    return self._result(command, stdout='{"state":"succeeded"}\n')
+                return self._result(command)
         return self._result(command)
 
     @staticmethod
@@ -619,23 +671,177 @@ def test_registry_production_keeps_promotion_and_local_docker_contract(
     tmp_path: Path,
 ) -> None:
     manifest_path, _ = _registry_bundle(tmp_path)
-    arguments = _arguments(manifest_path)
-    arguments.target = RemoteTarget(
-        host="release.example.com",
-        port=22,
-        user="smsdeploy",
-        platform_root="/opt/sms-platform",
-        secrets_mode="production",
-        runtime_root="/home/smsdeploy/.cache/sms-platform/releases",
-    )
-    arguments.public_urls = ()
+    arguments = _registry_arguments(manifest_path)
 
     plan = build_release_plan(arguments)
 
     assert sum(command[:3] == ["docker", "image", "inspect"] for command in plan) == 4
+    remote_actions = [command[8:] for command in plan if command[0] == "ssh"]
+    host_prefix = [
+        "sudo",
+        "--",
+        "/usr/bin/env",
+        "SMS_SECRETS_MODE=production",
+        "/usr/local/sbin/sms-compose",
+        "host-control",
+    ]
+    host_prepare = [*host_prefix, "prepare", "--expected-commit", COMMIT]
+    host_activate = [*host_prefix, "activate", "--expected-commit", COMMIT]
+    host_status = [*host_prefix, "status"]
+    fast_forward = ["git", "-C", "/opt/sms-platform", "merge", "--ff-only", COMMIT]
+    rollback_check = [
+        "git",
+        "-C",
+        "/opt/sms-platform",
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/heads/release-rollback/release-20260714",
+    ]
+    release_prepare_index = next(
+        index
+        for index, action in enumerate(remote_actions)
+        if action[:7]
+        == [
+            "sudo",
+            "--",
+            "/usr/bin/env",
+            "SMS_SECRETS_MODE=production",
+            "/usr/local/sbin/sms-compose",
+            "release",
+            "prepare",
+        ]
+    )
+    assert (
+        remote_actions.index(host_prepare)
+        < remote_actions.index(rollback_check)
+        < remote_actions.index(fast_forward)
+        < remote_actions.index(host_activate)
+        < remote_actions.index(host_status)
+        < release_prepare_index
+    )
     arguments.stage_only = True
     with pytest.raises(RemoteReleaseError, match="production offline"):
         build_release_plan(arguments)
+
+
+def test_registry_deploy_attests_host_control_before_release_lifecycle(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _registry_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+
+    deploy_release(_registry_arguments(manifest_path), runner)
+
+    remote_actions = [command[8:] for command in runner.calls if command[0] == "ssh"]
+    host_actions = [
+        (index, action)
+        for index, action in enumerate(remote_actions)
+        if action[5:6] == ["host-control"]
+    ]
+    assert [action[6] for _, action in host_actions] == ["prepare", "activate", "status"]
+    host_prepare_index, host_activate_index, host_status_index = (
+        index for index, _ in host_actions
+    )
+    rollback_index = next(
+        index
+        for index, action in enumerate(remote_actions)
+        if action[:4] == ["git", "-C", "/opt/sms-platform", "branch"]
+    )
+    fast_forward_index = remote_actions.index(
+        ["git", "-C", "/opt/sms-platform", "merge", "--ff-only", COMMIT]
+    )
+    release_prepare_index = next(
+        index
+        for index, action in enumerate(remote_actions)
+        if action[5:7] == ["release", "prepare"]
+    )
+    assert (
+        host_prepare_index
+        < rollback_index
+        < fast_forward_index
+        < host_activate_index
+        < host_status_index
+        < release_prepare_index
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "fast_forwarded"),
+    [("prepare", False), ("activate", True), ("status", True)],
+)
+def test_registry_host_control_failure_retains_bundle_and_stops_release(
+    tmp_path: Path,
+    operation: str,
+    fast_forwarded: bool,
+) -> None:
+    manifest_path, manifest = _registry_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    runner.host_control_failure = operation
+
+    with pytest.raises(RemoteReleaseError, match=f"host-control {operation}"):
+        deploy_release(_registry_arguments(manifest_path), runner)
+
+    remote_actions = [command[8:] for command in runner.calls if command[0] == "ssh"]
+    assert any(path.endswith("/manifest.json") for path in runner.remote_hashes)
+    assert not any(action[:2] == ["rm", "--"] for action in remote_actions)
+    assert not any(action[5:6] == ["release"] for action in remote_actions)
+    assert (
+        ["git", "-C", "/opt/sms-platform", "merge", "--ff-only", COMMIT] in remote_actions
+    ) is fast_forwarded
+
+
+def test_registry_host_control_identity_drift_stops_before_release(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _registry_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    runner.host_control_overrides["activate"] = {
+        "bytes": 4096,
+        "commit": COMMIT,
+        "current_target": "versions/" + "d" * 40,
+        "files": 12,
+        "status": "active",
+        "tree": "f" * 40,
+    }
+
+    with pytest.raises(RemoteReleaseError, match="identity"):
+        deploy_release(_registry_arguments(manifest_path), runner)
+
+    remote_actions = [command[8:] for command in runner.calls if command[0] == "ssh"]
+    assert not any(action[5:6] == ["release"] for action in remote_actions)
+    assert not any(action[:2] == ["rm", "--"] for action in remote_actions)
+
+
+def test_registry_retry_reuses_bundle_and_rollback_ref_after_host_status_failure(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _registry_bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    runner.host_control_failure = "status"
+
+    with pytest.raises(RemoteReleaseError, match="host-control status"):
+        deploy_release(_registry_arguments(manifest_path), runner)
+
+    first_call_count = len(runner.calls)
+    original_rollback = runner.rollback_ref
+    runner.host_control_failure = None
+    deploy_release(_registry_arguments(manifest_path), runner)
+
+    retry_calls = runner.calls[first_call_count:]
+    retry_remote = [command[8:] for command in retry_calls if command[0] == "ssh"]
+    assert original_rollback == "b" * 40
+    assert runner.rollback_ref == original_rollback
+    assert not any(command[0] == "rsync" for command in retry_calls)
+    assert not any(
+        action[:4] == ["git", "-C", "/opt/sms-platform", "branch"] for action in retry_remote
+    )
+    assert [action[6] for action in retry_remote if action[5:6] == ["host-control"]] == [
+        "prepare",
+        "activate",
+        "status",
+    ]
+    assert any(action[5:7] == ["release", "prepare"] for action in retry_remote)
 
 
 def test_offline_archive_size_must_match_before_upload(tmp_path: Path) -> None:
@@ -1144,6 +1350,43 @@ def test_remote_release_public_probe_requires_readyz(tmp_path: Path) -> None:
 
     with pytest.raises(RemoteReleaseError, match="readyz"):
         build_release_plan(arguments)
+
+
+def test_registry_dry_run_previews_redacted_host_control_sequence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path, _ = _registry_bundle(tmp_path)
+
+    result = main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--host",
+            "release.example.com",
+            "--user",
+            "smsdeploy",
+            "--platform-root",
+            "/opt/sms-platform",
+            "--runtime-root",
+            "/home/smsdeploy/.cache/sms-platform/releases",
+            "--mode",
+            "production",
+            "--dry-run",
+        ]
+    )
+
+    commands = [shlex.split(line) for line in capsys.readouterr().out.splitlines()]
+    remote_actions = [command[8:] for command in commands if command[0] == "ssh"]
+    assert result == 0
+    assert COMMIT not in "\n".join(" ".join(command) for command in commands)
+    assert [
+        (action[6], action[7:]) for action in remote_actions if action[5:6] == ["host-control"]
+    ] == [
+        ("prepare", ["--expected-commit", "<redacted>"]),
+        ("activate", ["--expected-commit", "<redacted>"]),
+        ("status", []),
+    ]
 
 
 def test_dry_run_redacts_commit_image_and_transfer_hashes(

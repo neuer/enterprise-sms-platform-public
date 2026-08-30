@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hmac
 import json
@@ -410,9 +411,23 @@ def _emit_result(payload: dict[str, object], *, stream: TextIO = sys.stdout) -> 
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")), file=stream)
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--secrets-dir",
+        type=Path,
+        default=PRIVATE_KEY_PATH.parent,
+        help="platform secrets directory containing redis_tls_server_key",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = _parser().parse_args(argv)
     try:
-        report = validate_redis_tls()
+        report = validate_redis_tls(
+            private_key_path=arguments.secrets_dir / PRIVATE_KEY_PATH.name
+        )
     except RedisTLSPreflightError as error:
         _emit_result(
             {

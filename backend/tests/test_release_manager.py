@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,9 @@ from release_manager import (  # noqa: E402
 from release_manifest import OFFLINE_EXPAND_MIGRATION, load_manifest  # noqa: E402
 
 COMMIT = "c" * 40
+DEFAULT_PRODUCTION_ENVIRONMENT_FILE = (
+    release_manager_module._PRODUCTION_ENVIRONMENT_FILE
+)
 IMAGE_NAMES = ("api", "web", "postgres", "redis")
 CONTROL_SMOKE_IMAGES = {
     "api": {
@@ -67,6 +70,28 @@ RUNTIME_SERVICES = (
 )
 WORKER_SERVICES = ("worker-realtime", "worker-bulk", "worker-callback")
 RECOVERY_RUNTIME_TARGET = "generations/generation-" + "a" * 32
+
+
+@pytest.fixture(autouse=True)
+def production_environment_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        release_manager_module,
+        "_PRODUCTION_ENVIRONMENT_FILE",
+        tmp_path / "etc" / "sms-platform" / "platform.env",
+    )
+    monkeypatch.setattr(
+        release_manager_module,
+        "_PRODUCTION_ENVIRONMENT_UID",
+        os.geteuid(),
+    )
+    monkeypatch.setattr(
+        release_manager_module,
+        "_PRODUCTION_ENVIRONMENT_GID",
+        os.getegid(),
+    )
 
 
 def _image_id(name: str) -> str:
@@ -702,42 +727,57 @@ def _platform(
     *,
     migration_from: str,
     migration_target: str,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     root = tmp_path / "platform"
-    (root / "deploy").mkdir(parents=True)
-    (root / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    for name in (
-        "docker-compose.production-storage.yml",
-        "docker-compose.production-restart.yml",
-        "docker-compose.redis-tls.yml",
-    ):
-        (root / "deploy" / name).write_text(f"# {name}\nservices: {{}}\n", encoding="utf-8")
-    versions = root / "backend" / "migrations" / "versions"
-    versions.mkdir(parents=True)
-    (versions / "0001_from.py").write_text(
-        f'revision = "{migration_from}"\ndown_revision = None\n',
-        encoding="utf-8",
-    )
-    if migration_target != migration_from:
-        (versions / "0002_target.py").write_text(
-            f'revision = "{migration_target}"\ndown_revision = "{migration_from}"\n',
+    control_root = tmp_path / "production-control" / "versions" / COMMIT
+    for source_root in (root, control_root):
+        (source_root / "deploy").mkdir(parents=True)
+        (source_root / "deploy" / "docker-compose.yml").write_text(
+            "services: {}\n", encoding="utf-8"
+        )
+        for name in (
+            "docker-compose.production-storage.yml",
+            "docker-compose.production-restart.yml",
+            "docker-compose.redis-tls.yml",
+        ):
+            (source_root / "deploy" / name).write_text(
+                f"# {name}\nservices: {{}}\n", encoding="utf-8"
+            )
+        versions = source_root / "backend" / "migrations" / "versions"
+        versions.mkdir(parents=True)
+        (versions / "0001_from.py").write_text(
+            f'revision = "{migration_from}"\ndown_revision = None\n',
             encoding="utf-8",
         )
+        if migration_target != migration_from:
+            (versions / "0002_target.py").write_text(
+                f'revision = "{migration_target}"\n'
+                f'down_revision = "{migration_from}"\n',
+                encoding="utf-8",
+            )
     keys = {
         "api": "SMS_API_IMAGE",
         "web": "SMS_WEB_IMAGE",
         "postgres": "SMS_POSTGRES_IMAGE",
         "redis": "SMS_REDIS_IMAGE",
     }
-    (root / ".env").write_text(
+    environment = (
         "\n".join(f"{keys[name]}={current_refs[name]}" for name in IMAGE_NAMES)
-        + "\nREDIS_HA_MODE=isolated-standalone\n",
-        encoding="utf-8",
+        + "\nREDIS_HA_MODE=isolated-standalone\n"
     )
+    development_environment_file = root / ".env"
+    development_environment_file.write_text(environment, encoding="utf-8")
+    development_environment_file.chmod(0o600)
+    production_environment_file = release_manager_module._PRODUCTION_ENVIRONMENT_FILE
+    environment_parent = production_environment_file.parent
+    environment_parent.mkdir(parents=True, exist_ok=True)
+    environment_parent.chmod(0o755)
+    production_environment_file.write_text(environment, encoding="utf-8")
+    production_environment_file.chmod(0o600)
     release_root = tmp_path / "release-store"
     release_root.mkdir(mode=0o700)
     release_root.chmod(0o700)
-    return root, release_root
+    return root, control_root, production_environment_file, release_root
 
 
 class FakeRunner:
@@ -749,6 +789,7 @@ class FakeRunner:
         self.manifest = manifest
         self.current_refs = current_refs
         self.calls: list[list[str]] = []
+        self.call_options: list[dict[str, object]] = []
         self.git_commit = COMMIT
         self.postgres_version = "postgres (PostgreSQL) 16.8\n"
         self.redis_version = (
@@ -815,9 +856,24 @@ class FakeRunner:
         argv: Sequence[str],
         *,
         cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [str(value) for value in argv]
         self.calls.append(command)
+        self.call_options.append(
+            {
+                "cwd": cwd,
+                "env": env,
+                "user": user,
+                "group": group,
+                "extra_groups": (
+                    None if extra_groups is None else tuple(extra_groups)
+                ),
+            }
+        )
         if command[:4] == ["git", "-C", str(cwd or command[2]), "status"]:
             return self._result(command)
         if command[0] == "git" and "status" in command:
@@ -1016,10 +1072,10 @@ class FakeRunner:
                     and self.action_counts[action] == self.fail_action_number
                 )
                 if action == "up" and (not should_fail or self.fail_after_effect):
-                    assert cwd is not None
+                    environment_file = Path(command[command.index("--env-file") + 1])
                     env = {
                         line.split("=", 1)[0]: line.split("=", 1)[1]
-                        for line in (cwd / ".env").read_text(encoding="utf-8").splitlines()
+                        for line in environment_file.read_text(encoding="utf-8").splitlines()
                         if "=" in line
                     }
                     keys = {
@@ -1074,21 +1130,65 @@ def _manager(
     manifest: dict[str, Any],
     current_refs: dict[str, str],
 ) -> tuple[ReleaseManager, FakeRunner, Path, Path]:
-    root, release_root = _platform(
+    root, control_root, environment_file, release_root = _platform(
         tmp_path,
         current_refs,
         migration_from=manifest["migration"]["from"],
         migration_target=manifest["migration"]["target"],
     )
     runner = FakeRunner(manifest, current_refs)
-    manager = ReleaseManager(
-        root=root,
-        release_root=release_root,
-        mode=manifest["mode"],
+    if manifest["mode"] == "production":
+        manager = ReleaseManager(
+            platform_root=root,
+            control_root=control_root,
+            environment_file=environment_file,
+            release_root=release_root,
+            mode="production",
+            runner=runner,
+            expected_staging_uid=os.geteuid(),
+        )
+    else:
+        manager = ReleaseManager(
+            root=root,
+            release_root=release_root,
+            mode="development",
+            runner=runner,
+            expected_staging_uid=os.geteuid(),
+        )
+    return manager, runner, root, release_root
+
+
+def _restart_production_manager(
+    manager: ReleaseManager,
+    runner: FakeRunner,
+) -> ReleaseManager:
+    return ReleaseManager(
+        platform_root=manager.platform_root,
+        control_root=manager.control_root,
+        environment_file=manager.environment_file,
+        release_root=manager.release_root,
+        mode="production",
         runner=runner,
         expected_staging_uid=os.geteuid(),
     )
-    return manager, runner, root, release_root
+
+
+def _switch_production_control_snapshot(
+    manager: ReleaseManager,
+    runner: FakeRunner,
+    commit: str,
+) -> ReleaseManager:
+    control_root = manager.control_root.parent / commit
+    shutil.copytree(manager.control_root, control_root)
+    return ReleaseManager(
+        platform_root=manager.platform_root,
+        control_root=control_root,
+        environment_file=manager.environment_file,
+        release_root=manager.release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
 
 
 def _bundle_for_changes(
@@ -1154,7 +1254,7 @@ def _production_baseline_bundle(
 
 def _recovery_evidence(
     tmp_path: Path,
-    root: Path,
+    environment_file: Path,
     manifest: dict[str, Any],
 ) -> tuple[Path, str, Path, str, Path, str]:
     snapshot_dir = tmp_path / "verified-snapshot"
@@ -1163,7 +1263,7 @@ def _recovery_evidence(
     contents = {
         "database": ("sms_snapshot.dump.enc", b"encrypted-production-database"),
         "repository_archive": ("repository_snapshot.tar.gz", b"tracked-repository"),
-        "environment": ("production.env", (root / ".env").read_bytes()),
+        "environment": ("production.env", environment_file.read_bytes()),
     }
     files: dict[str, dict[str, object]] = {}
     for label, (name, payload) in contents.items():
@@ -1533,21 +1633,146 @@ def test_migration_target_must_be_a_static_forward_descendant(tmp_path: Path) ->
         manager._validate_migration_direction(missing_manifest)
 
 
-def test_release_git_checks_disable_optional_index_refresh(tmp_path: Path) -> None:
+def test_production_reads_compose_and_migration_graph_only_from_control_root(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle(tmp_path, mode="production")
+    manager, _, root, _ = _manager(tmp_path, manifest, current_refs)
+    loaded = load_manifest(manifest_path)
+
+    compose = manager._compose()
+    assert compose[compose.index("--env-file") + 1] == str(manager.environment_file)
+    compose_files = [
+        Path(compose[index + 1])
+        for index, value in enumerate(compose)
+        if value == "-f"
+    ]
+    assert compose_files
+    assert all(path.is_relative_to(manager.control_root) for path in compose_files)
+    assert all(not path.is_relative_to(root) for path in compose_files)
+    assert manager.environment_file != root / ".env"
+    (root / ".env").write_text("checkout controlled\n", encoding="utf-8")
+    assert manager._root_env_refs() == current_refs
+
+    platform_versions = root / "backend" / "migrations" / "versions"
+    for path in platform_versions.glob("*.py"):
+        path.write_text("this is not valid Python", encoding="utf-8")
+    manager._validate_migration_direction(loaded)
+
+    control_revision = next(
+        path
+        for path in (manager.control_root / "backend" / "migrations" / "versions").glob(
+            "*.py"
+        )
+        if loaded.migration_target in path.read_text(encoding="utf-8")
+    )
+    control_revision.write_text("this is not valid Python", encoding="utf-8")
+    with pytest.raises(ReleaseManagerError, match="migration graph is invalid"):
+        manager._validate_migration_direction(loaded)
+
+
+def test_release_git_checks_disable_optional_index_refresh_and_repo_helpers(
+    tmp_path: Path,
+) -> None:
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
 
     manager.prepare(manifest_path)
 
-    assert [
-        "git",
-        "--no-optional-locks",
+    status = next(command for command in runner.calls if "status" in command)
+    assert status[:3] == ["git", "--no-optional-locks", "--no-replace-objects"]
+    assert status[3:5] == ["-c", "core.fsmonitor=false"]
+    assert status[5:7] == ["-c", f"core.hooksPath={os.devnull}"]
+    assert status[7:9] == ["-c", "core.untrackedCache=false"]
+    assert status[9:11] == ["-c", f"safe.directory={root}"]
+    assert status[11:] == [
         "-C",
         str(root),
         "status",
         "--porcelain",
         "--untracked-files=normal",
-    ] in runner.calls
+    ]
+    options = runner.call_options[runner.calls.index(status)]
+    assert options["env"] == manager._git_environment()
+    assert options["user"] is None
+    assert options["group"] is None
+    assert options["extra_groups"] is None
+
+
+def test_root_production_git_checks_run_as_fixed_operator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, manifest, current_refs = _bundle(tmp_path, mode="production")
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    monkeypatch.setattr(release_manager_module.os, "geteuid", lambda: 0)
+
+    assert manager._current_git_commit() == COMMIT
+
+    assert len(runner.calls) == 2
+    for command, options in zip(runner.calls, runner.call_options, strict=True):
+        assert command[command.index("-C") + 1] == str(root)
+        assert command[3:5] == ["-c", "core.fsmonitor=false"]
+        assert command[5:7] == ["-c", f"core.hooksPath={os.devnull}"]
+        assert options == {
+            "cwd": root,
+            "env": manager._git_environment(),
+            "user": 1000,
+            "group": 1000,
+            "extra_groups": (),
+        }
+
+
+def test_production_release_binds_control_snapshot_leaf_to_manifest_commit(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle(tmp_path, mode="production")
+    manager, runner, _, release_root = _manager(tmp_path, manifest, current_refs)
+    wrong_control_root = manager.control_root.parent / ("d" * 40)
+    shutil.copytree(manager.control_root, wrong_control_root)
+    manager = ReleaseManager(
+        platform_root=manager.platform_root,
+        control_root=wrong_control_root,
+        environment_file=manager.environment_file,
+        release_root=release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+
+    with pytest.raises(ReleaseManagerError, match="prepare failed") as error:
+        manager.prepare(manifest_path)
+    assert isinstance(error.value.__cause__, ReleaseManagerError)
+    assert "control snapshot" in str(error.value.__cause__)
+    assert not any(command[0] == "git" for command in runner.calls)
+
+
+@pytest.mark.parametrize("action", ["activate", "resume", "rollback"])
+def test_production_mutation_rejects_wrong_control_snapshot_before_runtime(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle(tmp_path, mode="production")
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    wrong_control_root = manager.control_root.parent / ("d" * 40)
+    shutil.copytree(manager.control_root, wrong_control_root)
+    manager = ReleaseManager(
+        platform_root=manager.platform_root,
+        control_root=wrong_control_root,
+        environment_file=manager.environment_file,
+        release_root=manager.release_root,
+        mode="production",
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="control snapshot"):
+        getattr(manager, action)(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+    assert not runner.calls
 
 
 def test_prepare_never_rereads_staging_manifest_after_validation(
@@ -1638,14 +1863,14 @@ def test_prepare_failure_marks_failed_without_env_or_container_mutation(
 ) -> None:
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
     runner.git_commit = "b" * 40
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
     assert manager.status(manifest["release_id"])["state"] == "failed"
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
     assert not any(
         token in command
         for command in runner.calls
@@ -1757,7 +1982,7 @@ def test_production_offline_validates_all_four_archives_before_any_load(
     archive.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
     archive.chmod(0o600)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
@@ -1765,7 +1990,7 @@ def test_production_offline_validates_all_four_archives_before_any_load(
     assert not any(
         command[:3] == ["docker", "image", "load"] for command in runner.calls
     )
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
 
 
 def test_production_offline_import_is_idempotent_for_verified_raw_ids(
@@ -1801,7 +2026,7 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     runner.fail_offline_load_number = 2
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
@@ -1812,7 +2037,7 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
         if command[:3] == ["docker", "image", "load"]
     ]
     assert len(loads) == 2
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
     assert not any(
         token in {"up", "down", "stop", "rm", "prune"}
         for command in runner.calls
@@ -2035,13 +2260,7 @@ def test_production_offline_expand_explicit_rollback_retains_schema_and_data(
     assert manager.status(manifest["release_id"])["state"] == "activating"
     assert runner.migration_head == manifest["migration"]["target"]
     runner.after_action = None
-    resumed = ReleaseManager(
-        root=root,
-        release_root=release_root,
-        mode=manifest["mode"],
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    resumed = _restart_production_manager(manager, runner)
 
     with pytest.raises(ReleaseManagerError, match="rolled_back"):
         resumed.rollback(manifest["release_id"])
@@ -2072,13 +2291,13 @@ def test_production_offline_signature_failure_precedes_every_docker_command(
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
     runner.signature_valid = False
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
     assert not any(command[0] == "docker" for command in runner.calls)
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
     release_dir = release_root / manifest["release_id"]
     assert {
         path.name for path in (release_dir / "artifacts").iterdir()
@@ -2132,7 +2351,7 @@ def test_production_offline_v2_condition_evidence_checks_hash_and_size(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     manifest_path.chmod(0o600)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
@@ -2140,7 +2359,7 @@ def test_production_offline_v2_condition_evidence_checks_hash_and_size(
     assert not any(
         command[:3] == ["docker", "image", "load"] for command in runner.calls
     )
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
 
 
 @pytest.mark.parametrize(
@@ -2165,13 +2384,13 @@ def test_production_offline_rejects_selective_or_unsupported_migration_updates(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     manifest_path.chmod(0o600)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError):
         manager.prepare(manifest_path)
 
     assert not runner.calls
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
 
 
 @pytest.mark.parametrize("trust_failure", ["mode", "key_id"])
@@ -2301,7 +2520,7 @@ def test_data_image_major_mismatch_fails_closed_after_fixed_observation(
     report_path = manifest_path.parent / "data-images.json"
     _write_private_json(report_path, _data_report(manifest, postgres_major=17))
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
@@ -2310,13 +2529,13 @@ def test_data_image_major_mismatch_fails_closed_after_fixed_observation(
         "docker",
         "compose",
         "--env-file",
-        str(root / ".env"),
+        str(manager.environment_file),
         "-f",
         str(root / "deploy" / "docker-compose.yml"),
     ]
     assert compose_prefix + ["exec", "-T", "postgres", "postgres", "--version"] in runner.calls
     assert compose_prefix + ["exec", "-T", "redis", "redis-server", "--version"] in runner.calls
-    assert (root / ".env").read_bytes() == original_env
+    assert manager.environment_file.read_bytes() == original_env
 
 
 def test_data_evidence_image_binding_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -2554,7 +2773,7 @@ def test_production_backup_contract_rejects_any_unbound_or_unsafe_evidence(
 def test_prepare_rejects_duplicate_env_image_keys(tmp_path: Path) -> None:
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, _, root, _ = _manager(tmp_path, manifest, current_refs)
-    with (root / ".env").open("a", encoding="utf-8") as stream:
+    with manager.environment_file.open("a", encoding="utf-8") as stream:
         stream.write(f"SMS_WEB_IMAGE={current_refs['web']}\n")
 
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
@@ -2808,13 +3027,31 @@ def test_activation_commands_are_exact_argv_arrays(tmp_path: Path) -> None:
     assert all(type(command) is list for command in commands)
 
 
+def test_production_activation_recreates_never_build_from_control_snapshot(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, refs = _bundle(tmp_path, mode="production")
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(manifest_path)
+    runner.calls.clear()
+
+    manager.activate(manifest["release_id"])
+
+    up_commands = [command for command in runner.calls if "up" in command]
+    assert up_commands
+    assert all(
+        command[command.index("up") + 1] == "--no-build"
+        for command in up_commands
+    )
+
+
 def test_configure_activation_atomically_updates_all_refs_and_preserves_env_metadata(
     tmp_path: Path,
 ) -> None:
     manifest_path, manifest, current_refs = _bundle(tmp_path, postgres_changed=True)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    env_path = root / ".env"
+    env_path = manager.environment_file
     original = env_path.read_bytes()
     decorated = b"# retained-comment\nUNRELATED=opaque\n" + original + b"TAIL=no-newline"
     env_path.write_bytes(decorated)
@@ -2846,7 +3083,7 @@ def test_configure_activation_atomic_failure_restores_original_without_container
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    env_path = root / ".env"
+    env_path = manager.environment_file
     original = env_path.read_bytes()
     release_store_module.ReleaseStore(manager.release_root, manifest["release_id"]).snapshot_env(
         env_path
@@ -2881,7 +3118,7 @@ def test_config_failure_restores_original_env_and_never_changes_containers(
     manifest_path, manifest, current_refs = _bundle(tmp_path)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    env_path = root / ".env"
+    env_path = manager.environment_file
     original = env_path.read_bytes()
     runner.calls.clear()
     real_run = runner.run
@@ -3222,7 +3459,7 @@ def test_web_only_failure_never_touches_backend_or_data_and_rolls_back(
     _write_private_json(manifest_path, manifest)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    original = (root / ".env").read_bytes()
+    original = manager.environment_file.read_bytes()
     runner.calls.clear()
     runner.fail_action = "up"
     runner.fail_after_effect = True
@@ -3234,7 +3471,7 @@ def test_web_only_failure_never_touches_backend_or_data_and_rolls_back(
     assert sum("up" in command and command[-1] == "web" for command in actions) == 2
     assert not any(set(_BACKEND_TEST_SERVICES) & set(command) for command in actions)
     assert not any("postgres" in command or "redis" in command for command in actions)
-    assert (root / ".env").read_bytes() == original
+    assert manager.environment_file.read_bytes() == original
     assert manager.status(manifest["release_id"])["state"] == "rolled_back"
 
 
@@ -3452,14 +3689,14 @@ def test_activation_rejects_runtime_drift_before_env_or_lifecycle_mutation(
     _write_private_json(manifest_path, manifest)
     manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    original = (root / ".env").read_bytes()
+    original = manager.environment_file.read_bytes()
     runner.runtime_refs["web"] = "sms-platform-web:external-drift"
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="recovery_required"):
         manager.activate(manifest["release_id"])
 
-    assert (root / ".env").read_bytes() == original
+    assert manager.environment_file.read_bytes() == original
     assert not any(
         action in command
         for command in runner.calls
@@ -3799,7 +4036,7 @@ def test_resume_after_env_replacement_before_config_observation(
         release_manager_module.ReleaseState.PREPARED,
         release_manager_module.ReleaseState.ACTIVATING,
     )
-    env_path = root / ".env"
+    env_path = manager.environment_file
     original = env_path.read_bytes()
     store.snapshot_env(env_path)
     store.record_intent("env_replace", {"source": "manifest"})
@@ -3913,9 +4150,22 @@ def test_resume_interrupted_compensation_uses_persisted_observations(
     real_run = runner.run
 
     def interrupt_on_failed_action(
-        argv: Sequence[str], *, cwd: Path | None = None
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        result = real_run(argv, cwd=cwd)
+        result = real_run(
+            argv,
+            cwd=cwd,
+            env=env,
+            user=user,
+            group=group,
+            extra_groups=extra_groups,
+        )
         if result.returncode != 0:
             manager.request_stop(signal.SIGTERM, None)
         return result
@@ -4157,6 +4407,11 @@ def test_succeeded_release_prepares_bound_forward_rollback_candidate(
     candidate_path, candidate = _forward_candidate_bundle(candidate_root, source)
     runner.manifest = candidate
     runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
     runner.calls.clear()
 
     manager.prepare_forward_rollback(source["release_id"], candidate_path)
@@ -4192,7 +4447,7 @@ def test_forward_rollback_rejects_source_topology_drift_before_candidate_work(
     tmp_path: Path,
 ) -> None:
     manager, runner, root, source, source_manifest_path = _succeeded_production_release(tmp_path)
-    env_path = root / ".env"
+    env_path = manager.environment_file
     env_path.write_text(
         env_path.read_text(encoding="utf-8").replace(
             "REDIS_HA_MODE=isolated-standalone",
@@ -4200,13 +4455,7 @@ def test_forward_rollback_rejects_source_topology_drift_before_candidate_work(
         ),
         encoding="utf-8",
     )
-    resumed = ReleaseManager(
-        root=root,
-        release_root=manager.release_root,
-        mode="production",
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    resumed = _restart_production_manager(manager, runner)
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="topology.*drifted"):
@@ -4238,6 +4487,11 @@ def test_forward_rollback_rejects_schema_downgrade_and_direct_image_restore(
     )
     runner.manifest = candidate
     runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="schema|previous image|historical image"):
@@ -4264,6 +4518,11 @@ def test_standard_prepare_cannot_bypass_forward_rollback_with_historical_image(
     )
     runner.manifest = candidate
     runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="historical image"):
@@ -4283,6 +4542,11 @@ def test_staged_forward_resume_revalidates_bound_source_before_docker(
     candidate_path, candidate = _forward_candidate_bundle(candidate_root, source)
     runner.manifest = candidate
     runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
 
     def interrupt_copy(*_args: object, **_kwargs: object) -> None:
         raise KeyboardInterrupt
@@ -4295,7 +4559,7 @@ def test_staged_forward_resume_revalidates_bound_source_before_docker(
     assert staged["state"] == "staged"
     assert staged["release_kind"] == "forward_rollback"
     assert staged["forward_rollback_of"] == source["release_id"]
-    env_path = root / ".env"
+    env_path = manager.environment_file
     env_path.write_text(
         env_path.read_text(encoding="utf-8").replace(
             f"SMS_WEB_IMAGE={source['images']['web']['ref']}",
@@ -4303,20 +4567,15 @@ def test_staged_forward_resume_revalidates_bound_source_before_docker(
         ),
         encoding="utf-8",
     )
-    resumed = ReleaseManager(
-        root=root,
-        release_root=manager.release_root,
-        mode="production",
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    resumed = _restart_production_manager(manager, runner)
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="current baseline"):
         resumed.resume(candidate["release_id"])
 
     assert resumed.status(candidate["release_id"])["state"] == "staged"
-    assert not runner.calls
+    assert runner.calls
+    assert all(command[0] == "git" for command in runner.calls)
 
 
 def test_production_bootstrap_is_empty_host_only_idempotent_and_seals_release(
@@ -4342,22 +4601,22 @@ def test_production_bootstrap_is_empty_host_only_idempotent_and_seals_release(
     assert release_state["control_smoke_only"] is False
     assert isinstance(release_state["prepared_at"], str)
     assert (release_root / "bootstrap-state.json").stat().st_mode & 0o777 == 0o600
+    bootstrap_up_commands = [command for command in runner.calls if "up" in command]
+    assert bootstrap_up_commands
+    assert all(
+        command[command.index("up") + 1] == "--no-build"
+        for command in bootstrap_up_commands
+    )
     assert runner.migration_head == manifest["migration"]["target"]
     first_calls = list(runner.calls)
     assert manager.bootstrap(manifest_path, confirmed_empty_host=True) == state
     assert runner.calls == first_calls
     assert state["production_topology"]["redis_ha_mode"] == "isolated-standalone"
-    (manager.root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+    (manager.control_root / "deploy" / "docker-compose.redis-tls.yml").write_text(
         "services: {redis: {}}\n",
         encoding="utf-8",
     )
-    restarted = ReleaseManager(
-        root=manager.root,
-        release_root=release_root,
-        mode="production",
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    restarted = _restart_production_manager(manager, runner)
     with pytest.raises(ReleaseManagerError, match="manual recovery"):
         restarted.bootstrap(manifest_path, confirmed_empty_host=True)
 
@@ -4406,7 +4665,7 @@ def test_offline_bootstrap_writes_target_ids_after_import_from_stage_only_env(
     manager, runner, root, release_root = _manager(tmp_path, manifest, staged_refs)
     runner.service_running = {service: False for service in RUNTIME_SERVICES}
     runner.migration_head = "uninitialized"
-    original_env = (root / ".env").read_bytes()
+    original_env = manager.environment_file.read_bytes()
 
     state = manager.bootstrap(manifest_path, confirmed_empty_host=True)
 
@@ -4499,13 +4758,7 @@ def test_unfinished_bootstrap_blocks_generic_release_mutations(
         runner.service_running[service] is False
         for service in ("web", *_QUIESCE_TEST_SERVICES)
     )
-    restarted = ReleaseManager(
-        root=root,
-        release_root=release_root,
-        mode="production",
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    restarted = _restart_production_manager(manager, runner)
     runner.calls.clear()
 
     for action in ("activate", "resume", "rollback"):
@@ -4650,7 +4903,7 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
     evidence = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     _, snapshot_sha, _, _, fence_path, _ = evidence
@@ -4668,6 +4921,12 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     assert release_state["snapshot_manifest_sha256"] == snapshot_sha
     assert release_state["gap_fence_sha256"] == fence_sha
     assert release_state["verified_migration_head"] == manifest["migration"]["target"]
+    recovery_up_commands = [command for command in runner.calls if "up" in command]
+    assert recovery_up_commands
+    assert all(
+        command[command.index("up") + 1] == "--no-build"
+        for command in recovery_up_commands
+    )
     watermark_path = (
         release_root
         / manifest["release_id"]
@@ -4676,13 +4935,7 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     )
     assert watermark_path.is_file()
 
-    restarted = ReleaseManager(
-        root=root,
-        release_root=release_root,
-        mode="production",
-        runner=runner,
-        expected_staging_uid=os.geteuid(),
-    )
+    restarted = _restart_production_manager(manager, runner)
     runner.calls.clear()
     runner.service_running = {service: False for service in RUNTIME_SERVICES}
     restarted.assert_production_start_allowed()
@@ -4713,7 +4966,7 @@ def test_successful_recovery_state_does_not_block_next_prepare(tmp_path: Path) -
     bundle_root.mkdir()
     manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
     manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
-    evidence = _recovery_evidence(tmp_path, root, manifest)
+    evidence = _recovery_evidence(tmp_path, manager.environment_file, manifest)
     _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
     _finish_recovery(manager)
     assert (release_root / "recovery-state.json").is_file()
@@ -4723,6 +4976,11 @@ def test_successful_recovery_state_does_not_block_next_prepare(tmp_path: Path) -
     candidate_path, candidate = _forward_candidate_bundle(candidate_root, manifest)
     runner.manifest = candidate
     runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
     runner.calls.clear()
 
     manager.prepare(candidate_path)
@@ -4759,7 +5017,7 @@ def test_recovery_adoption_rejects_unconfirmed_empty_unverified_or_drifted_host(
         fence_sha,
     ) = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     confirmed = True
@@ -4891,7 +5149,7 @@ def test_recovery_observation_generates_bound_pending_receipt_before_adoption(
         fence_sha,
     ) = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     manager.start_recovery(
@@ -4991,7 +5249,7 @@ def test_recovery_required_fence_remains_readable_and_blocks_gate_and_resume(
     manager, _, root, _ = _manager(tmp_path, manifest, refs)
     snapshot_path, snapshot_sha, _, _, _, _ = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
 
@@ -5033,7 +5291,7 @@ def test_start_gate_rejects_non_succeeded_current_release(
     manager, runner, root, _ = _manager(tmp_path, manifest, refs)
     evidence = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
@@ -5056,7 +5314,7 @@ def test_start_gate_ignores_same_commit_terminal_noncurrent_records(
     bundle_root.mkdir()
     manifest_path, manifest, refs = _production_baseline_bundle(bundle_root)
     manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
-    evidence = _recovery_evidence(tmp_path, root, manifest)
+    evidence = _recovery_evidence(tmp_path, manager.environment_file, manifest)
     _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
     _finish_recovery(manager)
 
@@ -5092,7 +5350,7 @@ def test_start_gate_binds_unique_current_commit_refs_topology_and_migration(
     manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
     evidence = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
@@ -5118,7 +5376,7 @@ def test_start_gate_binds_unique_current_commit_refs_topology_and_migration(
             verified_migration_head=duplicate["migration"]["target"],
         )
     elif drift == "refs":
-        env = root / ".env"
+        env = manager.environment_file
         env.write_text(
             env.read_text(encoding="utf-8").replace(
                 refs["web"],
@@ -5127,7 +5385,7 @@ def test_start_gate_binds_unique_current_commit_refs_topology_and_migration(
             encoding="utf-8",
         )
     elif drift == "topology":
-        (root / "deploy" / "docker-compose.redis-tls.yml").write_text(
+        (manager.control_root / "deploy" / "docker-compose.redis-tls.yml").write_text(
             "services: {redis: {image: changed}}\n",
             encoding="utf-8",
         )
@@ -5153,7 +5411,7 @@ def test_start_gate_translates_release_store_error(
     manager, runner, root, _ = _manager(tmp_path, manifest, refs)
     evidence = _recovery_evidence(
         tmp_path,
-        root,
+        manager.environment_file,
         manifest,
     )
     _start_and_adopt_recovery(manager, runner, manifest_path, manifest, evidence)
@@ -5205,7 +5463,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         "docker-compose.redis-tls.yml",
     ]
 
-    env_path = root / ".env"
+    env_path = production_manager.environment_file
     env_path.write_text(
         env_path.read_text(encoding="utf-8").replace(
             "REDIS_HA_MODE=isolated-standalone",
@@ -5225,12 +5483,9 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         "docker-compose.redis-tls.yml",
     ]
 
-    managed_manager = ReleaseManager(
-        root=root,
-        release_root=release_root,
-        mode="production",
-        runner=production_runner,
-        expected_staging_uid=os.geteuid(),
+    managed_manager = _restart_production_manager(
+        production_manager,
+        production_runner,
     )
     managed_files = [
         Path(value).name
@@ -5252,12 +5507,9 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         if invalid:
             lines.append(f"REDIS_HA_MODE={invalid}")
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        invalid_manager = ReleaseManager(
-            root=root,
-            release_root=release_root,
-            mode="production",
-            runner=production_runner,
-            expected_staging_uid=os.geteuid(),
+        invalid_manager = _restart_production_manager(
+            production_manager,
+            production_runner,
         )
         with pytest.raises(ReleaseManagerError, match="REDIS_HA_MODE"):
             invalid_manager._compose()
@@ -5281,7 +5533,7 @@ def test_release_mutations_reject_persisted_production_topology_drift(
     manager, runner, root, release_root = _manager(tmp_path, manifest, refs)
     manager.prepare(manifest_path)
     if drift == "mode":
-        env_path = root / ".env"
+        env_path = manager.environment_file
         env_path.write_text(
             env_path.read_text(encoding="utf-8").replace(
                 "REDIS_HA_MODE=isolated-standalone",
@@ -5290,18 +5542,20 @@ def test_release_mutations_reject_persisted_production_topology_drift(
             encoding="utf-8",
         )
     elif drift == "compose_file":
-        (root / "deploy" / "docker-compose.production-restart.yml").write_text(
+        (
+            manager.control_root / "deploy" / "docker-compose.production-restart.yml"
+        ).write_text(
             "services: {api: {restart: unless-stopped}}\n",
             encoding="utf-8",
         )
     elif drift == "non_image_env":
-        env_path = root / ".env"
+        env_path = manager.environment_file
         env_path.write_text(
             env_path.read_text(encoding="utf-8") + "SAFE_CONFIG=changed\n",
             encoding="utf-8",
         )
     else:
-        env_path = root / ".env"
+        env_path = manager.environment_file
         env_path.write_text(
             env_path.read_text(encoding="utf-8")
             + f"SMS_WEB_IMAGE={refs['web']}\n",
@@ -5309,20 +5563,14 @@ def test_release_mutations_reject_persisted_production_topology_drift(
         )
     restarted = manager
     if restart_manager:
-        restarted = ReleaseManager(
-            root=root,
-            release_root=release_root,
-            mode="production",
-            runner=runner,
-            expected_staging_uid=os.geteuid(),
-        )
+        restarted = _restart_production_manager(manager, runner)
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="topology.*drifted"):
         getattr(restarted, action)(manifest["release_id"])
 
     assert restarted.status(manifest["release_id"])["state"] == "prepared"
-    assert not runner.calls
+    assert all(command[0] == "git" for command in runner.calls)
 
 
 def test_production_topology_ignores_only_release_image_ref_changes(
@@ -5335,7 +5583,7 @@ def test_production_topology_ignores_only_release_image_ref_changes(
 
     manager.prepare(manifest_path)
     expected = manager.status(manifest["release_id"])["production_topology"]
-    env_path = root / ".env"
+    env_path = manager.environment_file
     env_path.write_text(
         env_path.read_text(encoding="utf-8").replace(
             f"SMS_WEB_IMAGE={refs['web']}",
@@ -5423,8 +5671,12 @@ def _recovery_cli_receipt_result(*, backup_generation: str) -> dict[str, object]
 
 def _recovery_cli_arguments(action: str) -> list[str]:
     common = [
-        "--root",
+        "--platform-root",
         "/tmp/platform",
+        "--control-root",
+        f"/tmp/production-control/versions/{COMMIT}",
+        "--environment-file",
+        str(release_manager_module._PRODUCTION_ENVIRONMENT_FILE),
         "--release-root",
         "/var/lib/sms-platform/releases",
         "--mode",
@@ -5646,6 +5898,349 @@ def test_main_registers_and_restores_term_int_hup_handlers(
         (signal.SIGINT, f"old-{signal.SIGINT}"),
         (signal.SIGHUP, f"old-{signal.SIGHUP}"),
     ]
+
+
+def test_production_manager_requires_distinct_explicit_roots(tmp_path: Path) -> None:
+    _, manifest, refs = _bundle(tmp_path, mode="production")
+    root, control_root, environment_file, release_root = _platform(
+        tmp_path / "manager",
+        refs,
+        migration_from=manifest["migration"]["from"],
+        migration_target=manifest["migration"]["target"],
+    )
+
+    with pytest.raises(ReleaseManagerError, match="legacy root"):
+        ReleaseManager(
+            root=root,
+            release_root=release_root,
+            mode="production",
+        )
+    with pytest.raises(ReleaseManagerError, match="must be distinct"):
+        ReleaseManager(
+            platform_root=root,
+            control_root=root,
+            release_root=release_root,
+            mode="production",
+        )
+    with pytest.raises(ReleaseManagerError, match="environment file is required"):
+        ReleaseManager(
+            platform_root=root,
+            control_root=control_root,
+            release_root=release_root,
+            mode="production",
+        )
+
+    manager = ReleaseManager(
+        platform_root=root,
+        control_root=control_root,
+        environment_file=environment_file,
+        release_root=release_root,
+        mode="production",
+    )
+    assert manager.platform_root == root
+    assert manager.control_root == control_root
+    assert manager.environment_file == environment_file
+
+
+def test_production_environment_authority_default_is_fixed() -> None:
+    assert Path("/etc/sms-platform/platform.env") == DEFAULT_PRODUCTION_ENVIRONMENT_FILE
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "file_mode",
+        "file_symlink",
+        "file_directory",
+        "parent_mode",
+        "parent_other_mode",
+        "parent_symlink",
+        "owner",
+        "group",
+    ],
+)
+def test_production_environment_authority_rejects_unsafe_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe: str,
+) -> None:
+    _, manifest, refs = _bundle(tmp_path, mode="production")
+    root, control_root, environment_file, release_root = _platform(
+        tmp_path / "manager",
+        refs,
+        migration_from=manifest["migration"]["from"],
+        migration_target=manifest["migration"]["target"],
+    )
+    if unsafe == "file_mode":
+        environment_file.chmod(0o640)
+    elif unsafe == "file_symlink":
+        target = environment_file.with_name("real.env")
+        environment_file.rename(target)
+        environment_file.symlink_to(target)
+    elif unsafe == "file_directory":
+        environment_file.unlink()
+        environment_file.mkdir()
+    elif unsafe == "parent_mode":
+        environment_file.parent.chmod(0o775)
+    elif unsafe == "parent_other_mode":
+        environment_file.parent.chmod(0o757)
+    elif unsafe == "parent_symlink":
+        parent = environment_file.parent
+        target = parent.with_name("sms-platform-real")
+        parent.rename(target)
+        parent.symlink_to(target, target_is_directory=True)
+    elif unsafe == "owner":
+        monkeypatch.setattr(
+            release_manager_module,
+            "_PRODUCTION_ENVIRONMENT_UID",
+            release_manager_module._PRODUCTION_ENVIRONMENT_UID + 1,
+        )
+    else:
+        monkeypatch.setattr(
+            release_manager_module,
+            "_PRODUCTION_ENVIRONMENT_GID",
+            release_manager_module._PRODUCTION_ENVIRONMENT_GID + 1,
+        )
+
+    with pytest.raises(ReleaseManagerError, match="environment file is invalid"):
+        ReleaseManager(
+            platform_root=root,
+            control_root=control_root,
+            environment_file=environment_file,
+            release_root=release_root,
+            mode="production",
+        )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["file_mode", "file_symlink", "parent_mode", "parent_other_mode"],
+)
+def test_cached_production_compose_revalidates_environment_authority(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    _, manifest, refs = _bundle(tmp_path, mode="production")
+    manager, _, _, _ = _manager(tmp_path, manifest, refs)
+    manager._compose()
+    environment_file = manager.environment_file
+    if drift == "file_mode":
+        environment_file.chmod(0o640)
+    elif drift == "file_symlink":
+        target = environment_file.with_name("real.env")
+        environment_file.rename(target)
+        environment_file.symlink_to(target)
+    elif drift == "parent_mode":
+        environment_file.parent.chmod(0o775)
+    else:
+        environment_file.parent.chmod(0o757)
+
+    with pytest.raises(ReleaseManagerError, match="environment file is invalid"):
+        manager._compose()
+
+
+@pytest.mark.parametrize("operation", ["read", "hash", "configure"])
+def test_production_environment_drift_blocks_every_active_access(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    manifest_path, manifest, refs = _bundle(tmp_path, mode="production")
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    if operation == "configure":
+        manager.prepare(manifest_path)
+        runner.calls.clear()
+    manager.environment_file.chmod(0o640)
+
+    with pytest.raises(ReleaseManagerError, match="root env|environment file"):
+        if operation == "read":
+            manager._root_env_refs()
+        elif operation == "hash":
+            manager._root_env_non_image_sha256()
+        else:
+            manager.configure_activation(manifest["release_id"])
+
+    assert not runner.calls
+
+
+def test_production_environment_snapshot_replace_and_restore_ignore_checkout_env(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, refs = _bundle(tmp_path, mode="production")
+    manager, _, root, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(manifest_path)
+    checkout_environment = root / ".env"
+    checkout_environment.write_bytes(b"operator-controlled-decoy\n")
+    original = manager.environment_file.read_bytes()
+
+    manager.configure_activation(manifest["release_id"])
+
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    assert (store.release_dir / "original.env").read_bytes() == original
+    assert manager.environment_file.read_bytes() != original
+    assert checkout_environment.read_bytes() == b"operator-controlled-decoy\n"
+    manager._restore_environment(store)
+    info = manager.environment_file.stat(follow_symlinks=False)
+    assert manager.environment_file.read_bytes() == original
+    assert checkout_environment.read_bytes() == b"operator-controlled-decoy\n"
+    assert stat.S_IMODE(info.st_mode) == 0o600
+    assert info.st_uid == release_manager_module._PRODUCTION_ENVIRONMENT_UID
+    assert info.st_gid == release_manager_module._PRODUCTION_ENVIRONMENT_GID
+
+
+def test_production_cli_forwards_explicit_platform_and_control_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class StubManager:
+        def __init__(self, **kwargs: object) -> None:
+            seen.update(kwargs)
+
+        def request_stop(self, _signum: int, _frame: object | None) -> None:
+            pass
+
+        def status(self, _release_id: str) -> dict[str, object]:
+            return {"state": "prepared"}
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
+    monkeypatch.setattr(
+        release_manager_module,
+        "_validate_cli_release_root",
+        lambda path, **_kwargs: path,
+    )
+
+    result = release_manager_module.main(
+        [
+            "--platform-root",
+            "/srv/sms-platform",
+            "--control-root",
+            f"/opt/sms-control/versions/{COMMIT}",
+            "--environment-file",
+            str(release_manager_module._PRODUCTION_ENVIRONMENT_FILE),
+            "--release-root",
+            "/var/lib/sms-platform/releases",
+            "--mode",
+            "production",
+            "status",
+            "--release-id",
+            "release-1",
+        ]
+    )
+
+    assert result == 0
+    assert seen["platform_root"] == Path("/srv/sms-platform")
+    assert seen["control_root"] == Path(f"/opt/sms-control/versions/{COMMIT}")
+    assert seen["environment_file"] == release_manager_module._PRODUCTION_ENVIRONMENT_FILE
+    assert seen["mode"] == "production"
+
+
+@pytest.mark.parametrize("environment", ["missing", "alternate"])
+def test_production_cli_rejects_missing_or_alternate_environment_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    constructed = False
+
+    class ForbiddenManager:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", ForbiddenManager)
+    environment_arguments = (
+        []
+        if environment == "missing"
+        else [
+            "--environment-file",
+            str(release_manager_module._PRODUCTION_ENVIRONMENT_FILE.with_name("other.env")),
+        ]
+    )
+
+    result = release_manager_module.main(
+        [
+            "--platform-root",
+            "/srv/sms-platform",
+            "--control-root",
+            f"/opt/sms-control/versions/{COMMIT}",
+            *environment_arguments,
+            "--release-root",
+            "/var/lib/sms-platform/releases",
+            "--mode",
+            "production",
+            "status",
+            "--release-id",
+            "release-1",
+        ]
+    )
+
+    assert result == 1
+    assert constructed is False
+
+
+@pytest.mark.parametrize(
+    "root_arguments",
+    [
+        ["--root", "/srv/sms-platform"],
+        ["--platform-root", "/srv/sms-platform"],
+        ["--control-root", f"/opt/sms-control/versions/{COMMIT}"],
+        [
+            "--root",
+            "/srv/sms-platform",
+            "--platform-root",
+            "/srv/sms-platform",
+            "--control-root",
+            f"/opt/sms-control/versions/{COMMIT}",
+        ],
+        [
+            "--platform-root",
+            "/srv/sms-platform",
+            "--control-root",
+            "/srv/sms-platform",
+        ],
+        [
+            "--platform-root",
+            "relative/platform",
+            "--control-root",
+            f"/opt/sms-control/versions/{COMMIT}",
+        ],
+        [
+            "--platform-root",
+            "/srv/sms-platform",
+            "--control-root",
+            f"relative/versions/{COMMIT}",
+        ],
+    ],
+)
+def test_production_cli_rejects_legacy_or_collapsed_roots_before_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    root_arguments: list[str],
+) -> None:
+    constructed = False
+
+    class ForbiddenManager:
+        def __init__(self, **_kwargs: object) -> None:
+            nonlocal constructed
+            constructed = True
+
+    monkeypatch.setattr(release_manager_module, "ReleaseManager", ForbiddenManager)
+
+    result = release_manager_module.main(
+        [
+            *root_arguments,
+            "--environment-file",
+            str(release_manager_module._PRODUCTION_ENVIRONMENT_FILE),
+            "--release-root",
+            "/var/lib/sms-platform/releases",
+            "--mode",
+            "production",
+            "status",
+            "--release-id",
+            "release-1",
+        ]
+    )
+
+    assert result == 1
+    assert constructed is False
 
 
 @pytest.fixture

@@ -12,11 +12,13 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[2] / "deploy" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import continuity_manager as continuity_module  # noqa: E402
 from continuity_manager import (  # noqa: E402
     COMPOSE_FILES,
     CONSUMER_SERVICES,
     ContinuityError,
     ContinuityManager,
+    _parser,
     main,
 )
 
@@ -30,6 +32,32 @@ def test_continuity_uses_the_complete_production_compose_topology() -> None:
         "docker-compose.production-restart.yml",
         "docker-compose.redis-tls.yml",
     )
+
+
+@pytest.mark.parametrize("platform_option", ("--root", "--platform-root"))
+def test_cli_accepts_platform_root_aliases_and_distinct_control_root(
+    tmp_path: Path,
+    platform_option: str,
+) -> None:
+    control_root = tmp_path / "immutable-control"
+
+    arguments = _parser().parse_args(
+        [
+            platform_option,
+            str(tmp_path),
+            "--control-root",
+            str(control_root),
+            "--environment-file",
+            str(tmp_path / ".env"),
+            "--mode",
+            "production",
+            "status",
+        ]
+    )
+
+    assert arguments.platform_root == tmp_path
+    assert arguments.control_root == control_root
+    assert arguments.environment_file == tmp_path / ".env"
 
 
 class FakeRunner:
@@ -94,13 +122,86 @@ def manager(tmp_path: Path, runner: FakeRunner, *, clock=lambda: NOW) -> Continu
     state_root = tmp_path / "continuity"
     state_root.mkdir(mode=0o700, exist_ok=True)
     return ContinuityManager(
-        root=tmp_path,
+        platform_root=tmp_path,
         state_root=state_root,
         runner=runner,
         clock=clock,
         expected_uid=os.geteuid(),
         expected_gid=os.getegid(),
     )
+
+
+def test_compose_uses_platform_env_and_immutable_control_files(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    platform_root = tmp_path / "platform"
+    control_root = tmp_path / "immutable-control"
+    service = ContinuityManager(
+        platform_root=platform_root,
+        control_root=control_root,
+        state_root=tmp_path / "continuity-state",
+        runner=runner,
+        clock=lambda: NOW,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+
+    command = service._compose()
+
+    assert command[:4] == [
+        "docker",
+        "compose",
+        "--env-file",
+        str(platform_root / ".env"),
+    ]
+    assert command[4:] == [
+        argument
+        for filename in COMPOSE_FILES
+        for argument in ("-f", str(control_root / "deploy" / filename))
+    ]
+
+
+def test_production_continuity_requires_fixed_root_owned_environment_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_root = tmp_path / "platform"
+    control_root = tmp_path / "immutable-control"
+    environment_parent = tmp_path / "etc-sms-platform"
+    environment_parent.mkdir(mode=0o755)
+    environment_parent.chmod(0o755)
+    environment_file = environment_parent / "platform.env"
+    environment_file.write_text("ENVIRONMENT=production\n", encoding="utf-8")
+    environment_file.chmod(0o600)
+    monkeypatch.setattr(
+        continuity_module,
+        "PRODUCTION_ENVIRONMENT_FILE",
+        environment_file,
+    )
+
+    service = ContinuityManager(
+        platform_root=platform_root,
+        control_root=control_root,
+        environment_file=environment_file,
+        mode="production",
+        state_root=tmp_path / "continuity-state",
+        runner=FakeRunner(),
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    assert service._compose()[3] == str(environment_file)
+
+    environment_parent.chmod(0o775)
+    with pytest.raises(ContinuityError, match="production environment file is invalid"):
+        ContinuityManager(
+            platform_root=platform_root,
+            control_root=control_root,
+            environment_file=environment_file,
+            mode="production",
+            state_root=tmp_path / "continuity-state-unsafe",
+            runner=FakeRunner(),
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        )
 
 
 def test_engage_persists_intent_before_failed_stop_and_blocks_after_restart(

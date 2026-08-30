@@ -269,6 +269,7 @@ def make_config(
     return RestoreConfig(
         repository_root=root,
         compose_file=compose,
+        environment_file=environment,
         backup_file=backup,
         manifest_file=manifest,
         passphrase_file=passphrase,
@@ -281,6 +282,19 @@ def make_config(
 
 def fixed_clock() -> datetime:
     return datetime(2026, 7, 12, 5, 0, tzinfo=UTC)
+
+
+def test_compose_uses_explicit_environment_file(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    assert RestoreService._compose(config) == [
+        "docker",
+        "compose",
+        "--env-file",
+        str(config.environment_file),
+        "-f",
+        str(config.compose_file),
+    ]
 
 
 def generation_reader(path: Path) -> str:
