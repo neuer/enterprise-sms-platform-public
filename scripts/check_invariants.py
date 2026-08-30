@@ -819,6 +819,10 @@ def check_usage_ledger_invariants() -> None:
         "_list_active_frequency_entry_refs",
         "_write_expired_canonical_tombstone",
         "_apply_release_projection_changes",
+        "if drift.mismatches:",
+        "RECONCILE_REBUILD_ACTOR",
+        "recover_orphans()",
+        "measure_drift()",
     )
     require_fragments(
         APP / "services/pipeline.py",
@@ -839,8 +843,7 @@ def check_usage_ledger_invariants() -> None:
     require_fragments(
         APP / "tasks/usage_projection.py",
         '@tracked_job("reconcile_usage_projection", expect_interval_s=300)',
-        "recover_orphans()",
-        "measure_drift()",
+        "reconcile_usage_facts(",
     )
     require_fragments(
         ROOT / "backend/migrations/versions/0028_usage_fact_ledger.py",
@@ -855,6 +858,7 @@ def check_usage_ledger_invariants() -> None:
         ROOT / "docs/runbooks/usage-ledger-recovery.md",
         "usage-projection-rebuild",
         "不得扩展为手机号、密文、HMAC",
+        "确认漂移后按事实表执行版本化绝对覆盖",
     )
 
 
