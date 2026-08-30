@@ -12,10 +12,11 @@ expires_at 已过期的 canonical 墓碑供后续驳回/过期/取消释放命�
 > receipt 和失败恢复均闭合的专用“账本解释/投影重建”入口。因此本手册中的生产手工解释和
 > 手工重建当前均为 **No-Go**；不得用 raw Compose、通用 `exec`、`docker exec`、临时容器或
 > 直接连接 Redis/数据库绕过。事故时保持发送失败关闭，保留漂移/Outbox 聚合证据并发起受控
-> 修复变更；实现并验收 dedicated action 前，5 分钟巡检只负责检测漂移和恢复超时预留，不能
-> 代替全量投影重建。发送入口自身的 `ensure_ready` 自动重建仍是正式产品路径：ready marker
-> 缺失且 PostgreSQL 存在有效事实时，它先抢短时重建锁，再按事实表执行版本化绝对覆盖；抢锁
-> 失败、Redis 不可确认或重建失败时继续返回 503。该自动路径不授权任何人工容器命令。
+> 修复变更。5 分钟巡检恢复超时预留，确认漂移后按事实表执行版本化绝对覆盖并复核；
+> 不得用容器命令或 Redis 手工改数代替。发送入口自身的 `ensure_ready` 自动重建仍是
+> ready marker 缺失时的正式路径：PostgreSQL 存在有效事实时，它先抢短时重建锁，再按
+> 事实表覆盖；抢锁失败、Redis 不可确认或重建失败时继续返回 503。两条自动路径都不授权
+> 任何人工容器命令。
 
 ## 状态与自动恢复
 
@@ -25,7 +26,7 @@ expires_at 已过期的 canonical 墓碑供后续驳回/过期/取消释放命�
 - `released`：Outbox 已把当前绝对投影覆盖到 Redis，重复消费不再扣减。
 - `uncertain`：PostgreSQL 已写入事实，但 Redis 投影写入未确认；发送失败关闭，巡检会把超时预留转为释放请求。
 
-`app.tasks.reconcile_usage_projection` 每 5 分钟恢复超过 10 分钟的 `reserved/uncertain` 预留，并比较 PostgreSQL 与 Redis 的聚合差异。指标为：
+`app.tasks.reconcile_usage_projection` 每 5 分钟恢复超过 10 分钟的 `reserved/uncertain` 预留，比较 PostgreSQL 与 Redis 的聚合差异；差异非零时按事实表做版本化绝对覆盖并再量一次。指标为：
 
 - `sms_usage_projection_drift_dimensions{kind="quota|frequency"}`；
 - `sms_usage_projection_drift_absolute_delta{kind="quota|frequency"}`。
@@ -54,12 +55,11 @@ uv run python -m app.cli usage-ledger-explain --reservation-id <UUID>
 3. 保持发送失败关闭并停止手工处置。由一个受控发送请求触发 `ensure_ready` 的自动重建；并发
    请求在锁持有或依赖不可确认期间继续 503，不得靠重试风暴催促恢复。Lua 版本比较必须拒绝旧
    快照覆盖更新值，自动重建审计只记录聚合维度数量。
-4. 下一次巡检只能刷新漂移观测和恢复超时预留，不会自动执行全量重建；不得因巡检成功退出
+4. 下一次巡检在确认漂移后按事实表执行版本化绝对覆盖并复核两组指标；不得因巡检成功退出
    就解除失败关闭。只有自动重建成功、随后两组漂移指标归零、critical 告警不再新增且发送入口
-   不再返回 `USAGE_PROJECTION_UNAVAILABLE`，才可恢复业务。自动路径失败时，当前生产没有
-   可执行的 dedicated manual rebuild action，因而人工重建仍为 **No-Go**；不得把 development/test
-   的 `python -m app.cli usage-projection-rebuild` 搬到生产。未来人工入口必须在 lifecycle lock
-   和持久 recovery fence 内执行，生成无 PII 的审计 receipt，并证明失败后仍保持 fail closed。
+   不再返回 `USAGE_PROJECTION_UNAVAILABLE`，才可恢复业务。自动路径失败时，人工容器重建仍为
+   **No-Go**；不得把 development/test 的 `python -m app.cli usage-projection-rebuild` 搬到生产，
+   也不得用 Redis `SET/DEL/FLUSH*` 直接修数。运维中心可手动触发同一巡检任务，不另开 CLI。
 5. 若仍有差异，继续保留失败关闭，检查 Outbox dead-letter 与
    `release_requested/uncertain` 聚合数量；不得用 Redis `SET/DEL/FLUSH*` 直接修数。
 
