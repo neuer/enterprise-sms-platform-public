@@ -107,7 +107,7 @@ usage() {
   echo "release prepare|bootstrap|start-recovery|observe-recovery|adopt-recovery|resume-recovery|prepare-forward-rollback|activate|status|resume|rollback: use the documented exact arguments" >&2
   echo "production only: continuity engage|release --evidence FILE --evidence-sha256 SHA256; continuity status" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
-  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
+  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|recover-rebaseline-prepare|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
@@ -1223,6 +1223,7 @@ run_locked_test_update() {
   fi
   [[ "$command" == prepare || "$command" == apply || "$command" == verify ||
       "$command" == recover-rebaseline ||
+      "$command" == recover-rebaseline-prepare ||
       "$command" == recover-rebaseline-verify ]] || return 2
   export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
   export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
@@ -1255,7 +1256,7 @@ dispatch_test_update() {
       [[ $# -eq 0 ]] || return 2
       run_with_lifecycle_lock test-update "$command"
       ;;
-    recover-rebaseline-verify)
+    recover-rebaseline-prepare | recover-rebaseline-verify)
       [[ $# -eq 0 && "$HOST_BOOTSTRAP" == 1 ]] || return 2
       run_with_lifecycle_lock test-update "$command"
       ;;

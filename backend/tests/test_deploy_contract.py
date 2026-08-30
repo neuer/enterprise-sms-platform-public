@@ -397,7 +397,7 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
         in config
     )
     assert config.count("limit_conn sms_api_concurrency 16;") == 2
-    assert config.count("limit_conn sms_client_concurrency 4;") == 2
+    assert config.count("limit_conn sms_client_concurrency 16;") == 2
     assert "limit_conn sms_import_concurrency 2;" in config
     assert (
         "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"
@@ -536,6 +536,10 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     assert "mkdir -p /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill" in dockerfile
     assert "chown -R sms:sms /var/lib/sms" in dockerfile
+    assert (
+        "chmod 0700 /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill"
+        in dockerfile
+    )
 
 
 def test_production_storage_overlay_binds_all_named_volumes_to_fixed_vmdk_paths() -> None:

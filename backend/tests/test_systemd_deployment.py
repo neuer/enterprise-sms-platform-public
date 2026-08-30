@@ -528,20 +528,20 @@ def test_vendor_reset_runbook_covers_runtime_revocation_and_replay_boundary() ->
     deploy_readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
 
     for token in (
-        "credential store 与 runtime generations",
-        "worker-realtime、worker-bulk 两个 vendor-secret reader",
-        "API 不再是 vendor-secret reader",
+        "root credential store",
+        "revocation tombstone generation",
+        "`VENDOR_MOCK=1`",
         "runtime_revoked",
-        "journal `running`",
-        "同一 lifecycle lock",
-        "不得回切旧 runtime generation",
-        "PostgreSQL、Docker volume 和非厂商 secret",
+        "同一 journal operation",
+        "同一个 lifecycle lock",
+        "不恢复旧真实凭据、旧 generation 或 live 消费者",
+        "PostgreSQL、Docker volume、运行态根目录和非厂商 secret",
     ):
         assert token in runbook
     for token in (
         "vendor-test reset-runtime",
         "release 共用同一个 lifecycle flock",
         "固定 revocation tombstone",
-        "不扩大 systemd capability",
+        "不触碰生产环境",
     ):
         assert token in deploy_readme

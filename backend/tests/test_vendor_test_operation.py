@@ -186,6 +186,41 @@ class FakeFinalizer:
             raise self.error
 
 
+def test_only_stale_pending_reset_is_due_for_page_driven_recovery() -> None:
+    from dataclasses import replace
+
+    from app.services.vendor_test_operation import (
+        VendorTestOperation,
+        VendorTestOperationService,
+    )
+
+    record = VendorTestOperation(
+        operation_id=OPERATION_ID,
+        operation_type="reset_configuration",
+        actor="admin",
+        status="running",
+        safe_code=None,
+        batch_no=None,
+        checkpoint_id=None,
+        requested_at=NOW,
+        completed_at=None,
+    )
+    service = VendorTestOperationService(
+        FakeRepository(record),
+        FakeClient(ControlResponse(OPERATION_ID, "ok", None, {})),
+        now=lambda: NOW + timedelta(seconds=61),
+    )
+
+    assert service.reset_recovery_due(record) is True
+    assert service.reset_recovery_due(
+        replace(record, requested_at=NOW + timedelta(seconds=2))
+    ) is False
+    assert service.reset_recovery_due(replace(record, status="succeeded")) is False
+    assert service.reset_recovery_due(
+        replace(record, operation_type="activate")
+    ) is False
+
+
 class ConcurrentLifecycleRepository:
     """复现未持有 lifecycle 锁的 request 穿过已开始的冲突扫描。"""
 
@@ -682,12 +717,11 @@ async def test_credential_reservation_blocks_concurrent_reset(
     assert SENTINEL not in repr(repository.records)
 
 
-def test_api_factory_injects_reset_finalizer(
+def test_api_factory_does_not_register_destructive_reset_finalizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.api import vendor_test as vendor_test_api
 
-    recipient_repository = object()
     captured: dict[str, object] = {}
 
     class CapturingService:
@@ -696,22 +730,16 @@ def test_api_factory_injects_reset_finalizer(
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
-            captured.update(finalizers)
+            captured["finalizers"] = finalizers
 
     monkeypatch.setattr(vendor_test_api, "get_settings", lambda: "settings")
-    monkeypatch.setattr(
-        vendor_test_api,
-        "SqlVendorTestRecipientRepository",
-        lambda settings: recipient_repository,
-    )
     monkeypatch.setattr(vendor_test_api, "VendorTestOperationService", CapturingService)
 
     vendor_test_api.get_vendor_operation_service()
 
-    finalizer = captured["reset_configuration"]
-    assert finalizer.repository is recipient_repository
+    assert captured == {"finalizers": None}
 
 
 @pytest.mark.asyncio

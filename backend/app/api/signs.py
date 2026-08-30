@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
-from app.services.ops_dispatch import OutboxJobSender
+from app.services.ops_dispatch import (
+    SignAdoptionConflict,
+    SignAdoptionSender,
+    SignAdoptionUnavailable,
+    SignSyncSender,
+)
 from app.services.sign_management import (
     SignManagementService,
     SignNotFound,
@@ -30,6 +36,13 @@ class SignPayload(BaseModel):
     name: str = Field(min_length=1, max_length=20)
 
 
+class SignAdoptionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vendor_sign_id: int = Field(strict=True, ge=1, le=2_147_483_647)
+    confirmed_name: str = Field(min_length=1, max_length=20)
+
+
 class SignModel(BaseModel):
     id: int
     name: str
@@ -43,8 +56,12 @@ def get_sign_service() -> SignManagementService:
     return SignManagementService(SqlSignRepository(settings))
 
 
-def get_sign_job_sender() -> OutboxJobSender:
-    return OutboxJobSender(get_settings())
+def get_sign_job_sender() -> SignSyncSender:
+    return SignSyncSender(get_settings())
+
+
+def get_sign_adoption_sender() -> SignAdoptionSender:
+    return SignAdoptionSender(get_settings())
 
 
 async def _user(
@@ -67,6 +84,15 @@ def _model(record: SignRecord) -> SignModel:
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, SignAdoptionConflict):
+        return ApiError(409, "STATE_CONFLICT", str(error), None)
+    if isinstance(error, SignAdoptionUnavailable):
+        return ApiError(
+            503,
+            "DEPENDENCY_UNAVAILABLE",
+            "关联意图暂时无法安全持久化",
+            None,
+        )
     if isinstance(error, SignNotFound):
         return ApiError(404, "NOT_FOUND", str(error), None)
     if isinstance(error, SignStateConflict):
@@ -148,6 +174,44 @@ async def delete_sign(
 
 
 @router.post(
+    "/{id}/adopt-existing",
+    status_code=202,
+    response_class=Response,
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        500: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
+)
+@audited("sign_adopt")
+async def adopt_existing_sign(
+    id: int,
+    payload: SignAdoptionPayload,
+    request: Request,
+    service: Annotated[SignManagementService, Depends(get_sign_service)],
+    sender: Annotated[SignAdoptionSender, Depends(get_sign_adoption_sender)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> Response:
+    claims = await _user(facade, credentials, admin=True)
+    try:
+        current = await service.prepare_adoption(id, confirmed_name=payload.confirmed_name)
+        await sender.send_sign(
+            current.id,
+            payload.vendor_sign_id,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
+        )
+    except Exception as error:
+        raise _error(error) from None
+    return Response(status_code=202)
+
+
+@router.post(
     "/{id}/sync",
     status_code=202,
     response_class=Response,
@@ -156,17 +220,25 @@ async def delete_sign(
 @audited("sign_sync")
 async def sync_sign(
     id: int,
+    request: Request,
     service: Annotated[SignManagementService, Depends(get_sign_service)],
-    sender: Annotated[OutboxJobSender, Depends(get_sign_job_sender)],
+    sender: Annotated[SignSyncSender, Depends(get_sign_job_sender)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    await _user(facade, credentials, admin=True)
+    claims = await _user(facade, credentials, admin=True)
     try:
         current = await service.get(id)
-        if current.vendor_state != "pending":
-            raise SignStateConflict("仅待审核签名可同步")
-        await sender.send("app.tasks.sync_signs", "realtime")
+        if (
+            current.vendor_state not in {"pending", "approved", "rejected"}
+            or current.vendor_sign_id is None
+        ):
+            raise SignStateConflict("仅已有厂商编号的签名可同步")
+        await sender.send_sign(
+            current.id,
+            principal=claims.principal,
+            ip=trusted_client_ip(request),
+        )
     except Exception as error:
         raise _error(error) from None
     return Response(status_code=202)

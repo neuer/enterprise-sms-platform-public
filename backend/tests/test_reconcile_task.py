@@ -125,7 +125,7 @@ def _install_reconcile_probe(
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
             _raise_preflight(
                 "vendor-control", "repo_init", failed_domain, failed_site, error_factory
@@ -255,13 +255,12 @@ def _install_reconcile_probe(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions(
+async def test_reconcile_task_avoids_destructive_reset_finalizer_and_sums_contributions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.tasks import reconcile as task_module
 
     captured: dict[str, object] = {}
-    recipient_repository = object()
     operation_repository = object()
 
     class PolicyLoader:
@@ -298,9 +297,9 @@ async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
-            captured.update(finalizers)
+            captured["finalizers"] = finalizers
 
         async def reconcile_once(self) -> int:
             return 3
@@ -328,21 +327,13 @@ async def test_reconcile_task_injects_reset_finalizer_and_sums_all_contributions
         "SqlVendorTestOperationRepository",
         lambda settings: operation_repository,
     )
-    monkeypatch.setattr(
-        task_module,
-        "SqlVendorTestRecipientRepository",
-        lambda settings: recipient_repository,
-        raising=False,
-    )
-
     async def replay_none(_settings: object) -> int:
         return 0
 
     monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
 
     assert await task_module._reconcile() == 10
-    finalizer = captured["reset_configuration"]
-    assert finalizer.repository is recipient_repository
+    assert captured == {"finalizers": None}
 
 
 @pytest.mark.asyncio
@@ -384,7 +375,7 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
             pass
 
@@ -508,7 +499,7 @@ async def test_reconcile_task_isolates_each_domain_failure(
             repository: object,
             client: object,
             *,
-            finalizers: dict[str, object],
+            finalizers: dict[str, object] | None = None,
         ) -> None:
             pass
 
@@ -995,35 +986,6 @@ async def test_policy_db_read_failure_still_runs_raw_replay(
 
     assert "raw-replay" in probe.succeeded
     assert "uncertain" not in probe.succeeded
-
-
-@pytest.mark.asyncio
-@pytest.mark.fault_injection
-async def test_shared_vendor_repo_init_failure_still_runs_other_recovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.tasks import reconcile as task_module
-
-    probe = _install_reconcile_probe(
-        monkeypatch,
-        task_module,
-        failed_domain="vendor-control",
-        failed_site="shared_repo_init",
-        error_factory=lambda: RuntimeError(f"shared operation repo init {PREFLIGHT_LEAK}"),
-    )
-
-    with pytest.raises(
-        task_module.ReconcilePartialFailure,
-        match="reconcile domains failed: 2",
-    ) as captured:
-        await task_module._reconcile()
-
-    assert probe.succeeded == ["uncertain", "delivery-recovery", "raw-replay"]
-    assert [alert["detail"]["domain"] for alert in probe.alerts] == [
-        "vendor-control",
-        "vendor-uat",
-    ]
-    assert PREFLIGHT_LEAK not in str(captured.value)
 
 
 @pytest.mark.asyncio

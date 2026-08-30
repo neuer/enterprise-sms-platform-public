@@ -899,7 +899,7 @@ def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     assert "`MAINTENANCE.md` 为准" in documents["PROGRESS.md"]
 
 
-def test_temporary_offline_no_migration_update_documents_narrow_exception() -> None:
+def test_temporary_offline_updates_document_narrow_exceptions() -> None:
     index = read_required("README.md")
     maintenance = (ROOT / "MAINTENANCE.md").read_text(encoding="utf-8")
     handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")
@@ -908,6 +908,10 @@ def test_temporary_offline_no_migration_update_documents_narrow_exception() -> N
         "临时离线无迁移整包快速更新",
         "data_images",
         "backup_restore_change",
+        "0080_security_daily_delivery_generation",
+        "0081_sign_adoption_contract",
+        "--allow-offline-no-conditional-evidence",
+        "不尝试 destructive downgrade",
         "不关闭每日备份",
         "不删除或重建数据卷",
         "同一具名操作者执行并自复核",

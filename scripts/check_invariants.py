@@ -308,6 +308,8 @@ def check_vendor_live_invariants() -> None:
     agent = require_fragments(
         ROOT / "deploy/scripts/vendor_control_agent.py",
         '[WRAPPER, "vendor-test", operation]',
+        'MOCK_RESET_WRAPPER = "/opt/sms-platform/deploy/scripts/vendor_test_mock_reset.py"',
+        '"reset-to-mock"',
         "shell=False",
         "_synchronize_state",
         "self.write_heartbeat()",
@@ -315,7 +317,13 @@ def check_vendor_live_invariants() -> None:
         "self.credential_store.discard_pending()",
         'self.runner.run("rotate")',
         'self.runner.run("recover-rotation")',
-        "只执行固定 wrapper 三元组，不接受 argv/path/env",
+        "只执行代码内固定的 wrapper argv，不接受请求提供的 path/env",
+    )
+    require_fragments(
+        ROOT / "deploy/scripts/vendor_test_mock_reset.py",
+        "self.operations.restore_recovery_surface()",
+        '"http://127.0.0.1:8080/livez"',
+        'arguments != ["__locked", "vendor-test", "reset-to-mock"]',
     )
     for forbidden_field in ('"path"', '"argv"', '"env"'):
         if forbidden_field in protocol:
@@ -325,10 +333,10 @@ def check_vendor_live_invariants() -> None:
     fixed_runner = agent.split("class FixedWrapperRunner:", maxsplit=1)[-1].split(
         "def secure_socket(", maxsplit=1
     )[0]
-    if "timeout=180" not in fixed_runner:
+    if 'timeout=300 if operation == "reset-runtime" else 180' not in fixed_runner:
         fail(
             ROOT / "deploy/scripts/vendor_control_agent.py",
-            "控制代理 wrapper 必须 timeout=180，超时视为失败",
+            "控制代理普通 wrapper 必须 timeout=180，reset-runtime 必须 timeout=300",
         )
 
     credential_store = require_fragments(
@@ -811,6 +819,10 @@ def check_usage_ledger_invariants() -> None:
         "_list_active_frequency_entry_refs",
         "_write_expired_canonical_tombstone",
         "_apply_release_projection_changes",
+        "if drift.mismatches:",
+        "RECONCILE_REBUILD_ACTOR",
+        "recover_orphans()",
+        "measure_drift()",
     )
     require_fragments(
         APP / "services/pipeline.py",
@@ -831,8 +843,7 @@ def check_usage_ledger_invariants() -> None:
     require_fragments(
         APP / "tasks/usage_projection.py",
         '@tracked_job("reconcile_usage_projection", expect_interval_s=300)',
-        "recover_orphans()",
-        "measure_drift()",
+        "reconcile_usage_facts(",
     )
     require_fragments(
         ROOT / "backend/migrations/versions/0028_usage_fact_ledger.py",
@@ -847,6 +858,7 @@ def check_usage_ledger_invariants() -> None:
         ROOT / "docs/runbooks/usage-ledger-recovery.md",
         "usage-projection-rebuild",
         "不得扩展为手机号、密文、HMAC",
+        "确认漂移后按事实表执行版本化绝对覆盖",
     )
 
 

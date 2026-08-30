@@ -1387,6 +1387,49 @@ def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None
     )
 
 
+def test_rebaseline_accepts_reviewed_historical_non_runtime_paths() -> None:
+    paths = [
+        "deploy/postgres.Dockerfile",
+        "deploy/production-storage-initialization.md",
+        "deploy/production-storage-manifest.example.json",
+        "deploy/scripts/initialize_production_storage.py",
+        "deploy/scripts/offline_image_archive.py",
+        "scripts/check_spec_consistency.py",
+        "scripts/create_offline_image_index.py",
+        "scripts/deploy_release_remote.py",
+        "backend/migrations/versions/0081_sign_adoption_contract.py",
+        "frontend/src/views/SignView.vue",
+    ]
+
+    change = classify_rebaseline_paths(paths)
+
+    assert change.components == frozenset({"api", "web"})
+    assert change.migration_changed is True
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == ("frontend/src/views/SignView.vue",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "deploy/postgres.Dockerfile",
+        "deploy/production-storage-initialization.md",
+        "deploy/production-storage-manifest.example.json",
+        "deploy/scripts/initialize_production_storage.py",
+        "deploy/scripts/offline_image_archive.py",
+        "scripts/check_spec_consistency.py",
+        "scripts/create_offline_image_index.py",
+        "scripts/deploy_release_remote.py",
+    ],
+)
+def test_historical_rebaseline_exceptions_remain_blocked_for_daily_apply(
+    path: str,
+) -> None:
+    with pytest.raises(ContractError, match="fast update forbidden"):
+        classify_changed_paths([path])
+
+
 def test_performance_gate_evidence_is_non_runtime_for_daily_apply() -> None:
     change = classify_changed_paths(["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
 
@@ -1407,8 +1450,8 @@ def test_rebaseline_requires_a_migration_change() -> None:
         )
 
 
-def test_rebaseline_requires_the_exact_runtime_control_path_set() -> None:
-    with pytest.raises(ContractError, match="exact approved runtime-control"):
+def test_rebaseline_requires_the_complete_runtime_control_path_set() -> None:
+    with pytest.raises(ContractError, match="complete approved runtime-control"):
         classify_rebaseline_paths(
             [
                 "deploy/scripts/prepare_runtime_secrets.py",

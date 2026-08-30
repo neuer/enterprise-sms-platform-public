@@ -105,6 +105,10 @@ class FakeOperations:
         assert operation_id == OPERATION_ID
         return self.existing
 
+    def reset_recovery_due(self, record: VendorTestOperation) -> bool:
+        assert record is self.existing
+        return False
+
 
 def _operation(
     *,

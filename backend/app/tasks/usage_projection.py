@@ -6,7 +6,7 @@ from redis.asyncio import Redis
 
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
-from app.services.usage_ledger import UsageLedgerService
+from app.services.usage_ledger import UsageLedgerService, reconcile_usage_facts
 from app.settings import get_settings
 from app.tasks import celery_app
 
@@ -15,10 +15,9 @@ async def _reconcile() -> int:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
-        service = UsageLedgerService(redis, settings, pooled=False)
-        recovered = await service.recover_orphans()
-        drift = await service.measure_drift()
-        return recovered + drift.mismatches
+        return await reconcile_usage_facts(
+            UsageLedgerService(redis, settings, pooled=False)
+        )
     finally:
         await redis.aclose()
 

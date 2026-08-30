@@ -20,6 +20,9 @@ from create_release_manifest import (  # noqa: E402
     create_manifest,
 )
 
+OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
+OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
+
 
 def _private_json(path: Path, value: object) -> Path:
     path.write_text(json.dumps(value), encoding="utf-8")
@@ -27,7 +30,11 @@ def _private_json(path: Path, value: object) -> Path:
     return path
 
 
-def _release_report(path: Path) -> Path:
+def _release_report(
+    path: Path,
+    *,
+    schema_revision: str = "0032_async_import_runtime",
+) -> Path:
     commit = "c" * 40
     return _private_json(
         path,
@@ -38,7 +45,7 @@ def _release_report(path: Path) -> Path:
             "source": {
                 "app_version": "1.6.0",
                 "git_sha": commit,
-                "schema_revision": "0032_async_import_runtime",
+                "schema_revision": schema_revision,
                 "openapi_sha256": "9" * 64,
                 "workflow_repository": "example/enterprise-sms-platform",
                 "workflow_run_id": 123,
@@ -67,7 +74,12 @@ def _release_report(path: Path) -> Path:
     )
 
 
-def _offline_archive(path: Path, *, name: str) -> tuple[str, str, int]:
+def _offline_archive(
+    path: Path,
+    *,
+    name: str,
+    schema_revision: str = "0032_async_import_runtime",
+) -> tuple[str, str, int]:
     config = json.dumps(
         {
             "os": "linux",
@@ -76,7 +88,7 @@ def _offline_archive(path: Path, *, name: str) -> tuple[str, str, int]:
                 "Labels": {
                     "org.opencontainers.image.version": "1.6.0",
                     "org.opencontainers.image.revision": "c" * 40,
-                    "com.sms-platform.schema-revision": "0032_async_import_runtime",
+                    "com.sms-platform.schema-revision": schema_revision,
                 }
             },
         },
@@ -167,7 +179,11 @@ def _artifact(path: Path, relative: str) -> dict[str, object]:
     }
 
 
-def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
+def _offline_inputs(
+    tmp_path: Path,
+    *,
+    schema_revision: str = "0032_async_import_runtime",
+) -> dict[str, Any]:
     source = tmp_path / "source"
     output_dir = tmp_path / "bundle"
     for directory in (
@@ -178,7 +194,10 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
         output_dir,
     ):
         directory.mkdir(mode=0o700)
-    release_report = _release_report(source / "release-gate.json")
+    release_report = _release_report(
+        source / "release-gate.json",
+        schema_revision=schema_revision,
+    )
     report = json.loads(release_report.read_text(encoding="utf-8"))
     report["promotion_source"] = None
 
@@ -188,6 +207,7 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
         image_id, archive_hash, archive_size = _offline_archive(
             archive,
             name=name,
+            schema_revision=schema_revision,
         )
         scan = _private_json(
             source / "scans" / f"{name}.json",
@@ -257,8 +277,8 @@ def _offline_inputs(tmp_path: Path) -> dict[str, Any]:
         "release_report": release_report,
         "output": output_dir / "manifest.json",
         "release_id": "release-offline-20260728",
-        "migration_from": "0032_async_import_runtime",
-        "migration_target": "0032_async_import_runtime",
+        "migration_from": schema_revision,
+        "migration_target": schema_revision,
         "changed": frozenset(),
         "baseline": True,
         "offline_archive_dir": source / "images",
@@ -531,6 +551,81 @@ def test_offline_full_no_migration_manifest_allows_missing_conditional_evidence(
     }
 
 
+def test_offline_approved_all_four_expand_allows_explicit_evidence_waiver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
+    data = _private_json(
+        arguments["offline_index"].parent / "data-images.json",
+        {"passed": True},
+    )
+    arguments.update(
+        {
+            "migration_from": OFFLINE_EXPAND_FROM,
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+            "data_images": data,
+            "allow_offline_no_conditional_evidence": True,
+        }
+    )
+    _mock_attestation(monkeypatch)
+
+    create_manifest(**arguments)
+
+    manifest = json.loads(arguments["output"].read_text(encoding="utf-8"))
+    assert manifest["migration"] == {
+        "from": OFFLINE_EXPAND_FROM,
+        "target": OFFLINE_EXPAND_TARGET,
+        "compatibility": "expand",
+    }
+    assert all(image["changed"] for image in manifest["images"].values())
+    assert manifest["evidence"]["data_images"] == {
+        "file": "data-images.json",
+        "sha256": hashlib.sha256(data.read_bytes()).hexdigest(),
+        "size": data.stat().st_size,
+    }
+    assert manifest["evidence"]["backup_restore_change"] is None
+
+
+def test_offline_approved_expand_waiver_must_be_explicit(tmp_path: Path) -> None:
+    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
+    data = _private_json(
+        arguments["offline_index"].parent / "data-images.json",
+        {"passed": True},
+    )
+    arguments.update(
+        {
+            "migration_from": OFFLINE_EXPAND_FROM,
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+            "data_images": data,
+        }
+    )
+
+    with pytest.raises(ManifestCreationError, match="explicit risk acceptance"):
+        create_manifest(**arguments)
+
+
+def test_offline_approved_expand_never_waives_data_image_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
+    arguments.update(
+        {
+            "migration_from": OFFLINE_EXPAND_FROM,
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+            "allow_offline_no_conditional_evidence": True,
+        }
+    )
+    _mock_attestation(monkeypatch)
+
+    with pytest.raises(ManifestCreationError, match="data image evidence"):
+        create_manifest(**arguments)
+
+
 def test_offline_missing_conditional_evidence_requires_explicit_risk_acceptance(
     tmp_path: Path,
 ) -> None:
@@ -556,7 +651,7 @@ def test_offline_missing_conditional_evidence_requires_explicit_risk_acceptance(
         ),
     ],
 )
-def test_offline_manifest_rejects_selective_updates_and_migrations(
+def test_offline_manifest_rejects_selective_and_unapproved_migrations(
     tmp_path: Path,
     changed: frozenset[str],
     migration_from: str,
@@ -570,7 +665,22 @@ def test_offline_manifest_rejects_selective_updates_and_migrations(
         }
     )
 
-    with pytest.raises(ManifestCreationError, match="no-migration baseline"):
+    with pytest.raises(ManifestCreationError, match="approved all-four expand"):
+        create_manifest(**arguments)
+
+
+def test_offline_approved_expand_rejects_selective_images(tmp_path: Path) -> None:
+    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
+    arguments.update(
+        {
+            "migration_from": OFFLINE_EXPAND_FROM,
+            "changed": frozenset({"api"}),
+            "baseline": False,
+            "allow_offline_no_conditional_evidence": True,
+        }
+    )
+
+    with pytest.raises(ManifestCreationError, match="approved all-four expand"):
         create_manifest(**arguments)
 
 

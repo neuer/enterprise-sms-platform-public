@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,10 +11,12 @@ from uuid import UUID
 
 import pytest
 
+import app.api.messages as messages_api_module
 import app.services.pipeline_repository as pipeline_repository_module
 import app.services.reconcile_repository as reconcile_repository_module
 import app.services.report_repository as report_repository_module
 import app.services.uncertain_repository as uncertain_repository_module
+import app.services.vendor_test_uat as vendor_test_uat_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.services.approval_repository import SqlApprovalRepository, record_pending_approval_alert
@@ -35,6 +38,7 @@ from app.services.report_repository import SqlReportRepository
 from app.services.resend import SqlResendRepository
 from app.services.scheduling_repository import SqlSchedulingRepository
 from app.services.sensitive_repository import SqlSensitiveWordRepository
+from app.services.sign_repository import SqlSignRepository
 from app.services.template_repository import SqlTemplateRepository
 from app.services.uncertain import UncertainChunk
 from app.services.uncertain_repository import SqlUncertainRepository
@@ -175,7 +179,7 @@ def protected_report() -> ProtectedReport:
 
 
 @pytest.mark.asyncio
-async def test_template_renderer_binds_authoritative_department(
+async def test_template_renderer_uses_global_template_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = FakeConnection(
@@ -207,8 +211,177 @@ async def test_template_renderer_binds_authoritative_department(
 
     assert await renderer.render(17, ["用户"], "平台技术部") == "尊敬的用户"
     sql, params = connection.calls[0]
-    assert "dept=:dept" in sql
-    assert params == {"template_id": 17, "dept": "平台技术部"}
+    assert "dept=:dept" not in sql
+    assert "vendor_template_id ~ '^[1-9][0-9]{0,9}$'" in sql
+    assert "vendor_template_id<='2147483647'" in sql
+    assert params == {"template_id": 17}
+
+
+def test_api_and_uat_factories_assemble_global_template_renderer() -> None:
+    sources = (
+        inspect.getsource(messages_api_module._pipeline),
+        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_service),
+        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_preview_service),
+    )
+
+    assert all("SqlTemplateRenderer(settings)" in source for source in sources)
+
+
+@pytest.mark.asyncio
+async def test_template_repository_list_and_get_ignore_department_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    row = {
+        "id": 17,
+        "name_enc": crypto.encrypt_bound_packed_text(
+            "全局通知",
+            EncryptionContext(
+                domain="sms-template-name",
+                table="sms_template",
+                column="name_enc",
+                object_id="17",
+            ),
+        ),
+        "content_enc": crypto.encrypt_bound_packed_text(
+            "通知{1}",
+            EncryptionContext(
+                domain="sms-template-content",
+                table="sms_template",
+                column="content_enc",
+                object_id="17",
+            ),
+        ),
+        "var_specs": [{"pos": 1, "max_len": 10}],
+        "dept": "历史部门",
+        "vendor_template_id": "21",
+        "vendor_state": "approved",
+        "vendor_reject_reason": None,
+        "row_version": 1,
+    }
+    connection = FakeConnection([FakeResult(rows=[row]), FakeResult(rows=[row])])
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    records = await repository.list_all(dept="其他业务部")
+    record = await repository.get(17, dept="其他业务部")
+
+    assert [item.id for item in records] == [17]
+    assert record is not None and record.dept == "历史部门"
+    list_sql, list_params = connection.calls[0]
+    get_sql, get_params = connection.calls[1]
+    assert "dept=:dept" not in list_sql
+    assert "dept=:dept" not in get_sql
+    assert list_params is None
+    assert get_params == {"id": 17}
+
+
+@pytest.mark.asyncio
+async def test_template_repository_create_writes_empty_compat_department(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crypto = content_crypto()
+    encrypted = crypto.encrypt_bound_packed_text(
+        "验证码{1}",
+        EncryptionContext(
+            domain="sms-template-content",
+            table="sms_template",
+            column="content_enc",
+            object_id="17",
+        ),
+    )
+    encrypted_name = crypto.encrypt_bound_packed_text(
+        "验证码",
+        EncryptionContext(
+            domain="sms-template-name",
+            table="sms_template",
+            column="name_enc",
+            object_id="17",
+        ),
+    )
+    outbox_id = UUID("20000000-0000-4000-8000-000000000017")
+    connection = FakeConnection(
+        [
+            FakeResult(),
+            FakeResult(),
+            FakeResult(
+                rows=[
+                    {
+                        "id": outbox_id,
+                        "event_type": "template.bind",
+                        "aggregate_type": "sms_template",
+                        "aggregate_id": "17",
+                        "task_name": "app.tasks.bind_template",
+                        "queue": "realtime",
+                        "args": [17],
+                        "max_attempts": 1,
+                        "correlation_id": None,
+                    }
+                ]
+            ),
+            FakeResult(
+                rows=[
+                    {
+                        "id": 17,
+                        "name_enc": encrypted_name,
+                        "content_enc": encrypted,
+                        "var_specs": [{"pos": 1, "max_len": 6}],
+                        "dept": "",
+                        "vendor_template_id": None,
+                        "vendor_state": "pending",
+                        "vendor_reject_reason": None,
+                        "row_version": 41,
+                    }
+                ]
+            ),
+        ],
+        scalar_values=[17],
+    )
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        crypto,
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    record = await repository.create(
+        name="验证码",
+        content="验证码{1}",
+        var_specs=[{"pos": 1, "max_len": 6}],
+        dept="调用方历史部门",
+        actor="operator01",
+    )
+
+    insert_sql, insert_params = connection.calls[1]
+    assert "INSERT INTO sms_template" in insert_sql
+    assert isinstance(insert_params, dict)
+    assert insert_params["dept"] == ""
+    assert record.dept == ""
+
+
+@pytest.mark.asyncio
+async def test_sign_approval_requires_vendor_binding_outside_mock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult(scalar=True)])
+    repository = SqlSignRepository(
+        cast(
+            Any,
+            SimpleNamespace(
+                database_url="postgresql+asyncpg://unused",
+                vendor_mock=False,
+            ),
+        )
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    assert await repository.is_approved("青鸾平台") is True
+    sql, params = connection.calls[0]
+    assert "vendor_sign_id ~ '^[1-9][0-9]{0,9}$'" in sql
+    assert "vendor_sign_id<='2147483647'" in sql
+    assert params == {"name": "青鸾平台"}
 
 
 @pytest.mark.asyncio
@@ -265,6 +438,7 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
                         "vendor_template_id": None,
                         "vendor_state": "pending",
                         "vendor_reject_reason": None,
+                        "row_version": 41,
                     }
                 ]
             ),
@@ -287,6 +461,8 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
     assert record is not None and record.content == "验证码{1}"
     update_sql, update_params = connection.calls[0]
     assert "content='[encrypted]'" in update_sql
+    assert "vendor_template_id IS NULL" in update_sql
+    assert "NOT EXISTS" in update_sql and "FROM sms_batch" in update_sql
     assert "验证码{1}" not in str(update_params)
     assert "验证码" not in str(update_params)
     assert isinstance(update_params, dict)
@@ -308,6 +484,24 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
             object_id="17",
         ),
     ) == "验证码"
+
+
+@pytest.mark.asyncio
+async def test_template_repository_delete_requires_unbound_unreferenced_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection([FakeResult()])
+    repository = SqlTemplateRepository(
+        cast(Any, SimpleNamespace(database_url="postgresql+asyncpg://unused")),
+        content_crypto(),
+    )
+    bind_engine(monkeypatch, repository, connection)
+
+    assert await repository.delete(17, actor="operator01") is False
+    delete_sql, params = connection.calls[0]
+    assert "vendor_template_id IS NULL" in delete_sql
+    assert "NOT EXISTS" in delete_sql and "FROM sms_batch" in delete_sql
+    assert params == {"id": 17}
 
 
 @pytest.mark.asyncio
@@ -1101,13 +1295,23 @@ async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
     row: dict[str, object] = {
         "batch_no": "batch-1",
         "display_content_enc": batch_content("batch-1", "验证码******"),
+        "pending": 0,
+        "sent": 1,
+        "other": 0,
     }
     connection = FakeConnection([FakeResult(rows=[row])])
     bind_engine(monkeypatch, service, connection)
     assert await service.get_batch("batch-1", BatchAccessScope(app_id=7)) == {
         "batch_no": "batch-1",
         "content": "验证码******",
+        "pending": 0,
+        "sent": 1,
+        "other": 0,
     }
+    batch_sql = connection.calls[0][0]
+    assert "count(*) FILTER (WHERE m.status='pending')" in batch_sql
+    assert "count(*) FILTER (WHERE m.status='sent')" in batch_sql
+    assert "count(*) FILTER (WHERE m.status='other')" in batch_sql
 
     connection = FakeConnection([FakeResult()])
     bind_engine(monkeypatch, service, connection)
@@ -1174,6 +1378,10 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     assert "GROUP BY b.status" in counts_sql
     assert ":statuses" not in counts_sql
     assert counts_params == {"scope_dept": "业务一部"}
+    rows_sql = connection.calls[2][0]
+    assert "count(*) FILTER (WHERE m.status='pending')" in rows_sql
+    assert "count(*) FILTER (WHERE m.status='sent')" in rows_sql
+    assert "count(*) FILTER (WHERE m.status='other')" in rows_sql
 
 
 @pytest.mark.asyncio

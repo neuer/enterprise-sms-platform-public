@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -86,6 +86,192 @@ def test_outbox_contract_allows_only_fixed_manual_job_references() -> None:
         validate_spec(replace(spec, args=("app.tasks.send.process_chunk",)))
 
 
+def test_outbox_contract_allows_only_exact_sign_sync_job_reference() -> None:
+    sign_id = 1_380_013_800
+    spec = event_spec(
+        event_type="job.trigger",
+        aggregate_type="sms_sign",
+        aggregate_id=str(sign_id),
+        task_name="app.tasks.outbox.trigger_job",
+        queue="realtime",
+        args=("app.tasks.sync_signs", sign_id),
+        dedup_key=f"job.trigger:sync_signs:{sign_id}:29772480",
+        max_attempts=3,
+    )
+
+    validate_spec(spec)
+    for malformed in (
+        replace(spec, event_type="sign.sync"),
+        replace(spec, aggregate_type="job"),
+        replace(spec, aggregate_id="1380013801"),
+        replace(spec, args=("app.tasks.sync_signs", 1_380_013_801)),
+        replace(spec, args=("app.tasks.poll_report", sign_id)),
+        replace(
+            spec,
+            aggregate_id="2147483648",
+            args=("app.tasks.sync_signs", 2_147_483_648),
+            dedup_key="job.trigger:sync_signs:2147483648:29772480",
+        ),
+        replace(spec, queue="bulk"),
+        replace(spec, max_attempts=12),
+        replace(spec, dedup_key=f"job.trigger:sync_signs:{sign_id}:0"),
+    ):
+        with pytest.raises(ValueError, match="manual job"):
+            validate_spec(malformed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sign_id", "claim_args", "expected_call"),
+    [
+        (None, ("app.tasks.sync_signs",), ("tracked", ())),
+        (7, ("app.tasks.sync_signs", 7), ("exact", (7,))),
+    ],
+)
+async def test_manual_job_worker_preserves_full_and_exact_sign_sync(
+    sign_id: int | None,
+    claim_args: tuple[str | int, ...],
+    expected_call: tuple[str, tuple[int, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_id = uuid4()
+    observed: list[tuple[str, tuple[int, ...]]] = []
+
+    class FakeTask:
+        def run(self, *args: int) -> int:
+            observed.append(("tracked", args))
+            return 1
+
+    async def sync_exact(selected_sign_id: int) -> int:
+        observed.append(("exact", (selected_sign_id,)))
+        return 1
+
+    class FakeExecutor:
+        def __init__(self, _repository: object) -> None:
+            pass
+
+        async def run(
+            self,
+            selected_event_id: UUID,
+            *,
+            expected_type: str,
+            effect: Any,
+        ) -> int:
+            assert selected_event_id == event_id
+            assert expected_type == "job.trigger"
+            return await effect(
+                OutboxClaim(event_id, uuid4(), "job.trigger", claim_args)
+            )
+
+    fake_celery = type(
+        "FakeCelery",
+        (),
+        {"tasks": {"app.tasks.sync_signs": FakeTask()}},
+    )()
+    monkeypatch.setattr(outbox_task_module, "celery_app", fake_celery)
+    monkeypatch.setattr(outbox_task_module, "_sync_exact_sign", sync_exact)
+    monkeypatch.setattr(outbox_task_module, "OutboxExecutor", FakeExecutor)
+    monkeypatch.setattr(
+        outbox_task_module,
+        "SqlOutboxRepository",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(outbox_task_module, "get_settings", lambda: object())
+
+    assert (
+        await outbox_task_module._trigger_job(
+            "app.tasks.sync_signs",
+            str(event_id),
+            sign_id=sign_id,
+        )
+        == 1
+    )
+    assert observed == [expected_call]
+
+
+@pytest.mark.asyncio
+async def test_exact_sign_sync_worker_rejects_claim_mismatch_before_task_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_id = uuid4()
+    task_run = False
+
+    class FakeTask:
+        def run(self, *_args: int) -> int:
+            nonlocal task_run
+            task_run = True
+            return 1
+
+    class FakeExecutor:
+        def __init__(self, _repository: object) -> None:
+            pass
+
+        async def run(
+            self,
+            _event_id: UUID,
+            *,
+            expected_type: str,
+            effect: Any,
+        ) -> int:
+            assert expected_type == "job.trigger"
+            return await effect(
+                OutboxClaim(
+                    event_id,
+                    uuid4(),
+                    "job.trigger",
+                    ("app.tasks.sync_signs", 8),
+                )
+            )
+
+    fake_celery = type(
+        "FakeCelery",
+        (),
+        {"tasks": {"app.tasks.sync_signs": FakeTask()}},
+    )()
+    monkeypatch.setattr(outbox_task_module, "celery_app", fake_celery)
+    monkeypatch.setattr(outbox_task_module, "OutboxExecutor", FakeExecutor)
+    monkeypatch.setattr(
+        outbox_task_module,
+        "SqlOutboxRepository",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(outbox_task_module, "get_settings", lambda: object())
+
+    with pytest.raises(ValueError, match="args mismatch"):
+        await outbox_task_module._trigger_job(
+            "app.tasks.sync_signs",
+            str(event_id),
+            sign_id=7,
+        )
+    assert task_run is False
+
+
+def test_trigger_job_task_decodes_legacy_and_exact_published_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, int | None]] = []
+
+    def trigger(
+        task_name: str,
+        event_id: str,
+        *,
+        sign_id: int | None = None,
+    ) -> object:
+        calls.append((task_name, event_id, sign_id))
+        return object()
+
+    monkeypatch.setattr(outbox_task_module, "_trigger_job", trigger)
+    monkeypatch.setattr(outbox_task_module, "run_worker_async", lambda _value: 1)
+    task = cast(Any, outbox_task_module.trigger_job)
+
+    assert task.run("app.tasks.poll_report", "legacy-event-id") == 1
+    assert task.run("app.tasks.sync_signs", 7, "exact-event-id") == 1
+    assert calls == [
+        ("app.tasks.poll_report", "legacy-event-id", None),
+        ("app.tasks.sync_signs", "exact-event-id", 7),
+    ]
+
+
 @pytest.mark.parametrize(
     ("task_name", "event_type", "aggregate_type"),
     [
@@ -138,6 +324,34 @@ def test_outbox_contract_allows_only_exact_template_sync_references() -> None:
         replace(spec, dedup_key="template.sync:13800138000:0"),
     ):
         with pytest.raises(ValueError, match="template sync"):
+            validate_spec(malformed)
+
+
+def test_outbox_contract_allows_only_exact_sign_adoption_references() -> None:
+    request_id = "c0a80101-0000-4000-8000-000000000139"
+    spec = event_spec(
+        event_type="sign.adopt",
+        aggregate_type="sms_sign",
+        aggregate_id="9",
+        task_name="app.tasks.adopt_sign",
+        queue="realtime",
+        args=(9, 112074),
+        dedup_key=f"sign.adopt:9:{request_id}",
+        max_attempts=3,
+    )
+
+    validate_spec(spec)
+    for malformed in (
+        replace(spec, event_type="job.trigger"),
+        replace(spec, aggregate_id="10"),
+        replace(spec, args=(10, 112074)),
+        replace(spec, args=(9, 0)),
+        replace(spec, args=(9, 2_147_483_648)),
+        replace(spec, queue="bulk"),
+        replace(spec, max_attempts=12),
+        replace(spec, dedup_key="sign.adopt:9:not-a-uuid"),
+    ):
+        with pytest.raises(ValueError, match="sign adoption"):
             validate_spec(malformed)
 
 

@@ -49,11 +49,14 @@ def test_static_gate_covers_all_live_test_safety_boundaries() -> None:
         assert token in source
 
 
-def test_static_gate_forbids_api_phone_decrypt_and_short_wrapper_timeout() -> None:
+def test_static_gate_forbids_api_phone_decrypt_and_checks_wrapper_timeouts() -> None:
     source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
 
     assert 'if "decrypt_text(" in uat_service' in source
-    assert 'if "timeout=180" not in fixed_runner' in source
+    assert (
+        "if 'timeout=300 if operation == \"reset-runtime\" else 180' "
+        "not in fixed_runner"
+    ) in source
 
 
 def test_static_gate_uses_database_recipients_and_control_state_not_host_allowlist() -> None:

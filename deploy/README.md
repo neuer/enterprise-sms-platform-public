@@ -647,14 +647,15 @@ commit 间的 host-control 字节未变可复用既有快照，发生变化则�
 凭据 generation、测试号码和运行态数据；任何初始化仍须操作者明确确认。
 
 同历史旧测试基线若仍是目标 `origin/main` 的祖先、包含真实迁移前移，且普通 `apply` 仅被
-合同枚举的旧运行凭据准备/撤销脚本与固定非运行态文件阻断，可在重装同一目标 commit 的
-host-control 快照、确认完整五项 CI check 成功后执行：
+合同枚举的旧运行凭据准备/撤销脚本与固定历史非运行态文件阻断，可在重装同一目标 commit 的
+host-control 快照、确认合并提交的精确 `ci-gate` 成功后执行：
 
 ```bash
 scripts/test_update.sh rebaseline --ref origin/main
 ```
 
-这是一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
+两个旧运行凭据脚本如出现在差异中必须成对出现；两者均未变更时不要求制造伪差异。这是
+一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
 密文 checkpoint、expand-only 迁移、verify 与 operator Git 复核；不接受分支、无迁移、
 跨历史或任意未枚举路径。当前批准的 `0053_idempotency_scope →
 0061_vendor_binding_outbox` 路径还会在 checkpoint 后由服务器本机把精确旧 18 件权威密钥
@@ -662,6 +663,11 @@ scripts/test_update.sh rebaseline --ref origin/main
 key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
 这是历史固定迁移，不能代生成 Phase 0 新增的第 25 件 `redis_tls_server_key`；该私钥必须走
 独立运行密钥变更，并与内部 PKI 证书在预生产验真后才能更新目标版本。
+已经到达 `0079_security_daily_publish_outbox` 的测试环境在批准的 `0079 → 0081` 重对齐中
+复用现有完整运行密钥清单，不再执行上述旧密钥扩展或重复生成 runtime generation。若原请求
+已经精确阻断在 `blocked/secret_expansion`，按 `docs/runbooks/test-fast-update.md` 执行
+`scripts/test_update.sh recover-rebaseline-prepare`，复用原 checkpoint、镜像和上传包继续；
+该恢复入口不构建、不上传、不新增 checkpoint。
 若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
 按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
 指针并保持 pause；该入口可在已回到请求 base 后幂等重放，并在最终 root Git 校验后恢复
@@ -679,7 +685,7 @@ pause；随后完整重跑 verify，不会重跑迁移或绕过真实厂商探�
 `vendor-control-agent.service`，重启后验真。不会手工改权限、强制重建或切换镜像。该入口产生且事件链可证明的
 固定 verify step 再阻断允许重放，其他 blocked step 或身份漂移继续失败关闭。
 
-页面 `reset_configuration` 的 root 撤销阶段只调用 development-only、零参数固定操作 `vendor-test reset-runtime`。该操作和 release 共用同一个 lifecycle flock：先切换到固定 revocation tombstone generation，再停止、删除和重建 worker-realtime、worker-bulk 两个厂商 secret reader，容器内无输出探测通过后才清理 stale runtime generations；API 不挂载厂商凭据，无需参与 reader 撤销。它不回切旧 generation，不删除 runtime root、PostgreSQL、Docker volume 或非厂商 secret，也不扩大 systemd capability、可写路径、网络族、sudo 或任意命令能力。任何部分失败由同一 journal operation 重放，固定错误不得携带 Key 或 generation 元数据。
+测试环境页面 `reset_configuration` 是从真实厂商切回纯 Mock 的唯一入口，只接受已配置凭据、无 pause 的 `controlled|inactive` 投影。root agent 先持久化 `reset_authorized`，再调用 development-only、零参数固定操作 `vendor-test reset-runtime`；这是 agent 内部操作名，不是给操作者手工执行的命令，实际由 agent 固定映射到 lifecycle lock 下的 `vendor_test_mock_reset.py reset-to-mock`。agent 不在 lifecycle lock 外另行删除 credential store。该操作与 release 共用同一个 lifecycle flock：停止旧 API/beat/workers/Outbox 并逐一确认它们不再运行后，直接恢复固定纯 Mock dotenv，切换到固定 revocation tombstone generation，启动并验证 `mock-vendor`，强制重建并逐一验证 API、三个 worker、Outbox dispatcher、beat 与 Web；Web 还必须通过自身 Nginx 代理访问新 API。已停止的消费者无法自行收敛 backlog，因此 reset 不再等待数据库状态清零；既有 queued/scheduled/pending/retrying 后续只会命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。全部验证通过后才在锁内删除 root credential store、清理 stale runtime generations，并把 live marker 作为最后的 commit marker 删除；成功输出仍严格为 `{"status":"runtime_revoked"}`。它保留加密测试号码、runtime root、PostgreSQL、Docker volume、非厂商 secret 和历史未决事实，也不触碰生产环境。失败路径只恢复不持有厂商凭据的 API 与 Web，页面轮询会对超过 60 秒仍未终结的同一 reset 自动安排后台对账；禁止手改 `.env`、raw Compose 或恢复旧 generation，固定错误不得携带 Key、generation 或子进程输出。
 
 production `up` 白名单只接受 `-d`/`--detach`、`--remove-orphans`、`--no-deps`、`--force-recreate`，以及显式服务 `postgres`、`redis`、`migrate`、`api`、`worker-realtime`、`worker-bulk`、`worker-callback`、`outbox-dispatcher`、`beat`、`web`。`mock-vendor`、未知服务、所有 `--scale`、`--profile`、`--env-file`、`--build`、`--pull` 和其他未列出的参数均在 Python/Docker 调用前退出 2；development 仍可使用 Mock 调试参数。所有 `up/down/run --rm migrate/rotate backend` 由 `run_with_lifecycle_lock.py` 使用 Python `fcntl.flock` 共用非阻塞 lifecycle lock。helper 以 `Popen(..., pass_fds=...)` 让受控子 wrapper 继承锁 FD；私有 `__locked` 在 dispatch 前调用 `verify-held` 核对 FD 类型、mode、euid 与 dev/ino，独立 probe 只确认该 inode 已有锁，再对传入 FD 本身执行幂等 `LOCK_EX|LOCK_NB`：只有继承的同一 open-file-description 成功，指向同 inode 但未加锁的 FD 会在另一个 holder 存在时失败。单独伪造 marker 或 FD 均无效。helper 对 TERM/INT/HUP 转发给子进程并继续等待；即使 helper 遭 SIGKILL，继承锁 FD 仍由子进程及其后代持有，到最后一个持有者退出才由内核释放。`SMS_RUNTIME_ROOT` 必须是无 `..` 的绝对路径，词法规范化会去除尾斜杠，因此等价写法使用同一 `${SMS_RUNTIME_ROOT}.lifecycle.lock`。首次启动/reboot 时 helper 安全创建最终锁父目录，要求 mode `0700`、当前 euid、非符号链接；锁文件以 `O_NOFOLLOW` 创建为 `0600` 普通常规文件。诊断命令不取得该锁，runtime cleanup 也不删除锁 inode。
 
@@ -816,9 +822,11 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
   SHA-256 和字节数同时受离线索引与 manifest 约束。四镜像即使 `changed=false` 也必须随包交付。
   只有 release manager 可以在验签和整包验证后执行受控导入；禁止操作者人工 `docker load`、
   裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
-  该临时通道只覆盖首次 bootstrap、同包恢复，以及 Registry 建成前确有必要的无迁移四镜像
-  整包更新；不实现选择性归档、版本间离线更新迁移、历史包拼装、离线镜像包缓存复用或自动
-  自愈。空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
+  该临时通道只覆盖首次 bootstrap、同包恢复、Registry 建成前确有必要的无迁移四镜像
+  整包更新，以及经明确批准的一次性
+  `0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 全四镜像 expand 更新；
+  不实现选择性归档、其他版本间离线迁移、历史包拼装、离线镜像包缓存复用或自动自愈。
+  空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
 
 离线 manifest 使用 Ed25519 签名。生产信任根固定为
 `/etc/sms-platform/offline-release-signing-public.pem`，固定 key ID 文件为
@@ -866,7 +874,8 @@ python3 scripts/create_release_manifest.py \
 清单由 `scripts/create_release_manifest.py` 按 `deploy/scripts/release_manifest.py` 的
 exact-field 契约自动生成并用 `0600` 原子落盘。Registry schema v1 可按 changed subset 发布，
 迁移只允许 `none` 或向后兼容 `expand`；临时离线 schema v2 仅允许四镜像全不变的 bootstrap/
-恢复，或四镜像全部 changed 的无迁移整包更新。
+恢复、四镜像全部 changed 的无迁移整包更新，或上述精确 `0080`→`0081`
+expand 整包更新。其他 from/target、选择性镜像或 destructive 迁移继续失败关闭。
 
 ### 本机状态机命令
 
@@ -926,7 +935,7 @@ sudo /usr/local/sbin/sms-compose release activate --release-id release-forward-f
 前向回退候选必须保持 PostgreSQL/Redis 数据镜像与当前 schema，不得把旧 digest 包装成新发布。
 临时离线 schema v2 明确拒绝 `prepare-forward-rollback`；需要修复时制作新 commit、四镜像全新
 ID、无迁移的标准整包后走普通 `prepare`→`activate`。需要 schema
-变化的修复等待内部 Registry 路径，不为临时通道增加离线迁移能力。
+变化的修复等待内部 Registry 路径，不为临时通道增加上述一次性例外之外的离线迁移能力。
 
 systemd 不直接执行 release；`RemainAfterExit=yes` 的 unit 只负责开机 `up` 与关机 `down`。生产容器固定为 `restart: "no"`，因此宿主机或 Docker daemon 恢复后只能由 systemd 的受控 `up` 重新经过 start-gate；单个容器异常退出不会由 Docker 自动拉起，按已批准的 12 小时 RTO 由监控告警后人工执行 `systemctl restart sms-platform.service`，禁止直接 `docker start/restart`。unit 保持 active 时执行上述受控发布命令，发布从 prepare 到终态期间不得并发执行 systemctl restart，也不得并发执行 systemctl stop、Docker restart 或其他 `sms-compose` 生命周期动作。`release activate/resume/rollback` 与 unit 的 ExecStart/ExecStop 使用同一个 lifecycle flock，避免容器和运行密钥交叉修改。
 
@@ -1012,10 +1021,15 @@ Trivy/attestation、实际提供的数据/备份恢复证据、changed subset、
 
 “临时离线无迁移整包快速更新”只适用于 schema v2、四镜像全部 changed、migration
 `from == target`，且提交差异不涉及 PostgreSQL/Redis 镜像定义或固定基础镜像、初始化脚本、
-Compose 存储/拓扑、`schema.sql` 或 Alembic。经操作者明确接受本次不单独证明数据镜像重启/主版本
-与隔离恢复的风险后，`data_images`、`backup_restore_change` 和同包预生产可以省略；若提供这些
-证据，原有 SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，
-也不放宽签名、attestation、四 archive、镜像 ID/platform/OCI labels、无迁移、健康检查和失败补偿。
+Compose 存储/拓扑、`schema.sql` 或 Alembic。另有一个精确授权例外：全四镜像
+`0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 可以执行向后兼容
+`expand`，但不得扩展到其他 from/target。无迁移全量更新维持原有显式风险例外，可省略
+`data_images`、`backup_restore_change` 和同包预生产；本次 expand 则仍必须执行数据镜像验证并
+绑定 `data_images`，显式风险参数只允许省略已获批准的 `backup_restore_change`。任何已提供证据的
+SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，也不放宽签名、
+attestation、四 archive、镜像 ID/platform/OCI labels、迁移兼容性、健康检查和失败补偿。
+该 expand 在失败补偿时允许恢复旧应用但保留已向前到 `0081_sign_adoption_contract` 的数据库
+schema，不尝试 destructive downgrade。
 生成不附条件证据的签名包时必须显式传入 `--allow-offline-no-conditional-evidence`；默认仍失败关闭。
 Phase 0 只有一名管理员时允许同一具名操作者执行并自复核，但必须如实记录为单人变更，禁止伪造
 第二身份。

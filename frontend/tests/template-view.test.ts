@@ -130,6 +130,42 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
+  it("所有已绑定厂商编号的审核状态均可手动同步，草稿不显示入口", async () => {
+    const rejectedTemplate = {
+      ...template,
+      id: 2,
+      vendor_state: "rejected",
+      vendor_reject_reason: "初次审核未通过",
+    }
+    const draftTemplate = { ...template, id: 3, vendor_state: "draft" }
+    const approvedTemplate = { ...template, id: 4, vendor_state: "approved" }
+    const templates = [rejectedTemplate, draftTemplate, approvedTemplate]
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => ({
+      ok: true,
+      status: String(input).endsWith("/templates/2/sync") ? 202 : 200,
+      headers: { get: () => null },
+      json: async () => templates,
+    }))
+    vi.stubGlobal("fetch", fetchMock)
+    vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
+    const pinia = applyRole("operator")
+    const wrapper = mount(TemplateView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='template-sync-2']").text()).toContain("同步")
+    expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='template-sync-4']").text()).toContain("同步")
+
+    await wrapper.get("[data-testid='template-sync-2']").trigger("click")
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/web/templates/2/sync",
+      expect.objectContaining({ method: "POST" }),
+    )
+    vi.unstubAllGlobals()
+  })
+
   it("状态筛选包含草稿选项并展示各状态计数", async () => {
     mockList([template, { ...template, id: 5, vendor_state: "draft" }])
     const pinia = applyRole("operator")
@@ -166,7 +202,7 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("已通过模板提供「用于发送」跳转且无其它写操作", async () => {
+  it("已通过模板可用于发送并可同步厂商状态，但不可编辑或删除", async () => {
     mockList([{ ...template, id: 3, vendor_state: "approved" }])
     const push = vi.fn()
     const pinia = applyRole("operator")
@@ -177,7 +213,7 @@ describe("模板管理", () => {
     })
     await flushPromises()
 
-    expect(wrapper.find("[data-testid='template-sync-3']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='template-sync-3']").text()).toContain("同步")
     expect(wrapper.find("[data-testid='template-edit-3']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='template-delete-3']").exists()).toBe(false)
     const use = wrapper.get("[data-testid='template-use-3']")
@@ -187,24 +223,22 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("部门列仅 admin 渲染，为空时列表与移动卡片均显示占位", async () => {
-    mockList([{ ...template, id: 4, dept: "" }])
+  it("模板作为全局资源时不展示兼容 dept 字段", async () => {
+    mockList([{ ...template, id: 4, dept: "历史部门" }])
     const operatorPinia = applyRole("operator")
     const operatorWrapper = mount(TemplateView, { global: { plugins: [operatorPinia, ElementPlus] } })
     await flushPromises()
     expect(operatorWrapper.get(".template-table thead").text()).not.toContain("部门")
     expect(operatorWrapper.find(".template-mobile-list dl").exists()).toBe(false)
+    expect(operatorWrapper.text()).not.toContain("历史部门")
     operatorWrapper.unmount()
 
     const adminPinia = applyRole("admin")
     const wrapper = mount(TemplateView, { global: { plugins: [adminPinia, ElementPlus] } })
     await flushPromises()
-
-    // 列序：名称 / 内容 / 部门 / 厂商状态 / 操作
-    const deptCell = wrapper.get(".template-table .el-table__row td:nth-child(3)")
-    expect(deptCell.text()).toBe("—")
-    expect(deptCell.get("span").classes()).toContain("muted")
-    expect(wrapper.get(".template-mobile-list dl > div:last-child dd").text()).toBe("—")
+    expect(wrapper.get(".template-table thead").text()).not.toContain("部门")
+    expect(wrapper.find(".template-mobile-list dl").exists()).toBe(false)
+    expect(wrapper.text()).not.toContain("历史部门")
     vi.unstubAllGlobals()
   })
 
@@ -247,19 +281,19 @@ describe("模板管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("驳回模板重新提交时回显上次厂商驳回原因", async () => {
+  it("已绑定的驳回模板保留原因且要求新建", async () => {
     mockList([{ ...template, id: 7, vendor_state: "rejected", vendor_reject_reason: "含未报备营销内容" }])
     const pinia = applyRole("operator")
     const wrapper = mount(TemplateView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.get(".template-table").text()).toContain("含未报备营销内容")
-    await wrapper.get("[data-testid='template-edit-7']").trigger("click")
+    expect(wrapper.find("[data-testid='template-edit-7']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='template-delete-7']").exists()).toBe(false)
+    await wrapper.get("[data-testid='template-detail-7']").trigger("click")
     await flushPromises()
-    expect(document.body.textContent).toContain("上次厂商驳回：含未报备营销内容")
-    expect(document.body.textContent).toContain("重新提交审核")
-    expect(document.body.textContent).toContain("平台 #7 · 重新提交将生成新的厂商编号")
-    expect(document.body.textContent).toContain("提交后进入厂商人工审核，期间不可编辑")
+    expect(document.body.textContent).toContain("不能原地修改；请新建模板")
+    expect(document.body.textContent).toContain("被拒绝或撤销后请新建模板")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
@@ -286,7 +320,13 @@ describe("模板管理", () => {
   })
 
   it("取消删除确认框不发起请求也不报错", async () => {
-    const rejectedTemplate = { ...template, id: 2, name: "通知", vendor_state: "rejected" }
+    const rejectedTemplate = {
+      ...template,
+      id: 2,
+      name: "通知",
+      vendor_template_id: null,
+      vendor_state: "rejected",
+    }
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: { get: () => null }, json: async () => [rejectedTemplate],
     })
@@ -303,7 +343,7 @@ describe("模板管理", () => {
     expect(ElMessageBox.confirm).toHaveBeenCalled()
     const confirmMessage = vnodeText(vi.mocked(ElMessageBox.confirm).mock.calls[0][0])
     expect(confirmMessage).toContain("写入审计日志")
-    expect(confirmMessage).toContain("已被批次引用的模板不可删除")
+    expect(confirmMessage).toContain("已绑定厂商编号或已被批次引用的模板不可删除")
     expect(error).not.toHaveBeenCalled()
     expect(
       fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,

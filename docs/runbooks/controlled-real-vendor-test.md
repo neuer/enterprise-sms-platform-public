@@ -186,23 +186,21 @@ GetBalance 是唯一允许的无消费预检。GetReport 与 GetReply 具有“�
 
 普通暂停可以直接执行；恢复 critical pause 必须重新二次认证、根因已修复且 GetBalance 成功。manual、daily 与 rotation-failed/agent-stale critical 原因分层保存；清除 critical 只能删除 critical 层，必须保留原有 manual 或 daily pause。任何未完成的凭据轮换事务都必须先完成受控恢复，禁止直接 resume。
 
-## 页面清空联调设置
+## 页面切回 Mock
 
-`/configs` 的「真实联调」页是清空联调设置的唯一入口。该动作只在已配置凭据的 `inactive` 状态且没有暂停投影时允许创建。`setup_required` 不允许创建新的 reset operation：若此前的 reset 已清除凭据但尚未完成号码终结，后端只按原 operation id 与同一 root journal 自动对账续跑，页面仅恢复该 operation 的非敏感进度，不再要求操作者提交第二次 reset。controlled、blocked、setup_required 或任意 pause 时动作不显示且不得执行；仍处于可清空状态但存在运行中 operation 时动作仍显示但禁用，不得重复提交。
+`/configs` 的「真实联调」页是测试环境从真实厂商切回纯 Mock 的唯一入口。只有当前投影为 `controlled` 或 `inactive`、正式凭据已配置且没有任何 pause 时才显示并允许创建 reset operation；`blocked`、`setup_required` 或任意 pause 均拒绝。存在运行中 operation 时按钮禁用，不得重复提交。禁止手改 `.env`、marker、root credential store 或 raw Compose 绕过本入口。
 
-管理员必须先阅读页面上的删除与保留边界，完成当前 Provider 二次认证，并精确输入“清空联调设置”。Provider 不得自动切换或回退；二次认证签发的单用途凭证只绑定本次 reset，普通 API 随后只把该凭证提交给 reset 接口，不创建 seal session，也不接收凭据、号码或确认短语。
+管理员必须先阅读删除与保留边界，完成当前 Provider 二次认证，并精确输入“切回Mock”。单用途凭证只绑定本次 reset；普通 API 只提交该凭证，不创建 seal session，也不接收厂商凭据、测试号码或确认短语。此操作只作用于当前测试主机，**不会修改生产环境的配置、凭据、服务或数据**。
 
-reset 只删除全部凭据 generation（包含 root credential store 与 runtime generations 中的正式厂商凭据副本）与全部加密测试收件人，包括相关安全索引投影。它保留管理员账号、短信业务数据和审计记录，保留当日 UAT 用量与 uncertain 占额，并保留数据库、Docker volume 和运行态目录。受保护的持久对象明确包括 PostgreSQL、Docker volume 和非厂商 secret，运行态根目录本身也不删除。它不是系统初始化，不得重建数据库、清理 volume、删除运行态目录或重置当日安全账本。
+root agent 先把同一 operation 的 `reset_authorized` 持久化，再调用 development-only、零参数固定操作 `vendor-test reset-runtime`。这是 agent 内部操作名，不是给操作者手工执行的命令；agent 会把它固定映射到 lifecycle lock 下的 `vendor_test_mock_reset.py reset-to-mock`。wrapper 在与 release 共用的 lifecycle lock 内停止 API、beat、realtime/bulk/callback worker 与 Outbox dispatcher，并逐一确认这些服务不再运行。已停止的消费者无法自行收敛数据库 backlog，因此 reset 不再等待 `queued`/`scheduled`/`pending`/`submitting`/`retrying` 清零；既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。
 
-root agent 在持久化 `reset_authorized` 后先幂等清空 credential store，再通过零参数固定 wrapper `vendor-test reset-runtime` 进入与 release 相同的 lifecycle lock。编排器生成只含固定 revocation tombstone 的新 runtime generation；tombstone 不读取、不包含也不派生自旧 Key。随后固定停止并删除 worker-realtime、worker-bulk 两个 vendor-secret reader，再从新 generation 重建并执行无输出内容探测；只有两个 reader 全部通过后才清理 stale generations。API 不再是 vendor-secret reader。切换撤销 generation 后不得回切旧 runtime generation，也不得让已删除的旧 reader 在失败重放中复活。
+旧消费者全部停止并通过复核后，wrapper 原子恢复固定纯 Mock dotenv，创建不含旧 Key 派生信息的 revocation tombstone generation，验证 Compose，启动并验证 `mock-vendor`，再强制重建 API、三个 worker、Outbox dispatcher、beat 与 Web。所有后端服务必须逐一读回 `VENDOR_MOCK=1`、固定 Mock URL 与 dev profile，realtime/bulk 还必须读回 tombstone；Web 必须通过自身 Nginx 代理访问新 API 的存活探针，未全部通过不得继续清理。
 
-只有 credential store 已未配置、runtime 与三个 reader 的当次探测均已通过、旧 generations 已清理，agent 才把 root journal 推进到 durable `runtime_revoked` 并最终成功。任一步失败或进程中断都保持 journal `running`，不把失败缓存成不可恢复终态；只允许原 operation id 重放并从实际文件/容器状态继续。锁与 release 冲突时在 Docker 和 runtime 修改前 fail closed。错误只返回固定安全状态，不输出 Key 值、长度、前缀、摘要、哈希、generation 名称或子进程输出。
+只有纯 Mock 服务已经运行并通过复核，wrapper 才在**同一个 lifecycle lock** 内删除 root credential store，清理 stale runtime generations，并再次复核 Mock、tombstone、当前 generation 与 credential store 均安全。live marker 是最后删除的 commit marker。wrapper 成功只输出固定 `{"status":"runtime_revoked"}`；agent 随后只读确认 credential store 为 unconfigured，再把 root journal 推进到 durable `runtime_revoked`。agent 不再单独调用 credential store reset，避免锁外删除或顺序反转。
 
-操作提交后，页面只按 operation id 跟踪非敏感进度，真实出口始终保持关闭。成功时刷新状态与收件人列表，最终安全状态必须是 `setup_required`，随后凭据安装、测试号码登记和激活仍须分别重新走本手册的受控页面流程，系统不得自动激活或发送。
+成功后页面最终刷新为 `setup_required`。保留全部加密测试收件人及其索引投影，也保留管理员账号、短信业务数据、审计记录、当日 UAT 用量、uncertain 占额、PostgreSQL、Docker volume、运行态根目录和非厂商 secret；后续重新安装凭据后可以继续复用既有测试号码。这不是系统初始化。切换前已发送、待回执、uncertain、`unmatched_report`、无关联回复或已被错误环境拉走的历史状态不会自动修复，必须另行盘点处置。
 
-失败时必须按事实提示部分设置可能已经清理，不得承诺回退或“保持原状”。页面保留原 operation id 的安全状态并刷新当前投影；原操作仍为非终态时，后端只能用同一 operation id 与 root journal 继续对账，禁止从通用 setup_required 投影创建新操作。若原操作已进入失败终态，操作者应继续保持真实出口关闭，根据安全代码完成 agent/journal 对账与故障处置；不得手工恢复 generation、测试收件人或状态投影，也不得借失败恢复清除当日 UAT、uncertain、暂停或审计事实。
-
-清空联调设置是独立的高风险管理流程，不得夹带到快速更新，也不得夹带管理员初始化；更新脚本、发布脚本、bootstrap、迁移和健康检查都不得自动调用 reset。快速更新继续保留数据库、Docker volume 与运行态目录，管理员初始化仍只允许空系统按独立流程执行。
+任一步失败或进程中断都保持同一 journal operation 可重放，不恢复旧真实凭据、旧 generation 或 live 消费者，也不创建第二个 reset。失败路径只尝试恢复不持有厂商凭据的 API 与 Web；页面恢复轮询后，对超过 60 秒仍未终结的同一 reset 自动安排后台对账并继续原 operation id。页面必须提示测试环境可能处于部分切换状态，要求停止发送；错误不得包含 Key、generation 或子进程输出。锁与 release 冲突时在 Docker/runtime 修改前 fail closed。reset 不得夹带到快速更新、bootstrap、迁移或管理员初始化中。
 
 ## 100 个计费条硬上限
 
@@ -228,7 +226,7 @@ live-test 模式下，现有普通 API/Web 发送入口一律返回 `VENDOR_TEST
 
 `POST /api/v1/messages/uat-send` 仅用于验证 `X-Api-Key → API → pipeline → queue → carrier` 真实接入链路。调用前必须确认页面仍显示受控联调中、目标应用已启用且允许通知、目标号码仍为 active，并对本次真实短信再次明确授权。
 
-请求合同固定为：仅通知（`category=notice`）、一个已登记号码、直接内容、可选签名和必填 `biz_id`。`biz_id` 为同一应用 24 小时幂等键，长度 1–32；同一个测试动作重试必须复用原值。模板、定时、验证码、营销、第二个号码和任何额外字段都返回 `INVALID_PARAM`。所有调用先消费应用每分钟限流并校验通知权限，未获授权的 Key 不进入号码 HMAC 查询；控制状态损坏或过期会用 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则返回 `CONTROL_AGENT_PAUSE_UNAVAILABLE` 并保持发送关闭。入口继续受应用/部门配额、每日 100 个计费条、uncertain 占额和所有 critical/daily pause 约束；HTTP 超时或网络异常严禁自动重发。
+请求合同固定为：仅通知（`category=notice`）、一个已登记号码、直接内容或已审核的全局平台模板（`template_id` + `template_params`）二选一、可选签名和必填 `biz_id`。`template_id` 只能填写平台模板编号，不能填写厂商编号。`biz_id` 为同一应用 24 小时幂等键，长度 1–32；同一个测试动作重试必须复用原值。定时、验证码、营销、第二个号码和任何额外字段都返回 `INVALID_PARAM`。所有调用先消费应用每分钟限流并校验通知权限，未获授权的 Key 不进入号码 HMAC 查询；控制状态损坏或过期会用 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则返回 `CONTROL_AGENT_PAUSE_UNAVAILABLE` 并保持发送关闭。入口继续受应用/部门配额、每日 100 个计费条、uncertain 占额和所有 critical/daily pause 约束；HTTP 超时或网络异常严禁自动重发。
 
 fish 终端使用下列纯标准库脚本。它只接受 `https://<临时 HTTPS 地址>` 且域名必须为当前
 Quick Tunnel 的 `*.trycloudflare.com`；TLS 使用系统默认 CA 严格校验。Key 与完整手机号均由

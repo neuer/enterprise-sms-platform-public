@@ -34,9 +34,12 @@ describe("批次与号码查询", () => {
       quota_cost: 2,
       total: 2,
       removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
       delivered: 1,
       failed: 1,
       unknown: 0,
+      other: 0,
       scheduled_at: null,
       created_at: "2026-07-12T08:00:00+08:00",
     }
@@ -101,7 +104,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-2", category: "notice", channel: "web", app_name: null,
       creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
+      delivered: 1, failed: 1, unknown: 0, other: 0,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     }
     const fetch = vi.fn()
@@ -136,7 +140,8 @@ describe("批次与号码查询", () => {
       batch_no, category: "notice", channel: "web", app_name: null,
       creator, dept: "平台部", content: "系统通知", status: "completed",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
+      delivered: 1, failed: 1, unknown: 0, other: 0,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     })
     const first = batch("BATCH-A", "operator-a")
@@ -197,7 +202,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-9", category: "notice", channel: "api", app_name: "通知应用",
       creator: "operator-b", dept: "平台部", content: "系统通知", status: "completed",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 21,
-      total: 21, removed_freq_limit: 0, delivered: 20, failed: 1, unknown: 0,
+      total: 21, removed_freq_limit: 0, pending: 0, sent: 0,
+      delivered: 20, failed: 1, unknown: 0, other: 0,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     }
     const message = {
@@ -246,7 +252,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-10", category: "notice", channel: "web", app_name: null,
       creator: "operator-c", dept: "平台部", content: "系统通知", status: "sending",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 40,
-      total: 40, removed_freq_limit: 0, delivered: 10, failed: 0, unknown: 0,
+      total: 40, removed_freq_limit: 0, pending: 2, sent: 25,
+      delivered: 10, failed: 0, unknown: 2, other: 1,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     }
     const message = {
@@ -267,7 +274,11 @@ describe("批次与号码查询", () => {
     await flushPromises()
     await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("仍有 30 条未终态（待回执 0 + 未提交 30）")
+    expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 待回执 25）")
+    const composition = wrapper.get(".batch-hero-nums").text()
+    for (const expected of ["待处理2", "待回执25", "送达10", "失败0", "未知2", "其他1"]) {
+      expect(composition).toContain(expected)
+    }
 
     const detailSelect = wrapper
       .findAllComponents({ name: "ElSelect" })
@@ -289,7 +300,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-SCHEDULED", category: "market", channel: "web", app_name: null,
       creator: "operator01", dept: "业务一部", content: "营销通知", status: "scheduled",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 1,
-      total: 1, removed_freq_limit: 0, delivered: 0, failed: 0, unknown: 0,
+      total: 1, removed_freq_limit: 0, pending: 1, sent: 0,
+      delivered: 0, failed: 0, unknown: 0, other: 0,
       scheduled_at: "2026-07-13T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00",
     }
     const fetch = vi.fn()
@@ -323,7 +335,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-1", category: "notice", channel: "web", app_name: null,
       creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
       deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, delivered: 1, failed: 1, unknown: 0,
+      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
+      delivered: 1, failed: 1, unknown: 0, other: 0,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     }
     const counts = { queued: 1, sending: 2, balance_blocked: 1, completed: 5 }
@@ -371,7 +384,8 @@ describe("批次与号码查询", () => {
       batch_no: "BATCH-R", category: "market", channel: "api", app_name: "会员营销",
       creator: "operator-a", dept: "市场部", content: "营销内容", status: "completed",
       deferred_reason: null, resend_of: "BATCH-0", is_test: false, segments: 1, quota_cost: 5,
-      total: 5, removed_freq_limit: 0, delivered: 4, failed: 1, unknown: 0,
+      total: 5, removed_freq_limit: 0, pending: 0, sent: 0,
+      delivered: 4, failed: 1, unknown: 0, other: 0,
       scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
     }
     const fetch = vi.fn()

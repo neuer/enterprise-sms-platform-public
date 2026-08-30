@@ -52,6 +52,9 @@ class FakeQueryService:
             "delivered": 1,
             "failed": 0,
             "unknown": 0,
+            "pending": 0,
+            "sent": 0,
+            "other": 0,
             "scheduled_at": None,
             "created_at": datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
         }
@@ -122,6 +125,9 @@ def test_batch_and_detail_queries_are_scoped_and_only_return_phone_mask(
 
     assert batch.status_code == 200
     assert batch.json()["batch_no"] == "batch-1"
+    assert batch.json()["pending"] == 0
+    assert batch.json()["sent"] == 0
+    assert batch.json()["other"] == 0
     assert details.status_code == 200
     assert details.json()["items"][0]["phone"] == "138****8000"
     assert "phone_enc" not in details.text

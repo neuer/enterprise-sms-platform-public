@@ -67,7 +67,6 @@ from app.services.vendor_test_recipient import (
 from app.services.vendor_test_recipient_repository import (
     SqlVendorTestRecipientRepository,
 )
-from app.services.vendor_test_reset import VendorTestResetFinalizer
 from app.services.vendor_test_security_audit import (
     SqlVendorTestSecurityAuditRepository,
     VendorTestSecurityAudit,
@@ -341,13 +340,9 @@ def get_vendor_security_audit() -> VendorTestSecurityAudit:
 
 def get_vendor_operation_service() -> VendorTestOperationService:
     settings = get_settings()
-    recipient_repository = SqlVendorTestRecipientRepository(settings)
     return VendorTestOperationService(
         SqlVendorTestOperationRepository(settings),
         VendorControlClient(),
-        finalizers={
-            "reset_configuration": VendorTestResetFinalizer(recipient_repository),
-        },
     )
 
 
@@ -873,13 +868,13 @@ async def reset_configuration(
         current = state.read_fresh()
     except VendorControlStateUnavailable as error:
         await raise_vendor_control_unavailable(error)
-    inactive_ready = (
-        current.mode == "inactive"
+    reset_ready = (
+        current.mode in {"inactive", "controlled"}
         and current.credential_configured
         and current.pause_kind is None
     )
-    if not inactive_ready:
-        raise ApiError(409, "STATE_CONFLICT", "当前真实联调状态不可清空", None)
+    if not reset_ready:
+        raise ApiError(409, "STATE_CONFLICT", "当前测试环境不可切回 Mock", None)
     return await _start_control_operation(
         background_tasks=background_tasks,
         operations=operations,
@@ -981,6 +976,7 @@ async def resume(
 async def get_operation(
     request: Request,
     operation_id: UUID,
+    background_tasks: BackgroundTasks,
     operations: Annotated[
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
@@ -992,6 +988,8 @@ async def get_operation(
     record = await operations.get(str(operation_id))
     if record is None:
         raise ApiError(404, "NOT_FOUND", "控制操作不存在", None)
+    if operations.reset_recovery_due(record):
+        background_tasks.add_task(operations.reconcile_once)
     return _operation_model(record)
 
 

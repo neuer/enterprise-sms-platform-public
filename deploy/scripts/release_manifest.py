@@ -48,6 +48,10 @@ class ReleaseManifest:
 
 
 _IMAGE_NAMES = ("api", "web", "postgres", "redis")
+OFFLINE_EXPAND_MIGRATION = (
+    "0080_security_daily_delivery_generation",
+    "0081_sign_adoption_contract",
+)
 OFFLINE_IMAGE_SOURCE = "production-offline-docker-archive-v1"
 _TOP_LEVEL_FIELDS_V1 = frozenset(
     {"schema_version", "release_id", "commit", "mode", "images", "migration", "evidence"}
@@ -350,11 +354,16 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         )
     if schema_version == 2:
         changed_count = sum(spec.changed for spec in images.values())
-        if migration_changes_schema:
-            raise ReleaseManifestError("offline production release cannot include a migration")
         if changed_count not in {0, len(_IMAGE_NAMES)}:
             raise ReleaseManifestError(
                 "offline production release must change either zero or all four images"
+            )
+        if migration_changes_schema and (
+            changed_count != len(_IMAGE_NAMES)
+            or (migration_from, migration_target) != OFFLINE_EXPAND_MIGRATION
+        ):
+            raise ReleaseManifestError(
+                "offline production migration must be the approved all-four expand update"
             )
 
     evidence_value = _require_object(document["evidence"], "evidence")
@@ -391,6 +400,12 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         and all(spec.changed for spec in images.values())
         and not migration_changes_schema
     )
+    offline_approved_expand_update = (
+        schema_version == 2
+        and image_source == OFFLINE_IMAGE_SOURCE
+        and all(spec.changed for spec in images.values())
+        and (migration_from, migration_target) == OFFLINE_EXPAND_MIGRATION
+    )
     data_evidence_required = data_changed and not offline_full_no_migration_update
     if (data_evidence_required and data_images is None) or (
         not data_changed and data_images is not None
@@ -401,7 +416,9 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     backup_allowed = mode == "production" and (
         images["postgres"].changed or migration_changes_schema
     )
-    backup_required = backup_allowed and not offline_full_no_migration_update
+    backup_required = backup_allowed and not (
+        offline_full_no_migration_update or offline_approved_expand_update
+    )
     backup_evidence: Mapping[str, object] | None
     if backup_candidate is None:
         backup_evidence = None

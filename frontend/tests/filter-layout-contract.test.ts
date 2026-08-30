@@ -227,7 +227,7 @@ describe("全站筛选布局契约", () => {
     expect(signView).toContain("接口全量返回 · 前端过滤")
     expect(signView).toContain("共 {{ filtered.length }} 个签名")
     expect(signView).toContain("读：operator / approver / admin · 写：admin")
-    expect(signView).toContain("不可变更")
+    expect(signView).toContain("不可编辑/删除")
     expect(signView).not.toContain("filter-toolbar")
     expect(signView).not.toContain("filter-grid")
     expect(signView).not.toContain("<el-segmented")

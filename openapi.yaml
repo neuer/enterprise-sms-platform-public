@@ -22,6 +22,8 @@ info:
     - v1.6.34：生产 callback 强制 HTTPS；签名密钥/协议版本按事件固化；敏感密文与导出帧绑定业务上下文
     - v1.6.39：服务器安全日报脱敏事实、预览与独立 mailer 受控投递
     - v1.6.40：安全日报管理员页面配置 Resend Key、收件人与启停状态，API 同步独立 mailer 配置
+    - v1.6.43：管理员可将本地待审核签名与厂商已有签名 ID 精确关联；realtime worker 仅调用 GetSignState 复核，不重复 BindSign
+    - v1.6.45：模板为全局资源，不按部门隔离；发送接口的 template_id 始终是平台模板 ID，不能填写厂商编号
 
 servers:
   - url: https://sms.example.com
@@ -167,7 +169,7 @@ paths:
                   minItems: 1
                   maxItems: 10000
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID（非厂商ID），配合 template_params }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），配合 template_params }
                 template_params:
                   anyOf:
                     - { type: array, items: { type: string, maxLength: 200 }, maxItems: 20 }
@@ -249,7 +251,7 @@ paths:
                   minItems: 1
                   maxItems: 1
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }], description: 与 template_id 二选一 }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 平台模板ID，须已审核通过 }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params:
                   anyOf:
                     - { type: array, maxItems: 20, items: { type: string, maxLength: 200 } }
@@ -572,7 +574,7 @@ paths:
                 mobiles: { anyOf: [{ type: array, minItems: 1, maxItems: 50000, items: { type: string, pattern: '^1\d{10}$' } }, { type: 'null' }], description: 与 import_id 二选一 }
                 import_id: { anyOf: [{ type: string, format: uuid }, { type: 'null' }], description: 引用导入任务号码包 }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
@@ -629,7 +631,7 @@ paths:
               properties:
                 category: { type: string, enum: [notice, market] }
                 content: { anyOf: [{ type: string, maxLength: 500 }, { type: 'null' }] }
-                template_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+                template_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 全局平台模板ID（非厂商ID），须已审核通过 }
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }] }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 accepted_count: { type: integer, minimum: 0, maximum: 50000 }
@@ -985,7 +987,7 @@ paths:
   /api/v1/web/templates:
     get:
       tags: [templates]
-      summary: 模板列表
+      summary: 全局模板列表
       security: [{ BearerAuth: [] }]
       responses:
         '200':
@@ -997,7 +999,7 @@ paths:
                 items: { $ref: '#/components/schemas/Template' }
     post:
       tags: [templates]
-      summary: 新建模板并排队提交厂商审核（BindTemplate）
+      summary: 新建全局模板并排队提交厂商审核（BindTemplate）
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -1034,7 +1036,8 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     put:
       tags: [templates]
-      summary: 修改草稿或被拒模板并重新排队提交审核
+      summary: 修改尚未绑定厂商编号的可编辑模板并重新排队提交审核
+      description: 模板一旦取得厂商编号即不可原地编辑或重新绑定；被拒绝或撤销后应新建模板。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1061,7 +1064,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
     delete:
       tags: [templates]
-      summary: 删除未通过且未被批次引用的模板
+      summary: 删除未绑定厂商编号且未被批次引用的模板
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1073,7 +1076,7 @@ paths:
     post:
       tags: [templates]
       summary: 排队手动同步厂商审核状态（GetTemplateState）
-      description: 仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。
+      description: 已有厂商编号的待审核、已通过或已拒绝模板均可同步；仅为已授权的当前模板写入精确主键任务；同一模板在同一 UTC 分钟内重复请求会合并为同一 Outbox 意图。厂商状态可双向变化，HTTP 202 仅表示任务已入队。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1154,6 +1157,7 @@ paths:
     post:
       tags: [signs]
       summary: 排队手动同步厂商签名审核状态（GetSignState）
+      description: 已有厂商编号的待审核、已通过或已拒绝签名均可同步；请求与人类审计原子写入事务性 Outbox，仅查询当前签名，同一签名在同一 UTC 分钟内重复请求会合并。厂商状态可双向变化，HTTP 202 仅表示任务已入队。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -1161,6 +1165,40 @@ paths:
         '202': { description: 已写入事务性任务队列 }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/web/signs/{id}/adopt-existing:
+    post:
+      tags: [signs]
+      summary: 排队关联厂商已有签名（admin）
+      description: |
+        仅管理员可用。只将本地签名、厂商签名正整数 ID 与操作人确认的签名名称组成的
+        精确关联意图排入 realtime worker；worker 仅调用 GetSignState 复核并回写本地状态，
+        不发送短信，也不调用 BindSign。尚未发布的自动 BindSign 会在同一事务中撤销；若自动
+        绑定已经发布或执行，或已有活动关联意图，则返回 409。202 只表示意图已受理排队，
+        不表示关联或状态同步完成。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [vendor_sign_id, confirmed_name]
+              properties:
+                vendor_sign_id: { type: integer, minimum: 1.0, maximum: 2147483647.0, description: 厂商已有签名的正整数 ID }
+                confirmed_name: { type: string, minLength: 1, maxLength: 20, description: 操作人再次确认的本地签名名称，必须与目标记录精确一致 }
+      responses:
+        '202': { description: 精确关联意图已排入 realtime worker；不表示关联或厂商审核状态同步已经完成 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { description: INTERNAL_ERROR, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: DEPENDENCY_UNAVAILABLE；精确关联意图无法安全排入队列, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   # ───────────────────────── 回复 ─────────────────────────
   /api/v1/web/replies:
@@ -2002,7 +2040,12 @@ paths:
   /api/v1/web/admin/vendor-test/reset:
     post:
       tags: [admin]
-      summary: 异步清空真实联调设置并恢复待设置状态
+      summary: 异步将测试环境切回 Mock 并撤销正式厂商凭据
+      description: |
+        仅允许管理员在正式凭据已配置、无暂停且状态为 `controlled` 或 `inactive` 时，
+        使用绑定 `reset_configuration` 的单次二次认证令牌启动。操作停止测试侧真实发送及
+        报告/回复拉取，恢复内置 Mock，并删除测试环境正式厂商凭据；保留加密测试号码、历史短信、
+        审计、当日 UAT/uncertain 事实、数据库和 volume，不修改生产环境，也不自动修复历史未决状态。
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true
@@ -3170,6 +3213,7 @@ components:
             - { type: string, minLength: 1, maxLength: 500 }
             - { type: 'null' }
         template_id:
+          description: 全局平台模板 ID（非厂商 ID）
           anyOf:
             - { type: integer, exclusiveMinimum: 0 }
             - { type: 'null' }
@@ -3206,6 +3250,7 @@ components:
             - { type: string, minLength: 1, maxLength: 500 }
             - { type: 'null' }
         template_id:
+          description: 全局平台模板 ID（非厂商 ID）
           anyOf:
             - { type: integer, exclusiveMinimum: 0 }
             - { type: 'null' }
@@ -3780,7 +3825,7 @@ components:
 
     Batch:
       type: object
-      required: [batch_no, category, channel, app_name, creator, dept, content, status, deferred_reason, resend_of, is_test, segments, quota_cost, total, removed_freq_limit, delivered, failed, unknown, scheduled_at, created_at]
+      required: [batch_no, category, channel, app_name, creator, dept, content, status, deferred_reason, resend_of, is_test, segments, quota_cost, total, removed_freq_limit, delivered, failed, unknown, pending, sent, other, scheduled_at, created_at]
       properties:
         batch_no: { type: string }
         category: { type: string, enum: [verify, notice, market] }
@@ -3801,7 +3846,10 @@ components:
         removed_freq_limit: { type: integer }
         delivered: { type: integer }
         failed: { type: integer }
-        unknown: { type: integer }
+        unknown: { type: integer, description: 结果未知终态数量，不表示等待回执 }
+        pending: { type: integer, description: 消息明细状态为 pending；可能尚待提交、重试，或对应分片处于结果未知状态 }
+        sent: { type: integer, description: 已提交厂商、等待状态回执的消息数量 }
+        other: { type: integer, description: 厂商其他终态数量 }
         scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         created_at: { type: string, format: date-time }
 
@@ -3902,7 +3950,7 @@ components:
             properties:
               pos: { type: integer, minimum: 1 }
               max_len: { type: integer, minimum: 1, maximum: 100 }
-        dept: { type: string }
+        dept: { type: string, deprecated: true, description: 历史兼容字段；模板为全局资源，该值不参与查询、授权或发送判断 }
         vendor_template_id: { anyOf: [{ type: string }, { type: 'null' }] }
         vendor_state: { type: string, enum: [draft, pending, approved, rejected] }
         vendor_reject_reason: { anyOf: [{ type: string }, { type: 'null' }] }

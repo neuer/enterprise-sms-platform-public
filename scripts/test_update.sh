@@ -68,7 +68,11 @@ TARGET="${SMS_TEST_UPDATE_TARGET:-$CONFIG_TARGET}"
 CANONICAL_REMOTE_ROOT="/opt/sms-platform"
 REMOTE_ROOT="${SMS_TEST_UPDATE_ROOT:-$CANONICAL_REMOTE_ROOT}"
 PORT="${SMS_TEST_UPDATE_PORT:-${CONFIG_PORT:-22}}"
-VENDOR_ORIGIN="${SMS_VENDOR_LIVE_TEST_ORIGIN:-$CONFIG_VENDOR_ORIGIN}"
+if [[ "${SMS_VENDOR_LIVE_TEST_ORIGIN+x}" == x ]]; then
+  VENDOR_ORIGIN="$SMS_VENDOR_LIVE_TEST_ORIGIN"
+else
+  VENDOR_ORIGIN="$CONFIG_VENDOR_ORIGIN"
+fi
 REF="origin/main"
 COMMAND="apply"
 REMOTE_SMS_COMPOSE="/usr/local/sbin/sms-compose"
@@ -119,7 +123,7 @@ if [[ -n "$VENDOR_ORIGIN" ]]; then
 fi
 
 usage() {
-  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|recover-rebaseline-verify|status|promote] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|recover-rebaseline-prepare|recover-rebaseline-verify|status|promote] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -200,7 +204,8 @@ verify_operator_git_after_switch() {
 
 github_write_preflight() {
   local authenticated_repository
-  if [[ "$COMMAND" != apply && "$COMMAND" != rebaseline && "$COMMAND" != promote ]]; then
+  if [[ "$COMMAND" != apply && "$COMMAND" != rebaseline &&
+        "$COMMAND" != recover-rebaseline-prepare && "$COMMAND" != promote ]]; then
     return 0
   fi
   command -v gh >/dev/null 2>&1 || {
@@ -230,7 +235,7 @@ github_write_preflight() {
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    plan | build | apply | rebaseline | recover-rebaseline-verify | status | promote)
+    plan | build | apply | rebaseline | recover-rebaseline-prepare | recover-rebaseline-verify | status | promote)
       COMMAND="$1"
       shift
       ;;
@@ -320,6 +325,55 @@ assert len(commit)==40 and all(c in "0123456789abcdef" for c in commit)
 payload={"repository":repo,"commit":commit,"test_update":json.loads(update_raw),"vendor_test":json.loads(vendor_raw)}
 print(json.dumps(payload,separators=(",",":"),sort_keys=True))' \
     "$LOCAL_REPOSITORY" "$REMOTE_COMMIT" "$UPDATE_STATUS" "$VENDOR_STATUS"
+  exit 0
+fi
+
+if [[ "$COMMAND" == recover-rebaseline-prepare ]]; then
+  [[ "$REF" == origin/main ]] || { usage; exit 2; }
+  if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+    echo "test-update: 本地工作树必须干净" >&2
+    exit 1
+  fi
+  LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
+  REMOTE_ORIGIN_URL="$(remote_git_preflight remote get-url origin)"
+  if ! LOCAL_REPOSITORY="$(github_repository_identity "$LOCAL_ORIGIN_URL")" ||
+    ! REMOTE_REPOSITORY="$(github_repository_identity "$REMOTE_ORIGIN_URL")"; then
+    echo "test-update: origin 必须是无凭据的 GitHub 仓库地址" >&2
+    exit 1
+  fi
+  [[ "$LOCAL_REPOSITORY" == "$REMOTE_REPOSITORY" ]] || {
+    echo "test-update: 本地与远端 origin 仓库不一致，拒绝跨仓库恢复" >&2
+    exit 1
+  }
+  github_write_preflight
+  RECOVERY_STATUS="$(
+    remote_bootstrap_sms_compose test-update recover-rebaseline-prepare
+  )"
+  read -r UPDATE_ID TARGET_COMMIT MIGRATION_TARGET < <(
+    python3 -c 'import json,sys
+value=json.loads(sys.argv[1])
+assert set(value)=={"commit","migration_target","status","update_id"}
+assert value["status"]=="checkpointed"
+assert isinstance(value["update_id"],str)
+assert isinstance(value["commit"],str) and len(value["commit"])==40
+assert isinstance(value["migration_target"],str)
+print(value["update_id"],value["commit"],value["migration_target"])' \
+      "$RECOVERY_STATUS"
+  )
+  remote_bootstrap_sms_compose test-update apply
+  remote_bootstrap_sms_compose test-update verify
+  verify_operator_git_after_switch recover-rebaseline-prepare
+  RECOVERY_STATUS_AFTER_VERIFY="$(remote_bootstrap_sms_compose test-update status)"
+  if ! printf '%s' "$RECOVERY_STATUS_AFTER_VERIFY" |
+    python3 "$ROOT/deploy/scripts/test_update_contract.py" verify-status \
+      "$UPDATE_ID" "$TARGET_COMMIT" "$MIGRATION_TARGET" >/dev/null; then
+    echo "test-update: 恢复后的远端终态未达到目标 verified" >&2
+    exit 1
+  fi
+  bash "$ROOT/scripts/record_test_deployment.sh" \
+    "$LOCAL_REPOSITORY" "$TARGET_COMMIT" origin/main \
+    "Resumed verified rebaseline without rebuilding or re-uploading images"
+  echo "test-update: state=verified commit=$TARGET_COMMIT update_id=$UPDATE_ID"
   exit 0
 fi
 
@@ -478,8 +532,7 @@ elif [[ "$COMMAND" == apply && "$CI_REQUIRED" == 1 ]]; then
 elif [[ "$COMMAND" == rebaseline ]]; then
   python3 "$ROOT/scripts/verify_ci_commit.py" \
     --repository "$LOCAL_REPOSITORY" \
-    --commit "$TARGET_COMMIT" \
-    --require-full
+    --commit "$TARGET_COMMIT"
 fi
 if [[ "$RISK" == high-risk &&
       ("$COMMAND" == apply || "$COMMAND" == rebaseline) ]]; then

@@ -169,6 +169,15 @@ class VendorTestOperationService:
         self.finalizers = dict(finalizers or {})
         self._now = now or (lambda: datetime.now(UTC))
 
+    def reset_recovery_due(self, record: VendorTestOperation) -> bool:
+        """页面恢复后仅为已超宽限期的同一 reset 安排后台对账。"""
+
+        return (
+            record.operation_type == "reset_configuration"
+            and record.status in _RECONCILABLE_STATUSES
+            and self._now() - record.requested_at >= _REQUESTED_RECONCILE_GRACE
+        )
+
     @staticmethod
     def _is_reset_recovery_pending(
         operation_type: str,

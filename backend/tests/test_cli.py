@@ -120,7 +120,10 @@ async def test_template_seed_persists_only_object_bound_ciphertext() -> None:
     connection = FakeConnection()
     await module.seed_dev_template(connection, crypto)
 
+    lookup_sql, lookup_params = connection.calls[0]
     insert_sql, insert_params = connection.calls[-1]
+    assert "dept" not in lookup_sql.casefold()
+    assert lookup_params is None
     assert "'[encrypted]'" in insert_sql
     assert "CAST(:dept AS varchar(128))" in insert_sql
     assert "CAST(:vendor_state AS varchar(10))" in insert_sql
@@ -129,6 +132,7 @@ async def test_template_seed_persists_only_object_bound_ciphertext() -> None:
     assert module.DEV_TEMPLATE.content not in str(insert_params)
     assert module.DEV_TEMPLATE.name not in str(insert_params)
     assert isinstance(insert_params, dict)
+    assert insert_params["dept"] == ""
     assert crypto.decrypt_bound_packed_text(
         insert_params["content_enc"],
         EncryptionContext(

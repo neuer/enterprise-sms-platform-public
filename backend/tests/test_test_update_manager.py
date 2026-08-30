@@ -276,6 +276,35 @@ def test_rebaseline_expands_secrets_after_checkpoint_and_migration_check() -> No
     assert store.state is State.CHECKPOINTED
 
 
+def test_current_rebaseline_does_not_repeat_legacy_secret_expansion() -> None:
+    store = FakeStore()
+    operations = FakePrepareOperations()
+
+    UpdateManager(store, operations).prepare(
+        _scope("high-risk", frozenset({"api", "web"})),
+        update_id="test-current-rebaseline",
+        commit="0" * 40,
+        migration_from="0079_security_daily_publish_outbox",
+        migration_target="0081_sign_adoption_contract",
+        operation="rebaseline",
+    )
+
+    assert operations.events == [
+        "lock",
+        ("mode", "live"),
+        ("pause", "test-current-rebaseline"),
+        "counts",
+        ("checkpoint", "test-current-rebaseline"),
+        (
+            "migration_check",
+            "0079_security_daily_publish_outbox",
+            "0081_sign_adoption_contract",
+        ),
+        ("pause_owner", "test-current-rebaseline"),
+    ]
+    assert store.state is State.CHECKPOINTED
+
+
 def test_queued_and_scheduled_do_not_block_but_unsafe_chunk_states_do() -> None:
     operations = FakePrepareOperations({"submitting": 0, "retrying": 0, "uncertain": 1})
     store = FakeStore()
@@ -1907,6 +1936,95 @@ def test_rebaseline_runtime_secret_generation_uses_target_fixed_preprocessor(
             "--vendor-credential-root",
             "/var/lib/sms-platform/vendor-test/credentials",
         )
+    ]
+
+
+def test_current_rebaseline_reuses_existing_runtime_secret_generation(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    operations.request = SimpleNamespace(
+        operation="rebaseline",
+        migration_from="0079_security_daily_publish_outbox",
+        migration_target="0081_sign_adoption_contract",
+        migration_compatibility="expand",
+        environment_mode="live",
+    )
+    calls: list[tuple[str, ...]] = []
+    operations._command = lambda *argv: calls.append(argv) or ""  # type: ignore[method-assign]
+
+    operations._prepare_rebaseline_runtime_secrets()
+
+    assert calls == []
+
+
+def test_blocked_current_rebaseline_prepare_reuses_checkpoint_and_loaded_images(
+    tmp_path: Path,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    update_id = "test-20260829T120940Z-fa28fa63f496"
+    base_commit = "a" * 40
+    target_commit = "b" * 40
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        operation="rebaseline",
+        base_commit=base_commit,
+        commit=target_commit,
+        migration_from="0079_security_daily_publish_outbox",
+        migration_target="0081_sign_adoption_contract",
+        migration_compatibility="expand",
+    )
+    operations.host_source_commit = "c" * 40
+    calls: list[object] = []
+
+    def command(*argv: str) -> str:
+        if "diff" in argv:
+            return ""
+        if "rev-parse" in argv:
+            return base_commit
+        if "status" in argv:
+            return ""
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+    operations.require_lifecycle_lock = lambda: calls.append("lock")  # type: ignore[method-assign]
+    operations.current_migration_head = lambda: "0079_security_daily_publish_outbox"  # type: ignore[method-assign]
+    operations.require_owned_update_pauses = lambda value: calls.append(("pauses", value))  # type: ignore[method-assign]
+    operations.unsafe_status_counts = lambda: {  # type: ignore[method-assign]
+        "submitting": 0,
+        "retrying": 0,
+        "uncertain": 0,
+    }
+    operations.require_loaded_request_images = lambda: calls.append("images")  # type: ignore[method-assign]
+
+    class Store:
+        def read_consistent_state(self) -> dict[str, object]:
+            return {
+                "state": "blocked",
+                "step": "secret_expansion",
+                "error_type": "validation_failed",
+                "actual_commit": target_commit,
+                "actual_migration_head": "0079_security_daily_publish_outbox",
+                "event_sequence": 2,
+            }
+
+        def transition(
+            self,
+            expected: State,
+            target: State,
+            *,
+            step: str,
+            **_: object,
+        ) -> None:
+            calls.append((expected, target, step))
+
+    operations.recover_blocked_rebaseline_prepare(Store())  # type: ignore[arg-type]
+
+    assert calls == [
+        "lock",
+        ("pauses", update_id),
+        "images",
+        (State.BLOCKED, State.CHECKPOINTED, "recover_prepare"),
     ]
 
 

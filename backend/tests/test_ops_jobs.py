@@ -10,7 +10,14 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.services import ops_dispatch as ops_dispatch_module
 from app.services.ops import JobNotFound, JobOpsService, JobRecord, JobRoute
-from app.services.ops_dispatch import OutboxBatchSender, OutboxJobSender, TemplateSyncSender
+from app.services.ops_dispatch import (
+    OutboxBatchSender,
+    OutboxJobSender,
+    SignAdoptionConflict,
+    SignAdoptionSender,
+    SignSyncSender,
+    TemplateSyncSender,
+)
 from app.services.ops_repository import SqlOpsRepository
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
@@ -26,6 +33,10 @@ class FakeResult:
 
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self.rows)
+
+    def one_or_none(self) -> dict[str, object] | None:
+        assert len(self.rows) <= 1
+        return self.rows[0] if self.rows else None
 
 
 class FakeConnection:
@@ -244,6 +255,7 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
 ) -> None:
     engines: list[FakeTransactionEngine] = []
     specs: list[Any] = []
+    audits: list[tuple[str, Any]] = []
 
     def engine(_database_url: object) -> FakeTransactionEngine:
         selected = FakeTransactionEngine()
@@ -253,18 +265,72 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     async def enqueue(_connection: object, spec: Any) -> None:
         specs.append(spec)
 
+    async def bind_audit(_connection: object, **values: object) -> None:
+        audits.append(("bind", values))
+
+    async def insert_audit(_connection: object, event: object) -> None:
+        audits.append(("insert", event))
+
+    async def reserve_adoption(_connection: object, _sign_id: int) -> bool:
+        return False
+
     monkeypatch.setattr(ops_dispatch_module, "database_engine", engine)
     monkeypatch.setattr(ops_dispatch_module, "enqueue_outbox", enqueue)
+    monkeypatch.setattr(
+        ops_dispatch_module,
+        "bind_connection_audit_subject",
+        bind_audit,
+    )
+    monkeypatch.setattr(ops_dispatch_module, "insert_audit", insert_audit)
+    monkeypatch.setattr(
+        SignAdoptionSender,
+        "_reserve_adoption",
+        staticmethod(reserve_adoption),
+    )
     settings = type("SettingsStub", (), {"database_url": "postgresql://test"})()
 
     await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
     await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
     await OutboxJobSender(settings).send("app.tasks.expire_approvals", "realtime")
-    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
-    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(7)
+    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(
+        7,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+    await TemplateSyncSender(settings, clock=lambda: NOW).send_template(
+        7,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+    await SignSyncSender(settings, clock=lambda: NOW).send_sign(
+        8,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+    await SignSyncSender(settings, clock=lambda: NOW).send_sign(
+        8,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+    await SignAdoptionSender(settings).send_sign(
+        9,
+        112074,
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
     await OutboxBatchSender(settings).send_batch("a" * 32, "realtime")
 
-    first_poll, second_poll, job, template_sync, repeated_template_sync, batch = specs
+    (
+        first_poll,
+        second_poll,
+        job,
+        template_sync,
+        repeated_template_sync,
+        sign_sync,
+        repeated_sign_sync,
+        sign_adoption,
+        batch,
+    ) = specs
     assert first_poll.task_name == "app.tasks.outbox.trigger_job"
     assert first_poll.args == ("app.tasks.poll_report",)
     assert first_poll.dedup_key.startswith("job.trigger:poll_report:")
@@ -281,8 +347,89 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     assert template_sync.args == (7,)
     assert template_sync.max_attempts == 3
     assert repeated_template_sync.dedup_key == template_sync.dedup_key
+    assert sign_sync.event_type == "job.trigger"
+    assert sign_sync.aggregate_type == "sms_sign"
+    assert sign_sync.aggregate_id == "8"
+    assert sign_sync.task_name == "app.tasks.outbox.trigger_job"
+    assert sign_sync.queue == "realtime"
+    assert sign_sync.args == ("app.tasks.sync_signs", 8)
+    assert sign_sync.max_attempts == 3
+    assert sign_sync.dedup_key.startswith("job.trigger:sync_signs:8:")
+    assert repeated_sign_sync.dedup_key == sign_sync.dedup_key
+    assert sign_adoption.event_type == "sign.adopt"
+    assert sign_adoption.aggregate_type == "sms_sign"
+    assert sign_adoption.aggregate_id == "9"
+    assert sign_adoption.task_name == "app.tasks.adopt_sign"
+    assert sign_adoption.queue == "realtime"
+    assert sign_adoption.args == (9, 112074)
+    assert sign_adoption.max_attempts == 3
+    assert sign_adoption.dedup_key.startswith("sign.adopt:9:")
+    audit_events = [value for kind, value in audits if kind == "insert"]
+    assert [event.action for event in audit_events] == [
+        "template_sync",
+        "template_sync",
+        "sign_sync",
+        "sign_sync",
+        "sign_adopt",
+    ]
+    assert audit_events[0].after == {"status": "requested"}
+    assert audit_events[2].after == {"status": "requested"}
+    assert audit_events[4].after == {
+        "status": "requested",
+        "vendor_sign_id": 112074,
+        "pending_bind_superseded": False,
+    }
     assert batch.task_name == "app.tasks.send.process_batch"
     assert batch.args == ("a" * 32,)
     assert batch.dedup_key.startswith("batch.ready:")
     assert batch.dedup_key != "batch.ready:" + "a" * 32
     assert all(selected.disposed for selected in engines)
+
+
+@pytest.mark.asyncio
+async def test_sign_adoption_supersedes_only_unpublished_bind() -> None:
+    class SequenceConnection:
+        def __init__(self) -> None:
+            self.results = [
+                FakeResult([{"vendor_state": "pending", "vendor_sign_id": None}]),
+                FakeResult([{"event_type": "sign.bind", "state": "pending"}]),
+                FakeResult([]),
+            ]
+            self.calls: list[tuple[str, object]] = []
+
+        async def execute(self, statement: object, params: object = None) -> FakeResult:
+            self.calls.append((str(statement), params))
+            return self.results.pop(0)
+
+    connection = SequenceConnection()
+
+    assert await SignAdoptionSender._reserve_adoption(connection, 9) is True
+    assert "FROM sms_sign" in connection.calls[0][0]
+    assert "FOR UPDATE" in connection.calls[0][0]
+    assert "FROM outbox_event" in connection.calls[1][0]
+    assert "state='completed'" in connection.calls[2][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "active_event",
+    (
+        {"event_type": "sign.bind", "state": "leased"},
+        {"event_type": "sign.adopt", "state": "pending"},
+    ),
+)
+async def test_sign_adoption_rejects_active_external_intent(
+    active_event: dict[str, object],
+) -> None:
+    class SequenceConnection:
+        def __init__(self) -> None:
+            self.results = [
+                FakeResult([{"vendor_state": "pending", "vendor_sign_id": None}]),
+                FakeResult([active_event]),
+            ]
+
+        async def execute(self, _statement: object, _params: object = None) -> FakeResult:
+            return self.results.pop(0)
+
+    with pytest.raises(SignAdoptionConflict):
+        await SignAdoptionSender._reserve_adoption(SequenceConnection(), 9)

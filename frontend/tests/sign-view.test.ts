@@ -92,15 +92,67 @@ describe("签名管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("待审核未绑定厂商编号时不提供手动同步入口", async () => {
-    mockFetch([{ ...pendingSign, id: 9, vendor_sign_id: null }])
+  it("仅管理员可对待审核且未绑定厂商编号的签名发起关联", async () => {
+    const unboundPending = { ...pendingSign, id: 9, vendor_sign_id: null }
+    mockFetch([unboundPending, pendingSign, approvedSign, rejectedSign])
     const pinia = applyRole("admin")
     const wrapper = mount(SignView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.get(".sign-table").text()).toContain("提交厂商中…")
     expect(wrapper.find("[data-testid='sign-sync-9']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='sign-adopt-9']").exists()).toBe(true)
+    expect(wrapper.find("[data-testid='mobile-sign-adopt-9']").exists()).toBe(true)
     expect(wrapper.find("[data-testid='sign-delete-9']").exists()).toBe(true)
+    expect(wrapper.find("[data-testid='sign-adopt-1']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='sign-adopt-2']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='sign-adopt-3']").exists()).toBe(false)
+    wrapper.unmount()
+
+    mockFetch([unboundPending])
+    const operatorPinia = applyRole("operator")
+    const operator = mount(SignView, { global: { plugins: [operatorPinia, ElementPlus] } })
+    await flushPromises()
+    expect(operator.find("[data-testid='sign-adopt-9']").exists()).toBe(false)
+    expect(operator.find("[data-testid='mobile-sign-adopt-9']").exists()).toBe(false)
+    operator.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("关联已有签名固定提交当前名称与正整数厂商 ID，成功只提示任务已入队", async () => {
+    const unboundPending = { ...pendingSign, id: 9, name: "厦门钨业", vendor_sign_id: null }
+    const fetchMock = mockFetch([unboundPending])
+    const success = vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
+    const pinia = applyRole("admin")
+    const wrapper = mount(SignView, {
+      attachTo: document.body,
+      global: { plugins: [pinia, ElementPlus] },
+    })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='sign-adopt-9']").trigger("click")
+    await flushPromises()
+    expect(document.body.textContent).toContain("请先在厂商后台核对")
+    expect(document.body.textContent).toContain("厂商签名 ID 必须对应规范签名【厦门钨业】")
+    expect(document.body.textContent).toContain("不会新建厂商签名，也不代表审核已经通过")
+
+    const input = document.querySelector("[data-testid='sign-adopt-vendor-id']") as HTMLInputElement
+    input.value = "112074"
+    input.dispatchEvent(new Event("input"))
+    await flushPromises()
+    ;(document.querySelector("[data-testid='sign-adopt-submit']") as HTMLElement).click()
+    await flushPromises()
+
+    const request = fetchMock.mock.calls.find(([url, init]) =>
+      String(url).endsWith("/signs/9/adopt-existing") && (init as RequestInit)?.method === "POST",
+    )
+    expect(request).toBeTruthy()
+    expect(JSON.parse(String((request?.[1] as RequestInit).body))).toEqual({
+      vendor_sign_id: 112074,
+      confirmed_name: "厦门钨业",
+    })
+    expect(success).toHaveBeenCalledWith("关联已有厂商签名与审核状态查询已入队")
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 
@@ -161,19 +213,29 @@ describe("签名管理", () => {
     vi.unstubAllGlobals()
   })
 
-  it("已通过签名操作列显示不可变更且无可用写操作", async () => {
+  it("已通过签名仍可同步厂商状态，但不可编辑或删除", async () => {
     mockFetch([approvedSign])
     const pinia = applyRole("admin")
     const wrapper = mount(SignView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.find("[data-testid='sign-sync-2']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='sign-sync-2']").text()).toContain("同步")
     expect(wrapper.find("[data-testid='sign-edit-2']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='sign-delete-2']").exists()).toBe(false)
     const actionCell = wrapper.get(".sign-table .el-table__row td:last-child")
-    expect(actionCell.text()).toBe("不可变更")
+    expect(actionCell.text()).toContain("不可编辑/删除")
     expect(actionCell.get(".muted").attributes("title")).toContain("已通过审核")
-    expect(wrapper.get(".sign-mobile-list article footer").text()).toContain("不可变更")
+    expect(wrapper.get(".sign-mobile-list article footer").text()).toContain("不可编辑/删除")
+    vi.unstubAllGlobals()
+  })
+
+  it("已拒绝签名保留厂商编号时仍可手动同步", async () => {
+    mockFetch([{ ...rejectedSign, vendor_sign_id: "22" }])
+    const pinia = applyRole("admin")
+    const wrapper = mount(SignView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.get("[data-testid='sign-sync-3']").text()).toContain("同步")
     vi.unstubAllGlobals()
   })
 
@@ -301,7 +363,7 @@ describe("签名管理", () => {
       [
         { id: 1, name: "订单中心", default_sign: "青鸾平台", status: 1 },
         { id: 2, name: "物流通知", default_sign: "其他签名", status: 1 },
-        { id: 3, name: "会员服务", default_sign: "青鸾平台", status: 0 },
+        { id: 3, name: "会员服务", default_sign: "【青鸾平台】", status: 0 },
       ],
     )
     const pinia = applyRole("admin")

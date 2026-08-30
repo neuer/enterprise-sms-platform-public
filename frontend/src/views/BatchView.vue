@@ -75,11 +75,11 @@ const channelLabel: Record<string, string> = { api: "API", web: "Web" }
 const statusLabel: Record<string, string> = {
   pending_approval: "待审批", rejected: "已驳回", scheduled: "定时中", queued: "排队中",
   sending: "发送中", completed: "已完成", cancelled: "已取消", balance_blocked: "余额阻断",
-  expired: "已过期", delivered: "已送达", failed: "失败", unknown: "未知", pending: "待发送",
+  expired: "已过期", delivered: "已送达", failed: "失败", unknown: "未知", pending: "待处理",
   sent: "已提交", other: "其他",
 }
 const detailStatusOptions = [
-  { label: "待发送", value: "pending" },
+  { label: "待处理", value: "pending" },
   { label: "已提交", value: "sent" },
   { label: "已送达", value: "delivered" },
   { label: "失败", value: "failed" },
@@ -122,10 +122,27 @@ function shortBatchNo(value: string): string {
   return value.length > 12 ? `${value.slice(0, 2)}…${value.slice(-4)}` : value
 }
 
-/** 结果构成 = 占受理总数的份额（前端减法推导），不是成功率口径 */
-function composeOf(row: BatchItem): { delivered: number; failed: number; unknown: number; pending: number } {
-  const pending = Math.max(row.total - row.delivered - row.failed - row.unknown, 0)
-  return { delivered: row.delivered, failed: row.failed, unknown: row.unknown, pending }
+/** 结果构成直接使用服务端消息状态计数，不从总数反推。 */
+function composeOf(row: BatchItem): {
+  pending: number
+  sent: number
+  delivered: number
+  failed: number
+  unknown: number
+  other: number
+} {
+  return {
+    pending: row.pending,
+    sent: row.sent,
+    delivered: row.delivered,
+    failed: row.failed,
+    unknown: row.unknown,
+    other: row.other,
+  }
+}
+
+function activeOf(row: BatchItem): number {
+  return row.pending + row.sent
 }
 
 function composePct(part: number, row: BatchItem): string {
@@ -134,7 +151,7 @@ function composePct(part: number, row: BatchItem): string {
 
 function composeText(row: BatchItem): string {
   const parts = composeOf(row)
-  return `送达 ${parts.delivered}，失败 ${parts.failed}，待回执 ${parts.unknown}，未提交 ${parts.pending}，占受理总数 ${row.total}`
+  return `待处理 ${parts.pending}，待回执 ${parts.sent}，送达 ${parts.delivered}，失败 ${parts.failed}，未知 ${parts.unknown}，其他 ${parts.other}，占受理总数 ${row.total}`
 }
 
 function groupCount(key: string, statuses: string[]): number | null {
@@ -468,10 +485,12 @@ watch(moreOpen, (open) => {
             <span v-else-if="row.status === 'scheduled' || row.status === 'pending_approval'" class="compose-hint">{{ row.status === "scheduled" ? "待进入流水线" : "待审批" }}</span>
           </div>
           <div class="compose" role="img" :aria-label="composeText(row)">
+            <i class="compose-p" :style="{ width: composePct(composeOf(row).pending, row) }"></i>
+            <i class="compose-s" :style="{ width: composePct(composeOf(row).sent, row) }"></i>
             <i class="compose-d" :style="{ width: composePct(composeOf(row).delivered, row) }"></i>
             <i class="compose-f" :style="{ width: composePct(composeOf(row).failed, row) }"></i>
             <i class="compose-u" :style="{ width: composePct(composeOf(row).unknown, row) }"></i>
-            <i class="compose-p" :style="{ width: composePct(composeOf(row).pending, row) }"></i>
+            <i class="compose-o" :style="{ width: composePct(composeOf(row).other, row) }"></i>
           </div>
         </template>
       </el-table-column>
@@ -497,10 +516,12 @@ watch(moreOpen, (open) => {
         </header>
         <p class="cell-content">{{ item.content }}</p>
         <div class="compose" role="img" :aria-label="composeText(item)">
+          <i class="compose-p" :style="{ width: composePct(composeOf(item).pending, item) }"></i>
+          <i class="compose-s" :style="{ width: composePct(composeOf(item).sent, item) }"></i>
           <i class="compose-d" :style="{ width: composePct(composeOf(item).delivered, item) }"></i>
           <i class="compose-f" :style="{ width: composePct(composeOf(item).failed, item) }"></i>
           <i class="compose-u" :style="{ width: composePct(composeOf(item).unknown, item) }"></i>
-          <i class="compose-p" :style="{ width: composePct(composeOf(item).pending, item) }"></i>
+          <i class="compose-o" :style="{ width: composePct(composeOf(item).other, item) }"></i>
         </div>
         <p class="query-mobile-meta">
           {{ categoryLabel[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} · 送达 {{ item.delivered }}/{{ item.total }}<template v-if="item.failed > 0"> · 失败 {{ item.failed }}</template>
@@ -511,10 +532,12 @@ watch(moreOpen, (open) => {
     </div>
     <footer class="batch-pager">
       <div class="compose-legend" aria-hidden="true">
+        <span><i class="compose-p"></i>待处理</span>
+        <span><i class="compose-s"></i>待回执</span>
         <span><i class="compose-d"></i>送达</span>
         <span><i class="compose-f"></i>失败</span>
-        <span><i class="compose-u"></i>待回执</span>
-        <span><i class="compose-p"></i>未提交</span>
+        <span><i class="compose-u"></i>未知</span>
+        <span><i class="compose-o"></i>其他</span>
         <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
       </div>
       <span>共 {{ total }} 个批次 · 每页 20</span>
@@ -541,24 +564,28 @@ watch(moreOpen, (open) => {
 
       <section class="batch-hero">
         <div class="compose compose--lg" role="img" :aria-label="composeText(selected)">
+          <i class="compose-p" :style="{ width: composePct(composeOf(selected).pending, selected) }"></i>
+          <i class="compose-s" :style="{ width: composePct(composeOf(selected).sent, selected) }"></i>
           <i class="compose-d" :style="{ width: composePct(composeOf(selected).delivered, selected) }"></i>
           <i class="compose-f" :style="{ width: composePct(composeOf(selected).failed, selected) }"></i>
           <i class="compose-u" :style="{ width: composePct(composeOf(selected).unknown, selected) }"></i>
-          <i class="compose-p" :style="{ width: composePct(composeOf(selected).pending, selected) }"></i>
+          <i class="compose-o" :style="{ width: composePct(composeOf(selected).other, selected) }"></i>
         </div>
         <div class="batch-hero-nums">
+          <div><span>待处理</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).pending / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
+          <div><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).sent / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
           <div><span>送达</span><b>{{ composeOf(selected).delivered.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).delivered / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
           <div><span>失败</span><b :class="{ 'is-failed': composeOf(selected).failed > 0 }">{{ composeOf(selected).failed.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).failed / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>待回执</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).unknown / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>未提交</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).pending / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
+          <div><span>未知</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).unknown / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
+          <div><span>其他</span><b>{{ composeOf(selected).other.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).other / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
         </div>
         <p class="batch-hero-quotas">受理 <b>{{ selected.total.toLocaleString() }}</b> · 计费条 <b>{{ selected.quota_cost.toLocaleString() }}</b> · 单条 <b>{{ selected.segments }}</b> 条 · 频控剔除 <b>{{ selected.removed_freq_limit.toLocaleString() }}</b></p>
       </section>
 
       <p
-        v-if="selected.status === 'sending' && composeOf(selected).unknown + composeOf(selected).pending > 0"
+        v-if="selected.status === 'sending' && activeOf(selected) > 0"
         class="batch-note"
-      >仍有 {{ (composeOf(selected).unknown + composeOf(selected).pending).toLocaleString() }} 条未终态（待回执 {{ composeOf(selected).unknown.toLocaleString() }} + 未提交 {{ composeOf(selected).pending.toLocaleString() }}），批次保持发送中，直至回执到达或报告超时。构成非成功率。</p>
+      >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理 {{ composeOf(selected).pending.toLocaleString() }} + 待回执 {{ composeOf(selected).sent.toLocaleString() }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p>
       <p v-if="selected.deferred_reason === 'market_window'" class="batch-note is-warn">营销时间窗外，已转为定时发送；到达营销窗口后自动进入队列。</p>
 
       <section class="batch-content-card">

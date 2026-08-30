@@ -178,6 +178,7 @@ required_paths = [
     "/api/v1/web/messages/{id}/phone/decrypt",
     "/api/v1/web/templates/{id}",
     "/api/v1/web/signs/{id}/sync",
+    "/api/v1/web/signs/{id}/adopt-existing",
     "/api/v1/web/replies/{id}/blacklist",
     "/api/v1/web/admin/apps/{id}",
     "/api/v1/web/admin/unmatched-reports/export",

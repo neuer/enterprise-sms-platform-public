@@ -559,16 +559,26 @@ class SqlTemplateRenderer:
         params: Sequence[str],
         dept: str,
     ) -> str:
+        # 保留 dept 形参兼容发送端口；模板按平台 ID 全局解析。
+        del dept
+        binding_guard = (
+            ""
+            if bool(getattr(self.settings, "vendor_mock", False))
+            else """AND vendor_template_id ~ '^[1-9][0-9]{0,9}$'
+              AND (length(vendor_template_id)<10
+                OR vendor_template_id<='2147483647')"""
+        )
         async with database_engine(self.settings.database_url).connect() as connection:
             result = await connection.execute(
                 text(
-                    """
+                    f"""
                         SELECT content_enc, var_specs FROM sms_template
-                        WHERE id=:template_id AND dept=:dept
+                        WHERE id=:template_id
                           AND vendor_state='approved'
+                          {binding_guard}
                         """
                 ),
-                {"template_id": template_id, "dept": dept},
+                {"template_id": template_id},
             )
             row = result.mappings().one_or_none()
             if row is None:

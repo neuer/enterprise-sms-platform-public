@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档版本 | v1.6.42 |
-| 日期 | 2026-08-24 |
+| 文档版本 | v1.6.45 |
+| 日期 | 2026-08-28 |
 | 状态 | 已评审定稿 |
 | 上游依赖 | 智慧信息-企信版短信网关（vendor.example.invalid，接口文档 V2.1.2） |
 | 开发方式 | 维护期按 MAINTENANCE.md / AGENTS.md 协作，契约由 openapi.yaml / schema.sql 约束 |
@@ -26,6 +26,9 @@
 | v1.6.40 | **安全日报配置 UI 化**：管理员页面配置 Resend Key、收件人和启停状态，API 同步独立 mailer 配置文件；不再要求手工维护 Docker secret 与收件人文件 |
 | v1.6.41 | **会话边界契约回填**：与已落地实现及 D048 修订对齐——access JWT 仅内存 + Bearer；refresh JWT 改 HttpOnly Cookie 并要求 refresh/logout 同源校验；高风险短期令牌仍仅组件局部易失内存 |
 | v1.6.42 | **生产 Phase 0 决策基线**：生产与测试空库、数据和 secrets 完全隔离；首发经 VPN 接入，旧短信系统（不同服务商）长期并行且可切回；短信发送能力的业务 RTO≤12h、平台数据 RPO≤24h，冷备与备出口暂非首发硬门禁；Core、PostgreSQL 与 broker/auth/control 三个 isolated-standalone Redis 实例合并部署在单台生产 VM，明确接受整机共同故障域；首批仅 1–2 个低风险 notice 应用并观察至少 3 天；统一保留期与企微+公司邮件告警边界。业务 RTO 从最早业务不可用或受控关闭新入口的 `outage_start` 计起，可由新平台恢复或旧系统受控切回并完成最小验收结束；新平台恢复耗时另记。该条只记录决策，不证明生产基础设施、运行配置或发布证据已经满足。 |
+| v1.6.43 | **复用厂商已有签名**：管理员可为本地待审核签名提交厂商已有正整数签名 ID，并再次确认本地签名名称；API 只把精确关联意图排入 realtime worker，worker 仅调用 GetSignState 复核并回写，不重复 BindSign、不发送短信；202 仅代表受理排队。 |
+| v1.6.44 | **模板与签名审核状态持续跟踪**：每 10 分钟同步所有已有厂商编号的模板和签名，允许厂商状态在 pending/approved/rejected 间双向变化；手动同步同样覆盖三态。平台要求批量响应与请求 ID 一一对应，拒绝缺失、额外、重复或非法项；厂商编号在本地保持一对一；仅 rejected 保留打码且限长的驳回原因，其他状态清空旧原因；写回使用行版本与厂商编号 CAS，迟到结果不得覆盖新事实。模板绑定厂商编号后保持不可变，被拒绝或撤销时新建，避免在途发送把旧内容与新编号错配。生产非 Mock 发送还必须同时满足 approved 与合法正整数厂商编号；签名关联已有 ID 会原子撤销尚未发布的自动 BindSign，自动绑定一旦发布或执行则返回冲突，禁止双路并发。 |
+| v1.6.45 | **模板改为全局资源**：平台模板不按用户、应用或部门隔离；所有应用均以全局唯一的平台模板 ID 引用已审核模板，厂商编号只用于平台对接厂商，不得作为发送接口的 `template_id`。模板的创建、送审、同步和不可变规则保持不变，应用仍受类别、配额、限流、频控、签名、IP 白名单与审批约束。历史 `sms_template.dept` 仅保留为兼容字段，不再参与查询、授权或发送判断。 |
 
 ---
 
@@ -80,7 +83,7 @@
 |---|---|---|
 | 系统管理员 | 本地维护 / AD 组映射或人工覆盖 | 全部功能，含账号维护、用户角色手动覆盖、队列恢复、强制下线 |
 | 审批人 | 本地维护 / AD 组映射或人工覆盖 | 审批（不能审本人提交）；查看全量记录与报表；导出任务对象按 FR-16 限制为本人/同部门 |
-| 操作员 | 本地维护 / AD 组映射或人工覆盖 | Web 人工发送（notice/market）、本部门记录、本部门模板 |
+| 操作员 | 本地维护 / AD 组映射或人工覆盖 | Web 人工发送（notice/market）、本部门记录、全局模板维护 |
 | 只读用户 | 本地维护 / AD 组映射或人工覆盖 | 本部门记录与报表 |
 | 接入应用 | API Key | 发送/查询 API，受 allowed_categories、配额、限流、频控约束 |
 
@@ -208,8 +211,8 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 
 ### 5.5 模板与签名管理
 
-#### FR-12 模板：CRUD + `{n}` 占位规范（每变量登记最大长度 var_specs）+ BindTemplate/GetTemplateState 同步；**提交厂商时按序转换为厂商 `{s最大长度}` 格式（v1.3）**；Bind 意图必须与模板变更同事务进入 PostgreSQL Outbox，由持有厂商凭据的 realtime worker 执行，API 不挂载厂商凭据且不直接出站；仅厂商通过可用；渲染时校验参数个数与各参数长度 ≤ max_len，见 FR-01 与 docs/vendor-api.md 1.5 节
-#### FR-13 签名：CRUD + BindSign/GetSignState；Bind 意图同样经事务性 Outbox 交给 realtime worker，API 仅返回 pending；应用默认签名；自动拼接与一致性校验
+#### FR-12 模板：模板是全局资源，不按用户、应用或部门隔离；平台模板 ID 全局唯一，所有应用均可引用任一已审核模板，历史 `sms_template.dept` 仅作兼容且不得参与查询、授权或发送判断。模板支持 CRUD + `{n}` 占位规范（每变量登记最大长度 var_specs）+ BindTemplate/GetTemplateState 同步；**提交厂商时按序转换为厂商 `{s最大长度}` 格式（v1.3）**；Bind 意图必须与模板变更同事务进入 PostgreSQL Outbox，由持有厂商凭据的 realtime worker 执行，API 不挂载厂商凭据且不直接出站；仅厂商通过可用；生产非 Mock 发送还必须存在 1..2147483647 的规范十进制厂商模板编号，`approved + NULL/非法编号` 的异常或遗留记录不得使用；渲染时校验参数个数与各参数长度 ≤ max_len，见 FR-01 与 docs/vendor-api.md 1.5 节。所有已有厂商编号的 pending/approved/rejected 模板每 10 分钟持续同步并允许双向变更，手动同步覆盖同一范围；批量响应异常时整批不写回，非 rejected 状态不得保留驳回原因。模板一旦绑定厂商编号即不得原地编辑、重新绑定或删除；被拒绝或撤销后必须新建模板，避免并发受理中的旧内容与新编号错配。状态降级会阻止此后新请求使用；已经通过审核校验并受理的批次继续使用冻结正文与原厂商编号到达终态，不自动改写或重发
+#### FR-13 签名：CRUD + BindSign/GetSignState；Bind 意图同样经事务性 Outbox 交给 realtime worker，API 仅返回 pending；应用默认签名；自动拼接与一致性校验。管理员可将本地待审核签名与厂商已有正整数签名 ID 精确关联，但必须再次提交与本地记录完全一致的签名名称；API 在同一事务锁定本地签名与活动 Outbox，允许原子撤销尚未发布的自动 BindSign 后排入关联意图；若自动绑定已经 leased/published/processing，或已有活动关联意图，则返回 409，禁止两条厂商路径并发。worker 仅调用 GetSignState 复核并回写本地状态，不调用 BindSign、不发送短信。HTTP 202 只表示排队成功，不表示关联或厂商审核状态同步完成。所有已有厂商编号的 pending/approved/rejected 签名每 10 分钟持续同步并允许双向变更；单行手动同步只查询当前签名，同一签名同一 UTC 分钟内合并请求，且不计作 beat 全量同步心跳；批量响应异常时整批不写回，非 rejected 状态不得保留驳回原因。生产非 Mock 发送必须同时满足 approved 与 1..2147483647 的规范十进制厂商编号；厂商编号在本地必须一对一绑定；已被应用或发送批次引用的签名禁止原地修改并重新绑定，应新建签名。状态降级会阻止此后新请求使用；已经通过审核校验并受理的批次继续使用冻结签名到达终态，不自动改写或重发
 
 ### 5.6 告警与监控
 
@@ -272,6 +275,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 测试号码按 `phone_enc/phone_hmac/phone_mask/key_version` 存 PostgreSQL；页面只展示备注与掩码。live-test 模式下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`，控制台 UAT 每次只选择一个 active recipient
 - 应用侧唯一真实联调例外为 `POST /api/v1/messages/uat-send`：有效 `X-Api-Key`、仅通知、单个 active 已登记号码、直接内容或已审核模板与必填 1–32 位 `biz_id`；禁止定时、验证码、营销及额外字段。API 必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码且要求所有保留版本 digest 与当次输入完全匹配，只把既有加密四元组交给同一 pipeline；worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，queued/sending 测试批次作为维护租约，终态前禁止停用或删除。控制状态损坏或过期必须以 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则保持 503 且不继续；复用 24h 幂等、每日 100 个计费条和 uncertain 占额
 - 继续执行上海自然日 100 个计费条硬上限、uncertain 持续占额、1010/鉴权/余额等 critical pause 和 GetBalance-only 激活预检；CI/G2 始终使用 Mock/FakeCarrier
+- 已配置且无暂停的测试环境允许管理员二次认证后从 `controlled|inactive` 切回内置 Mock：先停止并确认测试侧真实发送与报告/回复消费者均不再运行，再删除测试环境正式厂商凭据并重建纯 Mock 服务；不等待已停止消费者无法自行收敛的测试 backlog，既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发；保留加密测试号码、短信业务数据、审计、当日 UAT/uncertain 事实、数据库与 volume；不得修改生产环境，也不得自动修复切换前历史未决状态
 #### FR-19b 安全日报配置与投递（v1.6.40）
 - admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
 - 配置写入 `sys_config.security_daily_resend_api_key` 与 `security_daily_recipient`，配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
