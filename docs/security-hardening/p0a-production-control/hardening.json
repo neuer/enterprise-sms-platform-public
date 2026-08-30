@@ -1,0 +1,565 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_20260830_p0a_production_control",
+  "sourceEvidence": {
+    "kind": "source_and_approved_architecture",
+    "label": "P0-A production control source review and approved V1 target",
+    "collectionSha256": "903df5c9feeb085a4d940472c358bf0ab56427f96e11208f129ba629d31ccbd6",
+    "artifactCount": 20,
+    "sourceDrift": "present",
+    "targetRevision": "645e95e2691412121a5e3ffc750ad4e5bb071fd9"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "The reviewed source supports one structural opportunity: remove operator-owned checkout bytes from production root execution while retaining internal Git, Registry, release evidence, exact-commit release state, and four RepoDigests. The selected design uses one root-authorized full tracked-tree snapshot per commit and is not production-validated."
+  },
+  "constraints": {
+    "profile": "kiss",
+    "changeHorizons": [
+      "incremental",
+      "medium_term"
+    ],
+    "nonNegotiables": [
+      "Retain the internal Git mirror, private Registry, release-evidence store, controlled bridge, remote driver, lifecycle lock, and existing release state machine.",
+      "Every production Registry commit requires a root-owned root:root 0444 marker containing exact ASCII <commit>\\n before host-control adoption.",
+      "The root snapshot is the complete regular Git-tracked tree under versions/<40hex commit>; current is the only active host-control fact.",
+      "Ordinary release prepare, activate, and status continue to bind exact commit, release evidence, and four image RepoDigests without a control digest or manifest-schema change.",
+      "Host-control adoption and bootstrap are independently approved OS changes even when the release driver orchestrates host-control commands.",
+      "Precreate fixed production env, secret, approval, and security-report paths with reviewed owner/mode changes.",
+      "Do not add a selective control closure, fifth image, OCI control artifact, privileged release daemon, new signing schema, Kubernetes or datastore HA, or an expanded offline package.",
+      "Preserve recovery_required, compensation, forward-only schema behavior, and forward rollback.",
+      "Do not treat this analysis as production work or successful validation."
+    ],
+    "assumptions": [
+      "The approved V1 target places internal Git, Registry, release evidence, monitoring, redacted logging, and encrypted backup storage on one Ops VM.",
+      "Core, PostgreSQL, and the broker/auth/control Redis instances remain on one accepted non-HA production VM.",
+      "The fixed revision's complete regular tracked tree is 1000 files and 17750771 bytes; later candidate revisions remain within reviewed hard bounds.",
+      "Existing schema-v1 Registry manifests and schema-v2 offline compatibility readers remain exact and are not extended for host-control fields."
+    ],
+    "nonGoals": [
+      "Provision or modify production, pre-production, the Ops VM, Registry, internal Git, evidence store, monitoring, logging, or backup infrastructure.",
+      "Eliminate the accepted single-production-VM or single-Ops-VM failure domains.",
+      "Replace the application release state machine or introduce automatic schema/control downgrade.",
+      "Claim KMS, HSM, HA, disaster recovery, or security closure from design documents or unverified working-tree code."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "production-control-and-artifact-binding",
+      "title": "Bind production root execution and runtime artifacts to one approved commit",
+      "summary": "Move privileged repository execution out of the operator checkout and require a root-authorized current snapshot at the exact release commit before the unchanged four-RepoDigest lifecycle runs.",
+      "diagnosis": "The current checkout owns both daily Git updates and bytes later parsed, imported, or executed with root/Docker authority. An arbitrary local 40-hex commit is not root authorization because the operator can write local .git; the release identity therefore needs a separate root approval marker and immutable commit snapshot.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "evidenceId": "E001",
+          "path": "deploy/sms-compose",
+          "claim": "The production wrapper derives managers and Compose files from its checkout root; the host asset contract installs the wrapper as a symlink into that checkout and root systemd units contain direct checkout execution paths."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "evidenceId": "E002",
+          "path": "scripts/deploy_release_remote.py",
+          "claim": "The remote release driver performs operator-side Git fetch and fast-forward before invoking privileged release prepare, activate, and status."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "source",
+          "evidenceId": "E003",
+          "path": "deploy/scripts/release_manager.py",
+          "claim": "The release manager and store already enforce exact commit/image/migration identities, terminal recovery_required, compensation, and forward-only schema handling."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E004",
+          "path": "docs/DECISIONS.md",
+          "claim": "D041 defines RepoDigest promotion as the intended identity path and D094 describes the signed offline archive as temporary compatibility infrastructure with an explicit Registry exit condition."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "threat_model",
+          "evidenceId": "E005",
+          "path": "docs/threat-model.md",
+          "claim": "The Phase 0 threat model records Core, PostgreSQL, and three Redis domains on one common production VM and does not claim HA."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E006",
+          "path": "context.md",
+          "claim": "The approved V1 target retains internal Git and Registry/evidence channels and binds a root-owned full tracked-tree snapshot to the same exact commit as the four RepoDigests."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "document",
+          "evidenceId": "E007",
+          "path": "context.md",
+          "claim": "The approved KISS constraint requires a root-owned per-commit approval marker and rejects a selective closure, control digest, manifest field, fifth image, OCI control artifact, new daemon, signing change, Kubernetes/HA, and offline expansion."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "deploy/systemd/sms-backup.service",
+          "claim": "Because root entry points resolve executable or policy bytes from the operator-updateable tree, operator compromise or error can plausibly influence root and Docker behavior even when the release manifest and images remain exact."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "scripts/deploy_release_remote.py",
+          "claim": "Because the operator can write local Git metadata, a syntactically valid commit alone cannot grant root execution authority; a root-controlled allow decision must precede snapshot activation."
+        }
+      ],
+      "desiredInvariants": [
+        "Every production root process executes repository bytes only from one complete root-owned versions/<40hex commit> generation.",
+        "The stable launcher takes the existing lifecycle lock before resolving current and pins one verified physical generation for the operation.",
+        "Host-control prepare, activate, status, launcher, and bootstrap require a root:root 0444 single-link approval marker containing exactly the 41 ASCII bytes <commit>\\n.",
+        "The normal wrapper, release manager, operator, and containers cannot create or repair approval markers.",
+        "Current is the only active host-control fact; approval markers authorize commits but never select the active generation.",
+        "Every snapshot manifest records exact commit, Git tree, and every regular tracked file's path, Git mode, size, and SHA-256; missing, extra, linked, or drifted entries fail closed.",
+        "The ordinary release lifecycle and signed manifest schema remain unchanged and bind exact commit, immutable release evidence, and four image RepoDigests.",
+        "The driver orders marker-gated host-control prepare/activate/status before ordinary release prepare/activate/status for production Registry releases.",
+        "Production env, canonical secrets, approval markers, and security-report state use fixed precreated OS paths with exact owner/mode contracts.",
+        "Application compensation never silently rolls schema or active control backward; different-commit host activation requires the current commit to be a Git ancestor of the candidate.",
+        "The offline reader remains compatibility-only and receives no host-control payload or automatic fallback role.",
+        "Single production and Ops VM failures remain explicitly non-HA residual risks."
+      ],
+      "proposalPath": "proposals/production-control-and-artifact-binding.md",
+      "options": [
+        {
+          "optionId": "full-root-release-tree",
+          "title": "Root-owned full release tree",
+          "kind": "structural",
+          "summary": "Replace the operator-owned active checkout with one root-owned full tree at the exact approved commit.",
+          "diagramPaths": {
+            "before": "diagrams/production-control-and-artifact-binding-before.mmd",
+            "after": "diagrams/production-control-and-artifact-binding-full-root-release-tree-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E001",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Root ownership removes the operator-checkout write-to-root path after every entry is migrated."
+            },
+            {
+              "evidenceId": "E002",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The operator Git workflow no longer mutates the active tree, requiring a redesigned source/data workflow."
+            },
+            {
+              "evidenceId": "E003",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "The existing state machine can remain, but full-tree identity and forward-control behavior need integration."
+            },
+            {
+              "evidenceId": "E004",
+              "effect": "unaffected",
+              "tacticalFixRequired": true,
+              "rationale": "Registry promotion and offline exit are required regardless of active tree ownership."
+            },
+            {
+              "evidenceId": "E005",
+              "effect": "unaffected",
+              "tacticalFixRequired": false,
+              "rationale": "Changing tree ownership does not remove the accepted single-VM failure domain."
+            },
+            {
+              "evidenceId": "E006",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "It can bind exact commit and images but over-couples application data/Git and OS release."
+            },
+            {
+              "evidenceId": "E007",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "It avoids new daemons/artifacts but still needs root commit authorization and a broader OS operating model."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "One root-owned active tree removes the observed checkout ownership edge and makes the trusted repository surface explicit.",
+              "validationPlan": "Tamper with every former checkout root entry and prove root always resolves the verified OS-owned tree."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "No SMS request-path hop is added; full-tree hashing/copy occurs during OS adoption.",
+              "validationPlan": "Measure full-tree plan/apply duration and require completion within the approved OS window."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "No resident process is introduced, although retained full trees consume disk.",
+              "validationPlan": "Measure peak verification RSS and retained-generation disk."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "unknown",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Atomic tree publication can improve crash behavior, but broad Git/data/persistence migration adds failure modes.",
+              "validationPlan": "Inject failures across full-tree publication and data migration; require one complete active tree or fail closed."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The familiar operator checkout and application-only release model are replaced by a broad OS-managed tree.",
+              "validationPlan": "Classify representative releases and rehearse operator workflows under the new tree model."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Git, staging, configuration, persistence, ownership, systemd, and release paths need coordinated redesign.",
+              "validationPlan": "Complete a pre-production cutover/reversal rehearsal without changing application data or schema."
+            }
+          ],
+          "residualRisks": [
+            "The full active tree is a large root trusted computing base.",
+            "OS and application release become operationally coupled.",
+            "Schema and control still cannot be automatically downgraded after activation side effects."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "scripts/deploy_release_remote.py",
+              "deploy/sms-compose",
+              "deploy/scripts/release_manager.py",
+              "deploy/systemd",
+              "operator Git and persistent-data workflow"
+            ],
+            "workPackages": [
+              "Implement full active-tree ownership and commit authorization.",
+              "Replace operator active-tree Git mutation.",
+              "Migrate configuration, persistence, and systemd entry points.",
+              "Validate forward-control recovery."
+            ],
+            "acceptanceCriteria": [
+              "No production root entry resolves to operator-writable bytes.",
+              "Atomic full-tree switch survives interruption without a mixed tree.",
+              "Application release preserves exact commit and forward-only schema behavior.",
+              "After first activation, the full tree remains on the same commit or advances only to a marker-authorized Git descendant; prior and divergent trees are never reactivated."
+            ],
+            "migrationNotes": [
+              "Prefer only if the operator checkout will be removed from production."
+            ],
+            "rollback": "Before first activation, abandon the staged tree without changing the active root. After activation, never reactivate a prior or divergent tree; repair with a separately approved descendant and use existing application recovery."
+          }
+        },
+        {
+          "optionId": "versioned-control-snapshot",
+          "title": "Commit-keyed full tracked-tree snapshot",
+          "kind": "structural",
+          "summary": "Keep operator Git evidence but execute privileged repository bytes from a complete root-owned versions/<commit> tree authorized by a root marker and selected only by current.",
+          "diagramPaths": {
+            "before": "diagrams/production-control-and-artifact-binding-before.mmd",
+            "after": "diagrams/production-control-and-artifact-binding-versioned-control-snapshot-after.mmd"
+          },
+          "implementationPath": "implementation/versioned-control-snapshot.md",
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E001",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Every privileged entry moves to the root-owned snapshot; complete tracked-tree coverage avoids selective-closure omissions."
+            },
+            {
+              "evidenceId": "E002",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Operator Git supplies exact bytes/evidence, while the root marker authorizes and the snapshot supplies execution."
+            },
+            {
+              "evidenceId": "E003",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The existing lifecycle remains the sole application recovery authority; current is the sole active host-control fact."
+            },
+            {
+              "evidenceId": "E004",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The design adopts Registry RepoDigest promotion and keeps offline support compatibility-only."
+            },
+            {
+              "evidenceId": "E005",
+              "effect": "unaffected",
+              "tacticalFixRequired": false,
+              "rationale": "The accepted production common failure domain remains."
+            },
+            {
+              "evidenceId": "E006",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The same exact commit identifies internal Git, the current root snapshot, release evidence, and the four images."
+            },
+            {
+              "evidenceId": "E007",
+              "effect": "addresses",
+              "tacticalFixRequired": false,
+              "rationale": "The root marker supplies authorization without a daemon, fifth artifact, control digest, or new state machine."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The design removes checkout bytes from root execution, copies the complete tracked tree, and prevents the operator from authorizing arbitrary local commits without a root marker.",
+              "validationPlan": "Run checkout, local-Git, marker, environment, systemd, snapshot, and Registry/evidence tamper matrices; require fail-closed behavior before side effects."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "No resident process or SMS request-path hop is added; the fixed baseline hashes/copies 1000 files and 16.93 MiB only during OS adoption/status checks.",
+              "validationPlan": "Measure marker, plan, first prepare, idempotent prepare, activate, status, and ordinary release wall time against pre-production baselines."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The design adds root-owned files and transient verification buffers, not a resident process, queue, or cache.",
+              "validationPlan": "Measure peak RSS and retained snapshot disk for the refreshed implementation revision."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Complete commit generations and one atomic relative current link yield deterministic interruption outcomes; marker authorization is stateless read-only validation.",
+              "validationPlan": "Inject failures before/after snapshot fsync, current replacement, launcher replacement, and every release transition."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Phase 0 requires one independently approved root marker and host-control adoption for every production Registry commit, plus fixed-path metadata review.",
+              "validationPlan": "Rehearse marker creation, driver plan, absent-marker rejection, snapshot adoption, ordinary release, and marker/snapshot retention cleanup."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "The launcher, snapshot/marker contracts, control/data root split, systemd paths, fixed OS metadata, and driver ordering require coordinated changes while application/schema contracts remain unchanged.",
+              "validationPlan": "Deliver reviewable work packages and complete pre-production bootstrap, idempotent retry, rollback, Registry release, reboot, backup, and restore rehearsals."
+            }
+          ],
+          "residualRisks": [
+            "A missed privileged entry can still re-enter the operator checkout even though the snapshot is complete.",
+            "The stable launcher, bootstrap, snapshot manager, marker OS process, and full tracked tree are a high-value root TCB.",
+            "A mistakenly approved malicious commit is faithfully root-executable; approval does not prove code correctness.",
+            "Ops VM or bridge compromise can correlate Git, Registry, evidence, monitoring, and backup failures if identities and keys are not separated.",
+            "The production and Ops VMs remain non-HA common failure domains.",
+            "Complete production-host root compromise can expose mounted secrets without KMS/HSM."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "deploy/scripts/production_control_snapshot.py",
+              "deploy/production-sms-compose-launcher",
+              "deploy/scripts/install_production_control_bootstrap.py",
+              "deploy/sms-compose",
+              "scripts/deploy_release_remote.py",
+              "deploy/scripts/release_manager.py",
+              "deploy/scripts/release_store.py",
+              "deploy/docker-compose.yml",
+              "deploy/systemd",
+              "fixed OS env/secrets/approval/security-report paths",
+              "Ops VM Git/Registry/evidence/observability/backup services"
+            ],
+            "workPackages": [
+              "Freeze exact full-tree, marker, path, and size contracts.",
+              "Validate exact 41-byte <commit>\\n root markers in prepare, activate, status, launcher, and bootstrap without exposing approval mutation.",
+              "Build and verify complete versions/<commit> generations from fixed Git objects.",
+              "Make current the only atomic active fact.",
+              "Bootstrap manager/snapshot/current first and stable launcher last with idempotent retry.",
+              "Precreate and preview fixed platform env, secrets, approval, and security-report owner/mode contracts.",
+              "Preserve the signed manifest and ReleaseStore state while splitting control and data roots.",
+              "Order Registry host-control adoption before the unchanged release lifecycle.",
+              "Reroute production systemd root entry points.",
+              "Complete pre-production security, crash, resource, release, backup, and restore validation."
+            ],
+            "acceptanceCriteria": [
+              "Every marker-authorized commit snapshot exactly equals its complete regular Git-tracked tree and canonical manifest.",
+              "Current is always a safe relative link to versions/<commit> and is the only active host-control fact.",
+              "The operator, normal wrapper/release actions, and containers cannot create approval markers; wrong owner, mode, link count, size, or <commit>\\n content fails closed.",
+              "No root production entry executes or imports operator-checkout bytes.",
+              "Fixed production env, secrets, approval, and security-report paths match reviewed owner/mode/type contracts.",
+              "Driver host-control prepare, activate, and status completes for the exact commit before unchanged release prepare, activate, and status.",
+              "Same-commit host activation is idempotent; every different activated commit is a marker-authorized Git descendant, while backward and divergent transitions fail closed.",
+              "No control digest, manifest field, host state, intent, journal, daemon, or installer state machine exists.",
+              "Existing recovery_required and forward-only schema behavior remains unchanged.",
+              "Internal Git, Registry, and release evidence remain; offline is compatibility-only."
+            ],
+            "migrationNotes": [
+              "Every Phase 0 production Registry commit incurs a lightweight independently approved root marker and OS adoption.",
+              "Historical offline packages remain compatibility/audit inputs and are not extended."
+            ],
+            "rollback": "Host control never activates a prior or divergent commit. Same-commit retry is idempotent; repair activates a separately approved descendant while application images use existing compensation/recovery."
+          }
+        },
+        {
+          "optionId": "privileged-release-agent",
+          "title": "Privileged release agent and separate control artifact",
+          "kind": "foundational",
+          "summary": "Introduce an Ops orchestrator, production root daemon, privileged protocol, and independently promoted control artifact.",
+          "diagramPaths": {
+            "before": "diagrams/production-control-and-artifact-binding-before.mmd",
+            "after": "diagrams/production-control-and-artifact-binding-privileged-release-agent-after.mmd"
+          },
+          "evidenceCoverage": [
+            {
+              "evidenceId": "E001",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A daemon can own privileged code, but becomes a new root attack surface."
+            },
+            {
+              "evidenceId": "E002",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Local operator Git can be removed from release authority, requiring a new protocol and identity model."
+            },
+            {
+              "evidenceId": "E003",
+              "effect": "unknown",
+              "tacticalFixRequired": true,
+              "rationale": "Daemon state must reconcile with ReleaseStore before forward-only guarantees can be assessed."
+            },
+            {
+              "evidenceId": "E004",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Registry can carry a control artifact, but that expands artifact/signing contracts."
+            },
+            {
+              "evidenceId": "E005",
+              "effect": "unaffected",
+              "tacticalFixRequired": false,
+              "rationale": "A release agent does not change the single production VM failure domain."
+            },
+            {
+              "evidenceId": "E006",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "The agent can join identities but replaces the approved local driver/lock boundary with a larger system."
+            },
+            {
+              "evidenceId": "E007",
+              "effect": "unaffected",
+              "tacticalFixRequired": false,
+              "rationale": "The option conflicts with KISS prohibitions on a daemon, fifth/OCI artifact, and signing changes."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "analogous",
+              "assessment": "A narrow service can centralize authorization, but adds a network-reachable root parser, credential, and protocol lifecycle.",
+              "validationPlan": "Threat-model and independently review authentication, authorization, replay, parsing, upgrade, and root capability boundaries."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Every release operation gains an orchestrator/agent protocol hop and serialization, though application traffic is unaffected.",
+              "validationPlan": "Benchmark end-to-end release operations against the direct-driver baseline."
+            },
+            {
+              "dimension": "memory",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "A resident daemon, request buffers, credentials, queues, and observability state consume persistent resources.",
+              "validationPlan": "Measure idle/peak RSS, queue bounds, and replay recovery memory."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "unknown",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Central coordination can help a fleet, but daemon/ReleaseStore state and orchestrator availability create new ambiguous failures for one host.",
+              "validationPlan": "Inject partitions, duplicate requests, crashes, orchestrator loss, upgrade mismatch, and ReleaseStore conflict."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The option requires daemon lifecycle, certificates, protocol compatibility, monitoring, and another privileged deployment channel.",
+              "validationPlan": "Produce and rehearse install, upgrade, key-rotation, and incident runbooks before reconsideration."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "It replaces the approved driver boundary and expands Registry, evidence, signing, and host installation contracts.",
+              "validationPlan": "Require a separate architecture review and prototype; do not combine with P0-A."
+            }
+          ],
+          "residualRisks": [
+            "The privileged network daemon becomes a high-value remote attack surface.",
+            "Daemon and ReleaseStore state can diverge.",
+            "A new control artifact/signing path can drift from the four-image release identity.",
+            "The option does not remove single-VM or Ops VM failure domains."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "new production daemon",
+              "new Ops orchestrator",
+              "new control artifact",
+              "new protocol and credentials",
+              "ReleaseStore reconciliation"
+            ],
+            "workPackages": [
+              "Complete a separate architecture and threat-model review."
+            ],
+            "acceptanceCriteria": [
+              "Not selected for P0-A."
+            ],
+            "migrationNotes": [
+              "Defer unless a measured multi-host coordination need appears."
+            ],
+            "rollback": "Not implementation-ready under current constraints."
+          }
+        }
+      ],
+      "recommendedOptionId": "versioned-control-snapshot",
+      "recommendation": "Use a stable root-owned launcher plus one root-authorized complete tracked-tree snapshot per exact production commit. The root marker authorizes, current alone selects, the driver orchestrates the OS sub-change, and the ordinary four-RepoDigest release lifecycle remains schema-compatible."
+    }
+  ],
+  "openQuestions": [
+    "Which two-person OS approvers create and retire root-owned commit markers?",
+    "What snapshot/marker retention floor covers the active commit, recovery_required evidence, and forensic/audit needs when inactive generations are not rollback targets?",
+    "Are numeric service IDs 10001 and 101 frozen on the production host for the security-report owner/mode contract?",
+    "Which production root systemd units are allowed and which test/development units must be absent or masked?",
+    "What measured pre-production time, RSS, and disk thresholds fit the OS maintenance window?",
+    "Which identities write and read the internal Git, Registry, and release-evidence channels?"
+  ]
+}

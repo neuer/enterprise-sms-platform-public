@@ -18,9 +18,10 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 STATE_ROOT = Path("/var/lib/sms-platform/continuity")
+PRODUCTION_ENVIRONMENT_FILE = Path("/etc/sms-platform/platform.env")
 STATE_FILE = "state.json"
 MAX_JSON_BYTES = 32 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -114,6 +115,38 @@ class SubprocessRunner:
         if completed.returncode != 0:
             raise ContinuityError("continuity compose command failed")
         return completed.stdout
+
+
+def _validate_production_environment_file(
+    path: Path,
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> Path:
+    """验证生产环境文件及其不可由 operator 替换的父目录。"""
+
+    try:
+        parent_info = path.parent.lstat()
+        file_info = path.lstat()
+    except OSError as exc:
+        raise ContinuityError("production environment file is invalid") from exc
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or stat.S_ISLNK(parent_info.st_mode)
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or parent_info.st_uid != expected_uid
+        or parent_info.st_gid != expected_gid
+        or stat.S_IMODE(parent_info.st_mode) & 0o022
+        or stat.S_ISLNK(file_info.st_mode)
+        or not stat.S_ISREG(file_info.st_mode)
+        or file_info.st_uid != expected_uid
+        or file_info.st_gid != expected_gid
+        or stat.S_IMODE(file_info.st_mode) != 0o600
+        or file_info.st_nlink != 1
+    ):
+        raise ContinuityError("production environment file is invalid")
+    return path
 
 
 def utc_now() -> datetime:
@@ -292,14 +325,34 @@ class ContinuityManager:
     def __init__(
         self,
         *,
-        root: Path,
+        platform_root: Path,
+        control_root: Path | None = None,
+        environment_file: Path | None = None,
+        mode: Literal["production", "development"] = "development",
         state_root: Path = STATE_ROOT,
         runner: Runner | None = None,
         clock: Callable[[], datetime] = utc_now,
         expected_uid: int = 0,
         expected_gid: int = 0,
     ) -> None:
-        self.root = root.absolute()
+        self.platform_root = platform_root.absolute()
+        self.control_root = (control_root or platform_root).absolute()
+        if mode == "production":
+            if environment_file != PRODUCTION_ENVIRONMENT_FILE:
+                raise ContinuityError("production environment file is invalid")
+            self.environment_file = _validate_production_environment_file(
+                environment_file,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            ).absolute()
+        else:
+            expected_environment_file = self.platform_root / ".env"
+            if (
+                environment_file is not None
+                and environment_file.absolute() != expected_environment_file
+            ):
+                raise ContinuityError("development environment file is invalid")
+            self.environment_file = expected_environment_file
         self.state_root = state_root.absolute()
         self.runner = runner or SubprocessRunner()
         self.clock = clock
@@ -548,11 +601,14 @@ class ContinuityManager:
             "docker",
             "compose",
             "--env-file",
-            str(self.root / ".env"),
+            str(self.environment_file),
             *(
                 argument
                 for filename in COMPOSE_FILES
-                for argument in ("-f", str(self.root / "deploy" / filename))
+                for argument in (
+                    "-f",
+                    str(self.control_root / "deploy" / filename),
+                )
             ),
         ]
 
@@ -692,7 +748,15 @@ class ContinuityManager:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="production continuity fence")
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument(
+        "--root",
+        "--platform-root",
+        dest="platform_root",
+        required=True,
+        type=Path,
+    )
+    parser.add_argument("--control-root", type=Path)
+    parser.add_argument("--environment-file", type=Path)
     parser.add_argument("--mode", required=True, choices=("production", "development"))
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("gate")
@@ -716,7 +780,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     ):
         raise ContinuityError("continuity mutation requires lifecycle lock")
-    manager = ContinuityManager(root=arguments.root)
+    manager = ContinuityManager(
+        platform_root=arguments.platform_root,
+        control_root=arguments.control_root,
+        environment_file=arguments.environment_file,
+        mode=arguments.mode,
+    )
     if arguments.command == "gate":
         result = manager.gate()
     elif arguments.command == "status":

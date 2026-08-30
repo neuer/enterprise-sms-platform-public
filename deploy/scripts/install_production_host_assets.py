@@ -268,7 +268,7 @@ def build_asset_specs(
     systemd_root: Path,
     local_sbin_root: Path,
 ) -> tuple[AssetSpec, ...]:
-    """Return the exact 17 regular files and one fixed wrapper symlink."""
+    """Return the exact 16 regular files and one fixed wrapper symlink."""
 
     regular = (
         (
@@ -310,13 +310,6 @@ def build_asset_specs(
             "platform-unit",
             "deploy/systemd/sms-platform.service",
             systemd_root / "sms-platform.service",
-            0o644,
-            "100644",
-        ),
-        (
-            "vendor-control-unit",
-            "deploy/systemd/vendor-control-agent.service",
-            systemd_root / "vendor-control-agent.service",
             0o644,
             "100644",
         ),
@@ -984,6 +977,7 @@ class ProductionHostAssetInstaller:
 
     def _require_services_inactive(self) -> None:
         self._require_docker_units_masked_inactive()
+        self._require_production_test_boundary()
 
         platform_load = self.runner.run(
             (
@@ -1008,13 +1002,50 @@ class ProductionHostAssetInstaller:
                 "the not-yet-installed platform unit must be absent"
             )
 
+    def _require_production_test_boundary(self) -> None:
+        """生产宿主不得携带 test marker 或 development-only root unit。"""
+
+        if _lexists(self.etc_root / "test-host") or _lexists(
+            self.systemd_root / "vendor-control-agent.service"
+        ):
+            raise HostAssetInstallError(
+                "development-only vendor control assets must be absent"
+            )
+        load = self.runner.run(
+            (
+                SYSTEMCTL_BINARY,
+                "show",
+                "--property=LoadState",
+                "--value",
+                "vendor-control-agent.service",
+            )
+        )
+        active = self.runner.run(
+            (
+                SYSTEMCTL_BINARY,
+                "show",
+                "--property=ActiveState",
+                "--value",
+                "vendor-control-agent.service",
+            )
+        )
+        if (
+            load.returncode != 0
+            or load.stdout.strip() != b"not-found"
+            or active.returncode != 0
+            or active.stdout.strip() != b"inactive"
+        ):
+            raise HostAssetInstallError(
+                "development-only vendor control unit must be absent"
+            )
+
     def _require_upgrade_prebootstrap(self) -> None:
         """Prove the completed host install has not crossed first bootstrap."""
 
         self._require_docker_units_masked_inactive()
+        self._require_production_test_boundary()
         expected_enablement = {
             "sms-platform.service": (b"disabled", 1),
-            "vendor-control-agent.service": (b"disabled", 1),
             "sms-partition-maintenance.timer": (b"disabled", 1),
             "sms-backup.timer": (b"disabled", 1),
             "sms-restore-drill.timer": (b"static", 0),
@@ -2706,6 +2737,14 @@ class ProductionHostAssetInstaller:
         """Inspect the commit-last state and every installed asset without mutation."""
 
         present = [asset for asset in self.assets if _lexists(asset.destination)]
+        try:
+            self._require_production_test_boundary()
+        except (HostAssetInstallError, OSError):
+            return {
+                "action": "status",
+                "assets_present": len(present),
+                "status": "drifted",
+            }
         intent = self._load_intent()
         upgrade_intent = self._load_upgrade_intent()
         if _lexists(self._upgrade_intent_path()) and upgrade_intent is None:

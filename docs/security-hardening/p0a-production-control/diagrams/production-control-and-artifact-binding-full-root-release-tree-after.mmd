@@ -1,0 +1,40 @@
+flowchart LR
+  GH["GitHub Release Gate"] --> BRIDGE["Controlled bridge"]
+  OSCHANGE["Independent OS change approval"]
+
+  subgraph OPS["Ops VM"]
+    GIT["Internal Git mirror"]
+    REG["Private Registry\n4 image RepoDigests"]
+    EVID["Release evidence store"]
+    OBS["Monitoring + logs +\nencrypted backup"]
+  end
+
+  BRIDGE --> GIT
+  BRIDGE --> REG
+  BRIDGE --> EVID
+
+  subgraph PROD["Single production VM"]
+    TREE["Root-owned full release tree\nexact Git commit"]
+    APPROVE["Root-owned commit marker"]
+    WRAP["Stable root-owned launcher"]
+    LOCK["Lifecycle lock + ReleaseStore"]
+    DOCKER["Docker / Compose root authority"]
+    RUNTIME["Core + PostgreSQL +\nRedis broker/auth/control"]
+
+    WRAP --> TREE
+    APPROVE --> TREE
+    TREE --> LOCK
+    TREE --> DOCKER
+    DOCKER --> RUNTIME
+  end
+
+  GIT -->|"OS change installs full tree"| TREE
+  OSCHANGE -->|"creates marker"| APPROVE
+  REG -->|"read-only pull by RepoDigest"| DOCKER
+  EVID -->|"exact commit + 4 RepoDigests"| LOCK
+  RUNTIME --> OBS
+
+  classDef trusted fill:#d9ead3,stroke:#38761d,color:#111;
+  classDef control fill:#cfe2f3,stroke:#0b5394,color:#111;
+  class TREE,WRAP,APPROVE trusted;
+  class LOCK,EVID,REG,GIT control;

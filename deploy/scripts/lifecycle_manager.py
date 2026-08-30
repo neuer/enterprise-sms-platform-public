@@ -14,7 +14,7 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -180,6 +180,11 @@ CLI_BACKUP_STATUS_FIELDS = frozenset(
 CLI_SENSITIVE_FIELD = re.compile(r"(?:password|passphrase|secret)", re.IGNORECASE)
 CLI_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_BACKUP_ROOT = Path("/var/lib/sms-platform/runtime/backups")
+PRODUCTION_LIFECYCLE_CONFIG = Path("/etc/sms-platform/lifecycle.json")
+PRODUCTION_PLATFORM_ENVIRONMENT = Path("/etc/sms-platform/platform.env")
+PRODUCTION_BACKUP_PASSPHRASE = Path(
+    "/etc/sms-platform/backup-secrets/sms-backup-passphrase"
+)
 
 
 class SyncRunner(Protocol):
@@ -631,13 +636,69 @@ def _bounded_int(value: object, label: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def load_config(path: Path) -> LifecycleConfig:
+def _validate_fixed_private_file(
+    path: Path,
+    label: str,
+    *,
+    expected_uid: int,
+    expected_gid: int,
+) -> os.stat_result:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ValueError(f"{label} is unavailable") from error
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != expected_uid
+        or metadata.st_gid != expected_gid
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError(f"{label} must be a root-owned regular 0600 file")
+    return metadata
+
+
+def _validate_production_environment_file(
+    path: Path,
+    *,
+    expected_uid: int,
+    expected_gid: int,
+) -> None:
+    try:
+        parent = path.parent.lstat()
+    except OSError as error:
+        raise ValueError("production environment file parent is unavailable") from error
+    if (
+        stat.S_ISLNK(parent.st_mode)
+        or not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != expected_uid
+        or parent.st_gid != expected_gid
+        or stat.S_IMODE(parent.st_mode) & 0o022
+    ):
+        raise ValueError("production environment file parent is unsafe")
+    _validate_fixed_private_file(
+        path,
+        "production environment file",
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
+
+
+def load_config(
+    path: Path,
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> LifecycleConfig:
     """读取仅含路径和恢复目标的 0600 配置，拒绝链接与额外字段。"""
 
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("lifecycle config must be a regular non-symlink file")
-    if stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise ValueError("lifecycle config permissions must be 0600")
+    _validate_fixed_private_file(
+        path,
+        "lifecycle config",
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -702,9 +763,10 @@ class LifecycleService:
 
     def __init__(
         self,
-        repository_root: Path,
+        platform_root: Path,
         passphrase_file: Path,
         *,
+        control_root: Path | None = None,
         runner: CommandRunner | None = None,
         sync_service: SyncRunner | None = None,
         restore_service: DrillRunner | None = None,
@@ -713,12 +775,14 @@ class LifecycleService:
         generation_reader: Callable[[Path], str] = read_root_generation_id_file,
         marker_validator: Callable[[], None] = _validate_preproduction_marker,
     ) -> None:
-        self.repository_root = repository_root
+        self.platform_root = platform_root.absolute()
+        self.control_root = (control_root or platform_root).absolute()
         self.passphrase_file = passphrase_file
         command_runner = runner or CommandRunner()
         self.sync_service = sync_service or SyncService(
             command_runner,
             generation_reader=generation_reader,
+            secure_production_git=True,
         )
         self.restore_service = restore_service or RestoreService(
             command_runner,
@@ -787,7 +851,7 @@ class LifecycleService:
         if config.output_root.is_symlink():
             raise ValueError("output root must not be a symlink")
         if config.output_root.resolve(strict=False).is_relative_to(
-            self.repository_root.resolve(strict=True)
+            self.platform_root.resolve(strict=True)
         ):
             raise ValueError("backup output root must be outside the repository")
         for child_name in BACKUP_OUTPUT_CHILDREN:
@@ -806,7 +870,7 @@ class LifecycleService:
         if not config.output_root.is_dir():
             raise ValueError("output root must be a directory")
         if config.output_root.resolve().is_relative_to(
-            self.repository_root.resolve(strict=True)
+            self.platform_root.resolve(strict=True)
         ):
             raise ValueError("backup output root must be outside the repository")
         config.output_root.chmod(0o700)
@@ -1447,8 +1511,8 @@ class LifecycleService:
             # pg_dump/加密可耗时数小时，不能占用生命周期账本锁。
             result = self.sync_service.run(
                 SyncConfig(
-                    repository_root=self.repository_root,
-                    compose_file=self.repository_root / "deploy/docker-compose.yml",
+                    repository_root=self.platform_root,
+                    compose_file=self.control_root / "deploy/docker-compose.yml",
                     environment_file=config.environment_file,
                     output_dir=config.output_root,
                     passphrase_file=self.passphrase_file,
@@ -1481,9 +1545,10 @@ class LifecycleService:
                     and existing.get("commit_phase") == "ledger_committed"
                     and existing.get("integrity_verified") is True
                 )
-                if not already_committed:
-                    if self._register_snapshot_published(state, result.snapshot_id):
-                        self._save_state(config, state)
+                if not already_committed and self._register_snapshot_published(
+                    state, result.snapshot_id
+                ):
+                    self._save_state(config, state)
                 evidence = self._verify_snapshot(config, result.snapshot_id)
                 snapshot_state = state["snapshots"].get(result.snapshot_id)
                 if not isinstance(snapshot_state, dict):
@@ -1618,8 +1683,9 @@ class LifecycleService:
             restore_budget = self._remaining(deadline)
             result = self.restore_service.run(
                 RestoreConfig(
-                    repository_root=self.repository_root,
-                    compose_file=self.repository_root / "deploy/docker-compose.yml",
+                    repository_root=self.platform_root,
+                    compose_file=self.control_root / "deploy/docker-compose.yml",
+                    environment_file=config.environment_file,
                     backup_file=evidence.backup_file,
                     manifest_file=evidence.manifest_file,
                     passphrase_file=self.passphrase_file,
@@ -1972,15 +2038,42 @@ class LifecycleService:
             return LifecycleStatus(evidence=evidence, healthy=healthy)
 
 
-def _runtime_config() -> tuple[LifecycleConfig, Path]:
+def _runtime_config(
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> tuple[LifecycleConfig, Path]:
     config_value = os.environ.get("SMS_LIFECYCLE_CONFIG", "")
     passphrase_value = os.environ.get("BACKUP_PASSPHRASE_FILE", "")
     if not config_value or not passphrase_value:
         raise ValueError("lifecycle config and passphrase file paths are required")
-    config = load_config(Path(config_value))
+    config_path = Path(config_value)
+    passphrase_path = Path(passphrase_value)
+    if config_path != PRODUCTION_LIFECYCLE_CONFIG:
+        raise ValueError("production lifecycle config path is fixed")
+    if passphrase_path != PRODUCTION_BACKUP_PASSPHRASE:
+        raise ValueError("production backup passphrase path is fixed")
+    config = load_config(
+        config_path,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
     if config.output_root != PRODUCTION_BACKUP_ROOT:
         raise ValueError("production backup output root is fixed")
-    return config, Path(passphrase_value)
+    if config.environment_file != PRODUCTION_PLATFORM_ENVIRONMENT:
+        raise ValueError("production environment file path is fixed")
+    _validate_production_environment_file(
+        config.environment_file,
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
+    _validate_fixed_private_file(
+        passphrase_path,
+        "production backup passphrase",
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+    )
+    return config, passphrase_path
 
 
 def _alert(operation: str, error: BaseException) -> None:
@@ -1998,16 +2091,38 @@ def _alert(operation: str, error: BaseException) -> None:
     )
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    default_root = Path(__file__).resolve().parents[2]
+    parser.add_argument(
+        "--root",
+        "--platform-root",
+        dest="platform_root",
+        type=Path,
+        default=default_root,
+        help="mutable platform root (defaults to the source tree for development)",
+    )
+    parser.add_argument(
+        "--control-root",
+        type=Path,
+        default=None,
+        help="immutable control root (defaults to platform root for development)",
+    )
     parser.add_argument(
         "operation", choices=("backup", "drill", "status", "backup-status")
     )
-    args = parser.parse_args()
-    root = Path(__file__).resolve().parents[2]
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     try:
         config, passphrase = _runtime_config()
-        service = LifecycleService(root, passphrase)
+        service = LifecycleService(
+            args.platform_root,
+            passphrase,
+            control_root=args.control_root,
+        )
         healthy: bool | None = None
         if args.operation == "backup":
             evidence = service.backup(config)

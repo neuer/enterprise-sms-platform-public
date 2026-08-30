@@ -124,6 +124,7 @@ def prepare_portably(module: ModuleType, source: Path, runtime: Path) -> None:
         redis_tls_ca_path=ca,
         redis_tls_certificate_path=certificate,
         redis_tls_public_owner=(uid, gid),
+        production_source_owner=(uid, gid),
     )
 
 
@@ -138,6 +139,33 @@ def revoke_portably(module: ModuleType, source: Path, runtime: Path) -> None:
         migrate_owner=(uid, gid),
         require_root=False,
     )
+
+
+def test_production_source_requires_the_fixed_directory_and_file_owner(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, _ = make_source(tmp_path)
+    uid, gid = os.getuid(), os.getgid()
+
+    with pytest.raises(
+        module.RuntimeSecretsError,
+        match="production source directory owner must be root:root",
+    ):
+        module._validate_source_inventory(
+            source,
+            "production",
+            production_owner=(uid + 1, gid),
+        )
+
+    with pytest.raises(
+        module.RuntimeSecretsError,
+        match="owner must match the production contract",
+    ):
+        module._read_source_file(
+            source / "jwt_secret",
+            "jwt_secret",
+            expected_owner=(uid + 1, gid),
+        )
 
 
 def test_prepare_creates_service_specific_0400_copies(

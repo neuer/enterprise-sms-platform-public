@@ -1,5 +1,20 @@
 # 生产部署索引
 
+> **V1 正式路径替代说明（优先于本文后续旧路径与示例）：**
+> V1 目标正常发布路径收口为 GitHub Release Gate 经受控桥接机同步至 Ops VM 的
+> 内部 Git 镜像、私有 Registry 和发布证据库，生产共同校验精确 commit 与
+> 四个 `image@sha256:RepoDigest`。首次采用前必须通过**独立 OS 变更**预建
+> `/etc/sms-platform/platform.env` (`root:root 0600`)、
+> `/etc/sms-platform/secrets` (`root:root 0700`，规范子项 `0600`)、
+> `/etc/sms-platform/production-control-approved/<commit>`（`root:root 0444`，精确
+> 41 字节 `<commit>\n`）与 `/var/lib/sms-platform/security-report`的审核后所有权/模式；
+> 然后先就绪 manager、`versions/<commit>` 完整 Git tracked tree snapshot 和唯一原子事实
+> `current -> versions/<commit>`，最后原子替换 stable launcher。因此，后文凡把项目根
+> `.env`、`deploy/secrets`、operator checkout symlink、“内部 Registry 尚未建成/未来
+> Registry”或临时离线包写成正常生产权威的表述，均只是历史兼容语境；
+> 离线通道仅保留兼容，不自动回退、不扩展。实施合同见
+> [P0-A 生产控制加固](../docs/security-hardening/p0a-production-control/hardening.md)。
+
 API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
 `deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更通常先在同版本预生产或隔离环境执行；内部 Registry 尚未建成期间，满足下文“临时离线无迁移整包快速更新”条件且操作者明确接受风险时，预生产不作为硬前置。不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
@@ -120,7 +135,7 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
 ```
 
-该入口把上述 17 个普通文件及 `/usr/local/sbin/sms-compose` 固定链接作为闭集安装，拒绝覆盖
+该入口把上述 16 个普通文件及 `/usr/local/sbin/sms-compose` 固定链接作为闭集安装，拒绝覆盖
 任何已有目标，其中存储检查固定安装为 `/usr/local/sbin/sms-storage-preflight`；并把来源 commit
 与逐文件摘要写入最后提交的 root-owned 状态文件。它不执行
 APT/Git/磁盘/fstab/mount、secret、`.env`、Docker/Compose 或 systemd 生命周期动作。`status`
@@ -129,10 +144,12 @@ APT/Git/磁盘/fstab/mount、secret、`.env`、Docker/Compose 或 systemd 生命
 
 闭集具体包括 `compose.env`、`sms-storage-preflight`、`sms-storage-preflight.service`、
 `10-sms-platform-storage.conf`、`10-storage-preflight.conf`、`sms-platform.service`、
-`vendor-control-agent.service`、`lifecycle.json`、`lifecycle.env`，以及 partition、backup、
-restore-drill、lifecycle-status 各自的 service/timer，共 17 个普通文件和一个 wrapper symlink。
+`lifecycle.json`、`lifecycle.env`，以及 partition、backup、restore-drill、lifecycle-status
+各自的 service/timer，共 16 个普通文件和一个 wrapper symlink。生产 plan/apply/status 还要求
+`vendor-control-agent.service` 与 `/etc/sms-platform/test-host` 均不存在；旧主机不在本入口内
+自动删除或迁移，必须由另行批准的 OS 变更先行处置。
 
-该安装器的常规路径仍只用于首装；常规 release 不会更新上述 17 个 root-owned 文件。
+该安装器的常规路径仍只用于首装；常规 release 不会更新上述 16 个 root-owned 文件。
 `sms-compose` 又是指向 production operator 可写 checkout 的 symlink，因此该 operator 必须按
 root-equivalent 受信身份管理。当前只额外提供一次、首次 bootstrap 前的 mountinfo credential
 修复入口：旧状态必须精确绑定
@@ -143,9 +160,9 @@ root-equivalent 受信身份管理。当前只额外提供一次、首次 bootst
 或任意第七项发生变化都会失败关闭；五个 unit 必须保持原有 `CapabilityBoundingSet`，不得出现
 `CAP_SYS_PTRACE`，并精确加载 `/proc/1/mountinfo` credential 与受控环境标记。
 
-该窄入口还要求 Docker/containerd 保持 masked/inactive、Docker root 为空，平台与 vendor unit
-以及 partition、backup、lifecycle-status 三个 timer 均 disabled/inactive，restore-drill timer
-保持 static/inactive，四个维护 service inactive，且
+该窄入口还要求 Docker/containerd 保持 masked/inactive、Docker root 为空，平台 unit 以及
+partition、backup、lifecycle-status 三个 timer 均 disabled/inactive，vendor unit 与 test-host
+标记完全不存在，restore-drill timer 保持 static/inactive，四个维护 service inactive，且
 `/var/lib/sms-platform/releases` 不存在或为空。它不适用于已 bootstrap 或已经准备 release 的
 主机，也不关闭通用宿主资产升级 ENG-03。整个 plan/apply/验收/accept 窗口必须由
 同一变更单独占；其他 root 操作者不得并发启动 Docker、平台、vendor、维护 unit 或准备
@@ -264,7 +281,6 @@ storage preflight，不重复执行这里的手工启动）：
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/sms-platform.service
 sudo systemd-analyze verify /etc/systemd/system/sms-storage-preflight.service
-sudo systemd-analyze verify /etc/systemd/system/vendor-control-agent.service
 sudo systemd-analyze verify \
   /etc/systemd/system/sms-partition-maintenance.service \
   /etc/systemd/system/sms-backup.service \

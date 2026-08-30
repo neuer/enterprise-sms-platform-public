@@ -1,0 +1,439 @@
+#!/usr/bin/python3 -I
+"""Stable root-owned launcher for one verified production control snapshot."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path, PurePosixPath
+
+CONTROL_BASE = Path("/usr/local/libexec/sms-platform/production-control")
+VERSIONS_ROOT = CONTROL_BASE / "versions"
+CURRENT_LINK = CONTROL_BASE / "current"
+APPROVAL_ROOT = Path("/etc/sms-platform/production-control-approved")
+MANIFEST_NAME = ".sms-platform-production-control-manifest.json"
+PROJECT_ROOT = Path("/opt/sms-platform")
+RUNTIME_ROOT = Path("/run/sms-platform/secrets")
+MAX_TRACKED_FILES = 10_000
+MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
+MAX_TOTAL_BYTES = 512 * 1024 * 1024
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_PATH_BYTES = 512
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+PRODUCTION_OPERATOR_UID = "1000"
+FIXED_SMS_ENVIRONMENT = {
+    "SMS_PLATFORM_ROOT": str(PROJECT_ROOT),
+    "SMS_RUNTIME_ROOT": str(RUNTIME_ROOT),
+    "SMS_SECRETS_MODE": "production",
+    "SMS_VENDOR_CONTROL_SOCKET_DIR": "/run/sms-platform/vendor-control",
+    "SMS_VENDOR_CREDENTIAL_ROOT": "/var/lib/sms-platform/vendor-test/credentials",
+    "SMS_VENDOR_TEST_STATE_DIR": "/var/lib/sms-platform/vendor-test",
+}
+LIFECYCLE_CONFIG = "/etc/sms-platform/lifecycle.json"
+BACKUP_PASSPHRASE = "/etc/sms-platform/backup-secrets/sms-backup-passphrase"
+SYSTEMD_CREDENTIAL_DIRECTORY = re.compile(
+    r"/run/credentials/(?:sms-backup|sms-restore-drill|sms-lifecycle-status|"
+    r"sms-partition-maintenance)\.service"
+)
+
+
+class LauncherError(RuntimeError):
+    """The stable launcher cannot prove its immutable execution boundary."""
+
+
+def _fail(message: str) -> None:
+    print(f"sms-compose-launcher: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _validate_environment() -> dict[str, str]:
+    allowed_sms = set(FIXED_SMS_ENVIRONMENT) | {
+        "SMS_LIFECYCLE_CONFIG",
+        "SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL",
+    }
+    for name in os.environ:
+        if name.startswith(("COMPOSE_", "DOCKER_")) or (
+            name.startswith("SMS_") and name not in allowed_sms
+        ):
+            raise LauncherError(f"production environment override is forbidden: {name}")
+    for name, expected in FIXED_SMS_ENVIRONMENT.items():
+        if os.environ.get(name, expected) != expected:
+            raise LauncherError(f"production environment override is forbidden: {name}")
+
+    lifecycle_config = os.environ.get("SMS_LIFECYCLE_CONFIG")
+    backup_passphrase = os.environ.get("BACKUP_PASSPHRASE_FILE")
+    if (lifecycle_config is None) != (backup_passphrase is None) or (
+        lifecycle_config is not None
+        and (
+            lifecycle_config != LIFECYCLE_CONFIG
+            or backup_passphrase != BACKUP_PASSPHRASE
+        )
+    ):
+        raise LauncherError("lifecycle environment is invalid")
+
+    mountinfo_marker = os.environ.get("SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL")
+    credential_directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if (mountinfo_marker is None) != (credential_directory is None) or (
+        mountinfo_marker is not None
+        and (
+            mountinfo_marker != "1"
+            or credential_directory is None
+            or SYSTEMD_CREDENTIAL_DIRECTORY.fullmatch(credential_directory) is None
+        )
+    ):
+        raise LauncherError("systemd credential environment is invalid")
+
+    sudo_uid = os.environ.get("SUDO_UID")
+    if sudo_uid is not None and sudo_uid != PRODUCTION_OPERATOR_UID:
+        raise LauncherError("production operator identity is invalid")
+
+    environment = {
+        "HOME": "/root",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "LOGNAME": "root",
+        "PATH": SAFE_PATH,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "SHELL": "/bin/bash",
+        "USER": "root",
+        **FIXED_SMS_ENVIRONMENT,
+    }
+    if lifecycle_config is not None and backup_passphrase is not None:
+        environment["SMS_LIFECYCLE_CONFIG"] = lifecycle_config
+        environment["BACKUP_PASSPHRASE_FILE"] = backup_passphrase
+    if mountinfo_marker is not None and credential_directory is not None:
+        environment["SMS_STORAGE_HOST_MOUNTINFO_CREDENTIAL"] = mountinfo_marker
+        environment["CREDENTIALS_DIRECTORY"] = credential_directory
+    if sudo_uid is not None:
+        environment["SUDO_UID"] = sudo_uid
+    return environment
+
+
+def _validate_directory(
+    path: Path,
+    *,
+    modes: set[int],
+    uid: int = 0,
+    gid: int = 0,
+) -> os.stat_result:
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != uid
+        or metadata.st_gid != gid
+        or stat.S_IMODE(metadata.st_mode) not in modes
+    ):
+        raise LauncherError(f"unsafe directory metadata: {path}")
+    return metadata
+
+
+def _acquire_lifecycle_lock() -> int:
+    lock_path = Path(f"{RUNTIME_ROOT}.lifecycle.lock")
+    parent = lock_path.parent
+    if not parent.exists():
+        parent.mkdir(mode=0o700)
+    _validate_directory(parent, modes={0o700, 0o710, 0o750, 0o755})
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or metadata.st_nlink != 1
+        ):
+            raise LauncherError("lifecycle lock metadata is unsafe")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.set_inheritable(descriptor, True)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _safe_manifest_path(raw: object) -> str:
+    if (
+        type(raw) is not str
+        or not raw
+        or not raw.isascii()
+        or len(raw.encode("ascii")) > MAX_PATH_BYTES
+        or re.fullmatch(r"[A-Za-z0-9._+@/-]+", raw) is None
+    ):
+        raise LauncherError("snapshot manifest path is invalid")
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or "." in path.parts:
+        raise LauncherError("snapshot manifest path is invalid")
+    if str(path) != raw or raw == MANIFEST_NAME:
+        raise LauncherError("snapshot manifest path is invalid")
+    return raw
+
+
+def _parse_manifest(raw: bytes, commit: str) -> list[dict[str, object]]:
+    """Parse the canonical manifest under the same frozen bound as its manager."""
+
+    if not raw.endswith(b"\n"):
+        raise LauncherError("snapshot manifest encoding is invalid")
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LauncherError("snapshot manifest is invalid") from exc
+    if (
+        type(document) is not dict
+        or set(document) != {"schema_version", "commit", "tree", "files"}
+        or document["schema_version"] != 1
+        or document["commit"] != commit
+        or type(document["tree"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", document["tree"]) is None
+        or type(document["files"]) is not list
+        or not 1 <= len(document["files"]) <= MAX_TRACKED_FILES
+    ):
+        raise LauncherError("snapshot manifest contract is invalid")
+    canonical = (
+        json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("ascii")
+    if raw != canonical:
+        raise LauncherError("snapshot manifest is not canonical")
+    return document["files"]
+
+
+def _read_manifest(version_root: Path, commit: str) -> list[dict[str, object]]:
+    manifest_path = version_root / MANIFEST_NAME
+    descriptor = os.open(
+        manifest_path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o444
+            or metadata.st_size > MAX_MANIFEST_BYTES
+        ):
+            raise LauncherError("snapshot manifest metadata is unsafe")
+        raw = os.read(descriptor, MAX_MANIFEST_BYTES + 1)
+        if len(raw) != metadata.st_size or os.read(descriptor, 1):
+            raise LauncherError("snapshot manifest size changed")
+    finally:
+        os.close(descriptor)
+    return _parse_manifest(raw, commit)
+
+
+def _validate_snapshot(version_root: Path, files: list[dict[str, object]]) -> Path:
+    expected: set[str] = set()
+    expected_directories: set[str] = set()
+    previous = ""
+    total_size = 0
+    for entry in files:
+        if type(entry) is not dict or set(entry) != {"path", "mode", "size", "sha256"}:
+            raise LauncherError("snapshot file manifest is invalid")
+        relative = _safe_manifest_path(entry["path"])
+        if relative <= previous or relative in expected:
+            raise LauncherError("snapshot file manifest order is invalid")
+        previous = relative
+        expected.add(relative)
+        parent = PurePosixPath(relative).parent
+        while str(parent) != ".":
+            expected_directories.add(str(parent))
+            parent = parent.parent
+        mode = entry["mode"]
+        size = entry["size"]
+        digest = entry["sha256"]
+        if (
+            mode not in {"100644", "100755"}
+            or type(size) is not int
+            or not 0 <= size <= MAX_SINGLE_FILE_BYTES
+            or type(digest) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise LauncherError("snapshot file manifest entry is invalid")
+        total_size += size
+        if total_size > MAX_TOTAL_BYTES:
+            raise LauncherError("snapshot file manifest is too large")
+        path = version_root / relative
+        expected_mode = 0o555 if mode == "100755" else 0o444
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != 0
+                or metadata.st_gid != 0
+                or metadata.st_nlink != 1
+                or stat.S_IMODE(metadata.st_mode) != expected_mode
+                or metadata.st_size != size
+            ):
+                raise LauncherError(f"snapshot file verification failed: {relative}")
+            hasher = hashlib.sha256()
+            consumed = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                consumed += len(chunk)
+                if consumed > MAX_SINGLE_FILE_BYTES:
+                    raise LauncherError(f"snapshot file verification failed: {relative}")
+                hasher.update(chunk)
+            if consumed != size or hasher.hexdigest() != digest:
+                raise LauncherError(f"snapshot file verification failed: {relative}")
+        finally:
+            os.close(descriptor)
+
+    actual: set[str] = set()
+    actual_directories: set[str] = set()
+    for directory, directory_names, file_names in os.walk(version_root, followlinks=False):
+        directory_path = Path(directory)
+        _validate_directory(directory_path, modes={0o555})
+        for name in directory_names:
+            child = directory_path / name
+            _validate_directory(child, modes={0o555})
+            actual_directories.add(child.relative_to(version_root).as_posix())
+        for name in file_names:
+            relative = (directory_path / name).relative_to(version_root).as_posix()
+            if relative == MANIFEST_NAME:
+                continue
+            actual.add(relative)
+    if actual != expected or actual_directories != expected_directories:
+        raise LauncherError("snapshot contains missing or unmanifested files")
+
+    wrapper = version_root / "deploy" / "sms-compose"
+    if "deploy/sms-compose" not in expected or not os.access(wrapper, os.X_OK):
+        raise LauncherError("snapshot wrapper is unavailable")
+    return wrapper
+
+
+def _validate_approved_commit(
+    commit: str,
+    *,
+    approval_root: Path = APPROVAL_ROOT,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> None:
+    """Fail closed unless an independent OS change approved this commit."""
+
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise LauncherError("production control approval commit is invalid")
+    try:
+        _validate_directory(
+            approval_root,
+            modes={0o755},
+            uid=expected_uid,
+            gid=expected_gid,
+        )
+        marker = approval_root / commit
+        before = marker.lstat()
+        descriptor = os.open(marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except (OSError, LauncherError) as exc:
+        raise LauncherError("production control approval marker is unavailable") from exc
+    try:
+        opened = os.fstat(descriptor)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        opened_identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        if (
+            before_identity != opened_identity
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != expected_uid
+            or opened.st_gid != expected_gid
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o444
+            or opened.st_size != 41
+        ):
+            raise LauncherError("production control approval marker is unsafe")
+        payload = os.read(descriptor, 42)
+        after = os.fstat(descriptor)
+        if (
+            payload != f"{commit}\n".encode("ascii")
+            or os.read(descriptor, 1)
+            or (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            != before_identity
+        ):
+            raise LauncherError("production control approval marker is invalid")
+    finally:
+        os.close(descriptor)
+
+
+def _verify_version(commit: str) -> Path:
+    _validate_approved_commit(commit)
+    version_root = VERSIONS_ROOT / commit
+    if version_root.resolve(strict=True) != version_root:
+        raise LauncherError("snapshot version escapes the versions root")
+    _validate_directory(version_root, modes={0o555})
+    return _validate_snapshot(version_root, _read_manifest(version_root, commit))
+
+
+def _resolve_verified_wrapper() -> Path:
+    pointer = CURRENT_LINK.lstat()
+    if not stat.S_ISLNK(pointer.st_mode) or pointer.st_uid != 0 or pointer.st_gid != 0:
+        raise LauncherError("current pointer metadata is unsafe")
+    target = os.readlink(CURRENT_LINK)
+    match = re.fullmatch(r"versions/([0-9a-f]{40})", target)
+    if match is None:
+        raise LauncherError("current pointer target is invalid")
+    commit = match.group(1)
+    if CURRENT_LINK.resolve(strict=True) != VERSIONS_ROOT / commit:
+        raise LauncherError("current pointer escapes the versions root")
+    return _verify_version(commit)
+
+
+def main() -> int:
+    environment = _validate_environment()
+    descriptor = _acquire_lifecycle_lock()
+    try:
+        _validate_directory(CONTROL_BASE, modes={0o555, 0o755})
+        _validate_directory(VERSIONS_ROOT, modes={0o555, 0o755})
+        wrapper = _resolve_verified_wrapper()
+        environment["SMS_LIFECYCLE_LOCKED"] = "1"
+        environment["SMS_LIFECYCLE_LOCK_FD"] = str(descriptor)
+        os.execve(wrapper, [str(wrapper), *sys.argv[1:]], environment)
+    finally:
+        os.close(descriptor)
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (LauncherError, FileNotFoundError, OSError) as exc:
+        _fail(str(exc))

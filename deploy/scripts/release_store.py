@@ -222,8 +222,9 @@ class ReleaseStore:
             cls._validate_directory if private_parent else cls._validate_owned_directory
         )
         parent_validator(path.parent)
+        existing: os.stat_result | None = None
         try:
-            cls._validate_regular_file(path, expected_mode=mode)
+            existing = cls._validate_regular_file(path, expected_mode=mode)
         except ReleaseStoreError as exc:
             try:
                 path.lstat()
@@ -240,6 +241,18 @@ class ReleaseStore:
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
                 mode,
             )
+            if existing is not None:
+                current = cls._validate_regular_file(path, expected_mode=mode)
+                if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+                    raise ReleaseStoreError(
+                        f"private file changed before replacement: {path.name}"
+                    )
+                temporary_info = os.fstat(descriptor)
+                if (temporary_info.st_uid, temporary_info.st_gid) != (
+                    existing.st_uid,
+                    existing.st_gid,
+                ):
+                    os.fchown(descriptor, existing.st_uid, existing.st_gid)
             os.fchmod(descriptor, mode)
             view = memoryview(data)
             while view:
@@ -251,7 +264,14 @@ class ReleaseStore:
             os.close(descriptor)
             descriptor = -1
             os.replace(temporary, path)
-            cls._validate_regular_file(path, expected_mode=mode)
+            replaced = cls._validate_regular_file(path, expected_mode=mode)
+            if existing is not None and (
+                replaced.st_uid,
+                replaced.st_gid,
+            ) != (existing.st_uid, existing.st_gid):
+                raise ReleaseStoreError(
+                    f"private file ownership changed during replacement: {path.name}"
+                )
             cls._fsync_directory(path.parent, private=private_parent)
         finally:
             if descriptor >= 0:

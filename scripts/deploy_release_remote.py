@@ -78,6 +78,7 @@ _USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 _REMOTE_REF_RE = re.compile(r"origin/[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,126}[A-Za-z0-9])?")
 _HEX_40_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 _HEX_64_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+_GIT_OBJECT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _SHA_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 _WORKFLOW_REPOSITORY_RE = re.compile(
@@ -200,6 +201,12 @@ def _is_offline_archive(manifest: ReleaseManifest) -> bool:
         and manifest.mode == "production"
         and manifest.image_source == _OFFLINE_IMAGE_SOURCE
     )
+
+
+def _requires_registry_host_control(manifest: ReleaseManifest) -> bool:
+    """Only the production Registry/RepoDigest path advances host control."""
+
+    return manifest.mode == "production" and not _is_offline_archive(manifest)
 
 
 def _stage_only(arguments: argparse.Namespace) -> bool:
@@ -638,6 +645,7 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
     manifest, target, files, _ = _validated_arguments(arguments)
     ssh = _ssh_base(target)
     bundle = _remote_bundle(target, manifest.release_id)
+    registry_host_control = _requires_registry_host_control(manifest)
     rollback_ref = f"release-rollback/{manifest.release_id}"
     rollback_full_ref = f"refs/heads/{rollback_ref}"
     plan: list[list[str]] = [
@@ -693,6 +701,20 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
                 "HEAD",
                 manifest.commit,
             ],
+            *(
+                [
+                    ssh
+                    + [
+                        *_host_control_remote_argv(
+                            target,
+                            "prepare",
+                            expected_commit=manifest.commit,
+                        )
+                    ]
+                ]
+                if registry_host_control
+                else []
+            ),
             ssh
             + [
                 "git",
@@ -739,6 +761,21 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
                 else []
             ),
             ssh + ["git", "-C", target.platform_root, "merge", "--ff-only", manifest.commit],
+            *(
+                [
+                    ssh
+                    + [
+                        *_host_control_remote_argv(
+                            target,
+                            "activate",
+                            expected_commit=manifest.commit,
+                        )
+                    ],
+                    ssh + [*_host_control_remote_argv(target, "status")],
+                ]
+                if registry_host_control
+                else []
+            ),
             ssh
             + [
                 *_sms_compose_remote_argv(
@@ -1071,6 +1108,8 @@ def _prepare_remote_git(
         ],
         "remote fast-forward check",
     )
+    if _requires_registry_host_control(manifest):
+        _run_host_control_operation(runner, target, manifest, "prepare")
     rollback_ref = f"release-rollback/{manifest.release_id}"
     rollback_full_ref = f"refs/heads/{rollback_ref}"
     rollback_exists = runner.run(
@@ -1156,6 +1195,9 @@ def _prepare_remote_git(
         [*ssh, "git", "-C", target.platform_root, "merge", "--ff-only", manifest.commit],
         "remote Git fast-forward",
     )
+    if _requires_registry_host_control(manifest):
+        _run_host_control_operation(runner, target, manifest, "activate")
+        _run_host_control_operation(runner, target, manifest, "status")
     return vendor_agent_changed
 
 
@@ -1171,8 +1213,108 @@ def _sms_compose_remote_argv(target: RemoteTarget, *arguments: str) -> list[str]
     ]
 
 
+def _host_control_remote_argv(
+    target: RemoteTarget,
+    operation: Literal["prepare", "activate", "status"],
+    *,
+    expected_commit: str | None = None,
+) -> list[str]:
+    if target.secrets_mode != "production":
+        raise RemoteReleaseError("host-control requires production mode")
+    if operation == "status":
+        if expected_commit is not None:
+            raise RemoteReleaseError("host-control status does not accept a commit")
+        operation_arguments: list[str] = []
+    else:
+        if type(expected_commit) is not str or _HEX_40_RE.fullmatch(expected_commit) is None:
+            raise RemoteReleaseError("host-control expected commit is invalid")
+        operation_arguments = ["--expected-commit", expected_commit]
+    return [
+        "sudo",
+        "--",
+        "/usr/bin/env",
+        "SMS_SECRETS_MODE=production",
+        "/usr/local/sbin/sms-compose",
+        "host-control",
+        operation,
+        *operation_arguments,
+    ]
+
+
 def _sms_compose_command(target: RemoteTarget, *arguments: str) -> list[str]:
     return [*_ssh_base(target), *_sms_compose_remote_argv(target, *arguments)]
+
+
+def _host_control_command(
+    target: RemoteTarget,
+    operation: Literal["prepare", "activate", "status"],
+    *,
+    expected_commit: str | None = None,
+) -> list[str]:
+    return [
+        *_ssh_base(target),
+        *_host_control_remote_argv(
+            target,
+            operation,
+            expected_commit=expected_commit,
+        ),
+    ]
+
+
+def _strict_json_object(
+    result: subprocess.CompletedProcess[str],
+    context: str,
+) -> dict[str, Any]:
+    try:
+        value = json.loads(result.stdout, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, RemoteReleaseError) as exc:
+        raise RemoteReleaseError(f"{context} is not strict JSON") from exc
+    if type(value) is not dict:
+        raise RemoteReleaseError(f"{context} is not a JSON object")
+    return cast(dict[str, Any], value)
+
+
+def _validate_host_control_result(
+    result: subprocess.CompletedProcess[str],
+    manifest: ReleaseManifest,
+    operation: Literal["prepare", "activate", "status"],
+) -> None:
+    value = _strict_json_object(result, f"remote host-control {operation}")
+    expected_status = "prepared" if operation == "prepare" else "active"
+    expected_target: str | None = None if operation == "prepare" else f"versions/{manifest.commit}"
+    if set(value) != {"bytes", "commit", "current_target", "files", "status", "tree"}:
+        raise RemoteReleaseError("remote host-control result fields are invalid")
+    if (
+        value["status"] != expected_status
+        or value["commit"] != manifest.commit
+        or value["current_target"] != expected_target
+        or type(value["tree"]) is not str
+        or _GIT_OBJECT_RE.fullmatch(value["tree"]) is None
+        or type(value["files"]) is not int
+        or value["files"] < 0
+        or type(value["bytes"]) is not int
+        or value["bytes"] < 0
+    ):
+        raise RemoteReleaseError("remote host-control identity did not match the candidate")
+
+
+def _run_host_control_operation(
+    runner: CommandRunner,
+    target: RemoteTarget,
+    manifest: ReleaseManifest,
+    operation: Literal["prepare", "activate", "status"],
+) -> None:
+    expected_commit = None if operation == "status" else manifest.commit
+    result = _run(
+        runner,
+        _host_control_command(
+            target,
+            operation,
+            expected_commit=expected_commit,
+        ),
+        f"remote host-control {operation}",
+    )
+    _validate_host_control_result(result, manifest, operation)
 
 
 def _reload_vendor_control_agent(runner: CommandRunner, target: RemoteTarget) -> None:

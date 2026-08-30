@@ -5,6 +5,20 @@
 > 资产。正式发布、绝对 Runtime 路径、轮转和升级合同闭合前，禁止在生产执行本页的 build/up 或
 > enable 命令；本页命令只用于开发/预生产修复验证。
 
+> **V1 采用前置（优先于下文 checkout 路径示例）：**
+> 安全日报唯一生产宿主根是 `/var/lib/sms-platform/security-report`，必须在
+> 独立 OS 变更中逐路径预建并预览所有权/模式：根与 `control` 为
+> `root:root 0755`，`control/incoming` 为 `root:10001 0750`，
+> 其中日期快照必须为 `root:10001 0640` 单链接普通文件，运行时只能组读，
+> `control/requests`、`control/results`、`config` 为 `10001:10001 0700`，
+> `nginx` 为 `101:101 0750`。禁止盲目递归 `chown/chmod`，数字 UID/GID 不匹配必须
+> 失败关闭。此路径、`/etc/sms-platform/platform.env`、
+> `/etc/sms-platform/secrets`、root-owned commit 批准标记、完整 tracked-tree snapshot、
+> `current` 与 launcher-last bootstrap 均完成并读回前，生产 No-Go 不得关闭。
+> V1 目标正常发布权威是内部 Git + 私有 Registry + 发布证据；下文
+> `deploy/security-report-*` 和 `/opt/sms-platform/...` 仅保留开发/预生产语境。
+> 详见 [P0-A 生产控制加固](../../docs/security-hardening/p0a-production-control/hardening.md)。
+
 这个目录负责把已经通过 `render_security_daily_report.py` 校验的脱敏 JSON 日报发送到固定 Resend HTTPS 端点。日常配置全部在平台管理员的 `/security-daily` 页面完成，不需要手工维护 Resend secret 或收件人文件。
 
 ## 页面配置

@@ -66,11 +66,12 @@ class FakeRunner:
         self.platform_load_state = "not-found"
         self.platform_absent_returncode = 4
         self.platform_absent_active_state = "unknown"
+        self.vendor_load_state = "not-found"
+        self.vendor_active_state = "inactive"
         self.docker_filesystem = "ext4"
         self.git_sudo_uids: list[str | None] = []
         self.enabled_states: dict[str, tuple[int, str]] = {
             "sms-platform.service": (1, "disabled"),
-            "vendor-control-agent.service": (1, "disabled"),
             "sms-partition-maintenance.timer": (1, "disabled"),
             "sms-backup.timer": (1, "disabled"),
             "sms-restore-drill.timer": (0, "static"),
@@ -130,10 +131,18 @@ class FakeRunner:
             property_name = argv[2].removeprefix("--property=")
             unit = argv[4]
             if property_name == "LoadState":
+                if unit == "vendor-control-agent.service":
+                    return self.module.CommandResult(
+                        0, f"{self.vendor_load_state}\n".encode()
+                    )
                 state = self.docker_load_states.get(unit, self.platform_load_state)
                 if unit in self.loaded_capabilities:
                     state = "loaded"
                 return self.module.CommandResult(0, f"{state}\n".encode())
+            if property_name == "ActiveState" and unit == "vendor-control-agent.service":
+                return self.module.CommandResult(
+                    0, f"{self.vendor_active_state}\n".encode()
+                )
             if unit == "sms-storage-preflight.service":
                 values = {
                     "InvocationID": self.storage_invocation_id,
@@ -471,8 +480,8 @@ def test_manifest_is_exactly_seventeen_regular_assets_and_one_wrapper_symlink(
     fixture = make_fixture(tmp_path)
     specs = fixture.installer.assets  # type: ignore[union-attr]
 
-    assert len(specs) == 18
-    assert sum(spec.kind == "regular" for spec in specs) == 17
+    assert len(specs) == 17
+    assert sum(spec.kind == "regular" for spec in specs) == 16
     symlinks = [spec for spec in specs if spec.kind == "symlink"]
     assert len(symlinks) == 1
     assert symlinks[0].destination == fixture.local_sbin_root / "sms-compose"
@@ -481,7 +490,6 @@ def test_manifest_is_exactly_seventeen_regular_assets_and_one_wrapper_symlink(
         "compose.env",
         "sms-storage-preflight",
         "sms-platform.service",
-        "vendor-control-agent.service",
         "lifecycle.json",
         "lifecycle.env",
     }
@@ -495,7 +503,7 @@ def test_plan_is_read_only_and_checks_commit_storage_and_inactive_services(
 
     assert fixture.installer.plan(COMMIT) == {  # type: ignore[union-attr]
         "action": "plan",
-        "assets": 18,
+        "assets": 17,
         "source_commit": COMMIT,
         "status": "ready",
     }
@@ -540,6 +548,46 @@ def test_plan_is_read_only_and_checks_commit_storage_and_inactive_services(
     ) in fixture.runner.calls
     assert fixture.runner.git_sudo_uids
     assert set(fixture.runner.git_sudo_uids) == {str(fixture.source_root.lstat().st_uid)}
+
+
+@pytest.mark.parametrize("fault", ("fragment", "loaded", "active", "test-host"))
+def test_plan_rejects_development_only_vendor_control_on_production(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    if fault == "fragment":
+        (fixture.systemd_root / "vendor-control-agent.service").write_text(
+            "[Service]\nExecStart=/usr/bin/false\n",
+            encoding="utf-8",
+        )
+    elif fault == "loaded":
+        fixture.runner.vendor_load_state = "loaded"
+    elif fault == "active":
+        fixture.runner.vendor_active_state = "active"
+    else:
+        fixture.etc_root.mkdir(parents=True, mode=0o700)
+        (fixture.etc_root / "test-host").write_text("test\n", encoding="ascii")
+
+    with pytest.raises(
+        fixture.module.HostAssetInstallError,
+        match="development-only vendor control",
+    ):
+        fixture.installer.plan(COMMIT)  # type: ignore[union-attr]
+
+
+def test_status_reports_drift_if_development_only_boundary_appears(
+    tmp_path: Path,
+) -> None:
+    fixture = make_fixture(tmp_path)
+    apply(fixture)
+    fixture.runner.vendor_load_state = "loaded"
+
+    assert fixture.installer.status() == {  # type: ignore[union-attr]
+        "action": "status",
+        "assets_present": 17,
+        "status": "drifted",
+    }
 
 
 def test_plan_rejects_dirty_or_wrong_commit_checkout(tmp_path: Path) -> None:
@@ -784,7 +832,7 @@ def test_apply_installs_exact_modes_symlink_and_commits_state_last(
     assert fixture.state_path.is_file()
     state = json.loads(fixture.state_path.read_text(encoding="ascii"))
     assert state["source_commit"] == COMMIT
-    assert len(state["assets"]) == 18
+    assert len(state["assets"]) == 17
     for spec in fixture.installer.assets:  # type: ignore[union-attr]
         metadata = spec.destination.lstat()
         assert metadata.st_uid == os.geteuid()
@@ -1158,7 +1206,7 @@ def _interrupt_after(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, index: i
     monkeypatch.setattr(fixture.module, "_commit_symlink_no_replace", fail_symlink)
 
 
-@pytest.mark.parametrize("index", range(18))
+@pytest.mark.parametrize("index", range(17))
 def test_crash_at_each_asset_publish_boundary_can_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1177,7 +1225,7 @@ def test_crash_at_each_asset_publish_boundary_can_resume(
     assert fixture.state_path.is_file()
 
 
-@pytest.mark.parametrize("index", range(18))
+@pytest.mark.parametrize("index", range(17))
 def test_crash_at_each_asset_publish_boundary_can_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1355,7 +1403,7 @@ def test_upgrade_plan_from_legacy_v1_state_is_read_only_and_deterministic(
 
     assert result == {
         "action": "plan",
-        "assets": 18,
+        "assets": 17,
         "assets_changed": 6,
         "changed_assets": list(UPGRADE_NAMES),
         "from_commit": COMMIT,
@@ -1385,7 +1433,7 @@ def test_post_first_start_plan_allows_retained_docker_metadata_only_for_fixed_pr
 
     assert result == {
         "action": "plan",
-        "assets": 18,
+        "assets": 17,
         "assets_changed": 1,
         "changed_assets": ["storage-preflight"],
         "from_commit": POST_FIRST_START_COMMIT,

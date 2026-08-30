@@ -684,7 +684,7 @@ def check_vendor_live_invariants() -> None:
         if forbidden in secure_dispatch:
             fail(ROOT / "deploy/sms-compose", f"临时 HTTPS 包装器禁止 {forbidden}")
     cloudflare_dispatch = wrapper.split("dispatch_cloudflare_tunnel()", maxsplit=1)[-1].split(
-        "run_locked_operation()", maxsplit=1
+        "validate_production_control_commit()", maxsplit=1
     )[0]
     for forbidden in (
         "prepare_runtime_secrets",

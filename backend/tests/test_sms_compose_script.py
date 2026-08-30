@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import os
 import pty
+import shutil
 import signal
 import stat
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "deploy" / "sms-compose"
+PRODUCTION_LAUNCHER = ROOT / "deploy" / "production-sms-compose-launcher"
 LOCK_RUNNER = ROOT / "deploy" / "scripts" / "run_with_lifecycle_lock.py"
 
 
@@ -171,6 +173,21 @@ raise SystemExit(int(os.environ.get("FAKE_RESET_EXIT", "0")))
 """,
         encoding="utf-8",
     )
+    for script_name in (
+        "host_python_preflight.py",
+        "lifecycle_manager.py",
+        "collect_security_daily_evidence.py",
+        "production_control_snapshot.py",
+    ):
+        (platform_root / "deploy" / "scripts" / script_name).write_text(
+            "from __future__ import annotations\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "with Path(os.environ['COMMAND_LOG']).open('a', encoding='utf-8') as stream:\n"
+            "    stream.write('|'.join(['python3', __file__, *sys.argv[1:]]) + '\\n')\n",
+            encoding="utf-8",
+        )
     (platform_root / ".env").write_text(
         "# non-secret fixture\n"
         "SMS_EXTERNAL_TLS_MODE=0\n"
@@ -234,6 +251,7 @@ exit 0
             "SMS_PLATFORM_ROOT": str(platform_root),
             "SMS_RUNTIME_ROOT": str(runtime),
             "SMS_SECRETS_MODE": "development",
+            "SMS_PRODUCTION_CONTROL_SMOKE": "1",
             "SMS_TRUSTED_PROXY_CONF": str(
                 tmp_path / "trusted-proxy-output" / "trusted-proxies.conf"
             ),
@@ -261,6 +279,7 @@ exit 0
         "SMS_POSTGRES_IMAGE",
         "SMS_REDIS_IMAGE",
         "METRICS_ALLOWED_CIDRS",
+        "SMS_INTERNAL_PLATFORM_ENV_FILE",
     ):
         environment.pop(name, None)
     return platform_root, log, environment
@@ -351,6 +370,16 @@ def command_lines(log: Path) -> list[str]:
     if not log.exists():
         return []
     return log.read_text(encoding="utf-8").splitlines()
+
+
+def create_smoke_control_snapshot(platform_root: Path, parent: Path) -> Path:
+    control_root = parent / "production-control" / "versions" / ("a" * 40)
+    shutil.copytree(platform_root, control_root)
+    write_executable(
+        control_root / "deploy" / "sms-compose",
+        WRAPPER.read_text(encoding="utf-8"),
+    )
+    return control_root
 
 
 def compose_prefix(
@@ -473,13 +502,26 @@ def expected_release_manager(
     mode: str,
     *arguments: str,
     release_root: str = "/var/lib/sms-platform/releases",
+    control_root: Path | None = None,
 ) -> str:
+    effective_control_root = control_root or platform_root
+    roots = (
+        [
+            "--platform-root",
+            str(platform_root),
+            "--control-root",
+            str(effective_control_root),
+        ]
+        if mode == "production"
+        else ["--root", str(platform_root)]
+    )
     return expected_line(
         [
             "python3",
-            str(platform_root / "deploy" / "scripts" / "release_manager.py"),
-            "--root",
-            str(platform_root),
+            str(effective_control_root / "deploy" / "scripts" / "release_manager.py"),
+            *roots,
+            "--environment-file",
+            str(platform_root / ".env"),
             "--release-root",
             release_root,
             "--mode",
@@ -559,6 +601,389 @@ def test_symlink_entry_resolves_platform_root_without_environment(
             runtime=Path(environment["SMS_RUNTIME_ROOT"]),
         )
     ]
+
+
+def test_production_source_wrapper_is_rejected_before_any_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    _, log, environment = fake_environment
+    environment = environment.copy()
+    environment.update(
+        {
+            "SMS_SECRETS_MODE": "production",
+            "SMS_PRODUCTION_CONTROL_SMOKE": "0",
+        }
+    )
+
+    result = subprocess.run(
+        [str(WRAPPER), "ps"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "immutable production-control snapshot entry" in result.stderr
+    assert command_lines(log) == []
+
+
+def test_snapshot_wrapper_separates_project_data_from_control_bytes(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root)
+    control_root = create_smoke_control_snapshot(platform_root, tmp_path)
+    snapshot_wrapper = control_root / "deploy" / "sms-compose"
+    environment = environment.copy()
+    environment["SMS_SECRETS_MODE"] = "production"
+
+    result = subprocess.run(
+        [str(snapshot_wrapper), "config"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert command_lines(log) == [
+        expected_line(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(platform_root / ".env"),
+                "-f",
+                str(control_root / "deploy" / "docker-compose.yml"),
+                "-f",
+                str(control_root / "deploy" / "docker-compose.production-storage.yml"),
+                "-f",
+                str(control_root / "deploy" / "docker-compose.production-restart.yml"),
+                "-f",
+                str(control_root / "deploy" / "docker-compose.redis-tls.yml"),
+                "config",
+            ],
+            runtime=Path(environment["SMS_RUNTIME_ROOT"]),
+        )
+    ]
+
+
+def test_wrapper_rejects_internal_compose_env_shell_and_dotenv_overrides(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, _ = fake_environment
+
+    shell_override = run_wrapper(
+        fake_environment,
+        "ps",
+        extra_environment={"SMS_INTERNAL_PLATFORM_ENV_FILE": "/tmp/evil.env"},
+    )
+    assert shell_override.returncode == 1
+    assert "shell override" in shell_override.stderr
+
+    (platform_root / ".env").write_text(
+        "SMS_INTERNAL_PLATFORM_ENV_FILE=/tmp/evil.env\n",
+        encoding="utf-8",
+    )
+    dotenv_override = run_wrapper(fake_environment, "ps")
+    assert dotenv_override.returncode == 1
+    assert "root .env override" in dotenv_override.stderr
+    assert command_lines(log) == []
+
+
+def test_production_launcher_is_fixed_and_rejects_control_overrides() -> None:
+    assert PRODUCTION_LAUNCHER.is_file()
+    assert os.access(PRODUCTION_LAUNCHER, os.X_OK)
+    source = PRODUCTION_LAUNCHER.read_text(encoding="utf-8")
+    for token in (
+        "/usr/local/libexec/sms-platform/production-control",
+        "/etc/sms-platform/production-control-approved",
+        "_acquire_lifecycle_lock",
+        "_resolve_verified_wrapper",
+        "_validate_approved_commit",
+        "_validate_snapshot",
+        ".sms-platform-production-control-manifest.json",
+        "hasher = hashlib.sha256()",
+        'getattr(os, "O_NOFOLLOW", 0)',
+        "os.execve(wrapper",
+        '"PYTHONDONTWRITEBYTECODE": "1"',
+        'environment["SMS_LIFECYCLE_LOCKED"] = "1"',
+    ):
+        assert token in source
+    main_source = source[source.index("def main()") :]
+    assert main_source.index("descriptor = _acquire_lifecycle_lock()") < main_source.index(
+        "wrapper = _resolve_verified_wrapper()"
+    )
+
+    environment = {
+        "PATH": os.environ["PATH"],
+        "SMS_PRODUCTION_CONTROL_ROOT": "/tmp/attacker-control",
+    }
+    result = subprocess.run(
+        [str(PRODUCTION_LAUNCHER), "status"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "production environment override is forbidden" in result.stderr
+
+    for name, value in (
+        ("SMS_API_IMAGE", "registry.invalid/api@sha256:" + "0" * 64),
+        ("COMPOSE_FILE", "/tmp/attacker-compose.yml"),
+        ("DOCKER_HOST", "tcp://attacker.invalid:2375"),
+    ):
+        injected = {"PATH": os.environ["PATH"], name: value}
+        result = subprocess.run(
+            [str(PRODUCTION_LAUNCHER), "status"],
+            env=injected,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert f"production environment override is forbidden: {name}" in result.stderr
+
+
+def test_snapshot_root_jobs_use_control_python_and_share_lifecycle_lock(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root)
+    control_root = create_smoke_control_snapshot(platform_root, tmp_path)
+    wrapper = control_root / "deploy" / "sms-compose"
+    environment = environment.copy()
+    environment["SMS_SECRETS_MODE"] = "production"
+
+    lifecycle = subprocess.run(
+        [str(wrapper), "host-lifecycle", "backup"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    security = subprocess.run(
+        [str(wrapper), "security-report"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert lifecycle.returncode == 0, lifecycle.stderr
+    assert security.returncode == 0, security.stderr
+    assert command_lines(log) == [
+        expected_line(
+            [
+                "python3",
+                str(control_root / "deploy" / "scripts" / "host_python_preflight.py"),
+                "lifecycle",
+            ]
+        ),
+        expected_line(
+            [
+                "python3",
+                str(control_root / "deploy" / "scripts" / "lifecycle_manager.py"),
+                "--root",
+                str(platform_root),
+                "--control-root",
+                str(control_root),
+                "backup",
+            ]
+        ),
+        expected_line(
+            [
+                "python3",
+                str(
+                    control_root
+                    / "deploy"
+                    / "scripts"
+                    / "collect_security_daily_evidence.py"
+                ),
+                "--auth-log",
+                "/var/log/auth.log",
+                "--web-log",
+                str(platform_root / "deploy" / "security-report-nginx" / "access.log"),
+                "--output-dir",
+                str(platform_root / "deploy" / "security-report-control" / "incoming"),
+            ]
+        ),
+    ]
+
+
+def test_snapshot_host_control_forwards_exact_commit_and_locks_mutations(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root)
+    control_root = create_smoke_control_snapshot(platform_root, tmp_path)
+    wrapper = control_root / "deploy" / "sms-compose"
+    expected_commit = "b" * 40
+    environment = environment.copy()
+    environment["SMS_SECRETS_MODE"] = "production"
+
+    plan = subprocess.run(
+        [
+            str(wrapper),
+            "host-control",
+            "plan",
+            "--expected-commit",
+            expected_commit,
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    prepare = subprocess.run(
+        [
+            str(wrapper),
+            "host-control",
+            "prepare",
+            "--expected-commit",
+            expected_commit,
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    status = subprocess.run(
+        [str(wrapper), "host-control", "status"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert plan.returncode == 0, plan.stderr
+    assert prepare.returncode == 0, prepare.stderr
+    assert status.returncode == 0, status.stderr
+    manager = str(control_root / "deploy" / "scripts" / "production_control_snapshot.py")
+    assert command_lines(log) == [
+        expected_line(
+            [
+                "python3",
+                manager,
+                "plan",
+                "--expected-commit",
+                expected_commit,
+            ]
+        ),
+        expected_line(
+            [
+                "python3",
+                manager,
+                "prepare",
+                "--expected-commit",
+                expected_commit,
+            ]
+        ),
+        expected_line(["python3", manager, "status"]),
+    ]
+
+
+def test_snapshot_wrapper_reuses_launcher_inherited_lifecycle_lock(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root)
+    control_root = create_smoke_control_snapshot(platform_root, tmp_path)
+    wrapper = control_root / "deploy" / "sms-compose"
+    lock_path = Path(f"{environment['SMS_RUNTIME_ROOT']}.lifecycle.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    environment = environment.copy()
+    environment.update(
+        {
+            "SMS_SECRETS_MODE": "production",
+            "SMS_LIFECYCLE_LOCKED": "1",
+            "SMS_LIFECYCLE_LOCK_FD": str(descriptor),
+        }
+    )
+    try:
+        result = subprocess.run(
+            [str(wrapper), "host-lifecycle", "backup-status"],
+            env=environment,
+            pass_fds=(descriptor,),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode == 0, result.stderr
+    assert any("host_python_preflight.py|lifecycle" in line for line in command_lines(log))
+    assert any("lifecycle_manager.py|--root" in line for line in command_lines(log))
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "SMS_SECURITY_REPORT_CONTROL_DIR",
+        "SMS_SECURITY_REPORT_CONFIG_DIR",
+        "SMS_SECURITY_REPORT_NGINX_DIR",
+    ),
+)
+def test_production_rejects_security_report_path_overrides(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    name: str,
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+    shell = run_wrapper(
+        fake_environment,
+        "ps",
+        extra_environment={"SMS_SECRETS_MODE": "production", name: "/tmp/escape"},
+    )
+    assert shell.returncode == 1
+    assert "security-report path overrides" in shell.stderr
+    assert command_lines(log) == []
+
+    with (platform_root / ".env").open("a", encoding="utf-8") as stream:
+        stream.write(f"{name}=/tmp/escape\n")
+    dotenv = run_wrapper(
+        fake_environment,
+        "ps",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+    assert dotenv.returncode == 1
+    assert "Compose topology overrides" in dotenv.stderr
+    assert command_lines(log) == []
+
+
+def test_production_host_state_paths_are_fixed_and_prevalidated() -> None:
+    source = WRAPPER.read_text(encoding="utf-8")
+    for token in (
+        'SOURCE_SECRETS_ROOT="/etc/sms-platform/secrets"',
+        'PLATFORM_ENV_FILE="/etc/sms-platform/platform.env"',
+        '--environment-file "$PLATFORM_ENV_FILE"',
+        '--secrets-dir "$SOURCE_SECRETS_ROOT"',
+        '--source-dir "$SOURCE_SECRETS_ROOT"',
+        'PRODUCTION_SECURITY_REPORT_ROOT="/var/lib/sms-platform/security-report"',
+        '"$PRODUCTION_SECURITY_REPORT_CONTROL_DIR" "0:0:755:directory"',
+        '"$PRODUCTION_SECURITY_REPORT_INCOMING_DIR" "0:10001:750:directory"',
+        '"$PRODUCTION_SECURITY_REPORT_REQUESTS_DIR" "10001:10001:700:directory"',
+        '"$PRODUCTION_SECURITY_REPORT_RESULTS_DIR" "10001:10001:700:directory"',
+        '"$PRODUCTION_SECURITY_REPORT_CONFIG_DIR" "10001:10001:700:directory"',
+        '"$PRODUCTION_SECURITY_REPORT_NGINX_DIR" "101:101:750:directory"',
+        "--fixed-production-output",
+    ):
+        assert token in source
+    security_path_function = source[
+        source.index("configure_security_report_paths()") : source.index(
+            "configure_compose_topology()"
+        )
+    ]
+    assert "mkdir" not in security_path_function
 
 
 def test_usage_lists_only_explicitly_allowed_actions() -> None:
@@ -747,6 +1172,8 @@ def test_production_continuity_gate_blocks_up_before_secrets_or_docker(
     lines = command_lines(log)
     assert len(lines) == 1
     assert "continuity_manager.py|--root" in lines[0]
+    assert f"|--control-root|{platform_root}|" in lines[0]
+    assert f"|--environment-file|{platform_root / '.env'}|" in lines[0]
     assert lines[0].endswith("|--mode|production|gate")
     assert not any(line.startswith("docker|") for line in lines)
     assert not any("prepare_runtime_secrets.py" in line for line in lines)
@@ -1535,7 +1962,10 @@ def test_production_up_accepts_only_safe_non_secret_settings(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
-        expected_line([*prefix, "up", "-d", "--remove-orphans"], runtime=runtime),
+        expected_line(
+            [*prefix, "up", "--no-build", "-d", "--remove-orphans"],
+            runtime=runtime,
+        ),
     ]
 
 
@@ -1562,7 +1992,7 @@ def test_production_existing_generation_runs_redis_tls_guard_before_compose(
         expected_prepare(platform_root, runtime, mode="production"),
         expected_redis_tls_rotation_guard(platform_root, runtime, baseline),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
-        expected_line([*prefix, "up", "-d"], runtime=runtime),
+        expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
     ]
 
 
@@ -1898,7 +2328,7 @@ def test_production_external_tls_bind_requires_private_address_and_proxy_acl(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
-        expected_line([*prefix, "up", "-d"], runtime=runtime),
+        expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
     ]
 
 
@@ -1986,8 +2416,25 @@ def test_production_up_allows_dba_fixed_service_recreate(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
-        expected_line([*prefix, "up", *arguments], runtime=runtime),
+        expected_line([*prefix, "up", "--no-build", *arguments], runtime=runtime),
     ]
+
+
+def test_production_rotate_recreate_forbids_local_build(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, _ = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "rotate",
+        "backend",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any("|up|-d|--no-build|--no-deps|" in line for line in command_lines(log))
 
 
 def test_development_up_keeps_mock_profile_path_available(
@@ -2238,6 +2685,38 @@ def test_private_locked_action_requires_helper_marker(
     result = run_wrapper(fake_environment, "__locked", "up", "-d")
 
     assert result.returncode == 2
+    assert command_lines(log) == []
+
+
+def test_production_rejects_direct_private_locked_action_before_any_tool_call(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    _, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+    lock_path = Path(f"{runtime}.lifecycle.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.fchmod(descriptor, 0o600)
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = subprocess.run(
+            [str(WRAPPER), "__locked", "down"],
+            env={
+                **environment,
+                "SMS_SECRETS_MODE": "production",
+                "SMS_PRODUCTION_CONTROL_SMOKE": "0",
+                "SMS_LIFECYCLE_LOCKED": "1",
+                "SMS_LIFECYCLE_LOCK_FD": str(descriptor),
+            },
+            pass_fds=(descriptor,),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode == 2
+    assert "direct private locked entry is forbidden in production" in result.stderr
     assert command_lines(log) == []
 
 
@@ -2505,6 +2984,55 @@ def test_production_rejects_cp_before_any_tool_call(
 
     assert result.returncode == 2
     assert command_lines(log) == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("config", "--output", "/etc/systemd/system/sms-platform.service"),
+        ("config", "-o", "/etc/sms-platform/platform.env"),
+        ("ps", "--format", "json"),
+        ("logs", "--follow"),
+        ("logs", "api"),
+    ],
+)
+def test_production_diagnostics_reject_all_arguments_before_docker(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    arguments: tuple[str, ...],
+) -> None:
+    _, log, _ = fake_environment
+
+    result = run_wrapper(
+        fake_environment,
+        *arguments,
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 2
+    assert "production diagnostics do not accept arguments" in result.stderr
+    assert command_lines(log) == []
+
+
+def test_production_config_allows_only_the_existing_quiet_probe(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    write_non_secret_env(platform_root)
+
+    result = run_wrapper(
+        fake_environment,
+        "config",
+        "--quiet",
+        extra_environment={"SMS_SECRETS_MODE": "production"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert command_lines(log) == [
+        expected_line(
+            [*compose_prefix(platform_root, production=True), "config", "--quiet"],
+            runtime=Path(environment["SMS_RUNTIME_ROOT"]),
+        )
+    ]
 
 
 def test_production_rejects_generic_exec_before_any_tool_call(

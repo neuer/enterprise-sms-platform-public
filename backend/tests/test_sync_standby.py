@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -73,6 +73,19 @@ class FakeRunner:
         self.rev_parse_calls = 0
         self.calls: list[list[str]] = []
         self.pipeline_calls: list[tuple[list[str], list[str], Path]] = []
+        self.process_security: list[
+            tuple[list[str], dict[str, str] | None, int | None, int | None, tuple[int, ...] | None]
+        ] = []
+        self.pipeline_security: list[
+            tuple[
+                list[str],
+                list[str],
+                dict[str, str] | None,
+                int | None,
+                int | None,
+                tuple[int, ...] | None,
+            ]
+        ] = []
         self.timeouts: list[tuple[str, float | None]] = []
         self.envs: list[dict[str, str] | None] = []
 
@@ -93,16 +106,28 @@ class FakeRunner:
         env: dict[str, str] | None = None,
         input_bytes: bytes | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> bytes:
         argv = list(command)
         self.calls.append(argv)
         self.envs.append(env)
+        self.process_security.append(
+            (
+                argv,
+                env,
+                user,
+                group,
+                tuple(extra_groups) if extra_groups is not None else None,
+            )
+        )
         self.timeouts.append((" ".join(argv), timeout))
         if "SELECT pg_database_size(current_database())" in " ".join(argv):
             return f"{self.database_size}\n".encode()
-        if argv[:2] == ["git", "status"]:
+        if argv[0] in {"git", "/usr/bin/git"} and "status" in argv:
             return b" M tracked-file\n" if self.dirty else b""
-        if argv[:2] == ["git", "rev-parse"]:
+        if argv[0] in {"git", "/usr/bin/git"} and "rev-parse" in argv:
             self.rev_parse_calls += 1
             marker = (
                 b"b"
@@ -208,8 +233,21 @@ class FakeRunner:
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        user: int | None = None,
+        group: int | None = None,
+        extra_groups: Sequence[int] | None = None,
     ) -> None:
         self.pipeline_calls.append((list(producer), list(consumer), output_path))
+        self.pipeline_security.append(
+            (
+                list(producer),
+                list(consumer),
+                env,
+                user,
+                group,
+                tuple(extra_groups) if extra_groups is not None else None,
+            )
+        )
         self.timeouts.append((" ".join([*producer, *consumer]), timeout))
         if self.pipeline_error:
             raise CommandFailure("pg_dump", 1, "dump failed")
@@ -253,6 +291,19 @@ def make_config(
 
 def fixed_clock() -> datetime:
     return datetime(2026, 7, 12, 5, 0, tzinfo=UTC)
+
+
+def test_compose_uses_explicit_environment_file(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    assert SyncService._compose(config) == [
+        "docker",
+        "compose",
+        "--env-file",
+        str(config.environment_file),
+        "-f",
+        str(config.compose_file),
+    ]
 
 
 def generation_reader(path: Path) -> str:
@@ -340,6 +391,104 @@ def test_build_only_creates_encrypted_atomic_snapshot_without_remote_calls(
     assert "a" * 40 in archive_call
     assert all("secrets" not in item for item in archive_call)
     assert not any(call[0] in {"ssh", "rsync"} for call in runner.calls)
+
+
+def test_production_git_drops_privileges_and_avoids_configured_archive_filter(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    config = make_config(tmp_path)
+    service = SyncService(
+        runner,
+        clock=fixed_clock,
+        capacity_reader=lambda _path: (10_000, 0),
+        generation_reader=generation_reader,
+        secure_production_git=True,
+    )
+
+    service.run(config)
+
+    git_calls = [
+        item for item in runner.process_security if item[0][0] == "/usr/bin/git"
+    ]
+    assert len(git_calls) == 4
+    for argv, env, user, group, extra_groups in git_calls:
+        assert argv[: len(sync_module.PRODUCTION_GIT_PREFIX)] == list(
+            sync_module.PRODUCTION_GIT_PREFIX
+        )
+        assert f"safe.directory={config.repository_root}" in argv
+        assert env == sync_module.PRODUCTION_GIT_ENV
+        assert user == sync_module.PRODUCTION_OPERATOR_UID == 1000
+        assert group == sync_module.PRODUCTION_OPERATOR_GID == 1000
+        assert extra_groups == ()
+
+    archive = next(
+        item
+        for item in runner.pipeline_security
+        if item[0][0] == "/usr/bin/git"
+    )
+    producer, consumer, env, user, group, extra_groups = archive
+    assert producer[: len(sync_module.PRODUCTION_GIT_PREFIX)] == list(
+        sync_module.PRODUCTION_GIT_PREFIX
+    )
+    assert f"safe.directory={config.repository_root}" in producer
+    assert producer[-3:] == ["archive", "--format=tar", "a" * 40]
+    assert "--format=tar.gz" not in producer
+    assert consumer == ["/usr/bin/gzip", "-n", "-c"]
+    assert env == sync_module.PRODUCTION_GIT_ENV
+    assert (user, group, extra_groups) == (1000, 1000, ())
+
+    non_git = [
+        item for item in runner.process_security if item[0][0] != "/usr/bin/git"
+    ]
+    assert non_git
+    assert all(item[2:] == (None, None, None) for item in non_git)
+
+
+def test_development_git_keeps_existing_runner_contract(tmp_path: Path) -> None:
+    runner = FakeRunner()
+
+    make_sync_service(runner).run(make_config(tmp_path))
+
+    git_calls = [item for item in runner.process_security if item[0][0] == "git"]
+    assert git_calls
+    assert all(item[1:] == (None, None, None, None) for item in git_calls)
+    archive = next(call for call in git_calls if call[0][:2] == ["git", "archive"])
+    assert "--format=tar.gz" in archive[0]
+
+
+def test_production_cli_enables_secure_git_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = make_config(tmp_path)
+    captured: dict[str, object] = {}
+
+    class StubSyncService:
+        def __init__(
+            self,
+            _runner: object,
+            *,
+            secure_production_git: bool,
+        ) -> None:
+            captured["secure_production_git"] = secure_production_git
+
+        def run(self, selected: SyncConfig) -> sync_module.SyncResult:
+            captured["config"] = selected
+            return sync_module.SyncResult(
+                "20260712T050000Z_aaaaaaaaaaaa",
+                tmp_path / "snapshot",
+                False,
+            )
+
+    monkeypatch.setattr(sync_module, "SyncService", StubSyncService)
+    monkeypatch.setattr(sync_module, "_config_from_args", lambda _args: config)
+    monkeypatch.setattr(sys, "argv", ["sync_standby.py", "--build-only"])
+
+    assert sync_module.main() == 0
+    assert captured == {"secure_production_git": True, "config": config}
+    assert json.loads(capsys.readouterr().out)["status"] == "success"
 
 
 def test_remote_publish_uses_incoming_hash_check_then_atomic_current(

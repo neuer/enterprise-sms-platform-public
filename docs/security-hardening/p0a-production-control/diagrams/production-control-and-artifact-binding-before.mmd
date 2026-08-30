@@ -1,0 +1,30 @@
+flowchart LR
+  GH["GitHub Release Gate"] --> PKG["Signed offline image package\n(temporary compatibility path)"]
+  PKG --> DRIVER["Remote release driver"]
+
+  subgraph PROD["Single production VM"]
+    OP["Operator-owned Git checkout\n/opt/sms-platform"]
+    WRAP["/usr/local/sbin/sms-compose\nsymlink into checkout"]
+    DIRECT["systemd root services\ndirect checkout paths"]
+    ROOTCODE["Checkout scripts, Python imports,\nCompose and lifecycle code"]
+    LOCK["Lifecycle lock + ReleaseStore"]
+    DOCKER["Docker / Compose root authority"]
+    RUNTIME["Core + PostgreSQL +\nRedis broker/auth/control"]
+
+    OP --> WRAP
+    OP --> DIRECT
+    WRAP --> ROOTCODE
+    DIRECT --> ROOTCODE
+    ROOTCODE --> LOCK
+    ROOTCODE --> DOCKER
+    DOCKER --> RUNTIME
+  end
+
+  DRIVER --> OP
+  DRIVER --> WRAP
+  ACTOR["Compromised or mistaken\noperator context"] -. "can alter executable bytes" .-> OP
+
+  classDef danger fill:#ffd9d9,stroke:#a40000,color:#111;
+  classDef control fill:#fff2cc,stroke:#8a6d00,color:#111;
+  class OP,WRAP,DIRECT,ROOTCODE danger;
+  class LOCK,DOCKER control;

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "environment_file": "/opt/sms-platform/.env",
+  "environment_file": "/etc/sms-platform/platform.env",
   "output_root": "/var/lib/sms-platform/runtime/backups",
   "recovery_crypto_generation_id_file": "/etc/sms-platform/recovery-crypto-generation-id",
   "backup_passphrase_generation_id_file": "/etc/sms-platform/backup-secrets/generation-id",

@@ -1,5 +1,21 @@
 # 生产资源与责任冻结及宿主初始化手册
 
+> **V1 目标架构替代说明（优先于本文后续旧离线图和文字）：**
+> V1 目标正常发布路径为 GitHub Release Gate 经受控桥接机向 Ops VM 的内部 Git
+> 镜像、私有 Registry 和发布证据库双通道推进，生产联合绑定精确 Git
+> commit、root-owned `current -> versions/<commit>` 完整 tracked-tree snapshot 与四个
+> `image@sha256:RepoDigest`。Ops VM 同时承载监控、脱敏日志与加密备份；临时离线通道
+> 仅保留兼容，不扩展、不在 Registry 故障时自动回退。本文第 2 节及其他把
+> Registry 写为“未来”、把离线包写为正常首发权威的内容仅作历史兼容记录。
+> 生产采用前必须单独批准 OS 变更，预建
+> `/etc/sms-platform/platform.env` (`root:root 0600`)、
+> `/etc/sms-platform/secrets` (`root:root 0700`，规范子项 `0600`)、
+> `/etc/sms-platform/production-control-approved/<commit>`（`root:root 0444`，精确 41 字节
+> `<commit>\n`）与 `/var/lib/sms-platform/security-report`的审核后所有权/模式；
+> manager/snapshot/`current` 先就绪，stable launcher 最后原子替换，重跑幂等。
+> 本补充不改变本文 `draft / external-verification-required` 状态。详见
+> [P0-A 生产控制加固](../security-hardening/p0a-production-control/hardening.md)。
+
 ## 1. 文档状态、适用范围与完成定义
 
 **当前状态：`draft / external-verification-required`。** 本仓库已经给出申请规格、责任边界、

@@ -119,6 +119,24 @@ def _add_persistence(active_root: Path) -> None:
         (cache / "discardable.pyc").write_bytes(b"cache")
 
 
+def _assert_persistence_metadata(
+    active_root: Path,
+    *,
+    expected_uid: int,
+    expected_operator_gid: int,
+    expected_system_gid: int,
+) -> None:
+    for relative, expected_gid, expected_mode in (
+        (Path(".env"), expected_operator_gid, 0o600),
+        (Path("deploy/secrets"), expected_operator_gid, 0o700),
+        (Path("deploy/secrets/runtime-token"), expected_system_gid, 0o600),
+    ):
+        metadata = (active_root / relative).lstat()
+        assert metadata.st_uid == expected_uid
+        assert metadata.st_gid == expected_gid
+        assert stat.S_IMODE(metadata.st_mode) == expected_mode
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -429,6 +447,12 @@ def test_activate_finalize_and_rollback_preserve_only_allowlisted_state(
     assert (
         activator.active_root / "deploy/secrets/runtime-token"
     ).read_bytes() == old_secret
+    _assert_persistence_metadata(
+        activator.active_root,
+        expected_uid=os.geteuid(),
+        expected_operator_gid=os.getegid(),
+        expected_system_gid=os.getegid(),
+    )
     assert (activator.active_root / "backend/.venv/pyvenv.cfg").is_file()
     assert stat.S_IMODE(activator.active_root.stat().st_mode) == 0o2770
     assert (
@@ -478,6 +502,12 @@ def test_activate_finalize_and_rollback_preserve_only_allowlisted_state(
     assert (
         activator.active_root / "deploy/secrets/runtime-token"
     ).read_bytes() == old_secret
+    _assert_persistence_metadata(
+        activator.active_root,
+        expected_uid=os.geteuid(),
+        expected_operator_gid=os.getegid(),
+        expected_system_gid=os.getegid(),
+    )
     for cache in module.DISCARDABLE_CACHE_PATHS:
         assert (activator.active_root / cache).is_dir()
     assert (
@@ -825,20 +855,11 @@ def test_persistent_secret_files_use_fixed_system_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _request, activator, guard, exchange, _public = _fixture(tmp_path)
-    system_gid = os.getegid() + 1
-    system_owned = module.PublicBaselineActivator(
-        activation_id=ACTIVATION_ID,
-        artifacts_root=activator.artifacts_root,
-        lifecycle_guard=guard,
-        active_root=activator.active_root,
-        workspace_root=activator.workspace_root,
-        directory_exchange=exchange,
-        expected_uid=os.geteuid(),
-        expected_operator_uid=os.geteuid(),
-        expected_operator_gid=os.getegid(),
-        expected_system_gid=system_gid,
-    )
+    _request, activator, _guard, _exchange, _public = _fixture(tmp_path)
+    operator_gid = os.getegid()
+    system_gid = operator_gid + 1
+    activator.expected_operator_gid = operator_gid
+    activator.expected_system_gid = system_gid
 
     def secret_entry(gid: int) -> SimpleNamespace:
         metadata = SimpleNamespace(
@@ -854,21 +875,50 @@ def test_persistent_secret_files_use_fixed_system_group(
         )
 
     monkeypatch.setattr(module.os, "scandir", lambda _path: [secret_entry(system_gid)])
-    system_owned._validate_secrets(
-        system_owned.active_root / "deploy/secrets"
+    activator._validate_secrets(
+        activator.active_root / "deploy/secrets"
     )
 
     monkeypatch.setattr(
         module.os,
         "scandir",
-        lambda _path: [secret_entry(os.getegid())],
+        lambda _path: [secret_entry(operator_gid)],
     )
     with pytest.raises(
         module.PublicBaselineActivationError,
         match="secret metadata",
     ):
-        system_owned._validate_secrets(
-            system_owned.active_root / "deploy/secrets"
+        activator._validate_secrets(
+            activator.active_root / "deploy/secrets"
+        )
+
+
+def test_persistent_dotenv_and_secrets_directory_use_fixed_operator_group(
+    tmp_path: Path,
+) -> None:
+    _request, activator, _guard, _exchange, _public = _fixture(tmp_path)
+    system_gid = os.getegid()
+    operator_gid = os.getegid()
+    activator.expected_operator_gid = operator_gid
+    activator.expected_system_gid = system_gid
+
+    activator._validate_dotenv(activator.active_root / ".env")
+    activator._validate_secrets(
+        activator.active_root / "deploy/secrets"
+    )
+
+    activator.expected_operator_gid = operator_gid + 1
+    with pytest.raises(
+        module.PublicBaselineActivationError,
+        match="environment file metadata is unsafe",
+    ):
+        activator._validate_dotenv(activator.active_root / ".env")
+    with pytest.raises(
+        module.PublicBaselineActivationError,
+        match="persistent secrets metadata is unsafe",
+    ):
+        activator._validate_secrets(
+            activator.active_root / "deploy/secrets"
         )
 
 

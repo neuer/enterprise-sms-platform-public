@@ -1,0 +1,37 @@
+flowchart LR
+  GH["GitHub Release Gate"] --> BRIDGE["Controlled bridge"]
+
+  subgraph OPS["Ops VM"]
+    GIT["Internal Git mirror"]
+    REG["Private Registry\n4 image RepoDigests"]
+    EVID["Release evidence store"]
+    ORCH["Release orchestrator"]
+  end
+
+  BRIDGE --> GIT
+  BRIDGE --> REG
+  BRIDGE --> EVID
+  EVID --> ORCH
+
+  subgraph PROD["Single production VM"]
+    AGENT["New privileged release daemon"]
+    CONTROL["OCI/fifth control artifact"]
+    STATE["New daemon state + existing ReleaseStore"]
+    DOCKER["Docker / Compose root authority"]
+    RUNTIME["Core + PostgreSQL +\nRedis broker/auth/control"]
+
+    AGENT --> CONTROL
+    AGENT --> STATE
+    AGENT --> DOCKER
+    DOCKER --> RUNTIME
+  end
+
+  ORCH -->|"remote privileged protocol"| AGENT
+  GIT --> CONTROL
+  REG --> CONTROL
+  REG --> DOCKER
+
+  classDef deferred fill:#ead1dc,stroke:#741b47,color:#111;
+  classDef control fill:#cfe2f3,stroke:#0b5394,color:#111;
+  class AGENT,CONTROL,ORCH deferred;
+  class GIT,REG,EVID,STATE control;

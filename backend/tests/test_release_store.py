@@ -124,6 +124,45 @@ def test_atomic_failure_preserves_previous_state_bytes(
     assert not list(state_path.parent.glob(".*.tmp"))
 
 
+def test_atomic_replacement_preserves_existing_uid_and_gid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / ".env"
+    target.write_bytes(b"OLD=value\n")
+    target.chmod(0o600)
+    original = target.stat()
+    real_fstat = os.fstat
+    real_fchown = os.fchown
+    fchown_calls: list[tuple[int, int]] = []
+
+    def setgid_temp_fstat(descriptor: int) -> os.stat_result:
+        info = real_fstat(descriptor)
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            values = list(info)
+            values[5] = original.st_gid + 1
+            return os.stat_result(values)
+        return info
+
+    def spy_fchown(descriptor: int, uid: int, gid: int) -> None:
+        fchown_calls.append((uid, gid))
+        real_fchown(descriptor, uid, gid)
+
+    monkeypatch.setattr(release_store_module.os, "fstat", setgid_temp_fstat)
+    monkeypatch.setattr(release_store_module.os, "fchown", spy_fchown)
+
+    ReleaseStore._atomic_write(
+        target,
+        b"NEW=value\n",
+        private_parent=False,
+    )
+
+    replaced = target.stat()
+    assert fchown_calls == [(original.st_uid, original.st_gid)]
+    assert (replaced.st_uid, replaced.st_gid) == (original.st_uid, original.st_gid)
+    assert target.read_bytes() == b"NEW=value\n"
+
+
 def test_original_env_snapshot_is_never_returned_by_status(tmp_path: Path) -> None:
     tmp_path.chmod(0o755)
     store = _store(tmp_path)

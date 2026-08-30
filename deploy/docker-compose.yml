@@ -18,7 +18,7 @@ x-backend: &backend
   build:
     context: ..
     dockerfile: backend/Dockerfile
-  env_file: ../.env
+  env_file: ${SMS_INTERNAL_PLATFORM_ENV_FILE:-../.env}
   environment: *backend-environment
   user: "10001:10001"
   pids_limit: 256
@@ -181,7 +181,7 @@ services:
     build:
       context: ..
       dockerfile: backend/Dockerfile
-    env_file: ../.env
+    env_file: ${SMS_INTERNAL_PLATFORM_ENV_FILE:-../.env}
     environment:
       TZ: Asia/Shanghai
       SMS_COMPONENT: migrate
