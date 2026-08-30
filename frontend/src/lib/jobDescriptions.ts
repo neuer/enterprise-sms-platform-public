@@ -15,7 +15,7 @@ export const JOB_DESCRIPTIONS: Readonly<Record<string, string>> = {
   reconcile: "对账结果未知的发送分片，并恢复可恢复的投递或联调操作",
   sync_signs: "同步待处理签名的厂商状态",
   sync_templates: "同步待处理模板的厂商状态",
-  reconcile_usage_projection: "检查配额/频控事实账本与 Redis 投影的漂移并恢复孤儿预留",
+  reconcile_usage_projection: "恢复超时预留；确认漂移后按事实账本覆盖 Redis 投影并复核",
 }
 
 const UNKNOWN_JOB_DESCRIPTION = "用途说明暂未登记，请查阅任务定义"

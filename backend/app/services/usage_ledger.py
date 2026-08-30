@@ -145,6 +145,28 @@ class UsageDrift:
         return self.quota_mismatches + self.frequency_mismatches
 
 
+RECONCILE_REBUILD_ACTOR = "system:usage-projection-reconcile"
+
+
+class UsageReconcileLedger(Protocol):
+    async def recover_orphans(self, *, older_than_seconds: int = 600) -> int: ...
+
+    async def measure_drift(self) -> UsageDrift: ...
+
+    async def rebuild(self, *, actor: str = "system:usage-projection") -> int: ...
+
+
+async def reconcile_usage_facts(service: UsageReconcileLedger) -> int:
+    """恢复超时预留；确认漂移后按事实做版本化绝对覆盖，再复核聚合差异。"""
+
+    recovered = await service.recover_orphans()
+    drift = await service.measure_drift()
+    if drift.mismatches:
+        await service.rebuild(actor=RECONCILE_REBUILD_ACTOR)
+        drift = await service.measure_drift()
+    return recovered + drift.mismatches
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -2256,7 +2278,7 @@ class UsageLedgerService:
                                 "quota_absolute_delta": drift.quota_delta,
                                 "frequency_mismatches": drift.frequency_mismatches,
                                 "frequency_absolute_delta": drift.frequency_delta,
-                                "action": "运行 usage-projection-rebuild 后复核",
+                                "action": "巡检将按事实覆盖 Redis 投影后复核",
                             },
                             ensure_ascii=False,
                             sort_keys=True,
@@ -2428,6 +2450,7 @@ class UsageLedgerService:
 __all__ = [
     "APPLY_PROJECTION_LUA",
     "ProjectionRow",
+    "RECONCILE_REBUILD_ACTOR",
     "UsageDrift",
     "UsageLedgerService",
     "UsageProjectionUnavailable",
@@ -2435,6 +2458,7 @@ __all__ = [
     "UsageReservationConflict",
     "commit_usage_reservation",
     "frequency_windows",
+    "reconcile_usage_facts",
     "request_usage_release_for_batch",
     "shanghai_day",
 ]
