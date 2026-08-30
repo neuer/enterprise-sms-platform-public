@@ -1309,11 +1309,12 @@ def test_every_hardened_preflight_caller_has_read_only_pvscsi_access() -> None:
 def test_hardened_preflight_callers_use_exact_mountinfo_credential_contract() -> None:
     expected_capabilities = {
         PREFLIGHT_UNIT: "CapabilityBoundingSet=",
-        BACKUP_UNIT: "CapabilityBoundingSet=",
-        RESTORE_DRILL_UNIT: "CapabilityBoundingSet=",
-        LIFECYCLE_STATUS_UNIT: "CapabilityBoundingSet=",
+        BACKUP_UNIT: "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
+        RESTORE_DRILL_UNIT: "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
+        LIFECYCLE_STATUS_UNIT: "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
         PARTITION_MAINTENANCE_UNIT:
-            "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER",
+            "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER "
+            "CAP_SETUID CAP_SETGID",
     }
     for path, capability_line in expected_capabilities.items():
         unit = path.read_text(encoding="utf-8")
@@ -1354,7 +1355,11 @@ def test_runbook_covers_provisioning_thresholds_expansion_and_no_go() -> None:
 def test_wrapper_uses_startup_policy_and_release_mutations_use_release_policy() -> None:
     wrapper = WRAPPER.read_text(encoding="utf-8")
 
-    assert 'python3 "$STORAGE_PREFLIGHT" --mode "$storage_mode"' in wrapper
+    assert (
+        '"${CONTROL_PYTHON[@]}" "$STORAGE_PREFLIGHT" --mode "$storage_mode"'
+        in wrapper
+    )
+    assert 'python3 "$STORAGE_PREFLIGHT"' not in wrapper
     assert 'validate_production_launch release' in wrapper
 
 
