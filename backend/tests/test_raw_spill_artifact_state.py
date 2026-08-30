@@ -393,6 +393,155 @@ def test_atomic_write_temps_are_promoted_or_isolated(tmp_path: Path) -> None:
     assert_quota(store, 1)
 
 
+def test_reclaim_leaves_fresh_valid_spill_tmp_for_live_writer(tmp_path: Path) -> None:
+    store = RawSpillStore(tmp_path)
+    final = store.write(
+        source="reply",
+        payload_sha256="a" * 64,
+        key_version=1,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=b"encrypted-raw",
+        crypto=crypto(),
+    )
+    tmp = final.with_name(final.name + ".tmp")
+    final.rename(tmp)
+    future_mtime = time_stamp(-60)
+    os.utime(tmp, times=(future_mtime, future_mtime))
+
+    store.reclaim_idle("report", crypto())
+
+    assert tmp.is_file()
+    assert not final.exists()
+
+
+def test_reclaim_tolerates_writer_winning_tmp_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    final = store.write(
+        source="reply",
+        payload_sha256="d" * 64,
+        key_version=1,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=b"encrypted-raw",
+        crypto=crypto(),
+    )
+    tmp = final.with_name(final.name + ".tmp")
+    final.rename(tmp)
+    replace = os.replace
+
+    def replace_after_writer(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        source = Path(src)
+        target = Path(dst)
+        if source == tmp:
+            replace(source, target)
+            raise FileNotFoundError(source)
+        replace(source, target)
+
+    monkeypatch.setattr(os, "replace", replace_after_writer)
+
+    result = store.reclaim_idle("report", crypto())
+
+    assert final.is_file()
+    assert not tmp.exists()
+    records = store.list_pending("reply", crypto())
+    assert len(records) == 1
+    assert records[0].payload_sha256 == "d" * 64
+    assert records[0].payload_enc == b"encrypted-raw"
+    assert result.isolated == result.transient_io == result.temps_reclaimed == 0
+
+
+def test_write_tolerates_reclaimer_winning_tmp_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    replace = os.replace
+
+    def replace_after_reclaimer(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        source = Path(src)
+        target = Path(dst)
+        if source.name.endswith(".spill.tmp"):
+            replace(source, target)
+            raise FileNotFoundError(source)
+        replace(source, target)
+
+    monkeypatch.setattr(os, "replace", replace_after_reclaimer)
+
+    final = store.write(
+        source="report",
+        payload_sha256="e" * 64,
+        key_version=1,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=b"encrypted-raw",
+        crypto=crypto(),
+    )
+
+    assert final.is_file()
+    assert store.list_pending("report", crypto())
+
+
+def test_write_does_not_silence_missing_tmp_without_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    replace = os.replace
+
+    def remove_then_fail(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        source = Path(src)
+        if source.name.endswith(".spill.tmp"):
+            source.unlink()
+            raise FileNotFoundError(source)
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", remove_then_fail)
+
+    with pytest.raises(FileNotFoundError):
+        store.write(
+            source="report",
+            payload_sha256="b" * 64,
+            key_version=1,
+            http_status=200,
+            content_encoding="identity",
+            payload_enc=b"encrypted-raw",
+            crypto=crypto(),
+        )
+    assert leftover_names(tmp_path, ".spill", ".spill.tmp") == []
+
+
+def test_reclaim_does_not_silence_missing_tmp_without_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RawSpillStore(tmp_path, header_only_min_age_s=0)
+    final = store.write(
+        source="report",
+        payload_sha256="f" * 64,
+        key_version=1,
+        http_status=200,
+        content_encoding="identity",
+        payload_enc=b"encrypted-raw",
+        crypto=crypto(),
+    )
+    tmp = final.with_name(final.name + ".tmp")
+    final.rename(tmp)
+    replace = os.replace
+
+    def remove_then_fail(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
+        source = Path(src)
+        if source == tmp:
+            source.unlink()
+            raise FileNotFoundError(source)
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", remove_then_fail)
+
+    with pytest.raises(FileNotFoundError):
+        store.reclaim_idle("report", crypto())
+    assert not final.exists()
+
+
 def test_stream_delete_reconciles_orphan_markers(tmp_path: Path) -> None:
     store = RawSpillStore(tmp_path, header_only_min_age_s=0)
     stream = store.open_stream("report", crypto(), capture_bytes=4096)

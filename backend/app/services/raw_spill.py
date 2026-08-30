@@ -1027,7 +1027,12 @@ class RawSpillStore:
             handle.write(payload_enc)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, target)
+        try:
+            os.replace(tmp, target)
+        except FileNotFoundError:
+            # 回收器可能已把同一个 tmp 原子提升为目标；随机 artifact_id 保证目标唯一。
+            if not target.is_file():
+                raise
         self._fsync_directory()
         return target
 
@@ -1973,7 +1978,22 @@ class RawSpillStore:
                 continue
             if kind == SPILL_LIFE_VALID and path.name.endswith(".spill.tmp"):
                 target = path.with_name(path.name[: -len(".tmp")])
-                os.replace(path, target)
+                # 新鲜 tmp 仍属于在途 write()；避免在 writer 最终改名前抢先提升。
+                try:
+                    age_seconds = max(0.0, now_ts - path.stat().st_mtime)
+                except FileNotFoundError:
+                    if not target.is_file():
+                        raise
+                    continue
+                if age_seconds < self.header_only_min_age_s:
+                    continue
+                try:
+                    os.replace(path, target)
+                except FileNotFoundError:
+                    # writer 在分类后先完成改名；目标已存在才算这次交错已收敛。
+                    if not target.is_file():
+                        raise
+                    continue
                 self._fsync_directory()
                 path = target
             if kind == SPILL_LIFE_VALID:
