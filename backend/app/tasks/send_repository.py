@@ -35,6 +35,11 @@ from app.vendor.identifiers import vendor_identifier_pseudonym
 
 LOGGER = logging.getLogger(__name__)
 
+_VENDOR_CRITICAL_PAUSE_SCRIPT = (
+    "redis.call('set',KEYS[1],ARGV[1]); "
+    "redis.call('set',KEYS[2],ARGV[1]); return 1"
+)
+
 
 class SqlChunkStore:
     """PostgreSQL 是分片事实源；Redis 仅保存队列暂停开关。"""
@@ -105,8 +110,10 @@ class SqlChunkStore:
             await engine.dispose()
 
     async def is_paused(self, lane: str) -> bool:
-        critical = await self.redis.get(f"queue:paused:{lane}")
-        if critical is not None:
+        critical = await self.redis.mget(
+            ["queue:paused:realtime", "queue:paused:bulk"]
+        )
+        if any(value is not None for value in critical):
             return True
         agent_stale = (
             await self.redis.get("queue:paused:vendor-test-agent-stale:realtime"),
@@ -929,8 +936,15 @@ class SqlChunkStore:
             await engine.dispose()
 
     async def pause_queues(self, code: int) -> None:
-        await self.redis.set("queue:paused:realtime", str(code))
-        await self.redis.set("queue:paused:bulk", str(code))
+        result = await self.redis.eval(
+            _VENDOR_CRITICAL_PAUSE_SCRIPT,
+            2,
+            "queue:paused:realtime",
+            "queue:paused:bulk",
+            str(code),
+        )
+        if result != 1:
+            raise RuntimeError("vendor critical pause was not persisted")
 
     async def split_once(self, chunk: ChunkPayload) -> list[ChunkPayload]:
         if len(chunk.phones) < 2:

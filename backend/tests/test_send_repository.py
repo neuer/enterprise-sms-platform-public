@@ -756,13 +756,22 @@ async def test_claim_without_live_budget_uses_existing_cas(
 
 
 class FakeRedis:
-    def __init__(self, values: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        values: dict[str, str] | None = None,
+        *,
+        eval_result: int = 1,
+    ) -> None:
         self.values = values or {}
+        self.eval_result = eval_result
         self.set_calls: list[tuple[str, str, int | None]] = []
         self.eval_calls: list[tuple[str, int, tuple[object, ...]]] = []
 
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
+
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [self.values.get(key) for key in keys]
 
     async def set(self, key: str, value: str, *, ex: int | None = None) -> None:
         self.values[key] = value
@@ -772,16 +781,15 @@ class FakeRedis:
         self.eval_calls.append((script, numkeys, values))
         keys = values[:numkeys]
         arguments = values[numkeys:]
-        assert len(keys) == 2 and arguments == ("vendor-test-agent-stale",)
-        for key in keys:
-            self.values[str(key)] = str(arguments[0])
-        return 1
+        assert len(keys) == 2 and len(arguments) == 1
+        if self.eval_result == 1:
+            for key in keys:
+                self.values[str(key)] = str(arguments[0])
+        return self.eval_result
 
 
-@pytest.mark.asyncio
-async def test_daily_pause_expiry_never_clears_critical_pause() -> None:
-    redis = FakeRedis({"queue:paused:realtime": "1010"})
-    store = SqlChunkStore(
+def redis_chunk_store(redis: FakeRedis) -> SqlChunkStore:
+    return SqlChunkStore(
         object(),  # type: ignore[arg-type]
         settings=cast(
             Any,
@@ -792,6 +800,66 @@ async def test_daily_pause_expiry_never_clears_critical_pause() -> None:
         ),
         redis=redis,
     )
+
+
+@pytest.mark.asyncio
+async def test_vendor_critical_pause_sets_both_lanes_with_one_eval() -> None:
+    redis = FakeRedis()
+    store = redis_chunk_store(redis)
+
+    await store.pause_queues(1000)
+
+    assert redis.values == {
+        "queue:paused:realtime": "1000",
+        "queue:paused:bulk": "1000",
+    }
+    assert redis.set_calls == []
+    assert len(redis.eval_calls) == 1
+    script, numkeys, values = redis.eval_calls[0]
+    assert numkeys == 2
+    assert "redis.call('set',KEYS[1],ARGV[1])" in script
+    assert "redis.call('set',KEYS[2],ARGV[1])" in script
+    assert values == (
+        "queue:paused:realtime",
+        "queue:paused:bulk",
+        "1000",
+    )
+
+
+@pytest.mark.asyncio
+async def test_vendor_critical_pause_rejects_unconfirmed_eval() -> None:
+    redis = FakeRedis(eval_result=0)
+    store = redis_chunk_store(redis)
+
+    with pytest.raises(RuntimeError, match="vendor critical pause was not persisted"):
+        await store.pause_queues(1000)
+
+
+@pytest.mark.parametrize("existing_lane", ["realtime", "bulk"])
+@pytest.mark.asyncio
+async def test_historical_partial_vendor_pause_stops_both_lanes(
+    existing_lane: str,
+) -> None:
+    redis = FakeRedis({f"queue:paused:{existing_lane}": "1000"})
+    store = redis_chunk_store(redis)
+
+    assert await store.is_paused("realtime") is True
+    assert await store.is_paused("bulk") is True
+
+
+@pytest.mark.asyncio
+async def test_daily_pause_remains_lane_specific() -> None:
+    redis = FakeRedis({"queue:paused:vendor-test-daily:realtime": "daily_limit"})
+    store = redis_chunk_store(redis)
+
+    assert await store.is_paused("realtime") is True
+    assert await store.is_paused("bulk") is False
+
+
+@pytest.mark.asyncio
+async def test_daily_pause_expiry_never_clears_critical_pause() -> None:
+    redis = FakeRedis({"queue:paused:realtime": "1010"})
+    store = redis_chunk_store(redis)
 
     await store.pause_daily_limit(
         "realtime",
@@ -811,17 +879,7 @@ async def test_any_historical_partial_agent_stale_key_pauses_both_lanes() -> Non
     redis = FakeRedis(
         {"queue:paused:vendor-test-agent-stale:realtime": "vendor-test-agent-stale"}
     )
-    store = SqlChunkStore(
-        object(),  # type: ignore[arg-type]
-        settings=cast(
-            Any,
-            SimpleNamespace(
-                database_url="postgresql+asyncpg://unused",
-                redis_control_url="redis://unused",
-            ),
-        ),
-        redis=redis,
-    )
+    store = redis_chunk_store(redis)
 
     assert await store.is_paused("realtime") is True
     assert await store.is_paused("bulk") is True
@@ -835,17 +893,7 @@ async def test_agent_stale_pause_uses_independent_named_keys() -> None:
             "queue:paused:vendor-test-daily:bulk": "daily_limit",
         }
     )
-    store = SqlChunkStore(
-        object(),  # type: ignore[arg-type]
-        settings=cast(
-            Any,
-            SimpleNamespace(
-                database_url="postgresql+asyncpg://unused",
-                redis_control_url="redis://unused",
-            ),
-        ),
-        redis=redis,
-    )
+    store = redis_chunk_store(redis)
 
     await store.pause_control_agent_stale()
 
