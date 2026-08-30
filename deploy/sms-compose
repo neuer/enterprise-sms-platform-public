@@ -1843,6 +1843,12 @@ case "$SECRETS_MODE" in
     ;;
 esac
 
+case "$ACTION" in
+  vendor-test | test-update | secure-access | cloudflare-tunnel)
+    reject_production_control_plane "$ACTION" || exit $?
+    ;;
+esac
+
 validate_control_entry
 validate_control_state_binding "$ACTION" "$@"
 configure_internal_compose_env
