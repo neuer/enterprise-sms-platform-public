@@ -8,6 +8,8 @@
 - Base URL：`https://vendor.example.invalid`（生产）；mock：`http://mock-vendor:9028`
 - 全部接口 **POST**，`Content-Type: application/json; charset=UTF-8`
 - 鉴权：每个请求 Body 携带 `secretName` / `secretKey`
+- 当前厂商额度口径：同一账户每秒最多 200 次调用；单次 Send 最多提交 100000 个手机号码。厂商未进一步说明统计窗口、最小调用间隔、并发上限及八个接口是否合并计数，平台按账户总上限保守处理
+- 平台不直接用满厂商额度：`vendor_qps` 可配置硬上限为 200，生产使用更低运行值并为非 Send 接口留余量；`vendor_batch_size` 继续使用默认 500、平台安全上限 1000，不因厂商允许 100000 个号码而扩大单个 `uncertain` 分片
 - **大小写警示**：官方参数表列名为 PascalCase（如 Mobile），但**请求示例均为小写驼峰**（mobile/content/...）。实现一律按示例小写驼峰；联调若报参数错误优先排查大小写
 - 统一响应包络：
 
