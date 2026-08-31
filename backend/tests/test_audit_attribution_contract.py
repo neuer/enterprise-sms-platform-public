@@ -32,6 +32,23 @@ def test_schema_rejects_new_legacy_audit_and_uses_transaction_correlation() -> N
     assert "NEW.actor='system-reconcile' AND NEW.action='raw_replay'" in schema
 
 
+def test_usage_projection_reconcile_actor_is_authorized_for_send_workers() -> None:
+    from app.services.usage_ledger import RECONCILE_REBUILD_ACTOR
+
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    start = schema.index("CREATE OR REPLACE FUNCTION enforce_live_audit_principal()")
+    end = schema.index("REVOKE ALL ON FUNCTION enforce_live_audit_principal()")
+    function = schema[start:end]
+    realtime = function.split("context_domain='realtime'", maxsplit=1)[1].split(
+        "context_domain='bulk'",
+        maxsplit=1,
+    )[0]
+    bulk = function.split("context_domain='bulk'", maxsplit=1)[1]
+    for domain_sql in (realtime, bulk):
+        assert RECONCILE_REBUILD_ACTOR in domain_sql
+        assert "usage_projection_rebuild" in domain_sql
+
+
 def test_runtime_binds_human_and_api_key_principals_before_business_writes() -> None:
     auth_runtime = (ROOT / "backend/app/core/auth/runtime.py").read_text(encoding="utf-8")
     api_key = (ROOT / "backend/app/core/apikey.py").read_text(encoding="utf-8")

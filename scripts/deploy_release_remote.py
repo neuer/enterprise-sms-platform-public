@@ -859,12 +859,16 @@ def _run(
 
 
 def _validate_public_health_response(result: subprocess.CompletedProcess[str]) -> None:
+    """公网探针只接受 /readyz 接流合同，不能把 /healthz 的存活别名当通过。"""
+
     try:
         value = json.loads(result.stdout, object_pairs_hook=_reject_duplicate_keys)
     except (json.JSONDecodeError, RemoteReleaseError) as exc:
-        raise RemoteReleaseError("public health response is not strict JSON") from exc
-    if type(value) is not dict or value != {"status": "ok"}:
-        raise RemoteReleaseError("public health response is not the API health contract")
+        raise RemoteReleaseError("public readiness response is not strict JSON") from exc
+    if type(value) is not dict or value != {"status": "ready"}:
+        raise RemoteReleaseError(
+            "public readiness response is not the API readiness contract"
+        )
 
 
 def _single_line(result: subprocess.CompletedProcess[str], context: str) -> str:
