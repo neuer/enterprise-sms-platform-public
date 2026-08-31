@@ -32,6 +32,22 @@
   --red: var(--verm);
   --cyan: var(--slate);
   --violet: #9b7ed9;
+  /* 文字级品牌绿：面板上作前景色的绿（亮/暗主题取值方向相反） */
+  --verdi-text: #71c4ad;
+  /* ECharts canvas 读不到 CSS 变量，图表经 lib/chartTheme.ts 读取这组 --chart-* 令牌 */
+  --chart-text: #8b978f;
+  --chart-axis: rgba(255, 255, 255, 0.14);
+  --chart-split: rgba(255, 255, 255, 0.07);
+  --chart-green: #2fa184;
+  --chart-green-area: rgba(47, 161, 132, 0.14);
+  --chart-blue: #6f9bcf;
+  --chart-amber: #d8a35c;
+  --chart-violet: #9b7ed9;
+  --chart-teal: #5b8c7b;
+  --chart-dim: #6d7a72;
+  --chart-tip-bg: #141d19;
+  --chart-tip-border: rgba(255, 255, 255, 0.08);
+  --chart-tip-text: #c9d2cc;
   --el-color-primary: var(--verdi);
   --el-color-success: var(--verdi);
   --el-color-warning: var(--amber);
@@ -55,6 +71,13 @@
   --el-disabled-text-color: var(--tx-3);
   --el-disabled-border-color: #2a3d37;
   --el-mask-color: rgba(6, 12, 9, 0.66);
+  /* 主色派生阶：Element 默认 light-N 基于蓝色主色，这里按品牌绿与面板色重混，亮/暗主题自适应 */
+  --el-color-primary-light-3: color-mix(in srgb, var(--verdi) 70%, var(--panel));
+  --el-color-primary-light-5: color-mix(in srgb, var(--verdi) 50%, var(--panel));
+  --el-color-primary-light-7: color-mix(in srgb, var(--verdi) 30%, var(--panel));
+  --el-color-primary-light-8: color-mix(in srgb, var(--verdi) 20%, var(--panel));
+  --el-color-primary-light-9: color-mix(in srgb, var(--verdi) 12%, var(--panel));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--verdi) 88%, #000000);
   color: var(--tx);
   font-family: var(--sans);
   font-size: 13px;
@@ -63,6 +86,49 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== 明亮模式令牌 =====
+   深色是默认主题（上方 :root）；html[data-theme="light"] 只覆写需要变化的令牌，
+   --el-* 桥接变量与 --paper/--card 等别名引用令牌本身，随主题自动跟随。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #edf1ed;
+  --panel: #ffffff;
+  --panel-2: #eef2ee;
+  --sink: #e2e8e2;
+  --hair: rgba(21, 32, 26, 0.1);
+  --hair-2: rgba(21, 32, 26, 0.05);
+  --tx: #2c3731;
+  --tx-2: #54625a;
+  --tx-3: #7d8b81;
+  --tx-hi: #14211a;
+  /* 品牌绿 --verdi 不变；亮底上文字级绿色向深取，保证对比度 */
+  --verdi-l: #0f8a6c;
+  --slate: #34618f;
+  --amber: #9a6b1e;
+  --verm: #c2492f;
+  --violet: #7558c2;
+  --verdi-text: #0b6a55;
+  --el-fill-color: #e6ece6;
+  --el-fill-color-lighter: #f1f5f1;
+  --el-disabled-bg-color: #dce3dc;
+  --el-disabled-border-color: #d2dad2;
+  --el-mask-color: rgba(28, 40, 33, 0.45);
+  --chart-text: #54625a;
+  --chart-axis: rgba(21, 32, 26, 0.22);
+  --chart-split: rgba(21, 32, 26, 0.08);
+  /* 亮底上大面积填充用中饱和色阶：与暗色图表同源，避免深压白底的突兀感 */
+  --chart-green: #35a38a;
+  --chart-green-area: rgba(53, 163, 138, 0.14);
+  --chart-blue: #6f9bcf;
+  --chart-amber: #d8a35c;
+  --chart-violet: #9b7ed9;
+  --chart-teal: #5b8c7b;
+  --chart-dim: #8fa39a;
+  --chart-tip-bg: #ffffff;
+  --chart-tip-border: rgba(21, 32, 26, 0.12);
+  --chart-tip-text: #2c3731;
 }
 
 * {
@@ -816,4 +882,88 @@ button:focus-visible {
 .login-card .el-input__inner {
   color: var(--tx);
   font-family: var(--mono);
+}
+
+
+/* ===== 明亮模式：Element 覆写与深色登录门 =====
+   下方深色重混规则（el-tag/el-alert）按暗色面板调优，亮色模式下恢复亮底深字版本；
+   选择器加 [data-theme="light"] 前缀，优先级高于原双类规则。 */
+[data-theme="light"] .el-tag.el-tag--primary,
+[data-theme="light"] .el-tag.el-tag--success {
+  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verdi) 32%, #ffffff);
+  --el-tag-text-color: var(--verdi-text);
+}
+
+[data-theme="light"] .el-tag.el-tag--warning {
+  --el-tag-bg-color: color-mix(in srgb, var(--amber) 11%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--amber) 34%, #ffffff);
+  --el-tag-text-color: var(--amber);
+}
+
+[data-theme="light"] .el-tag.el-tag--danger,
+[data-theme="light"] .el-tag.el-tag--error {
+  --el-tag-bg-color: color-mix(in srgb, var(--verm) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verm) 32%, #ffffff);
+  --el-tag-text-color: var(--verm);
+}
+
+[data-theme="light"] .el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 22%, #ffffff);
+  --el-tag-text-color: var(--tx-2);
+}
+
+[data-theme="light"] .el-alert--primary,
+[data-theme="light"] .el-alert--success {
+  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 8%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--warning {
+  --el-alert-bg-color: color-mix(in srgb, var(--amber) 9%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--error {
+  --el-alert-bg-color: color-mix(in srgb, var(--verm) 8%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--info {
+  --el-alert-bg-color: var(--panel-2);
+}
+
+[data-theme="light"] .el-alert--primary.is-light,
+[data-theme="light"] .el-alert--primary.is-light .el-alert__description,
+[data-theme="light"] .el-alert--success.is-light,
+[data-theme="light"] .el-alert--success.is-light .el-alert__description {
+  color: var(--verdi-text);
+}
+
+/* 登录页是固定深色身份门：亮色模式下把公共壳子树的令牌钉回深色值。
+   别名（--card 等）在 :root 已按亮色解析，子树内必须连同别名一起重钉。 */
+[data-theme="light"] .public-shell {
+  --bg: #101814;
+  --panel: #18231e;
+  --panel-2: #141d19;
+  --sink: #0c1512;
+  --hair: rgba(255, 255, 255, 0.08);
+  --hair-2: rgba(255, 255, 255, 0.05);
+  --tx: #c9d2cc;
+  --tx-2: #8b978f;
+  --tx-3: #6d7a72;
+  --tx-hi: #eaf1ed;
+  --verdi-l: #2fa184;
+  --amber: #d8a35c;
+  --verm: #e46a4f;
+  --paper: #101814;
+  --card: #18231e;
+  --ink: #eaf1ed;
+  --line: rgba(255, 255, 255, 0.05);
+  --line-2: rgba(255, 255, 255, 0.08);
+  --surface: #18231e;
+  --surface-soft: #141d19;
+  --surface-strong: #0c1512;
+  --ink-soft: #8b978f;
+  --muted: #6d7a72;
+  --verdi-text: #71c4ad;
+  color: var(--tx);
 }

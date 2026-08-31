@@ -122,8 +122,8 @@ button:focus-visible {
   padding: 1px 6px;
   color: var(--amber);
   font: 600 10px/1.6 "IBM Plex Mono", monospace;
-  background: rgba(216, 163, 92, 0.12);
-  border: 1px solid rgba(216, 163, 92, 0.35);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: 999px;
 }
 
@@ -1253,15 +1253,15 @@ main {
 }
 
 .trend-legend .verify {
-  background: var(--verdi-l);
+  background: var(--chart-green);
 }
 
 .trend-legend .notice {
-  background: var(--slate);
+  background: var(--chart-blue);
 }
 
 .trend-legend .market {
-  background: var(--amber);
+  background: var(--chart-amber);
 }
 
 .balance-summary {
@@ -1749,10 +1749,12 @@ main {
   color: var(--tx-2);
 }
 
+/* 导出状态徽章：rgba 底即深色 --amber/--verdi-l/--verm 同值透明度，就地令牌化后亮色随令牌跟随；
+   done 文字 #71c4ad 即深色 --verdi-text。 */
 .export-tag {
   padding: 0 8px;
   border-radius: 4px;
-  background: rgba(216, 163, 92, 0.14);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
   color: var(--amber);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9.5px;
@@ -1760,12 +1762,12 @@ main {
 }
 
 .export-tag.done {
-  background: rgba(47, 161, 132, 0.14);
-  color: #71c4ad;
+  background: color-mix(in srgb, var(--verdi-l) 14%, transparent);
+  color: var(--verdi-text);
 }
 
 .export-tag.failed {
-  background: rgba(228, 106, 79, 0.13);
+  background: color-mix(in srgb, var(--verm) 13%, transparent);
   color: var(--el-color-danger);
 }
 
@@ -2018,18 +2020,19 @@ main {
   white-space: nowrap;
 }
 
+/* 成功率徽章：同 export-tag 的归类——底色按深色令牌同值就地令牌化，g 文字用 --verdi-text。 */
 .rate-chip.g {
-  background: rgba(47, 161, 132, 0.13);
-  color: #71c4ad;
+  background: color-mix(in srgb, var(--verdi-l) 13%, transparent);
+  color: var(--verdi-text);
 }
 
 .rate-chip.y {
-  background: rgba(216, 163, 92, 0.13);
+  background: color-mix(in srgb, var(--amber) 13%, transparent);
   color: var(--amber);
 }
 
 .rate-chip.r {
-  background: rgba(228, 106, 79, 0.13);
+  background: color-mix(in srgb, var(--verm) 13%, transparent);
   color: var(--el-color-danger);
 }
 
@@ -2283,13 +2286,14 @@ main {
   cursor: not-allowed;
 }
 
+/* 类别卡选中渐变：rgba(69,116,163)/rgba(216,163,92) 即深色 --slate/--amber，就地令牌化等价。 */
 .category-switch button.notice.on {
-  background: linear-gradient(180deg, rgba(69, 116, 163, 0.09), transparent 60%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--slate) 9%, transparent), transparent 60%);
   border-color: var(--slate);
 }
 
 .category-switch button.market.on {
-  background: linear-gradient(180deg, rgba(216, 163, 92, 0.07), transparent 60%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 7%, transparent), transparent 60%);
   border-color: var(--amber);
 }
 
@@ -2308,19 +2312,21 @@ main {
   border-radius: 4px;
 }
 
+/* 类别小徽章：底色按深色 --verdi/--slate/--amber 同值就地令牌化；
+   notice 文字 #6f9bcf 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
 .cat-tag.verify {
   color: var(--verdi-l);
-  background: rgba(14, 122, 99, 0.2);
+  background: color-mix(in srgb, var(--verdi) 20%, transparent);
 }
 
 .cat-tag.notice {
   color: #6f9bcf;
-  background: rgba(69, 116, 163, 0.2);
+  background: color-mix(in srgb, var(--slate) 20%, transparent);
 }
 
 .cat-tag.market {
   color: var(--amber);
-  background: rgba(216, 163, 92, 0.14);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
 }
 
 .category-switch small {
@@ -2363,13 +2369,14 @@ main {
   border: 1px solid var(--hair);
 }
 
+/* 营销同意面板：琥珀底/边即深色 --amber 同值，就地令牌化。 */
 .consent-panel {
   display: flex;
   gap: 9px;
   align-items: flex-start;
   padding: 11px 14px;
-  background: rgba(216, 163, 92, 0.14);
-  border: 1px solid rgba(216, 163, 92, 0.5);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 50%, transparent);
   border-radius: 10px;
 }
 
@@ -2468,7 +2475,8 @@ main {
   gap: 12px;
   align-items: center;
   color: var(--tx);
-  border-color: rgba(228, 106, 79, 0.45);
+  /* rgba(228,106,79) 即深色 --verm：就地令牌化等价。 */
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
 }
 
 .import-box.failed p {
@@ -2615,11 +2623,12 @@ main {
   overflow-wrap: anywhere;
 }
 
+/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字 #6f9bcf 保留深色值，亮色覆写见文件末尾。 */
 .template-render-preview em {
   padding: 0 3px;
   color: #6f9bcf;
   font-style: normal;
-  background: rgba(69, 116, 163, 0.2);
+  background: color-mix(in srgb, var(--slate) 20%, transparent);
   border-radius: 3px;
 }
 
@@ -2684,14 +2693,15 @@ main {
   border-radius: 8px;
 }
 
+/* 签名/退订语虚线标记：按深色 --verdi-l/--amber 同值就地令牌化。 */
 .final-content .fx-sign {
   color: var(--verdi-l);
-  border-bottom: 1px dashed rgba(47, 161, 132, 0.5);
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 50%, transparent);
 }
 
 .final-content .fx-suffix {
   color: var(--amber);
-  border-bottom: 1px dashed rgba(216, 163, 92, 0.55);
+  border-bottom: 1px dashed color-mix(in srgb, var(--amber) 55%, transparent);
 }
 
 .final-meta {
@@ -2828,7 +2838,8 @@ main {
 
 .quota-bar .this {
   height: 100%;
-  background: repeating-linear-gradient(135deg, var(--amber) 0 4px, rgba(216, 163, 92, 0.45) 4px 8px);
+  /* 斜纹第二色即深色 --amber 45%：就地令牌化等价。 */
+  background: repeating-linear-gradient(135deg, var(--amber) 0 4px, color-mix(in srgb, var(--amber) 45%, transparent) 4px 8px);
 }
 
 .quota-foot {
@@ -2877,9 +2888,10 @@ main {
   border-radius: 50%;
 }
 
+/* 风险行告警态：琥珀底/边即深色 --amber 同值，就地令牌化。 */
 .risk-line.warn {
-  background: rgba(216, 163, 92, 0.14);
-  border-color: rgba(216, 163, 92, 0.4);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
 }
 
 .risk-line.warn::before {
@@ -2890,8 +2902,9 @@ main {
   background: var(--verdi-l);
 }
 
+/* #6f9bcf 与 --chart-blue 在亮/暗两套主题下同值：直接引用令牌。 */
 .risk-line.info::before {
-  background: #6f9bcf;
+  background: var(--chart-blue);
 }
 
 .risk-line b {
@@ -2908,12 +2921,13 @@ main {
   font-size: 10.5px;
 }
 
+/* 提交结果面板：底渐变/边框即深色 --verdi/--verdi-l 同值，就地令牌化。 */
 .send-result {
   display: grid;
   gap: 9px;
   padding: 12px 14px;
-  background: linear-gradient(180deg, rgba(14, 122, 99, 0.14), transparent 75%);
-  border: 1px solid rgba(47, 161, 132, 0.45);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--verdi) 14%, transparent), transparent 75%);
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 45%, transparent);
   border-radius: 10px;
 }
 
@@ -3051,8 +3065,9 @@ main {
   border-radius: 7px;
 }
 
+/* #71c4ad 即深色 --verdi-text（亮底文字绿）：直接引用令牌。 */
 .approval-counts-pill b {
-  color: #71c4ad;
+  color: var(--verdi-text);
   font-size: 13px;
 }
 
@@ -4390,8 +4405,9 @@ main {
   cursor: pointer;
 }
 
+/* 悬停朱红描边即深色 --verm 同值：就地令牌化。 */
 .sensitive-tile:hover {
-  border-color: rgba(228, 106, 79, 0.35);
+  border-color: color-mix(in srgb, var(--verm) 35%, transparent);
 }
 
 .sensitive-tile:hover .sensitive-tile-del,
@@ -4444,18 +4460,20 @@ main {
   border-radius: 5px;
 }
 
+/* 预检 chips：ok 文字改用亮底自适应的 --verdi-text，两边框按深色令牌同值就地令牌化；
+   bad 文字 #ef9b89 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
 .blacklist-chip-ok,
 .sensitive-chip-ok,
 .user-chip-ok {
-  color: #71c4ad;
-  border-color: rgba(47, 161, 132, 0.4);
+  color: var(--verdi-text);
+  border-color: color-mix(in srgb, var(--verdi-l) 40%, transparent);
 }
 
 .blacklist-chip-bad,
 .sensitive-chip-bad,
 .user-chip-bad {
   color: #ef9b89;
-  border-color: rgba(228, 106, 79, 0.45);
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
 }
 
 .blacklist-parse-error,
@@ -5135,7 +5153,7 @@ main {
   padding: 0 4px;
   color: var(--verdi-l);
   font: 600 9.5px/1.6 var(--mono);
-  background: rgba(14, 122, 99, 0.2);
+  background: color-mix(in srgb, var(--verdi) 20%, transparent);
   border-radius: 4px;
 }
 .batch-more,
@@ -5155,15 +5173,15 @@ main {
 .batch-chip { display: inline-flex; gap: 5px; align-items: center; padding: 1px 9px; border: 1px solid var(--hair); border-radius: 6px; background: var(--sink); color: var(--tx-2); font: 10.5px/1.6 var(--mono); cursor: pointer; }
 .batch-chip b { color: var(--tx); font-weight: 600; }
 .batch-chip:hover { border-color: var(--verdi-l); }
-.batch-chip.on { color: var(--verdi-l); background: rgba(14, 122, 99, 0.14); border-color: rgba(47, 161, 132, 0.55); }
+.batch-chip.on { color: var(--verdi-l); background: color-mix(in srgb, var(--verdi) 14%, transparent); border-color: color-mix(in srgb, var(--verdi-l) 55%, transparent); }
 .batch-chip.on b { color: var(--verdi-l); }
-.batch-chip.hot { color: #f0a08c; border-color: rgba(228, 106, 79, 0.55); }
+.batch-chip.hot { color: #f0a08c; border-color: color-mix(in srgb, var(--verm) 55%, transparent); }
 .batch-chip.hot b { color: var(--verm); }
 .batch-chips-meta { margin-left: auto; color: var(--tx-3); font-size: 9.5px; }
 
 .cell-subline { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 2px; }
 .cell-flag { padding: 0 6px; border: 1px solid var(--hair); border-radius: 4px; background: transparent; color: var(--tx-2); font: 9.5px/1.6 var(--mono); white-space: nowrap; }
-.cell-flag--sched { color: var(--amber); border-color: rgba(216, 163, 92, 0.4); }
+.cell-flag--sched { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
 .cell-flag--test { color: var(--slate); border-color: var(--slate); border-style: dashed; }
 .cell-flag--resend { color: var(--verdi-l); cursor: pointer; }
 .cell-flag--resend:hover { border-color: var(--verdi-l); }
@@ -5242,14 +5260,14 @@ main {
   padding: 8px 12px;
   color: #93b6e0;
   font-size: 11px;
-  background: rgba(111, 155, 207, 0.08);
-  border: 1px solid rgba(111, 155, 207, 0.35);
+  background: color-mix(in srgb, var(--chart-blue) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chart-blue) 35%, transparent);
   border-radius: 8px;
 }
 .batch-note.is-warn {
   color: var(--amber);
-  background: rgba(216, 163, 92, 0.08);
-  border-color: rgba(216, 163, 92, 0.35);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 35%, transparent);
 }
 .batch-content-card { display: grid; gap: 6px; justify-items: start; padding: 11px 14px; margin-bottom: 12px; background: var(--sink); border: 1px solid var(--hair); border-radius: 10px; }
 .batch-content-card p { margin: 0; color: var(--tx-hi); font-size: 12.5px; line-height: 1.7; overflow-wrap: anywhere; }
@@ -5391,8 +5409,8 @@ main {
 
 .message-badge-tag.is-listed {
   color: #ef9b89;
-  background: rgba(228, 106, 79, 0.15);
-  border-color: rgba(228, 106, 79, 0.35);
+  background: color-mix(in srgb, var(--verm) 15%, transparent);
+  border-color: color-mix(in srgb, var(--verm) 35%, transparent);
 }
 
 .message-badge-source { color: var(--tx-3); font-size: 12px; }
@@ -5462,8 +5480,8 @@ main {
   padding: 8px 14px;
   color: var(--amber);
   font-size: 11.5px;
-  background: rgba(216, 163, 92, 0.07);
-  border: 1px solid rgba(216, 163, 92, 0.35);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: 8px;
 }
 
@@ -6316,13 +6334,13 @@ main {
 .balance { color: var(--tx-3); font-family: var(--mono); }
 .balance strong { color: var(--tx-hi); }
 .operator-name { color: var(--tx); }
-.logout-button:hover { color: #71c4ad; }
+.logout-button:hover { color: var(--verdi-text); }
 
 main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .page-heading { margin-bottom: 18px; }
 .page-heading h1 { color: var(--tx-hi); font-size: 19px; font-weight: 600; }
 .page-heading p:not(.eyebrow) { color: var(--tx-2); font-size: 12.5px; }
-.eyebrow { color: #71c4ad; letter-spacing: 0.16em; }
+.eyebrow { color: var(--verdi-text); letter-spacing: 0.16em; }
 
 .page-heading.send-heading { margin-bottom: 14px; }
 .send-heading .eyebrow,
@@ -6416,7 +6434,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .channel-monitor-link:hover .channel-monitor,
 .metric-link:hover .metric-card,
-.disposition-link:hover .disposition-row { border-color: rgba(113, 196, 173, 0.45); }
+.disposition-link:hover .disposition-row { border-color: color-mix(in srgb, var(--verdi-text) 45%, transparent); }
 .panel-jump { color: var(--tx-2); }
 .panel-jump:hover { color: var(--tx-hi); }
 .dashboard-metrics { gap: 14px; }
@@ -6432,12 +6450,12 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .dashboard-panel,
 .jobs-panel { background: var(--panel); border-color: var(--hair); }
 .jobs-sum b { color: var(--tx-hi); }
-.job-alert { background: rgba(228, 106, 79, 0.06); border-color: rgba(228, 106, 79, 0.3); }
+.job-alert { background: color-mix(in srgb, var(--verm) 6%, transparent); border-color: color-mix(in srgb, var(--verm) 30%, transparent); }
 .job-alert code { color: var(--verm); }
 .disposition-row.active { background: linear-gradient(180deg, #241a17, #1a1513); border-color: rgba(228, 106, 79, 0.5); }
 
-.approval-counts-pill { color: var(--tx-hi); background: rgba(14, 122, 99, 0.18); border-color: rgba(47, 161, 132, 0.4); }
-.approval-counts-pill b { color: #71c4ad; }
+.approval-counts-pill { color: var(--tx-hi); background: color-mix(in srgb, var(--verdi) 18%, transparent); border-color: color-mix(in srgb, var(--verdi-l) 40%, transparent); }
+.approval-counts-pill b { color: var(--verdi-text); }
 .approval-counts-pill .is-hot { color: var(--verm); }
 .approval-role { color: var(--tx-2); background: var(--panel); border-color: var(--hair); }
 .approval-filter-bar { background: var(--panel); border-color: var(--hair); }
@@ -6451,10 +6469,10 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .approval-seg button.on { color: #eaf1ed; background: var(--verdi); }
 .approval-seg-count { color: var(--tx-3); background: var(--panel-2); }
 .approval-seg button.on .approval-seg-count { color: #eaf1ed; background: rgba(255, 255, 255, 0.12); }
-.approval-seg-count.is-hot { color: #f0a08c; background: rgba(228, 106, 79, 0.25); }
+.approval-seg-count.is-hot { color: #f0a08c; background: color-mix(in srgb, var(--verm) 25%, transparent); }
 .approval-row { background: var(--panel); border-color: var(--hair); }
-.approval-row.is-urgent { background: linear-gradient(90deg, rgba(228, 106, 79, 0.07), var(--panel) 34%); border-color: rgba(228, 106, 79, 0.45); }
-.approval-row.is-soon { border-color: rgba(216, 163, 92, 0.4); }
+.approval-row.is-urgent { background: linear-gradient(90deg, color-mix(in srgb, var(--verm) 7%, transparent), var(--panel) 34%); border-color: color-mix(in srgb, var(--verm) 45%, transparent); }
+.approval-row.is-soon { border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
 .approval-cd b { color: var(--tx-hi); }
 .approval-cd span { color: var(--tx-3); }
 .approval-row.is-urgent .approval-cd b { color: var(--verm); }
@@ -6479,7 +6497,7 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .approval-dest small { color: var(--tx-3); }
 .approval-decide-box { background: var(--panel-2); border-color: var(--hair); }
 .approval-decide-hint { color: var(--tx-3); }
-.approval-outcome { color: var(--tx-2); background: rgba(14, 122, 99, 0.12); border-color: rgba(47, 161, 132, 0.35); }
+.approval-outcome { color: var(--tx-2); background: color-mix(in srgb, var(--verdi) 12%, transparent); border-color: color-mix(in srgb, var(--verdi-l) 35%, transparent); }
 .approval-facts dt,
 .approval-proof span,
 .reason-proof span,
@@ -6489,11 +6507,12 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .approval-proof,
 .reason-proof { background: var(--sink); border-color: var(--hair); }
 .approval-content-body { color: var(--tx-hi); }
-.approval-content-head em { color: #93b6e0; border-color: rgba(111, 155, 207, 0.4); }
+.approval-content-head em { color: #93b6e0; border-color: color-mix(in srgb, var(--chart-blue) 40%, transparent); }
 
-.circuit-banner { display: flex; gap: 18px; align-items: center; padding: 16px 20px; margin-bottom: 16px; color: #f0e2cb; background: linear-gradient(180deg, #241d12, #1b160f); border: 1px solid rgba(216, 163, 92, 0.4); border-radius: 12px; }
-.circuit-banner.recovered { color: #d9eee7; background: linear-gradient(180deg, #162b23, #13221c); border-color: rgba(47, 161, 132, 0.45); }
-.circuit-icon { display: grid; width: 38px; height: 38px; flex: none; place-items: center; color: var(--amber); background: rgba(216, 163, 92, 0.16); border-radius: 10px; }
+/* 熔断横幅：深色渐变底与浅文字保留深色值（亮色覆写见文件末尾）；边框/图标底按深色令牌同值就地令牌化。 */
+.circuit-banner { display: flex; gap: 18px; align-items: center; padding: 16px 20px; margin-bottom: 16px; color: #f0e2cb; background: linear-gradient(180deg, #241d12, #1b160f); border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius: 12px; }
+.circuit-banner.recovered { color: #d9eee7; background: linear-gradient(180deg, #162b23, #13221c); border-color: color-mix(in srgb, var(--verdi-l) 45%, transparent); }
+.circuit-icon { display: grid; width: 38px; height: 38px; flex: none; place-items: center; color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); border-radius: 10px; }
 .circuit-banner strong { display: block; font-size: 13.5px; }
 .circuit-banner p { margin: 2px 0 0; color: var(--tx-2); font-size: 12px; }
 .circuit-actions { display: flex; gap: 9px; align-items: center; margin-left: auto; }
@@ -6529,8 +6548,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .apps-key-cell { display: grid; gap: 3px; justify-items: start; }
 .apps-key-prefix { color: var(--tx); font: 11.5px var(--mono); letter-spacing: 0.04em; }
 .apps-key-tag { display: inline-flex; align-items: center; width: fit-content; padding: 0 9px; color: var(--tx-2); font: 10.5px/1.9 var(--mono); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--hair); border-radius: 5px; }
-.apps-key-tag--grace { color: var(--amber); background: rgba(216, 163, 92, 0.13); border-color: rgba(216, 163, 92, 0.35); }
-.apps-key-tag--revoked { color: #ef9b89; background: rgba(228, 106, 79, 0.15); border-color: rgba(228, 106, 79, 0.35); }
+.apps-key-tag--grace { color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, transparent); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+.apps-key-tag--revoked { color: #ef9b89; background: color-mix(in srgb, var(--verm) 15%, transparent); border-color: color-mix(in srgb, var(--verm) 35%, transparent); }
 .apps-callback-url { display: block; max-width: 180px; overflow: hidden; color: var(--tx); font: 11.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .apps-foot { display: flex; gap: 14px; align-items: center; padding: 10px 16px; color: var(--tx-3); font-size: 11px; border-top: 1px solid var(--hair-2); }
 .apps-foot-role { margin-left: auto; font-family: var(--mono); font-size: 10.5px; }
@@ -6558,19 +6577,19 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .apps-key-line code { color: var(--tx-hi); font: 12px var(--mono); letter-spacing: 0.05em; }
 .apps-key-line small { color: var(--tx-3); font-size: 10px; }
 .apps-key-act { display: flex; gap: 6px; margin-left: auto; }
-.apps-key-grace { display: flex; gap: 10px; align-items: center; padding: 9px 12px; background: rgba(216, 163, 92, 0.07); border: 1px solid rgba(216, 163, 92, 0.35); border-radius: 8px; }
+.apps-key-grace { display: flex; gap: 10px; align-items: center; padding: 9px 12px; background: color-mix(in srgb, var(--amber) 7%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; }
 .apps-key-grace code { color: var(--amber); font: 11px var(--mono); }
 .apps-key-grace small { color: var(--tx-2); font-size: 10px; }
 .apps-form-sec { display: grid; gap: 10px; margin-top: 13px; padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--hair-2); border-radius: 10px; }
 .apps-form-sec > h3 { margin: 0; color: var(--tx-3); font-size: 11px; font-weight: 400; letter-spacing: 0.1em; }
 .apps-form-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.apps-form-alert { padding: 8px 12px; color: var(--amber); font-size: 11px; background: rgba(216, 163, 92, 0.07); border: 1px solid rgba(216, 163, 92, 0.35); border-radius: 8px; }
-.apps-form-alert--verm { color: #ef9b89; background: rgba(228, 106, 79, 0.07); border-color: rgba(228, 106, 79, 0.35); }
+.apps-form-alert { padding: 8px 12px; color: var(--amber); font-size: 11px; background: color-mix(in srgb, var(--amber) 7%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; }
+.apps-form-alert--verm { color: #ef9b89; background: color-mix(in srgb, var(--verm) 7%, transparent); border-color: color-mix(in srgb, var(--verm) 35%, transparent); }
 .apps-form-audit { color: var(--tx-3); font-size: 10px; }
 .apps-conseq { padding-left: 0; margin: 0; }
 .apps-conseq li { position: relative; padding: 2px 0 2px 16px; color: var(--tx-2); font-size: 12px; list-style: none; }
 .apps-conseq li::before { content: "—"; position: absolute; left: 0; color: var(--tx-3); }
-.one-time-secret { padding: 13px 15px; margin: 14px 0 0; overflow-x: auto; color: #71c4ad; font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
+.one-time-secret { padding: 13px 15px; margin: 14px 0 0; overflow-x: auto; color: var(--verdi-text); font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 .demo-script { padding: 13px 15px; margin: 6px 0 0; overflow-x: auto; color: #cfe3ff; font: 12px/1.7 var(--mono); white-space: pre; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 .demo-dialog .el-tabs__item { font-size: 13px; }
 
@@ -6681,7 +6700,8 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 
 .el-button.is-link.el-button--primary {
   --el-button-text-color: var(--verdi-l);
-  --el-button-hover-link-text-color: #71c4ad;
+  /* #71c4ad 即深色 --verdi-text：引用令牌后亮色悬停自动取亮底文字绿。 */
+  --el-button-hover-link-text-color: var(--verdi-text);
   --el-button-active-color: var(--verdi-l);
 }
 
@@ -6704,3 +6724,97 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
   .apps-keyword { width: 100%; }
   .apps-filter-note { width: 100%; margin-left: 0; }
 }
+
+
+/* ===== 明亮模式覆写 =====
+   深色是默认主题；此处只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的规则（壳层 + 全部业务页）。
+   登录页在明亮模式下保持深色（theme.css 的 .public-shell 令牌钉回），属于有意保留。 */
+[data-theme="light"] .el-button--default {
+  --el-button-bg-color: #ffffff;
+  --el-button-border-color: var(--hair);
+  --el-button-text-color: var(--tx);
+}
+[data-theme="light"] .el-button--primary.is-disabled,
+[data-theme="light"] .el-button--primary.is-disabled:hover {
+  color: var(--tx-3);
+  background: #dce3dc;
+  border-color: #dce3dc;
+}
+[data-theme="light"] .el-overlay { background: var(--el-mask-color); }
+[data-theme="light"] .el-drawer { box-shadow: -16px 0 48px rgba(21, 32, 26, 0.18); }
+/* 顶栏随主题走亮色（主视觉层钉了深色背景 #111a16；文字全部走令牌，无需另行覆写） */
+[data-theme="light"] .topbar { background: color-mix(in srgb, var(--paper) 94%, transparent); }
+/* 侧边栏在明亮模式下同样转亮，仅品牌章保留深绿渐变 */
+[data-theme="light"] .sidebar {
+  color: var(--tx);
+  background: var(--panel);
+  scrollbar-color: rgba(21, 32, 26, 0.25) transparent;
+}
+[data-theme="light"] .brand strong { color: var(--tx-hi); }
+[data-theme="light"] .brand small { color: var(--tx-3); }
+[data-theme="light"] .nav-section h2 { color: var(--tx-3); }
+[data-theme="light"] .nav-link { color: var(--tx-2); }
+[data-theme="light"] .nav-link:hover { color: var(--tx-hi); background: rgba(21, 32, 26, 0.05); }
+[data-theme="light"] .nav-link.active {
+  color: var(--verdi-text);
+  background: color-mix(in srgb, var(--verdi) 12%, #ffffff);
+  box-shadow: inset 2px 0 var(--verdi);
+}
+[data-theme="light"] .nav-marker { color: var(--tx-3); }
+[data-theme="light"] .nav-link.active .nav-marker { color: var(--verdi-text); }
+[data-theme="light"] .sidebar-foot { color: var(--tx-3); }
+[data-theme="light"] .navigation-close { color: var(--tx-2); }
+[data-theme="light"] .disposition-row.active {
+  background: color-mix(in srgb, var(--verm) 6%, var(--panel));
+  border-color: color-mix(in srgb, var(--verm) 45%, var(--line));
+}
+
+/* 透明白高光（rgba(255,255,255,…)）在亮底上不可见，统一换成 rgba(21,32,26,…) 深色纱：
+   类别卡悬停描边、表格行悬停、徽章/进度轨底色。 */
+[data-theme="light"] .category-switch button:hover:not(:disabled) { border-color: rgba(21, 32, 26, 0.2); }
+[data-theme="light"] .el-table,
+[data-theme="light"] .sign-table,
+[data-theme="light"] .template-table,
+[data-theme="light"] .apps-table { --el-table-row-hover-bg-color: rgba(21, 32, 26, 0.04); }
+[data-theme="light"] .approval-table tbody tr:hover { background: rgba(21, 32, 26, 0.04); }
+[data-theme="light"] .message-badge-tag,
+[data-theme="light"] .apps-key-tag { background: rgba(21, 32, 26, 0.05); }
+[data-theme="light"] .apps-quota-bar { background: rgba(21, 32, 26, 0.08); }
+
+/* 按深色面板调优的浅蓝文字（#6f9bcf/#93b6e0/#cfe3ff）亮底对比不足，向深取 --slate。
+   .batch-note 必须排除 .is-warn：后者是琥珀语义且源序在前，不隔离会被本规则压盖。 */
+[data-theme="light"] .cat-tag.notice,
+[data-theme="light"] .template-render-preview em,
+[data-theme="light"] .approval-content-head em,
+[data-theme="light"] .demo-script { color: var(--slate); }
+[data-theme="light"] .batch-note:not(.is-warn) { color: var(--slate); }
+
+/* 按深色面板调优的浅朱红文字（#ef9b89/#f0a08c/#d66b6b）亮底对比不足，向深取 --verm。 */
+[data-theme="light"] .approval-seg-count.is-hot,
+[data-theme="light"] .batch-chip.hot,
+[data-theme="light"] .message-badge-tag.is-listed,
+[data-theme="light"] .apps-key-tag--revoked,
+[data-theme="light"] .apps-form-alert--verm,
+[data-theme="light"] .blacklist-chip-bad,
+[data-theme="light"] .sensitive-chip-bad,
+[data-theme="light"] .user-chip-bad,
+[data-theme="light"] .sensitive-tile:hover .sensitive-tile-del,
+[data-theme="light"] .sensitive-tile-del:focus-visible,
+[data-theme="light"] .security-delivery-facts .security-error { color: var(--verm); }
+[data-theme="light"] .security-metric.danger { border-top-color: var(--verm); }
+
+/* 深色渐变横幅（审批熔断/安全日报概览）在亮底下反白为令牌浅色渐变，文字随令牌。 */
+[data-theme="light"] .circuit-banner {
+  color: var(--tx-hi);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 12%, #ffffff), color-mix(in srgb, var(--amber) 7%, #ffffff));
+}
+[data-theme="light"] .circuit-banner.recovered {
+  color: var(--tx-hi);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--verdi) 10%, #ffffff), color-mix(in srgb, var(--verdi) 6%, #ffffff));
+}
+[data-theme="light"] .security-daily-state {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--verdi) 10%, #ffffff), color-mix(in srgb, var(--verdi) 6%, #ffffff));
+}
+
+/* 空态三色尺的中间蓝钉死了深色值 #35618f，亮色跟随 --slate 令牌。 */
+[data-theme="light"] .empty-rule { background: linear-gradient(90deg, var(--verdi) 0 33%, var(--slate) 33% 66%, var(--amber) 66%); }

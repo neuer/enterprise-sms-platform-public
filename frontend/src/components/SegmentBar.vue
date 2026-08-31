@@ -41,10 +41,11 @@ defineProps<{
 }
 
 .seg-cells i.part {
+  /* 斜纹第二色即 --verdi 35%（该令牌亮/暗同值）：引用令牌，避免硬编码。 */
   background: repeating-linear-gradient(
     135deg,
     var(--verdi) 0 4px,
-    rgba(14, 122, 99, 0.35) 4px 8px
+    color-mix(in srgb, var(--verdi) 35%, transparent) 4px 8px
   );
 }
 

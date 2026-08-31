@@ -20,7 +20,7 @@ import {
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
-import { CHART_DIM_PALETTE } from "../lib/chartTheme"
+import { CHART_DIM_VARS } from "../lib/chartTheme"
 import { reportTrendDims } from "../lib/reportTrend"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -122,7 +122,8 @@ const trendLegend = computed(() =>
 )
 
 function dimColor(index: number): string {
-  return CHART_DIM_PALETTE[index % CHART_DIM_PALETTE.length]
+  // 图例色块是 DOM 元素，用 var() 引用令牌即可随主题自动切换
+  return `var(${CHART_DIM_VARS[index % CHART_DIM_VARS.length]})`
 }
 
 const averageLabel = computed(() => {

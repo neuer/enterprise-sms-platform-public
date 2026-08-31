@@ -9,7 +9,8 @@ describe("文字按钮悬停主题契约", () => {
     // 按下读取 --el-button-active-color；写成 --el-button-hover-text-color 不生效。
     const block = css.match(/\.el-button\.is-link\.el-button--primary\s*\{[^}]*\}/s)?.[0] ?? ""
     expect(block).toContain("--el-button-text-color: var(--verdi-l)")
-    expect(block).toContain("--el-button-hover-link-text-color: #71c4ad")
+    // 悬停色走 --verdi-text 令牌（深色 #71c4ad）：亮色主题下自动取亮底文字绿 #0b6a55。
+    expect(block).toContain("--el-button-hover-link-text-color: var(--verdi-text)")
     expect(block).toContain("--el-button-active-color: var(--verdi-l)")
   })
 })

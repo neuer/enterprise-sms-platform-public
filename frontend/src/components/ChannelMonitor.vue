@@ -104,7 +104,7 @@ function displayNumber(value: number | null): string {
   display: inline-flex;
   gap: 7px;
   align-items: center;
-  color: #71c4ad;
+  color: var(--verdi-text);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
@@ -134,7 +134,7 @@ function displayNumber(value: number | null): string {
 
 .monitor-lane span,
 .monitor-qps span {
-  color: #71c4ad;
+  color: var(--verdi-text);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 500;
