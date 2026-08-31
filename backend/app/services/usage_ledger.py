@@ -145,7 +145,9 @@ class UsageDrift:
         return self.quota_mismatches + self.frequency_mismatches
 
 
-RECONCILE_REBUILD_ACTOR = "system:usage-projection-reconcile"
+# 必须已在 enforce_live_audit_principal 的 sms_send+realtime/bulk 白名单中；
+# 新 actor 名需要手写迁移，不能只改 Python。
+RECONCILE_REBUILD_ACTOR = "system:usage-projection-auto"
 
 
 class UsageReconcileLedger(Protocol):
@@ -1373,7 +1375,7 @@ class UsageLedgerService:
                 raise UsageProjectionUnavailable("usage projection redis unavailable") from exc
             if not owns_rebuild:
                 raise UsageProjectionUnavailable("usage projection rebuild in progress")
-            await self.rebuild(actor="system:usage-projection-auto")
+            await self.rebuild(actor=RECONCILE_REBUILD_ACTOR)
             return
         try:
             await self.redis.set(
