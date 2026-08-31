@@ -1838,9 +1838,9 @@ class UatSuite:
         def unmatched_page() -> dict[str, Any] | None:
             response = self._request(
                 self.api,
-                "GET",
-                "/api/v1/web/admin/unmatched-reports?"
-                + urllib.parse.urlencode({"phone": phone, "page": 1, "page_size": 20}),
+                "POST",
+                "/api/v1/web/admin/unmatched-reports",
+                payload={"phone": phone, "page": 1, "page_size": 20},
                 headers=self._bearer("admin01"),
             )
             page = self._expect("25", response, 200)

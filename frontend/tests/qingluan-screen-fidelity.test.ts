@@ -99,7 +99,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const workspace = source("src/styles/workspace.css")
     expect(view).toContain("report-filter-bar")
     expect(view).toContain("含明文手机号")
-    expect(view).toContain("unknown 不入分母")
+    expect(view).toContain("未知不入分母")
     expect(view).toContain('label="周期"')
     expect(view).toContain('label="送达"')
     expect(view).toContain('label="失败"')

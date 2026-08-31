@@ -5,7 +5,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import {
   getDashboard,
-  type DashboardCategory,
   type DashboardChannelMonitor,
   type DashboardSnapshot,
 } from "../api/dashboard"
@@ -14,18 +13,14 @@ import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
 import TrendChart from "../components/TrendChart.vue"
 import { jobDescription } from "../lib/jobDescriptions"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { formatDateTime, formatHm, formatHms } from "../lib/time"
 
 const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
 const lastChannelSuccessAt = ref<string | null>(null)
 let refreshTimer: number | undefined
-
-const categoryLabels: Record<DashboardCategory, string> = {
-  verify: "验证码",
-  notice: "通知",
-  market: "营销",
-}
 
 const totalMessages = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total, 0) ?? 0)
 const totalSegments = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total_segments, 0) ?? 0)
@@ -40,7 +35,7 @@ const balancePollJob = computed(() => operations.value?.jobs.find((item) => item
 const balancePollLabel = computed(() => {
   const job = balancePollJob.value
   if (!job) return "尚未登记"
-  const clock = job.last_run_at ? formatTime(job.last_run_at).slice(11, 16) : ""
+  const clock = job.last_run_at ? formatHm(job.last_run_at) : ""
   if (job.stalled) return clock ? `异常 · ${clock}` : "异常"
   if (!job.last_run_at) return "尚未运行"
   return `正常 · ${clock}`
@@ -67,14 +62,6 @@ const balanceRunwayLabel = computed(() => {
   const runway = stats.runway === null ? "" : ` · 预计可用约 ${stats.runway} 天`
   return `日均消耗 ≈ ${Math.round(stats.daily).toLocaleString()}${runway}`
 })
-
-function formatTime(value: string | null): string {
-  if (!value) return "尚未运行"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
-}
 
 function channelMonitorError(reason: DashboardChannelMonitor["degraded_reason"]): string {
   if (reason === "snapshot_incomplete") return "Redis 运行快照字段不完整，信道指标暂不可用"
@@ -137,7 +124,7 @@ onBeforeUnmount(() => {
       <p>业务统计遵循当前数据权限，运行信号为平台级摘要。</p>
     </div>
     <div class="dashboard-refresh">
-      <time v-if="snapshot">最后刷新 {{ formatTime(snapshot.refreshed_at) }}</time>
+      <time v-if="snapshot">最后刷新 {{ formatDateTime(snapshot.refreshed_at, "尚未运行") }}</time>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
   </section>
@@ -146,7 +133,7 @@ onBeforeUnmount(() => {
     <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
   </el-alert>
 
-  <div v-if="snapshot" v-loading="loading && !snapshot" class="dashboard-shell">
+  <div v-if="snapshot" class="dashboard-shell">
     <div class="zone-label"><span>业务成果 · 今日</span></div>
     <section class="dashboard-metrics" aria-label="今日关键指标">
       <router-link to="/reports" class="metric-link" data-testid="metric-messages">
@@ -156,9 +143,9 @@ onBeforeUnmount(() => {
           <strong>{{ totalMessages.toLocaleString() }}</strong>
           <small>{{ totalSegments.toLocaleString() }} 计费条</small>
           <div class="category-strip" aria-label="分类消息量">
-            <span v-for="item in snapshot.categories" :key="item.category" :class="item.category" :style="{ flexGrow: Math.max(item.total, 1) }" :title="`${categoryLabels[item.category]} ${item.total}`"></span>
+            <span v-for="item in snapshot.categories" :key="item.category" :class="item.category" :style="{ flexGrow: Math.max(item.total, 1) }" :title="`${CATEGORY_LABELS[item.category]} ${item.total}`"></span>
           </div>
-          <p>{{ snapshot.categories.map(item => `${categoryLabels[item.category]} ${item.total}`).join(' · ') }}</p>
+          <p>{{ snapshot.categories.map(item => `${CATEGORY_LABELS[item.category]} ${item.total}`).join(' · ') }}</p>
         </el-card>
       </router-link>
       <router-link to="/reports" class="metric-link" data-testid="metric-success">
@@ -166,10 +153,10 @@ onBeforeUnmount(() => {
           <span>送达成功率</span>
           <span class="kpi-go">→ 报表</span>
           <strong>{{ (snapshot.overall_success_rate * 100).toFixed(1) }}%</strong>
-          <small>delivered / (delivered + failed)</small>
+          <small>送达 /（送达 + 失败）</small>
           <div class="rate-rows" aria-label="分类目成功率">
             <div v-for="item in snapshot.categories" :key="item.category" class="rate-row">
-              <span>{{ categoryLabels[item.category] }}</span>
+              <span>{{ CATEGORY_LABELS[item.category] }}</span>
               <div class="rate-track"><i :class="item.category" :style="{ width: `${Math.min(100, item.success_rate * 100)}%` }"></i></div>
               <b>{{ (item.success_rate * 100).toFixed(1) }}%</b>
             </div>
@@ -252,7 +239,7 @@ onBeforeUnmount(() => {
         <el-card shadow="never" class="dashboard-panel alert-panel">
           <template #header><div class="panel-title"><div><strong>今日告警</strong><small>仅展示标题，不暴露载荷</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
           <ul v-if="operations.alerts.length" class="alert-list">
-            <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatTime(item.created_at).slice(11) }}</time></div></li>
+            <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatHms(item.created_at) }}</time></div></li>
           </ul>
           <EmptyState v-else title="今日没有告警" description="新的异常、余额或任务告警会出现在这里。" />
         </el-card>
@@ -287,7 +274,7 @@ onBeforeUnmount(() => {
           <article v-for="job in stalledJobs" :key="job.job_name" class="job-alert">
             <code>{{ job.job_name }}</code>
             <p>{{ jobDescription(job.job_name) }}</p>
-            <time>最后运行 {{ formatTime(job.last_run_at) }}</time>
+            <time>最后运行 {{ formatDateTime(job.last_run_at, "尚未运行") }}</time>
           </article>
           <p class="jobs-ok">{{ stalledJobs.length ? '其余任务均在预期间隔内运行；默认只显示异常项，不再平铺全部。' : '全部任务均在预期间隔内运行。' }}</p>
         </el-card>

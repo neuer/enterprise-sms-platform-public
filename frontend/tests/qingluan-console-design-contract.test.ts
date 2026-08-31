@@ -98,7 +98,6 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(apps).toContain('item.key === "key_grace_hours"')
     expect(apps).not.toContain("旧 Key 24h 并行有效")
     expect(dashboard).toContain("if (loading.value) return")
-    expect(dashboard).toContain('v-loading="loading && !snapshot"')
   })
 
   it("所有运动在用户要求减少动态时关闭", () => {

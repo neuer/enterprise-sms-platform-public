@@ -295,7 +295,9 @@ def test_ops_lists_return_safe_complete_models() -> None:
         ]
         == 3600
     )
-    unmatched = browser.get("/api/v1/web/admin/unmatched-reports", headers=headers).json()
+    unmatched = browser.post(
+        "/api/v1/web/admin/unmatched-reports", headers=headers, json={"page": 1, "page_size": 20}
+    ).json()
     assert unmatched["items"][0]["phone_mask"] == "138****8000"
     assert (
         browser.get("/api/v1/web/admin/jobs", headers=headers).json()[0]["job_name"]

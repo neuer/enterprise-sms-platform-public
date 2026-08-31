@@ -35,6 +35,7 @@ function result(url: string, method: string): unknown {
     if (url.includes("/unmatched-reports/export")) {
       return { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
     }
+    if (url.includes("/unmatched-reports")) return { items: [{ id: 4, vendor_task_id: "vendor-1", custom_id: "legacy-1", phone_mask: "138****8000", report_status: 1, report_desc: "DELIVRD", report_time: "2026-07-12T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
     if (url.includes("/queue/resume")) return { resumed_batches: 2, paused_codes: ["999"] }
     if (url.includes("/outbox/") && url.endsWith("/retry")) return undefined
     return undefined
@@ -43,7 +44,6 @@ function result(url: string, method: string): unknown {
   if (url.includes("/alerts")) return { items: [{ id: 1, alert_type: "job_failed", level: "crit", title: "任务连续失败", detail: { job_name: "poll_report" }, channels: "log-sink", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/raw-logs")) return { items: [{ id: 2, source: "report", item_count: 3, custom_id_count: 2, processed: false, error: "ValueError", fetched_at: "2026-07-12T08:00:00+08:00", capture_state: "complete" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/chunks/uncertain")) return { items: [{ chunk_id: 3, batch_no: "BATCH-1", custom_id: "CUSTOM-1", phone_count: 50, vendor_code: null, uncertain_since: "2026-07-12T08:00:00+08:00", age_seconds: 90000 }], total: 45, page: 1, page_size: 20 }
-  if (url.includes("/unmatched-reports")) return { items: [{ id: 4, vendor_task_id: "vendor-1", custom_id: "legacy-1", phone_mask: "138****8000", report_status: 1, report_desc: "DELIVRD", report_time: "2026-07-12T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/jobs")) return [
     { job_name: "poll_report", last_run_at: "2026-07-12T08:00:00+08:00", last_status: "failed", last_duration_ms: 120, last_items: 0, success_rate_24h: 0.75, stalled: true },
     { job_name: "housekeeping", last_run_at: null, last_status: null, last_duration_ms: null, last_items: 0, success_rate_24h: 0, stalled: false },
@@ -109,7 +109,7 @@ describe("统一运维中心", () => {
     const wrapper = await mountOps()
     await flushPromises()
 
-    await tab(wrapper, "unmatched").trigger("click")
+    await tab(wrapper, "无主报告").trigger("click")
     await flushPromises()
     const filterBar = wrapper.get("#ops-panel-unmatched .ops-filter-bar")
     expect(filterBar.find("[data-testid='ops-unmatched-phone']").exists()).toBe(true)
@@ -241,7 +241,7 @@ describe("统一运维中心", () => {
     })
     vi.stubGlobal("fetch", fetch)
     const wrapper = await mountOps()
-    await tab(wrapper, "uncertain").trigger("click")
+    await tab(wrapper, "结果未知").trigger("click")
     await flushPromises()
     await tab(wrapper, "告警记录").trigger("click")
     await flushPromises()
@@ -262,7 +262,7 @@ describe("统一运维中心", () => {
     const wrapper = await mountOps()
     await flushPromises()
 
-    await tab(wrapper, "unmatched").trigger("click")
+    await tab(wrapper, "无主报告").trigger("click")
     await flushPromises()
     const unmatchedCalls = () =>
       fetch.mock.calls.filter(([url]) => String(url).includes("/unmatched-reports")).length

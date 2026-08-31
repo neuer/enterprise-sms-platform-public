@@ -2355,16 +2355,16 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/web/admin/unmatched-reports:
-    get:
+    post:
       tags: [admin]
       summary: 无主报告查询（v1.4，并行迁移期对账；支持导出）
+      description: 手机号精确查询条件只在请求体携带，禁止出现在 URL（硬性规则 2：明文不得进访问日志）。
       security: [{ BearerAuth: [] }]
-      parameters:
-        - { name: phone, in: query, required: false, schema: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }, description: 精确匹配走HMAC }
-        - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
-        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
-        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UnmatchedQueryModel' }
       responses:
         '200': { description: 列表(号码mask), content: { application/json: { schema: { $ref: '#/components/schemas/UnmatchedPageModel' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -3380,6 +3380,15 @@ components:
         page: { type: integer, minimum: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100 }
         items: { type: array, items: { $ref: '#/components/schemas/UnmatchedModel' } }
+
+    UnmatchedQueryModel:
+      type: object
+      properties:
+        phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
+        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        page: { type: integer, minimum: 1, default: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100, default: 20 }
 
     UnmatchedExportModel:
       type: object

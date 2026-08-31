@@ -22,18 +22,21 @@ import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { CHART_DIM_PALETTE } from "../lib/chartTheme"
 import { reportTrendDims } from "../lib/reportTrend"
+import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
 
-const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date())
-const startDefault = new Date(`${today}T00:00:00+08:00`)
-startDefault.setDate(startDefault.getDate() - 29)
+// 默认范围：Asia/Shanghai 日历口径的近 30 天（含今天）；旧实现 setDate+toISOString 存在时区 off-by-one。
+// 每次调用重新求值，保证「重置」回到当下口径的近 30 天而不是模块加载时刻。
+function defaultDateRange(): [string, string] {
+  return [daysAgoDateKey(29), shanghaiDateKey()]
+}
+const dateRange = ref<[string, string]>(defaultDateRange())
 
 const granularity = ref<ReportGranularity>("day")
 const groupBy = ref<ReportGroupBy>("app")
 const category = ref<ReportCategory>("all")
-const dateRange = ref<[string, string]>([startDefault.toISOString().slice(0, 10), today])
 const result = ref<ReportResult | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
@@ -207,6 +210,15 @@ async function load(): Promise<void> {
   }
 }
 
+/** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别）并立即重查；日期范围按当下重新求值。 */
+function resetFilters(): void {
+  granularity.value = "day"
+  groupBy.value = "app"
+  category.value = "all"
+  dateRange.value = defaultDateRange()
+  void load()
+}
+
 function schedulePoll(): void {
   // 先清旧定时器：重复点击“导出”会开启新任务，否则新旧两条轮询链会同时存在。
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
@@ -336,6 +348,7 @@ onBeforeUnmount(() => {
       />
     </div>
     <el-button type="primary" native-type="submit" class="report-filter-go" :loading="loading">查询</el-button>
+    <el-button data-testid="report-reset" @click="resetFilters">重置</el-button>
     <el-button :loading="exportLoading" @click="createExport">导出明细 CSV</el-button>
     <el-checkbox v-if="canDecrypt" v-model="decrypted" class="report-decrypted">含明文手机号</el-checkbox>
   </form>
@@ -375,13 +388,13 @@ onBeforeUnmount(() => {
       <el-card shadow="never" class="report-kpi">
         <span>送达成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
-        <small>delivered / (delivered + failed)，unknown 不入分母</small>
-        <div class="kpi-kv"><span>送达 delivered</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div>
-        <div class="kpi-kv"><span>失败 failed</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div>
+        <small>送达 /（送达 + 失败），未知不入分母</small>
+        <div class="kpi-kv"><span>送达</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div>
+        <div class="kpi-kv"><span>失败</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div>
       </el-card>
       <el-card shadow="never" class="report-kpi">
         <span>结果构成</span>
-        <strong>{{ result.summary.unknown.toLocaleString() }}<small class="strong-note">unknown 待终态</small></strong>
+        <strong>{{ result.summary.unknown.toLocaleString() }}<small class="strong-note">未知 · 待终态</small></strong>
         <div class="compose-strip" aria-label="结果构成">
           <i class="d" :style="{ width: composeWidth(result.summary.delivered) }" :title="`送达 ${result.summary.delivered.toLocaleString()}`"></i><i class="f" :style="{ width: composeWidth(result.summary.failed) }" :title="`失败 ${result.summary.failed.toLocaleString()}`"></i><i class="u" :style="{ width: composeWidth(result.summary.unknown) }" :title="`未知 ${result.summary.unknown.toLocaleString()}`"></i>
         </div>
@@ -455,6 +468,7 @@ onBeforeUnmount(() => {
       <el-table
         :data="pagedItems"
         class="report-table"
+        :loading="loading"
         :default-sort="{ prop: 'period_start', order: 'descending' }"
         @sort-change="onSortChange"
       >
@@ -469,7 +483,7 @@ onBeforeUnmount(() => {
       </el-table>
       <div v-if="result.items.length > pageSize" class="report-pager">
         <el-pagination
-          layout="prev, pager, next, total"
+          layout="prev, pager, next"
           :total="result.items.length"
           :page-size="pageSize"
           :current-page="page"
