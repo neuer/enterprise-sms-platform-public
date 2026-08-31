@@ -380,7 +380,7 @@ class FakeRunner:
         self.vendor_agent_changed = True
         self.fail_vendor_agent_restart = False
         self.fail_vendor_agent_active_check = False
-        self.public_probe_body = '{"status":"ok"}\n'
+        self.public_probe_body = '{"status":"ready"}\n'
 
     def run(
         self,
@@ -1067,7 +1067,7 @@ def test_public_probe_rejects_spa_html_even_when_http_status_is_successful(
     runner = FakeRunner(manifest)
     runner.public_probe_body = "<!doctype html><html></html>\n"
 
-    with pytest.raises(RemoteReleaseError, match="health response"):
+    with pytest.raises(RemoteReleaseError, match="readiness response"):
         deploy_release(_arguments(manifest_path), runner)
 
     assert any(command[0] == "curl" for command in runner.calls)
@@ -1350,6 +1350,39 @@ def test_remote_release_public_probe_requires_readyz(tmp_path: Path) -> None:
 
     with pytest.raises(RemoteReleaseError, match="readyz"):
         build_release_plan(arguments)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"status":"ok"}\n',
+        '{"status":"alive"}\n',
+        '{"status":"not_ready"}\n',
+        '{"status":"ready","detail":"x"}\n',
+    ],
+)
+def test_public_readyz_probe_rejects_non_ready_bodies(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    manifest_path, manifest = _bundle(tmp_path)
+    runner = FakeRunner(manifest)
+    runner.public_probe_body = body
+
+    with pytest.raises(RemoteReleaseError, match="readiness"):
+        deploy_release(_arguments(manifest_path), runner)
+
+
+def test_public_readyz_probe_accepts_ready_body(tmp_path: Path) -> None:
+    manifest_path, manifest = _bundle(tmp_path)
+    runner = FakeRunner(manifest)
+
+    deploy_release(_arguments(manifest_path), runner)
+
+    assert any(
+        command[0] == "curl" and command[-1] == "https://sms.example.com/readyz"
+        for command in runner.calls
+    )
 
 
 def test_registry_dry_run_previews_redacted_host_control_sequence(

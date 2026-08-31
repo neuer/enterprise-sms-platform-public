@@ -66,6 +66,28 @@ def literal_integer(path: Path, name: str) -> int | None:
     return None
 
 
+def literal_string(path: Path, name: str) -> str | None:
+    """读取模块级字符串常量；禁止动态拼接。"""
+
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError) as exc:
+        fail(path, f"无法读取字符串常量定义: {type(exc).__name__}")
+        return None
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            if isinstance(value, ast.Constant) and type(value.value) is str:
+                return value.value
+            fail(path, f"{name} 必须是模块级字符串常量")
+            return None
+    fail(path, f"缺少字符串常量 {name}")
+    return None
+
+
 def check_vendor_live_invariants() -> None:
     """静态锁定真实厂商受控联调的不可绕过边界。"""
 
@@ -824,6 +846,26 @@ def check_usage_ledger_invariants() -> None:
         "recover_orphans()",
         "measure_drift()",
     )
+    actor = literal_string(APP / "services/usage_ledger.py", "RECONCILE_REBUILD_ACTOR")
+    schema = require_fragments(ROOT / "schema.sql", "enforce_live_audit_principal")
+    start = schema.find("CREATE OR REPLACE FUNCTION enforce_live_audit_principal()")
+    end = schema.find("REVOKE ALL ON FUNCTION enforce_live_audit_principal()")
+    function = schema[start:end] if start >= 0 and end > start else ""
+    realtime = function.split("context_domain='realtime'", maxsplit=1)
+    bulk = function.split("context_domain='bulk'", maxsplit=1)
+    if actor and (
+        len(realtime) < 2
+        or actor not in realtime[1].split("context_domain='bulk'", maxsplit=1)[0]
+    ):
+        fail(
+            ROOT / "schema.sql",
+            "用量巡检重建 actor 未进入 realtime/sms_send 系统审计白名单",
+        )
+    if actor and (len(bulk) < 2 or actor not in bulk[1]):
+        fail(
+            ROOT / "schema.sql",
+            "用量巡检重建 actor 未进入 bulk/sms_send 系统审计白名单",
+        )
     require_fragments(
         APP / "services/pipeline.py",
         "UsageLedgerPort",
