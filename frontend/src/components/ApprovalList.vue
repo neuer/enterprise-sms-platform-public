@@ -5,6 +5,8 @@ import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/ap
 import CategoryTag from "./CategoryTag.vue"
 import EmptyState from "./EmptyState.vue"
 import StatusTag from "./StatusTag.vue"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 const REASON_MAX_LENGTH = 256
 const URGENT_THRESHOLD_MS = 2 * 3600_000
@@ -33,7 +35,7 @@ function isMine(item: ApprovalListItem): boolean {
 }
 
 function categoryLabel(category: ApprovalListItem["category"]): string {
-  return category === "market" ? "营销" : "通知"
+  return CATEGORY_LABELS[category]
 }
 
 function triggerRule(item: ApprovalListItem): string {
@@ -44,27 +46,12 @@ function triggerRule(item: ApprovalListItem): string {
   return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
 }
 
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  })
-    .format(new Date(value))
-    .replaceAll("/", "-")
-}
-
 function formatSegments(value: number | null): string {
   return value === null ? "—" : `${value.toLocaleString()} 条`
 }
 
 function scheduleChip(item: ApprovalListItem): string {
-  return item.scheduled_at ? `定时 ${formatTime(item.scheduled_at)}` : "立即发送"
+  return item.scheduled_at ? `定时 ${formatDateTime(item.scheduled_at)}` : "立即发送"
 }
 
 interface Countdown {
@@ -115,7 +102,7 @@ interface Destination {
 function destinationOf(item: ApprovalListItem): Destination {
   if (item.status === "approved") {
     if (item.batch_status === "scheduled") {
-      const note = item.scheduled_at ? `定时 ${formatTime(item.scheduled_at)}` : null
+      const note = item.scheduled_at ? `定时 ${formatDateTime(item.scheduled_at)}` : null
       return item.deferred_reason === "market_window"
         ? { title: "窗外改派为定时", note }
         : { title: "已进入定时", note }
@@ -193,7 +180,7 @@ function confirmQuick(item: ApprovalListItem): void {
           </div>
           <p class="approval-row-facts">
             {{ item.applicant }} · {{ item.dept }}
-            <em>·</em>{{ formatTime(item.created_at) }} 提交
+            <em>·</em>{{ formatDateTime(item.created_at) }} 提交
             <em>·</em>受众 <b>{{ item.total.toLocaleString() }}</b> 号码
             <em>·</em>预计计费 <b>{{ formatSegments(item.estimated_segments) }}</b>
           </p>
@@ -240,7 +227,7 @@ function confirmQuick(item: ApprovalListItem): void {
                 placeholder="审批意见（选填，≤256 字）"
                 data-testid="approval-quick-reason-approve"
               />
-              <p class="approval-quick-tip">决策写审计 · 409 冲突自动刷新队列</p>
+              <p class="approval-quick-tip">决策写审计 · 冲突时自动刷新列表</p>
               <div class="approval-quick-actions">
                 <el-button size="small" @click="closeQuick">取消</el-button>
                 <el-button
@@ -324,7 +311,7 @@ function confirmQuick(item: ApprovalListItem): void {
           <td data-label="批次号 / 申请时间">
             <span class="approval-batch-cell">
               <code>{{ item.batch_no }}</code>
-              <small>{{ formatTime(item.created_at) }}</small>
+              <small>{{ formatDateTime(item.created_at) }}</small>
             </span>
           </td>
           <td data-label="类别"><CategoryTag :category="item.category" /></td>
@@ -335,7 +322,7 @@ function confirmQuick(item: ApprovalListItem): void {
           <td data-label="审批人 / 决策时间">
             <span class="approval-decider">
               <b>{{ deciderLabel(item) }}</b>
-              <small>{{ item.decided_at ? formatTime(item.decided_at) : "—" }}</small>
+              <small>{{ item.decided_at ? formatDateTime(item.decided_at) : "—" }}</small>
             </span>
           </td>
           <td data-label="去向" class="approval-dest">

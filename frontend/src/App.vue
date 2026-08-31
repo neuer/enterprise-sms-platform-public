@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import "./styles/workspace.css"
+
 import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
@@ -49,7 +51,7 @@ const navigation: Array<{ group: string; items: NavigationItem[] }> = [
       { label: "审批中心", path: "/approvals", marker: "审", roles: ["approver", "admin"] },
       { label: "批次列表", path: "/batches", marker: "批" },
       { label: "号码搜索", path: "/messages", marker: "迹" },
-      { label: "回复查询", path: "/replies", marker: "回" },
+      { label: "上行回复", path: "/replies", marker: "回" },
     ],
   },
   {
@@ -57,7 +59,7 @@ const navigation: Array<{ group: string; items: NavigationItem[] }> = [
     items: [
       { label: "模板管理", path: "/templates", marker: "模", roles: ["operator", "approver", "admin"] },
       { label: "签名管理", path: "/signs", marker: "签", roles: ["operator", "approver", "admin"] },
-      { label: "应用与密钥", path: "/apps", marker: "应", roles: ["admin"] },
+      { label: "应用管理", path: "/apps", marker: "应", roles: ["admin"] },
       { label: "黑名单", path: "/blacklist", marker: "黑", roles: ["admin"] },
       { label: "敏感词", path: "/sensitive-words", marker: "敏", roles: ["admin"] },
       { label: "用户与角色", path: "/users", marker: "权", roles: ["admin"] },

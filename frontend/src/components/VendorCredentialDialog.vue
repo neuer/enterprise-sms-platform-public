@@ -134,7 +134,7 @@ watch(
       v-else-if="modelValue"
       data-testid="vendor-credential-insecure"
       title="当前入口不支持正式凭据安全加密。"
-      description="请在 ChatGPT 中发送“打开正式凭据安全入口”，然后通过临时 HTTPS 地址重新登录。"
+      description="当前页面不处于安全上下文（非 HTTPS），无法对凭据加密封装。请改用 HTTPS 地址访问后重试。"
       type="error"
       :closable="false"
       show-icon

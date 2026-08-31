@@ -4257,7 +4257,8 @@ main {
 .config-confirm-dialog p,
 .ops-confirm-dialog p,
 .callback-confirm-dialog p,
-.security-daily-confirm-dialog p {
+.security-daily-confirm-dialog p,
+.apps-danger-dialog p {
   margin: 0;
 }
 
@@ -4268,7 +4269,8 @@ main {
 .config-confirm-audit,
 .ops-confirm-audit,
 .callback-confirm-audit,
-.security-daily-confirm-audit {
+.security-daily-confirm-audit,
+.apps-audit-note {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
@@ -6609,7 +6611,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .apps-conseq { padding-left: 0; margin: 0; }
 .apps-conseq li { position: relative; padding: 2px 0 2px 16px; color: var(--tx-2); font-size: 12px; list-style: none; }
 .apps-conseq li::before { content: "—"; position: absolute; left: 0; color: var(--tx-3); }
-.apps-audit-note { margin: 8px 0 0; color: var(--tx-3); font-size: 10px; }
 .one-time-secret { padding: 13px 15px; margin: 14px 0 0; overflow-x: auto; color: #71c4ad; font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 .demo-script { padding: 13px 15px; margin: 6px 0 0; overflow-x: auto; color: #cfe3ff; font: 12px/1.7 var(--mono); white-space: pre; background: var(--sink); border: 1px solid var(--hair); border-radius: 8px; user-select: all; }
 .demo-dialog .el-tabs__item { font-size: 13px; }

@@ -25,6 +25,8 @@ import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
@@ -40,12 +42,6 @@ const STATUS_FILTERS: { label: string; value: "all" | "1" | "0" }[] = [
   { label: "启用", value: "1" },
   { label: "停用", value: "0" },
 ]
-
-const CATEGORY_LABELS: Record<AppCategory, string> = {
-  verify: "验证码",
-  notice: "通知",
-  market: "营销",
-}
 
 const items = ref<ManagedApp[]>([])
 const loading = ref(false)
@@ -128,21 +124,6 @@ const emptyDescription = computed(() =>
 
 /** 详情抽屉数据源跟随列表引用，写操作重查列表后自动刷新。 */
 const detail = computed(() => items.value.find((item) => item.id === detailId.value) ?? null)
-
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  })
-    .format(new Date(value))
-    .replaceAll("/", "-")
-}
 
 /** 停用应用整行降透明度，与密钥列「已随停用吊销」呼应。 */
 function rowClassName({ row }: { row: ManagedApp }): string {
@@ -543,6 +524,7 @@ async function loadKeyGraceHours(): Promise<void> {
     keyGraceHours.value = Number.isInteger(value) && value > 0 ? value : null
   } catch {
     keyGraceHours.value = null
+    ElMessage.warning("密钥轮换宽限期读取失败，页面显示可能不完整")
   }
 }
 
@@ -698,16 +680,19 @@ async function rotateKey(item: ManagedApp): Promise<void> {
       ? "旧 Key 将进入当前配置的宽限期。"
       : `旧 Key 将进入 ${keyGraceHours.value} 小时宽限期。`
     await ElMessageBox.confirm(
-      `将为 ${item.name} 生成新的 API Key。新 Key 仅展示一次，${graceHint}请确认已准备好立即复制并安全保存。`,
+      h("div", { class: "apps-danger-dialog" }, [
+        h("p", `将为 ${item.name} 生成新的 API Key。新 Key 仅展示一次，${graceHint}请确认已准备好立即复制并安全保存。`),
+        h("p", { class: "apps-audit-note" }, "轮换行为与操作人将写入审计日志。"),
+      ]),
       "确认轮换 API Key",
-      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消" },
+      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消", customClass: "apps-confirm-box" },
     )
     const result = await rotateAppKey(item.id)
     secretRevealed = true
     reveal(
       "这是当前最终 API Key（仅展示一次）",
       result.api_key,
-      `请立即复制并安全保存，确认保存后再关闭。旧 Key 宽限期至 ${formatTime(result.old_key_expires_at)}`,
+      `请立即复制并安全保存，确认保存后再关闭。旧 Key 宽限期至 ${formatDateTime(result.old_key_expires_at)}`,
     )
     await load()
   } catch (error) {
@@ -721,9 +706,12 @@ async function revokeKey(item: ManagedApp): Promise<void> {
   if (!item.old_key_prefix || !item.old_key_expires_at) return
   try {
     await ElMessageBox.confirm(
-      `旧 Key ${item.old_key_prefix}•••• 原定 ${formatTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
+      h("div", { class: "apps-danger-dialog" }, [
+        h("p", `旧 Key ${item.old_key_prefix}•••• 原定 ${formatDateTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`),
+        h("p", { class: "apps-audit-note" }, "作废行为与操作人将写入审计日志。"),
+      ]),
       "立即作废旧 Key？",
-      { type: "warning", confirmButtonText: "确认作废", cancelButtonText: "取消" },
+      { type: "warning", confirmButtonText: "确认作废", cancelButtonText: "取消", customClass: "apps-confirm-box" },
     )
     await revokeOldAppKey(item.id)
     ElMessage.success("旧 Key 已作废")
@@ -738,9 +726,12 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
   let secretRevealed = false
   try {
     await ElMessageBox.confirm(
-      `将为 ${item.name} 生成新的回调密钥，已部署的旧密钥立即失效。新密钥仅展示一次，请确认已准备好立即复制并安全保存。`,
+      h("div", { class: "apps-danger-dialog" }, [
+        h("p", `将为 ${item.name} 生成新的回调密钥，已部署的旧密钥立即失效。新密钥仅展示一次，请确认已准备好立即复制并安全保存。`),
+        h("p", { class: "apps-audit-note" }, "轮换行为与操作人将写入审计日志。"),
+      ]),
       "确认轮换回调密钥",
-      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消" },
+      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消", customClass: "apps-confirm-box" },
     )
     const result = await rotateCallbackSecret(item.id)
     secretRevealed = true
@@ -777,7 +768,14 @@ async function disable(item: ManagedApp): Promise<void> {
 /** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
   try {
-    await ElMessageBox.confirm(`启用应用 ${item.name}？`, "确认启用", { type: "warning" })
+    await ElMessageBox.confirm(
+      h("div", { class: "apps-danger-dialog" }, [
+        h("p", `启用应用 ${item.name}？`),
+        h("p", { class: "apps-audit-note" }, "启用行为与操作人将写入审计日志。"),
+      ]),
+      "确认启用",
+      { type: "warning", confirmButtonText: "确认启用", cancelButtonText: "取消", customClass: "apps-confirm-box" },
+    )
     const current = await getApp(item.id)
     await updateApp(item.id, {
       dept: current.dept,
@@ -958,14 +956,14 @@ onMounted(() => {
     </footer>
   </section>
 
-  <el-drawer v-model="detailOpen" class="apps-drawer apps-detail-drawer" size="min(560px, 94vw)" :teleported="false">
+  <el-drawer v-model="detailOpen" class="apps-drawer apps-detail-drawer" size="min(560px, 92vw)" :teleported="false">
     <template #header>
       <div v-if="detail" class="apps-drawer-head">
         <div class="apps-drawer-title">
           <el-tag :type="detail.status ? 'success' : 'info'">{{ detail.status ? "启用" : "停用" }}</el-tag>
           <b>{{ detail.name }}</b>
         </div>
-        <code>#{{ detail.id }} · {{ detail.dept }} · 创建于 {{ formatTime(detail.created_at) }}</code>
+        <code>#{{ detail.id }} · {{ detail.dept }} · 创建于 {{ formatDateTime(detail.created_at) }}</code>
       </div>
     </template>
     <template v-if="detail">
@@ -1012,7 +1010,7 @@ onMounted(() => {
         </div>
         <div v-if="detail.old_key_prefix && detail.old_key_expires_at" class="apps-key-grace">
           <code>{{ detail.old_key_prefix }}••••</code>
-          <small>旧 Key 宽限期至 {{ formatTime(detail.old_key_expires_at) }}（余 {{ graceHoursLeft(detail) }}h），到期自动失效</small>
+          <small>旧 Key 宽限期至 {{ formatDateTime(detail.old_key_expires_at) }}（余 {{ graceHoursLeft(detail) }}h），到期自动失效</small>
           <span class="apps-key-act">
             <el-button
               :data-testid="`revoke-old-key-${detail.id}`"
@@ -1028,7 +1026,7 @@ onMounted(() => {
             <dd class="apps-mono">{{ detail.callback_url || "未配置" }}</dd>
           </div>
           <div>
-            <dt>明细级回调</dt>
+            <dt>明细回调</dt>
             <dd>{{ detail.callback_url ? (detail.callback_report_enabled ? "开启" : "关闭") : "—" }}</dd>
           </div>
           <div>
@@ -1072,7 +1070,7 @@ onMounted(() => {
     </template>
   </el-drawer>
 
-  <el-drawer v-model="drawerOpen" class="apps-drawer apps-editor-drawer" size="min(560px, 100vw)" :teleported="false">
+  <el-drawer v-model="drawerOpen" class="apps-drawer apps-editor-drawer" size="min(560px, 92vw)" :teleported="false">
     <template #header>
       <div class="apps-drawer-head">
         <div class="apps-drawer-title">{{ editingId === null ? "新建应用" : "编辑应用" }}</div>
@@ -1165,9 +1163,9 @@ onMounted(() => {
           <el-input v-model="form.callback_url" placeholder="https://" />
           <small class="field-rule">须落在内网 CIDR 白名单，生产仅 HTTPS；留空表示不推送回调。</small>
         </el-form-item>
-        <el-form-item label="明细级回调">
+        <el-form-item label="明细回调">
           <el-switch v-model="form.callback_report_enabled" />
-          <small class="field-rule">按消息粒度推送回执，开启前需先配置回调 URL。</small>
+          <small class="field-rule">按消息粒度推送明细回调，开启前需先配置回调 URL。</small>
         </el-form-item>
       </section>
     </el-form>
@@ -1192,15 +1190,15 @@ onMounted(() => {
 
   <el-dialog v-model="demoOpen" :title="demoApp ? `接入示例 · ${demoApp.name}` : '接入示例'" width="min(720px, 96vw)" :close-on-click-modal="false" class="demo-dialog">
     <p class="muted">应用 #{{ demoApp?.id }} · {{ demoApp?.dept }} · 类别 {{ (demoApp?.allowed_categories || []).join(' / ') }}</p>
-    <p class="hint">正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key 请通过环境变量注入，不要硬编码或写入日志。</p>
+    <p>正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key 请通过环境变量注入，不要硬编码或写入日志。</p>
     <label class="muted" for="demo-template-select">已审核模板</label>
     <el-select v-model="demoTemplateId" data-testid="demo-template-select" placeholder="选择已审核模板" :loading="demoTemplatesLoading" style="width: 100%">
       <el-option v-for="template in approvedTemplates" :key="template.id" :value="template.id" :label="'#' + template.id + ' · ' + template.name" />
     </el-select>
-    <p v-if="demoTemplate" class="hint" data-testid="demo-template-info">
+    <p v-if="demoTemplate" data-testid="demo-template-info">
       模板内容：{{ demoTemplate.content }} · 参数：{{ demoParamsSummary }}
     </p>
-    <p v-else class="hint">暂无已审核模板，示例将使用占位模板 ID；请先在「模板管理」创建模板并提交审核。</p>
+    <p v-else>暂无已审核模板，示例将使用占位模板 ID；请先在「模板管理」创建模板并提交审核。</p>
     <el-tabs v-model="demoLang">
       <el-tab-pane v-for="language in DEMO_LANGUAGES" :key="language" :label="DEMO_LABELS[language]" :name="language">
         <pre class="demo-script" :data-testid="`demo-script-body-${language}`">{{ demoScript }}</pre>

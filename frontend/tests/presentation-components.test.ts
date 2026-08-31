@@ -1,7 +1,8 @@
-import { mount } from "@vue/test-utils"
-import ElementPlus from "element-plus"
+import { flushPromises, mount } from "@vue/test-utils"
+import ElementPlus, { ElMessage } from "element-plus"
 import { readFileSync, readdirSync } from "node:fs"
 import { resolve } from "node:path"
+import { vi } from "vitest"
 
 describe("共享语义展示组件", () => {
   it("CategoryTag 集中呈现类别中文名与固定色类", async () => {
@@ -72,6 +73,65 @@ describe("共享语义展示组件", () => {
     expect(wrapper.get("strong").text()).toBe("当前没有待审批记录")
     expect(wrapper.get("p").text()).toBe("新的审批申请会出现在这里。")
     expect(wrapper.find(".el-empty").exists()).toBe(false)
+  })
+
+  it("PhoneReveal 默认展示掩码与授权查看入口", async () => {
+    const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
+    const reveal = vi.fn<() => Promise<string>>().mockResolvedValue("13800138000")
+    const wrapper = mount(PhoneReveal, {
+      props: { masked: "138****8000", reveal, testid: "phone-reveal-test" },
+      global: { plugins: [ElementPlus] },
+    })
+
+    expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.text()).not.toContain("13800138000")
+    expect(wrapper.find(".phone-mask").exists()).toBe(true)
+    const button = wrapper.get("[data-testid='phone-reveal-test']")
+    expect(button.text()).toContain("授权查看")
+    expect(reveal).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it("PhoneReveal 授权查看成功后内联展示明文并提示已记审计", async () => {
+    const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
+    const success = vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
+    const reveal = vi.fn<() => Promise<string>>().mockResolvedValue("13800138000")
+    const wrapper = mount(PhoneReveal, {
+      props: { masked: "138****8000", reveal, testid: "phone-reveal-test" },
+      global: { plugins: [ElementPlus] },
+    })
+
+    await wrapper.get("[data-testid='phone-reveal-test']").trigger("click")
+    await flushPromises()
+
+    expect(reveal).toHaveBeenCalledTimes(1)
+    expect(wrapper.get(".revealed-phone").text()).toBe("13800138000")
+    expect(wrapper.find("[data-testid='phone-reveal-test']").exists()).toBe(false)
+    expect(wrapper.emitted("revealed")).toEqual([["13800138000"]])
+    expect(success).toHaveBeenCalledWith("已解密 · 本次授权查看已记入审计")
+    wrapper.unmount()
+    success.mockRestore()
+  })
+
+  it("PhoneReveal 解密失败给出错误提示且不展示明文", async () => {
+    const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
+    const error = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: () => undefined }))
+    const reveal = vi.fn<() => Promise<string>>().mockRejectedValue(new Error("无解密权限"))
+    const wrapper = mount(PhoneReveal, {
+      props: { masked: "138****8000", reveal },
+      global: { plugins: [ElementPlus] },
+    })
+
+    await wrapper.get("button").trigger("click")
+    await flushPromises()
+
+    expect(error).toHaveBeenCalledWith("无解密权限")
+    expect(wrapper.find(".revealed-phone").exists()).toBe(false)
+    expect(wrapper.text()).toContain("138****8000")
+    // 失败后入口仍可重试
+    expect(wrapper.get("button").text()).toContain("授权查看")
+    wrapper.unmount()
+    error.mockRestore()
   })
 
   it("所有业务页面使用统一的无插画双行空态", () => {
