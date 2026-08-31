@@ -49,9 +49,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "approval_expire_hours": ConfigSpec("24", "int", GROUP_SENDING, maximum=168),
     "market_send_window": ConfigSpec("08:00-21:00", "str", GROUP_SENDING),
     "vendor_batch_size": ConfigSpec("500", "int", GROUP_SCHEDULING, maximum=1_000),
-    "vendor_qps": ConfigSpec("5", "int", GROUP_SCHEDULING, maximum=1_000),
+    "vendor_qps": ConfigSpec("5", "int", GROUP_SCHEDULING, maximum=200),
     "reserved_realtime_qps": ConfigSpec(
-        "2", "int", GROUP_SCHEDULING, maximum=999, allow_zero=True
+        "2", "int", GROUP_SCHEDULING, maximum=199, allow_zero=True
     ),
     "report_poll_seconds": ConfigSpec(
         "60", "int", GROUP_SCHEDULING, minimum=10, maximum=3_600, beat_restart=True
