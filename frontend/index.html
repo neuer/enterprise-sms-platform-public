@@ -4,7 +4,16 @@
     <!-- 运行时资源全部自包含，不依赖外部 CDN。 -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
+    <!-- 防闪烁：样式加载前恢复颜色模式偏好；与 src/lib/theme.ts 的存储键保持一致。 -->
+    <script>
+      try {
+        document.documentElement.dataset.theme =
+          window.localStorage.getItem("sms-theme") === "light" ? "light" : "dark"
+      } catch {
+        document.documentElement.dataset.theme = "dark"
+      }
+    </script>
     <meta name="sms-app-version" content="%VITE_APP_VERSION%" />
     <meta name="sms-git-sha" content="%VITE_GIT_SHA%" />
     <meta name="sms-schema-revision" content="%VITE_SCHEMA_REVISION%" />

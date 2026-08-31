@@ -8,6 +8,7 @@ import { useRoute, useRouter } from "vue-router"
 import type { UserRole } from "./api/auth"
 import { getDashboard } from "./api/dashboard"
 import DailyPasswordChangeDialog from "./components/DailyPasswordChangeDialog.vue"
+import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { invalidateSessionGeneration } from "./api/sessionGeneration"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
@@ -22,6 +23,12 @@ const pageGroup = computed(() => String(route.meta.group || "概览"))
 const navigationOpen = ref(false)
 const currentBalance = ref<number | null>(null)
 const passwordDialogOpen = ref(false)
+const themeMode = ref<ThemeMode>(getTheme())
+
+/** 一键切换深色/明亮模式；令牌在 theme.css，图表监听 sms:theme-change 重建配色。 */
+function switchTheme(): void {
+  themeMode.value = toggleTheme()
+}
 const authenticatedShell = computed(() => !publicRoute.value && session.isAuthenticated)
 const dashboardRoute = computed(() => route.path === "/dashboard")
 const approverRole = computed(() => session.role === "approver" || session.role === "admin")
@@ -275,6 +282,14 @@ async function handlePasswordChanged(): Promise<void> {
           <p class="breadcrumb"><span>{{ pageGroup }}</span><b>/</b> {{ pageTitle }}</p>
 
           <div class="operator">
+            <button
+              class="toolbar-action theme-toggle"
+              data-testid="theme-toggle"
+              type="button"
+              :aria-pressed="themeMode === 'light'"
+              :title="themeMode === 'light' ? '切换到深色模式' : '切换到明亮模式'"
+              @click="switchTheme"
+            >{{ themeMode === 'light' ? '☾ 深色' : '☀ 明亮' }}</button>
             <span class="balance" :aria-label="balanceLabel">余额 <strong>{{ currentBalance?.toLocaleString() ?? '—' }}</strong></span>
             <span class="operator-name">{{ session.displayName }} <small>{{ session.roleLabel }}</small></span>
             <button

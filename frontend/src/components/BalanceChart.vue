@@ -2,7 +2,6 @@
 import { computed } from "vue"
 
 import type { DashboardBalancePoint } from "../api/dashboard"
-import { CHART_COLORS } from "../lib/chartTheme"
 
 const props = defineProps<{ points: DashboardBalancePoint[] }>()
 
@@ -39,7 +38,8 @@ const spark = computed(() => {
     role="img"
     aria-label="最近十四日厂商余额走势"
   >
-    <polygon :points="spark.area" :fill="CHART_COLORS.greenArea" />
-    <polyline :points="spark.line" fill="none" :stroke="CHART_COLORS.green" stroke-width="1.6" />
+    <!-- SVG 走内联 style 引用 --chart-* 令牌，主题切换时无需 JS 介入 -->
+    <polygon :points="spark.area" style="fill: var(--chart-green-area)" />
+    <polyline :points="spark.line" fill="none" style="stroke: var(--chart-green)" stroke-width="1.6" />
   </svg>
 </template>

@@ -76,8 +76,12 @@ import { createPinia } from "pinia"
 import { createApp } from "vue"
 
 import App from "./App.vue"
+import { initTheme } from "./lib/theme"
 import router, { installAuthGuard } from "./router"
 import { useSessionStore } from "./stores/session"
+
+// index.html 内联脚本已先行写入 data-theme，这里幂等兜底（如偏好被外部改动）。
+initTheme()
 
 const pinia = createPinia()
 useSessionStore(pinia).restore()

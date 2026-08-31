@@ -6,8 +6,9 @@ import { CanvasRenderer } from "echarts/renderers"
 import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { ReportGranularity, ReportRow, ReportTrendMetric } from "../api/reports"
-import { CHART_COLORS, CHART_DIM_PALETTE, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
+import { getChartTheme } from "../lib/chartTheme"
 import { REPORT_TREND_OTHER_LABEL, reportTrendDims } from "../lib/reportTrend"
+import { THEME_CHANGE_EVENT } from "../lib/theme"
 import { shanghaiDateKey } from "../lib/time"
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
@@ -53,6 +54,7 @@ function axisLabel(period: string): string {
 
 function render(): void {
   if (!chart) return
+  const theme = getChartTheme()
   const axis = periods()
   const seriesDims = reportTrendDims(props.items, props.metric)
   const topKeys = new Set(seriesDims.map((item) => item.key))
@@ -69,39 +71,42 @@ function render(): void {
       trigger: "axis",
       axisPointer: { type: "shadow" },
       valueFormatter: (value: unknown) => Number(value).toLocaleString(),
-      ...CHART_TOOLTIP_STYLE,
+      ...theme.tooltip,
     },
     xAxis: {
       type: "category",
       data: axis,
       axisLabel: {
-        color: CHART_COLORS.text,
+        color: theme.text,
         fontFamily: "IBM Plex Mono",
         fontSize: 10,
         hideOverlap: true,
         formatter: (value: string) => axisLabel(value),
       },
-      axisLine: { lineStyle: { color: CHART_COLORS.axisLine } },
+      axisLine: { lineStyle: { color: theme.axisLine } },
       axisTick: { show: false },
     },
     yAxis: {
       type: "value",
       minInterval: 1,
-      axisLabel: { color: CHART_COLORS.text, fontSize: 10, formatter: (value: number) => value.toLocaleString() },
-      splitLine: { lineStyle: { color: CHART_COLORS.splitLine, type: "dashed" } },
+      axisLabel: { color: theme.text, fontSize: 10, formatter: (value: number) => value.toLocaleString() },
+      splitLine: { lineStyle: { color: theme.splitLine, type: "dashed" } },
     },
     series: seriesDims.map((dim, index) => ({
       name: dim.label,
       type: "bar",
       stack: "total",
       barMaxWidth: 30,
-      itemStyle: { color: CHART_DIM_PALETTE[index % CHART_DIM_PALETTE.length] },
+      itemStyle: { color: theme.dimPalette[index % theme.dimPalette.length] },
       data: axis.map((period) => cells.get(`${period}${dim.key}`) ?? 0),
     })),
   })
 }
 
 function resize(): void { chart?.resize() }
+
+/** 主题切换后 canvas 需按新令牌重建配色。 */
+function onThemeChange(): void { render() }
 
 onMounted(() => {
   if (!root.value) return
@@ -112,10 +117,12 @@ onMounted(() => {
     observer.observe(root.value)
   }
   window.addEventListener("resize", resize)
+  window.addEventListener(THEME_CHANGE_EVENT, onThemeChange)
 })
 watch(() => [props.items, props.metric, props.start, props.end, props.granularity], render, { deep: true })
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resize)
+  window.removeEventListener(THEME_CHANGE_EVENT, onThemeChange)
   observer?.disconnect()
   observer = null
   chart?.dispose()
