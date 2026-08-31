@@ -1521,6 +1521,15 @@ def test_pre_live_update_mode_reconciles_legacy_pure_mock_dotenv(
     assert "VENDOR_MOCK=1\n" in dotenv.read_text(encoding="utf-8")
 
 
+def test_setup_required_projection_allows_leftover_recipients_after_reset() -> None:
+    source = (ROOT / "deploy/scripts/test_update_manager.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'document["active_recipient_count"] != 0' not in source
+    assert 'document["credential_configured"] is not False' in source
+    assert 'document["pause_kind"] is not None' in source
+
+
 def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> None:
     calls: list[tuple[str, ...]] = []
     base = "a" * 40
