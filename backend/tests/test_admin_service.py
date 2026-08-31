@@ -239,7 +239,6 @@ async def test_cross_field_config_is_validated_atomically() -> None:
     [
         ("alert_wecom_webhook", "https://attacker.example/hook"),
         ("alert_wecom_webhook", "http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x"),
-        ("alert_smtp_host", "attacker.internal"),
     ],
 )
 async def test_alert_egress_config_is_rejected_before_write(key: str, value: str) -> None:
@@ -256,6 +255,42 @@ async def test_alert_egress_config_is_rejected_before_write(key: str, value: str
         )
 
     assert repository.updates == []
+
+
+@pytest.mark.asyncio
+async def test_active_smtp_egress_config_is_rejected_before_write() -> None:
+    repository = FakeRepository()
+
+    with pytest.raises(InvalidAdminQuery, match="alert_smtp_host 不在部署允许列表"):
+        await AdminService(
+            repository,
+            allowed_smtp_hosts={"smtp", "mail.internal"},
+        ).update_configs(
+            (
+                ConfigUpdate("alert_mail_to", "ops@example.com"),
+                ConfigUpdate("alert_smtp_host", "attacker.internal"),
+            ),
+            principal=ADMIN,
+            ip="10.0.0.8",
+        )
+
+    assert repository.updates == []
+
+
+@pytest.mark.asyncio
+async def test_inactive_smtp_host_does_not_block_unrelated_config_updates() -> None:
+    repository = FakeRepository()
+
+    await AdminService(
+        repository,
+        allowed_smtp_hosts={"mail.internal"},
+    ).update_configs(
+        (ConfigUpdate("vendor_qps", "8"),),
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+
+    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8"),)
 
 
 @pytest.mark.asyncio
