@@ -78,7 +78,7 @@ def test_runtime_policy_returns_typed_snapshot() -> None:
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     (
-        ("vendor_qps", "1001", "vendor_qps"),
+        ("vendor_qps", "201", "vendor_qps"),
         ("vendor_batch_size", "1001", "vendor_batch_size"),
         ("import_max_mb", "11", "import_max_mb"),
         ("import_max_rows", "50001", "import_max_rows"),
@@ -120,6 +120,15 @@ def test_runtime_policy_rejects_resource_exhaustion_bounds(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         RuntimePolicy.from_mapping({key: value})
+
+
+def test_runtime_policy_accepts_confirmed_vendor_qps_boundary() -> None:
+    policy = RuntimePolicy.from_mapping(
+        {"vendor_qps": "200", "reserved_realtime_qps": "199"}
+    )
+
+    assert policy.vendor_qps == 200
+    assert policy.reserved_realtime_qps == 199
 
 
 def test_beat_scan_intervals_are_registered_config_keys() -> None:

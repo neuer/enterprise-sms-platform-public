@@ -92,8 +92,10 @@ async def test_config_items_expose_registry_metadata_for_console_controls() -> N
     vendor_qps = next(item for item in items if item.key == "vendor_qps")
     assert vendor_qps.default == "5"
     assert vendor_qps.min_value is None
-    assert vendor_qps.max_value == 1_000
+    assert vendor_qps.max_value == 200
     assert vendor_qps.group == "运行调度"
+    reserved_qps = next(item for item in items if item.key == "reserved_realtime_qps")
+    assert reserved_qps.max_value == 199
     report = next(item for item in items if item.key == "report_poll_seconds")
     assert (report.min_value, report.max_value) == (10, 3_600)
     window = next(item for item in items if item.key == "market_send_window")
@@ -197,7 +199,7 @@ async def test_audit_actions_pass_through_repository() -> None:
         ("alert_mail_to", "not-an-email"),
         ("alert_mail_to", "ops@example.com, bad-address"),
         ("report_poll_seconds", "9"),
-        ("vendor_qps", "1001"),
+        ("vendor_qps", "201"),
     ),
 )
 async def test_invalid_semantic_config_is_rejected_before_any_write(
