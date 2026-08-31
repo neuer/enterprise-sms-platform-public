@@ -1366,12 +1366,12 @@ class HostTestUpdateOperations:
                 os.close(descriptor)
         if type(document) is not dict or set(document) != fields:
             raise TestUpdateManagerError("vendor control state is invalid")
+        # reset_configuration 的官方投影是 setup_required，且可以留下已登记号码。
         if (
             (
                 document["mode"] == "setup_required"
                 and (
                     document["credential_configured"] is not False
-                    or document["active_recipient_count"] != 0
                     or document["pause_kind"] is not None
                 )
             )
