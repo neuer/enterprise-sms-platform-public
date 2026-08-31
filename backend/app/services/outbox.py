@@ -16,6 +16,7 @@ from app.core.correlation import correlation_scope
 
 LOGGER = logging.getLogger(__name__)
 
+OUTBOX_BACKLOG_ALERT_SECONDS = 300
 PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 BATCH_REFERENCE = re.compile(r"^[0-9a-f]{32}$")
 UUID_REFERENCE = re.compile(

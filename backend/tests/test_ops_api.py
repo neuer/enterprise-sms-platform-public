@@ -15,6 +15,7 @@ from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
 from app.core.jobtrack import JobSpec
 from app.main import create_app
+from app.services.current_alerts import CurrentAlert, CurrentAlertSnapshot
 from app.services.export import ExportTaskInfo
 from app.services.ops import (
     AlertRecord,
@@ -50,6 +51,27 @@ class FakeFacade:
             self.role,
             1,
             "admin-session",
+        )
+
+
+class FakeCurrentAlerts:
+    async def get(self) -> CurrentAlertSnapshot:
+        return CurrentAlertSnapshot(
+            NOW,
+            False,
+            ("control_redis",),
+            (
+                CurrentAlert(
+                    "callback_dead",
+                    "callback_dead",
+                    "crit",
+                    "存在重试耗尽的结果回调",
+                    {"count": 2},
+                    NOW,
+                    NOW,
+                    "callbacks",
+                ),
+            ),
         )
 
 
@@ -266,6 +288,7 @@ def client(role: Role = "admin") -> tuple[TestClient, dict[str, Any]]:
         "replay": FakeReplay(),
         "export": FakeExport(),
         "outbox": FakeOutbox(),
+        "current": FakeCurrentAlerts(),
     }
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[ops_api.get_ops_repository] = lambda: values["repo"]
@@ -275,6 +298,7 @@ def client(role: Role = "admin") -> tuple[TestClient, dict[str, Any]]:
     app.dependency_overrides[ops_api.get_raw_replay_service] = lambda: values["replay"]
     app.dependency_overrides[get_export_service] = lambda: values["export"]
     app.dependency_overrides[ops_api.get_outbox_repository] = lambda: values["outbox"]
+    app.dependency_overrides[ops_api.get_current_alert_service] = lambda: values["current"]
     return TestClient(app), values
 
 
@@ -286,6 +310,10 @@ def test_ops_lists_return_safe_complete_models() -> None:
         browser.get("/api/v1/web/admin/alerts", headers=headers).json()["items"][0]["level"]
         == "crit"
     )
+    current = browser.get("/api/v1/web/admin/alerts/current", headers=headers).json()
+    assert current["complete"] is False
+    assert current["unknown_sources"] == ["control_redis"]
+    assert current["items"][0]["target"] == "callbacks"
     raw = browser.get("/api/v1/web/admin/raw-logs", headers=headers).json()
     assert raw["items"][0]["custom_id_count"] == 1
     assert "payload" not in str(raw).lower()

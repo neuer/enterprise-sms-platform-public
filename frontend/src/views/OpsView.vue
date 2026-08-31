@@ -7,6 +7,7 @@ import { useRoute, useRouter } from "vue-router"
 
 import {
   createUnmatchedExport,
+  getCurrentAlerts,
   getOutboxStatus,
   getQueueStatus,
   listAlerts,
@@ -20,6 +21,8 @@ import {
   retryOutboxEvent,
   triggerJob,
   type AlertItem,
+  type CurrentAlertItem,
+  type CurrentAlertSnapshot,
   type JobItem,
   type OutboxEventItem,
   type OutboxState,
@@ -43,9 +46,10 @@ import PhoneMask from "../components/PhoneMask.vue"
 import CallbackView from "./CallbackView.vue"
 
 type TabName = "alerts" | "callbacks" | "raw" | "uncertain" | "unmatched" | "jobs" | "queue" | "outbox"
+type AlertMode = "current" | "history"
 const OPS_TABS: TabName[] = ["alerts", "callbacks", "raw", "uncertain", "unmatched", "jobs", "queue", "outbox"]
 const OPS_TAB_ITEMS: { name: TabName; label: string }[] = [
-  { name: "alerts", label: "告警记录" },
+  { name: "alerts", label: "告警" },
   { name: "callbacks", label: "回调任务" },
   { name: "raw", label: "原始报文" },
   { name: "uncertain", label: "结果未知" },
@@ -68,6 +72,8 @@ const visitedTabs = ref<TabName[]>([activeTab.value])
 const loading = ref(false)
 const errorMessage = ref("")
 const alerts = ref<AlertItem[]>([])
+const alertMode = ref<AlertMode>("current")
+const currentAlerts = ref<CurrentAlertSnapshot | null>(null)
 const alertPage = ref(1)
 const alertTotal = ref(0)
 const alertType = ref("")
@@ -104,6 +110,7 @@ const selectedAlert = ref<AlertItem | null>(null)
 const alertDetailVisible = ref(false)
 const queueBlocked = computed(() => Boolean(queue.value?.realtime_code || queue.value?.bulk_code))
 let exportPollTimer: number | undefined
+let currentAlertTimer: number | undefined
 
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
 
@@ -131,6 +138,12 @@ const ALERT_LEVEL_OPTIONS: { key: string; label: string; value: "" | AlertItem["
   { key: "warn", label: "警告", value: "warn" },
   { key: "crit", label: "严重", value: "crit" },
 ]
+const CURRENT_SOURCE_LABELS: Record<string, string> = {
+  postgresql: "PostgreSQL 运行事实",
+  control_redis: "control Redis",
+  usage_projection: "用量投影巡检",
+  balance: "厂商余额巡检",
+}
 const RAW_SOURCE_OPTIONS: { key: string; label: string; value: "" | RawLogItem["source"] }[] = [
   { key: "all", label: "全部", value: "" },
   { key: "report", label: "报告", value: "report" },
@@ -146,6 +159,11 @@ const alertEmpty = computed(() =>
   alertType.value.trim() || alertLevel.value || alertRange.value
     ? { title: "没有符合筛选条件的告警", description: "调整告警类型、等级或时间范围后重新查询，也可重置筛选。" }
     : { title: "暂无告警记录", description: "告警渠道为空时仅落 alert_log 与日志，不产生外呼。" },
+)
+const currentCritCount = computed(() => currentAlerts.value?.items.filter((item) => item.level === "crit").length ?? 0)
+const currentWarnCount = computed(() => currentAlerts.value?.items.filter((item) => item.level === "warn").length ?? 0)
+const currentUnknownText = computed(() =>
+  currentAlerts.value?.unknown_sources.map((source) => CURRENT_SOURCE_LABELS[source] ?? source).join("、") ?? "",
 )
 const rawEmpty = computed(() =>
   rawSource.value || rawProcessed.value
@@ -191,6 +209,12 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
   errorMessage.value = ""
   try {
     if (tab === "alerts") {
+      if (alertMode.value === "current") {
+        const result = await getCurrentAlerts()
+        if (token !== loadToken || activeTab.value !== tab || alertMode.value !== "current") return
+        currentAlerts.value = result
+        return
+      }
       const result = await listAlerts({
         page: alertPage.value,
         alertType: alertType.value,
@@ -258,6 +282,12 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
   } finally {
     if (token === loadToken) loading.value = false
   }
+}
+
+function setAlertMode(mode: AlertMode): void {
+  if (alertMode.value === mode) return
+  alertMode.value = mode
+  void load("alerts")
 }
 
 function reloadFromFirstPage(tab: "alerts" | "raw" | "unmatched" | "outbox"): void {
@@ -329,6 +359,38 @@ function outboxStateMeta(state: OutboxState): { label: string; tag: "info" | "wa
 
 function levelLabel(level: AlertItem["level"]): string {
   return ALERT_LEVEL_LABELS[level]
+}
+
+function levelTag(level: AlertItem["level"]): "danger" | "warning" | "info" {
+  if (level === "crit") return "danger"
+  if (level === "warn") return "warning"
+  return "info"
+}
+
+function currentDuration(item: CurrentAlertItem): string {
+  if (!item.since || !currentAlerts.value) return "起始时间未知"
+  const seconds = Math.max(0, (Date.parse(currentAlerts.value.refreshed_at) - Date.parse(item.since)) / 1000)
+  return `持续 ${duration(seconds)}`
+}
+
+function currentImpact(item: CurrentAlertItem): string {
+  const detail = item.detail
+  if (typeof detail.count === "number") return `${detail.count} 项`
+  if (typeof detail.consecutive_failures === "number") return `连续 ${detail.consecutive_failures} 次`
+  if (typeof detail.mismatched_dimensions === "number") {
+    return `${detail.mismatched_dimensions} 个维度 · 差值 ${String(detail.absolute_delta ?? "—")}`
+  }
+  if (typeof detail.balance === "number") return `余额 ${detail.balance} / 阈值 ${String(detail.threshold ?? "—")}`
+  if (typeof detail.dead === "number") return `活动 ${String(detail.active ?? 0)} · 死信 ${detail.dead}`
+  const pauses = [detail.realtime_code && `实时 ${detail.realtime_code}`, detail.bulk_code && `批量 ${detail.bulk_code}`]
+    .filter(Boolean)
+  if (pauses.length) return pauses.join(" · ")
+  if (typeof detail.source === "string") return detail.source === "report" ? "状态报告" : "上行回复"
+  return "—"
+}
+
+function goCurrentTarget(item: CurrentAlertItem): void {
+  activeTab.value = item.target
 }
 
 function openAlertDetail(item: AlertItem): void {
@@ -528,8 +590,16 @@ watch(() => route.query.tab, (raw) => {
 onMounted(() => {
   void load()
   void getQueueStatus().then((result) => { queue.value = result }).catch(() => undefined)
+  currentAlertTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible" && activeTab.value === "alerts" && alertMode.value === "current") {
+      void load("alerts")
+    }
+  }, 60_000)
 })
-onBeforeUnmount(stopExportPolling)
+onBeforeUnmount(() => {
+  stopExportPolling()
+  if (currentAlertTimer !== undefined) window.clearInterval(currentAlertTimer)
+})
 </script>
 
 <template>
@@ -584,37 +654,78 @@ onBeforeUnmount(stopExportPolling)
     role="tabpanel"
     aria-labelledby="ops-tab-alerts"
   >
-    <header class="ops-panel-title"><div><strong>告警事实流</strong><small>渠道为空时仅写 alert_log + 日志</small></div></header>
-    <form class="ops-filter-bar" @submit.prevent="reloadFromFirstPage('alerts')">
-      <label class="ops-fld"><span>告警类型</span>
-        <el-input v-model="alertType" class="ops-keyword" clearable placeholder="如 job_failed" aria-label="告警类型关键词" />
-      </label>
-      <div class="ops-fld"><span>等级</span>
-        <div class="ops-seg" role="group" aria-label="告警等级筛选" data-testid="ops-alert-level-seg">
-          <button
-            v-for="option in ALERT_LEVEL_OPTIONS"
-            :key="option.key"
-            type="button"
-            :class="{ on: alertLevel === option.value }"
-            :data-testid="`ops-alert-level-${option.key}`"
-            @click="setAlertLevel(option.value)"
-          >{{ option.label }}</button>
+    <header class="ops-panel-title ops-alert-title">
+      <div><strong>{{ alertMode === 'current' ? '当前未恢复告警' : '告警触发历史' }}</strong><small>{{ alertMode === 'current' ? '从权威运行事实实时计算，不按最近告警时间猜测' : '去重后的触发快照，不代表异常仍在持续或外部渠道已送达' }}</small></div>
+      <div class="ops-seg" role="group" aria-label="告警视图" data-testid="ops-alert-mode">
+        <button type="button" :class="{ on: alertMode === 'current' }" @click="setAlertMode('current')">当前告警</button>
+        <button type="button" :class="{ on: alertMode === 'history' }" @click="setAlertMode('history')">告警历史</button>
+      </div>
+    </header>
+
+    <template v-if="alertMode === 'current'">
+      <el-alert
+        v-if="currentAlerts && !currentAlerts.complete"
+        data-testid="current-alert-incomplete"
+        class="ops-alert"
+        type="warning"
+        :closable="false"
+        title="当前告警状态不完整"
+        :description="`以下来源暂时无法确认：${currentUnknownText}。未显示为正常，请先恢复数据源。`"
+        show-icon
+      />
+      <div v-if="currentAlerts" class="ops-current-summary" data-testid="current-alert-summary">
+        <div><span>当前未恢复</span><strong>{{ currentAlerts.items.length }}</strong></div>
+        <div><span>严重</span><strong class="crit">{{ currentCritCount }}</strong></div>
+        <div><span>警告</span><strong class="warn">{{ currentWarnCount }}</strong></div>
+        <p>刷新于 {{ formatDateTime(currentAlerts.refreshed_at) }} · 页面可见时每 60 秒更新</p>
+      </div>
+      <section class="ops-results">
+        <el-table :data="currentAlerts?.items ?? []" class="ops-table">
+          <el-table-column label="等级" width="88"><template #default="{ row }"><el-tag :type="levelTag(row.level)" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{ levelLabel(row.level) }}</el-tag></template></el-table-column>
+          <el-table-column prop="title" label="当前问题" min-width="260" />
+          <el-table-column label="影响" min-width="150"><template #default="{ row }">{{ currentImpact(row) }}</template></el-table-column>
+          <el-table-column prop="alert_type" label="类型" min-width="170" />
+          <el-table-column label="持续状态" width="150"><template #default="{ row }">{{ currentDuration(row) }}</template></el-table-column>
+          <el-table-column label="最后确认" width="180"><template #default="{ row }">{{ formatDateTime(row.checked_at) }}</template></el-table-column>
+          <el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" :data-testid="`current-alert-target-${row.key}`" @click="goCurrentTarget(row)">去处理</el-button></template></el-table-column>
+          <template #empty><EmptyState :title="currentAlerts?.complete ? '当前没有未恢复告警' : '当前状态尚未完整确认'" :description="currentAlerts?.complete ? '所有已登记权威状态均为正常；历史触发仍可在“告警历史”查看。' : '请先恢复上方列出的数据源，系统不会把未知状态显示为正常。'" /></template>
+        </el-table>
+        <div class="ops-mobile-list"><article v-for="item in currentAlerts?.items ?? []" :key="item.key"><header><el-tag :type="levelTag(item.level)">{{ levelLabel(item.level) }}</el-tag><time>{{ currentDuration(item) }}</time></header><strong>{{ item.title }}</strong><p>{{ currentImpact(item) }}</p><p>{{ item.alert_type }} · {{ formatDateTime(item.checked_at) }}</p><el-button link type="primary" @click="goCurrentTarget(item)">去处理</el-button></article></div>
+      </section>
+    </template>
+
+    <template v-else>
+      <form class="ops-filter-bar" @submit.prevent="reloadFromFirstPage('alerts')">
+        <label class="ops-fld"><span>告警类型（精确）</span>
+          <el-input v-model="alertType" class="ops-keyword" clearable placeholder="如 job_failed" aria-label="告警类型精确筛选" />
+        </label>
+        <div class="ops-fld"><span>等级</span>
+          <div class="ops-seg" role="group" aria-label="告警等级筛选" data-testid="ops-alert-level-seg">
+            <button
+              v-for="option in ALERT_LEVEL_OPTIONS"
+              :key="option.key"
+              type="button"
+              :class="{ on: alertLevel === option.value }"
+              :data-testid="`ops-alert-level-${option.key}`"
+              @click="setAlertLevel(option.value)"
+            >{{ option.label }}</button>
+          </div>
         </div>
-      </div>
-      <label class="ops-fld"><span>时间范围</span>
-        <el-date-picker v-model="alertRange" class="ops-dates" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" />
-      </label>
-      <div class="ops-filter-go">
-        <el-button type="primary" @click="reloadFromFirstPage('alerts')">查询</el-button>
-        <el-button @click="resetAlerts">重置</el-button>
-      </div>
-      <p class="ops-privacy">服务端分页过滤；等级点选即重查，关键词与时间范围点「查询」生效。告警渠道为空时仅落 alert_log 与日志，不外呼。</p>
-    </form>
-    <section class="ops-results">
-      <el-table :data="alerts" class="ops-table"><el-table-column label="等级" width="88"><template #default="{ row }"><el-tag :type="row.level === 'crit' ? 'danger' : row.level === 'warn' ? 'warning' : 'info'" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{ levelLabel(row.level) }}</el-tag></template></el-table-column><el-table-column prop="title" label="告警" min-width="220" /><el-table-column prop="alert_type" label="类型" min-width="150" /><el-table-column prop="channels" label="渠道" width="110" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="70" fixed="right"><template #default="{ row }"><el-button link type="primary" :data-testid="`alert-detail-${row.id}`" @click="openAlertDetail(row)">详情</el-button></template></el-table-column><template #empty><EmptyState :title="alertEmpty.title" :description="alertEmpty.description" /></template></el-table>
-      <div class="ops-mobile-list"><article v-for="item in alerts" :key="item.id"><header><el-tag :type="item.level === 'crit' ? 'danger' : 'warning'">{{ levelLabel(item.level) }}</el-tag><time>{{ formatDateTime(item.created_at) }}</time></header><strong>{{ item.title }}</strong><p>{{ item.alert_type }} · {{ item.channels }}</p><el-button link type="primary" @click="openAlertDetail(item)">详情</el-button></article><EmptyState v-if="!alerts.length" :title="alertEmpty.title" :description="alertEmpty.description" /></div>
-      <footer class="ops-pagination"><span>共 {{ alertTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="alertPage" data-testid="ops-alert-pagination" :page-size="20" :total="alertTotal" layout="prev, pager, next" @current-change="load('alerts')" /></footer>
-    </section>
+        <label class="ops-fld"><span>时间范围</span>
+          <el-date-picker v-model="alertRange" class="ops-dates" type="datetimerange" popper-class="qingluan-date-popper" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" />
+        </label>
+        <div class="ops-filter-go">
+          <el-button type="primary" @click="reloadFromFirstPage('alerts')">查询</el-button>
+          <el-button @click="resetAlerts">重置</el-button>
+        </div>
+        <p class="ops-privacy">服务端分页过滤；每条为去重后的触发快照，不表示异常仍在持续。“配置路由”也不等同于外部渠道已经送达。</p>
+      </form>
+      <section class="ops-results">
+        <el-table :data="alerts" class="ops-table"><el-table-column label="等级" width="88"><template #default="{ row }"><el-tag :type="levelTag(row.level)" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{ levelLabel(row.level) }}</el-tag></template></el-table-column><el-table-column prop="title" label="告警" min-width="220" /><el-table-column prop="alert_type" label="类型" min-width="150" /><el-table-column prop="channels" label="配置路由" width="120" /><el-table-column label="记录时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="70" fixed="right"><template #default="{ row }"><el-button link type="primary" :data-testid="`alert-detail-${row.id}`" @click="openAlertDetail(row)">详情</el-button></template></el-table-column><template #empty><EmptyState :title="alertEmpty.title" :description="alertEmpty.description" /></template></el-table>
+        <div class="ops-mobile-list"><article v-for="item in alerts" :key="item.id"><header><el-tag :type="levelTag(item.level)">{{ levelLabel(item.level) }}</el-tag><time>{{ formatDateTime(item.created_at) }}</time></header><strong>{{ item.title }}</strong><p>{{ item.alert_type }} · {{ item.channels }}</p><el-button link type="primary" @click="openAlertDetail(item)">详情</el-button></article><EmptyState v-if="!alerts.length" :title="alertEmpty.title" :description="alertEmpty.description" /></div>
+        <footer class="ops-pagination"><span>共 {{ alertTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="alertPage" data-testid="ops-alert-pagination" :page-size="20" :total="alertTotal" layout="prev, pager, next" @current-change="load('alerts')" /></footer>
+      </section>
+    </template>
   </section>
 
   <section

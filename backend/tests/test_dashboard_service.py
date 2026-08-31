@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from app.core.jobtrack import JobSpec
+from app.services.current_alerts import CurrentAlert, CurrentAlertSnapshot
 from app.services.dashboard import (
     CategoryTotals,
     DashboardFacts,
@@ -29,6 +30,27 @@ class FakeRepository:
     ) -> DashboardFacts:
         self.calls.append((scope_dept, today, include_operations))
         return self.facts
+
+
+class FakeCurrentAlerts:
+    async def get(self) -> CurrentAlertSnapshot:
+        return CurrentAlertSnapshot(
+            datetime(2026, 7, 12, 4, 0, tzinfo=UTC),
+            False,
+            ("control_redis",),
+            (
+                CurrentAlert(
+                    "queue_paused",
+                    "queue_paused",
+                    "crit",
+                    "短信发送队列当前处于暂停状态",
+                    {},
+                    None,
+                    datetime(2026, 7, 12, 4, 0, tzinfo=UTC),
+                    "queue",
+                ),
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -114,3 +136,35 @@ async def test_elevated_dashboard_is_global_and_failed_or_late_job_is_red() -> N
     assert repository.calls == [(None, date(2026, 7, 12), True)]
     assert result.operations is not None
     assert result.operations.jobs[0].stalled is True
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_uses_current_alert_snapshot_and_marks_unknown() -> None:
+    now = datetime(2026, 7, 12, 4, 0, tzinfo=UTC)
+    facts = DashboardFacts(
+        categories=(),
+        pending_approvals=0,
+        operations=DashboardOperationsFacts(
+            current_balance=None,
+            balances=(),
+            alerts=(),
+            uncertain=0,
+            unmatched=0,
+            callback_dead=0,
+            jobs=(),
+        ),
+    )
+    service = DashboardService(
+        FakeRepository(facts),
+        (),
+        current_alerts=FakeCurrentAlerts(),
+        clock=lambda: now,
+    )
+
+    result = await service.get(role="admin", dept="平台部")
+
+    assert result.operations is not None
+    assert [alert.title for alert in result.operations.alerts] == [
+        "当前告警状态不完整",
+        "短信发送队列当前处于暂停状态",
+    ]

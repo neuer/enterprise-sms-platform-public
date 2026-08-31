@@ -254,10 +254,10 @@ async def test_near_quota_skips_vendor_and_alerts(tmp_path: Path) -> None:
     sparse_file(tmp_path / "padding.bin", store.max_total_bytes - 63 * 1024 * 1024)
     gateway = RecordingGateway(empty_payload())
     alerts = FakeAlerts()
-    count = await ReportIngestService(
-        gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
-    ).poll_once()
-    assert count == 0
+    with pytest.raises(SpillQuotaExceeded):
+        await ReportIngestService(
+            gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
+        ).poll_once()
     assert gateway.calls == 0
     assert any(item["alert_type"] == "vendor_raw_spill_quota_exceeded" for item in alerts.events)
 
@@ -355,10 +355,10 @@ async def test_overlapping_report_reply_poll_does_not_call_second_vendor(
         ).poll_once()
     )
     await started.wait()
-    reply_count = await ReplyIngestService(
-        reply_gateway, FakeRepository(), crypto(), alerts=reply_alerts, spill=store
-    ).poll_once()
-    assert reply_count == 0
+    with pytest.raises(SpillQuotaExceeded):
+        await ReplyIngestService(
+            reply_gateway, FakeRepository(), crypto(), alerts=reply_alerts, spill=store
+        ).poll_once()
     assert reply_gateway.calls == 0
     assert any(
         item["alert_type"] == "vendor_raw_spill_quota_exceeded" for item in reply_alerts.events
@@ -383,10 +383,10 @@ async def test_disk_full_on_stream_create_skips_vendor(
     monkeypatch.setattr(Path, "open", boom)
     gateway = RecordingGateway(empty_payload())
     alerts = FakeAlerts()
-    count = await ReportIngestService(
-        gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
-    ).poll_once()
-    assert count == 0
+    with pytest.raises(SpillQuotaExceeded):
+        await ReportIngestService(
+            gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
+        ).poll_once()
     assert gateway.calls == 0
     assert leftover_names(tmp_path, ".reserve", ".stream", ".stream.tmp") == []
     assert any(item["alert_type"] == "vendor_raw_spill_quota_exceeded" for item in alerts.events)

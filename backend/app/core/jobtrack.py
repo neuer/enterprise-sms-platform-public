@@ -237,22 +237,44 @@ class SqlJobRunRepository:
                     ),
                     {"job_name": job_name, "limit": limit},
                 )
-                failures = consecutive_unfinished_count(result.scalars())
+                failures = consecutive_failed_count(result.scalars())
                 return failures
         finally:
             await engine.dispose()
 
 
-def consecutive_unfinished_count(statuses: Iterable[str]) -> int:
-    """连续失败含启动后未结束的 running，用于捕捉杀循环。"""
+def consecutive_failed_count(statuses: Iterable[str]) -> int:
+    """只统计已经结束为 failed 的连续运行；running 由 stalled 单独判断。"""
 
     failures = 0
     for status in statuses:
-        if status in {"failed", "running"}:
+        if status == "failed":
             failures += 1
             continue
         break
     return failures
+
+
+def job_is_stalled(
+    latest: JobRunSnapshot | None,
+    spec: JobSpec,
+    *,
+    now: datetime,
+) -> bool:
+    """按统一心跳规则判断任务是否停摆，供巡检、Ops 与仪表盘共用。"""
+
+    checked_at = _require_aware(now)
+    if latest is None:
+        return True
+    started_at = _require_aware(latest.started_at)
+    age = checked_at - started_at
+    if age > timedelta(seconds=spec.expect_interval_s * 2):
+        return True
+    return (
+        latest.status == "running"
+        and latest.finished_at is None
+        and age > timedelta(seconds=spec.expect_interval_s)
+    )
 
 
 class JobTracker:
@@ -448,16 +470,7 @@ class JobHealthMonitor:
         selected_specs = tuple(specs) if specs is not None else tuple(JOB_SPECS.values())
         for spec in selected_specs:
             latest = await self.repository.latest(spec.job_name)
-            stalled = latest is None or now - latest.started_at > timedelta(
-                seconds=spec.expect_interval_s * 2
-            )
-            if (
-                latest is not None
-                and latest.status == "running"
-                and latest.finished_at is None
-                and now - latest.started_at > timedelta(seconds=spec.expect_interval_s)
-            ):
-                stalled = True
+            stalled = job_is_stalled(latest, spec, now=now)
             if stalled:
                 # 同一缺失心跳事件保持去重；任务恢复后 started_at 会变化，
                 # 再次停摆必须形成新的告警，不能被上一事件的四小时窗口吞掉。

@@ -20,6 +20,8 @@ from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
 from app.core.runtime_resources import database_engine, redis_client
 from app.services.crypto import CryptoService
+from app.services.current_alerts import CurrentAlertService
+from app.services.current_alerts_repository import SqlCurrentAlertRepository
 from app.services.dashboard import DashboardService, DashboardSnapshot
 from app.services.dashboard_repository import SqlDashboardRepository
 from app.services.export import (
@@ -240,7 +242,11 @@ def get_export_step_up_service(
 def get_dashboard_service() -> DashboardService:
     register_task_modules()
     specs = tuple(JOB_SPECS[name] for name in sorted(JOB_SPECS))
-    return DashboardService(SqlDashboardRepository(), specs)
+    return DashboardService(
+        SqlDashboardRepository(),
+        specs,
+        current_alerts=CurrentAlertService(SqlCurrentAlertRepository(), specs),
+    )
 
 
 def get_reporting_service() -> ReportingService:

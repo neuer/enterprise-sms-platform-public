@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app.services.crypto import CryptoService, EncryptionContext
+from app.services.raw_spill import RawSpillDegraded
 from app.services.reply_ingest import ReplyIngestService
 from app.vendor.zhihui import RawPulledPayload, VendorResponseTooLarge
 
@@ -469,7 +470,8 @@ async def test_reply_spill_write_failure_degrades_to_alert_and_db_persist_contin
         spill=BrokenReplySpill(),  # type: ignore[arg-type]
     )
 
-    assert await service.poll_once() == 1
+    with pytest.raises(RawSpillDegraded):
+        await service.poll_once()
 
     assert [event[0] for event in repository.events] == [
         "persist_raw",

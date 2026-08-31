@@ -380,14 +380,14 @@ async def test_protocol_invalid_pull_is_persisted_and_not_replayed(tmp_path: Pat
     raw = b'{"code":0,"data":[]}'
     repository = FakeRepository()
     alerts = FakeAlerts()
-    count = await ReportIngestService(
-        RecordingGateway(RawPulledPayload(raw, 204, "identity", protocol_invalid=True)),
-        repository,
-        crypto(),
-        alerts=alerts,
-        spill=RawSpillStore(tmp_path),
-    ).poll_once()
-    assert count == 0
+    with pytest.raises(RuntimeError, match="protocol-invalid"):
+        await ReportIngestService(
+            RecordingGateway(RawPulledPayload(raw, 204, "identity", protocol_invalid=True)),
+            repository,
+            crypto(),
+            alerts=alerts,
+            spill=RawSpillStore(tmp_path),
+        ).poll_once()
     persisted = [value for event, value in repository.events if event == "persist_raw"]
     assert persisted[0]["capture_state"] == CAPTURE_PROTOCOL_INVALID
     assert persisted[0]["http_status"] == 204

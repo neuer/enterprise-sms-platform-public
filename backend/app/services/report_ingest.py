@@ -27,6 +27,7 @@ from app.services.raw_spill import (
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
+    RawSpillDegraded,
     RawSpillStore,
     RecoverRoundBudget,
     SpillQuotaExceeded,
@@ -219,6 +220,7 @@ class ReportIngestService:
         self.crypto = crypto
         self.alerts = alerts
         self.spill = spill
+        self._spill_degraded = False
 
     async def _alert_failure_rate(self, batch_id: int) -> None:
         if self.alerts is None:
@@ -529,9 +531,11 @@ class ReportIngestService:
                 capture_state=capture_state,
             )
         except SpillQuotaExceeded:
+            self._spill_degraded = True
             await self._alert_spill_quota(source)
             return None
         except Exception as exc:
+            self._spill_degraded = True
             LOGGER.error(
                 "raw spill write failed",
                 extra={"source": source, "error_type": type(exc).__name__},
@@ -816,6 +820,7 @@ class ReportIngestService:
     async def poll_once(self) -> int:
         if self.gateway is None:
             raise RuntimeError("report gateway is not configured")
+        self._spill_degraded = False
         await self.recover_spills()
         stream = None
         if self.spill is not None:
@@ -823,7 +828,7 @@ class ReportIngestService:
                 stream = self.spill.open_stream("report", self.crypto)
             except SpillQuotaExceeded:
                 await self._alert_spill_quota("report")
-                return 0
+                raise
         try:
             with manage_raw_spill_stream(stream):
                 pulled = await self.gateway.get_report_raw(body_sink=stream)
@@ -866,7 +871,7 @@ class ReportIngestService:
         if is_non_replayable_capture(capture_state):
             await self.repository.mark_error(raw_id, "report protocol-invalid vendor response")
             await self._alert_protocol_invalid("report")
-            return 0
+            raise RuntimeError("report vendor response protocol-invalid")
         try:
             data = decode_pulled_payload(pulled, "GetReport")
         except Exception as error:
@@ -875,7 +880,10 @@ class ReportIngestService:
                 f"{type(error).__name__}: vendor response parsing failed",
             )
             raise
-        return await self.process_existing(raw_id, data)
+        processed = await self.process_existing(raw_id, data)
+        if self._spill_degraded:
+            raise RawSpillDegraded("report raw spill write degraded")
+        return processed
 
     async def process_existing(
         self,

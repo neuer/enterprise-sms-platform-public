@@ -41,6 +41,7 @@ function result(url: string, method: string): unknown {
     return undefined
   }
   if (url.includes(`/reports/export/${publicId}`) && !url.endsWith("/download")) return { id: publicId, status: "done", decrypted: false, row_count: 45, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }
+  if (url.endsWith("/alerts/current")) return { refreshed_at: "2026-07-12T08:00:00+08:00", complete: false, unknown_sources: ["control_redis"], items: [{ key: "job_failed:poll_report", alert_type: "job_failed", level: "crit", title: "任务连续失败", detail: { job_name: "poll_report" }, since: "2026-07-12T07:00:00+08:00", checked_at: "2026-07-12T08:00:00+08:00", target: "jobs" }] }
   if (url.includes("/alerts")) return { items: [{ id: 1, alert_type: "job_failed", level: "crit", title: "任务连续失败", detail: { job_name: "poll_report" }, channels: "log-sink", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/raw-logs")) return { items: [{ id: 2, source: "report", item_count: 3, custom_id_count: 2, processed: false, error: "ValueError", fetched_at: "2026-07-12T08:00:00+08:00", capture_state: "complete" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/chunks/uncertain")) return { items: [{ chunk_id: 3, batch_no: "BATCH-1", custom_id: "CUSTOM-1", phone_count: 50, vendor_code: null, uncertain_since: "2026-07-12T08:00:00+08:00", age_seconds: 90000 }], total: 45, page: 1, page_size: 20 }
@@ -75,8 +76,9 @@ describe("统一运维中心", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("任务连续失败")
-    expect(wrapper.find("[data-testid='ops-alert-pagination']").exists()).toBe(true)
-    expect(fetch.mock.calls.filter(([url]) => String(url).includes("/alerts"))).toHaveLength(1)
+    expect(wrapper.find("[data-testid='current-alert-incomplete']").exists()).toBe(true)
+    expect(wrapper.text()).toContain("control Redis")
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/alerts/current"))).toHaveLength(1)
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/raw-logs"))).toBe(false)
 
     await tab(wrapper, "原始报文").trigger("click")
@@ -196,6 +198,8 @@ describe("统一运维中心", () => {
     const wrapper = await mountOps()
     await flushPromises()
 
+    await wrapper.findAll("button").find((item) => item.text() === "告警历史")!.trigger("click")
+    await flushPromises()
     await wrapper.get("[data-testid='alert-detail-1']").trigger("click")
     await flushPromises()
 
@@ -218,22 +222,23 @@ describe("统一运维中心", () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input)
       const method = init?.method || "GET"
-      if (method === "GET" && url.includes("/alerts")) {
-        if (fetch.mock.calls.filter(([item]) => String(item).includes("/alerts")).length === 1) {
+      if (method === "GET" && url.endsWith("/alerts/current")) {
+        if (fetch.mock.calls.filter(([item]) => String(item).endsWith("/alerts/current")).length === 1) {
           await initialAlerts
           return response({
+            refreshed_at: "2026-07-12T08:00:00+08:00",
+            complete: true,
+            unknown_sources: [],
             items: [{
-              id: 99,
+              key: "stale",
               alert_type: "job_failed",
               level: "crit",
               title: "过期告警不应出现",
               detail: { job_name: "stale" },
-              channels: "log-sink",
-              created_at: "2026-07-12T08:00:00+08:00",
+              since: "2026-07-12T08:00:00+08:00",
+              checked_at: "2026-07-12T08:00:00+08:00",
+              target: "jobs",
             }],
-            total: 1,
-            page: 1,
-            page_size: 20,
           })
         }
       }
@@ -243,7 +248,7 @@ describe("统一运维中心", () => {
     const wrapper = await mountOps()
     await tab(wrapper, "结果未知").trigger("click")
     await flushPromises()
-    await tab(wrapper, "告警记录").trigger("click")
+    await tab(wrapper, "告警").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("任务连续失败")
     expect(wrapper.text()).not.toContain("过期告警不应出现")

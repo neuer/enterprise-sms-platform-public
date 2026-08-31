@@ -16,7 +16,7 @@ from app.core.jobtrack import (
     JobSpec,
     JobTracker,
     SqlJobMonitorLease,
-    consecutive_unfinished_count,
+    consecutive_failed_count,
     tracked_job,
 )
 from app.settings import Settings
@@ -257,11 +257,11 @@ async def test_monitor_treats_never_seen_job_as_stalled() -> None:
     assert [event["alert_type"] for event in sink.events] == ["job_stalled"]
 
 
-def test_consecutive_unfinished_count_treats_running_as_failure() -> None:
-    assert consecutive_unfinished_count(["running", "running", "running"]) == 3
-    assert consecutive_unfinished_count(["running", "success"]) == 1
-    assert consecutive_unfinished_count(["failed", "failed", "success"]) == 2
-    assert consecutive_unfinished_count(["success", "failed"]) == 0
+def test_consecutive_failed_count_keeps_running_in_stalled_domain() -> None:
+    assert consecutive_failed_count(["running", "running", "running"]) == 0
+    assert consecutive_failed_count(["running", "success"]) == 0
+    assert consecutive_failed_count(["failed", "failed", "success"]) == 2
+    assert consecutive_failed_count(["success", "failed"]) == 0
 
 
 @pytest.mark.asyncio

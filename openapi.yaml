@@ -2270,7 +2270,7 @@ paths:
   /api/v1/web/admin/alerts:
     get:
       tags: [admin]
-      summary: 告警记录列表（v1.4，ops页支撑）
+      summary: 历史告警触发记录（去重快照，不表示仍在持续或渠道已送达）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: alert_type, in: query, required: false, schema: { anyOf: [{ type: string }, { type: 'null' }] } }
@@ -2282,6 +2282,20 @@ paths:
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AlertPageModel' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/web/admin/alerts/current:
+    get:
+      tags: [admin]
+      summary: 从 PostgreSQL 与 control Redis 权威事实派生当前未恢复告警
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 当前状态快照；complete=false 时 unknown_sources 不得解释为正常
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentAlertSnapshotModel' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -3313,6 +3327,30 @@ components:
         page: { type: integer, minimum: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100 }
         items: { type: array, items: { $ref: '#/components/schemas/AlertModel' } }
+
+    CurrentAlertModel:
+      type: object
+      additionalProperties: false
+      required: [key, alert_type, level, title, detail, since, checked_at, target]
+      properties:
+        key: { type: string }
+        alert_type: { type: string }
+        level: { type: string, enum: [info, warn, crit] }
+        title: { type: string }
+        detail: { type: object, additionalProperties: true }
+        since: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        checked_at: { type: string, format: date-time }
+        target: { type: string, enum: [jobs, raw, uncertain, callbacks, queue, outbox] }
+
+    CurrentAlertSnapshotModel:
+      type: object
+      additionalProperties: false
+      required: [refreshed_at, complete, unknown_sources, items]
+      properties:
+        refreshed_at: { type: string, format: date-time }
+        complete: { type: boolean }
+        unknown_sources: { type: array, items: { type: string } }
+        items: { type: array, items: { $ref: '#/components/schemas/CurrentAlertModel' } }
 
     RawLogModel:
       type: object

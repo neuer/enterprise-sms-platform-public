@@ -9,7 +9,7 @@ import pytest
 
 import app.services.report_ingest as report_ingest_module
 from app.services.crypto import CryptoService, EncryptionContext
-from app.services.raw_spill import RawSpillStore
+from app.services.raw_spill import RawSpillDegraded, RawSpillStore
 from app.services.report_ingest import (
     FailureRateAlert,
     ReportApplyResult,
@@ -652,7 +652,8 @@ async def test_spill_write_failure_degrades_to_alert_and_db_persist_continues() 
         spill=BrokenSpill(),  # type: ignore[arg-type]
     )
 
-    assert await service.poll_once() == 1
+    with pytest.raises(RawSpillDegraded):
+        await service.poll_once()
 
     assert [event[0] for event in repository.events] == [
         "persist_raw",

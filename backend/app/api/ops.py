@@ -8,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.reports import ExportTaskModel, _response, get_export_service
@@ -19,6 +19,8 @@ from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
 from app.services.crypto import CryptoService
+from app.services.current_alerts import CurrentAlertService
+from app.services.current_alerts_repository import SqlCurrentAlertRepository
 from app.services.export import (
     ExportForbidden,
     ExportRequestFilters,
@@ -79,6 +81,28 @@ class AlertModel(BaseModel):
 
 class AlertPageModel(PageModel):
     items: list[AlertModel]
+
+
+class CurrentAlertModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    alert_type: str
+    level: Literal["info", "warn", "crit"]
+    title: str
+    detail: dict[str, Any]
+    since: datetime | None
+    checked_at: datetime
+    target: Literal["jobs", "raw", "uncertain", "callbacks", "queue", "outbox"]
+
+
+class CurrentAlertSnapshotModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    refreshed_at: datetime
+    complete: bool
+    unknown_sources: list[str]
+    items: list[CurrentAlertModel]
 
 
 class RawLogModel(BaseModel):
@@ -223,6 +247,12 @@ class UnmatchedExportModel(BaseModel):
 
 def get_ops_repository() -> SqlOpsRepository:
     return SqlOpsRepository()
+
+
+def get_current_alert_service() -> CurrentAlertService:
+    register_task_modules()
+    specs = tuple(JOB_SPECS[name] for name in sorted(JOB_SPECS))
+    return CurrentAlertService(SqlCurrentAlertRepository(), specs)
 
 
 def get_outbox_repository() -> SqlOutboxRepository:
@@ -373,6 +403,23 @@ async def retry_outbox_event(
     if not await repository.retry_dead(event_id, principal=claims.principal):
         raise ApiError(409, "STATE_CONFLICT", "仅 dead 事件允许人工重推", None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/alerts/current",
+    response_model=CurrentAlertSnapshotModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+)
+async def current_alerts(
+    service: Annotated[CurrentAlertService, Depends(get_current_alert_service)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> CurrentAlertSnapshotModel:
+    await _admin(facade, credentials)
+    return CurrentAlertSnapshotModel.model_validate(
+        await service.get(),
+        from_attributes=True,
+    )
 
 
 @router.get(
