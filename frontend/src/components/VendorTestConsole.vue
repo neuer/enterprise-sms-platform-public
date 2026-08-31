@@ -24,6 +24,8 @@ import PhoneMask from "./PhoneMask.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
+import { PHONE_RE } from "../lib/phone"
+import { formatDateTime } from "../lib/time"
 
 const loading = ref(false)
 const loadErrorMessage = ref("")
@@ -63,6 +65,18 @@ const OPERATION_TYPES = new Set<VendorTestOperation["operation_type"]>([
   "reset_configuration",
   "uat_send",
 ])
+
+const OPERATION_STATUS_LABELS: Record<string, string> = {
+  requested: "已提交",
+  running: "执行中",
+  succeeded: "操作成功",
+  failed: "操作失败",
+}
+
+// 已知操作状态上屏为中文；服务端新增未知状态时原样显示，避免吞掉诊断信息。
+function operationStatusLabel(status: string): string {
+  return OPERATION_STATUS_LABELS[status] ?? status
+}
 
 const activeRecipients = computed(() => recipients.value.filter((item) => item.status === "active"))
 const errorMessage = computed(() => restoreErrorMessage.value || loadErrorMessage.value)
@@ -108,21 +122,6 @@ const statusPresentation = computed(() => {
   }
   return { title: "安全阻断", detail: "需先完成错误处置，再按暂停类型恢复", tone: "danger" }
 })
-
-function safeTime(value: string): string {
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return "状态时间无效"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(parsed)
-}
 
 async function load(): Promise<boolean> {
   const generation = ++loadGeneration
@@ -462,7 +461,7 @@ function clearIndexRefresh(): void {
 async function submitIndexRefresh(): Promise<void> {
   const recipient = refreshRecipient.value
   const phone = refreshPhone.value
-  if (!recipient || !/^1\d{10}$/.test(phone)) {
+  if (!recipient || !PHONE_RE.test(phone)) {
     ElMessage.warning("请输入 11 位测试手机号")
     return
   }
@@ -512,7 +511,7 @@ onBeforeUnmount(() => {
         <div><dt>凭据</dt><dd>{{ status.credential_configured ? '正式凭据已安装' : '正式凭据未安装' }}</dd></div>
         <div><dt>收件人</dt><dd>{{ status.active_recipient_count }} 个已登记</dd></div>
         <div><dt>预算</dt><dd>{{ status.daily_limit }} 条/日</dd></div>
-        <div><dt>心跳</dt><dd>{{ safeTime(status.heartbeat_at) }}</dd></div>
+        <div><dt>心跳</dt><dd>{{ formatDateTime(status.heartbeat_at, "状态时间无效") }}</dd></div>
       </dl>
     </header>
 
@@ -635,7 +634,7 @@ onBeforeUnmount(() => {
         <code>{{ activeOperation.operation_id }}</code>
       </div>
       <div class="vendor-operation-state" :class="activeOperation.status">
-        <i></i><strong>{{ activeOperation.status === 'succeeded' ? '操作成功' : activeOperation.status }}</strong>
+        <i></i><strong>{{ operationStatusLabel(activeOperation.status) }}</strong>
       </div>
       <div v-if="activeOperation.batch_no"><span>批次引用</span><code>{{ activeOperation.batch_no }}</code></div>
       <div v-if="activeOperation.safe_code"><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div>

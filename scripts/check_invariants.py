@@ -568,7 +568,7 @@ def check_vendor_live_invariants() -> None:
         ROOT / "frontend/src/components/VendorCredentialDialog.vue",
         "isVendorCredentialSecureContext",
         "当前入口不支持正式凭据安全加密。",
-        "打开正式凭据安全入口",
+        "无法对凭据加密封装",
         ':disabled="submitting || !secureContextAvailable"',
     )
 

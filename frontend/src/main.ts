@@ -13,7 +13,6 @@ import "element-plus/theme-chalk/el-date-picker-panel.css"
 import "element-plus/theme-chalk/el-descriptions.css"
 import "element-plus/theme-chalk/el-dialog.css"
 import "element-plus/theme-chalk/el-drawer.css"
-import "element-plus/theme-chalk/el-empty.css"
 import "element-plus/theme-chalk/el-form.css"
 import "element-plus/theme-chalk/el-icon.css"
 import "element-plus/theme-chalk/el-input.css"
@@ -51,7 +50,6 @@ import {
   ElDescriptionsItem,
   ElDialog,
   ElDrawer,
-  ElEmpty,
   ElForm,
   ElFormItem,
   ElInput,
@@ -90,7 +88,7 @@ installAuthGuard(router, pinia, sessionReady)
 const application = createApp(App).use(pinia).use(router)
 for (const plugin of [
   ElAlert, ElButton, ElCard, ElCheckbox, ElCheckboxGroup, ElConfigProvider,
-  ElDatePicker, ElDescriptions, ElDescriptionsItem, ElDialog, ElDrawer, ElEmpty,
+  ElDatePicker, ElDescriptions, ElDescriptionsItem, ElDialog, ElDrawer,
   ElForm, ElFormItem, ElInput, ElInputNumber, ElLoading, ElOption, ElPagination,
   ElPopover, ElRadioButton, ElRadioGroup, ElSegmented, ElSelect, ElSkeleton,
   ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElTooltip, ElUpload,

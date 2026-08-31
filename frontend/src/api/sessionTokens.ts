@@ -2,8 +2,9 @@
 
 import type { PlatformUser } from "./auth"
 
-const TOKEN_KEY = "sms_token"
-const USER_KEY = "sms_user"
+/** 历史 Web Storage 凭据键（规则 26 一次性迁移 + 清除的唯一事实源）。 */
+export const LEGACY_TOKEN_KEY = "sms_token"
+export const LEGACY_USER_KEY = "sms_user"
 export const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
 const REFRESH_TAB_ID_PATTERN = /^[0-9a-f]{32}$/
 
@@ -89,10 +90,10 @@ function migrateLegacyStorageOnce(): void {
   if (legacyMigrationClosed || legacyMigrationAttempted) return
   // 先关闭本 Document 扫描闸门，再碰 Storage，避免删除失败后被再次导入。
   legacyMigrationAttempted = true
-  const legacyToken = storageGet(TOKEN_KEY)
-  const rawUser = storageGet(USER_KEY)
-  storageRemove(TOKEN_KEY)
-  storageRemove(USER_KEY)
+  const legacyToken = storageGet(LEGACY_TOKEN_KEY)
+  const rawUser = storageGet(LEGACY_USER_KEY)
+  storageRemove(LEGACY_TOKEN_KEY)
+  storageRemove(LEGACY_USER_KEY)
   if (legacyMigrationClosed) return
   if (!accessToken && legacyToken) accessToken = legacyToken
   if (!sessionUser && rawUser) {
@@ -131,8 +132,8 @@ export function clearAccessSession(): void {
   accessToken = null
   sessionUser = null
   closeLegacyAccessMigration()
-  storageRemove(TOKEN_KEY)
-  storageRemove(USER_KEY)
+  storageRemove(LEGACY_TOKEN_KEY)
+  storageRemove(LEGACY_USER_KEY)
 }
 
 /** 测试隔离：模拟新 Document，允许再次一次性迁移。生产路径不得调用。 */

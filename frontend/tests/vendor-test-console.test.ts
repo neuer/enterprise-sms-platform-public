@@ -234,9 +234,9 @@ describe("系统配置页真实联调控制台", () => {
     expect(document.querySelector("[data-testid='vendor-secret-key']")).toBeNull()
     expect(document.body.textContent).toContain("当前入口不支持正式凭据安全加密。")
     expect(document.body.textContent).toContain(
-      "请在 ChatGPT 中发送“打开正式凭据安全入口”",
+      "当前页面不处于安全上下文（非 HTTPS），无法对凭据加密封装。",
     )
-    expect(document.body.textContent).toContain("然后通过临时 HTTPS 地址重新登录。")
+    expect(document.body.textContent).toContain("请改用 HTTPS 地址访问后重试。")
 
     const submit = [...document.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("密封并"),
@@ -652,7 +652,7 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
 
     expect(afterRefresh.text()).toContain(operation.operation_id)
-    expect(afterRefresh.text()).toContain("running")
+    expect(afterRefresh.text()).toContain("执行中")
     expect(fetch.mock.calls.some(([url]) =>
       url.endsWith(`/vendor-test/operations/${operation.operation_id}`),
     )).toBe(true)

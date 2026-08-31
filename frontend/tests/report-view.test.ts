@@ -69,7 +69,7 @@ describe("统计报表页", () => {
     expect(wrapper.text()).toContain("19")
     expect(wrapper.text()).toContain("78.6%")
     expect(wrapper.text()).toContain("12 天")
-    expect(wrapper.text()).toContain("unknown 不入分母")
+    expect(wrapper.text()).toContain("未知不入分母")
     expect(wrapper.text()).toContain("结果构成")
     expect(wrapper.text()).toContain("维度排行")
     expect(wrapper.text()).toContain("OA应用")

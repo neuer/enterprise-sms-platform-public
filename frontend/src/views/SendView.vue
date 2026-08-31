@@ -21,6 +21,8 @@ import { listSigns, type SmsSign } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
 import SegmentBar from "../components/SegmentBar.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { PHONE_RE } from "../lib/phone"
+import { formatDateTime } from "../lib/time"
 
 const router = getCurrentInstance()?.appContext.config.globalProperties.$router as Router | undefined
 
@@ -97,8 +99,8 @@ const pastedMobiles = computed(() =>
     .filter(Boolean),
 )
 
-// 与服务端一致的 ^1\d{10}$；提交前即时暴露格式错误，避免整单被 400 拒绝却只看到笼统提示。
-const invalidMobiles = computed(() => pastedMobiles.value.filter((value) => !/^1\d{10}$/.test(value)))
+// 与服务端一致的 ^1\d{10}$（lib/phone 单点）；提交前即时暴露格式错误，避免整单被 400 拒绝却只看到笼统提示。
+const invalidMobiles = computed(() => pastedMobiles.value.filter((value) => !PHONE_RE.test(value)))
 const dedupedCount = computed(() => new Set(pastedMobiles.value).size)
 const duplicateCount = computed(() => pastedMobiles.value.length - dedupedCount.value)
 
@@ -501,8 +503,8 @@ async function handleUpload(options: UploadRequestOptions): Promise<void> {
 }
 
 function formatExpiry(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false })
+  // 锁 Asia/Shanghai（lib/time 单点）：非 +08:00 环境下 toLocaleString 会显示错误时间。
+  return formatDateTime(value, value)
 }
 
 async function submit(): Promise<void> {

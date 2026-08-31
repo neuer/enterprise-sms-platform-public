@@ -4,7 +4,7 @@ import "../styles/workspace.css"
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
-import { passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
+import { passwordPolicyRequest, type PasswordPolicy, type UserRole } from "../api/auth"
 import {
   createLocalUser,
   listUsers,
@@ -13,10 +13,11 @@ import {
   updateUserRole,
   updateUserStatus,
   type ManagedUser,
-  type UserRole,
   type UserSyncStatus,
 } from "../api/users"
 import EmptyState from "../components/EmptyState.vue"
+import { DEFAULT_PAGE_SIZE, ROLE_LABELS } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 const users = ref<ManagedUser[]>([])
 const total = ref(0)
@@ -36,7 +37,7 @@ const filters = reactive({
   role: "" as UserRole | "",
   status: "" as 0 | 1 | "",
   page: 1,
-  pageSize: 20,
+  pageSize: DEFAULT_PAGE_SIZE,
 })
 const createForm = reactive({
   username: "",
@@ -53,12 +54,6 @@ const passwordPolicy = ref<PasswordPolicy>({
   description: "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名",
 })
 
-const roleLabels: Record<UserRole, string> = {
-  admin: "系统管理员",
-  approver: "审批人",
-  operator: "操作员",
-  viewer: "只读用户",
-}
 const roleTag: Record<UserRole, "danger" | "warning" | "primary" | "info"> = {
   admin: "danger",
   approver: "warning",
@@ -110,7 +105,7 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 function roleLabel(role: UserRole): string {
-  return roleLabels[role]
+  return ROLE_LABELS[role]
 }
 
 function roleTagType(role: UserRole): "danger" | "warning" | "primary" | "info" {
@@ -142,22 +137,6 @@ function roleOrigin(user: ManagedUser): string {
 
 function syncLabel(status: UserSyncStatus): string {
   return syncLabels[status]
-}
-
-function localTime(value: string | null): string {
-  if (!value) return "—"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  })
-    .format(new Date(value))
-    .replaceAll("/", "-")
 }
 
 function disabledRowClass({ row }: { row: ManagedUser }): string {
@@ -639,11 +618,11 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="状态 / 同步" min-width="210">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? "账号有效" : "账号停用" }}</el-tag>
+            <el-tag size="small" :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? "有效" : "停用" }}</el-tag>
             <span class="sync-state" :class="row.sync_status"><i></i>{{ syncLabel(row.sync_status) }}</span>
             <div class="user-times">
-              <time v-if="row.provider_code !== 'local'" class="mono-time">同步 {{ localTime(row.last_synced_at) }}</time>
-              <time class="mono-time">最近登录 {{ localTime(row.last_login_at) }}</time>
+              <time v-if="row.provider_code !== 'local'" class="mono-time">同步 {{ formatDateTime(row.last_synced_at) }}</time>
+              <time class="mono-time">最近登录 {{ formatDateTime(row.last_login_at) }}</time>
             </div>
           </template>
         </el-table-column>
@@ -663,7 +642,7 @@ onMounted(() => {
         <article v-for="user in users" :key="user.account_id">
           <header>
             <div><strong class="user-name">{{ user.display_name || user.username }}</strong><code class="user-code">{{ user.username }}</code></div>
-            <el-tag size="small" :type="user.status === 1 ? 'success' : 'danger'">{{ user.status === 1 ? "有效" : "停用" }}</el-tag>
+            <el-tag size="small" :type="user.status === 1 ? 'success' : 'info'">{{ user.status === 1 ? "有效" : "停用" }}</el-tag>
           </header>
           <div class="identity-tags">
             <el-tag size="small" :type="user.provider_code === 'ad' ? 'primary' : 'info'" effect="plain">{{ providerLabel(user.provider_code) }}</el-tag>
@@ -671,13 +650,13 @@ onMounted(() => {
             <span class="sync-state" :class="user.sync_status"><i></i>{{ syncLabel(user.sync_status) }}</span>
           </div>
           <p>{{ user.dept || "未分配部门" }}</p>
-          <p>最近登录 {{ localTime(user.last_login_at) }}</p>
+          <p>最近登录 {{ formatDateTime(user.last_login_at) }}</p>
           <div class="source-groups">
             <el-tag v-for="group in user.source_groups" :key="group" size="small" effect="plain">{{ group }}</el-tag>
             <small v-if="!user.source_groups.length">{{ user.provider_code === "local" ? "本地维护，无目录来源组" : "暂无同步记录" }}</small>
           </div>
           <footer>
-            <span><el-tag :type="roleTag[user.role]" size="small">{{ roleLabels[user.role] }}</el-tag>{{ roleOrigin(user) }}</span>
+            <span><el-tag :type="roleTag[user.role]" size="small">{{ ROLE_LABELS[user.role] }}</el-tag>{{ roleOrigin(user) }}</span>
             <span>
               <el-button :data-testid="`mobile-role-${user.account_id}`" link type="primary" @click="openRole(user)">角色</el-button>
               <el-button v-if="user.provider_code === 'local'" :data-testid="`mobile-reset-password-${user.account_id}`" link type="primary" @click="openPasswordReset(user)">重置密码</el-button>
@@ -729,7 +708,7 @@ onMounted(() => {
       </el-form-item>
       <el-form-item label="角色">
         <el-select v-model="createForm.role">
-          <el-option v-for="(label, value) in roleLabels" :key="value" :label="label" :value="value" />
+          <el-option v-for="(label, value) in ROLE_LABELS" :key="value" :label="label" :value="value" />
         </el-select>
         <small class="field-rule" data-testid="create-role-permission">{{ roleDescriptions[createForm.role] }}</small>
       </el-form-item>
@@ -774,7 +753,7 @@ onMounted(() => {
       <el-form label-position="top" class="user-form">
         <el-form-item label="目标角色">
           <el-select v-model="roleDraft" :disabled="selected.provider_code === 'ad' && !overrideDraft">
-            <el-option v-for="(label, value) in roleLabels" :key="value" :label="label" :value="value" />
+            <el-option v-for="(label, value) in ROLE_LABELS" :key="value" :label="label" :value="value" />
           </el-select>
           <small class="field-rule" data-testid="role-permission">{{ roleDescriptions[roleDraft] }}</small>
         </el-form-item>

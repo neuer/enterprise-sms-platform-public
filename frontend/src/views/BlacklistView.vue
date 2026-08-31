@@ -13,6 +13,8 @@ import {
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
+import { PHONE_RE } from "../lib/phone"
+import { formatDateTime } from "../lib/time"
 
 const items = ref<BlacklistItem[]>([])
 const total = ref(0)
@@ -27,7 +29,6 @@ const phonesText = ref("")
 const remark = ref("")
 
 // 与服务端 PHONE_PATTERN 同一规则（硬性规则 8）；服务端仍为权威校验。
-const PHONE_RE = /^1\d{10}$/
 
 const sourceOptions: { label: string; value: BlacklistSource | "all" }[] = [
   { label: "全部", value: "all" },
@@ -48,16 +49,6 @@ function sourceLabel(source: BlacklistSource): string {
 
 function sourceType(source: BlacklistSource): "primary" | "warning" | "info" {
   return sourceMeta[source]?.type ?? "info"
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return "—"
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).formatToParts(new Date(value))
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
 /** 与服务端 BlacklistService.add 同口径拆分：空白/中英文逗号分号分隔，行号即拆分序号。 */
@@ -251,7 +242,7 @@ onMounted(() => void load())
         <template #default="{ row }"><span :class="{ 'blacklist-dash': !row.remark }">{{ row.remark || "—" }}</span></template>
       </el-table-column>
       <el-table-column label="加入时间" width="178">
-        <template #default="{ row }"><time class="mono-time">{{ formatTime(row.created_at) }}</time></template>
+        <template #default="{ row }"><time class="mono-time">{{ formatDateTime(row.created_at) }}</time></template>
       </el-table-column>
       <el-table-column label="操作" width="80" fixed="right">
         <template #default="{ row }">
@@ -269,7 +260,7 @@ onMounted(() => void load())
         </header>
         <p>{{ item.remark || "无备注" }}</p>
         <footer>
-          <time class="mono-time">{{ formatTime(item.created_at) }}</time>
+          <time class="mono-time">{{ formatDateTime(item.created_at) }}</time>
           <el-button :data-testid="`mobile-blacklist-delete-${item.phone_hmac.slice(0, 8)}`" link type="danger" @click="remove(item)">移除</el-button>
         </footer>
       </article>
@@ -289,7 +280,7 @@ onMounted(() => void load())
     </footer>
   </section>
 
-  <el-drawer v-model="drawerOpen" class="blacklist-drawer" size="min(440px, 92vw)">
+  <el-drawer v-model="drawerOpen" class="blacklist-drawer" size="min(440px, 92vw)" :teleported="false">
     <template #header>
       <div class="blacklist-drawer-head">
         <div class="blacklist-drawer-title">添加号码到黑名单</div>

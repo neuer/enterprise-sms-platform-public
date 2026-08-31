@@ -206,6 +206,14 @@ class OutboxEventPageModel(PageModel):
     items: list[OutboxEventModel]
 
 
+class UnmatchedQueryModel(BaseModel):
+    phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
+    start: datetime | None = None
+    end: datetime | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+
+
 class UnmatchedExportModel(BaseModel):
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
     start: datetime | None = None
@@ -431,24 +439,23 @@ async def list_uncertain(
     return _page(await repository.list_uncertain(page, page_size), UncertainModel)
 
 
-@router.get(
+@router.post(
     "/unmatched-reports",
     response_model=UnmatchedPageModel,
     responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
 )
 async def list_unmatched(
+    payload: UnmatchedQueryModel,
     service: Annotated[OpsService, Depends(get_ops_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    phone: Annotated[str | None, Query(pattern=r"^1\d{10}$")] = None,
-    start: datetime | None = None,
-    end: datetime | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
+    # 手机号精确查询走 POST body：GET query 会把明文写进访问日志（硬性规则 2）。
     await _admin(facade, credentials)
     try:
-        value = await service.list_unmatched(phone, start, end, page, page_size)
+        value = await service.list_unmatched(
+            payload.phone, payload.start, payload.end, payload.page, payload.page_size
+        )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     return _page(value, UnmatchedModel)

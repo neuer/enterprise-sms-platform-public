@@ -1,4 +1,5 @@
-import { apiRequest, type Category } from "./webMessages"
+import { apiRequest } from "./client"
+import type { Category } from "./webMessages"
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired"
 

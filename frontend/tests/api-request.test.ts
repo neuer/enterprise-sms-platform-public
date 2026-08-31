@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, vi } from "vitest"
 
-import { apiRequest, authorizedFetch } from "../src/api/webMessages"
+import { apiRequest, authorizedFetch } from "../src/api/client"
 import {
   clearRefreshTabBinding,
   getAccessToken,

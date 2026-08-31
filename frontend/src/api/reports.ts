@@ -1,4 +1,4 @@
-import { apiRequest, authorization, authorizedFetch } from "./webMessages"
+import { apiRequest, authorizedFetch, ApiRequestError, type ApiErrorBody } from "./client"
 
 export type ReportGranularity = "day" | "week" | "month"
 export type ReportGroupBy = "app" | "dept"
@@ -107,10 +107,19 @@ export function issueExportStepUp(id: string, password: string): Promise<{ token
 }
 
 export async function downloadExport(task: ExportTask, stepUpToken?: string): Promise<Blob> {
-  if (!task.download_url) throw new Error("导出文件尚未就绪")
-  const headers: Record<string, string> = authorization()
+  if (!task.download_url) throw new ApiRequestError(0, "EXPORT_NOT_READY", "导出文件尚未就绪")
+  // authorizedFetch 内部统一注入 Bearer；此处只携带 step-up 头，避免双份授权头。
+  const headers: Record<string, string> = {}
   if (stepUpToken) headers["X-Export-Step-Up"] = stepUpToken
   const response = await authorizedFetch(task.download_url, { headers })
-  if (!response.ok) throw new Error(`下载失败（${response.status}）`)
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as ApiErrorBody
+    throw new ApiRequestError(
+      response.status,
+      body.code || `HTTP_${response.status}`,
+      body.message || body.code || `下载失败（${response.status}）`,
+      body.detail,
+    )
+  }
   return response.blob()
 }

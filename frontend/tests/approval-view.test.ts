@@ -151,7 +151,7 @@ describe("审批中心", () => {
     const pill = wrapper.get("[data-testid='approval-counts-pill']")
     expect(pill.text()).toContain("12")
     expect(pill.text()).toContain("3 临期")
-    expect(wrapper.text()).toContain("当前身份 · 审批员")
+    expect(wrapper.text()).toContain("当前身份 · 审批人")
     expect(wrapper.text()).toContain("30s 自动")
     expect(wrapper.find(".approval-filter-bar").exists()).toBe(true)
     expect(wrapper.find(".filter-toolbar").exists()).toBe(false)

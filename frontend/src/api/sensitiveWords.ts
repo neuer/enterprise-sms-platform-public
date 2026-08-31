@@ -1,4 +1,4 @@
-import { apiRequest } from "./webMessages"
+import { apiRequest } from "./client"
 
 export interface SensitiveWordItem {
   id: number

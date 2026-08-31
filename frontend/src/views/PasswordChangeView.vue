@@ -86,8 +86,8 @@ async function submit() {
 </script>
 
 <template>
-  <main class="login-screen password-change-screen">
-    <article class="login-card password-change-card" aria-labelledby="password-change-title">
+  <main class="login-screen">
+    <article class="login-card" aria-labelledby="password-change-title">
       <div class="login-brand">
         <span class="login-seal" aria-hidden="true">鸾</span>
         <strong>青鸾</strong>

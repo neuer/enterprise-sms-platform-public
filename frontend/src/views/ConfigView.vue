@@ -14,15 +14,16 @@ import {
   saveAuthProviderDraft,
   testAuthProvider,
   updateConfigs,
-  type AdminUserRole,
   type AuthProviderAdmin,
   type ConfigItem,
   type ConfigUpdate,
   type ExternalRoleMapping,
   type LdapProviderConfig,
 } from "../api/admin"
-import VendorTestConsole from "../components/VendorTestConsole.vue"
 import EmptyState from "../components/EmptyState.vue"
+import VendorTestConsole from "../components/VendorTestConsole.vue"
+import { ROLE_LABELS } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -68,13 +69,6 @@ const adForm = reactive<LdapProviderConfig>({
   connect_timeout_s: 5,
   receive_timeout_s: 8,
 })
-
-const roleLabels: Record<AdminUserRole, string> = {
-  admin: "系统管理员",
-  approver: "审批人",
-  operator: "操作员",
-  viewer: "只读用户",
-}
 
 const GROUP_ORDER = ["运行调度", "发送策略", "安全控制", "告警通知", "生命周期"]
 
@@ -214,14 +208,6 @@ function resetToDefault(item: ConfigItem): void {
 
 function isModified(item: ConfigItem): boolean {
   return !item.sensitive && values[item.key] !== item.default
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return ""
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
 }
 
 function markProviderDirty(): void {
@@ -505,7 +491,7 @@ onMounted(() => {
             <el-input v-model="mapping.external_group" :data-testid="`mapping-group-${index}`" placeholder="CN=SMS-Operators,OU=Groups,..." />
             <el-input v-model="mapping.dept" :data-testid="`mapping-dept-${index}`" placeholder="授权部门" />
             <el-select v-model="mapping.role" :data-testid="`mapping-role-${index}`">
-              <el-option v-for="(label, role) in roleLabels" :key="role" :label="label" :value="role" />
+              <el-option v-for="(label, role) in ROLE_LABELS" :key="role" :label="label" :value="role" />
             </el-select>
             <el-button type="danger" link @click="removeRoleMapping(index)">移除</el-button>
           </div>
@@ -527,7 +513,7 @@ onMounted(() => {
       <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
     </el-alert>
 
-    <form class="config-filter-bar" @submit.prevent>
+    <div class="config-filter-bar">
       <label class="config-fld"><span>关键词</span>
         <el-input
           v-model="searchQuery"
@@ -552,7 +538,7 @@ onMounted(() => {
         </div>
       </div>
       <p class="config-privacy">接口全量返回，关键词与分组均为前端过滤；改动逐键写入审计日志，敏感值不回显。</p>
-    </form>
+    </div>
 
     <aside class="config-rules" aria-label="调度生效与敏感值规则">
       <div><span>调度生效规则</span><p>标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。</p></div>
@@ -584,7 +570,7 @@ onMounted(() => {
             <small v-else-if="!item.sensitive && FORMAT_HINTS[item.key]" class="config-range-hint">{{ FORMAT_HINTS[item.key] }}</small>
             <div v-if="item.sensitive && item.configured" class="secret-control"><small>已配置，值不回显</small><el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button></div><small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
             <div class="config-item-meta">
-              <small v-if="item.updated_by">最近由 {{ item.updated_by }} 更新<template v-if="formatTime(item.updated_at)"> · {{ formatTime(item.updated_at) }}</template></small>
+              <small v-if="item.updated_by">最近由 {{ item.updated_by }} 更新 · {{ formatDateTime(item.updated_at) }}</small>
               <small v-else></small>
               <el-button v-if="isModified(item)" link type="primary" :data-testid="`config-reset-${item.key}`" @click="resetToDefault(item)">重置默认值</el-button>
             </div>

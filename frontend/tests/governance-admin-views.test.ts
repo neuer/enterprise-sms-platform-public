@@ -16,6 +16,19 @@ function response(body: unknown, status = 200) {
   }
 }
 
+/** ElMessageBox.confirm 的消息为 h() VNode（apps-danger-dialog），递归提取文本用于断言。 */
+function vnodeText(value: unknown): string {
+  if (typeof value === "string") return value
+  if (value == null) return ""
+  if (typeof value === "object" && "children" in value) {
+    const children = (value as { children?: unknown }).children
+    if (typeof children === "string") return children
+    if (Array.isArray(children)) return children.map(vnodeText).join("")
+    return vnodeText(children)
+  }
+  return String(value)
+}
+
 const app = {
   id: 1,
   name: "app-iam",
@@ -160,15 +173,13 @@ describe("管理员治理页面", () => {
     await wrapper.get("[data-testid='revoke-old-key-2']").trigger("click")
     await flushPromises()
     expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("sk-old99cd••••"),
+      expect.objectContaining({ type: "div" }),
       "立即作废旧 Key？",
       expect.objectContaining({ type: "warning", confirmButtonText: "确认作废" }),
     )
-    expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("到期，作废后立即失效"),
-      "立即作废旧 Key？",
-      expect.objectContaining({ type: "warning" }),
-    )
+    const revokeMessage = vnodeText(confirm.mock.calls.at(-1)?.[0])
+    expect(revokeMessage).toContain("sk-old99cd••••")
+    expect(revokeMessage).toContain("到期，作废后立即失效")
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/revoke-old-key"))).toHaveLength(1)
 
     wrapper.unmount()
@@ -302,7 +313,7 @@ describe("管理员治理页面", () => {
     await flushPromises()
 
     expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("新 Key 仅展示一次"),
+      expect.objectContaining({ type: "div" }),
       "确认轮换 API Key",
       expect.objectContaining({
         type: "warning",
@@ -310,11 +321,9 @@ describe("管理员治理页面", () => {
         cancelButtonText: "取消",
       }),
     )
-    expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("72 小时宽限期"),
-      "确认轮换 API Key",
-      expect.objectContaining({ type: "warning" }),
-    )
+    const rotateMessage = vnodeText(confirm.mock.calls[0][0])
+    expect(rotateMessage).toContain("新 Key 仅展示一次")
+    expect(rotateMessage).toContain("72 小时宽限期")
     expect(rotateButton.attributes("disabled")).toBeDefined()
     expect(callbackButton.attributes("disabled")).toBeDefined()
     expect(newAppButton.attributes("disabled")).toBeDefined()
@@ -400,10 +409,11 @@ describe("管理员治理页面", () => {
     await flushPromises()
 
     expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("回调密钥"),
+      expect.objectContaining({ type: "div" }),
       "确认轮换回调密钥",
       expect.objectContaining({ type: "warning" }),
     )
+    expect(vnodeText(confirm.mock.calls[0][0])).toContain("回调密钥")
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-callback-secret"))).toHaveLength(0)
     expect(wrapper.get("[data-testid='rotate-callback-1']").attributes("disabled")).toBeUndefined()
 

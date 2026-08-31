@@ -1,4 +1,4 @@
-import { apiRequest } from "./webMessages"
+import { apiRequest } from "./client"
 
 export type SignState = "pending" | "approved" | "rejected"
 export interface SmsSign {

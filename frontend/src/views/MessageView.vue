@@ -8,6 +8,7 @@ import { ElMessage } from "element-plus"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
+import PhoneReveal from "../components/PhoneReveal.vue"
 import StatusTag from "../components/StatusTag.vue"
 import {
   decryptMessagePhone,
@@ -18,6 +19,9 @@ import {
   type TimelineEvent,
   type TimelineResult,
 } from "../api/queries"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { maskPhone, PHONE_RE } from "../lib/phone"
+import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -36,16 +40,16 @@ const searchedPhone = ref("")
 const searchedMask = ref("")
 const decryptId = ref<number>()
 const loading = ref(false)
-const revealing = ref(false)
 const errorMessage = ref("")
-const revealedPhone = ref("")
+/** 徽标条是否已完成一次授权查看（由 PhoneReveal 的 revealed 事件驱动），仅控制辅助文案。 */
+const badgeRevealed = ref(false)
 const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
 const displayMask = computed(() => items.value[0]?.phone || searchedMask.value)
 
 /** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示（与上行回复同规则同文案）。 */
 const phoneError = computed<string | undefined>(() => {
   const value = phone.value.trim()
-  return value === "" || /^1\d{10}$/.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
+  return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
 })
 
 const categoryOptions = [
@@ -54,7 +58,7 @@ const categoryOptions = [
   { value: "market", label: "营销" },
 ]
 const statusOptions = [
-  { value: "pending", label: "待发送" },
+  { value: "pending", label: "待处理" },
   { value: "sent", label: "已提交" },
   { value: "delivered", label: "已送达" },
   { value: "failed", label: "失败" },
@@ -67,7 +71,7 @@ const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "�
 const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
   for (const event of timeline.value?.events || []) {
-    const day = formatTime(event.ts).slice(0, 10)
+    const day = formatDateTime(event.ts).slice(0, 10)
     groups.set(day, [...(groups.get(day) || []), event])
   }
   return [...groups.entries()].map(([day, events]) => ({
@@ -77,13 +81,12 @@ const groupedEvents = computed(() => {
   }))
 })
 
-const categoryLabel: Record<string, string> = { verify: "验证码", notice: "通知", market: "营销" }
 const statusLabel: Record<string, string> = {
   delivered: "已送达",
   failed: "失败",
   unknown: "未知",
   sent: "已提交",
-  pending: "待发送",
+  pending: "待处理",
   other: "其他",
 }
 const blacklistSourceLabel: Record<string, string> = {
@@ -96,29 +99,12 @@ function isCategory(value: string): value is "verify" | "notice" | "market" {
   return value === "verify" || value === "notice" || value === "market"
 }
 
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
-}
-
 function reportTip(item: MessageItem): string {
-  return item.report_time ? `厂商回报 ${formatTime(item.report_time)}` : "厂商回报描述"
+  return item.report_time ? `厂商回执 ${formatDateTime(item.report_time)}` : "厂商回执描述"
 }
 
 function showReport(item: MessageItem): boolean {
   return Boolean(item.report_desc) && (item.status === "failed" || item.status === "unknown")
-}
-
-function maskFromInput(value: string): string {
-  return `${value.slice(0, 3)}****${value.slice(-4)}`
 }
 
 let runToken = 0
@@ -192,8 +178,8 @@ function search(): void {
   page.value = 1
   searched.value = true
   searchedPhone.value = value
-  searchedMask.value = maskFromInput(value)
-  revealedPhone.value = ""
+  searchedMask.value = maskPhone(value)
+  badgeRevealed.value = false
   decryptId.value = undefined
   void run()
 }
@@ -207,7 +193,7 @@ function reset(): void {
   searched.value = false
   searchedPhone.value = ""
   searchedMask.value = ""
-  revealedPhone.value = ""
+  badgeRevealed.value = false
   decryptId.value = undefined
   items.value = []
   timeline.value = null
@@ -232,22 +218,14 @@ function switchMode(next: "list" | "timeline"): void {
   mode.value = next
   page.value = 1
   if (searched.value) void run()
-  else if (/^1\d{10}$/.test(phone.value)) search()
+  else if (PHONE_RE.test(phone.value)) search()
 }
 
-async function revealSearched(): Promise<void> {
-  if (revealing.value || decryptId.value === undefined) return
-  revealing.value = true
-  errorMessage.value = ""
-  try {
-    const result = await decryptMessagePhone(decryptId.value)
-    revealedPhone.value = result.phone
-    ElMessage.success("已解密 · 本次授权查看已记入审计")
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "授权查看失败"
-  } finally {
-    revealing.value = false
-  }
+/** 徽标条授权查看：解密当前首条消息号码；明文只交给 PhoneReveal 内存展示，视图自身不保存明文。 */
+async function revealSearched(): Promise<string> {
+  if (decryptId.value === undefined) throw new Error("当前没有可授权查看的记录")
+  const result = await decryptMessagePhone(decryptId.value)
+  return result.phone
 }
 </script>
 
@@ -305,8 +283,15 @@ async function revealSearched(): Promise<void> {
 
   <div v-if="badge" class="message-badge">
     <div class="message-badge-num">
-      <small>当前号码{{ revealedPhone ? " · 已解密" : "" }}</small>
-      <strong v-if="revealedPhone" class="revealed-phone">{{ revealedPhone }}</strong>
+      <small>当前号码{{ badgeRevealed ? " · 已解密" : "" }}</small>
+      <PhoneReveal
+        v-if="canDecrypt && decryptId !== undefined"
+        :key="decryptId"
+        :masked="displayMask"
+        :reveal="revealSearched"
+        testid="message-phone-decrypt"
+        @revealed="badgeRevealed = true"
+      />
       <PhoneMask v-else :value="displayMask" />
     </div>
     <span :class="['message-badge-tag', badge.blacklisted ? 'is-listed' : 'is-clear']">
@@ -320,17 +305,9 @@ async function revealSearched(): Promise<void> {
       <span>近30日接收</span>
       <strong>{{ badge.recv_30d }} 条</strong>
     </div>
-    <div v-if="canDecrypt && (decryptId !== undefined || revealedPhone)" class="message-badge-reveal">
-      <small v-if="revealedPhone">解密明文仅存页面内存，刷新即失效</small>
-      <el-button
-        v-if="!revealedPhone"
-        link
-        type="primary"
-        :loading="revealing"
-        data-testid="message-phone-decrypt"
-        @click="revealSearched"
-      >授权查看</el-button>
-      <el-button v-else disabled>已授权查看</el-button>
+    <div v-if="badgeRevealed" class="message-badge-reveal">
+      <small>解密明文仅存页面内存，刷新即失效</small>
+      <el-button disabled>已授权查看</el-button>
     </div>
   </div>
 
@@ -338,14 +315,14 @@ async function revealSearched(): Promise<void> {
     <el-table v-loading="loading" :data="items" row-key="id" class="query-table">
       <el-table-column label="时间 / 批次" min-width="205">
         <template #default="{ row }">
-          <time class="message-time">{{ formatTime(row.created_at) }}</time>
+          <time class="message-time">{{ formatDateTime(row.created_at) }}</time>
           <code class="batch-code cell-sub">{{ row.batch_no }}</code>
         </template>
       </el-table-column>
       <el-table-column label="类别" width="90">
         <template #default="{ row }">
           <CategoryTag v-if="isCategory(row.category)" :category="row.category" />
-          <span v-else>{{ categoryLabel[row.category] || row.category }}</span>
+          <span v-else>{{ CATEGORY_LABELS[row.category] || row.category }}</span>
         </template>
       </el-table-column>
       <el-table-column label="内容摘要" min-width="280">
@@ -373,13 +350,13 @@ async function revealSearched(): Promise<void> {
       <article v-for="item in items" :key="item.id">
         <header>
           <CategoryTag v-if="isCategory(item.category)" :category="item.category" />
-          <span v-else>{{ categoryLabel[item.category] || item.category }}</span>
+          <span v-else>{{ CATEGORY_LABELS[item.category] || item.category }}</span>
           <StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" />
         </header>
         <p>{{ item.content }}</p>
         <p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p>
         <footer>
-          <time>{{ formatTime(item.created_at) }}</time>
+          <time>{{ formatDateTime(item.created_at) }}</time>
           <code>{{ item.batch_no }}</code>
         </footer>
       </article>
@@ -415,10 +392,10 @@ async function revealSearched(): Promise<void> {
         <div class="timeline-dot"></div>
         <header>
           <CategoryTag v-if="event.direction === 'out' && event.category && isCategory(event.category)" :category="event.category" />
-          <span v-else-if="event.direction === 'out'" class="category-mark">{{ categoryLabel[event.category || ''] || '平台下行' }}</span>
+          <span v-else-if="event.direction === 'out'" class="category-mark">{{ CATEGORY_LABELS[event.category || ''] || '平台下行' }}</span>
           <strong v-else>↩ 用户回复</strong>
           <StatusTag v-if="event.status" :status="event.status" :label="statusLabel[event.status] || event.status" />
-          <time>{{ formatTime(event.ts).slice(11) }}</time>
+          <time>{{ formatDateTime(event.ts).slice(11) }}</time>
         </header>
         <p>{{ event.content }}</p>
         <footer>

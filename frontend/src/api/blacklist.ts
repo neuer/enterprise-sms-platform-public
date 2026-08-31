@@ -1,4 +1,5 @@
-import { apiRequest } from "./webMessages"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { apiRequest } from "./client"
 
 export type BlacklistSource = "manual" | "reply_optout" | "import"
 
@@ -22,7 +23,7 @@ export interface BlacklistFilters {
 }
 
 export const listBlacklist = (filters: BlacklistFilters) => {
-  const query = new URLSearchParams({ page: String(filters.page), size: "20" })
+  const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.source) query.set("source", filters.source)
   if (filters.keyword) query.set("keyword", filters.keyword)
   return apiRequest<BlacklistPage>(`/admin/blacklist?${query}`, { method: "GET" })

@@ -54,8 +54,18 @@ describe("运维查询 API", () => {
       "/api/v1/web/admin/alerts?page=2&page_size=50&alert_type=job_failed&level=crit&start=2026-07-01T00%3A00%3A00%2B08%3A00&end=2026-07-20T23%3A59%3A59%2B08%3A00",
       "/api/v1/web/admin/raw-logs?page=3&page_size=20&source=report&processed=false",
       "/api/v1/web/admin/chunks/uncertain?page=4&page_size=20",
-      "/api/v1/web/admin/unmatched-reports?page=5&page_size=20&phone=13800138000&start=2026-07-01T00%3A00%3A00%2B08%3A00&end=2026-07-20T23%3A59%3A59%2B08%3A00",
+      "/api/v1/web/admin/unmatched-reports",
     ])
+    // 手机号等查询条件只在 POST body 携带，不得出现在 URL（硬性规则 2：明文不得进访问日志）
+    const unmatchedInit = fetch.mock.calls[3][1]
+    expect(unmatchedInit.method).toBe("POST")
+    expect(JSON.parse(String(unmatchedInit.body))).toEqual({
+      phone: "13800138000",
+      start: "2026-07-01T00:00:00+08:00",
+      end: "2026-07-20T23:59:59+08:00",
+      page: 5,
+      page_size: 20,
+    })
   })
 
   it("创建 unmatched 导出时沿用页面的号码与时间筛选", async () => {

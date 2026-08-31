@@ -8,6 +8,8 @@ import { useRouter } from "vue-router"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
+import { PHONE_RE } from "../lib/phone"
+import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -24,7 +26,6 @@ const errorMessage = ref("")
 const optingOutId = ref<number | null>(null)
 const canOptout = computed(() => session.role === "admin" || session.role === "operator")
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
-const PHONE_RE = /^1\d{10}$/
 const OPT_OUT_RE = /^(TD|T|退订)$/i
 
 const dispositionOptions: { label: string; value: ReplyDisposition }[] = [
@@ -57,22 +58,6 @@ const emptyState = computed(() =>
         description: "厂商回复轮询约每 5 分钟运行一次；也可按时间或手机号缩小查询范围。",
       },
 )
-
-function formatTime(value: string): string {
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(value))
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
-}
 
 let loadToken = 0
 
@@ -134,16 +119,14 @@ async function optout(item: ReplyItem): Promise<void> {
       "退订加黑确认",
       { confirmButtonText: "加入黑名单", cancelButtonText: "取消", type: "warning" },
     )
-  } catch {
-    return
-  }
-  optingOutId.value = item.id
-  try {
+    optingOutId.value = item.id
     await blacklistReply(item.id)
     ElMessage.success("已加入退订黑名单 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "退订加黑失败")
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(error instanceof Error ? error.message : "退订加黑失败")
+    }
   } finally {
     optingOutId.value = null
   }
@@ -161,7 +144,7 @@ onMounted(load)
     </div>
   </section>
 
-  <form class="reply-filter reply-filter-bar" @submit.prevent="search">
+  <form class="reply-filter-bar" @submit.prevent="search">
     <label class="reply-fld">
       <span>手机号精确查询</span>
       <el-input
@@ -213,7 +196,7 @@ onMounted(load)
   <section class="reply-results">
     <el-table v-loading="loading" :data="items" row-key="id" class="reply-table">
       <el-table-column label="回复时间" width="178">
-        <template #default="{ row }"><time class="mono-time">{{ formatTime(row.reply_time) }}</time></template>
+        <template #default="{ row }"><time class="mono-time">{{ formatDateTime(row.reply_time) }}</time></template>
       </el-table-column>
       <el-table-column label="回复号码" width="145">
         <template #default="{ row }"><PhoneMask :value="row.phone" /></template>
@@ -264,7 +247,7 @@ onMounted(load)
       <article v-for="item in items" :key="item.id" class="reply-mobile-item">
         <header>
           <PhoneMask :value="item.phone" />
-          <time class="mono-time">{{ formatTime(item.reply_time) }}</time>
+          <time class="mono-time">{{ formatDateTime(item.reply_time) }}</time>
         </header>
         <p class="reply-content" :class="{ 'is-optout': isOptOutContent(item.content) }">{{ item.content }}</p>
         <footer>
@@ -290,7 +273,7 @@ onMounted(load)
           >退订加黑</el-button>
         </footer>
       </article>
-      <EmptyState v-if="!items.length" :title="emptyState.title" :description="emptyState.description" />
+      <EmptyState v-if="!loading && !items.length" :title="emptyState.title" :description="emptyState.description" />
     </div>
 
     <footer class="reply-pagination">

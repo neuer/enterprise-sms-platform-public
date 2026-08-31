@@ -32,6 +32,7 @@ READ_ONLY_POST_PATHS = frozenset(
     {
         "/api/v1/web/billing/preview",
         "/api/v1/web/admin/vendor-test/messages/preview",
+        "/api/v1/web/admin/unmatched-reports",
         "/api/v1/web/messages",
         "/api/v1/web/messages/timeline",
         "/api/v1/web/replies",

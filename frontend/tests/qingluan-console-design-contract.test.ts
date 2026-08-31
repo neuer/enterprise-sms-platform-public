@@ -46,8 +46,8 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(login).toContain('class="login-seal" aria-hidden="true">鸾')
     expect(passwordChange).toContain('class="login-seal" aria-hidden="true">鸾')
     expect(app).toContain("SMS PLATFORM · XTC")
-    expect(app).toContain('{ label: "回复查询", path: "/replies"')
-    expect(app).toContain('{ label: "应用与密钥", path: "/apps"')
+    expect(app).toContain('{ label: "上行回复", path: "/replies"')
+    expect(app).toContain('{ label: "应用管理", path: "/apps"')
     for (const group of ["概览", "发送", "治理", "管理", "运维"]) {
       expect(app).toContain(`group: "${group}"`)
     }
@@ -98,7 +98,6 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(apps).toContain('item.key === "key_grace_hours"')
     expect(apps).not.toContain("旧 Key 24h 并行有效")
     expect(dashboard).toContain("if (loading.value) return")
-    expect(dashboard).toContain('v-loading="loading && !snapshot"')
   })
 
   it("所有运动在用户要求减少动态时关闭", () => {

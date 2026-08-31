@@ -1,15 +1,11 @@
 <script setup lang="ts">
-defineProps<{ category: "verify" | "notice" | "market" }>()
+import { CATEGORY_LABELS } from "../lib/labels"
 
-const labels = {
-  verify: "验证码",
-  notice: "通知",
-  market: "营销",
-} as const
+defineProps<{ category: "verify" | "notice" | "market" }>()
 </script>
 
 <template>
   <el-tag effect="plain" :class="['category-tag', `category-tag--${category}`]">
-    {{ labels[category] }}
+    {{ CATEGORY_LABELS[category] }}
   </el-tag>
 </template>

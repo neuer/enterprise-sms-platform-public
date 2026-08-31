@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router"
 import { afterEach, beforeEach, vi } from "vitest"
 
 import App from "../src/App.vue"
-import { apiRequest } from "../src/api/webMessages"
+import { apiRequest } from "../src/api/client"
 import {
   getSessionGeneration,
   invalidateSessionGeneration,

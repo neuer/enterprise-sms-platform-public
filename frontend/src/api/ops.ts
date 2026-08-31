@@ -1,5 +1,6 @@
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import type { ExportTask } from "./reports"
-import { apiRequest } from "./webMessages"
+import { apiRequest } from "./client"
 
 export interface OpsPage<T> { items: T[]; total: number; page: number; page_size: number }
 export interface AlertItem { id: number; alert_type: string; level: "info" | "warn" | "crit"; title: string; detail: Record<string, unknown> | null; channels: string; created_at: string }
@@ -47,7 +48,7 @@ export type UnmatchedExportFilters = Omit<UnmatchedQuery, "page" | "pageSize">
 function pageParams(query: PageQuery): URLSearchParams {
   return new URLSearchParams({
     page: String(query.page ?? 1),
-    page_size: String(query.pageSize ?? 20),
+    page_size: String(query.pageSize ?? DEFAULT_PAGE_SIZE),
   })
 }
 
@@ -74,11 +75,18 @@ export function listUncertain(query: PageQuery = {}): Promise<OpsPage<UncertainI
 }
 
 export function listUnmatched(query: UnmatchedQuery = {}): Promise<OpsPage<UnmatchedItem>> {
-  const params = pageParams(query)
-  if (query.phone?.trim()) params.set("phone", query.phone.trim())
-  if (query.start) params.set("start", query.start)
-  if (query.end) params.set("end", query.end)
-  return apiRequest<OpsPage<UnmatchedItem>>(`/admin/unmatched-reports?${params}`, { method: "GET" })
+  // 手机号精确查询条件只在请求体携带：GET query 会把明文写进访问日志（硬性规则 2）。
+  return apiRequest<OpsPage<UnmatchedItem>>("/admin/unmatched-reports", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      phone: query.phone?.trim() || null,
+      start: query.start || null,
+      end: query.end || null,
+      page: query.page ?? 1,
+      page_size: query.pageSize ?? DEFAULT_PAGE_SIZE,
+    }),
+  })
 }
 export const listJobs = () => apiRequest<JobItem[]>("/admin/jobs", { method: "GET" })
 export const triggerJob = (name: string) => apiRequest<void>(`/admin/jobs/${encodeURIComponent(name)}/trigger`, { method: "POST" })

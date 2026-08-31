@@ -157,16 +157,20 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     assert "revalidateOnResume" in session
 
     web_messages = read("frontend/src/api/webMessages.ts")
-    assert "withRefreshLock" in web_messages
+    assert "apiRequest" in web_messages
+
+    # 请求基建（刷新锁/会话代际/会话取消）单点在 api/client.ts（自 webMessages 迁出）。
+    client = read("frontend/src/api/client.ts")
+    assert "withRefreshLock" in client
     assert has_browser_session_generation_surface(
-        web_messages,
+        client,
         read_optional("frontend/src/api/sessionGeneration.ts"),
     ), (
         "browser session must expose sessionEpoch or the sessionGeneration API "
         "(getSessionGeneration / isCurrentSessionGeneration / "
         "invalidateSessionGeneration / withSessionGeneration)"
     )
-    assert "BroadcastChannel" not in web_messages
+    assert "BroadcastChannel" not in client
 
     shell = read("frontend/src/App.vue")
     assert "pageshow" in shell

@@ -8,6 +8,8 @@ import { ElMessage } from "element-plus"
 import { listAuditActions, listAudits, type AuditItem } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 type DiffState = "added" | "removed" | "changed" | "same"
 
@@ -21,7 +23,7 @@ interface DiffRow {
 const DIFF_LABEL: Record<DiffState, string> = { added: "新增", removed: "删除", changed: "变更", same: "不变" }
 const DIFF_RANK: Record<DiffState, number> = { changed: 0, added: 1, removed: 2, same: 3 }
 
-const filters = reactive({ actor: "", actorAccountId: "", action: "", objectType: "", objectId: "", correlationId: "", start: "", end: "", page: 1, pageSize: 20 })
+const filters = reactive({ actor: "", actorAccountId: "", action: "", objectType: "", objectId: "", correlationId: "", start: "", end: "", page: 1, pageSize: DEFAULT_PAGE_SIZE })
 const items = ref<AuditItem[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -68,10 +70,6 @@ const moreActive = computed(() => moreActiveCount.value > 0)
 const selectedDiff = computed<DiffRow[]>(() =>
   selected.value ? diffRows(selected.value.before_val, selected.value.after_val) : [],
 )
-
-function time(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value)).replaceAll("/", "-")
-}
 
 function payloadValue(value: unknown): string {
   if (value === null || value === undefined) return "—"
@@ -128,6 +126,7 @@ async function loadActions(): Promise<void> {
     actionOptions.value = await listAuditActions()
   } catch {
     actionOptions.value = []
+    ElMessage.warning("动作选项加载失败，筛选可稍后重试")
   }
 }
 
@@ -245,10 +244,10 @@ onMounted(() => {
 
   <el-alert v-if="errorMessage" class="audit-alert" :title="errorMessage" type="error" :closable="false"><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert>
 
-  <section class="audit-results" v-loading="loading">
-    <template v-if="items.length">
-      <el-table :data="items" class="audit-table"><el-table-column label="稳定主体" min-width="150"><template #default="{ row }">{{ row.actor_account_id ? `账号 #${row.actor_account_id}` : row.actor_app_id ? `应用 #${row.actor_app_id}` : '历史未知' }}</template></el-table-column><el-table-column prop="actor" label="操作人快照" min-width="120" /><el-table-column prop="action" label="动作" min-width="170"><template #default="{ row }"><code>{{ row.action }}</code></template></el-table-column><el-table-column label="对象" min-width="190"><template #default="{ row }">{{ row.object_type || '—' }} · {{ row.object_id || '—' }}</template></el-table-column><el-table-column prop="ip" label="IP" width="135" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ time(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="detail(row)">详情</el-button></template></el-table-column></el-table>
-      <div class="audit-mobile-list"><article v-for="item in items" :key="item.id"><header><code>{{ item.action }}</code><time>{{ time(item.created_at) }}</time></header><strong>{{ item.actor }} · {{ item.role || '—' }}</strong><p>{{ item.object_type || '—' }} / {{ item.object_id || '—' }}</p><el-button link type="primary" @click="detail(item)">详情</el-button></article></div>
+  <section class="audit-results">
+    <template v-if="items.length || loading">
+      <el-table v-loading="loading" :data="items" class="audit-table"><el-table-column label="稳定主体" min-width="150"><template #default="{ row }">{{ row.actor_account_id ? `账号 #${row.actor_account_id}` : row.actor_app_id ? `应用 #${row.actor_app_id}` : '历史未知' }}</template></el-table-column><el-table-column prop="actor" label="操作人快照" min-width="120" /><el-table-column prop="action" label="动作" min-width="170"><template #default="{ row }"><code>{{ row.action }}</code></template></el-table-column><el-table-column label="对象" min-width="190"><template #default="{ row }">{{ row.object_type || '—' }} · {{ row.object_id || '—' }}</template></el-table-column><el-table-column prop="ip" label="IP" width="135" /><el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="detail(row)">详情</el-button></template></el-table-column></el-table>
+      <div class="audit-mobile-list"><article v-for="item in items" :key="item.id"><header><code>{{ item.action }}</code><time>{{ formatDateTime(item.created_at) }}</time></header><strong>{{ item.actor }} · {{ item.role || '—' }}</strong><p>{{ item.object_type || '—' }} / {{ item.object_id || '—' }}</p><el-button link type="primary" @click="detail(item)">详情</el-button></article></div>
     </template>
     <div v-else-if="filtering" class="audit-empty-action">
       <EmptyState title="没有符合条件的审计事件" description="调整筛选条件或扩大时间范围后重新查询。" />
@@ -263,7 +262,7 @@ onMounted(() => {
     </footer>
   </section>
 
-  <el-drawer v-model="drawer" title="审计事件详情" size="min(560px, 92vw)" class="audit-drawer">
-    <template v-if="selected"><el-descriptions :column="1" border><el-descriptions-item label="事件">#{{ selected.id }} · {{ selected.action }}</el-descriptions-item><el-descriptions-item label="关联 ID"><div class="audit-correlation"><code>{{ selected.correlation_id }}</code><el-button link type="primary" data-testid="audit-copy-correlation" @click="copyCorrelation">复制</el-button><el-button link type="primary" data-testid="audit-trace-correlation" @click="traceCorrelation">同链路事件</el-button></div></el-descriptions-item><el-descriptions-item label="稳定主体">{{ selected.actor_subject_kind }} / account={{ selected.actor_account_id || '—' }} / identity={{ selected.actor_identity_id || '—' }} / app={{ selected.actor_app_id || '—' }}</el-descriptions-item><el-descriptions-item label="操作人快照">{{ selected.actor }} / {{ selected.role || '—' }}</el-descriptions-item><el-descriptions-item label="来源 IP">{{ selected.ip || '—' }}</el-descriptions-item><el-descriptions-item label="对象">{{ selected.object_type || '—' }} / {{ selected.object_id || '—' }}</el-descriptions-item><el-descriptions-item label="时间">{{ time(selected.created_at) }}</el-descriptions-item></el-descriptions><section class="audit-diff" aria-label="载荷前后差异"><header class="audit-diff-head"><span>字段</span><span>BEFORE</span><span>AFTER</span></header><template v-if="selectedDiff.length"><div v-for="row in selectedDiff" :key="row.key" class="audit-diff-row" :class="`is-${row.state}`"><div class="audit-diff-key"><code>{{ row.key }}</code><em v-if="row.state !== 'same'">{{ DIFF_LABEL[row.state] }}</em></div><span class="audit-diff-value audit-diff-value--before">{{ row.before }}</span><span class="audit-diff-value audit-diff-value--after">{{ row.after }}</span></div></template><p v-else class="audit-diff-empty">该事件无 before/after 载荷记录</p></section><el-alert title="载荷受数据库 PII 约束保护" type="success" :closable="false" description="手机号、逐号密文与 HMAC 列表无法写入 audit_log。" /></template>
+  <el-drawer v-model="drawer" title="审计事件详情" size="min(560px, 92vw)" :teleported="false" class="audit-drawer">
+    <template v-if="selected"><el-descriptions :column="1" border><el-descriptions-item label="事件">#{{ selected.id }} · {{ selected.action }}</el-descriptions-item><el-descriptions-item label="关联 ID"><div class="audit-correlation"><code>{{ selected.correlation_id }}</code><el-button link type="primary" data-testid="audit-copy-correlation" @click="copyCorrelation">复制</el-button><el-button link type="primary" data-testid="audit-trace-correlation" @click="traceCorrelation">同链路事件</el-button></div></el-descriptions-item><el-descriptions-item label="稳定主体">{{ selected.actor_subject_kind }} / account={{ selected.actor_account_id || '—' }} / identity={{ selected.actor_identity_id || '—' }} / app={{ selected.actor_app_id || '—' }}</el-descriptions-item><el-descriptions-item label="操作人快照">{{ selected.actor }} / {{ selected.role || '—' }}</el-descriptions-item><el-descriptions-item label="来源 IP">{{ selected.ip || '—' }}</el-descriptions-item><el-descriptions-item label="对象">{{ selected.object_type || '—' }} / {{ selected.object_id || '—' }}</el-descriptions-item><el-descriptions-item label="时间">{{ formatDateTime(selected.created_at) }}</el-descriptions-item></el-descriptions><section class="audit-diff" aria-label="载荷前后差异"><header class="audit-diff-head"><span>字段</span><span>BEFORE</span><span>AFTER</span></header><template v-if="selectedDiff.length"><div v-for="row in selectedDiff" :key="row.key" class="audit-diff-row" :class="`is-${row.state}`"><div class="audit-diff-key"><code>{{ row.key }}</code><em v-if="row.state !== 'same'">{{ DIFF_LABEL[row.state] }}</em></div><span class="audit-diff-value audit-diff-value--before">{{ row.before }}</span><span class="audit-diff-value audit-diff-value--after">{{ row.after }}</span></div></template><p v-else class="audit-diff-empty">该事件无 before/after 载荷记录</p></section><el-alert title="载荷受数据库 PII 约束保护" type="success" :closable="false" description="手机号、逐号密文与 HMAC 列表无法写入 audit_log。" /></template>
   </el-drawer>
 </template>
