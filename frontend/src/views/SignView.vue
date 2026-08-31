@@ -17,14 +17,10 @@ import {
 } from "../api/signs"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 
 const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可修改或删除；审核结果由轮询同步，也可在列表手动同步。"
-
-interface StateSub {
-  text: string
-  tone?: "verm"
-}
 
 interface TrailStep {
   title: string
@@ -96,21 +92,12 @@ const emptyDescription = computed(() =>
 )
 
 function stateLabel(state: SignState): string {
-  return { pending: "待审核", approved: "已通过", rejected: "已拒绝" }[state]
+  return VENDOR_REVIEW_LABELS[state]
 }
 
 /** 状态副行：待审核按 vendor_sign_id 区分提交中/审核中；已拒绝直接显示驳回原因。 */
-function stateSub(item: SmsSign): StateSub {
-  switch (item.vendor_state) {
-    case "approved":
-      return { text: item.vendor_sign_id ? `厂商 #${item.vendor_sign_id}` : "厂商编号待同步" }
-    case "pending":
-      return {
-        text: item.vendor_sign_id ? `厂商审核中 · #${item.vendor_sign_id}` : "提交厂商中…",
-      }
-    case "rejected":
-      return { text: item.vendor_reject_reason || "厂商未附驳回原因", tone: "verm" }
-  }
+function stateSub(item: SmsSign): VendorReviewSub {
+  return vendorReviewSub(item.vendor_state, item.vendor_sign_id, item.vendor_reject_reason)
 }
 
 /** 详情抽屉标题副行：平台编号 / 已绑定厂商编号，缺项省略。 */
@@ -444,7 +431,7 @@ onMounted(load)
     </footer>
   </section>
 
-  <el-drawer v-model="detailOpen" class="sign-drawer" size="min(560px, 94vw)">
+  <el-drawer v-model="detailOpen" class="sign-drawer" size="min(560px, 94vw)" :teleported="false">
     <template #header>
       <div v-if="detail" class="sign-drawer-head">
         <div class="sign-drawer-title">
@@ -505,10 +492,11 @@ onMounted(load)
     </template>
   </el-drawer>
 
-  <el-dialog
+  <el-drawer
     v-model="adoptOpen"
     title="关联已有厂商签名"
-    width="min(520px, 92vw)"
+    size="min(440px, 92vw)"
+    :teleported="false"
     :close-on-click-modal="false"
   >
     <template v-if="adoptingSign">
@@ -536,9 +524,9 @@ onMounted(load)
       <el-button @click="adoptOpen = false">取消</el-button>
       <el-button data-testid="sign-adopt-submit" type="primary" :loading="adopting" @click="adopt">确认关联并查询状态</el-button>
     </template>
-  </el-dialog>
+  </el-drawer>
 
-  <el-drawer v-model="editorOpen" class="sign-drawer" size="min(440px, 92vw)">
+  <el-drawer v-model="editorOpen" class="sign-drawer" size="min(440px, 92vw)" :teleported="false">
     <template #header>
       <div class="sign-drawer-head">
         <div class="sign-drawer-title">{{ editingSource === null ? "申请签名" : "重新提交签名" }}</div>

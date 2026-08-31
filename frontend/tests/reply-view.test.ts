@@ -50,8 +50,8 @@ describe("回复查询", () => {
     })
     await flushPromises()
 
-    expect(wrapper.get("form.reply-filter").classes()).toContain("reply-filter-bar")
-    expect(wrapper.get("form.reply-filter").classes()).not.toContain("filter-grid")
+    expect(wrapper.get("form.reply-filter-bar").classes()).toContain("reply-filter-bar")
+    expect(wrapper.get("form.reply-filter-bar").classes()).not.toContain("filter-grid")
     expect(wrapper.findComponent({ name: "ElSegmented" }).exists()).toBe(false)
     expect(wrapper.text()).toContain("上行回复")
     expect(wrapper.text()).toContain("138****8000")
@@ -134,7 +134,7 @@ describe("回复查询", () => {
     await new Promise((resolve) => setTimeout(resolve, 120))
     await flushPromises()
     expect(wrapper.text()).toContain("手机号须为 11 位以 1 开头的数字")
-    await wrapper.get("form.reply-filter").trigger("submit")
+    await wrapper.get("form.reply-filter-bar").trigger("submit")
     await flushPromises()
 
     expect(warning).toHaveBeenCalledWith("手机号须为 11 位以 1 开头的数字")
@@ -155,7 +155,7 @@ describe("回复查询", () => {
     expect(wrapper.text()).toContain("尚未采集到上行回复")
 
     await wrapper.get("[data-testid='reply-filter-phone']").setValue("13800138000")
-    await wrapper.get("form.reply-filter").trigger("submit")
+    await wrapper.get("form.reply-filter-bar").trigger("submit")
     await flushPromises()
     expect(wrapper.text()).toContain("没有符合筛选条件的回复")
     expect(wrapper.text()).not.toContain("尚未采集到上行回复")

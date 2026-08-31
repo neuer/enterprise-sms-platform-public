@@ -17,6 +17,7 @@ import {
 } from "../api/templates"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 
 const PLACEHOLDER_TOKEN = /\{[^{}]*\}/g
@@ -28,11 +29,6 @@ interface ContentPart {
   text: string
   pos?: number
   maxLen?: number
-}
-
-interface StateSub {
-  text: string
-  tone?: "verm"
 }
 
 interface TrailStep {
@@ -99,23 +95,13 @@ const emptyDescription = computed(() =>
 )
 
 function stateLabel(state: TemplateState): string {
-  return { draft: "草稿", pending: "待审核", approved: "已通过", rejected: "已拒绝" }[state]
+  return VENDOR_REVIEW_LABELS[state]
 }
 
 /** 状态副行：待审核按 vendor_template_id 区分提交中/审核中；已拒绝直接显示驳回原因。 */
-function stateSub(item: SmsTemplate): StateSub {
-  switch (item.vendor_state) {
-    case "approved":
-      return { text: item.vendor_template_id ? `厂商 #${item.vendor_template_id}` : "厂商编号待同步" }
-    case "pending":
-      return {
-        text: item.vendor_template_id ? `厂商审核中 · #${item.vendor_template_id}` : "提交厂商中…",
-      }
-    case "rejected":
-      return { text: item.vendor_reject_reason || "厂商未附驳回原因", tone: "verm" }
-    default:
-      return { text: "未送审（历史数据）" }
-  }
+function stateSub(item: SmsTemplate): VendorReviewSub {
+  if (item.vendor_state === "draft") return { text: "未送审（历史数据）" }
+  return vendorReviewSub(item.vendor_state, item.vendor_template_id, item.vendor_reject_reason)
 }
 
 /** 详情抽屉标题副行：平台编号 / 已绑定厂商编号。 */
@@ -490,7 +476,7 @@ onMounted(load)
     </footer>
   </section>
 
-  <el-drawer v-model="detailOpen" class="template-drawer" size="min(560px, 94vw)">
+  <el-drawer v-model="detailOpen" class="template-drawer" size="min(560px, 94vw)" :teleported="false">
     <template #header>
       <div v-if="detail" class="template-drawer-head">
         <div class="template-drawer-title">
@@ -554,7 +540,7 @@ onMounted(load)
     </template>
   </el-drawer>
 
-  <el-drawer v-model="editorOpen" class="template-drawer" size="min(560px, 94vw)">
+  <el-drawer v-model="editorOpen" class="template-drawer" size="min(560px, 94vw)" :teleported="false">
     <template #header>
       <div class="template-drawer-head">
         <div class="template-drawer-title">{{ editingSource === null ? "新建模板" : "重新提交模板" }}</div>

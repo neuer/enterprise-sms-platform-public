@@ -7,6 +7,7 @@ import { computed, h, onMounted, ref } from "vue"
 import { listConfigs, updateConfigs } from "../api/admin"
 import { addSensitiveWords, deleteSensitiveWord, listSensitiveWords, type SensitiveWordItem } from "../api/sensitiveWords"
 import EmptyState from "../components/EmptyState.vue"
+import { formatDateTime } from "../lib/time"
 
 const MAX_WORD_LENGTH = 64
 
@@ -26,16 +27,6 @@ const policyOptions = [
   { label: "命中阻断", value: "block" },
   { label: "仅审计", value: "audit" },
 ]
-
-function formatTime(value: string | null): string {
-  if (!value) return "—"
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).formatToParts(new Date(value))
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
-}
 
 /** 与现提交口径一致拆分：换行/中英文逗号分号分隔，行号即拆分序号。 */
 const entries = computed(() =>
@@ -225,14 +216,14 @@ onMounted(() => void load())
     <p class="sensitive-filter-note">关键词服务端 ILIKE 仅匹配词面（通配符已转义）；词库服务端分页过滤。词库变更经 sensitive_word_revision 修订号广播，各进程下次匹配前自动重建快照。</p>
   </form>
 
-  <el-alert v-if="errorMessage" class="sensitive-alert" :title="errorMessage" type="error" :closable="false" />
+  <el-alert v-if="errorMessage" class="sensitive-alert" :title="errorMessage" type="error" show-icon :closable="false"><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert>
 
   <section v-loading="loading" class="sensitive-results">
     <div v-if="items.length" class="sensitive-wall" data-testid="sensitive-wall">
       <el-tooltip
         v-for="item in items"
         :key="item.id"
-        :content="`添加于 ${formatTime(item.created_at)}`"
+        :content="`添加于 ${formatDateTime(item.created_at)}`"
         :disabled="!item.created_at"
         placement="top"
       >
@@ -252,6 +243,7 @@ onMounted(() => void load())
 
     <footer class="sensitive-pagination">
       <span>共 {{ total }} 条 · 每页 60</span>
+      <!-- 每页 60 为词条墙密度的刻意决策，见 api/sensitiveWords.ts -->
       <el-pagination
         v-model:current-page="page"
         data-testid="sensitive-pagination"
@@ -263,7 +255,7 @@ onMounted(() => void load())
     </footer>
   </section>
 
-  <el-drawer v-model="drawerOpen" class="sensitive-drawer" size="min(440px, 92vw)">
+  <el-drawer v-model="drawerOpen" class="sensitive-drawer" size="min(440px, 92vw)" :teleported="false">
     <template #header>
       <div class="sensitive-drawer-head">
         <div class="sensitive-drawer-title">添加敏感词到词库</div>
