@@ -39,7 +39,7 @@ const configTabs = computed(() => [
 const configs = ref<ConfigItem[]>([])
 const values = reactive<Record<string, string>>({})
 const original = reactive<Record<string, string>>({})
-const touched = new Set<string>()
+const touched = reactive(new Set<string>())
 const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref("")
@@ -215,14 +215,14 @@ function markProviderDirty(): void {
   disabledPreserved.value = false
 }
 
-function changes(): ConfigUpdate[] {
+const changes = computed<ConfigUpdate[]>(() => {
   return configs.value
     .filter((item) => (item.sensitive ? touched.has(item.key) : values[item.key] !== original[item.key]))
     .map((item) => ({ key: item.key, value: values[item.key] }))
-}
+})
 
 async function save(): Promise<void> {
-  const items = changes()
+  const items = changes.value
   if (!items.length) {
     ElMessage.info("没有待保存的变更")
     return
@@ -578,7 +578,7 @@ onMounted(() => {
         </div>
       </section>
     </section>
-    <footer class="config-savebar"><span>共 {{ configs.length }} 项受控参数 · <b :class="{ 'is-pending': changes().length > 0 }">{{ changes().length }} 项待保存</b></span><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer>
+    <footer class="config-savebar"><span>共 {{ configs.length }} 项受控参数 · <b :class="{ 'is-pending': changes.length > 0 }">{{ changes.length }} 项待保存</b></span><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer>
   </section>
 
   <VendorTestConsole
