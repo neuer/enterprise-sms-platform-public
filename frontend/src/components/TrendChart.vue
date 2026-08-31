@@ -7,6 +7,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { DashboardTrendPoint } from "../api/dashboard"
 import { CHART_COLORS, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
+import { shanghaiDateKey } from "../lib/time"
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
@@ -16,17 +17,8 @@ const root = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 let observer: ResizeObserver | null = null
 
-function todayKey(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date())
-}
-
 function axisLabel(statDate: string): string {
-  return statDate === todayKey() ? "今天" : statDate.slice(5)
+  return statDate === shanghaiDateKey() ? "今天" : statDate.slice(5)
 }
 
 function render(): void {

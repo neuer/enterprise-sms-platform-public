@@ -1,4 +1,5 @@
-import { apiRequest } from "./webMessages"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { apiRequest } from "./client"
 
 export type CallbackStatus = "pending" | "retrying" | "done" | "dead"
 export type CallbackEvent = "batch.finished" | "message.report"
@@ -40,7 +41,7 @@ export interface CallbackFilters {
 }
 
 export function listCallbacks(filters: CallbackFilters): Promise<CallbackPage> {
-  const query = new URLSearchParams({ page: String(filters.page) })
+  const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
   if (filters.appId) query.set("app_id", String(filters.appId))
   if (filters.event) query.set("event", filters.event)

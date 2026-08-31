@@ -24,8 +24,9 @@ import {
   type SecurityStatus,
   updateSecurityDailyConfiguration,
 } from "../api/securityDaily"
-import { ApiRequestError } from "../api/webMessages"
 import EmptyState from "../components/EmptyState.vue"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 const statusLabels: Record<SecurityStatus, string> = {
   normal: "正常",
@@ -123,7 +124,7 @@ const filters = reactive({
   generationStatus: "" as GenerationStatus | "",
   deliveryStatus: "" as DeliveryStatus | "",
   page: 1,
-  pageSize: 20,
+  pageSize: DEFAULT_PAGE_SIZE,
 })
 
 const selectedPayload = computed<SecurityDailyPayload | null>(() => selected.value?.payload ?? null)
@@ -207,10 +208,6 @@ function configurationTagType(value: string): "success" | "warning" | "info" {
 }
 
 function apiErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiRequestError) {
-    const retry = error.status >= 500 ? "，请刷新重试" : ""
-    return `${error.message}（错误码 ${error.code}）${retry}`
-  }
   if (error instanceof Error && "code" in error && typeof error.code === "string") {
     const status = "status" in error && typeof error.status === "number" ? error.status : 0
     const retry = status >= 500 ? "，请刷新重试" : ""
@@ -243,15 +240,8 @@ function displayPeriod(start: string, end: string): string {
 }
 
 function displayMoment(value: string | null | undefined): string {
-  if (!value) return "—"
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.valueOf())) return "数据不可用"
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).formatToParts(parsed)
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
+  if (value && Number.isNaN(new Date(value).valueOf())) return "数据不可用"
+  return formatDateTime(value)
 }
 
 let loadToken = 0
@@ -704,7 +694,7 @@ onMounted(() => void refresh())
     </footer>
   </section>
 
-  <el-drawer v-model="drawerOpen" title="安全日报详情" size="min(760px, 92vw)">
+  <el-drawer v-model="drawerOpen" title="安全日报详情" size="min(760px, 92vw)" :teleported="false">
     <el-skeleton v-if="detailLoading" :rows="8" animated />
     <template v-else-if="selected">
       <div class="security-detail-heading">

@@ -16,13 +16,16 @@ import {
   type ApprovalStatus,
   type DecisionOutcome,
 } from "../api/approvals"
-import { ApiRequestError, type Category } from "../api/webMessages"
+import { ApiRequestError } from "../api/client"
+import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { formatDateTime, formatHms } from "../lib/time"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 
 const REASON_MAX_LENGTH = 256
-const PAGE_SIZE = 20
 const POLL_INTERVAL_MS = 30_000
 const TICK_INTERVAL_MS = 1_000
 
@@ -61,11 +64,9 @@ const statusTabs: Array<{ value: ApprovalStatus; label: string }> = [
   { value: "rejected", label: "已驳回" },
   { value: "expired", label: "已过期" },
 ]
-const statusText: Record<ApprovalStatus, string> = {
-  pending: "待审批",
-  approved: "已通过",
-  rejected: "已驳回",
-  expired: "已过期",
+
+function statusLabel(value: ApprovalStatus): string {
+  return statusTabs.find((tab) => tab.value === value)?.label ?? value
 }
 const lastUpdatedAt = ref<string | null>(null)
 
@@ -109,7 +110,7 @@ function urgentOf(value: unknown): number {
 }
 
 function categoryLabel(category: Category): string {
-  return category === "market" ? "营销" : "通知"
+  return CATEGORY_LABELS[category]
 }
 
 function triggerRule(item: ApprovalListItem): string {
@@ -142,35 +143,16 @@ const contentMeta = computed(() => {
 const drawerStatusLine = computed(() => {
   if (!selected.value) return ""
   if (selected.value.status === "pending" && selectedCountdown.value && selectedCountdown.value !== "已临期截止") {
-    return `${statusText.pending} · 剩 ${selectedCountdown.value}`
+    return `${statusLabel("pending")} · 剩 ${selectedCountdown.value}`
   }
   if (selected.value.status === "pending" && selectedCountdown.value === "已临期截止") {
-    return `${statusText.pending} · 已临期截止`
+    return `${statusLabel("pending")} · 已临期截止`
   }
-  return statusText[selected.value.status]
+  return statusLabel(selected.value.status)
 })
 
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  })
-    .format(new Date(value))
-    .replaceAll("/", "-")
-}
-
-function formatClock(value: string): string {
-  return formatTime(value).slice(11)
-}
-
 function formatSchedule(value: string | null): string {
-  return value ? formatTime(value) : "立即发送"
+  return value ? formatDateTime(value) : "立即发送"
 }
 
 function formatSegments(value: number | null): string {
@@ -196,7 +178,7 @@ async function load(options: { silent?: boolean } = {}): Promise<void> {
     const result = await listApprovals({
       status: status.value,
       page: page.value,
-      size: PAGE_SIZE,
+      size: DEFAULT_PAGE_SIZE,
       category: category.value || undefined,
       dept: dept.value,
       q: q.value,
@@ -226,6 +208,17 @@ function onStatusChange(value: string | number): void {
 }
 
 function applyFilters(): void {
+  page.value = 1
+  void load()
+}
+
+/** 清空状态/类别/部门/申请人筛选并回第一页重查；排序随状态位回到 pending 默认的临期优先。 */
+function resetFilters(): void {
+  status.value = "pending"
+  category.value = ""
+  dept.value = ""
+  q.value = ""
+  sort.value = "expires_asc"
   page.value = 1
   void load()
 }
@@ -411,6 +404,7 @@ onBeforeUnmount(() => {
     </div>
     <div class="approval-filter-go">
       <el-button data-testid="approval-refresh" :loading="loading" @click="void load()">刷新</el-button>
+      <el-button data-testid="approval-reset" @click="resetFilters">重置</el-button>
       <span class="approval-poll-hint">30s 自动</span>
     </div>
   </div>
@@ -430,21 +424,20 @@ onBeforeUnmount(() => {
   />
 
   <div class="approval-list-foot">
-    <span>共 {{ total }} 条 · 每页 {{ PAGE_SIZE }}</span>
+    <span>共 {{ total }} 条 · 每页 {{ DEFAULT_PAGE_SIZE }}</span>
     <el-pagination
-      v-if="total > PAGE_SIZE"
       v-model:current-page="page"
-      :page-size="PAGE_SIZE"
+      :page-size="DEFAULT_PAGE_SIZE"
       :total="total"
       layout="prev, pager, next"
       @current-change="onPageChange"
     />
     <span class="approval-poll-status">
-      <i></i>30s 轮询中<template v-if="lastUpdatedAt"> · 上次更新 {{ formatClock(lastUpdatedAt) }}</template>
+      <i></i>30s 轮询中<template v-if="lastUpdatedAt"> · 上次更新 {{ formatHms(lastUpdatedAt) }}</template>
     </span>
   </div>
 
-  <el-drawer v-model="drawerOpen" title="审批详情" size="min(560px, 92vw)" @close="closeDrawer">
+  <el-drawer v-model="drawerOpen" size="min(560px, 92vw)" :teleported="false" @close="closeDrawer">
     <template #header>
       <div class="approval-drawer-head">
         <strong>审批详情</strong>
@@ -483,12 +476,12 @@ onBeforeUnmount(() => {
         </div>
         <div>
           <dt>申请时间</dt>
-          <dd>{{ formatTime(selected.created_at) }}</dd>
+          <dd>{{ formatDateTime(selected.created_at) }}</dd>
         </div>
         <div v-if="selected.expires_at" class="is-wide" data-testid="drawer-approval-expiry">
           <dt>审批有效期</dt>
           <dd>
-            至 {{ formatTime(selected.expires_at) }}
+            至 {{ formatDateTime(selected.expires_at) }}
             <template v-if="selectedCountdown">（剩 {{ selectedCountdown }}）</template>
             。过期自动作废并释放配额
           </dd>
@@ -499,7 +492,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="selected.decided_at">
           <dt>决策时间</dt>
-          <dd>{{ formatTime(selected.decided_at) }}</dd>
+          <dd>{{ formatDateTime(selected.decided_at) }}</dd>
         </div>
       </dl>
       <div class="approval-proof">
@@ -523,7 +516,7 @@ onBeforeUnmount(() => {
           data-testid="drawer-decision-reason"
         />
         <div class="approval-decide-hint">
-          <span>决策写审计 · 409 冲突自动刷新队列</span>
+          <span>决策写审计 · 冲突时自动刷新列表</span>
           <span>驳回时意见必填</span>
         </div>
         <div class="approval-decide-actions">

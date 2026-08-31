@@ -8,6 +8,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { ReportGranularity, ReportRow, ReportTrendMetric } from "../api/reports"
 import { CHART_COLORS, CHART_DIM_PALETTE, CHART_TOOLTIP_STYLE } from "../lib/chartTheme"
 import { REPORT_TREND_OTHER_LABEL, reportTrendDims } from "../lib/reportTrend"
+import { shanghaiDateKey } from "../lib/time"
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
@@ -45,17 +46,8 @@ function periods(): string[] {
   return days ?? present
 }
 
-function todayKey(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date())
-}
-
 function axisLabel(period: string): string {
-  if (period === todayKey()) return "今天"
+  if (period === shanghaiDateKey()) return "今天"
   return period.length >= 10 ? period.slice(5) : period
 }
 

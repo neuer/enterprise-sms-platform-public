@@ -3,6 +3,7 @@ import { ElMessage } from "element-plus"
 import { ref, watch } from "vue"
 
 import { addVendorTestRecipient, type VendorTestRecipient } from "../api/admin"
+import { PHONE_RE } from "../lib/phone"
 
 const props = defineProps<{ modelValue: boolean }>()
 
@@ -27,7 +28,7 @@ function close(): void {
 
 async function submit(): Promise<void> {
   const normalizedLabel = label.value.trim()
-  if (!normalizedLabel || !/^1\d{10}$/.test(phone.value)) {
+  if (!normalizedLabel || !PHONE_RE.test(phone.value)) {
     ElMessage.warning("请填写用途标签和 11 位测试手机号")
     return
   }

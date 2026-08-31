@@ -1,5 +1,7 @@
+import type { UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
-import { apiRequest, authorizedFetch, type BillingPreview } from "./webMessages"
+import { apiRequest, authorizedFetch } from "./client"
+import type { BillingPreview } from "./webMessages"
 
 export interface AuditItem {
   id: number
@@ -60,7 +62,7 @@ export interface ConfigUpdate {
   value: string | null
 }
 
-export type AdminUserRole = "admin" | "approver" | "operator" | "viewer"
+export type AdminUserRole = UserRole
 
 export interface LdapProviderConfig {
   server: string
@@ -277,7 +279,7 @@ interface VendorApiErrorBody {
 export class VendorRequestError extends Error {
   constructor(
     readonly status: number,
-    readonly code: string | undefined,
+    readonly code: string,
     message: string,
   ) {
     super(message)
@@ -291,7 +293,7 @@ async function vendorRequest<T>(path: string, init: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => ({}))) as VendorApiErrorBody
     throw new VendorRequestError(
       response.status,
-      body.code,
+      body.code || `HTTP_${response.status}`,
       body.message || body.code || `请求失败（${response.status}）`,
     )
   }

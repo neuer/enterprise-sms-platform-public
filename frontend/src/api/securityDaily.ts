@@ -1,4 +1,5 @@
-import { apiRequest } from "./webMessages"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { apiRequest } from "./client"
 
 export type SecurityStatus = "normal" | "attention" | "high"
 export type GenerationSource = "auto" | "manual"
@@ -176,7 +177,7 @@ export function generateSecurityDailyReport(): Promise<SecurityDailyReport> {
 export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Promise<SecurityDailyPage> {
   const query = new URLSearchParams({
     page: String(filters.page ?? 1),
-    page_size: String(filters.pageSize ?? 20),
+    page_size: String(filters.pageSize ?? DEFAULT_PAGE_SIZE),
   })
   if (filters.dateFrom) query.set("date_from", filters.dateFrom)
   if (filters.dateTo) query.set("date_to", filters.dateTo)

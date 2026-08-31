@@ -13,6 +13,8 @@ import {
   type CallbackTask,
 } from "../api/callbacks"
 import EmptyState from "../components/EmptyState.vue"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 
@@ -31,21 +33,21 @@ const filters = reactive({
   event: "" as CallbackEvent | "",
   batchNo: "",
   page: 1,
-  pageSize: 20,
+  pageSize: DEFAULT_PAGE_SIZE,
 })
 
 const statusMeta: Record<CallbackStatus, { label: string; type: "warning" | "success" | "danger" | "info" }> = {
   pending: { label: "待投递", type: "info" },
   retrying: { label: "重试中", type: "warning" },
   done: { label: "已完成", type: "success" },
-  dead: { label: "已死亡", type: "danger" },
+  dead: { label: "终止重试", type: "danger" },
 }
 const statusSegOptions = [
   { label: "全部", value: "" as CallbackStatus | "", key: "all" },
   { label: "待投递", value: "pending" as CallbackStatus, key: "pending" },
   { label: "重试中", value: "retrying" as CallbackStatus, key: "retrying" },
   { label: "已完成", value: "done" as CallbackStatus, key: "done" },
-  { label: "已死亡", value: "dead" as CallbackStatus, key: "dead" },
+  { label: "终止重试", value: "dead" as CallbackStatus, key: "dead" },
 ]
 const eventSegOptions = [
   { label: "全部", value: "" as CallbackEvent | "", key: "all" },
@@ -67,16 +69,6 @@ function statusLabel(value: CallbackStatus): string {
 
 function statusType(value: CallbackStatus): "warning" | "success" | "danger" | "info" {
   return statusMeta[value].type
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return "—"
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).formatToParts(new Date(value))
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ""
-  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`
 }
 
 let loadToken = 0
@@ -122,6 +114,7 @@ async function loadApps(): Promise<void> {
     apps.value = await listApps()
   } catch {
     apps.value = []
+    ElMessage.warning("应用列表加载失败，筛选可稍后重试")
   }
 }
 
@@ -312,7 +305,7 @@ onMounted(() => {
         <el-table-column label="尝试 / 下次重试" width="142">
           <template #default="{ row }">
             <span class="retry-count">{{ row.retry_count }}/5</span>
-            <small v-if="row.status === 'retrying' && row.next_retry_at">{{ formatTime(row.next_retry_at) }}</small>
+            <small v-if="row.status === 'retrying' && row.next_retry_at">{{ formatDateTime(row.next_retry_at) }}</small>
           </template>
         </el-table-column>
         <el-table-column label="最近结果" min-width="148">
@@ -322,7 +315,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="178">
-          <template #default="{ row }"><time>{{ formatTime(row.created_at) }}</time></template>
+          <template #default="{ row }"><time>{{ formatDateTime(row.created_at) }}</time></template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
@@ -351,11 +344,11 @@ onMounted(() => {
           <dl>
             <div><dt>引用</dt><dd>{{ item.reference_count }}</dd></div>
             <div><dt>重试</dt><dd>{{ item.retry_count }}/5</dd></div>
-            <div v-if="item.status === 'retrying' && item.next_retry_at"><dt>下次重试</dt><dd>{{ formatTime(item.next_retry_at) }}</dd></div>
+            <div v-if="item.status === 'retrying' && item.next_retry_at"><dt>下次重试</dt><dd>{{ formatDateTime(item.next_retry_at) }}</dd></div>
             <div><dt>结果</dt><dd>{{ item.last_http_code ? `HTTP ${item.last_http_code}` : item.last_error || "—" }}</dd></div>
           </dl>
           <footer>
-            <time>{{ formatTime(item.created_at) }}</time>
+            <time>{{ formatDateTime(item.created_at) }}</time>
             <span>
               <el-button :data-testid="`mobile-callback-detail-${item.id}`" link type="primary" @click="openDetail(item)">详情</el-button>
               <el-button
@@ -407,14 +400,14 @@ onMounted(() => {
           </dd>
         </div>
         <div><dt>尝试</dt><dd class="mono-id">{{ selected.retry_count }}/5</dd></div>
-        <div><dt>下次重试</dt><dd>{{ selected.status === "retrying" ? formatTime(selected.next_retry_at) : "—" }}</dd></div>
+        <div><dt>下次重试</dt><dd>{{ selected.status === "retrying" ? formatDateTime(selected.next_retry_at) : "—" }}</dd></div>
         <div><dt>最近结果</dt><dd>{{ selected.last_http_code ? `HTTP ${selected.last_http_code}` : "—" }}<template v-if="selected.last_error"> · {{ selected.last_error }}</template></dd></div>
-        <div><dt>租约</dt><dd>{{ selected.lease_id ? `执行中 · 到期 ${formatTime(selected.lease_expires_at)}` : "—" }}</dd></div>
+        <div><dt>租约</dt><dd>{{ selected.lease_id ? `执行中 · 到期 ${formatDateTime(selected.lease_expires_at)}` : "—" }}</dd></div>
         <div><dt>接管次数</dt><dd class="mono-id">{{ selected.takeover_count }}</dd></div>
         <div><dt>事件 ID</dt><dd class="mono-id">{{ selected.event_id }}</dd></div>
         <div><dt>关联 RID</dt><dd class="mono-id">{{ selected.correlation_id }}</dd></div>
-        <div><dt>创建时间</dt><dd>{{ formatTime(selected.created_at) }}</dd></div>
-        <div><dt>完成时间</dt><dd>{{ formatTime(selected.finished_at) }}</dd></div>
+        <div><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div>
+        <div><dt>完成时间</dt><dd>{{ formatDateTime(selected.finished_at) }}</dd></div>
       </dl>
     </template>
     <template #footer>

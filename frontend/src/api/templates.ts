@@ -1,4 +1,4 @@
-import { apiRequest } from "./webMessages"
+import { apiRequest } from "./client"
 
 export type TemplateState = "draft" | "pending" | "approved" | "rejected"
 export interface VarSpec { pos: number; max_len: number }

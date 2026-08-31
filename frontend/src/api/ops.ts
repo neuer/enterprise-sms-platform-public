@@ -1,5 +1,5 @@
 import type { ExportTask } from "./reports"
-import { apiRequest } from "./webMessages"
+import { apiRequest } from "./client"
 
 export interface OpsPage<T> { items: T[]; total: number; page: number; page_size: number }
 export interface AlertItem { id: number; alert_type: string; level: "info" | "warn" | "crit"; title: string; detail: Record<string, unknown> | null; channels: string; created_at: string }

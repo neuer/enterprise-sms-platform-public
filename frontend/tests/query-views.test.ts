@@ -68,14 +68,14 @@ describe("批次与号码查询", () => {
     expect(wrapper.find(".filter-toolbar").exists()).toBe(false)
     expect(wrapper.find(".query-total").exists()).toBe(false)
     expect(wrapper.find(".query-table-card").exists()).toBe(false)
-    expect(wrapper.text()).toContain("当前口径 · 管理员")
+    expect(wrapper.text()).toContain("当前口径 · 系统管理员")
     expect(wrapper.text()).toContain("共 1 个批次 · 每页 20")
     expect(wrapper.text()).toContain("批次列表")
     expect(wrapper.text()).toContain("BATCH-1")
     expect(wrapper.find(".category-tag--notice").exists()).toBe(true)
     expect(wrapper.find(".status-tag--completed").exists()).toBe(true)
     const chips = wrapper.get("[data-testid='batch-status-chips']").text()
-    for (const label of ["全部", "进行中", "待审批", "定时中", "余额阻断", "已完成", "其他终态"]) {
+    for (const label of ["全部", "进行中", "待审批", "已排期", "余额阻断", "已完成", "其他终态"]) {
       expect(chips).toContain(label)
     }
     const detail = wrapper.findAll("button").find((item) => item.text().includes("查看详情"))

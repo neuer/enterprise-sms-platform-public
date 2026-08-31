@@ -89,14 +89,14 @@ describe("回调任务", () => {
     expect(wrapper.text()).toContain("dead 总计")
     expect(wrapper.text()).toContain("60s → 5m → 15m → 1h → 1h")
     expect(wrapper.text()).toContain("IAM")
-    expect(wrapper.text()).toContain("已死亡")
+    expect(wrapper.text()).toContain("终止重试")
     expect(wrapper.text()).toContain("TimeoutError")
     // 关联 RID、接管计数等密集事实收进详情抽屉，不再占据表格
     expect(wrapper.text()).not.toContain("30000000-0000-4000-8000-000000000009")
     expect(wrapper.text()).not.toContain("接管 2 次")
     expect(wrapper.text()).not.toContain("callback.internal")
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/admin/apps")
-    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/admin/callbacks?page=1")
+    expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/admin/callbacks?page=1&size=20")
 
     await wrapper.get("[data-testid='callback-detail-9']").trigger("click")
     await flushPromises()

@@ -399,7 +399,7 @@ describe("应用骨架", () => {
     await router.push("/dashboard")
     await router.isReady()
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
-    const { authorizedFetch } = await import("../src/api/webMessages")
+    const { authorizedFetch } = await import("../src/api/client")
     const pending = authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
     const assertion = expect(pending).rejects.toThrow("会话已切换")
 

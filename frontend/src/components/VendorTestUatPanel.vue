@@ -14,6 +14,7 @@ import { listSigns, type SmsSign } from "../api/signs"
 import { listTemplates, type SmsTemplate } from "../api/templates"
 import type { BillingPreview } from "../api/webMessages"
 import PhoneMask from "./PhoneMask.vue"
+import { CATEGORY_LABELS } from "../lib/labels"
 
 const props = defineProps<{
   disabled: boolean
@@ -261,7 +262,7 @@ onMounted(() => void loadApprovedOptions())
       <el-form-item label="消息类别" required>
         <el-segmented
           v-model="category"
-          :options="categories.map((value) => ({ label: { verify: '验证码', notice: '通知', market: '营销' }[value], value }))"
+          :options="categories.map((value) => ({ label: CATEGORY_LABELS[value], value }))"
           :disabled="disabled"
         />
       </el-form-item>

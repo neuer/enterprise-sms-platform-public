@@ -6,6 +6,7 @@ import { computed, onMounted, ref, watch } from "vue"
 import { useRoute } from "vue-router"
 
 import PhoneMask from "../components/PhoneMask.vue"
+import PhoneReveal from "../components/PhoneReveal.vue"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
@@ -21,6 +22,8 @@ import {
   type BatchItem,
   type BatchMessage,
 } from "../api/queries"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { formatDateTime, formatDateTimeMinute } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -52,7 +55,6 @@ const detailTotal = ref(0)
 const detailPage = ref(1)
 const detailStatus = ref("")
 const detailsLoading = ref(false)
-const revealed = ref<Record<number, string>>({})
 const rescheduleOpen = ref(false)
 const scheduledAt = ref("")
 const canWrite = computed(() => session.role === "operator" || session.role === "admin")
@@ -64,16 +66,15 @@ const statusGroups = [
   { key: "all", label: "全部", statuses: [] as string[] },
   { key: "active", label: "进行中", statuses: ["queued", "sending"] },
   { key: "pending_approval", label: "待审批", statuses: ["pending_approval"] },
-  { key: "scheduled", label: "定时中", statuses: ["scheduled"] },
+  { key: "scheduled", label: "已排期", statuses: ["scheduled"] },
   { key: "balance_blocked", label: "余额阻断", statuses: ["balance_blocked"] },
   { key: "completed", label: "已完成", statuses: ["completed"] },
   { key: "closed", label: "其他终态", statuses: ["cancelled", "rejected", "expired"] },
 ]
 
-const categoryLabel: Record<string, string> = { verify: "验证码", notice: "通知", market: "营销" }
 const channelLabel: Record<string, string> = { api: "API", web: "Web" }
 const statusLabel: Record<string, string> = {
-  pending_approval: "待审批", rejected: "已驳回", scheduled: "定时中", queued: "排队中",
+  pending_approval: "待审批", rejected: "已驳回", scheduled: "已排期", queued: "排队中",
   sending: "发送中", completed: "已完成", cancelled: "已取消", balance_blocked: "余额阻断",
   expired: "已过期", delivered: "已送达", failed: "失败", unknown: "未知", pending: "待处理",
   sent: "已提交", other: "其他",
@@ -102,21 +103,6 @@ const isTestOptions = [
   { label: "正式", value: "false" },
   { label: "测试", value: "true" },
 ]
-
-function formatTime(value: string | null): string {
-  if (!value) return "—"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
-}
-
-function formatSchedule(value: string): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
-}
 
 function shortBatchNo(value: string): string {
   return value.length > 12 ? `${value.slice(0, 2)}…${value.slice(-4)}` : value
@@ -250,7 +236,6 @@ async function openBatch(item: BatchItem): Promise<void> {
   detailTotal.value = 0
   detailPage.value = 1
   detailStatus.value = ""
-  revealed.value = {}
   try {
     const [batch] = await Promise.all([getBatch(item.batch_no), loadDetails()])
     if (token !== openToken) return
@@ -266,11 +251,10 @@ function filterDetails(): void {
   void loadDetails()
 }
 
-async function revealPhone(message: BatchMessage): Promise<void> {
-  try {
-    const result = await decryptMessagePhone(message.id)
-    revealed.value = { ...revealed.value, [message.id]: result.phone }
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "授权查看失败") }
+/** 行内授权查看：仅把明文返回给 PhoneReveal 内存展示，视图不落明文状态。 */
+async function revealPhone(messageId: number): Promise<string> {
+  const result = await decryptMessagePhone(messageId)
+  return result.phone
 }
 
 const canScheduleOps = computed(() => canWrite.value && selected.value?.status === "scheduled")
@@ -444,7 +428,7 @@ watch(moreOpen, (open) => {
     >
       {{ group.label }}<b v-if="groupCount(group.key, group.statuses) !== null">{{ groupCount(group.key, group.statuses) }}</b>
     </button>
-    <span class="batch-chips-meta">分组 = 进行中(queued+sending) · 待审批 · 定时中 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span>
+    <span class="batch-chips-meta">分组 = 进行中(queued+sending) · 待审批 · 已排期 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span>
   </div>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
@@ -454,12 +438,12 @@ watch(moreOpen, (open) => {
         <template #default="{ row }">
           <code class="batch-code">{{ row.batch_no }}</code>
           <div v-if="row.scheduled_at && row.status === 'scheduled' || row.is_test || row.resend_of" class="cell-subline">
-            <small class="mono-time">{{ formatTime(row.created_at) }}</small>
-            <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched">定时 {{ formatSchedule(row.scheduled_at) }}</span>
+            <small class="mono-time">{{ formatDateTime(row.created_at) }}</small>
+            <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched">定时 {{ formatDateTimeMinute(row.scheduled_at) }}</span>
             <span v-if="row.is_test" class="cell-flag cell-flag--test">测试</span>
             <button v-if="row.resend_of" type="button" class="cell-flag cell-flag--resend" :title="`重发自 ${row.resend_of}`" @click="traceResendOf(row.resend_of)">重发自 {{ shortBatchNo(row.resend_of) }} ↗</button>
           </div>
-          <small v-else class="mono-time cell-subline">{{ formatTime(row.created_at) }}</small>
+          <small v-else class="mono-time cell-subline">{{ formatDateTime(row.created_at) }}</small>
         </template>
       </el-table-column>
       <el-table-column label="类别 / 内容" min-width="240">
@@ -524,10 +508,10 @@ watch(moreOpen, (open) => {
           <i class="compose-o" :style="{ width: composePct(composeOf(item).other, item) }"></i>
         </div>
         <p class="query-mobile-meta">
-          {{ categoryLabel[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} · 送达 {{ item.delivered }}/{{ item.total }}<template v-if="item.failed > 0"> · 失败 {{ item.failed }}</template>
+          {{ CATEGORY_LABELS[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} · 送达 {{ item.delivered }}/{{ item.total }}<template v-if="item.failed > 0"> · 失败 {{ item.failed }}</template>
           <span v-if="item.is_test" class="cell-flag cell-flag--test">测试</span>
         </p>
-        <footer><time>{{ formatTime(item.created_at) }}</time><el-button link type="primary" @click="openBatch(item)">查看详情</el-button></footer>
+        <footer><time>{{ formatDateTime(item.created_at) }}</time><el-button link type="primary" @click="openBatch(item)">查看详情</el-button></footer>
       </article>
     </div>
     <footer class="batch-pager">
@@ -550,7 +534,7 @@ watch(moreOpen, (open) => {
       <div v-if="selected" class="batch-drawer-head">
         <StatusTag :status="selected.status" :label="statusLabel[selected.status] || selected.status" />
         <code>{{ selected.batch_no }}</code>
-        <small>创建于 {{ formatTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} · {{ selected.dept }}</small>
+        <small>创建于 {{ formatDateTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} · {{ selected.dept }}</small>
       </div>
       <span v-else>批次详情</span>
     </template>
@@ -559,7 +543,7 @@ watch(moreOpen, (open) => {
         <el-button type="danger" plain :disabled="!canScheduleOps" data-testid="cancel-batch" @click="cancelSelected">取消批次</el-button>
         <el-button :disabled="!canScheduleOps" data-testid="reschedule-batch" @click="openReschedule">改期</el-button>
         <el-button v-if="selected.failed > 0" :disabled="!canResendFailed" data-testid="resend-failed" @click="resendFailed">重发失败（{{ selected.failed.toLocaleString() }}）</el-button>
-        <p class="batch-actions-why">取消 / 改期仅「定时中」批次可用（服务端 409 为最终裁决）；重发失败将生成新批次并完整重走频控、审批与时间窗。</p>
+        <p class="batch-actions-why">取消 / 改期仅「已排期」批次可用（服务端 409 为最终裁决）；重发失败将生成新批次并完整重走频控、审批与时间窗。</p>
       </div>
 
       <section class="batch-hero">
@@ -599,8 +583,8 @@ watch(moreOpen, (open) => {
         <div><dt>应用</dt><dd>{{ selected.app_name || "—" }}</dd></div>
         <div><dt>创建人</dt><dd>{{ selected.creator || "—" }}</dd></div>
         <div><dt>部门</dt><dd>{{ selected.dept }}</dd></div>
-        <div><dt>创建时间</dt><dd>{{ formatTime(selected.created_at) }}</dd></div>
-        <div><dt>定时时间</dt><dd>{{ selected.scheduled_at ? formatTime(selected.scheduled_at) : "—" }}</dd></div>
+        <div><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div>
+        <div><dt>定时时间</dt><dd>{{ selected.scheduled_at ? formatDateTime(selected.scheduled_at) : "—" }}</dd></div>
         <div>
           <dt>重发溯源</dt>
           <dd><button v-if="selected.resend_of" type="button" class="batch-trace" @click="traceResendOf(selected.resend_of!)">{{ selected.resend_of }} ↗</button><template v-else>—</template></dd>
@@ -609,8 +593,8 @@ watch(moreOpen, (open) => {
       </dl>
 
       <div class="batch-detail-head"><h3>号码明细</h3><el-select v-model="detailStatus" data-testid="batch-detail-status" style="width: 128px" placeholder="全部状态" clearable @change="filterDetails"><el-option v-for="option in detailStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></div>
-      <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><strong v-if="revealed[row.id]" class="revealed-phone">{{ revealed[row.id] }}</strong><PhoneMask v-else :value="row.phone" /><el-button v-if="canDecrypt && !revealed[row.id]" :data-testid="`batch-phone-decrypt-${row.id}`" link type="primary" @click="revealPhone(row)">授权查看</el-button></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
-      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20 条</span><el-pagination v-model:current-page="detailPage" :page-size="20" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
+      <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><PhoneReveal v-if="canDecrypt" :masked="row.phone" :reveal="() => revealPhone(row.id)" :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask v-else :value="row.phone" /></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
+      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="detailPage" :page-size="20" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
     </template>
   </el-drawer>
   <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"><el-date-picker v-model="scheduledAt" type="datetime" popper-class="qingluan-date-popper" value-format="YYYY-MM-DDTHH:mm:ss+08:00" placeholder="选择新的发送时间" /><template #footer><el-button @click="rescheduleOpen=false">取消</el-button><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template></el-dialog>

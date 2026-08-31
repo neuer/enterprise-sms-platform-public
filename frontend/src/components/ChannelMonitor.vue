@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue"
 
+import { formatDateTime, formatHms } from "../lib/time"
+
 const props = withDefaults(defineProps<{
   realtimeQueue?: number | null
   bulkQueue?: number | null
@@ -44,31 +46,6 @@ const qpsTitle = computed(() => {
 function displayNumber(value: number | null): string {
   return value === null ? "—" : value.toLocaleString()
 }
-
-function formatClock(value: string | null): string {
-  if (!value) return "—"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(value))
-}
-
-function formatTimestamp(value: string | null): string {
-  if (!value) return "尚无成功快照"
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(new Date(value)).replaceAll("/", "-")
-}
 </script>
 
 <template>
@@ -101,11 +78,11 @@ function formatTimestamp(value: string | null): string {
       </div>
     </article>
 
-    <time class="chan-time num">最近更新 {{ formatClock(stale ? lastSuccessfulAt : refreshedAt) }}</time>
+    <time class="chan-time num">最近更新 {{ formatHms(stale ? lastSuccessfulAt : refreshedAt) }}</time>
 
     <p v-if="stale" class="monitor-degraded">
       {{ degradedMessage }}；界面保留灰态并隐藏未知值，不伪造运行指标。
-      <span>最近成功：{{ formatTimestamp(lastSuccessfulAt) }}；可点击顶部“刷新”重试。</span>
+      <span>最近成功：{{ formatDateTime(lastSuccessfulAt, "尚无成功快照") }}；可点击顶部“刷新”重试。</span>
     </p>
   </section>
 </template>

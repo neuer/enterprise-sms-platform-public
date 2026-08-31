@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia"
 import { beforeEach, vi } from "vitest"
 
-import { authorization, authorizedFetch } from "../src/api/webMessages"
+import { authorization, authorizedFetch } from "../src/api/client"
 import {
   clearRefreshTabBinding,
   getAccessToken,
@@ -91,9 +91,9 @@ describe("Provider 与 JWT 会话", () => {
 
     await session.loadProviders()
 
-    expect(fetch).toHaveBeenCalledWith("/api/v1/web/auth/providers", {
+    expect(fetch).toHaveBeenCalledWith("/api/v1/web/auth/providers", expect.objectContaining({
       headers: { Accept: "application/json" },
-    })
+    }))
     expect(session.providers.map((item) => item.code)).toEqual(["local", "ad"])
   })
 
@@ -129,7 +129,7 @@ describe("Provider 与 JWT 会话", () => {
     expect(session.isAuthenticated).toBe(true)
     expect(session.accountId).toBe(8)
     expect(session.providerCode).toBe("local")
-    expect(session.roleLabel).toBe("管理员")
+    expect(session.roleLabel).toBe("系统管理员")
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()

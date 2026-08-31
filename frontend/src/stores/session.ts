@@ -21,11 +21,12 @@ import {
   clearRefreshTabBinding,
   getAccessToken,
   getSessionUser,
+  LEGACY_TOKEN_KEY,
+  LEGACY_USER_KEY,
   setAccessSession,
 } from "../api/sessionTokens"
+import { ROLE_LABELS } from "../lib/labels"
 
-const TOKEN_KEY = "sms_token"
-const USER_KEY = "sms_user"
 const CHANGE_TOKEN_KEY = "sms_change_token"
 const CHANGE_TOKEN_EXPIRES_AT_KEY = "sms_change_token_expires_at"
 export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
@@ -61,22 +62,15 @@ function broadcastSessionClear(): void {
 
 function clearLegacyPersistence(): void {
   for (const key of [
-    TOKEN_KEY,
+    LEGACY_TOKEN_KEY,
     "sms_refresh_token",
-    USER_KEY,
+    LEGACY_USER_KEY,
     CHANGE_TOKEN_KEY,
     CHANGE_TOKEN_EXPIRES_AT_KEY,
   ]) {
     storageRemove("localStorage", key)
     storageRemove("sessionStorage", key)
   }
-}
-
-const roleLabels: Record<UserRole, string> = {
-  admin: "管理员",
-  approver: "审批员",
-  operator: "操作员",
-  viewer: "查看员",
 }
 
 function isPlatformUser(value: unknown): value is PlatformUser {
@@ -110,7 +104,7 @@ export const useSessionStore = defineStore("session", {
   getters: {
     isAuthenticated: (state) =>
       Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
-    roleLabel: (state) => (state.role ? roleLabels[state.role] : "未登录"),
+    roleLabel: (state) => (state.role ? ROLE_LABELS[state.role] : "未登录"),
   },
   actions: {
     resetIdentity() {

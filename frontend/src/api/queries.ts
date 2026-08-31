@@ -1,4 +1,5 @@
-import { apiRequest, authorizedFetch } from "./webMessages"
+import { apiRequest, apiRequestAbs } from "./client"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 
 export interface BatchItem {
   batch_no: string
@@ -93,24 +94,8 @@ export interface TimelineResult {
   truncated: boolean
 }
 
-async function throwResponseError(response: Response): Promise<never> {
-  const body = await response.json().catch(() => ({})) as { message?: string; code?: string }
-  throw new Error(body.message || body.code || `请求失败（${response.status}）`)
-}
-
-async function directRequest<T>(url: string, init: RequestInit = { method: "GET" }): Promise<T> {
-  const response = await authorizedFetch(url, init)
-  if (!response.ok) await throwResponseError(response)
-  return (await response.json()) as T
-}
-
-async function directVoid(url: string, init: RequestInit): Promise<void> {
-  const response = await authorizedFetch(url, init)
-  if (!response.ok) await throwResponseError(response)
-}
-
 export function listBatches(filters: BatchFilters): Promise<BatchPage> {
-  const query = new URLSearchParams({ page: String(filters.page), size: "20" })
+  const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.category) query.set("category", filters.category)
   if (filters.status) query.set("status", filters.status)
   if (filters.is_test !== undefined) query.set("is_test", String(filters.is_test))
@@ -124,7 +109,7 @@ export function listBatches(filters: BatchFilters): Promise<BatchPage> {
 }
 
 export function getBatch(batchNo: string): Promise<BatchItem> {
-  return directRequest<BatchItem>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}`)
+  return apiRequestAbs<BatchItem>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}`, { method: "GET" })
 }
 
 export interface BatchMessageFilters {
@@ -136,10 +121,11 @@ export function getBatchMessages(
   batchNo: string,
   filters: BatchMessageFilters = {},
 ): Promise<BatchMessagePage> {
-  const query = new URLSearchParams({ page: String(filters.page ?? 1), size: "20" })
+  const query = new URLSearchParams({ page: String(filters.page ?? 1), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
-  return directRequest<BatchMessagePage>(
+  return apiRequestAbs<BatchMessagePage>(
     `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`,
+    { method: "GET" },
   )
 }
 
@@ -186,11 +172,11 @@ export function decryptMessagePhone(id: number): Promise<{ phone: string }> {
 }
 
 export function cancelBatch(batchNo: string): Promise<void> {
-  return directVoid(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/cancel`, { method: "POST" })
+  return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/cancel`, { method: "POST" })
 }
 
 export function rescheduleBatch(batchNo: string, scheduledAt: string): Promise<void> {
-  return directVoid(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/reschedule`, {
+  return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/reschedule`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scheduled_at: scheduledAt }),
@@ -198,5 +184,5 @@ export function rescheduleBatch(batchNo: string, scheduledAt: string): Promise<v
 }
 
 export function resendFailedBatch(batchNo: string): Promise<{ batch_no: string; resend_of: string; accepted: number; status: string }> {
-  return directRequest(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`, { method: "POST" })
+  return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`, { method: "POST" })
 }

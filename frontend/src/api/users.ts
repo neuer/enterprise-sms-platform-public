@@ -1,6 +1,5 @@
-import { apiRequest } from "./webMessages"
-
-export type UserRole = "admin" | "approver" | "operator" | "viewer"
+import { apiRequest } from "./client"
+import type { UserRole } from "./auth"
 export type UserProvider = "local" | "ad" | string
 export type UserSyncStatus = "local" | "synced" | "pending" | "disabled"
 export type CredentialStatus = "active" | "must_change" | null
