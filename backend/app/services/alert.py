@@ -181,10 +181,11 @@ def validate_alert_destinations(
     webhook = values.get("alert_wecom_webhook", "").strip()
     if webhook and not is_allowed_wecom_webhook(webhook):
         raise ValueError("alert_wecom_webhook 仅允许企业微信官方 HTTPS 机器人地址")
-    smtp_host = values.get("alert_smtp_host", "smtp").strip().casefold() or "smtp"
-    allowed = frozenset(host.casefold() for host in allowed_smtp_hosts)
-    if smtp_host not in allowed:
-        raise ValueError("alert_smtp_host 不在部署允许列表")
+    if values.get("alert_mail_to", "").strip():
+        smtp_host = values.get("alert_smtp_host", "smtp").strip().casefold() or "smtp"
+        allowed = frozenset(host.casefold() for host in allowed_smtp_hosts)
+        if smtp_host not in allowed:
+            raise ValueError("alert_smtp_host 不在部署允许列表")
 
 
 def _assert_no_pii(value: Any, *, key: str | None = None) -> None:
