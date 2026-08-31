@@ -87,16 +87,6 @@ button:focus-visible {
   letter-spacing: 0.12em;
 }
 
-.brand small {
-  color: #99a69f;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-}
-
-.nav-section {
-  margin-top: 18px;
-}
-
 .nav-section h2 {
   margin: 0 10px 5px;
   color: #75827b;
@@ -116,16 +106,6 @@ button:focus-visible {
   transition: color 120ms ease, background-color 120ms ease;
 }
 
-.nav-link:hover,
-.nav-link.active {
-  color: #f1f5f2;
-  background: #29362f;
-}
-
-.nav-link.active {
-  box-shadow: inset 3px 0 var(--verdi);
-}
-
 .nav-marker {
   display: grid;
   width: 20px;
@@ -135,11 +115,6 @@ button:focus-visible {
   font-size: 10px;
   border: 1px solid #526159;
   border-radius: 5px;
-}
-
-.nav-link.active .nav-marker {
-  color: #bde4d7;
-  border-color: #3c826f;
 }
 
 .nav-badge {
@@ -753,10 +728,6 @@ button:focus-visible {
   }
 }
 
-.workspace {
-  min-width: 0;
-}
-
 .topbar {
   position: sticky;
   z-index: 10;
@@ -773,10 +744,6 @@ button:focus-visible {
 .breadcrumb {
   margin: 0;
   color: var(--tx-2);
-}
-
-.breadcrumb span {
-  color: var(--tx-3);
 }
 
 .breadcrumb b {
@@ -983,13 +950,6 @@ main {
   padding: 28px 20px;
   place-content: center;
   text-align: center;
-}
-
-.empty-state-mark {
-  width: 42px;
-  height: 4px;
-  margin: 0 auto 14px;
-  background: linear-gradient(90deg, var(--verdi) 0 33%, var(--slate) 33% 66%, var(--amber) 66%);
 }
 
 .empty-state strong {
@@ -6451,7 +6411,6 @@ main { max-width: 1440px; min-height: calc(100vh - 56px); padding: 20px 26px; }
 .el-overlay { background: rgba(6, 12, 9, 0.55); }
 .el-drawer { box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4); }
 .el-drawer__header { color: var(--tx-hi); border-bottom: 1px solid var(--hair); }
-.empty-state-mark { display: none; }
 .empty-state strong { color: var(--tx-2); }
 .empty-state p { color: var(--tx-2); }
 

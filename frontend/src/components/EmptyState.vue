@@ -4,7 +4,6 @@ defineProps<{ title: string; description: string }>()
 
 <template>
   <section class="empty-state" role="status">
-    <span class="empty-state-mark" aria-hidden="true"></span>
     <strong>{{ title }}</strong>
     <p>{{ description }}</p>
   </section>
