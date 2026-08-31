@@ -2212,10 +2212,9 @@ class UsageLedgerService:
                 (str(row["dimension_key"]), str(row["kind"]), int(row["value"]))
                 for row in result.mappings()
             ]
-        try:
-            raw_values = await self.redis.mget([row[0] for row in rows]) if rows else []
-        except Exception:
-            raw_values = [None] * len(rows)
+        # Redis 不可读时没有“当前投影”这一事实；必须让任务失败并由当前告警
+        # 标记 UNKNOWN，不能把依赖故障折算成一组看似有效的零值。
+        raw_values = await self.redis.mget([row[0] for row in rows]) if rows else []
         aggregates = {
             "quota": [0, 0],
             "frequency": [0, 0],

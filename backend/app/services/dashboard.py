@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol
 
 from app.core.jobtrack import JobSpec
+from app.services.current_alerts import CurrentAlertSnapshot
 from app.services.stats import SHANGHAI, success_rate
 
 Category = Literal["verify", "notice", "market"]
@@ -156,6 +157,10 @@ class DashboardRepository(Protocol):
     ) -> DashboardFacts: ...
 
 
+class CurrentAlertReader(Protocol):
+    async def get(self) -> CurrentAlertSnapshot: ...
+
+
 class DashboardService:
     """以 JWT 部门范围读取事实并在服务端统一派生展示指标。"""
 
@@ -164,10 +169,12 @@ class DashboardService:
         repository: DashboardRepository,
         job_specs: tuple[JobSpec, ...],
         *,
+        current_alerts: CurrentAlertReader | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repository = repository
         self.job_specs = job_specs
+        self.current_alerts = current_alerts
         self.clock = clock
 
     async def get(self, *, role: str, dept: str) -> DashboardSnapshot:
@@ -213,6 +220,18 @@ class DashboardService:
         operation_facts = facts.operations
         operations: DashboardOperations | None = None
         if operation_facts is not None:
+            alert_summaries = operation_facts.alerts
+            if self.current_alerts is not None:
+                current = await self.current_alerts.get()
+                alert_summaries = tuple(
+                    AlertSummary(item.level, item.title, item.checked_at)
+                    for item in current.items[:5]
+                )
+                if not current.complete:
+                    alert_summaries = (
+                        AlertSummary("warn", "当前告警状态不完整", current.refreshed_at),
+                        *alert_summaries[:4],
+                    )
             latest = {item.job_name: item for item in operation_facts.jobs}
             jobs: list[JobHealth] = []
             for spec in self.job_specs:
@@ -234,7 +253,7 @@ class DashboardService:
             operations = DashboardOperations(
                 operation_facts.current_balance,
                 operation_facts.balances,
-                operation_facts.alerts,
+                alert_summaries,
                 operation_facts.uncertain,
                 operation_facts.unmatched,
                 operation_facts.callback_dead,

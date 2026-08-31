@@ -309,10 +309,10 @@ async def test_quota_backpressure_skips_vendor_pull(tmp_path: Path) -> None:
     (tmp_path / "blocker.spill").write_bytes(b"not-json")
     gateway = RecordingGateway(RawPulledPayload(b'{"code":0,"data":[]}', 200))
     alerts = FakeAlerts()
-    count = await ReportIngestService(
-        gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
-    ).poll_once()
-    assert count == 0
+    with pytest.raises(SpillQuotaExceeded):
+        await ReportIngestService(
+            gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
+        ).poll_once()
     assert gateway.calls == 0
     assert any(item["alert_type"] == "vendor_raw_spill_quota_exceeded" for item in alerts.events)
 

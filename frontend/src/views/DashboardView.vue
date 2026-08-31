@@ -237,11 +237,11 @@ onBeforeUnmount(() => {
 
       <section class="ops-grid" aria-label="运行健康明细">
         <el-card shadow="never" class="dashboard-panel alert-panel">
-          <template #header><div class="panel-title"><div><strong>今日告警</strong><small>仅展示标题，不暴露载荷</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
+          <template #header><div class="panel-title"><div><strong>当前告警</strong><small>实时状态摘要，仅展示标题</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
           <ul v-if="operations.alerts.length" class="alert-list">
             <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatHms(item.created_at) }}</time></div></li>
           </ul>
-          <EmptyState v-else title="今日没有告警" description="新的异常、余额或任务告警会出现在这里。" />
+          <EmptyState v-else title="当前没有未恢复告警" description="已登记的权威运行状态均为正常。" />
         </el-card>
 
         <el-card shadow="never" class="dashboard-panel disposition-panel">

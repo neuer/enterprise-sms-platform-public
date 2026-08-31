@@ -11,7 +11,7 @@ from app.core.runtime_resources import (
     configure_runtime_resources,
 )
 from app.services.alert_repository import SqlAlertService
-from app.services.outbox import OutboxDispatcher
+from app.services.outbox import OUTBOX_BACKLOG_ALERT_SECONDS, OutboxDispatcher
 from app.services.outbox_queue import CeleryOutboxPublisher
 from app.services.outbox_repository import SqlOutboxRepository
 from app.settings import get_settings
@@ -44,7 +44,7 @@ async def dispatch_forever(*, idle_seconds: float = 1.0) -> None:
             next_monitor_at = now + 60
             try:
                 stats = await repository.stats()
-                if stats.dead or stats.oldest_age_seconds >= 300:
+                if stats.dead or stats.oldest_age_seconds >= OUTBOX_BACKLOG_ALERT_SECONDS:
                     await SqlAlertService().emit(
                         alert_type="outbox_backlog",
                         level="crit" if stats.dead else "warn",

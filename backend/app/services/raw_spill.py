@@ -251,6 +251,10 @@ class SpillQuotaExceeded(RuntimeError):
     """spill 目录已达文件数或总字节上限，必须停止继续拉取。"""
 
 
+class RawSpillDegraded(RuntimeError):
+    """本轮 raw 已安全落库，但 spill 崩溃兜底写入能力不可用。"""
+
+
 class SpillMetadataAuthError(RuntimeError):
     """secondary spill 元数据认证失败；禁止写入 raw_vendor_log。"""
 

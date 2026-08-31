@@ -83,6 +83,39 @@ class ProjectionRedis:
         return applied
 
 
+@pytest.mark.asyncio
+async def test_measure_drift_does_not_turn_redis_failure_into_zero_projection() -> None:
+    class Result:
+        def mappings(self) -> list[dict[str, object]]:
+            return [{"dimension_key": "quota:app:7:20260901", "kind": "quota", "value": 9}]
+
+    class Connection:
+        async def execute(self, *_args: object, **_kwargs: object) -> Result:
+            return Result()
+
+    class Connect:
+        async def __aenter__(self) -> Connection:
+            return Connection()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class Engine:
+        def connect(self) -> Connect:
+            return Connect()
+
+        def begin(self) -> object:
+            raise AssertionError("Redis 读取失败时不得写入一份伪造的零漂移快照")
+
+    redis = ProjectionRedis()
+    redis.fail = True
+    service = UsageLedgerService(redis, object())  # type: ignore[arg-type]
+    service._engine = lambda: Engine()  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError):
+        await service.measure_drift()
+
+
 def test_shanghai_boundaries_are_explicit_and_timezone_aware() -> None:
     before_midnight = datetime(2026, 7, 26, 15, 59, 59, tzinfo=UTC)
     date_key, usage_date, next_day = shanghai_day(before_midnight)

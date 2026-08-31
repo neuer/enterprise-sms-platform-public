@@ -27,6 +27,7 @@ from app.services.raw_spill import (
     CAPTURE_PROTOCOL_INVALID,
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
+    RawSpillDegraded,
     RawSpillStore,
     RecoverRoundBudget,
     SpillQuotaExceeded,
@@ -155,6 +156,7 @@ class ReplyIngestService:
         self.crypto = crypto
         self.alerts = alerts
         self.spill = spill
+        self._spill_degraded = False
 
     def _parse(self, item: dict[str, Any]) -> ProtectedReply:
         value = _normalized(item)
@@ -486,9 +488,11 @@ class ReplyIngestService:
                 capture_state=capture_state,
             )
         except SpillQuotaExceeded:
+            self._spill_degraded = True
             await self._alert_spill_quota()
             return None
         except Exception as exc:
+            self._spill_degraded = True
             LOGGER.error(
                 "raw spill write failed",
                 extra={"source": "reply", "error_type": type(exc).__name__},
@@ -701,6 +705,7 @@ class ReplyIngestService:
     async def poll_once(self) -> int:
         if self.gateway is None:
             raise RuntimeError("reply gateway is not configured")
+        self._spill_degraded = False
         await self.recover_spills()
         stream = None
         if self.spill is not None:
@@ -708,7 +713,7 @@ class ReplyIngestService:
                 stream = self.spill.open_stream("reply", self.crypto)
             except SpillQuotaExceeded:
                 await self._alert_spill_quota()
-                return 0
+                raise
         try:
             with manage_raw_spill_stream(stream):
                 pulled = await self.gateway.get_reply_raw(body_sink=stream)
@@ -749,7 +754,7 @@ class ReplyIngestService:
         if is_non_replayable_capture(capture_state):
             await self.repository.mark_error(raw_id, "reply protocol-invalid vendor response")
             await self._alert_protocol_invalid()
-            return 0
+            raise RuntimeError("reply vendor response protocol-invalid")
         try:
             data = decode_pulled_payload(pulled, "GetReply")
         except Exception as error:
@@ -758,7 +763,10 @@ class ReplyIngestService:
                 f"{type(error).__name__}: vendor response parsing failed",
             )
             raise
-        return await self.process_existing(raw_id, data)
+        processed = await self.process_existing(raw_id, data)
+        if self._spill_degraded:
+            raise RawSpillDegraded("reply raw spill write degraded")
+        return processed
 
     async def process_existing(
         self,

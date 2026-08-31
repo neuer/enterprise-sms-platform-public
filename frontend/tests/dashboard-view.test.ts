@@ -117,6 +117,7 @@ describe("仪表盘", () => {
     expect(wrapper.get("[data-testid='disposition-callback_dead']").attributes("href")).toBe("/ops?tab=callbacks")
     expect(wrapper.text()).toContain("业务成果")
     expect(wrapper.text()).toContain("运行健康")
+    expect(wrapper.text()).toContain("当前告警")
     expect(wrapper.text()).toContain("今日消息")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19 计费条")

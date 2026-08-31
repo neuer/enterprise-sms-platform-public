@@ -4,6 +4,22 @@ import { apiRequest } from "./client"
 
 export interface OpsPage<T> { items: T[]; total: number; page: number; page_size: number }
 export interface AlertItem { id: number; alert_type: string; level: "info" | "warn" | "crit"; title: string; detail: Record<string, unknown> | null; channels: string; created_at: string }
+export interface CurrentAlertItem {
+  key: string
+  alert_type: string
+  level: "info" | "warn" | "crit"
+  title: string
+  detail: Record<string, unknown>
+  since: string | null
+  checked_at: string
+  target: "jobs" | "raw" | "uncertain" | "callbacks" | "queue" | "outbox"
+}
+export interface CurrentAlertSnapshot {
+  refreshed_at: string
+  complete: boolean
+  unknown_sources: string[]
+  items: CurrentAlertItem[]
+}
 export type RawCaptureState = "complete" | "complete_too_large" | "truncated"
 export interface RawLogItem {
   id: number
@@ -60,6 +76,8 @@ export function listAlerts(query: AlertQuery = {}): Promise<OpsPage<AlertItem>> 
   if (query.end) params.set("end", query.end)
   return apiRequest<OpsPage<AlertItem>>(`/admin/alerts?${params}`, { method: "GET" })
 }
+
+export const getCurrentAlerts = () => apiRequest<CurrentAlertSnapshot>("/admin/alerts/current", { method: "GET" })
 
 export function listRawLogs(query: RawLogQuery = {}): Promise<OpsPage<RawLogItem>> {
   const params = pageParams(query)
