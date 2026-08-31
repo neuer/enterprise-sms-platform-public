@@ -156,6 +156,26 @@ describe("审计与系统参数", () => {
     vi.restoreAllMocks()
   })
 
+  it("敏感参数清除与保存后实时刷新待保存计数", async () => {
+    vi.stubGlobal("fetch", configFetch((url, init) => {
+      if (url === "/api/v1/web/admin/configs" && init.method === "PUT") return response(configs)
+      return undefined
+    }))
+    const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("0 项待保存")
+    await wrapper.findAll("button").find((button) => button.text().includes("清除配置"))!.trigger("click")
+    expect(wrapper.text()).toContain("1 项待保存")
+
+    await wrapper.findAll("button").find((button) => button.text().includes("保存变更"))!.trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("0 项待保存")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("支持按关键字搜索参数并展示数值范围与重置入口", async () => {
     vi.stubGlobal("fetch", configFetch())
     const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
