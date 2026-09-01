@@ -80,6 +80,9 @@ app.conf.update(
     worker_max_memory_per_child=512_000,
     task_soft_time_limit=570,
     task_time_limit=600,
+    task_routes={
+        "app.tasks.poll_report": {"queue": "realtime-report"},
+    },
     broker_transport_options={"visibility_timeout": 3600},
     broker_use_ssl=redis_ssl_options or False,
     redis_backend_use_ssl=redis_ssl_options,

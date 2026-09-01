@@ -165,7 +165,7 @@ def test_release_control_smoke_binds_manifests_to_the_observed_migration_head() 
     assert '"from": "0013_auth_runtime_config"' not in source
 
 
-def test_release_control_smoke_starts_the_pre_report_worker_baseline() -> None:
+def test_release_control_smoke_starts_the_report_worker_baseline() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     baseline = source.split("PRE_REPORT_BASELINE_SERVICES=(", maxsplit=1)[1].split(
         ")", maxsplit=1
@@ -174,5 +174,5 @@ def test_release_control_smoke_starts_the_pre_report_worker_baseline() -> None:
     assert "worker-realtime" in baseline
     assert "worker-bulk" in baseline
     assert "worker-callback" in baseline
-    assert "worker-report" not in baseline
+    assert "worker-report" in baseline
     assert '"${PRE_REPORT_BASELINE_SERVICES[@]}"' in source

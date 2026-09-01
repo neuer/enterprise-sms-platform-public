@@ -42,7 +42,7 @@ CURRENT_POSTGRES_REF=""
 CURRENT_REDIS_REF=""
 PRE_REPORT_BASELINE_SERVICES=(
   postgres redis redis-auth redis-control migrate api
-  worker-realtime worker-bulk worker-callback outbox-dispatcher beat web mock-vendor
+  worker-realtime worker-report worker-bulk worker-callback outbox-dispatcher beat web mock-vendor
 )
 
 fail() {
@@ -612,7 +612,7 @@ PY
   replace_env_refs "$PLATFORM/.env" \
     "$CURRENT_API_REF" "$CURRENT_WEB_REF" "$CURRENT_POSTGRES_REF" "$CURRENT_REDIS_REF"
 
-  # Release A 从尚无 worker-report 的既有运行态升级；空闲新 worker 在激活后另行创建。
+  # Release B 的严格运行态要求兼容基线已经存在空闲 worker-report。
   smoke_env "$PLATFORM/deploy/sms-compose" up -d --remove-orphans --pull never \
     "${PRE_REPORT_BASELINE_SERVICES[@]}"
   wait_for_runtime

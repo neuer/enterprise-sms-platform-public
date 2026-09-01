@@ -58,7 +58,10 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
         "poll-report": {
             "task": "app.tasks.poll_report",
             "schedule": report_seconds,
-            "options": {"queue": "realtime"},
+            "options": {
+                "queue": "realtime-report",
+                "expires": report_seconds,
+            },
         },
         "poll-reply": {
             "task": "app.tasks.poll_reply",
