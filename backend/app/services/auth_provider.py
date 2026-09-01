@@ -12,6 +12,7 @@ from app.core.auth.roles import Role
 
 LDAP_ATTRIBUTE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
 LDAP_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,251}[a-z0-9])?$")
+LDAP_AUTH_TOTAL_BUDGET_S = 50.0
 LDAP_CONFIG_FIELDS = frozenset(
     {
         "server",
@@ -66,7 +67,10 @@ def validate_ldap_allowed(server: str, allowed_hosts: frozenset[str]) -> None:
         raise InvalidProviderConfig("LDAP 地址无法解析为受控主机")
     if not allowed_hosts:
         raise InvalidProviderConfig("LDAP 出站目标未配置部署允许列表")
-    port = parsed.port or 636
+    try:
+        port = parsed.port or 636
+    except ValueError:
+        raise InvalidProviderConfig("LDAP 地址端口无效") from None
     matched = False
     for entry in allowed_hosts:
         entry_host, separator, raw_port = entry.partition(":")
@@ -167,6 +171,12 @@ class LdapProviderConfig:
             raise InvalidProviderConfig("LDAP 地址不得包含凭据")
         if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
             raise InvalidProviderConfig("LDAP 地址必须是 LDAPS origin，不得包含路径或参数")
+        try:
+            port = parsed.port
+        except ValueError:
+            raise InvalidProviderConfig("LDAP 地址端口无效") from None
+        if port is not None and not 1 <= port <= 65535:
+            raise InvalidProviderConfig("LDAP 地址端口无效")
 
         base_dn = _required_text(value["base_dn"], "Base DN", max_length=512)
         bind_dn = _required_text(value["bind_dn"], "Bind DN", max_length=512)
@@ -198,6 +208,9 @@ class LdapProviderConfig:
 
         connect_timeout = _timeout(value["connect_timeout_s"])
         receive_timeout = _timeout(value["receive_timeout_s"])
+        total_budget = 2 * connect_timeout + 3 * receive_timeout + 1
+        if total_budget > LDAP_AUTH_TOTAL_BUDGET_S:
+            raise InvalidProviderConfig("LDAP 登录总超时预算不得超过 50 秒")
         return cls(
             server=server,
             base_dn=base_dn,

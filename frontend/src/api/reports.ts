@@ -1,3 +1,4 @@
+import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS } from "./auth"
 import { apiRequest, authorizedFetch, ApiRequestError, type ApiErrorBody } from "./client"
 
 export type ReportGranularity = "day" | "week" | "month"
@@ -98,12 +99,19 @@ export function getExportTask(id: string): Promise<ExportTask> {
   return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET" })
 }
 
-export function issueExportStepUp(id: string, password: string): Promise<{ token: string; expires_in: 300 }> {
-  return apiRequest<{ token: string; expires_in: 300 }>(`/reports/export/${id}/step-up`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
-  })
+export function issueExportStepUp(
+  id: string,
+  password: string,
+): Promise<{ token: string; expires_in: 300 }> {
+  return apiRequest<{ token: string; expires_in: 300 }>(
+    `/reports/export/${id}/step-up`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    },
+    PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
+  )
 }
 
 export async function downloadExport(task: ExportTask, stepUpToken?: string): Promise<Blob> {

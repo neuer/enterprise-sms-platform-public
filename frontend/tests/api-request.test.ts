@@ -275,6 +275,43 @@ describe("统一 API 请求", () => {
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
+  it("AD family 超期时清理会话、广播重认证并返回专用错误", async () => {
+    setAccessSession("expired", {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "ad",
+      username: "operator01",
+      display_name: "目录操作员",
+      dept: "研发部",
+      role: "operator",
+    })
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED" }, 401))
+      .mockResolvedValueOnce(
+        response(
+          {
+            code: "AUTH_REAUTH_REQUIRED",
+            message: "AD 会话已到期，请重新登录",
+          },
+          401,
+        ),
+      )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+    const reauthentication = vi.fn()
+    window.addEventListener("sms:reauth-required", reauthentication, { once: true })
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
+      "AD 会话已到期，请重新登录",
+    )
+
+    expect(getAccessToken()).toBeNull()
+    expect(getSessionUser()).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+    expect(reauthentication).toHaveBeenCalledOnce()
+  })
+
   it.each(["STEP_UP_REQUIRED", "STEP_UP_EXPIRED"])("%s 时保留当前会话且不广播未授权事件", async (code) => {
     sessionStorage.setItem("sms_token", "admin.jwt")
     sessionStorage.setItem("sms_user", "{}")

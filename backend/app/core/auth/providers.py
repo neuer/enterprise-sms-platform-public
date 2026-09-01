@@ -165,7 +165,7 @@ class LdapProviderKind:
     async def test_config(self, config: dict[str, object]) -> ProviderTestResult:
         try:
             await self._provider("ad", config).test_connection()
-        except (ProviderUnavailable, RuntimeError):
+        except (InvalidProviderConfig, OSError, ProviderUnavailable, RuntimeError):
             return ProviderTestResult(False, "LDAP_CONNECTION_FAILED")
         return ProviderTestResult(True, "OK")
 
@@ -177,10 +177,11 @@ class LdapProviderKind:
     ) -> AuthenticatedIdentity:
         if record.active_config is None:
             raise ProviderDisabled("认证源未激活")
-        return await self._provider(record.code, record.active_config).authenticate(
-            login_name,
-            password,
-        )
+        try:
+            provider = self._provider(record.code, record.active_config)
+        except (InvalidProviderConfig, OSError, RuntimeError):
+            raise ProviderUnavailable("LDAP 服务暂不可用") from None
+        return await provider.authenticate(login_name, password)
 
 
 class MockLdapProviderKind:
@@ -216,17 +217,19 @@ def create_provider_registry(
     settings: Settings,
     provider_repository: ProviderRecordLoader,
     local_repository: LocalAccountReader,
+    local_passwords: LocalPasswordHasher | None = None,
 ) -> AuthProviderRegistry:
     """装配同时存在的 local 与 ldap kind；AUTH_MOCK 只替换后者。"""
 
     ldap: ProviderKindHandler = (
         MockLdapProviderKind(settings) if settings.auth_mock else LdapProviderKind(settings)
     )
+    passwords = local_passwords or LocalPasswordHasher()
     return AuthProviderRegistry(
         provider_repository,
         {
             "local": LocalProviderKind(
-                LocalPasswordProvider(local_repository, LocalPasswordHasher())
+                LocalPasswordProvider(local_repository, passwords)
             ),
             "ldap": ldap,
         },

@@ -10,7 +10,16 @@ from threading import BoundedSemaphore, Lock
 from typing import Literal, TypeVar
 
 T = TypeVar("T")
-ExecutorPool = Literal["default", "ldap", "archive", "smtp"]
+ExecutorPool = Literal["default", "ldap", "archive", "smtp", "auth_hash"]
+
+_POOL_BOUNDS: dict[ExecutorPool, tuple[int, int]] = {
+    "default": (4, 8),
+    "ldap": (4, 8),
+    "archive": (4, 8),
+    "smtp": (4, 8),
+    # Argon2 每个任务使用 64 MiB；与普通同步工作隔离并限制进程内并发。
+    "auth_hash": (1, 2),
+}
 
 
 class ExecutorBackpressure(RuntimeError):
@@ -83,7 +92,12 @@ def _current_executor(pool: ExecutorPool) -> BoundedExecutor:
     with _GLOBAL_LOCK:
         executor = _BOUNDED_EXECUTORS.get(pool)
         if executor is None:
-            executor = BoundedExecutor(thread_name_prefix=f"sms-{pool}")
+            max_workers, max_pending = _POOL_BOUNDS[pool]
+            executor = BoundedExecutor(
+                max_workers=max_workers,
+                max_pending=max_pending,
+                thread_name_prefix=f"sms-{pool}",
+            )
             _BOUNDED_EXECUTORS[pool] = executor
         return executor
 

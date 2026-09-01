@@ -40,7 +40,7 @@ case "$domain" in
   auth)
     maxmemory='192mb'
     key_rules='~auth:* ~export:step-up:* ~vendor-test:step-up:*'
-    command_rules='+ping +get +set +del +incr +expire +eval +evalsha'
+    command_rules='+ping +get +set +del +incr +expire +pexpire +ttl +pttl +hset +hmget +time +eval +evalsha'
     ;;
   control)
     maxmemory='192mb'

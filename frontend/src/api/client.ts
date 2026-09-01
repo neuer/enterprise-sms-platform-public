@@ -42,7 +42,7 @@ export class ApiRequestError extends Error {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const REFRESH_TIMEOUT_MS = 10_000
 export const DOWNLOAD_TIMEOUT_MS = 120_000
-type RefreshResult = "refreshed" | "unauthorized" | "unavailable"
+type RefreshResult = "refreshed" | "unauthorized" | "reauth-required" | "unavailable"
 let refreshInFlight: Promise<RefreshResult> | null = null
 const sessionControllers = new Set<AbortController>()
 window.addEventListener("sms:session-clearing", () => {
@@ -181,6 +181,10 @@ async function refreshSession(): Promise<RefreshResult> {
       }
       if (error instanceof AuthApiError && error.status === 401) {
         clearSession()
+        if (error.code === "AUTH_REAUTH_REQUIRED") {
+          window.dispatchEvent(new Event("sms:reauth-required"))
+          return "reauth-required"
+        }
         return "unauthorized"
       }
       return "unavailable"
@@ -233,6 +237,16 @@ export async function authorizedFetch(
       { status: 503, headers: { "Content-Type": "application/json" } },
     )
   }
+  if (refreshed === "reauth-required") {
+    return new Response(
+      JSON.stringify({
+        code: "AUTH_REAUTH_REQUIRED",
+        message: "AD 会话已到期，请重新登录",
+        detail: null,
+      }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    )
+  }
   return response
 }
 
@@ -253,8 +267,12 @@ async function unwrapJson<T>(response: Response): Promise<T> {
 }
 
 /** Web 业务端点：path 自动加 `/api/v1/web` 前缀。 */
-export async function apiRequest<T>(path: string, init: RequestInit): Promise<T> {
-  return unwrapJson<T>(await authorizedFetch(`/api/v1/web${path}`, init))
+export async function apiRequest<T>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  return unwrapJson<T>(await authorizedFetch(`/api/v1/web${path}`, init, timeoutMs))
 }
 
 /** 绝对路径端点（如 `/api/v1/messages/...`）：与 apiRequest 同错误类型，不加前缀。 */

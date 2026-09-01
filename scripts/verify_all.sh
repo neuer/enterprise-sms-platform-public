@@ -204,7 +204,7 @@ seed_dev
 }
 
 stage_6(){
-python3 scripts/security_acceptance.py --base "http://localhost:${api_port}" --compose-file deploy/docker-compose.yml --secrets-dir deploy/secrets
+python3 scripts/security_acceptance.py --base "http://localhost:${web_port}" --compose-file deploy/docker-compose.yml --secrets-dir deploy/secrets
 }
 
 stage_7(){

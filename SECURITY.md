@@ -67,8 +67,9 @@
 - Web 登录必须显式选择认证 Provider，禁止失败后自动回退、隐藏注册或隐藏提权路径。
 - 授权必须基于服务端权威的账号、身份、Provider、角色、部门、应用归属和安全版本；前端状态、JWT 内的陈旧快照或请求参数不得成为最终授权事实源。
 - 所有资源读取和变更必须在解析最终资源身份后校验角色、部门、所有权和操作权限；认证成功不能替代授权。
-- 新签发的 Refresh Token 只能位于受限路径的 `HttpOnly` Cookie 中，生产环境必须使用 `Secure`，刷新和注销必须执行规范化的同源校验。任何历史请求体兼容读取都必须是有限、可观测且有明确退出条件的迁移路径。新代码不得把 Access Token、首次改密令牌或 step-up 令牌写入 `localStorage`、`sessionStorage`、IndexedDB、URL、日志或持久 DOM 状态；历史 Web Storage 只读迁移路径必须在读取后立即清理。
+- 新签发的 Refresh Token 只能位于受限路径的 `HttpOnly` Cookie 中，生产环境必须使用 `Secure`，刷新和注销必须执行规范化的同源校验；refresh 请求体不得接受令牌。新代码不得把 Access Token、首次改密令牌或 step-up 令牌写入 `localStorage`、`sessionStorage`、IndexedDB、URL、日志或持久 DOM 状态；历史 Web Storage 只读迁移路径必须在读取后立即清理。AD refresh family 必须使用最初完整密码认证时间实施绝对重新登录时限，refresh 不得滑动延长。
 - Refresh 单次轮换保留 5 秒、不可递归延长的 grace：Lua 状态机为首次轮换 `{1}`、grace 内同一旧 binding 重试 `{2}`、family 缺失 `{0}`、窗口外或跨代 replay `{-1}`。`{1}/{2}` 不得吊销刚生成的 family；`{-1}/{0}` 必须 fail closed。grace 记录不得保存 token 明文，replacement 只能按前序 token 确定性重建。浏览器可用 Web Locks 做跨标签页单飞，但不得用 storage/`BroadcastChannel` 传递凭据；BFCache 恢复必须向服务端重新验证，失败即清除全部标签页。
+- Refresh 接口的任何 401 都必须返回 `no-store` 并删除 refresh Cookie；浏览器同时清空当前页 access 与用户快照，只广播不含凭据的失效信号。
 - 账号、身份、角色、Provider、密码或强制下线状态改变后，旧会话必须按安全版本和服务端状态失效；认证依赖不可用时必须失败关闭。
 - API Key 明文只能在受控创建或轮换时一次性返回，持久化时只能保存不可逆摘要。类别、配额、速率、来源 IP 和轮换宽限必须绑定到正确应用，并使用统一的可信客户端 IP。
 - 审批人不得审批本人提交；任何角色绕过、跨部门访问、跨应用访问或最后有效管理员保护失效均应视为安全问题。

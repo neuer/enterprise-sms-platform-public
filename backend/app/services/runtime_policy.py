@@ -89,6 +89,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "login_lock_minutes": ConfigSpec("15", "int", GROUP_SECURITY, maximum=1_440),
     "login_ip_fail_limit": ConfigSpec("20", "int", GROUP_SECURITY, maximum=1_000),
     "login_ip_ban_minutes": ConfigSpec("15", "int", GROUP_SECURITY, maximum=1_440),
+    "ad_session_max_age_minutes": ConfigSpec(
+        "480", "int", GROUP_SECURITY, minimum=15, maximum=10_080
+    ),
     "callback_timeout_seconds": ConfigSpec("5", "int", GROUP_SECURITY, maximum=10),
     "callback_retry_schedule": ConfigSpec(
         "60,300,900,3600,3600", "str", GROUP_SECURITY
@@ -261,6 +264,7 @@ class RuntimePolicy:
     login_lock_minutes: int
     login_ip_fail_limit: int
     login_ip_ban_minutes: int
+    ad_session_max_age_minutes: int
     callback_timeout_seconds: int
     callback_retry_schedule: tuple[int, ...]
     callback_allow_cidrs: str
@@ -350,6 +354,7 @@ class RuntimePolicy:
             login_lock_minutes=parsed["login_lock_minutes"],
             login_ip_fail_limit=parsed["login_ip_fail_limit"],
             login_ip_ban_minutes=parsed["login_ip_ban_minutes"],
+            ad_session_max_age_minutes=parsed["ad_session_max_age_minutes"],
             callback_timeout_seconds=parsed["callback_timeout_seconds"],
             callback_retry_schedule=retries,
             callback_allow_cidrs=values["callback_allow_cidrs"],

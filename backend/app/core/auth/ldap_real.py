@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ssl
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from ldap3 import SUBTREE, Connection, Server, Tls
+from ldap3 import NONE, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import LDAPBindError, LDAPException, LDAPInvalidCredentialsResult
 from ldap3.utils.conv import escape_filter_chars
 
@@ -26,14 +28,45 @@ LDAP_MAX_GROUP_BYTES = 1024
 LDAP_MAX_GROUP_TOTAL_BYTES = 64 * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class _MonotonicDeadline:
+    expires_at: float
+
+    @classmethod
+    def after(cls, seconds: float) -> _MonotonicDeadline:
+        return cls(time.monotonic() + seconds)
+
+    def remaining(self) -> float:
+        remaining = self.expires_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("LDAP total deadline exceeded")
+        return remaining
+
+    def bounded_timeout(self, configured: float) -> float:
+        return max(0.001, min(configured, self.remaining()))
+
+
 class _ReceiveBudgetSocket:
     """在 ldap3 ASN.1 解析前限制一个连接可接收的 LDAP 字节数。"""
 
-    def __init__(self, wrapped: Any, limit: int = LDAP_MAX_RESPONSE_BYTES) -> None:
+    def __init__(
+        self,
+        wrapped: Any,
+        *,
+        deadline: _MonotonicDeadline,
+        receive_timeout_s: float,
+        limit: int = LDAP_MAX_RESPONSE_BYTES,
+    ) -> None:
         self._wrapped = wrapped
         self._remaining = limit
+        self._deadline = deadline
+        self._receive_timeout_s = receive_timeout_s
 
     def recv(self, size: int, *args: object) -> bytes:
+        timeout = self._deadline.bounded_timeout(self._receive_timeout_s)
+        setter = getattr(self._wrapped, "settimeout", None)
+        if setter is not None:
+            setter(timeout)
         data = bytes(self._wrapped.recv(min(size, self._remaining + 1), *args))
         self._remaining -= len(data)
         if self._remaining < 0:
@@ -112,28 +145,36 @@ class LdapPasswordProvider:
     ) -> AuthenticatedIdentity:
         if not login_name or not password:
             raise InvalidCredentials("用户名或密码错误")
+        deadline = _MonotonicDeadline.after(self._authentication_deadline_s)
         try:
             return await run_bounded(
                 self._authenticate_sync,
                 login_name,
                 password,
+                deadline,
                 timeout_s=self._authentication_deadline_s,
                 pool="ldap",
             )
-        except (ExecutorBackpressure, TimeoutError):
+        except ExecutorBackpressure:
             raise ProviderCapacityUnavailable("LDAP 认证容量暂不可用") from None
+        except TimeoutError:
+            raise ProviderUnavailable("LDAP 服务暂不可用") from None
 
     async def test_connection(self) -> None:
         """仅验证服务绑定；不接收也不记录任何用户密码。"""
 
+        deadline = _MonotonicDeadline.after(self._connection_test_deadline_s)
         try:
             await run_bounded(
                 self._test_connection_sync,
+                deadline,
                 timeout_s=self._connection_test_deadline_s,
                 pool="ldap",
             )
-        except (ExecutorBackpressure, TimeoutError):
+        except ExecutorBackpressure:
             raise ProviderCapacityUnavailable("LDAP 认证容量暂不可用") from None
+        except TimeoutError:
+            raise ProviderUnavailable("LDAP 服务暂不可用") from None
 
     @property
     def _authentication_deadline_s(self) -> float:
@@ -151,49 +192,93 @@ class LdapPasswordProvider:
 
         return self.config.connect_timeout_s + 2 * self.config.receive_timeout_s + 1
 
-    def _server(self) -> Any:
+    def _server(self, deadline: _MonotonicDeadline) -> Any:
         parsed = urlsplit(self.config.server)
         if parsed.scheme != "ldaps" or not parsed.hostname:
             raise ProviderUnavailable("LDAP 服务暂不可用")
+        try:
+            port = parsed.port or 636
+        except ValueError:
+            raise ProviderUnavailable("LDAP 服务暂不可用") from None
         tls = Tls(
             validate=ssl.CERT_REQUIRED,
             ca_certs_file=self.config.ca_certs_file,
         )
         return Server(
             parsed.hostname,
-            port=parsed.port or 636,
+            port=port,
             use_ssl=True,
             tls=tls,
-            connect_timeout=self.config.connect_timeout_s,
+            connect_timeout=deadline.bounded_timeout(self.config.connect_timeout_s),
+            get_info=NONE,
             allowed_referral_hosts=[],
         )
 
-    @staticmethod
-    def _open_bounded_connection(server: Any, **kwargs: Any) -> Connection:
+    def _open_bounded_connection(
+        self,
+        server: Any,
+        deadline: _MonotonicDeadline,
+        **kwargs: Any,
+    ) -> Connection:
         connection = Connection(
             server,
             auto_bind=False,
             auto_referrals=False,
             raise_exceptions=True,
+            check_names=False,
+            receive_timeout=deadline.bounded_timeout(self.config.receive_timeout_s),
             **kwargs,
         )
-        connection.open()
-        connection.socket = _ReceiveBudgetSocket(connection.socket)
-        connection.bind()
-        return connection
+        try:
+            deadline.remaining()
+            connection.open()
+            if connection.socket is None:
+                raise OSError("LDAP connection socket unavailable")
+            connection.socket = _ReceiveBudgetSocket(
+                connection.socket,
+                deadline=deadline,
+                receive_timeout_s=self.config.receive_timeout_s,
+            )
+            deadline.remaining()
+            connection.bind(read_server_info=False)
+            deadline.remaining()
+            return connection
+        except Exception:
+            self._safe_close(connection)
+            raise
 
-    def _service_connection(self, server: Any) -> Connection:
+    @staticmethod
+    def _safe_close(connection: Connection | None) -> None:
+        if connection is None:
+            return
+        with suppress(Exception):
+            connection.unbind()
+            return
+        socket = getattr(connection, "socket", None)
+        if socket is not None:
+            with suppress(Exception):
+                socket.close()
+                return
+        with suppress(Exception):
+            connection.strategy.close()
+
+    def _service_connection(
+        self,
+        server: Any,
+        deadline: _MonotonicDeadline,
+    ) -> Connection:
         return self._open_bounded_connection(
             server,
+            deadline,
             user=self.config.bind_dn,
             password=self.config.bind_password,
-            receive_timeout=self.config.receive_timeout_s,
         )
 
-    def _test_connection_sync(self) -> None:
+    def _test_connection_sync(self, deadline: _MonotonicDeadline) -> None:
         service: Connection | None = None
         try:
-            service = self._service_connection(self._server())
+            service = self._service_connection(self._server(deadline), deadline)
+            deadline.remaining()
             searched = service.search(
                 search_base=self.config.base_dn,
                 search_filter="(objectClass=*)",
@@ -203,23 +288,25 @@ class LdapPasswordProvider:
             )
             if not searched:
                 raise ProviderUnavailable("LDAP Base DN 不可用")
+            deadline.remaining()
         except ProviderUnavailable:
             raise
-        except LDAPException:
+        except (LDAPException, OSError, TimeoutError):
             raise ProviderUnavailable("LDAP 服务暂不可用") from None
         finally:
-            if service is not None:
-                service.unbind()
+            self._safe_close(service)
 
     def _authenticate_sync(
         self,
         login_name: str,
         password: str,
+        deadline: _MonotonicDeadline,
     ) -> AuthenticatedIdentity:
         service: Connection | None = None
+        user_connection: Connection | None = None
         try:
-            server = self._server()
-            service = self._service_connection(server)
+            server = self._server(deadline)
+            service = self._service_connection(server, deadline)
             search_filter = self.config.user_search_filter.format(
                 username=escape_filter_chars(login_name)
             )
@@ -234,6 +321,7 @@ class LdapPasswordProvider:
                     )
                 )
             )
+            deadline.remaining()
             service.search(
                 search_base=self.config.base_dn,
                 search_filter=search_filter,
@@ -243,6 +331,7 @@ class LdapPasswordProvider:
             )
             if len(service.entries) != 1:
                 raise InvalidCredentials("用户名或密码错误")
+            deadline.remaining()
             entry = service.entries[0]
             subject = _bounded_text(
                 _attribute_value(entry, self.config.subject_attribute),
@@ -253,14 +342,12 @@ class LdapPasswordProvider:
             try:
                 user_connection = self._open_bounded_connection(
                     server,
+                    deadline,
                     user=entry.entry_dn,
                     password=password,
-                    receive_timeout=self.config.receive_timeout_s,
                 )
             except (LDAPBindError, LDAPInvalidCredentialsResult):
                 raise InvalidCredentials("用户名或密码错误") from None
-            else:
-                user_connection.unbind()
             directory_login = _bounded_text(
                 _attribute_value(entry, self.config.username_attribute) or login_name,
                 field="username",
@@ -281,11 +368,11 @@ class LdapPasswordProvider:
             )
         except (InvalidCredentials, ProviderUnavailable):
             raise
-        except LDAPException:
+        except (LDAPException, OSError, TimeoutError):
             raise ProviderUnavailable("LDAP 服务暂不可用") from None
         finally:
-            if service is not None:
-                service.unbind()
+            self._safe_close(user_connection)
+            self._safe_close(service)
 
 
 # 兼容尚未迁移的导入；运行装配只使用 LdapPasswordProvider。

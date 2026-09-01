@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from argon2 import PasswordHasher
 
+import app.core.auth.passwords as passwords_module
 from app.core.auth.passwords import (
     LocalPasswordHasher,
     PasswordPolicy,
@@ -75,3 +77,18 @@ def test_missing_or_malformed_hash_uses_uniform_failure_path() -> None:
 
     assert not hasher.verify_or_dummy(None, "Wrong@Password123")
     assert not hasher.verify_or_dummy("not-an-argon2-hash", "Wrong@Password123")
+    assert not hasher.verify("not-an-argon2-hash", "Wrong@Password123")
+
+
+def test_hasher_constructor_never_runs_argon2_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_hash(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("constructor must not execute Argon2")
+
+    monkeypatch.setattr(PasswordHasher, "hash", unexpected_hash)
+
+    hasher = LocalPasswordHasher()
+
+    assert not hasher.needs_rehash(passwords_module._DUMMY_PASSWORD_HASH)
+    assert not hasher.verify_or_dummy(None, "Wrong@Password123")

@@ -50,6 +50,7 @@ class LocalPasswordProvider:
                 password_hash,
                 password,
                 timeout_s=5,
+                pool="auth_hash",
             )
         except (ExecutorBackpressure, TimeoutError):
             raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None

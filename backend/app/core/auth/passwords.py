@@ -18,6 +18,10 @@ LOWERCASE: Final = "abcdefghijkmnopqrstuvwxyz"
 UPPERCASE: Final = "ABCDEFGHJKLMNPQRSTUVWXYZ"
 DIGITS: Final = "23456789"
 SPECIALS: Final = "!@#$%^&*()-_=+"
+_DUMMY_PASSWORD_HASH: Final = (
+    "$argon2id$v=19$m=65536,t=3,p=4$3Ls1C++JucbXEeHzOBtakg$"
+    "7jbN7KPOdNGfphlj0FdpiRxcUnnIMjaMs26GBxdcj7M"
+)
 
 
 class PasswordPolicyViolation(ValueError):
@@ -73,7 +77,8 @@ class LocalPasswordHasher:
             salt_len=16,
             type=Type.ID,
         )
-        self._dummy_hash = self._hasher.hash("Dummy@Password-Only-For-Uniform-Verification")
+        # 固定公开哈希只用于统一缺失账号的校验成本；构造器不得执行昂贵 Argon2。
+        self._dummy_hash = _DUMMY_PASSWORD_HASH
 
     def hash(self, password: str) -> str:
         return self._hasher.hash(password)
@@ -81,6 +86,10 @@ class LocalPasswordHasher:
     def verify(self, encoded: str, password: str) -> bool:
         try:
             return bool(self._hasher.verify(encoded, password))
+        except InvalidHashError:
+            # 损坏摘要也执行固定公开摘要，避免异常旁路与显著成本差异。
+            self.verify(self._dummy_hash, password)
+            return False
         except VerificationError:
             return False
 

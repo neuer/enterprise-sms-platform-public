@@ -100,6 +100,10 @@ function handleUnauthorized(): void {
   if (route.path !== "/login") void router.replace("/login")
 }
 
+function handleReauthenticationRequired(): void {
+  ElMessage.warning("AD 会话已到期，请重新登录")
+}
+
 function handleSessionStorageSignal(event: StorageEvent): void {
   if (event.key !== SESSION_CLEAR_SIGNAL_KEY) return
   // 信号只含无凭据时间戳。先推进本页代际并取消在途 Refresh，再清状态。
@@ -183,6 +187,7 @@ onBeforeMount(() => {
 
 onMounted(() => {
   window.addEventListener("sms:unauthorized", handleUnauthorized)
+  window.addEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.addEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.addEventListener("storage", handleSessionStorageSignal)
   window.addEventListener("pageshow", handlePageShow)
@@ -190,6 +195,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener("sms:unauthorized", handleUnauthorized)
+  window.removeEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.removeEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.removeEventListener("storage", handleSessionStorageSignal)
   window.removeEventListener("pageshow", handlePageShow)

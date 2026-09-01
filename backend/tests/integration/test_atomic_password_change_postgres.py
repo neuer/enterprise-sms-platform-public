@@ -9,11 +9,10 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.auth.backends import InvalidCredentials
-from app.core.auth.users import SqlUserRepository
+from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.users import PasswordChangeInProgress, SqlUserRepository
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -145,8 +144,16 @@ async def test_password_change_token_rollback_and_concurrency_are_atomic() -> No
         actor: str | None = None,
         provider_code: str = "local",
     ) -> None:
-        await repository.consume_password_change_and_update(
+        claim = await repository.claim_password_change_token(
             token_hash=token_hash,
+            account_id=account_id,
+            identity_id=identity_id,
+            provider_code=provider_code,
+            login_name=login_name,
+        )
+        await repository.consume_password_change_and_update(
+            token_id=claim.token_id,
+            lease_id=claim.lease_id,
             account_id=account_id,
             identity_id=identity_id,
             provider_code=provider_code,
@@ -168,13 +175,24 @@ async def test_password_change_token_rollback_and_concurrency_are_atomic() -> No
             login_name=LOGINS[0],
             security_version=rollback_version,
         )
-        with pytest.raises(DBAPIError):
+        with pytest.raises(SessionStateUnavailable):
             await consume(
                 token_hash=rollback_hash,
                 account_id=rollback_account,
                 identity_id=rollback_identity,
                 login_name=LOGINS[0],
                 actor="x" * 65,
+            )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE password_change_token
+                    SET processing_lease_expires_at=now()-INTERVAL '1 second'
+                    WHERE token_hash=:token_hash AND status='processing'
+                    """
+                ),
+                {"token_hash": rollback_hash},
             )
         await consume(
             token_hash=rollback_hash,
@@ -210,7 +228,11 @@ async def test_password_change_token_rollback_and_concurrency_are_atomic() -> No
             return_exceptions=True,
         )
         assert sum(result is None for result in results) == 1
-        assert sum(isinstance(result, InvalidCredentials) for result in results) == 1
+        # 败方在胜方完成消费前观察到 processing；若数据库调度使胜方先完成，
+        # 则观察到 consumed 并按已使用令牌拒绝。两种终态都必须只允许一次成功。
+        rejected = [result for result in results if result is not None]
+        assert len(rejected) == 1
+        assert isinstance(rejected[0], (PasswordChangeInProgress, InvalidCredentials))
 
         rejection_cases: list[tuple[str, int, int, int]] = []
         for login_name in LOGINS[2:]:

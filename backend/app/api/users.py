@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.accounts import AccountSourceConflict
+from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.identity import InvalidLoginName
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.passwords import PasswordPolicyViolation
@@ -93,10 +94,6 @@ class PasswordResetModel(StrictModel):
     )
 
 
-async def get_user_management_service() -> UserManagementService:
-    return UserManagementService(SqlUserManagementRepository(get_settings()))
-
-
 def _token(credentials: HTTPAuthorizationCredentials | None) -> str:
     if credentials is None or credentials.scheme.casefold() != "bearer":
         raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
@@ -111,6 +108,28 @@ async def _admin(
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可管理用户", None)
     return claims
+
+
+async def require_admin(
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+) -> JwtClaims:
+    """在构造管理员业务依赖前完成 Bearer 与角色校验。"""
+
+    return await _admin(facade, credentials)
+
+
+async def get_user_management_service(
+    _actor: Annotated[JwtClaims, Depends(require_admin)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+) -> UserManagementService:
+    return UserManagementService(
+        SqlUserManagementRepository(get_settings()),
+        passwords=facade.passwords,
+    )
 
 
 def _ip(request: Request) -> str:
@@ -178,6 +197,13 @@ def _raise_user_error(error: Exception) -> NoReturn:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     if isinstance(error, ProviderActionUnsupported):
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    if isinstance(error, ProviderCapacityUnavailable):
+        raise ApiError(
+            503,
+            "AUTH_PROVIDER_UNAVAILABLE",
+            "认证源容量暂不可用，请稍后重试",
+            None,
+        ) from None
     raise error
 
 
@@ -190,6 +216,7 @@ USER_ERRORS = (
     SelfDisableDenied,
     RoleMappingConflict,
     ProviderActionUnsupported,
+    ProviderCapacityUnavailable,
 )
 
 
@@ -199,12 +226,8 @@ USER_ERRORS = (
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
 )
 async def list_users(
+    _actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
     keyword: Annotated[str | None, Query(max_length=128)] = None,
     provider_code: Annotated[str | None, Query(max_length=64)] = None,
     role: Role | None = None,
@@ -212,7 +235,6 @@ async def list_users(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> UserPageModel:
-    await _admin(facade, credentials)
     return _page_model(
         await service.list(
             keyword,
@@ -234,20 +256,16 @@ async def list_users(
         403: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
     },
 )
 @audited("local_account_create")
 async def create_local_user(
     payload: LocalUserCreateModel,
     request: Request,
+    actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
 ) -> UserModel:
-    actor = await _admin(facade, credentials)
     try:
         return _model(
             await service.create_local(
@@ -279,14 +297,9 @@ async def update_user_role(
     account_id: int,
     payload: RoleUpdateModel,
     request: Request,
+    actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
 ) -> UserModel:
-    actor = await _admin(facade, credentials)
     try:
         return _model(
             await service.change_role(
@@ -311,14 +324,9 @@ async def update_user_status(
     account_id: int,
     payload: StatusUpdateModel,
     request: Request,
+    actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
 ) -> UserModel:
-    actor = await _admin(facade, credentials)
     try:
         return _model(
             await service.change_status(
@@ -342,6 +350,7 @@ async def update_user_status(
         404: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
     },
 )
 @audited("local_password_reset")
@@ -349,14 +358,9 @@ async def reset_user_password(
     account_id: int,
     payload: PasswordResetModel,
     request: Request,
+    actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
 ) -> UserModel:
-    actor = await _admin(facade, credentials)
     try:
         return _model(
             await service.reset_password(
@@ -379,6 +383,7 @@ async def reset_user_password(
 async def revoke_user_sessions(
     account_id: int,
     request: Request,
+    _actor: Annotated[JwtClaims, Depends(require_admin)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
@@ -386,6 +391,5 @@ async def revoke_user_sessions(
     ],
 ) -> Response:
     token = _token(credentials)
-    await _admin(facade, credentials)
     await facade.force_logout(token, account_id, _ip(request))
     return Response(status_code=200)

@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.roles import Role
+from app.core.bounded_executor import ExecutorBackpressure
 from app.services.user_management import (
     SelfDisableDenied,
     UserManagementService,
@@ -202,3 +204,38 @@ async def test_role_status_and_local_reset_delegate_numeric_account_id() -> None
         ("status", (8, 1, 1, "admin", "10.0.0.8")),
         ("reset", (8, "encoded:Reset@Password123", "admin", "10.0.0.8")),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("create", "reset"))
+async def test_password_mutations_map_hash_pool_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    async def saturated(*_args: object, **_kwargs: object) -> str:
+        raise ExecutorBackpressure("full")
+
+    monkeypatch.setattr("app.services.user_management.run_bounded", saturated)
+    repository = FakeRepository()
+    service = UserManagementService(repository, FakeHasher())
+
+    with pytest.raises(ProviderCapacityUnavailable):
+        if operation == "create":
+            await service.create_local(
+                username="new.user",
+                display_name="新用户",
+                dept="业务一部",
+                role="viewer",
+                temporary_password="Temporary@123",
+                actor="admin",
+                ip="10.0.0.8",
+            )
+        else:
+            await service.reset_password(
+                8,
+                "Reset@Password123",
+                actor="admin",
+                ip="10.0.0.8",
+            )
+
+    assert repository.calls == []

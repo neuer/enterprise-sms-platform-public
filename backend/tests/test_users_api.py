@@ -302,3 +302,52 @@ def test_non_admin_and_missing_bearer_are_rejected() -> None:
     )
     assert forbidden.status_code == 403
     assert forbidden.json()["code"] == "FORBIDDEN"
+
+
+def test_admin_dependencies_reject_before_constructing_user_service(
+    monkeypatch,
+) -> None:
+    constructions = 0
+
+    def record_construction(*_args: object, **_kwargs: object) -> None:
+        nonlocal constructions
+        constructions += 1
+        raise AssertionError("user service constructed before authorization")
+
+    monkeypatch.setattr(users_api, "UserManagementService", record_construction)
+    app = create_app()
+    facade = FakeFacade("viewer")
+    app.dependency_overrides[get_auth_facade] = lambda: facade
+    browser = TestClient(app, raise_server_exceptions=False)
+
+    requests = (
+        ("get", "/api/v1/web/admin/users", None),
+        (
+            "post",
+            "/api/v1/web/admin/users/local",
+            {
+                "username": "new.user",
+                "display_name": "新用户",
+                "dept": "平台部",
+                "role": "viewer",
+                "temporary_password": "Temporary@123",
+            },
+        ),
+        (
+            "post",
+            "/api/v1/web/admin/users/8/password/reset",
+            {"temporary_password": "Reset@Password123"},
+        ),
+    )
+    for method, path, payload in requests:
+        missing = browser.request(method, path, json=payload)
+        forbidden = browser.request(
+            method,
+            path,
+            headers={"Authorization": "Bearer viewer.jwt"},
+            json=payload,
+        )
+        assert missing.status_code == 401
+        assert forbidden.status_code == 403
+
+    assert constructions == 0

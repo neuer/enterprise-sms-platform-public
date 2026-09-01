@@ -470,7 +470,7 @@ def _login_payload(password: str = "correct") -> dict[str, str]:
     }
 
 
-def test_login_forwards_existing_refresh_cookie_to_facade() -> None:
+def test_login_forwards_existing_refresh_cookie_and_refresh_body_rejects_token() -> None:
     facade = FakeAuthFacade()
     response_client = client(facade)
     response_client.cookies.set("sms_refresh_token", "old-family.jwt")
@@ -481,14 +481,60 @@ def test_login_forwards_existing_refresh_cookie_to_facade() -> None:
     assert facade.login_calls[0][5] == "old-family.jwt"
     assert "sms_refresh_token=refresh.jwt" in success.headers.get("set-cookie", "")
 
-    late = response_client.post(
+    body_token = response_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": "http://testserver"},
         json={"tab_id": TAB_ID, "refresh_token": "old-family.jwt"},
     )
-    assert late.status_code == 401
-    assert late.json()["code"] == "UNAUTHORIZED"
-    assert "sms_refresh_token=" not in late.headers.get("set-cookie", "")
+    assert body_token.status_code == 400
+    assert body_token.json()["code"] == "INVALID_PARAM"
+    assert facade.refresh_calls == []
+
+
+def test_refresh_requires_http_only_cookie() -> None:
+    facade = FakeAuthFacade()
+    response_client = client(facade)
+
+    missing = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={"tab_id": TAB_ID},
+    )
+
+    assert missing.status_code == 401
+    assert missing.json()["code"] == "UNAUTHORIZED"
+    assert missing.headers["cache-control"] == "no-store"
+    assert "sms_refresh_token=" in missing.headers.get("set-cookie", "")
+    assert "Max-Age=0" in missing.headers.get("set-cookie", "")
+    assert facade.refresh_calls == []
+
+
+def test_ad_reauthentication_required_clears_refresh_cookie() -> None:
+    class ReauthenticationFacade(FakeAuthFacade):
+        async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
+            del refresh_token, ip, tab_id
+            raise ApiError(
+                401,
+                "AUTH_REAUTH_REQUIRED",
+                "AD 会话已到期，请重新登录",
+                None,
+            )
+
+    response_client = client(ReauthenticationFacade())
+    response_client.cookies.set("sms_refresh_token", "refresh.jwt")
+
+    expired = response_client.post(
+        "/api/v1/web/auth/refresh",
+        headers={"Origin": "http://testserver"},
+        json={"tab_id": TAB_ID},
+    )
+
+    assert expired.status_code == 401
+    assert expired.json()["code"] == "AUTH_REAUTH_REQUIRED"
+    assert expired.headers["cache-control"] == "no-store"
+    cookie = expired.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in cookie
+    assert "Max-Age=0" in cookie
 
 
 def _real_login_facade() -> AuthFacade:
@@ -511,7 +557,7 @@ def _real_login_facade() -> AuthFacade:
     return AuthFacade(FakeAuthService(identity), users, tokens, FakeHasher())
 
 
-def test_relogin_revokes_prior_cookie_family_and_late_refresh_has_no_set_cookie() -> None:
+def test_relogin_revokes_prior_cookie_family_and_late_refresh_clears_cookie() -> None:
     facade = _real_login_facade()
     response_client = client(facade)
 
@@ -528,14 +574,18 @@ def test_relogin_revokes_prior_cookie_family_and_late_refresh_has_no_set_cookie(
     assert new_refresh != old_refresh
     assert "refresh_token" not in second.json()
 
-    late = response_client.post(
+    late_client = client(facade)
+    late_client.cookies.set("sms_refresh_token", old_refresh)
+    late = late_client.post(
         "/api/v1/web/auth/refresh",
         headers={"Origin": "http://testserver"},
-        json={"tab_id": TAB_ID, "refresh_token": old_refresh},
+        json={"tab_id": TAB_ID},
     )
     assert late.status_code == 401
     assert late.json()["code"] == "UNAUTHORIZED"
-    assert "sms_refresh_token=" not in late.headers.get("set-cookie", "")
+    late_cookie = late.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in late_cookie
+    assert "Max-Age=0" in late_cookie
 
     rotated = response_client.post(
         "/api/v1/web/auth/refresh",

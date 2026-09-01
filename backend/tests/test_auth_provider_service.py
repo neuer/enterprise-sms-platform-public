@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.backends import ProviderUnavailable
 from app.core.auth.providers import LdapProviderKind
 from app.services.auth_provider import (
     AuthProviderService,
@@ -56,6 +57,41 @@ def test_ldap_provider_kind_rejects_target_outside_deployment_allowlist() -> Non
 def test_ldap_allowed_list_empty_fails_closed() -> None:
     with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
         validate_ldap_allowed("ldaps://dc01.example.com:636", frozenset())
+
+
+@pytest.mark.asyncio
+async def test_ldap_test_maps_missing_runtime_secret_to_safe_failure() -> None:
+    def missing_credential(_name: str) -> str:
+        raise FileNotFoundError("secret unavailable")
+
+    kind = LdapProviderKind(
+        SimpleNamespace(
+            ldap_allowed_host_set=frozenset({"dc01.example.com:636"}),
+            credential=missing_credential,
+            ldap_ca_certs_file="/ca.pem",
+        )
+    )
+
+    result = await kind.test_config(valid_ad_config())
+
+    assert result == ProviderTestResult(False, "LDAP_CONNECTION_FAILED")
+
+
+@pytest.mark.asyncio
+async def test_ldap_login_maps_corrupt_active_config_to_provider_outage() -> None:
+    kind = LdapProviderKind(
+        SimpleNamespace(ldap_allowed_host_set=frozenset({"dc01.example.com:636"}))
+    )
+
+    with pytest.raises(ProviderUnavailable, match="暂不可用"):
+        await kind.authenticate(
+            provider(
+                enabled=True,
+                active_config={**valid_ad_config(), "server": "ldap://invalid"},
+            ),
+            "user01",
+            "password",
+        )
 
 
 def provider(
@@ -370,6 +406,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
         ({"username_attribute": "uid)(objectClass=*"}, "属性"),
         ({"connect_timeout_s": 0}, "超时"),
         ({"receive_timeout_s": 31}, "超时"),
+        ({"connect_timeout_s": 10, "receive_timeout_s": 10}, "总超时预算"),
+        ({"server": "ldaps://dc01.example.com:99999"}, "端口"),
         ({"bind_password": "must-never-enter-database"}, "未知配置"),
     ),
 )
