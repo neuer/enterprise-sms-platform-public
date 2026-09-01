@@ -3,9 +3,10 @@
 ## 固定预算
 
 连接预算按 OS 进程而不是容器计算。默认 Compose 有两个 API 进程，每个最多使用
-`api=8+2` 和 `metrics=2`；三个 Celery worker 各有两个 prefork child，每个 child 最多
-`worker=3+1`；beat 启动读取最多 2 条并立即关闭；Outbox dispatcher 最多 2 条。理论上限
-为 52，PostgreSQL `max_connections` 还必须为 migrate、owner 运维、健康检查和故障处置
+`api=8+2` 和 `metrics=2`；原三个 Celery worker 各有两个 prefork child，每个 child 最多
+`worker=3+1`；`worker-report -c 1` 使用独立覆盖的 `2+0`；beat 启动读取最多 2 条并立即关闭；
+Outbox dispatcher 最多 2 条。理论上限为 54，PostgreSQL `max_connections` 还必须为
+migrate、owner 运维、健康检查和故障处置
 预留独立余量。扩大 Uvicorn/Celery 并发前必须按相同公式重新审批，不能只调大 pool。
 
 所有组件的 pool 获取、asyncpg 建连和 SQL 执行均有独立超时。不得把超时设为无限，不得在

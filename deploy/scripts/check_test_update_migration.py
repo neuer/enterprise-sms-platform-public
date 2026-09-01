@@ -55,6 +55,20 @@ _DROP_CONSTRAINT_RE = re.compile(
     r"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+_RENAME_CONSTRAINT_RE = re.compile(
+    r"\bALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+"
+    r"RENAME\s+CONSTRAINT\s+[A-Za-z_][A-Za-z0-9_]*\s+TO\s+"
+    r"[A-Za-z_][A-Za-z0-9_]*",
+    re.IGNORECASE,
+)
+_OPTIONAL_RENAME_CONSTRAINT_BLOCK_RE = re.compile(
+    r"DO\s+\$\$\s+BEGIN\s+ALTER\s+TABLE\s+"
+    r"[A-Za-z_][A-Za-z0-9_]*\s+RENAME\s+CONSTRAINT\s+"
+    r"[A-Za-z_][A-Za-z0-9_]*\s+TO\s+[A-Za-z_][A-Za-z0-9_]*\s*;\s*"
+    r"EXCEPTION\s+WHEN\s+undefined_object\s+THEN\s+NULL\s*;\s*"
+    r"END\s*;\s*\$\$\s*;?",
+    re.IGNORECASE,
+)
 _ADD_CONSTRAINT_RE = re.compile(
     r"\bALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+"
     r"ADD\s+CONSTRAINT\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -291,6 +305,8 @@ def _check_raw_sql(
             normalized,
         ):
             return
+        if _RENAME_CONSTRAINT_RE.fullmatch(sql.strip()) is not None:
+            return
         dropped_constraint = _DROP_CONSTRAINT_RE.fullmatch(sql.strip())
         if dropped_constraint is not None:
             key = (
@@ -329,6 +345,8 @@ def _check_raw_sql(
             f"{migration.revision}: index drop is not replaced in the same migration"
         )
     if normalized.startswith("DO "):
+        if _OPTIONAL_RENAME_CONSTRAINT_BLOCK_RE.fullmatch(sql.strip()) is not None:
+            return
         if (
             "CREATE POLICY " in normalized
             and not re.search(

@@ -813,6 +813,7 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",

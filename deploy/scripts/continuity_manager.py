@@ -33,6 +33,7 @@ CONSUMER_SERVICES = (
     "web",
     "api",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",

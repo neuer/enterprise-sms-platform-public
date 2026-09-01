@@ -371,7 +371,7 @@ operator 身份执行一次 `scripts/test_update.sh status`；它必须能读取
    仓库 target；
 2. API/Web 当前 image ID 等于 manifest；architecture=amd64，version/revision/schema
    三个 label 与 manifest 一致；
-3. api、web、worker-realtime、worker-bulk、worker-callback、outbox-dispatcher、beat
+3. api、web、worker-realtime、worker-report、worker-bulk、worker-callback、outbox-dispatcher、beat
    均 running/healthy，mock-vendor 未被引入；
 4. `vendor-control-agent.service` 的已安装字节等于 target unit，service active，重启计数
    不持续增长；

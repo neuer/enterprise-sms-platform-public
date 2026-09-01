@@ -16,6 +16,8 @@ services:
     restart: "no"
   worker-realtime:
     restart: "no"
+  worker-report:
+    restart: "no"
   worker-bulk:
     restart: "no"
   worker-callback:

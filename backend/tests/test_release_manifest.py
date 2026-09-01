@@ -22,6 +22,8 @@ from release_manifest import (  # noqa: E402
 
 OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
 OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
+OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
+OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"
 
 
 def _manifest(
@@ -255,6 +257,30 @@ def test_offline_v2_accepts_approved_all_four_expand_without_backup_evidence(
     assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
     assert manifest.evidence["data_images"] is not None
     assert manifest.evidence["backup_restore_change"] is None
+
+
+def test_offline_v2_accepts_realtime_report_queue_expand(
+    tmp_path: Path,
+) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+    payload["migration"] = {
+        "from": OFFLINE_REPORT_EXPAND_FROM,
+        "target": OFFLINE_REPORT_EXPAND_TARGET,
+        "compatibility": "expand",
+    }
+    payload["evidence"]["data_images"] = {
+        "file": "data-images.json",
+        "sha256": "2" * 64,
+        "size": 4096,
+    }
+
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+
+    assert manifest.migration_from == OFFLINE_REPORT_EXPAND_FROM
+    assert manifest.migration_target == OFFLINE_REPORT_EXPAND_TARGET
+    assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
 
 
 def test_offline_v2_approved_expand_requires_data_image_evidence(

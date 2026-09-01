@@ -674,6 +674,30 @@ def test_sign_adoption_contract_is_in_schema_and_followup_migration() -> None:
     assert 'down_revision = "0080_security_daily_delivery_generation"' in source
 
 
+def test_outbox_realtime_report_queue_is_named_and_forward_compatible() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = (
+        BACKEND
+        / "migrations/versions/0082_outbox_realtime_report_queue.py"
+    )
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.68：" in schema
+    assert "CONSTRAINT ck_outbox_queue" in schema
+    assert "'realtime','realtime-report','bulk','callback'" in schema.replace(
+        "\n", ""
+    ).replace(" ", "")
+    assert 'revision = "0082_outbox_realtime_report_queue"' in source
+    assert 'down_revision = "0081_sign_adoption_contract"' in source
+    assert (
+        "RENAME CONSTRAINT outbox_event_queue_check TO ck_outbox_queue"
+        in source.replace("\n", " ")
+    )
+    assert "WHEN undefined_object THEN NULL" in source
+    assert "DROP CONSTRAINT IF EXISTS ck_outbox_queue" in source
+    assert "WHERE queue='realtime-report'" in source
+
+
 def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"

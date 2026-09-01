@@ -290,6 +290,33 @@ services:
       # reconcile 需要连接固定 agent UDS；其余 worker 不获得该能力。
       - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
 
+  worker-report:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      SMS_COMPONENT: worker
+      DB_RUNTIME_ROLE: send
+      DB_WORKER_POOL_SIZE: "2"
+      DB_WORKER_MAX_OVERFLOW: "0"
+    secrets:
+      - { source: vendor_secret_name, target: vendor_secret_name }
+      - { source: vendor_secret_key, target: vendor_secret_key }
+      - { source: data_aes_key, target: data_aes_key }
+      - { source: data_hmac_key, target: data_hmac_key }
+      - { source: db_send_password, target: db_send_password }
+      - { source: redis_broker_client_password, target: redis_broker_password }
+      - { source: redis_control_client_password, target: redis_control_password }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      redis-control: { condition: service_healthy }
+    command: celery -A app.tasks worker -Q realtime-report -c 1 -l info
+    cpus: 1.0
+    volumes:
+      - rawspill:/var/lib/sms/raw-spill
+      # GetReport 调用前仍需读取统一控制状态；该 worker 不获得控制 UDS。
+      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
+
   worker-bulk:
     <<: *backend
     environment:

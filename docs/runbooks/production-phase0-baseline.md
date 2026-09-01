@@ -197,7 +197,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
    `sudo /usr/local/sbin/sms-compose continuity engage --evidence /绝对路径/engage.json --evidence-sha256 <sha256>`。
 2. 该命令在 lifecycle lock 内先把 intent 原子写入
    `/var/lib/sms-platform/continuity/state.json`，再停止并逐项读回
-   `web/api/worker-realtime/worker-bulk/worker-callback/outbox-dispatcher/beat`；PostgreSQL 和三个
+   `web/api/worker-realtime/worker-report/worker-bulk/worker-callback/outbox-dispatcher/beat`；PostgreSQL 和三个
    Redis 数据服务保留。中途失败、宿主重启、状态或证据损坏都会继续阻断 `up`、systemd 启动、
    rotate、migrate、partition、init-admin 和所有 release mutation；用
    `sudo /usr/local/sbin/sms-compose continuity status` 只读取得机读状态，禁止删除或手改状态文件。

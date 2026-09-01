@@ -823,6 +823,7 @@ class HostUpdateOperations:
             "stop",
             "beat",
             "worker-realtime",
+            "worker-report",
             "worker-bulk",
             "worker-callback",
             "outbox-dispatcher",

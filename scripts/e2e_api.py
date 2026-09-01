@@ -1480,6 +1480,29 @@ class UatSuite:
             return True if "尊敬的{s10}，验证码{s6}" in contents else None
 
         wait_until("19", template_bound, timeout_s=15, interval_s=0.25)
+
+        def template_syncable() -> bool | None:
+            current = self._expect(
+                "19",
+                self._request(
+                    self.api,
+                    "GET",
+                    f"/api/v1/web/templates/{template_id}",
+                    headers=self._bearer("admin01"),
+                ),
+                200,
+            )
+            vendor_template_id = current.get("vendor_template_id")
+            return (
+                True
+                if current.get("vendor_state") in {"pending", "approved", "rejected"}
+                and isinstance(vendor_template_id, str)
+                and bool(vendor_template_id)
+                else None
+            )
+
+        # Mock 收到 BindTemplate 早于 worker 提交本地厂商编号；同步前必须等本地可同步。
+        wait_until("19", template_syncable, timeout_s=15, interval_s=0.25)
         self._expect(
             "19",
             self._request(

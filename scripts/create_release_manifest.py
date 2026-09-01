@@ -28,7 +28,7 @@ from offline_image_archive import (  # noqa: E402
     validate_offline_image_archive,
 )
 from release_manifest import (  # noqa: E402
-    OFFLINE_EXPAND_MIGRATION,
+    OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
     load_manifest_bytes,
 )
@@ -623,7 +623,7 @@ def create_manifest(
     )
     offline_expand_update = (
         offline_full_update
-        and (migration_from, migration_target) == OFFLINE_EXPAND_MIGRATION
+        and (migration_from, migration_target) in OFFLINE_EXPAND_MIGRATIONS
     )
     if offline and (
         changed not in {frozenset(), frozenset(_IMAGES)}

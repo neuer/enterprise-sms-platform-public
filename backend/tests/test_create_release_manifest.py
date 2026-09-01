@@ -22,6 +22,8 @@ from create_release_manifest import (  # noqa: E402
 
 OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
 OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
+OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
+OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"
 
 
 def _private_json(path: Path, value: object) -> Path:
@@ -586,6 +588,39 @@ def test_offline_approved_all_four_expand_allows_explicit_evidence_waiver(
         "size": data.stat().st_size,
     }
     assert manifest["evidence"]["backup_restore_change"] is None
+
+
+def test_offline_realtime_report_expand_is_an_approved_full_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _offline_inputs(
+        tmp_path,
+        schema_revision=OFFLINE_REPORT_EXPAND_TARGET,
+    )
+    data = _private_json(
+        arguments["offline_index"].parent / "data-images.json",
+        {"passed": True},
+    )
+    arguments.update(
+        {
+            "migration_from": OFFLINE_REPORT_EXPAND_FROM,
+            "changed": frozenset({"api", "web", "postgres", "redis"}),
+            "baseline": False,
+            "data_images": data,
+            "allow_offline_no_conditional_evidence": True,
+        }
+    )
+    _mock_attestation(monkeypatch)
+
+    create_manifest(**arguments)
+
+    manifest = json.loads(arguments["output"].read_text(encoding="utf-8"))
+    assert manifest["migration"] == {
+        "from": OFFLINE_REPORT_EXPAND_FROM,
+        "target": OFFLINE_REPORT_EXPAND_TARGET,
+        "compatibility": "expand",
+    }
 
 
 def test_offline_approved_expand_waiver_must_be_explicit(tmp_path: Path) -> None:

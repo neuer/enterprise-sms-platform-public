@@ -39,10 +39,10 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 
 | secret 名 | 内容格式与生产来源 | Compose 挂载服务 | 轮换后动作 |
 |---|---|---|---|
-| `vendor_secret_name` | 厂商控制台签发的非空文本；从受控密钥系统下发 | worker-realtime、worker-bulk | 与 SecretKey 同窗原子替换，滚动重启使用方，先 GetBalance 验证 |
-| `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | worker-realtime、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
-| `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
-| `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
+| `vendor_secret_name` | 厂商控制台签发的非空文本；从受控密钥系统下发 | worker-realtime、worker-report、worker-bulk | 与 SecretKey 同窗原子替换，滚动重启使用方，先 GetBalance 验证 |
+| `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | worker-realtime、worker-report、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
+| `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
+| `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
 | `audit_context_key` | 稳定 human/api_app 主体专用 32 随机字节 base64；不得复用其他 key | 仅 api、migrate | 与自治事件 key 同窗轮换；先运行 migrate 同步 owner-only 验证表，再重建 api，禁止挂载到 worker/beat/outbox |
 | `audit_system_api_context_key` | API 自治事件专用 32 随机字节 base64 | 仅 api、migrate | 只签 `AUDIT_PRODUCER_DOMAIN=api`，不得复用任何审计 key |
 | `audit_system_realtime_context_key` | realtime worker 自治事件专用 32 随机字节 base64 | 仅 worker-realtime、migrate | 只签 realtime 域；不得挂给其他 worker |
@@ -55,7 +55,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `db_owner_password` | 独立高熵 PostgreSQL owner 密码 | **仅 postgres、db-role-provision、migrate** | 按 dba.md 维护窗流程更新；严禁挂载 api/worker/outbox-dispatcher/beat |
 | `db_auth_password` | 独立高熵 auth 角色密码 | db-role-provision、api | 重跑 provision 并重建 api |
 | `db_accept_password` | 独立高熵 accept 角色密码 | db-role-provision、api | 重跑 provision 并重建 api |
-| `db_send_password` | 独立高熵 send 角色密码 | db-role-provision、realtime/bulk worker | 重跑 provision 并重建两个发送 worker |
+| `db_send_password` | 独立高熵 send 角色密码 | db-role-provision、realtime/report/bulk worker | 重跑 provision 并重建三个使用方 |
 | `db_callback_password` | 独立高熵 callback 角色密码 | db-role-provision、api、realtime/callback worker | 重跑 provision 并重建使用方 |
 | `db_export_password` | 独立高熵 export 角色密码 | db-role-provision、api、bulk worker | 重跑 provision 并重建使用方 |
 | `db_scheduler_password` | 独立高熵 scheduler 角色密码 | db-role-provision、beat、outbox-dispatcher | 重跑 provision 并重建使用方 |
@@ -71,6 +71,7 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 |---|---|
 | api | AES/HMAC、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
 | worker-realtime | 厂商两项、AES/HMAC、`audit_system_realtime_context_key`、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
+| worker-report | 厂商两项、AES/HMAC、`db_send_password`、`redis_broker_password`、`redis_control_password`；不得挂载审计 key、callback DB 密码或 vendor-control UDS |
 | worker-bulk | 厂商两项、AES/HMAC、`audit_system_bulk_context_key`、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |
 | worker-callback | AES/HMAC、`alert_credential_private_key`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
 | outbox-dispatcher | `db_scheduler_password`、`redis_broker_password` |

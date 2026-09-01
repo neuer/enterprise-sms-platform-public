@@ -203,6 +203,8 @@ metrics_gate
 compose exec -T api test ! -e /run/secrets/db_owner_password
 bash scripts/verify_database_roles.sh
 compose exec -T api test ! -e /run/secrets/redis_broker_password
+compose exec -T worker-report test ! -e /run/secrets/audit_system_realtime_context_key
+compose exec -T worker-report test ! -e /run/secrets/db_callback_password
 compose exec -T worker-callback test ! -e /run/secrets/redis_auth_password
 seed_dev
 }

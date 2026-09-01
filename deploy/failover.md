@@ -287,7 +287,7 @@ receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、
 
 开始计时并记录事件编号。每一步完成后由另一名执行人复核。
 
-1. **隔离旧主。** 停止旧主的 web、api、worker-realtime、worker-bulk、worker-callback、outbox-dispatcher、beat；主机不可达时在负载均衡、网络和容器编排层同时隔离其入站、Redis/PostgreSQL 与厂商出站。没有旧主已冻结的证据就停止切换，严禁出现双 dispatcher、双 beat、双拉取 GetReport/GetReply 或双发送 worker。
+1. **隔离旧主。** 停止旧主的 web、api、worker-realtime、worker-report、worker-bulk、worker-callback、outbox-dispatcher、beat；主机不可达时在负载均衡、网络和容器编排层同时隔离其入站、Redis/PostgreSQL 与厂商出站。没有旧主已冻结的证据就停止切换，严禁出现双 dispatcher、双 beat、双拉取 GetReport/GetReply 或双发送 worker。
 2. **锁定恢复点。** 从生命周期账本选择 `available=true` 的快照，再核验其
    `SHA256SUMS`、manifest、Git commit、Alembic version、最后演练报告 SHA-256、备份年龄、
    恢复耗时与 `data_gap_seconds`。超过 24 小时明确记录数据缺口与业务批准；完整性或演练
@@ -302,7 +302,7 @@ receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、
    无围栏不得启动发送、拉取、dispatcher 或 beat。
 5. **启动无消费入口。** 通过受控包装器启动 `api`，先验证 `/livez`，再等待 `/readyz`、
    `/metrics`、JWT 登录和只读列表；此时 DNS 仍指向维护页，禁止发送接口流量。
-6. **逐队列启动。** 先启动 `worker-callback`，再启动 `worker-realtime`、`worker-bulk`；worker
+6. **逐队列启动。** 先启动 `worker-callback`，再启动 `worker-report`、`worker-realtime`、`worker-bulk`；worker
    就绪后只启动一个 `outbox-dispatcher`，观察 pending/dead/最老事件年龄回落。确认队列深度、
    vendor 令牌桶、余额和暂停开关正确；不得手工重投 submitted 或 uncertain chunk。
 7. **恢复唯一调度。** 再次确认旧主 beat 和所有拉取进程已隔离，随后只在备机启动单实例
@@ -348,7 +348,7 @@ customId 落 `unmatched`，不得丢弃。以 raw 的 custom_ids 与平台 chunk
 故障修复后的回切按一次新的故障切换执行：先把当前备机提升后的生产事实做加密快照并恢复到
 原主隔离库，完成哈希、迁移、权限与计数验证；冻结当前主并记录最终 RPO 边界、重新执行 gap
 fence；所有阶段通过受控包装器和 lifecycle lock，按
-`postgres → redis → api → worker-callback → worker-realtime/worker-bulk → outbox-dispatcher → beat → web`
+`postgres → redis → api → worker-callback → worker-report/worker-realtime/worker-bulk → outbox-dispatcher → beat → web`
 顺序启动原主；最后切 DNS 和厂商出口。禁止 raw Compose 或人工 Docker 顺序。旧节点至少保留
 一个观察周期且保持隔离。
 

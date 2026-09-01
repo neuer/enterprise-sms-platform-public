@@ -82,6 +82,7 @@ def test_outbox_contract_allows_only_fixed_manual_job_references() -> None:
     )
 
     validate_spec(spec)
+    validate_spec(replace(spec, queue="realtime-report"))
     with pytest.raises(ValueError, match="manual job"):
         validate_spec(replace(spec, args=("app.tasks.send.process_chunk",)))
 

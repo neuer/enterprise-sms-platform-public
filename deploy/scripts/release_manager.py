@@ -35,7 +35,7 @@ from offline_image_archive import (  # noqa: E402
     validate_offline_image_archive,
 )
 from release_manifest import (  # noqa: E402
-    OFFLINE_EXPAND_MIGRATION,
+    OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
     MigrationCompatibility,
     ReleaseManifest,
@@ -1371,7 +1371,7 @@ def _offline_full_update(manifest: ReleaseManifest) -> bool:
         and manifest.migration_compatibility is MigrationCompatibility.NONE
     ) or (
         (manifest.migration_from, manifest.migration_target)
-        == OFFLINE_EXPAND_MIGRATION
+        in OFFLINE_EXPAND_MIGRATIONS
         and manifest.migration_compatibility is MigrationCompatibility.EXPAND
     )
     return (
