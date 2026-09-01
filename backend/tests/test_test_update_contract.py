@@ -487,6 +487,7 @@ def test_each_migration_source_sets_migration_changed(
         "backend/vendor_control_protocol.pyi",
         "backend/Dockerfile",
         "deploy/scripts/vendor_test_manager.py",
+        "deploy/scripts/vendor_runtime_reset.py",
         "deploy/scripts/vendor_test_bootstrap.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/vendor_control_agent.py",
@@ -594,7 +595,6 @@ def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> 
         "deploy/redis.Dockerfile",
         "deploy/initdb/01-create-app-role.sh",
         "deploy/systemd/sms-platform.service",
-        "deploy/scripts/vendor_runtime_reset.py",
         "deploy/unknown-runtime.conf",
     ],
 )
@@ -855,6 +855,8 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "docs/api-test-playground.md",
             "docs/api-integration.md",
             "docs/runbooks/controlled-real-vendor-test.md",
+            "docs/runbooks/database-pool-recovery.md",
+            "docs/poll-report-queue-split.md",
             "docs/runbooks/production-phase0-baseline.md",
             "docs/runbooks/production-resource-responsibility-freeze.md",
             "docs/runbooks/test-fast-update.md",
@@ -1744,7 +1746,7 @@ def test_public_cutover_keeps_retired_static_paths_as_deletion_tombstones() -> N
 
 def test_public_cutover_does_not_weaken_normal_or_unknown_path_rejection() -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths(["deploy/scripts/vendor_runtime_reset.py"])
+        classify_changed_paths(["deploy/unknown-runtime.conf"])
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_public_cutover_paths(["scripts/future_runtime.py"])
 
