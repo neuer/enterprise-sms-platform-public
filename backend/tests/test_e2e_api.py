@@ -142,6 +142,17 @@ def test_uat_07_and_17_cover_scheduled_ci_races() -> None:
     assert 'wait_send("17/send-call"' in case_17
 
 
+def test_uat_19_waits_for_local_vendor_binding_before_manual_sync() -> None:
+    source = inspect.getsource(UatSuite.case_19)
+
+    assert 'wait_until("19", template_syncable' in source
+    assert source.index('wait_until("19", template_syncable') < source.index(
+        'f"/api/v1/web/templates/{template_id}/sync"'
+    )
+    assert 'current.get("vendor_state") in {"pending", "approved", "rejected"}' in source
+    assert 'current.get("vendor_template_id")' in source
+
+
 def test_key_file_requires_fixed_apps_without_echoing_values(tmp_path: Path) -> None:
     path = tmp_path / "keys.json"
     path.write_text(json.dumps({"app-iam": "secret-value"}), encoding="utf-8")
