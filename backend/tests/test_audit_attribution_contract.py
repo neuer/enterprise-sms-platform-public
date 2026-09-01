@@ -76,6 +76,7 @@ def test_compose_isolates_audit_signers_by_producer_domain() -> None:
     )
     for service in (
         "worker-realtime",
+        "worker-report",
         "worker-bulk",
         "worker-callback",
         "beat",
@@ -92,6 +93,6 @@ def test_compose_isolates_audit_signers_by_producer_domain() -> None:
     assert "audit_system_bulk_context_key" in {
         item["target"] for item in compose["services"]["worker-bulk"]["secrets"]
     }
-    for service in ("worker-callback", "beat", "outbox-dispatcher"):
+    for service in ("worker-report", "worker-callback", "beat", "outbox-dispatcher"):
         targets = {item["target"] for item in compose["services"][service]["secrets"]}
         assert not any(name.startswith("audit_system_") for name in targets)

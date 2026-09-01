@@ -33,6 +33,10 @@ from release_manager import (  # noqa: E402
 from release_manifest import OFFLINE_EXPAND_MIGRATION, load_manifest  # noqa: E402
 
 COMMIT = "c" * 40
+OFFLINE_REPORT_EXPAND_MIGRATION = (
+    "0081_sign_adoption_contract",
+    "0082_outbox_realtime_report_queue",
+)
 DEFAULT_PRODUCTION_ENVIRONMENT_FILE = (
     release_manager_module._PRODUCTION_ENVIRONMENT_FILE
 )
@@ -496,6 +500,7 @@ def _offline_bundle(
     changed: set[str] | None = None,
     large_archive: bool = False,
     migration_changed: bool = False,
+    migration_pair: tuple[str, str] | None = None,
     include_conditional_evidence: bool = True,
 ) -> tuple[Path, dict[str, Any], dict[str, str]]:
     changed = set(IMAGE_NAMES) if changed is None else changed
@@ -506,11 +511,13 @@ def _offline_bundle(
     bundle.mkdir(mode=0o700)
     bundle.chmod(0o700)
     app_version = "1.6.0"
-    migration_from, schema_revision = (
-        OFFLINE_EXPAND_MIGRATION
-        if migration_changed
-        else ("0012_baseline", "0012_baseline")
-    )
+    if migration_changed or migration_pair is not None:
+        migration_from, schema_revision = (
+            migration_pair or OFFLINE_EXPAND_MIGRATION
+        )
+    else:
+        migration_from, schema_revision = ("0012_baseline", "0012_baseline")
+    migration_changed = migration_from != schema_revision
     images: dict[str, dict[str, Any]] = {}
     for name in IMAGE_NAMES:
         archive_path = bundle / f"{name}.tar"
@@ -2088,6 +2095,26 @@ def test_production_offline_full_expand_update_can_activate(
     with pytest.raises(ReleaseManagerError, match="requires a forward rollback candidate"):
         manager.rollback(manifest["release_id"])
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
+
+
+def test_production_offline_report_queue_expand_update_can_activate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_pair=OFFLINE_REPORT_EXPAND_MIGRATION,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    manager.prepare(manifest_path)
+    manager.activate(manifest["release_id"])
+
+    state = manager.status(manifest["release_id"])
+    assert state["state"] == "succeeded"
+    assert state["verified_migration_head"] == OFFLINE_REPORT_EXPAND_MIGRATION[1]
+    assert runner.migration_head == OFFLINE_REPORT_EXPAND_MIGRATION[1]
 
 
 def test_succeeded_offline_expand_source_still_rejects_forward_rollback(

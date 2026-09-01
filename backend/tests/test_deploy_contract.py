@@ -205,6 +205,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
     expected_roles = {
         "api": "accept",
         "worker-realtime": "send",
+        "worker-report": "send",
         "worker-bulk": "send",
         "worker-callback": "callback",
         "outbox-dispatcher": "scheduler",
@@ -283,6 +284,15 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
     }
     assert {"vendor_secret_name", "vendor_secret_key"}.isdisjoint(targets("api"))
     assert {"vendor_secret_name", "vendor_secret_key"} <= targets("worker-realtime")
+    assert targets("worker-report") == {
+        "vendor_secret_name",
+        "vendor_secret_key",
+        "data_aes_key",
+        "data_hmac_key",
+        "db_send_password",
+        "redis_broker_password",
+        "redis_control_password",
+    }
     assert targets("worker-bulk") == {
         "vendor_secret_name",
         "vendor_secret_key",
@@ -322,6 +332,16 @@ def test_compose_uses_locking_beat_entrypoint_and_fixed_queues() -> None:
         services["worker-realtime"]["command"]
         == "celery -A app.tasks worker -Q realtime -c 2 -l info"
     )
+    assert (
+        services["worker-report"]["command"]
+        == "celery -A app.tasks worker -Q realtime-report -c 1 -l info"
+    )
+    assert services["worker-report"]["cpus"] == 1.0
+    assert services["worker-report"]["mem_limit"] == "768m"
+    assert services["worker-report"]["user"] == "10001:10001"
+    assert "group_add" not in services["worker-report"]
+    assert services["worker-report"]["environment"]["DB_WORKER_POOL_SIZE"] == "2"
+    assert services["worker-report"]["environment"]["DB_WORKER_MAX_OVERFLOW"] == "0"
     assert services["worker-bulk"]["command"] == "celery -A app.tasks worker -Q bulk -c 2 -l info"
     assert (
         services["worker-callback"]["command"]
@@ -530,7 +550,14 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
     assert "exportdata:/var/lib/sms/exports" in services["api"]["volumes"]
     assert "exportdata:/var/lib/sms/exports" in services["worker-bulk"]["volumes"]
     assert "rawspill:/var/lib/sms/raw-spill" in services["worker-realtime"]["volumes"]
-    for name in ("worker-realtime", "worker-callback", "outbox-dispatcher", "beat"):
+    assert "rawspill:/var/lib/sms/raw-spill" in services["worker-report"]["volumes"]
+    for name in (
+        "worker-realtime",
+        "worker-report",
+        "worker-callback",
+        "outbox-dispatcher",
+        "beat",
+    ):
         assert "exportdata:/var/lib/sms/exports" not in services[name].get("volumes", [])
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
@@ -620,6 +647,7 @@ def test_production_restart_overlay_disables_daemon_restart_for_every_runtime_se
                 "redis-control",
                 "api",
                 "worker-realtime",
+                "worker-report",
                 "worker-bulk",
                 "worker-callback",
                 "outbox-dispatcher",
@@ -660,6 +688,7 @@ def test_isolated_redis_tls_overlay_fixes_server_and_client_identity_contract() 
         "migrate",
         "api",
         "worker-realtime",
+        "worker-report",
         "worker-bulk",
         "worker-callback",
         "beat",

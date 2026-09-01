@@ -15,7 +15,7 @@ from typing import NamedTuple, Protocol
 from prepare_runtime_secrets import VENDOR_REVOCATION_TOMBSTONE
 from test_update_backup import require_inherited_lifecycle_lock
 
-VENDOR_READER_SERVICES = ("worker-realtime", "worker-bulk")
+VENDOR_READER_SERVICES = ("worker-realtime", "worker-report", "worker-bulk")
 _CONTAINER_PROBE = (
     "from pathlib import Path;"
     "p=(Path('/run/secrets/vendor_secret_name'),"

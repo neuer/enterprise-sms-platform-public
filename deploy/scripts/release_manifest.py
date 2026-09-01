@@ -52,6 +52,15 @@ OFFLINE_EXPAND_MIGRATION = (
     "0080_security_daily_delivery_generation",
     "0081_sign_adoption_contract",
 )
+OFFLINE_EXPAND_MIGRATIONS = frozenset(
+    {
+        OFFLINE_EXPAND_MIGRATION,
+        (
+            "0081_sign_adoption_contract",
+            "0082_outbox_realtime_report_queue",
+        ),
+    }
+)
 OFFLINE_IMAGE_SOURCE = "production-offline-docker-archive-v1"
 _TOP_LEVEL_FIELDS_V1 = frozenset(
     {"schema_version", "release_id", "commit", "mode", "images", "migration", "evidence"}
@@ -360,7 +369,7 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
             )
         if migration_changes_schema and (
             changed_count != len(_IMAGE_NAMES)
-            or (migration_from, migration_target) != OFFLINE_EXPAND_MIGRATION
+            or (migration_from, migration_target) not in OFFLINE_EXPAND_MIGRATIONS
         ):
             raise ReleaseManifestError(
                 "offline production migration must be the approved all-four expand update"
@@ -404,7 +413,7 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         schema_version == 2
         and image_source == OFFLINE_IMAGE_SOURCE
         and all(spec.changed for spec in images.values())
-        and (migration_from, migration_target) == OFFLINE_EXPAND_MIGRATION
+        and (migration_from, migration_target) in OFFLINE_EXPAND_MIGRATIONS
     )
     data_evidence_required = data_changed and not offline_full_no_migration_update
     if (data_evidence_required and data_images is None) or (

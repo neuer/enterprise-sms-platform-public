@@ -22,7 +22,7 @@ def test_vendor_test_state_is_read_only_and_only_visible_to_vendor_callers() -> 
         "/run/vendor-test:ro"
     )
 
-    for service in ("api", "worker-realtime", "worker-bulk"):
+    for service in ("api", "worker-realtime", "worker-report", "worker-bulk"):
         assert mount in services[service].get("volumes", [])
     for service in (
         "postgres",
@@ -50,6 +50,7 @@ def test_vendor_control_socket_directory_is_read_only_and_least_privilege() -> N
         "postgres",
         "redis",
         "migrate",
+        "worker-report",
         "worker-bulk",
         "worker-callback",
         "outbox-dispatcher",
@@ -101,6 +102,7 @@ def test_backend_services_declare_database_pool_component() -> None:
     expected = {
         "api": "api",
         "worker-realtime": "worker",
+        "worker-report": "worker",
         "worker-bulk": "worker",
         "worker-callback": "worker",
         "beat": "beat",
@@ -121,6 +123,7 @@ def test_every_runtime_service_has_minimal_read_only_resource_boundary() -> None
         "migrate",
         "api",
         "worker-realtime",
+        "worker-report",
         "worker-bulk",
         "worker-callback",
         "beat",

@@ -25,10 +25,11 @@ from vendor_test_files import (
     VendorTestMarker,
 )
 
-VENDOR_READER_SERVICES = ("worker-realtime", "worker-bulk")
+VENDOR_READER_SERVICES = ("worker-realtime", "worker-report", "worker-bulk")
 BACKEND_SERVICES = (
     "api",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",
@@ -38,6 +39,7 @@ OLD_SETTING_SERVICES = (
     "api",
     "beat",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",

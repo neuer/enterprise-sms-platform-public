@@ -11,6 +11,7 @@ from test_update_store import TestUpdateState
 BACKEND_SERVICES = (
     "api",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",

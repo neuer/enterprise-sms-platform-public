@@ -54,6 +54,10 @@ services:
     environment: *isolated-redis-environment
     volumes:
       - *client-redis-ca-volume
+  worker-report:
+    environment: *isolated-redis-environment
+    volumes:
+      - *client-redis-ca-volume
   worker-bulk:
     environment: *isolated-redis-environment
     volumes:

@@ -59,7 +59,7 @@ scripts/local_test.sh reset   # 销毁本地测试卷并重新 seed
 查看安全日志时禁止开启 shell trace，也不要输出 `deploy/secrets/` 或 `dev-apikeys.txt` 内容：
 
 ```bash
-docker compose -f deploy/docker-compose.yml logs --since=10m api worker-realtime worker-bulk worker-callback beat
+docker compose -f deploy/docker-compose.yml logs --since=10m api worker-realtime worker-report worker-bulk worker-callback beat
 ```
 
 ## 安全边界

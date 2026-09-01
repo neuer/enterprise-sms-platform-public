@@ -158,7 +158,7 @@ PRODUCTION_SECURITY_REPORT_INCOMING_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR
 PRODUCTION_SECURITY_REPORT_REQUESTS_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR/requests"
 PRODUCTION_SECURITY_REPORT_RESULTS_DIR="$PRODUCTION_SECURITY_REPORT_CONTROL_DIR/results"
 ROTATE_WAIT_TIMEOUT=120
-BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-bulk worker-callback outbox-dispatcher beat)
+BACKEND_SERVICES=(redis redis-auth redis-control api worker-realtime worker-report worker-bulk worker-callback outbox-dispatcher beat)
 export SMS_RUNTIME_SECRETS_DIR="$RUNTIME_ROOT/current"
 
 CONTROL_PYTHON=(python3)
@@ -262,7 +262,7 @@ usage() {
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
-  echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-bulk worker-callback outbox-dispatcher beat web" >&2
+  echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-report worker-bulk worker-callback outbox-dispatcher beat web" >&2
   echo "lifecycle locking: portable Python fcntl runner" >&2
 }
 
@@ -737,7 +737,7 @@ validate_production_up_args() {
   for argument in "$@"; do
     case "$argument" in
       -d | --detach | --remove-orphans | --no-deps | --force-recreate) ;;
-      postgres | redis | redis-auth | redis-control | migrate | api | worker-realtime | worker-bulk | worker-callback | outbox-dispatcher | beat | web) ;;
+      postgres | redis | redis-auth | redis-control | migrate | api | worker-realtime | worker-report | worker-bulk | worker-callback | outbox-dispatcher | beat | web) ;;
       *)
         echo "sms-compose: unsupported production up argument" >&2
         return 2

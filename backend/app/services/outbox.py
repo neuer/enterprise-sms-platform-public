@@ -81,7 +81,7 @@ FORBIDDEN_KEYS = {
     "secret",
     "password",
 }
-ALLOWED_QUEUES = {"realtime", "bulk", "callback"}
+ALLOWED_QUEUES = {"realtime", "realtime-report", "bulk", "callback"}
 
 
 class OutboxLeaseLost(RuntimeError):

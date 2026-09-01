@@ -75,7 +75,7 @@ hypervisor 路径、宿主内核、电源和维护窗口，三者共享 Redis VM
 托管 PostgreSQL、KMS、跨机房备份或独立 Redis HA，任何静态配置、单元测试或 AOF 文件存在
 都不能证明上述目标已经实现。
 
-API 容器不挂载 `redis_broker_password`，worker-callback 不挂载 `redis_auth_password`。三个 Redis 服务关闭 default 用户，且不用 `~*` 或 `+@all`：broker 只允许 Celery 的三个业务队列及 `_kombu`/Celery 内部键，auth 只允许 `auth:*`、`export:step-up:*`、`vendor-test:step-up:*`，control 只允许已登记的配额、频控、幂等、锁和投影前缀。应用 ACL 不允许 `KEYS`，并拒绝 `ACL`、`CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 及 `CLIENT PAUSE/KILL/UNBLOCK` 等管理命令；broker 只开放 Celery/redis-py 建连必需的 `CLIENT ID/GETNAME/SETNAME/SETINFO/GETREDIR` 子命令。管理账号不进入应用 Compose；托管平台管理操作只能走受控运维身份和双人审批。
+API 容器不挂载 `redis_broker_password`，worker-callback 不挂载 `redis_auth_password`。三个 Redis 服务关闭 default 用户，且不用 `~*` 或 `+@all`：broker 只允许 Celery 的 `realtime`、`realtime-report`、`bulk`、`callback` 四个业务队列及 `_kombu`/Celery 内部键，auth 只允许 `auth:*`、`export:step-up:*`、`vendor-test:step-up:*`，control 只允许已登记的配额、频控、幂等、锁和投影前缀。应用 ACL 不允许 `KEYS`，并拒绝 `ACL`、`CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 及 `CLIENT PAUSE/KILL/UNBLOCK` 等管理命令；broker 只开放 Celery/redis-py 建连必需的 `CLIENT ID/GETNAME/SETNAME/SETINFO/GETREDIR` 子命令。管理账号不进入应用 Compose；托管平台管理操作只能走受控运维身份和双人审批。
 
 基础 Compose 中的三个单节点服务仍只用于 development/test 和镜像契约验证；生产
 `isolated-standalone` 必须由正式入口叠加专用 TLS/持久化合同，不能只启动基础 Compose。

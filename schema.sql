@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.68  2026-09-01
+-- v1.6.68：Outbox 队列白名单增加 realtime-report，为独立报告轮询
+-- worker 建立前向兼容数据库合同；本版本不切换 poll_report 路由。
 -- v1.6.67  2026-08-28
 -- v1.6.67：允许精确关联已有厂商签名的 Outbox 任务，并授权 realtime
 --          vendor-state-sync 写入 sign_adopt 系统审计。
@@ -1386,7 +1389,10 @@ CREATE TABLE outbox_event (
                      'app.tasks.outbox.trigger_job'
                    )),
     queue          VARCHAR(16)  NOT NULL
-                   CHECK (queue IN ('realtime','bulk','callback')),
+                   CONSTRAINT ck_outbox_queue
+                   CHECK (queue IN (
+                     'realtime','realtime-report','bulk','callback'
+                   )),
     args           JSONB        NOT NULL DEFAULT '[]'::jsonb
                    CHECK (jsonb_typeof(args)='array')
                    CONSTRAINT ck_outbox_args_scalar_refs CHECK (

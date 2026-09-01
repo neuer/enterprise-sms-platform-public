@@ -13,7 +13,7 @@ NOREPLICATION`：
 |---|---|---|
 | `sms_auth` | API 认证、账号与 Provider 仓储 | 账号、身份、Provider、凭据、角色映射；只读应用 Key |
 | `sms_accept` | API 消息受理与管理接口 | 批次、导入、审批、模板、签名、策略和受控联调受理 |
-| `sms_send` | realtime/bulk worker | 分片、消息、厂商事实、用量账本、发送恢复、统计、异步导入、生命周期清理，以及签名/模板厂商绑定结果更新 |
+| `sms_send` | realtime/report/bulk worker | 分片、消息、厂商事实、用量账本、发送恢复、统计、异步导入、生命周期清理，以及签名/模板厂商绑定结果更新 |
 | `sms_callback` | callback worker 与回调管理接口 | 回调事件、任务、租约、相关 Outbox 和告警 |
 | `sms_export` | 导出 API 与 bulk export worker | 固化范围内的消息/回执读取和导出任务租约 |
 | `sms_scheduler` | beat 与 Outbox dispatcher | job 追踪、Outbox 投递和调度告警 |
