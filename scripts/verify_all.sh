@@ -8,7 +8,6 @@ if [[ "${SMS_DOCKER_PUBLIC_SESSION:-0}" != "1" ]]; then
 fi
 cd "$ROOT"
 mode="full"
-include_performance=0
 include_release_control=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -17,23 +16,18 @@ while [[ $# -gt 0 ]]; do
       mode="$2"
       shift 2
       ;;
-    --include-performance)
-      include_performance=1
-      shift
-      ;;
     --include-release-control)
       include_release_control=1
       shift
       ;;
     *)
-      echo "usage: scripts/verify_all.sh [--mode full|integration] [--include-performance] [--include-release-control]" >&2
+      echo "usage: scripts/verify_all.sh [--mode full|integration] [--include-release-control]" >&2
       exit 2
       ;;
   esac
 done
 case "$mode" in
   full)
-    include_performance=1
     include_release_control=1
     ;;
   integration) ;;
@@ -222,20 +216,10 @@ python3 scripts/verify_tls_termination_e2e.py \
 }
 
 stage_8(){
-# E2E creates durable facts by design. Recreate only the G2 development volumes so
-# the authoritative performance profile measures the same images from a clean DB.
-compose down -v
-compose up -d
-wait_api_ready
-seed_dev
-uv run --project backend python scripts/perf_smoke.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt
-}
-
-stage_9(){
 frontend_gate
 }
 
-stage_10(){
+stage_9(){
 # Control-plane recovery smoke does not replace the Trivy release gate.
 local image platform
 local -a release_images=(
@@ -274,14 +258,11 @@ trap cleanup EXIT
 run_stage 5 "干净整栈拉起" stage_5
 run_stage 6 "运行态安全验收" stage_6
 run_stage 7 "API 级 E2E" stage_7
-if [[ "$include_performance" == 1 ]]; then
-run_stage 8 "性能冒烟" stage_8
-fi
 if [[ "$mode" == full ]]; then
-run_stage 9 "前端门禁" stage_9
+run_stage 8 "前端门禁" stage_8
 fi
 if [[ "$include_release_control" == 1 ]]; then
-run_stage 10 "发布控制恢复烟测" stage_10
+run_stage 9 "发布控制恢复烟测" stage_9
 fi
 
-echo -e "\n\033[1;32m✔ verify_all 全绿 mode=$mode performance=$include_performance release_control=$include_release_control\033[0m"
+echo -e "\n\033[1;32m✔ verify_all 全绿 mode=$mode release_control=$include_release_control\033[0m"

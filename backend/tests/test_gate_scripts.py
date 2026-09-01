@@ -208,7 +208,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
         assert command not in postgres_gate
 
 
-def test_g2_wraps_exactly_eleven_authoritative_stages_with_timing() -> None:
+def test_g2_wraps_exactly_ten_authoritative_stages_with_timing() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
     calls = re.findall(
@@ -217,7 +217,7 @@ def test_g2_wraps_exactly_eleven_authoritative_stages_with_timing() -> None:
         re.MULTILINE,
     )
     assert [(int(stage), int(function)) for stage, _name, function in calls] == [
-        (stage, stage) for stage in range(11)
+        (stage, stage) for stage in range(10)
     ]
     assert "time.monotonic_ns" in all_gate
     assert "scripts/g2_timing.py record" in all_gate
@@ -379,45 +379,16 @@ def test_g2_uat_runs_full_default_registry_with_runtime_ports() -> None:
     assert "--keys deploy/secrets/dev-apikeys.txt" in line
     assert "--compose-file deploy/docker-compose.yml" in line
     assert "--cases" not in line
-    assert all_gate.index(line) < all_gate.index(
-        "uv run --project backend python scripts/perf_smoke.py"
-    )
 
 
-def test_g2_performance_gate_uses_authoritative_default_durations() -> None:
+def test_g2_gate_does_not_execute_performance_loads() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    line = next(
-        line
+    assert "--include-performance" not in all_gate
+    assert "性能冒烟" not in all_gate
+    assert not any(
+        line.startswith("uv run --project backend python scripts/perf_smoke.py")
         for line in all_gate.splitlines()
-        if line.startswith("uv run --project backend python scripts/perf_smoke.py")
     )
-    assert '--base "http://localhost:${api_port}"' in line
-    assert '--mock-base "http://localhost:${mock_vendor_port}"' in line
-    assert "--keys deploy/secrets/dev-apikeys.txt" in line
-    for forbidden in (
-        "--acceptance-rps",
-        "--acceptance-seconds",
-        "--mixed-seconds",
-        "--drain-timeout",
-    ):
-        assert forbidden not in line
-
-
-def test_g2_performance_gate_recreates_clean_volumes_without_rebuilding() -> None:
-    all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_eight = all_gate.split("stage_8(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
-
-    down = stage_eight.index("compose down -v")
-    up = stage_eight.index("compose up -d")
-    ready = stage_eight.index("wait_api_ready")
-    seed = stage_eight.index("seed_dev")
-    performance = stage_eight.index(
-        "uv run --project backend python scripts/perf_smoke.py"
-    )
-    assert down < up < ready < seed < performance
-    assert "--build" not in stage_eight
 
 
 def test_release_gate_is_pinned_fail_closed_and_scans_all_release_images() -> None:
@@ -748,7 +719,7 @@ def test_g2_runs_release_control_smoke_as_a_non_substitute_control_plane_check()
 
 def test_g2_release_control_reuses_stage_five_amd64_images() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_ten = all_gate.split("stage_10(){", maxsplit=1)[1].split(
+    stage_nine = all_gate.split("stage_9(){", maxsplit=1)[1].split(
         "\n}", maxsplit=1
     )[0]
 
@@ -758,16 +729,16 @@ def test_g2_release_control_reuses_stage_five_amd64_images() -> None:
         "sms-platform-postgres:local",
         "sms-platform-redis:local",
     ):
-        assert image in stage_ten
-    assert "docker image inspect" in stage_ten
-    assert "linux/amd64" in stage_ten
+        assert image in stage_nine
+    assert "docker image inspect" in stage_nine
+    assert "linux/amd64" in stage_nine
     for variable in (
         "SMS_RELEASE_CONTROL_API_IMAGE",
         "SMS_RELEASE_CONTROL_WEB_IMAGE",
         "SMS_RELEASE_CONTROL_POSTGRES_IMAGE",
         "SMS_RELEASE_CONTROL_REDIS_IMAGE",
     ):
-        assert variable in stage_ten
+        assert variable in stage_nine
 
 
 def _write_fake_gate_tools(tmp_path: Path) -> Path:

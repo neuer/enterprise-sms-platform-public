@@ -13,12 +13,12 @@ sys.path.insert(0, str(SCRIPTS))
 from g2_timing import STAGE_NAMES, append_record, render_summary  # noqa: E402
 
 
-def _write_success_records(path: Path, stages: range = range(11)) -> None:
+def _write_success_records(path: Path, stages: range = range(10)) -> None:
     for stage in stages:
         append_record(path, stage, STAGE_NAMES[stage], "success", (stage + 1) * 1000)
 
 
-def test_success_summary_requires_all_eleven_ordered_stages(tmp_path: Path) -> None:
+def test_success_summary_requires_all_ten_ordered_stages(tmp_path: Path) -> None:
     timing = tmp_path / "g2.jsonl"
     summary = tmp_path / "summary.md"
     _write_success_records(timing)
@@ -28,21 +28,21 @@ def test_success_summary_requires_all_eleven_ordered_stages(tmp_path: Path) -> N
     markdown = summary.read_text(encoding="utf-8")
     assert "## G2 阶段耗时" in markdown
     assert "| 0 | 规格一致性与安全规则 | success | 1.000s |" in markdown
-    assert "| 10 | 发布控制恢复烟测 | success | 11.000s |" in markdown
-    assert "| 合计 |  | success | 66.000s |" in markdown
+    assert "| 9 | 发布控制恢复烟测 | success | 10.000s |" in markdown
+    assert "| 合计 |  | success | 55.000s |" in markdown
 
 
 def test_integration_summary_requires_exact_selected_stages(tmp_path: Path) -> None:
     timing = tmp_path / "g2.jsonl"
     summary = tmp_path / "summary.md"
-    expected = (5, 6, 7, 8, 10)
+    expected = (5, 6, 7, 9)
     for stage in expected:
         append_record(timing, stage, STAGE_NAMES[stage], "success", 1000)
 
     assert render_summary(timing, "success", summary, expected) == 0
     markdown = summary.read_text(encoding="utf-8")
     assert "| 5 | 干净整栈拉起 | success | 1.000s |" in markdown
-    assert "| 10 | 发布控制恢复烟测 | success | 1.000s |" in markdown
+    assert "| 9 | 发布控制恢复烟测 | success | 1.000s |" in markdown
     assert "| 0 |" not in markdown
 
 
@@ -51,8 +51,8 @@ def test_integration_summary_fails_closed_on_missing_selected_stage(
 ) -> None:
     timing = tmp_path / "g2.jsonl"
     summary = tmp_path / "summary.md"
-    expected = (5, 6, 7, 8, 10)
-    for stage in (5, 6, 8, 10):
+    expected = (5, 6, 7, 9)
+    for stage in (5, 6, 9):
         append_record(timing, stage, STAGE_NAMES[stage], "success", 1000)
 
     assert render_summary(timing, "success", summary, expected) == 1
@@ -64,14 +64,14 @@ def test_success_summary_fails_closed_on_invalid_timing(tmp_path: Path, case: st
     timing = tmp_path / "g2.jsonl"
     summary = tmp_path / "summary.md"
     if case == "missing":
-        _write_success_records(timing, range(10))
+        _write_success_records(timing, range(9))
     elif case == "duplicate":
         _write_success_records(timing)
-        append_record(timing, 10, STAGE_NAMES[10], "success", 1)
+        append_record(timing, 9, STAGE_NAMES[9], "success", 1)
     elif case == "out-of-order":
         append_record(timing, 1, STAGE_NAMES[1], "success", 1)
         append_record(timing, 0, STAGE_NAMES[0], "success", 1)
-        _write_success_records(timing, range(2, 11))
+        _write_success_records(timing, range(2, 10))
     else:
         timing.write_text("{not-json}\n", encoding="utf-8")
 
@@ -109,7 +109,7 @@ def test_failed_gate_tolerates_unavailable_timing(
 @pytest.mark.parametrize(
     ("stage", "name", "status", "duration_ms"),
     (
-        (11, "未知", "success", 1),
+        (10, "未知", "success", 1),
         (0, "名称漂移", "success", 1),
         (0, STAGE_NAMES[0], "pending", 1),
         (0, STAGE_NAMES[0], "success", -1),

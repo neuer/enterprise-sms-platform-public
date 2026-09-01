@@ -1447,7 +1447,7 @@ def test_historical_rebaseline_exceptions_remain_blocked_for_daily_apply(
         classify_changed_paths([path])
 
 
-def test_performance_gate_evidence_is_non_runtime_for_daily_apply() -> None:
+def test_performance_tooling_is_non_runtime_for_daily_apply() -> None:
     change = classify_changed_paths(["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
 
     assert change.components == frozenset()

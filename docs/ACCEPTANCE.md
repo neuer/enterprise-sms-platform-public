@@ -15,7 +15,8 @@
 | 单元/集成 | `pytest` | 服务唯一实现、状态机、仓储 SQL、API 鉴权和 mock 契约 |
 | 运行态安全 | `python3 scripts/security_acceptance.py` | Compose HTTP/DB/log 黑盒安全边界 |
 | 完整契约 | `python scripts/check_contract.py openapi.yaml` | FastAPI 与 OpenAPI 字段、安全和响应零差 |
-| 完整 G2 | `scripts/verify_all.sh` | 静态规则、覆盖率、迁移、干净栈、UAT、性能和前端 |
+| 完整 G2 | `scripts/verify_all.sh` | 静态规则、覆盖率、迁移、干净栈、UAT、前端和发布控制恢复 |
+| 专项性能 | `docs/PERFORMANCE.md` | 隔离测试环境中的有界压测、全日压测及独立性能证据 |
 
 ## 可靠发送与基础安全
 

@@ -356,8 +356,8 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/local_test.sh",
         # 精确 CI 证据核验只在本地 driver / 托管 CI 使用，不进入 api/web 运行镜像。
         "scripts/verify_ci_commit.py",
-        # G2 性能门禁脚本不进入 api/web 运行镜像；阈值变更由精确提交的
-        # 托管 CI/G2 负责验证，不能阻断同一提交中的正式运行态更新。
+        # 测试环境专项压测脚本不进入 api/web 运行镜像，也不属于日常 CI/G2；
+        # 其变更不能阻断同一提交中的正式运行态更新。
         "scripts/perf_smoke.py",
         # 安全验收仅供本地/托管 CI 检查，不进入 api/web 运行镜像；其结果由
         # 精确提交的 ci-gate 负责验证。

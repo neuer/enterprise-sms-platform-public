@@ -914,7 +914,7 @@ python3 scripts/security_acceptance.py \
 
 性能测试必须独占环境并得到测试负责人批准。禁止从公网无节制压测；推荐在服务器回环或同内网压测机执行现有脚本：
 
-仓库完整 G2 会在 E2E 后复用已构建镜像并重建开发卷，再等待 ready、执行 seed-dev 后运行性能冒烟；手工独立运行下列脚本时，执行人仍须自行提供同等的干净、独占环境。
+性能压测不进入日常 CI/G2。执行人必须在隔离测试环境中独占运行下列脚本，自行完成干净环境、ready、seed-dev、参数基线和结果归档。
 
 ```bash
 uv run --project backend python scripts/perf_smoke.py \
@@ -982,7 +982,7 @@ python3 scripts/e2e_api.py \
 API_PORT=18100 MOCK_VENDOR_PORT=19128 WEB_PORT=18180 bash scripts/verify_all.sh
 ```
 
-G2 包含规格/硬规则、Ruff、Mypy、后端 pytest 与覆盖率、迁移双建库、OpenAPI、SEC、20 项自动 UAT、性能和 Node 24 前端检查。远程人工 UAT 与仓库 G2 二者均通过，才能形成完整测试结论。
+G2 包含规格/硬规则、Ruff、Mypy、后端 pytest 与覆盖率、迁移双建库、OpenAPI、SEC、20 项自动 UAT、Node 24 前端检查和发布控制恢复。远程人工 UAT 与仓库 G2 二者均通过，才能形成日常功能测试结论；性能结论必须另附隔离测试环境专项压测证据。
 
 ## 9. 回归与验收标准
 

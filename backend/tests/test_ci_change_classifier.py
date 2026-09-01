@@ -129,7 +129,6 @@ def test_mixed_changes_take_union() -> None:
         security=True,
         categories=frozenset({"frontend-security", "vendor-live"}),
         full_fallback=False,
-        performance=True,
     )
 
 
@@ -397,7 +396,6 @@ def test_main_push_without_verified_pr_evidence_fails_closed_to_g2(
         True,
         frozenset({"backend-critical"}),
         False,
-        True,
         False,
     )
 
@@ -424,7 +422,6 @@ def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -
         frozenset({"reused-pr-ci-evidence"}),
         False,
         False,
-        False,
     )
 
 
@@ -441,7 +438,6 @@ def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -
                 frozenset({"reused-pr-ci-evidence"}),
                 False,
                 False,
-                False,
             ),
         ),
         (
@@ -452,7 +448,6 @@ def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -
                 True,
                 True,
                 frozenset({"untrusted-post-merge"}),
-                True,
                 True,
                 True,
             ),
@@ -476,7 +471,7 @@ def test_post_merge_reuses_only_trusted_evidence_without_git(
     assert result == expected
 
 
-def test_high_risk_pull_request_requires_g2_but_defers_performance(
+def test_high_risk_pull_request_requires_g2(
     tmp_path: Path,
 ) -> None:
     repo = init_repo(tmp_path)
@@ -494,11 +489,10 @@ def test_high_risk_pull_request_requires_g2_but_defers_performance(
         frozenset({"backend-critical"}),
         False,
         False,
-        False,
     )
 
 
-def test_pull_request_defers_performance_without_dropping_release_control(
+def test_pull_request_keeps_release_control(
     tmp_path: Path,
 ) -> None:
     repo = init_repo(tmp_path)
@@ -514,7 +508,6 @@ def test_pull_request_defers_performance_without_dropping_release_control(
         True,
         True,
         frozenset({"vendor-live"}),
-        False,
         False,
         True,
     )
@@ -895,27 +888,25 @@ def test_manual_and_scheduled_events_force_all_without_git(
         frozenset({f"forced-{event_name}"}),
         True,
         True,
-        True,
     )
 
 
 @pytest.mark.parametrize(
-    ("event_name", "base_sha", "before_sha", "head_sha", "reason", "performance"),
+    ("event_name", "base_sha", "before_sha", "head_sha", "reason"),
     [
-        ("pull_request", "", "", "head", "missing-pr-sha", False),
-        ("push", "", ZERO_SHA, "head", "missing-push-sha", True),
-        ("push", "", "before", "", "missing-push-sha", True),
-        ("repository_dispatch", "", "", "", "unsupported-event", True),
+        ("pull_request", "", "", "head", "missing-pr-sha"),
+        ("push", "", ZERO_SHA, "head", "missing-push-sha"),
+        ("push", "", "before", "", "missing-push-sha"),
+        ("repository_dispatch", "", "", "", "unsupported-event"),
     ],
 )
-def test_unreliable_event_metadata_fails_closed_while_pr_defers_performance(
+def test_unreliable_event_metadata_fails_closed(
     tmp_path: Path,
     event_name: str,
     base_sha: str,
     before_sha: str,
     head_sha: str,
     reason: str,
-    performance: bool,
 ) -> None:
     result = classify_event(
         repo=tmp_path / "missing-repo",
@@ -932,7 +923,6 @@ def test_unreliable_event_metadata_fails_closed_while_pr_defers_performance(
         True,
         frozenset({reason}),
         True,
-        performance,
         True,
     )
 
@@ -949,7 +939,6 @@ def test_reliable_but_empty_diff_forces_all(tmp_path: Path) -> None:
         True,
         True,
         frozenset({"empty-diff"}),
-        True,
         True,
         True,
     )
@@ -981,7 +970,6 @@ def test_github_outputs_contain_only_boolean_job_flags(tmp_path: Path) -> None:
         "frontend=true",
         "g2=false",
         "security=false",
-        "performance=false",
         "release_control=false",
     ]
 
@@ -1009,7 +997,6 @@ def test_cli_writes_forced_outputs_without_echoing_paths(
         "frontend=true",
         "g2=true",
         "security=true",
-        "performance=true",
         "release_control=true",
     ]
     captured = capsys.readouterr()
