@@ -3533,7 +3533,10 @@ class ReleaseManager:
                 if state.get("state") not in eligible:
                     continue
                 manifest = self._stored_manifest(store)
-                snapshot = self._read_snapshot(store)
+                snapshot = self._read_snapshot(
+                    store,
+                    allow_legacy_report_worker=True,
+                )
             except (ReleaseManagerError, ReleaseStoreError) as exc:
                 raise ReleaseManagerError(
                     "production image history is unavailable"
@@ -5896,7 +5899,12 @@ class ReleaseManager:
                 raise _ActivationStepError(step.kind, ambiguous=True) from exc
         raise _ActivationStepError(step.kind, ambiguous=ambiguous)
 
-    def _read_snapshot(self, store: ReleaseStore) -> dict[str, Any]:
+    def _read_snapshot(
+        self,
+        store: ReleaseStore,
+        *,
+        allow_legacy_report_worker: bool = False,
+    ) -> dict[str, Any]:
         snapshot = _read_json(store.release_dir / "current-snapshot.json", "release snapshot")
         required = {
             "current_commit",
@@ -5915,7 +5923,11 @@ class ReleaseManager:
             if type(value) is not dict or set(value) != set(_IMAGE_NAMES):
                 raise ReleaseManagerError("release snapshot mapping is invalid")
         service_ids = snapshot["service_container_ids"]
-        if type(service_ids) is not dict or set(service_ids) != set(_RUNTIME_SERVICES):
+        expected_services = set(_RUNTIME_SERVICES)
+        accepted_services = {frozenset(expected_services)}
+        if allow_legacy_report_worker:
+            accepted_services.add(frozenset(expected_services - {"worker-report"}))
+        if type(service_ids) is not dict or frozenset(service_ids) not in accepted_services:
             raise ReleaseManagerError("release snapshot service mapping is invalid")
         return snapshot
 
