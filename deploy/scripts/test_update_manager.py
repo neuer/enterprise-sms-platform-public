@@ -1970,6 +1970,105 @@ class HostTestUpdateOperations:
             if component not in _IMAGE_ENV_KEYS:
                 raise TestUpdateManagerError("image component is invalid")
 
+    def prepare_diagnostics(self) -> dict[str, bool]:
+        """只读汇总 prepare 前置条件，不返回路径、命令输出或异常文本。"""
+
+        def command_equals(expected: str, *argv: str) -> bool:
+            try:
+                return self._command(*argv) == expected
+            except Exception:
+                return False
+
+        tracked_checkout_clean = command_equals(
+            "",
+            "git",
+            "-c",
+            "status.showUntrackedFiles=no",
+            "-C",
+            str(self.root),
+            "status",
+            "--porcelain",
+        )
+        base_commit_matches = command_equals(
+            self.request.base_commit,
+            "git",
+            "-C",
+            str(self.root),
+            "rev-parse",
+            "HEAD",
+        )
+        target_commit_available = command_equals(
+            self.request.commit,
+            "git",
+            "-C",
+            str(self.root),
+            "rev-parse",
+            f"{self.request.commit}^{{commit}}",
+        )
+        host_control_snapshot_matches = False
+        if self.host_source_commit is not None and target_commit_available:
+            host_control_snapshot_matches = command_equals(
+                "",
+                "git",
+                "-C",
+                str(self.root),
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                self.host_source_commit,
+                self.request.commit,
+                "--",
+                *HOST_CONTROL_SOURCE_PATHS,
+            )
+
+        incoming = self.state_root / "incoming"
+        archives_safe = True
+        images_loaded = True
+        for component, image in self.request.images.items():
+            archive = incoming / image.archive_file
+            try:
+                metadata = archive.lstat()
+                archive_safe = (
+                    stat.S_ISREG(metadata.st_mode)
+                    and not stat.S_ISLNK(metadata.st_mode)
+                    and metadata.st_uid == self.expected_uid
+                    and stat.S_IMODE(metadata.st_mode) == 0o600
+                    and _sha256_file(archive) == image.archive_sha256
+                    and component in _IMAGE_ENV_KEYS
+                )
+            except Exception:
+                archive_safe = False
+            archives_safe = archives_safe and archive_safe
+
+            expected_identity = (
+                f"{image.image_id}|amd64|{self.request.commit}|"
+                f"{self.request.migration_target}"
+            )
+            image_loaded = command_equals(
+                expected_identity,
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                (
+                    "{{.Id}}|{{.Architecture}}|"
+                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                ),
+                image.ref,
+            )
+            images_loaded = images_loaded and image_loaded
+
+        return {
+            "archives_safe": archives_safe,
+            "base_commit_matches": base_commit_matches,
+            "host_control_snapshot_matches": host_control_snapshot_matches,
+            "images_loaded": images_loaded,
+            "target_commit_available": target_commit_available,
+            "tracked_checkout_clean": tracked_checkout_clean,
+        }
+
     def require_loaded_request_images(self) -> None:
         """复核 prepare 已加载的镜像仍与不可变请求完全一致。"""
 
@@ -2861,16 +2960,27 @@ def main(argv: list[str] | None = None) -> int:
                 if store.update_dir.exists()
                 else {"state": "incoming"}
             )
+            status_payload: dict[str, object] = {
+                "update_id": request.update_id,
+                "state": state["state"],
+                "actual_commit": operations._command(
+                    "git", "-C", str(args.root), "rev-parse", "HEAD"
+                ),
+                "actual_migration_head": operations.current_migration_head(),
+            }
+            if state["state"] == TestUpdateState.BLOCKED.value:
+                status_payload.update(
+                    {
+                        "step": state.get("step"),
+                        "error_type": state.get("error_type"),
+                        "target_commit": request.commit,
+                        "migration_target": request.migration_target,
+                        "prepare_diagnostics": operations.prepare_diagnostics(),
+                    }
+                )
             print(
                 json.dumps(
-                    {
-                        "update_id": request.update_id,
-                        "state": state["state"],
-                        "actual_commit": operations._command(
-                            "git", "-C", str(args.root), "rev-parse", "HEAD"
-                        ),
-                        "actual_migration_head": operations.current_migration_head(),
-                    },
+                    status_payload,
                     separators=(",", ":"),
                     sort_keys=True,
                 )

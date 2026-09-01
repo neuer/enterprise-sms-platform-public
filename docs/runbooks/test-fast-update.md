@@ -90,6 +90,10 @@ incoming 目录，文件为 `0600`。
 严格解析 status，只有 update id、`verified` 状态、目标 commit 和 migration head 四项同时
 匹配才以 0 退出。
 
+blocked 状态的 `status` 额外返回固定 `step`、`error_type` 与 prepare 只读布尔诊断，覆盖
+tracked 基线、目标 Git 对象、host-control 绑定、镜像归档和已加载镜像身份；不得返回路径、
+命令输出或异常文本。该诊断不执行 fetch、`docker load`、暂停、checkpoint 或任何切换。
+
 迁移 PR 不只验证“本次新增 revision”。CI 从受控测试环境兼容基线
 `0021_approval_legacy_default` 一直检查到仓库唯一 head；因此新增 head 会自动进入完整
 迁移列车。静态检查无法证明的动态 SQL 必须改写成逐条字面量 SQL。替换触发器或约束时，
