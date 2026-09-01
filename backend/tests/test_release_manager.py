@@ -67,12 +67,19 @@ RUNTIME_SERVICES = (
     "redis-auth",
     "redis-control",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",
     "beat",
 )
-WORKER_SERVICES = ("worker-realtime", "worker-bulk", "worker-callback")
+WORKER_QUEUES = {
+    "worker-realtime": "realtime",
+    "worker-report": "realtime-report",
+    "worker-bulk": "bulk",
+    "worker-callback": "callback",
+}
+WORKER_SERVICES = tuple(WORKER_QUEUES)
 RECOVERY_RUNTIME_TARGET = "generations/generation-" + "a" * 32
 
 
@@ -828,6 +835,7 @@ class FakeRunner:
         self.recreate_count = 0
         self.unhealthy_service: str | None = None
         self.missing_worker_ping: str | None = None
+        self.worker_queue_overrides: dict[str, str] = {}
         self.after_action: Any = None
         self.after_ping: Any = None
         self.volume_inventory = ""
@@ -1066,6 +1074,30 @@ class FakeRunner:
                     for service in WORKER_SERVICES
                     if service != self.missing_worker_ping
                 }
+                return self._result(command, json.dumps(replies) + "\n")
+            if command[-11:] == [
+                "exec",
+                "-T",
+                "worker-realtime",
+                "celery",
+                "-A",
+                "app.tasks",
+                "inspect",
+                "active_queues",
+                "--timeout",
+                "10",
+                "--json",
+            ]:
+                replies = {}
+                for service, configured_queue in WORKER_QUEUES.items():
+                    queue = self.worker_queue_overrides.get(service, configured_queue)
+                    replies[f"celery@{self.service_hostnames[service]}"] = [
+                        {
+                            "name": queue,
+                            "routing_key": queue,
+                            "exchange": {"name": queue},
+                        }
+                    ]
                 return self._result(command, json.dumps(replies) + "\n")
             action = next(
                 (value for value in ("stop", "up", "run") if value in command),
@@ -2851,6 +2883,7 @@ def _planned_manifest(
                         "beat",
                         "outbox-dispatcher",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "api",
@@ -2862,6 +2895,7 @@ def _planned_manifest(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",
@@ -2881,6 +2915,7 @@ def _planned_manifest(
                         "beat",
                         "outbox-dispatcher",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "api",
@@ -2893,6 +2928,7 @@ def _planned_manifest(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",
@@ -2912,6 +2948,7 @@ def _planned_manifest(
                         "beat",
                         "outbox-dispatcher",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "api",
@@ -2924,6 +2961,7 @@ def _planned_manifest(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",
@@ -2943,6 +2981,7 @@ def _planned_manifest(
                         "beat",
                         "outbox-dispatcher",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "api",
@@ -2956,6 +2995,7 @@ def _planned_manifest(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",
@@ -2975,6 +3015,7 @@ def _planned_manifest(
                         "beat",
                         "outbox-dispatcher",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "api",
@@ -2989,6 +3030,7 @@ def _planned_manifest(
                     (
                         "api",
                         "worker-realtime",
+                        "worker-report",
                         "worker-bulk",
                         "worker-callback",
                         "outbox-dispatcher",
@@ -3308,6 +3350,23 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
         ]
         in runner.calls
     )
+    assert (
+        compose
+        + [
+            "exec",
+            "-T",
+            "worker-realtime",
+            "celery",
+            "-A",
+            "app.tasks",
+            "inspect",
+            "active_queues",
+            "--timeout",
+            "10",
+            "--json",
+        ]
+        in runner.calls
+    )
     events = [
         json.loads(line)
         for line in (release_root / manifest["release_id"] / "events.jsonl")
@@ -3365,6 +3424,28 @@ def test_missing_worker_ping_uses_existing_stateless_compensation(tmp_path: Path
         encoding="utf-8"
     )
     assert '"reason":"worker_ping_membership"' in events
+
+
+def test_wrong_worker_queue_binding_uses_existing_stateless_compensation(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
+    manifest["migration"]["target"] = manifest["migration"]["from"]
+    manifest["migration"]["compatibility"] = "none"
+    _write_private_json(manifest_path, manifest)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.worker_queue_overrides["worker-report"] = "realtime"
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        manager.activate(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "rolled_back"
+    events = (manager.release_root / manifest["release_id"] / "events.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert '"reason":"worker_active_queues_binding"' in events
 
 
 def test_service_failure_during_worker_ping_is_detected_before_success(
@@ -3463,6 +3544,7 @@ _QUIESCE_TEST_SERVICES = (
     "beat",
     "outbox-dispatcher",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "api",
@@ -3470,6 +3552,7 @@ _QUIESCE_TEST_SERVICES = (
 _BACKEND_TEST_SERVICES = (
     "api",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",

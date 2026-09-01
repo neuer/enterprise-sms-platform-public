@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.core.jobtrack import JOB_SPECS, JobHealthMonitor, JobRunSnapshot, JobSpec
-from app.tasks import register_task_modules
+from app.tasks import celery_app, register_task_modules
 from app.tasks.scheduler import (
     apply_job_interval_overrides,
     build_beat_schedule,
@@ -19,7 +19,10 @@ def test_beat_schedule_reads_report_interval_once_at_startup() -> None:
     assert schedule["poll-report"] == {
         "task": "app.tasks.poll_report",
         "schedule": 17,
-        "options": {"queue": "realtime"},
+        "options": {"queue": "realtime-report", "expires": 17},
+    }
+    assert celery_app.conf.task_routes == {
+        "app.tasks.poll_report": {"queue": "realtime-report"}
     }
     assert schedule["reconcile"] == {
         "task": "app.tasks.reconcile",

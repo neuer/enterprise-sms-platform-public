@@ -429,7 +429,7 @@ def test_repeated_poll_report_trigger_binds_live_principal_and_returns_202(
         repository,
         RecordingSender(),
         {"poll_report": JobSpec("poll_report", 60)},
-        {"poll_report": JobRoute("app.tasks.poll_report", "realtime")},
+        {"poll_report": JobRoute("app.tasks.poll_report", "realtime-report")},
         clock=lambda: NOW,
     )
     app = create_app()
@@ -455,9 +455,15 @@ def test_repeated_poll_report_trigger_binds_live_principal_and_returns_202(
     assert [event.action for event in events] == ["job_trigger", "job_trigger"]
     assert [event.object_id for event in events] == ["poll_report", "poll_report"]
     assert sent == [
-        ("app.tasks.poll_report", "realtime"),
-        ("app.tasks.poll_report", "realtime"),
+        ("app.tasks.poll_report", "realtime-report"),
+        ("app.tasks.poll_report", "realtime-report"),
     ]
+
+
+def test_poll_report_manual_route_matches_dedicated_queue() -> None:
+    route = ops_api._job_routes()["poll_report"]
+
+    assert route == JobRoute("app.tasks.poll_report", "realtime-report")
 
 
 def test_outbox_status_and_admin_retry_use_stable_principal() -> None:

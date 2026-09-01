@@ -712,6 +712,7 @@ _QUIESCE_SERVICES = (
     "beat",
     "outbox-dispatcher",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "api",
@@ -720,6 +721,7 @@ _BOOTSTRAP_CONTAINMENT_SERVICES = ("web", *_QUIESCE_SERVICES)
 _BACKEND_SERVICES = (
     "api",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",
@@ -733,6 +735,7 @@ _RUNTIME_SERVICES = (
     "redis-auth",
     "redis-control",
     "worker-realtime",
+    "worker-report",
     "worker-bulk",
     "worker-callback",
     "outbox-dispatcher",
@@ -745,12 +748,22 @@ _RUNTIME_SECRETS_TARGET_RE = re.compile(
 _RECOVERY_RESUME_STAGES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("api", ("api",), "api_started"),
     ("callback", ("worker-callback",), "callback_started"),
-    ("workers", ("worker-realtime", "worker-bulk"), "workers_started"),
+    (
+        "workers",
+        ("worker-report", "worker-realtime", "worker-bulk"),
+        "workers_started",
+    ),
     ("outbox", ("outbox-dispatcher",), "outbox_started"),
     ("beat", ("beat",), "beat_started"),
     ("web", ("web",), "succeeded"),
 )
-_WORKER_SERVICES = ("worker-realtime", "worker-bulk", "worker-callback")
+_WORKER_QUEUES = {
+    "worker-realtime": "realtime",
+    "worker-report": "realtime-report",
+    "worker-bulk": "bulk",
+    "worker-callback": "callback",
+}
+_WORKER_SERVICES = tuple(_WORKER_QUEUES)
 _WORKER_PROBE_SERVICE = "worker-realtime"
 _HEALTHCHECK_SERVICES = frozenset(
     {"api", "web", "postgres", "redis", "redis-auth", "redis-control"}
@@ -6021,6 +6034,48 @@ class ReleaseManager:
         for reply in replies.values():
             if type(reply) is not dict or reply != {"ok": "pong"}:
                 fail("worker_ping_reply")
+
+        active_queues = self.runner.run(
+            self._compose()
+            + [
+                "exec",
+                "-T",
+                _WORKER_PROBE_SERVICE,
+                "celery",
+                "-A",
+                "app.tasks",
+                "inspect",
+                "active_queues",
+                "--timeout",
+                "10",
+                "--json",
+            ],
+            cwd=self.root,
+        )
+        if active_queues.returncode != 0:
+            fail("worker_active_queues_command")
+        try:
+            queue_replies = json.loads(
+                active_queues.stdout,
+                object_pairs_hook=_reject_duplicate_keys,
+            )
+        except (UnicodeError, json.JSONDecodeError):
+            fail("worker_active_queues_output", ambiguous=True)
+        if type(queue_replies) is not dict or set(queue_replies) != expected_workers:
+            fail("worker_active_queues_membership")
+        for service, expected_queue in _WORKER_QUEUES.items():
+            reply = queue_replies[f"celery@{worker_hostnames[service]}"]
+            if type(reply) is not list or len(reply) != 1 or type(reply[0]) is not dict:
+                fail("worker_active_queues_binding")
+            queue = reply[0]
+            exchange = queue.get("exchange")
+            if (
+                queue.get("name") != expected_queue
+                or queue.get("routing_key") != expected_queue
+                or type(exchange) is not dict
+                or exchange.get("name") != expected_queue
+            ):
+                fail("worker_active_queues_binding")
 
         for service in _RUNTIME_SERVICES:
             lookup = self.runner.run(

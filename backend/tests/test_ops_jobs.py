@@ -150,7 +150,7 @@ async def test_job_trigger_is_allowlisted_and_repeated_trigger_is_dispatched_aga
         FakeJobRepository(events),
         FakeSender(events),
         {"poll_report": JobSpec("poll_report", 60)},
-        {"poll_report": JobRoute("app.tasks.poll_report", "realtime")},
+        {"poll_report": JobRoute("app.tasks.poll_report", "realtime-report")},
         clock=lambda: NOW,
     )
 
@@ -159,9 +159,9 @@ async def test_job_trigger_is_allowlisted_and_repeated_trigger_is_dispatched_aga
 
     assert events == [
         "audit:poll_report:admin01:10.0.0.8:1",
-        "send:app.tasks.poll_report:realtime",
+        "send:app.tasks.poll_report:realtime-report",
         "audit:poll_report:admin01:10.0.0.8:1",
-        "send:app.tasks.poll_report:realtime",
+        "send:app.tasks.poll_report:realtime-report",
     ]
 
 
@@ -289,8 +289,8 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     )
     settings = type("SettingsStub", (), {"database_url": "postgresql://test"})()
 
-    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
-    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime")
+    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime-report")
+    await OutboxJobSender(settings).send("app.tasks.poll_report", "realtime-report")
     await OutboxJobSender(settings).send("app.tasks.expire_approvals", "realtime")
     await TemplateSyncSender(settings, clock=lambda: NOW).send_template(
         7,
@@ -333,6 +333,7 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     ) = specs
     assert first_poll.task_name == "app.tasks.outbox.trigger_job"
     assert first_poll.args == ("app.tasks.poll_report",)
+    assert first_poll.queue == "realtime-report"
     assert first_poll.dedup_key.startswith("job.trigger:poll_report:")
     assert second_poll.dedup_key.startswith("job.trigger:poll_report:")
     assert first_poll.dedup_key != second_poll.dedup_key
