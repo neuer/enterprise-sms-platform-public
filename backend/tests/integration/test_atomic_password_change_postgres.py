@@ -228,7 +228,11 @@ async def test_password_change_token_rollback_and_concurrency_are_atomic() -> No
             return_exceptions=True,
         )
         assert sum(result is None for result in results) == 1
-        assert sum(isinstance(result, PasswordChangeInProgress) for result in results) == 1
+        # 败方在胜方完成消费前观察到 processing；若数据库调度使胜方先完成，
+        # 则观察到 consumed 并按已使用令牌拒绝。两种终态都必须只允许一次成功。
+        rejected = [result for result in results if result is not None]
+        assert len(rejected) == 1
+        assert isinstance(rejected[0], (PasswordChangeInProgress, InvalidCredentials))
 
         rejection_cases: list[tuple[str, int, int, int]] = []
         for login_name in LOGINS[2:]:
