@@ -4642,6 +4642,43 @@ def test_standard_prepare_cannot_bypass_forward_rollback_with_historical_image(
     assert not runner.calls
 
 
+def test_historical_image_check_accepts_snapshot_from_before_report_worker(
+    tmp_path: Path,
+) -> None:
+    manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
+    source_store = ReleaseStore(manager.release_root, source["release_id"])
+    snapshot_path = source_store.release_dir / "current-snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["service_container_ids"].pop("worker-report")
+    _write_private_json(snapshot_path, snapshot)
+
+    with pytest.raises(ReleaseManagerError, match="service mapping"):
+        manager._read_snapshot(source_store)
+
+    candidate_root = tmp_path / "candidate-bundle"
+    candidate_root.mkdir()
+    candidate_path, candidate = _forward_candidate_bundle(
+        candidate_root,
+        source,
+        direct_previous_ref=snapshot["current_refs"]["web"],
+        direct_previous_id=snapshot["image_ids"]["web"],
+    )
+    runner.manifest = candidate
+    runner.git_commit = candidate["commit"]
+    manager = _switch_production_control_snapshot(
+        manager,
+        runner,
+        candidate["commit"],
+    )
+    runner.calls.clear()
+
+    with pytest.raises(ReleaseManagerError, match="historical image"):
+        manager.prepare(candidate_path)
+
+    assert not (manager.release_root / candidate["release_id"]).exists()
+    assert not runner.calls
+
+
 def test_staged_forward_resume_revalidates_bound_source_before_docker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
