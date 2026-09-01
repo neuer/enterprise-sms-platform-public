@@ -73,6 +73,8 @@ GitHub 鉴权与 Docker 鉴权是两个独立边界。`apply` / `promote` 在任
 （`remote get-url origin`、`rev-parse HEAD`、`status --porcelain`），再读取 migration head；
 远端 `.git` 不可由该用户读/遍历时立即 fail closed，并提示修复 operator Git 权限，
 不得改用 root Git 结果冒充日常更新用户可用，
+prepare 只拒绝 tracked 工作树或暂存区漂移；不相关的未跟踪压测覆盖与本地运维文件不参与
+版本差异分类，也不会被纳入候选 commit，若与目标 tracked 路径冲突仍由 Git 失败关闭。
 并由 CI 和测试发布共用的 Python 合同按实际差异分类。普通 `web-only`/`backend-safe`
 无迁移更新允许 CI 并行运行；high-risk、迁移或 host-control 更新必须通过 GitHub 公共 API
 验证目标 commit 上由 GitHub Actions 应用产生的精确 `ci-gate=success`，同名第三方状态

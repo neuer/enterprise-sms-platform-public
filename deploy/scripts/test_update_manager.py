@@ -1755,8 +1755,16 @@ class HostTestUpdateOperations:
             or self.request.migration_from == self.request.migration_target
         ):
             raise TestUpdateManagerError("rebaseline request scope is invalid")
-        if self._command("git", "-C", str(self.root), "status", "--porcelain"):
-            raise TestUpdateManagerError("server checkout must be clean")
+        if self._command(
+            "git",
+            "-c",
+            "status.showUntrackedFiles=no",
+            "-C",
+            str(self.root),
+            "status",
+            "--porcelain",
+        ):
+            raise TestUpdateManagerError("server checkout tracked content must be clean")
         actual = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
         if actual != self.request.base_commit:
             raise TestUpdateManagerError("base commit drifted")
