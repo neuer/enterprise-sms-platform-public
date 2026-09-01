@@ -54,7 +54,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "curl=8.20.0-r0",
         "libcrypto3=3.5.8-r0",
         "libcurl=8.20.0-r0",
-        "libexpat=2.8.3-r0",
+        "libexpat=2.8.4-r0",
         "libssl3=3.5.8-r0",
     ):
         assert package in frontend
