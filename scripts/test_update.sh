@@ -85,7 +85,6 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/cloudflare_tunnel_manager.py"
   "deploy/scripts/render_trusted_proxy_conf.py"
   "deploy/scripts/vendor_test_files.py"
-  "deploy/scripts/vendor_runtime_reset.py"
   "deploy/scripts/check_test_update_migration.py"
   "deploy/scripts/public_baseline_activation.py"
   "deploy/scripts/public_baseline_manager.py"
