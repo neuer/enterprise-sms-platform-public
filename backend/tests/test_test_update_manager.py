@@ -1577,6 +1577,8 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
     scope = operations.verify_source_scope()
 
     assert scope.risk == "web-only"
+    status_call = next(call for call in calls if call[-2:] == ("status", "--porcelain"))
+    assert status_call[1:3] == ("-c", "status.showUntrackedFiles=no")
     fetch_call = next(call for call in calls if "fetch" in call)
     assert fetch_call[-5:] == (
         "fetch",
@@ -1589,6 +1591,34 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
     diff_call = next(call for call in calls if "diff" in call)
     assert "--no-renames" in diff_call
     assert "-z" in diff_call
+
+
+def test_host_source_scope_rejects_tracked_checkout_drift_before_fetch() -> None:
+    calls: list[tuple[str, ...]] = []
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id="test-20260901T120000Z-bbbbbbbbbbbb",
+        base_commit="a" * 40,
+        commit="b" * 40,
+        source_ref="origin/main",
+        components=frozenset({"web"}),
+        public_cutover=None,
+    )  # type: ignore[assignment]
+
+    def command(*argv: str) -> str:
+        calls.append(argv)
+        if argv[-2:] == ("status", "--porcelain"):
+            assert argv[1:3] == ("-c", "status.showUntrackedFiles=no")
+            return " M frontend/src/views/DashboardView.vue"
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="tracked content must be clean"):
+        operations.verify_source_scope()
+
+    assert not any("fetch" in call for call in calls)
 
 
 def test_host_source_scope_retries_only_the_fixed_fetch_command(
