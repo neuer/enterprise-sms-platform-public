@@ -104,8 +104,9 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_secure_access_manager.py",
         "deploy/scripts/cloudflare_tunnel_manager.py",
         "deploy/scripts/render_trusted_proxy_conf.py",
-        "deploy/scripts/vendor_test_files.py",
-        "deploy/scripts/check_test_update_migration.py",
+            "deploy/scripts/vendor_test_files.py",
+            "deploy/scripts/vendor_runtime_reset.py",
+            "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/public_baseline_activation.py",
         "deploy/scripts/public_baseline_manager.py",
         "deploy/scripts/public_cutover_bootstrap.py",
@@ -278,6 +279,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/api-integration.md",
         "docs/reports/2026-07-18-test-fast-update-rehearsal.md",
         "docs/runbooks/controlled-real-vendor-test.md",
+        "docs/runbooks/database-pool-recovery.md",
         "docs/runbooks/production-phase0-baseline.md",
         "docs/runbooks/production-resource-responsibility-freeze.md",
         "docs/runbooks/test-fast-update.md",
@@ -297,6 +299,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/sms-ui-prototype.html",
         "docs/threat-model.md",
         "docs/vendor-api.md",
+        "docs/poll-report-queue-split.md",
         "SECURITY.md",
     }
 )
