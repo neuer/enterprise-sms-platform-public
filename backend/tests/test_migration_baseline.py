@@ -698,6 +698,51 @@ def test_outbox_realtime_report_queue_is_named_and_forward_compatible() -> None:
     assert "WHERE queue='realtime-report'" in source
 
 
+def test_password_change_token_lease_is_fenced_and_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = (
+        BACKEND
+        / "migrations/versions/0083_password_change_token_lease.py"
+    )
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.69：" in schema
+    for contract in (schema, source):
+        assert "processing_lease_id" in contract
+        assert "processing_lease_expires_at" in contract
+        assert "password_change_token_status_check" in contract
+        assert "ck_password_change_processing_lease" in contract
+        assert "idx_password_change_processing_lease" in contract
+        assert "'available','processing','consumed','revoked','expired'" in contract.replace(
+            "\n", ""
+        ).replace(" ", "")
+    assert 'revision = "0083_password_change_token_lease"' in source
+    assert 'down_revision = "0082_outbox_realtime_report_queue"' in source
+    assert "cannot remove password change leases while tokens are processing" in source
+
+
+def test_auth_security_audit_and_ad_freshness_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = (
+        BACKEND
+        / "migrations/versions/0084_auth_security_and_ad_freshness.py"
+    )
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.70：" in schema
+    for contract in (schema, source):
+        assert "ad_session_max_age_minutes" in contract
+        assert "idx_audit_auth_security_transition" in contract
+        assert "auth_account_locked" in contract
+        assert "auth_ip_banned" in contract
+    assert 'revision = "0084_auth_security_and_ad_freshness"' in source
+    assert 'down_revision = "0083_password_change_token_lease"' in source
+    assert "CREATE OR REPLACE FUNCTION enforce_live_audit_principal()" in source
+    assert "pg_get_functiondef" in source
+    assert "cannot restore auth system audit action allowlist safely" in source
+    assert "DELETE FROM audit_log" not in source
+
+
 def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"

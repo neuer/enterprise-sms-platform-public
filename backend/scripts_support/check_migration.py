@@ -616,6 +616,67 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
                 )
                 await connection.execute(text("RESET SESSION AUTHORIZATION"))
 
+            async with engine.begin() as connection:
+                await connection.execute(text("SET SESSION AUTHORIZATION sms_auth"))
+                identity = (
+                    await connection.execute(
+                        text(
+                            "SELECT current_user AS database_user,"
+                            "txid_current() AS txid"
+                        )
+                    )
+                ).mappings().one()
+                correlation_id = "30000000-0000-4000-8000-000000000094"
+                signature = sign_system_audit_context(
+                    bytes.fromhex("33" * 32),
+                    txid=int(identity["txid"]),
+                    database_user=str(identity["database_user"]),
+                    correlation_id=correlation_id,
+                    producer_domain="api",
+                    actor_name="auth-system",
+                    action="auth_account_locked",
+                )
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                          set_config('sms.correlation_id',:correlation,TRUE),
+                          set_config('sms.audit_subject_kind','system',TRUE),
+                          set_config('sms.audit_actor_name','auth-system',TRUE),
+                          set_config('sms.audit_account_id','',TRUE),
+                          set_config('sms.audit_identity_id','',TRUE),
+                          set_config('sms.audit_app_id','',TRUE),
+                          set_config('sms.audit_producer_domain','api',TRUE),
+                          set_config('sms.audit_action','auth_account_locked',TRUE),
+                          set_config('sms.audit_context_signature',:signature,TRUE)
+                        """
+                    ),
+                    {"correlation": correlation_id, "signature": signature},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,ip,action,object_type,
+                          object_id,after_val
+                        ) VALUES(
+                          'auth-system','system',NULL,'10.0.0.8',
+                          'auth_account_locked','auth_control',
+                          '8a5a77a4-286f-4d81-9a64-5379e30df986',
+                          jsonb_build_object(
+                            'count',5,
+                            'provider_code','local',
+                            'remaining_ttl_seconds',900,
+                            'result_code','ACCOUNT_LOCKED',
+                            'transition_id',
+                            '8a5a77a4-286f-4d81-9a64-5379e30df986'
+                          )
+                        )
+                        """
+                    )
+                )
+                await connection.execute(text("RESET SESSION AUTHORIZATION"))
+
             cross_domain_rejected = False
             try:
                 async with engine.begin() as connection:
@@ -896,6 +957,7 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
           (has_table_privilege('sms_auth','password_change_token','SELECT')
            AND has_table_privilege('sms_auth','password_change_token','INSERT')
            AND has_table_privilege('sms_auth','password_change_token','UPDATE')
+           AND NOT has_table_privilege('sms_auth','audit_log','SELECT')
            AND NOT has_table_privilege('sms_auth','password_change_token','DELETE')
            AND NOT has_table_privilege('sms_auth','password_change_token','TRUNCATE')
            AND has_sequence_privilege(

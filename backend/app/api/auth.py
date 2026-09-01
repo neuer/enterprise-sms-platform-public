@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyCookie, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.audit import audited
@@ -25,6 +25,11 @@ router = APIRouter(prefix="/api/v1/web", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 REFRESH_COOKIE_NAME = "sms_refresh_token"
 REFRESH_COOKIE_PATH = "/api/v1/web/auth"
+refresh_cookie_scheme = APIKeyCookie(
+    name=REFRESH_COOKIE_NAME,
+    auto_error=False,
+    scheme_name="RefreshCookie",
+)
 ERROR_RESPONSE = {
     "content": {
         "application/json": {
@@ -93,11 +98,6 @@ class LoginResponse(StrictModel):
 
 class RefreshRequest(StrictModel):
     tab_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    refresh_token: str | None = Field(
-        default=None,
-        max_length=4096,
-        json_schema_extra={"writeOnly": True},
-    )
 
 
 class PasswordChangeRequiredResponse(StrictModel):
@@ -109,6 +109,7 @@ class PasswordChangeRequiredResponse(StrictModel):
 class InitialPasswordChangeRequest(StrictModel):
     change_token: str = Field(
         min_length=1,
+        max_length=4096,
         json_schema_extra={"writeOnly": True},
     )
     new_password: str = Field(
@@ -314,14 +315,23 @@ async def refresh(
     response: Response,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     payload: Annotated[RefreshRequest, Body()],
-) -> LoginResponse:
+    refresh_token: Annotated[str | None, Depends(refresh_cookie_scheme)],
+) -> LoginResponse | Response:
     _assert_same_origin(request)
-    refresh_token = (
-        payload.refresh_token
-    ) or request.cookies.get(REFRESH_COOKIE_NAME)
-    if not refresh_token:
-        raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
-    result = await facade.refresh(refresh_token, _client_ip(request), payload.tab_id)
+    try:
+        if not refresh_token:
+            raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
+        result = await facade.refresh(refresh_token, _client_ip(request), payload.tab_id)
+    except ApiError as error:
+        if error.status_code != 401:
+            raise
+        outcome = JSONResponse(
+            status_code=error.status_code,
+            content={"code": error.code, "message": error.message, "detail": error.detail},
+            headers={"Cache-Control": "no-store"},
+        )
+        _clear_refresh_cookie(outcome)
+        return outcome
     response.headers["Cache-Control"] = "no-store"
     _set_refresh_cookie(
         response,
@@ -342,8 +352,9 @@ async def refresh(
     responses={
         200: NO_STORE_RESPONSE,
         401: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
-        500: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
     },
 )
 @audited("local_password_change")
@@ -366,6 +377,7 @@ async def change_initial_password(
     responses={
         200: NO_STORE_RESPONSE,
         401: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
         503: ERROR_RESPONSE,
     },

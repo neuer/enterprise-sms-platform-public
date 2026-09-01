@@ -1,6 +1,7 @@
 import { defineStore } from "pinia"
 
 import {
+  AuthApiError,
   loginRequest,
   logoutRequest,
   passwordChangeRequest,
@@ -170,7 +171,10 @@ export const useSessionStore = defineStore("session", {
           this.apply(result.token, result.user)
           return true
         })
-      } catch {
+      } catch (error) {
+        if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
+          window.dispatchEvent(new Event("sms:reauth-required"))
+        }
         this.clear()
         return false
       }
@@ -183,7 +187,10 @@ export const useSessionStore = defineStore("session", {
           this.apply(result.token, result.user)
           return true
         })
-      } catch {
+      } catch (error) {
+        if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
+          window.dispatchEvent(new Event("sms:reauth-required"))
+        }
         this.clearAllTabs()
         return false
       }

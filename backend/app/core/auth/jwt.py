@@ -21,6 +21,7 @@ from app.core.auth.accounts import PlatformAccount, SecurityPrincipal
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
 from app.core.auth.roles import Role
 from app.core.auth.service import AsyncKeyValue
+from app.services.runtime_policy import RuntimePolicy
 
 ACCESS_TOKEN_TYPE = "access"
 REFRESH_TOKEN_TYPE = "refresh"
@@ -33,8 +34,13 @@ JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
 REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+DEFAULT_AD_SESSION_MAX_AGE_MINUTES = 480
 
 LOGGER = logging.getLogger(__name__)
+
+
+class ReauthenticationRequired(RuntimeError):
+    """外部目录 refresh family 已达到完整重新认证期限。"""
 
 _ROTATE_REFRESH_LUA = r"""
 local current = redis.call('GET', KEYS[1])
@@ -234,6 +240,7 @@ class JwtService:
         security_session_loader: (
             Callable[[int, int], Awaitable[PlatformAccount]] | None
         ) = None,
+        runtime_policy_loader: Callable[[], Awaitable[RuntimePolicy]] | None = None,
     ) -> None:
         if len(secret) < 32:
             raise ValueError("JWT secret must be at least 32 characters")
@@ -249,6 +256,7 @@ class JwtService:
         self.ttl = ttl
         self.refresh_ttl = refresh_ttl
         self.security_session_loader = security_session_loader
+        self.runtime_policy_loader = runtime_policy_loader
 
     @staticmethod
     def _require_stable(claims: JwtClaims) -> None:
@@ -724,6 +732,11 @@ class JwtService:
         await self._ensure_account_not_revoked(payload, claims)
         claims = await self._authoritative(claims)
         session_id = claims.session_id
+        await self._enforce_ad_session_max_age(
+            payload,
+            claims,
+            remaining=remaining,
+        )
         new_access = self._encode_access(claims, session_id)
         new_refresh, new_payload = self._encode_refresh_replacement(
             claims,
@@ -796,6 +809,42 @@ class JwtService:
             selected_refresh,
             refresh_expires_in=remaining,
         )
+
+    async def _enforce_ad_session_max_age(
+        self,
+        payload: dict[str, Any],
+        claims: JwtClaims,
+        *,
+        remaining: int,
+    ) -> None:
+        """AD family 只沿用最初密码认证时间，超期后原子吊销并要求重登。"""
+
+        if claims.provider_code != "ad":
+            return
+        try:
+            max_age_minutes = (
+                (await self.runtime_policy_loader()).ad_session_max_age_minutes
+                if self.runtime_policy_loader is not None
+                else DEFAULT_AD_SESSION_MAX_AGE_MINUTES
+            )
+            issued_at = float(payload["iat"])
+        except Exception:
+            raise SessionStateUnavailable("AD session policy unavailable") from None
+        if self.clock().timestamp() < issued_at + max_age_minutes * 60:
+            return
+        try:
+            await self.store.eval(
+                _REVOKE_SESSION_LUA,
+                3,
+                f"auth:jwt:revoked:{claims.jti}",
+                f"auth:jwt:session-revoked:{claims.session_id}",
+                self._refresh_key(claims.session_id),
+                str(max(1, remaining)),
+                str(max(1, remaining)),
+            )
+        except Exception:
+            raise SessionStateUnavailable("AD session revocation unavailable") from None
+        raise ReauthenticationRequired("AD 会话已到期，请重新登录")
 
     def read_password_change(self, token: str) -> PasswordChangeClaims:
         payload = self._decode(token)

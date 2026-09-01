@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -324,6 +325,7 @@ async def test_password_change_token_is_stored_as_bound_hash_only() -> None:
 
 @pytest.mark.asyncio
 async def test_initial_password_change_consumes_token_and_updates_password_atomically() -> None:
+    lease_id = uuid4()
     repo, connection, engine = repository(
         [
             FakeResult(scalar=91),
@@ -336,7 +338,8 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     )
 
     await repo.consume_password_change_and_update(
-        token_hash="b" * 64,
+        token_id=91,
+        lease_id=lease_id,
         account_id=8,
         identity_id=18,
         provider_code="local",
@@ -348,10 +351,13 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
 
     lock_sql, lock_params = connection.calls[0]
     assert "FOR UPDATE OF pct,ua" in lock_sql
-    assert "pct.status='available'" in lock_sql
+    assert "pct.status='processing'" in lock_sql
+    assert "pct.processing_lease_id=:lease_id" in lock_sql
+    assert "pct.processing_lease_expires_at>now()" in lock_sql
     assert "pct.expires_at>now()" in lock_sql
     assert "pct.issued_security_version=ua.security_version" in lock_sql
-    assert lock_params["token_hash"] == "b" * 64
+    assert lock_params["token_id"] == 91
+    assert lock_params["lease_id"] == lease_id
     credential_sql, credential_params = connection.calls[1]
     assert "must_change_password=FALSE" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new-secret-hash"
@@ -367,7 +373,6 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     audit_sql, audit_params = connection.calls[5]
     assert "local_password_change" in audit_sql
     assert "$argon2id" not in str(audit_params)
-    assert "b" * 64 not in str(audit_params)
     assert engine.disposed
 
 
@@ -377,7 +382,8 @@ async def test_initial_password_change_rejects_used_or_stale_token_without_updat
 
     with pytest.raises(InvalidCredentials, match="改密令牌"):
         await repo.consume_password_change_and_update(
-            token_hash="c" * 64,
+            token_id=91,
+            lease_id=uuid4(),
             account_id=8,
             identity_id=18,
             provider_code="local",
@@ -388,6 +394,58 @@ async def test_initial_password_change_rejects_used_or_stale_token_without_updat
         )
 
     assert len(connection.calls) == 1
+    assert engine.disposed
+
+
+@pytest.mark.asyncio
+async def test_initial_password_change_claims_and_releases_fenced_lease() -> None:
+    lease_expires_at = datetime(2026, 7, 29, 9, 10, 30, tzinfo=UTC)
+    repo, connection, engine = repository(
+        [
+            FakeResult(
+                [
+                    {
+                        "id": 91,
+                        "status": "available",
+                        "processing_lease_expires_at": None,
+                        "lease_active": None,
+                        "password_hash": "$argon2id$v=19$current",
+                    }
+                ]
+            ),
+            FakeResult(scalar=lease_expires_at),
+            FakeResult(scalar=91),
+        ]
+    )
+
+    claim = await repo.claim_password_change_token(
+        token_hash="b" * 64,
+        account_id=8,
+        identity_id=18,
+        provider_code="local",
+        login_name="operator01",
+    )
+    released = await repo.release_password_change_token(
+        token_id=claim.token_id,
+        lease_id=claim.lease_id,
+    )
+
+    assert claim.token_id == 91
+    assert claim.lease_expires_at == lease_expires_at
+    assert claim.current_password_hash == "$argon2id$v=19$current"
+    select_sql, select_params = connection.calls[0]
+    assert "FOR UPDATE OF pct,ua" in select_sql
+    assert "pct.token_hash=:token_hash" in select_sql
+    assert select_params["token_hash"] == "b" * 64
+    claim_sql, claim_params = connection.calls[1]
+    assert "status='processing'" in claim_sql
+    assert "INTERVAL '30 seconds'" in claim_sql
+    assert claim_params["lease_id"] == claim.lease_id
+    release_sql, release_params = connection.calls[2]
+    assert "status='available'" in release_sql
+    assert "processing_lease_id=:lease_id" in release_sql
+    assert release_params == {"token_id": 91, "lease_id": claim.lease_id}
+    assert released
     assert engine.disposed
 
 

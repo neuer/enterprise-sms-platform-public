@@ -85,6 +85,8 @@ def test_runtime_policy_returns_typed_snapshot() -> None:
         ("callback_timeout_seconds", "11", "callback_timeout_seconds"),
         ("login_lock_minutes", "1441", "login_lock_minutes"),
         ("login_ip_ban_minutes", "1441", "login_ip_ban_minutes"),
+        ("ad_session_max_age_minutes", "14", "ad_session_max_age_minutes"),
+        ("ad_session_max_age_minutes", "10081", "ad_session_max_age_minutes"),
         ("test_send_max", "6", "test_send_max"),
         ("report_poll_seconds", "9", "report_poll_seconds"),
         ("report_poll_seconds", "3601", "report_poll_seconds"),
@@ -129,6 +131,13 @@ def test_runtime_policy_accepts_confirmed_vendor_qps_boundary() -> None:
 
     assert policy.vendor_qps == 200
     assert policy.reserved_realtime_qps == 199
+
+
+@pytest.mark.parametrize("value", ("15", "10080"))
+def test_ad_session_max_age_accepts_declared_boundaries(value: str) -> None:
+    assert RuntimePolicy.from_mapping(
+        {"ad_session_max_age_minutes": value}
+    ).ad_session_max_age_minutes == int(value)
 
 
 def test_beat_scan_intervals_are_registered_config_keys() -> None:

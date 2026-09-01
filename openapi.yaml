@@ -425,10 +425,13 @@ paths:
     post:
       tags: [auth]
       summary: 单次轮换刷新令牌
+      security: [{ RefreshCookie: [] }]
       description: |
         refresh JWT 仅可使用一次；服务端原子轮换 refresh family，并重新读取数据库中的账号、
         身份、Provider、部门、角色及 security_version 权威投影。旧令牌重放会吊销该 family。
-        新客户端通过 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，生产 Secure）
+        AD family 自最后一次完整密码认证起最长 480 分钟（可配置 15–10080）；到期后原子
+        吊销 family，返回 AUTH_REAUTH_REQUIRED 并删除 refresh Cookie，必须重新登录。
+        refresh JWT 仅接受 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，生产 Secure），
         提交 refresh，并携带登录时绑定的 tab_id；请求必须通过规范化同源校验（CSRF 补偿，
         不是 cookie CSRF token）。access 仍为 JSON 中的 Bearer token。
       requestBody:
@@ -444,7 +447,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LoginSuccess' }
-        '401': { description: refresh 令牌无效、过期或已使用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: refresh 令牌无效、过期、已使用，或 AD family 超期要求 AUTH_REAUTH_REQUIRED；所有 401 均删除 refresh Cookie, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '403': { description: 缺少或非同源来源（CSRF 补偿失败）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: AUTH_SESSION_UNAVAILABLE；数据库或 Redis 状态不可用时 fail closed, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
@@ -505,8 +508,9 @@ paths:
       summary: 使用单用途令牌完成首次改密
       description: |
         服务端只持久化令牌 SHA-256 指纹，并绑定本地账号、身份、用途与签发时安全版本。
-        令牌消费、密码更新、安全版本递增和无敏感审计在同一 PostgreSQL 事务提交；
-        数据库失败时整体回滚，同一未过期令牌可安全重试。
+        高成本校验前先用短事务取得带 UUID fencing 的 processing 租约；只有当前未过期租约
+        可以在同一 PostgreSQL 事务提交令牌消费、密码更新、安全版本递增和无敏感审计。
+        新密码不得与临时密码相同；数据库结果不可确认时保持租约至到期并失败关闭。
         浏览器不得把 change_token 写入 Pinia、sessionStorage、localStorage、IndexedDB、URL 或日志。
       requestBody:
         required: true
@@ -519,8 +523,9 @@ paths:
           headers:
             Cache-Control: { schema: { type: string }, description: 固定为 no-store }
         '401': { description: 改密令牌无效、过期或已使用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT，令牌已有未过期处理租约, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '500': { description: 数据库事务未提交，可使用同一未过期令牌重试, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE；未提交时同一未过期令牌可重试, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/auth/password/change:
     post:
@@ -537,9 +542,10 @@ paths:
           description: 密码已修改，全部既有会话失效
           headers:
             Cache-Control: { schema: { type: string }, description: 固定为 no-store }
-        '401': { description: 当前密码错误、非本地身份或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: 当前密码错误或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT，非本地身份不支持平台改密, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '503': { description: AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/auth/logout:
     post:
@@ -1593,6 +1599,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: ACCOUNT_SOURCE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/admin/users/{account_id}/role:
     put:
@@ -1655,6 +1662,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: 非本地账号不支持密码重置, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: AUTH_PROVIDER_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/admin/users/{account_id}/sessions/revoke:
     post:
@@ -2805,6 +2813,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    RefreshCookie:
+      type: apiKey
+      in: cookie
+      name: sms_refresh_token
 
   responses:
     BadRequest:
@@ -2991,12 +3003,6 @@ components:
       required: [tab_id]
       properties:
         tab_id: { type: string, pattern: '^[0-9a-f]{32}$', description: 必须与 refresh family 登录时绑定的标签页一致 }
-        refresh_token:
-          anyOf:
-            - { type: string, maxLength: 4096 }
-            - { type: "null" }
-          writeOnly: true
-          description: 兼容旧客户端；新客户端通过 HttpOnly Cookie 提供
 
     PasswordChangeRequired:
       type: object
@@ -3012,7 +3018,7 @@ components:
       additionalProperties: false
       required: [change_token, new_password]
       properties:
-        change_token: { type: string, minLength: 1, writeOnly: true }
+        change_token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
         new_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
 
     PasswordChangeRequest:

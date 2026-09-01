@@ -370,14 +370,17 @@
 
 - 决策：短期 JWT 只作为不透明载体；服务端仅持久化其 SHA-256 指纹，并绑定
   `account_id`、`identity_id`、local Provider、用途、规范化登录名、签发时
-  `security_version` 和到期时间。首次改密先在事务外完成 Argon2id 计算，再在同一
-  PostgreSQL 事务中锁定账号与令牌，消费令牌、更新密码、清除首次改密标志、递增安全
-  版本、撤销同账号其他改密令牌并写无敏感审计。
+  `security_version` 和到期时间。首次改密先以短 PostgreSQL 事务把有效令牌从
+  `available` claim 为带 UUID fencing 的 `processing` 租约，再在事务外完成同密码校验
+  与 Argon2id 计算，最后只允许当前未过期租约在同一事务消费令牌、更新密码、清除首次
+  改密标志、递增安全版本、撤销同账号其他可用/处理中令牌并写无敏感审计。已知未执行的
+  容量拒绝可释放租约；线程超时或数据库结果不可确认时保留租约至到期，旧请求不得提交或
+  释放后来请求取得的新租约。
 - 原因：Redis 先消费再更新数据库会在数据库失败时永久耗尽令牌；把消费事实与密码写入
   同一事实源，能让失败完整回滚，并由账号行锁与安全版本保证并发请求只有一个成功。
-- 影响：schema v1.6.34、0035 仅在令牌表为空时可安全降级、认证 JWT/Facade/用户仓储、
-  OpenAPI 与真实 PostgreSQL 故障/并发门禁。Redis 故障不再影响首次改密，既有
-  access/refresh 仍由数据库权威安全版本立即失效。
+- 影响：schema v1.6.34/0035 建立原子改密事实，v1.6.69/0083 增加租约列、状态约束和
+  回收索引；认证 JWT/Facade/用户仓储、OpenAPI 与真实 PostgreSQL 故障/并发门禁同步
+  更新。Redis 故障不影响首次改密，既有 access/refresh 仍由数据库权威安全版本立即失效。
 
 ## D048 Bearer access 与 HttpOnly refresh Cookie（含同源 CSRF 补偿）
 
@@ -388,8 +391,8 @@
   `localStorage`、IndexedDB、URL 或日志；历史 Web Storage 凭据只允许同步读一次并立即清除。
   refresh JWT 以受限路径的 **HttpOnly Cookie**（`sms_refresh_token`，path 限定
   `/api/v1/web/auth`）承载；生产必须 `Secure`，`SameSite=Lax`。携带 Cookie 的 refresh /
-  logout 必须执行规范化同源（Origin/Referer）校验；请求体 refresh 仅作有限兼容迁移，
-  不得作为新客户端主路径。注销、401、超时和强制下线必须清除内存会话与 refresh Cookie，
+  logout 必须执行规范化同源（Origin/Referer）校验；refresh 请求体不得接受令牌，Cookie
+  是唯一浏览器输入源。注销、401、超时和强制下线必须清除内存会话与 refresh Cookie，
   并只用不含凭据的跨标签页信号同步兄弟标签。首次改密、明文导出/真实联调 step-up 等高风险
   短期令牌只存在于组件局部变量，提交、到期或组件销毁立即清空。
 - 传输边界：生产 HTTP 入口只能跳转到配置的同一 HTTPS origin；无凭据部署探针验证
@@ -1269,3 +1272,23 @@
   但不得产生压测负载。
 - 原因：性能与容量验证需要稳定、独占且可观测的测试环境；Hosted runner 的共享资源和日常
   开发反馈链不适合作为容量结论，也不应持续承担数分钟压测成本。
+
+## D098 登录防爆破、认证时限与 AD 会话新鲜度统一失败关闭
+
+- 决策：账号失败计数、账号锁定、来源 IP 失败计数与封禁由 auth Redis 内两段 Lua 原子更新；
+  默认第 1–4 次错误返回 401，第 5–19 次返回 423，第 20 次起返回 429。锁定与封禁使用
+  UUID transition 值和 `SET NX EX` 建立，不因后续探测续期；每个 transition 由 `sms_auth`
+  以仅 INSERT 权限幂等写入最小系统审计，重复写入只在保存点内吞 PostgreSQL
+  `unique_violation`。在任何密码摘要读取或 LDAP 连接前，另以来源 IP 的 5 个突发令牌、
+  每 15 秒补 1 个及 5 分钟 20 次长窗执行高成本认证准入。Provider 容量错误不得计为密码
+  失败或触发 IP 封禁。
+- 时限：LDAP 全流程单调时钟总预算 50 秒，浏览器登录/二次认证预算 55 秒，Nginx 读取预算 60 秒；
+  目录连接/绑定共享同一剩余预算。AD refresh family 保留原始 `iat`，默认 480 分钟、可配置
+  15–10080 分钟；到期后原子撤销 family、清除 refresh Cookie，并返回
+  `AUTH_REAUTH_REQUIRED`，本地账号不受该上限影响。
+- 原因：单纯接口级重试提示不能限制高成本 Argon2/LDAP 资源消耗；分步 GET/INCR/SET 会在
+  并发下丢计数、续期或产生无审计状态。AD access/refresh 持续轮换也不能替代周期性目录凭据
+  复核。三层时限留出明确响应余量，避免代理先断开造成结果不确定。
+- 影响：schema v1.6.70/0084、认证 guard、LDAP Provider、JWT refresh、运行策略、前端会话
+  恢复、OpenAPI 与 Redis/PostgreSQL 合同测试。Redis、审计写入、运行策略或权威会话状态
+  不可确认时一律 503，禁止放行或降级到无防护认证。

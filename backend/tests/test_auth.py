@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import jwt
 import pytest
@@ -28,6 +29,7 @@ from app.core.auth.ldap_real import LdapConfig, LdapPasswordProvider
 from app.core.auth.mock import MockLdapProvider
 from app.core.auth.providers import AuthProviderRegistry
 from app.core.auth.roles import ExistingUser, RoleResolver
+from app.core.auth.security_events import AuthSecurityTransition
 from app.core.auth.service import AccountLocked, AuthService, LoginGuard, RateLimited
 from app.services.auth_provider import ProviderRecord, ProviderTestResult
 from app.services.runtime_policy import RuntimePolicy
@@ -53,8 +55,98 @@ class FakeKeyValue:
         self.values[key] = value
         return value
 
-    async def eval(self, script: str, numkeys: int, *args: Any) -> int:
-        del script
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        if "auth-admit-v1" in script:
+            assert numkeys == 6
+            ban_key, lock_key, ip_fail_key, bucket_key, window_key, user_fail_key = map(
+                str, args[:6]
+            )
+            values = args[6:]
+            ip_limit = int(values[1])
+            ban_ttl = int(values[2])
+            ban_transition = str(values[3])
+            lock_transition = str(values[4])
+            user_limit = int(values[5])
+            burst = int(values[6])
+            long_limit = int(values[9])
+            ban = self.values.get(ban_key)
+            if ban is not None:
+                if ban == "1":
+                    ban = ban_transition
+                    self.values[ban_key] = ban
+                return [2, "", 0, ban, int(self.values.get(ip_fail_key, 0)), 0, ban_ttl]
+            lock = self.values.get(lock_key)
+            if lock is not None:
+                if lock == "1":
+                    lock = lock_transition
+                    self.values[lock_key] = lock
+                ip_count = int(self.values.get(ip_fail_key, 0)) + 1
+                self.values[ip_fail_key] = ip_count
+                if ip_count >= ip_limit:
+                    self.values.setdefault(ban_key, ban_transition)
+                    return [
+                        2,
+                        lock,
+                        int(self.values.get(user_fail_key, user_limit)),
+                        self.values[ban_key],
+                        ip_count,
+                        900,
+                        ban_ttl,
+                    ]
+                return [
+                    1,
+                    lock,
+                    int(self.values.get(user_fail_key, user_limit)),
+                    "",
+                    ip_count,
+                    900,
+                    0,
+                ]
+            long_count = int(self.values.get(window_key, 0))
+            used = int(self.values.get(bucket_key, 0))
+            if long_count >= long_limit or used >= burst:
+                return [3, "", 0, "", long_count, 0, 300]
+            self.values[bucket_key] = used + 1
+            self.values[window_key] = long_count + 1
+            return [0, "", 0, "", long_count + 1, 0, 300]
+        if "auth-invalid-v1" in script:
+            assert numkeys == 4
+            user_fail_key, ip_fail_key, lock_key, ban_key = map(str, args[:4])
+            values = args[4:]
+            user_limit = int(values[2])
+            lock_ttl = int(values[3])
+            ip_limit = int(values[4])
+            ban_ttl = int(values[5])
+            lock_transition = str(values[6])
+            ban_transition = str(values[7])
+            existing_ban = self.values.get(ban_key)
+            if existing_ban is not None:
+                return [
+                    2,
+                    "",
+                    0,
+                    existing_ban,
+                    int(self.values.get(ip_fail_key, 0)),
+                    0,
+                    ban_ttl,
+                ]
+            user_count = int(self.values.get(user_fail_key, 0)) + 1
+            ip_count = int(self.values.get(ip_fail_key, 0)) + 1
+            self.values[user_fail_key] = user_count
+            self.values[ip_fail_key] = ip_count
+            lock = self.values.get(lock_key)
+            if user_count >= user_limit:
+                self.values.setdefault(lock_key, lock_transition)
+                lock = self.values[lock_key]
+            ban = self.values.get(ban_key)
+            if ip_count >= ip_limit:
+                self.values.setdefault(ban_key, ban_transition)
+                ban = self.values[ban_key]
+            if ban is not None:
+                return [2, lock or "", user_count, ban, ip_count, lock_ttl, ban_ttl]
+            if lock is not None:
+                return [1, lock, user_count, "", ip_count, lock_ttl, 0]
+            return [0, "", user_count, "", ip_count, 0, 0]
         if numkeys == 3:
             revoked_jti, revoked_session, refresh_family, jti_ttl, session_ttl = args
             assert int(jti_ttl) > 0 and int(session_ttl) > 0
@@ -199,6 +291,14 @@ class CapacityUnavailableProviderKind(RecordingProviderKind):
         raise ProviderCapacityUnavailable("capacity unavailable")
 
 
+class RecordingSecurityEvents:
+    def __init__(self) -> None:
+        self.transitions: list[AuthSecurityTransition] = []
+
+    async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+        self.transitions.append(transition)
+
+
 @pytest.mark.asyncio
 async def test_mock_backend_only_accepts_seed_users_and_injected_password() -> None:
     password = "in-memory-test-password"
@@ -248,7 +348,8 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
         def open(self) -> None:
             return None
 
-        def bind(self) -> bool:
+        def bind(self, **kwargs: Any) -> bool:
+            calls.append({"bind": kwargs})
             return True
 
         def search(self, **kwargs: Any) -> bool:
@@ -305,8 +406,10 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
     assert calls[1]["receive_timeout"] == 4
     assert calls[1]["user"] == "CN=svc,DC=xtc,DC=com"
     assert calls[1]["auto_referrals"] is False
-    assert calls[3]["user"] == Entry.entry_dn
-    assert calls[3]["auto_referrals"] is False
+    assert calls[2] == {"bind": {"read_server_info": False}}
+    assert calls[4]["user"] == Entry.entry_dn
+    assert calls[4]["auto_referrals"] is False
+    assert calls[5] == {"bind": {"read_server_info": False}}
 
 
 @pytest.mark.asyncio
@@ -339,7 +442,8 @@ async def test_ldap_invalid_credentials_result_is_uniform_auth_failure(
         def open(self) -> None:
             return None
 
-        def bind(self) -> bool:
+        def bind(self, **kwargs: Any) -> bool:
+            assert kwargs == {"read_server_info": False}
             if self.user == Entry.entry_dn:
                 raise LDAPInvalidCredentialsResult(result=49)
             return True
@@ -393,7 +497,8 @@ async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
         def open(self) -> None:
             return None
 
-        def bind(self) -> bool:
+        def bind(self, **kwargs: Any) -> bool:
+            assert kwargs == {"read_server_info": False}
             return True
 
         def search(self, **kwargs: Any) -> bool:
@@ -442,14 +547,42 @@ def test_ldap_receive_budget_fails_before_unbounded_parser_materialization() -> 
     import app.core.auth.ldap_real as ldap_module
 
     class Socket:
+        def settimeout(self, timeout: float) -> None:
+            assert 0 < timeout <= 4
+
         def recv(self, size: int, *_args: object) -> bytes:
             return b"x" * size
 
-    bounded = ldap_module._ReceiveBudgetSocket(Socket(), limit=4)
+    bounded = ldap_module._ReceiveBudgetSocket(
+        Socket(),
+        deadline=ldap_module._MonotonicDeadline.after(19),
+        receive_timeout_s=4,
+        limit=4,
+    )
 
     assert bounded.recv(3) == b"xxx"
     with pytest.raises(OSError, match="byte budget"):
         bounded.recv(3)
+
+
+def test_ldap_cleanup_closes_socket_when_unbind_fails() -> None:
+    import app.core.auth.ldap_real as ldap_module
+
+    closed: list[bool] = []
+
+    class Socket:
+        def close(self) -> None:
+            closed.append(True)
+
+    class Connection:
+        socket = Socket()
+
+        def unbind(self) -> None:
+            raise OSError("directory disappeared")
+
+    ldap_module.LdapPasswordProvider._safe_close(Connection())  # type: ignore[arg-type]
+
+    assert closed == [True]
 
 
 def test_ldap_group_attribute_has_count_and_aggregate_budgets() -> None:
@@ -463,10 +596,17 @@ def test_ldap_group_attribute_has_count_and_aggregate_budgets() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [TimeoutError(), Exception("backpressure")])
-async def test_ldap_capacity_failure_uses_isolated_pool_and_aligned_deadline(
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        (TimeoutError(), ProviderUnavailable),
+        (Exception("backpressure"), ProviderCapacityUnavailable),
+    ),
+)
+async def test_ldap_failure_uses_isolated_pool_and_aligned_deadline(
     monkeypatch: pytest.MonkeyPatch,
     failure: Exception,
+    expected: type[Exception],
 ) -> None:
     import app.core.auth.ldap_real as ldap_module
 
@@ -505,7 +645,7 @@ async def test_ldap_capacity_failure_uses_isolated_pool_and_aligned_deadline(
         )
     )
 
-    with pytest.raises(ProviderCapacityUnavailable):
+    with pytest.raises(expected):
         await provider.authenticate("user01", "password")
 
     assert observed == {"timeout_s": 19, "pool": "ldap"}
@@ -572,6 +712,78 @@ async def test_shared_guard_locks_account_after_five_failures() -> None:
         await service.authenticate("local", "user01", "correct", "10.0.0.2")
 
     assert list(store.values).count("auth:lock:user:user01") == 1
+
+
+@pytest.mark.asyncio
+async def test_locked_account_requests_continue_to_ip_ban_without_password_work() -> None:
+    store = FakeKeyValue()
+    events = RecordingSecurityEvents()
+    provider = RecordingProviderKind("local", fails=True)
+    service = AuthService(
+        AuthProviderRegistry(
+            FakeProviderRepository(provider_record(code="local", kind="local")),
+            {"local": provider},
+        ),
+        LoginGuard(store, security_events=events),
+    )
+
+    outcomes: list[type[Exception]] = []
+    for _ in range(20):
+        try:
+            await service.authenticate("local", " User01 ", "bad", "10.0.0.9")
+        except (InvalidCredentials, AccountLocked, RateLimited) as error:
+            outcomes.append(type(error))
+
+    assert outcomes == (
+        [InvalidCredentials] * 4
+        + [AccountLocked] * 15
+        + [RateLimited]
+    )
+    assert provider.calls == [("user01", "bad")] * 5
+    lock_ids = {
+        item.transition_id
+        for item in events.transitions
+        if item.action == "auth_account_locked"
+    }
+    ban_ids = {
+        item.transition_id
+        for item in events.transitions
+        if item.action == "auth_ip_banned"
+    }
+    assert len(lock_ids) == 1
+    assert len(ban_ids) == 1
+    assert all(item.provider_code == "local" for item in events.transitions)
+
+
+@pytest.mark.asyncio
+async def test_prehash_burst_rejects_before_provider_or_password_lookup() -> None:
+    store = FakeKeyValue()
+    provider = RecordingProviderKind("local", fails=True)
+    service = AuthService(
+        AuthProviderRegistry(
+            FakeProviderRepository(provider_record(code="local", kind="local")),
+            {"local": provider},
+        ),
+        LoginGuard(store),
+    )
+
+    for index in range(5):
+        with pytest.raises(InvalidCredentials):
+            await service.authenticate(
+                "local",
+                f"candidate-{index}",
+                "bad",
+                "10.0.0.10",
+            )
+    with pytest.raises(RateLimited, match="过于频繁"):
+        await service.authenticate(
+            "local",
+            "candidate-5",
+            "bad",
+            "10.0.0.10",
+        )
+
+    assert len(provider.calls) == 5
 
 
 @pytest.mark.asyncio
@@ -647,13 +859,14 @@ async def test_provider_capacity_failure_is_admitted_before_scheduling_without_u
 
     assert overloaded.calls == [("target-admin", "pw")]
     assert local_identity.provider_code == "local"
-    assert store.values["auth:capacity-fail:ip:10.0.0.1"] == 1
+    assert store.values["auth:capacity:provider:ad"] == "1"
+    assert "auth:capacity-fail:ip:10.0.0.1" not in store.values
     assert "auth:lock:user:target-admin" not in store.values
     assert "auth:lock:user:another-user" not in store.values
 
 
 @pytest.mark.asyncio
-async def test_repeated_provider_capacity_failures_advance_ip_ban() -> None:
+async def test_repeated_provider_capacity_failures_never_advance_ip_ban() -> None:
     store = FakeKeyValue()
     overloaded = CapacityUnavailableProviderKind("ad")
     registry = AuthProviderRegistry(
@@ -673,10 +886,11 @@ async def test_repeated_provider_capacity_failures_advance_ip_ban() -> None:
     with pytest.raises(ProviderCapacityUnavailable):
         await service.authenticate("ad", "first", "pw", "10.0.0.2")
     store.values.pop("auth:capacity:provider:ad")
-    with pytest.raises(RateLimited):
+    with pytest.raises(ProviderCapacityUnavailable):
         await service.authenticate("ad", "second", "pw", "10.0.0.2")
 
-    assert store.values["auth:ban:ip:10.0.0.2"] == "1"
+    assert "auth:ban:ip:10.0.0.2" not in store.values
+    assert "auth:capacity-fail:ip:10.0.0.2" not in store.values
     assert "auth:lock:user:first" not in store.values
     assert "auth:lock:user:second" not in store.values
 
@@ -698,7 +912,9 @@ async def test_shared_guard_loads_runtime_thresholds_for_each_login_boundary() -
     await guard.record_failure("first", "10.0.0.1")
     with pytest.raises(RateLimited):
         await guard.record_failure("second", "10.0.0.1")
-    assert store.values["auth:ban:ip:10.0.0.1"] == "1"
+    assert str(UUID(str(store.values["auth:ban:ip:10.0.0.1"]))) == str(
+        store.values["auth:ban:ip:10.0.0.1"]
+    )
 
     values["login_ip_fail_limit"] = "3"
     await guard.record_failure("third", "10.0.0.2")

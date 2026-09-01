@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,7 +19,12 @@ from app.core.auth.backends import (
     SessionStateUnavailable,
 )
 from app.core.auth.identity import normalize_login_name
-from app.core.auth.jwt import IssuedTokenPair, JwtClaims, JwtService
+from app.core.auth.jwt import (
+    IssuedTokenPair,
+    JwtClaims,
+    JwtService,
+    ReauthenticationRequired,
+)
 from app.core.auth.passwords import (
     LocalPasswordHasher,
     PasswordPolicy,
@@ -26,6 +32,7 @@ from app.core.auth.passwords import (
 )
 from app.core.auth.principal_context import bind_audit_principal
 from app.core.auth.providers import create_provider_registry
+from app.core.auth.security_events import SqlAuthSecurityEventRepository
 from app.core.auth.service import (
     AccountLocked,
     AuthService,
@@ -33,7 +40,12 @@ from app.core.auth.service import (
     RateLimited,
     RedisKeyValue,
 )
-from app.core.auth.users import SqlUserRepository, UserRepository
+from app.core.auth.users import (
+    PasswordChangeClaim,
+    PasswordChangeInProgress,
+    SqlUserRepository,
+    UserRepository,
+)
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.errors import ApiError
 from app.services.auth_provider import AuthProviderService, ProviderSummary
@@ -76,6 +88,8 @@ class AuthenticationService(Protocol):
 
 class PasswordHasher(Protocol):
     def hash(self, password: str) -> str: ...
+
+    def verify(self, encoded: str, password: str) -> bool: ...
 
     def verify_or_dummy(self, encoded: str | None, password: str) -> bool: ...
 
@@ -134,8 +148,8 @@ class AuthFacade:
             )
         except AccountLocked:
             raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
-        except RateLimited:
-            raise ApiError(429, "RATE_LIMITED", "登录来源已临时封禁", None) from None
+        except RateLimited as error:
+            raise ApiError(429, "RATE_LIMITED", str(error), None) from None
         except ProviderCapacityUnavailable:
             raise ApiError(
                 503,
@@ -150,10 +164,16 @@ class AuthFacade:
                 "会话权威状态暂不可用，请稍后重试",
                 None,
             ) from None
+        except ProviderUnavailable:
+            raise ApiError(
+                503,
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "认证源暂不可用，请稍后重试",
+                None,
+            ) from None
         except (
             InvalidCredentials,
             ProviderDisabled,
-            ProviderUnavailable,
         ):
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None) from None
         same_identity = (
@@ -203,8 +223,8 @@ class AuthFacade:
             await self._record_bound_success(user)
         except AccountLocked:
             raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
-        except RateLimited:
-            raise ApiError(429, "RATE_LIMITED", "登录来源已临时封禁", None) from None
+        except RateLimited as error:
+            raise ApiError(429, "RATE_LIMITED", str(error), None) from None
         except LastAdminProtected as error:
             raise ApiError(409, "LAST_ADMIN_PROTECTED", str(error), None) from None
         except InvalidCredentials:
@@ -293,6 +313,13 @@ class AuthFacade:
         try:
             pair = await self.tokens.rotate_refresh(refresh_token, tab_id)
             claims = await self.tokens.verify(pair.token)
+        except ReauthenticationRequired:
+            raise ApiError(
+                401,
+                "AUTH_REAUTH_REQUIRED",
+                "AD 会话已到期，请重新登录",
+                None,
+            ) from None
         except InvalidCredentials:
             raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None) from None
         except SessionStateUnavailable:
@@ -327,13 +354,65 @@ class AuthFacade:
         try:
             claims = self.tokens.read_password_change(change_token)
             self.policy.validate(new_password, username=claims.login_name)
-            password_hash = await run_bounded(
-                self.passwords.hash,
-                new_password,
-                timeout_s=5,
-            )
-            await self.users.consume_password_change_and_update(
+            claim = await self.users.claim_password_change_token(
                 token_hash=self.tokens.password_change_digest(change_token),
+                account_id=claims.account_id,
+                identity_id=claims.identity_id,
+                provider_code=claims.provider_code,
+                login_name=normalize_login_name(claims.login_name),
+            )
+            try:
+                same_password = await run_bounded(
+                    self.passwords.verify,
+                    claim.current_password_hash,
+                    new_password,
+                    timeout_s=5,
+                    pool="auth_hash",
+                )
+            except ExecutorBackpressure:
+                await self._release_password_change_claim(claim)
+                raise ApiError(
+                    503,
+                    "AUTH_PROVIDER_UNAVAILABLE",
+                    "认证源容量暂不可用，请稍后重试",
+                    None,
+                ) from None
+            except TimeoutError:
+                # shield 下底层 Argon2 仍可能运行；保留短租约，禁止立即重放。
+                raise ApiError(
+                    503,
+                    "AUTH_PROVIDER_UNAVAILABLE",
+                    "认证源容量暂不可用，请稍后重试",
+                    None,
+                ) from None
+            if same_password:
+                await self._release_password_change_claim(claim)
+                raise PasswordPolicyViolation("新密码不能与当前密码相同")
+            try:
+                password_hash = await run_bounded(
+                    self.passwords.hash,
+                    new_password,
+                    timeout_s=5,
+                    pool="auth_hash",
+                )
+            except ExecutorBackpressure:
+                await self._release_password_change_claim(claim)
+                raise ApiError(
+                    503,
+                    "AUTH_PROVIDER_UNAVAILABLE",
+                    "认证源容量暂不可用，请稍后重试",
+                    None,
+                ) from None
+            except TimeoutError:
+                raise ApiError(
+                    503,
+                    "AUTH_PROVIDER_UNAVAILABLE",
+                    "认证源容量暂不可用，请稍后重试",
+                    None,
+                ) from None
+            await self.users.consume_password_change_and_update(
+                token_id=claim.token_id,
+                lease_id=claim.lease_id,
                 account_id=claims.account_id,
                 identity_id=claims.identity_id,
                 provider_code=claims.provider_code,
@@ -347,6 +426,13 @@ class AuthFacade:
                 422,
                 "PASSWORD_POLICY_VIOLATION",
                 str(error),
+                None,
+            ) from None
+        except PasswordChangeInProgress:
+            raise ApiError(
+                409,
+                "STATE_CONFLICT",
+                "改密请求处理中，请稍后重试",
                 None,
             ) from None
         except InvalidCredentials:
@@ -364,6 +450,17 @@ class AuthFacade:
                 None,
             ) from None
 
+    async def _release_password_change_claim(
+        self,
+        claim: PasswordChangeClaim,
+    ) -> None:
+        released = await self.users.release_password_change_token(
+            token_id=claim.token_id,
+            lease_id=claim.lease_id,
+        )
+        if not released:
+            raise PasswordChangeInProgress("改密租约已变化")
+
     async def change_password(
         self,
         token: str,
@@ -372,12 +469,29 @@ class AuthFacade:
         ip: str,
     ) -> None:
         claims = await self.verify(token)
+        if claims.provider_code != "local":
+            raise ApiError(
+                409,
+                "STATE_CONFLICT",
+                "仅本地账号支持修改密码",
+                None,
+            )
         try:
             await self.reauthenticate_current(claims, current_password, ip)
         except ApiError as error:
             if error.code == "STEP_UP_REQUIRED":
                 raise ApiError(401, "UNAUTHORIZED", "当前密码错误", None) from None
             raise
+        if secrets.compare_digest(
+            current_password.encode("utf-8"),
+            new_password.encode("utf-8"),
+        ):
+            raise ApiError(
+                422,
+                "PASSWORD_POLICY_VIOLATION",
+                "新密码不能与当前密码相同",
+                None,
+            )
         try:
             self.policy.validate(new_password, username=claims.login_name)
         except PasswordPolicyViolation as error:
@@ -392,6 +506,7 @@ class AuthFacade:
                 self.passwords.hash,
                 new_password,
                 timeout_s=5,
+                pool="auth_hash",
             )
         except (ExecutorBackpressure, TimeoutError):
             raise ApiError(
@@ -533,25 +648,34 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
     store = RedisKeyValue.from_url(settings.redis_auth_url)
     users = SqlUserRepository(settings)
     provider_repository = SqlAuthProviderRepository(settings)
+    passwords = LocalPasswordHasher()
     providers = create_provider_registry(
         settings=settings,
         provider_repository=provider_repository,
         local_repository=users,
+        local_passwords=passwords,
     )
+    policy_loader = SqlRuntimePolicyLoader(settings)
     auth = AuthService(
         providers,
-        LoginGuard(store, policy_loader=SqlRuntimePolicyLoader(settings).load),
+        LoginGuard(
+            store,
+            policy_loader=policy_loader.load,
+            security_events=SqlAuthSecurityEventRepository(settings),
+        ),
     )
     tokens = JwtService(
         settings.credential("jwt_secret"),
         store,
         accept_legacy=settings.jwt_accept_legacy,
         security_session_loader=users.load_security_session,
+        runtime_policy_loader=policy_loader.load,
     )
     return AuthFacade(
         auth,
         users,
         tokens,
+        passwords=passwords,
         providers=AuthProviderService(provider_repository, providers),
     )
 

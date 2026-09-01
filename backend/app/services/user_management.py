@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.passwords import LocalPasswordHasher, PasswordPolicy
 from app.core.auth.roles import Role
-from app.core.bounded_executor import run_bounded
+from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
 SyncStatus = Literal["local", "synced", "pending", "disabled"]
 CredentialStatus = Literal["active", "must_change"]
@@ -187,11 +188,15 @@ class UserManagementService:
     ) -> UserRecord:
         normalized = validate_local_login_name(username)
         self.policy.validate(temporary_password, username=normalized)
-        password_hash = await run_bounded(
-            self.passwords.hash,
-            temporary_password,
-            timeout_s=5,
-        )
+        try:
+            password_hash = await run_bounded(
+                self.passwords.hash,
+                temporary_password,
+                timeout_s=5,
+                pool="auth_hash",
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
         return await self.repository.create_local(
             username=normalized,
             display_name=display_name.strip(),
@@ -250,11 +255,15 @@ class UserManagementService:
         if current.provider_code != "local":
             raise ProviderActionUnsupported("仅本地账号支持密码重置")
         self.policy.validate(temporary_password, username=current.username)
-        password_hash = await run_bounded(
-            self.passwords.hash,
-            temporary_password,
-            timeout_s=5,
-        )
+        try:
+            password_hash = await run_bounded(
+                self.passwords.hash,
+                temporary_password,
+                timeout_s=5,
+                pool="auth_hash",
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
         return await self.repository.reset_local_password(
             account_id,
             password_hash,

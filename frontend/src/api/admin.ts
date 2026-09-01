@@ -1,4 +1,4 @@
-import type { UserRole } from "./auth"
+import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
 import { apiRequest, authorizedFetch } from "./client"
 import type { BillingPreview } from "./webMessages"
@@ -287,8 +287,16 @@ export class VendorRequestError extends Error {
   }
 }
 
-async function vendorRequest<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await authorizedFetch(`/api/v1/web/admin/vendor-test${path}`, init)
+async function vendorRequest<T>(
+  path: string,
+  init: RequestInit,
+  timeoutMs?: number,
+): Promise<T> {
+  const response = await authorizedFetch(
+    `/api/v1/web/admin/vendor-test${path}`,
+    init,
+    timeoutMs,
+  )
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as VendorApiErrorBody
     throw new VendorRequestError(
@@ -323,6 +331,7 @@ export function issueVendorTestStepUp(
   return vendorRequest<VendorStepUpResponse>(
     "/step-up",
     jsonRequest("POST", { operation, password }),
+    PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
   )
 }
 

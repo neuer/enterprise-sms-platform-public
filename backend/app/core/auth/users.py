@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, cast
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.core.auth.accounts import (
     AccountNotFound,
@@ -14,7 +16,11 @@ from app.core.auth.accounts import (
     LocalAccountRecord,
     PlatformAccount,
 )
-from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
+from app.core.auth.backends import (
+    AuthenticatedIdentity,
+    InvalidCredentials,
+    SessionStateUnavailable,
+)
 from app.core.auth.identity import normalize_login_name, validate_local_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.runtime_resources import (
@@ -65,6 +71,20 @@ FROM user_account ua
 JOIN auth_identity ai ON ai.account_id=ua.id
 JOIN auth_provider ap ON ap.id=ai.provider_id
 """
+
+
+class PasswordChangeInProgress(RuntimeError):
+    """同一首次改密令牌已被另一个未过期租约占用。"""
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordChangeClaim:
+    """首次改密高成本计算前取得的数据库 fencing 租约。"""
+
+    token_id: int
+    lease_id: UUID
+    lease_expires_at: datetime
+    current_password_hash: str
 
 
 def _security_account(row: Any) -> PlatformAccount:
@@ -140,10 +160,28 @@ class UserRepository(Protocol):
         expires_at: datetime,
     ) -> None: ...
 
-    async def consume_password_change_and_update(
+    async def claim_password_change_token(
         self,
         *,
         token_hash: str,
+        account_id: int,
+        identity_id: int,
+        provider_code: str,
+        login_name: str,
+    ) -> PasswordChangeClaim: ...
+
+    async def release_password_change_token(
+        self,
+        *,
+        token_id: int,
+        lease_id: UUID,
+    ) -> bool: ...
+
+    async def consume_password_change_and_update(
+        self,
+        *,
+        token_id: int,
+        lease_id: UUID,
         account_id: int,
         identity_id: int,
         provider_code: str,
@@ -583,10 +621,127 @@ class SqlUserRepository:
         finally:
             await engine.dispose()
 
-    async def consume_password_change_and_update(
+    async def claim_password_change_token(
         self,
         *,
         token_hash: str,
+        account_id: int,
+        identity_id: int,
+        provider_code: str,
+        login_name: str,
+    ) -> PasswordChangeClaim:
+        """短事务取得首次改密租约；昂贵 Argon2 不在事务内执行。"""
+
+        lease_id = uuid4()
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                selected = await connection.execute(
+                    text(
+                        """
+                        SELECT pct.id,pct.status,
+                               pct.processing_lease_expires_at,
+                               pct.processing_lease_expires_at>now() AS lease_active,
+                               lc.password_hash
+                        FROM password_change_token pct
+                        JOIN user_account ua ON ua.id=pct.account_id
+                        JOIN auth_identity ai
+                          ON ai.id=pct.identity_id AND ai.account_id=ua.id
+                        JOIN auth_provider ap ON ap.id=ai.provider_id
+                        JOIN local_credential lc ON lc.identity_id=ai.id
+                        WHERE pct.token_hash=:token_hash
+                          AND pct.account_id=:account_id
+                          AND pct.identity_id=:identity_id
+                          AND pct.provider_code=:provider_code
+                          AND pct.purpose='initial_password'
+                          AND pct.normalized_login_name=:login_name
+                          AND pct.expires_at>now()
+                          AND pct.issued_security_version=ua.security_version
+                          AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
+                          AND ap.code=:provider_code
+                          AND ai.normalized_login_name=:login_name
+                          AND lc.must_change_password=TRUE
+                        FOR UPDATE OF pct,ua
+                        """
+                    ),
+                    {
+                        "token_hash": token_hash,
+                        "account_id": account_id,
+                        "identity_id": identity_id,
+                        "provider_code": provider_code,
+                        "login_name": login_name,
+                    },
+                )
+                row = selected.mappings().one_or_none()
+                if row is None:
+                    raise InvalidCredentials("改密令牌无效、已过期或已使用")
+                status = str(row["status"])
+                if status == "processing" and bool(row["lease_active"]):
+                    raise PasswordChangeInProgress("改密请求处理中")
+                if status not in {"available", "processing"}:
+                    raise InvalidCredentials("改密令牌无效、已过期或已使用")
+                claimed = await connection.execute(
+                    text(
+                        """
+                        UPDATE password_change_token SET
+                          status='processing',
+                          processing_lease_id=:lease_id,
+                          processing_lease_expires_at=now()+INTERVAL '30 seconds'
+                        WHERE id=:token_id
+                        RETURNING processing_lease_expires_at
+                        """
+                    ),
+                    {"token_id": int(row["id"]), "lease_id": lease_id},
+                )
+                lease_expires_at = claimed.scalar_one()
+                return PasswordChangeClaim(
+                    token_id=int(row["id"]),
+                    lease_id=lease_id,
+                    lease_expires_at=lease_expires_at,
+                    current_password_hash=str(row["password_hash"]),
+                )
+        except SQLAlchemyError as error:
+            raise SessionStateUnavailable("改密令牌状态暂不可用") from error
+        finally:
+            await engine.dispose()
+
+    async def release_password_change_token(
+        self,
+        *,
+        token_id: int,
+        lease_id: UUID,
+    ) -> bool:
+        """仅持有当前 fencing UUID 的请求可以释放首次改密租约。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                released = await connection.execute(
+                    text(
+                        """
+                        UPDATE password_change_token SET
+                          status='available',
+                          processing_lease_id=NULL,
+                          processing_lease_expires_at=NULL
+                        WHERE id=:token_id
+                          AND status='processing'
+                          AND processing_lease_id=:lease_id
+                        RETURNING id
+                        """
+                    ),
+                    {"token_id": token_id, "lease_id": lease_id},
+                )
+                return released.scalar_one_or_none() is not None
+        except SQLAlchemyError as error:
+            raise SessionStateUnavailable("改密令牌状态暂不可用") from error
+        finally:
+            await engine.dispose()
+
+    async def consume_password_change_and_update(
+        self,
+        *,
+        token_id: int,
+        lease_id: UUID,
         account_id: int,
         identity_id: int,
         provider_code: str,
@@ -610,13 +765,15 @@ class SqlUserRepository:
                           ON ai.id=pct.identity_id AND ai.account_id=ua.id
                         JOIN auth_provider ap ON ap.id=ai.provider_id
                         JOIN local_credential lc ON lc.identity_id=ai.id
-                        WHERE pct.token_hash=:token_hash
+                        WHERE pct.id=:token_id
                           AND pct.account_id=:account_id
                           AND pct.identity_id=:identity_id
                           AND pct.provider_code=:provider_code
                           AND pct.purpose='initial_password'
                           AND pct.normalized_login_name=:login_name
-                          AND pct.status='available'
+                          AND pct.status='processing'
+                          AND pct.processing_lease_id=:lease_id
+                          AND pct.processing_lease_expires_at>now()
                           AND pct.expires_at>now()
                           AND pct.issued_security_version=ua.security_version
                           AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
@@ -627,7 +784,8 @@ class SqlUserRepository:
                         """
                     ),
                     {
-                        "token_hash": token_hash,
+                        "token_id": token_id,
+                        "lease_id": lease_id,
                         "account_id": account_id,
                         "identity_id": identity_id,
                         "provider_code": provider_code,
@@ -670,8 +828,11 @@ class SqlUserRepository:
                         """
                         UPDATE password_change_token SET
                           status=CASE WHEN id=:token_id THEN 'consumed' ELSE 'revoked' END,
-                          consumed_at=CASE WHEN id=:token_id THEN now() ELSE consumed_at END
-                        WHERE account_id=:account_id AND status='available'
+                          consumed_at=CASE WHEN id=:token_id THEN now() ELSE NULL END,
+                          processing_lease_id=NULL,
+                          processing_lease_expires_at=NULL
+                        WHERE account_id=:account_id
+                          AND status IN ('available','processing')
                         """
                     ),
                     {"token_id": int(token_id), "account_id": account_id},
@@ -705,6 +866,8 @@ class SqlUserRepository:
                         "object_id": str(account_id),
                     },
                 )
+        except SQLAlchemyError as error:
+            raise SessionStateUnavailable("改密事务状态暂不可用") from error
         finally:
             await engine.dispose()
 

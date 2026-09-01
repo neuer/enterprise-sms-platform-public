@@ -1,5 +1,11 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.70  2026-09-01
+-- v1.6.70：登录锁定/IP 封禁由 Redis Lua 原子建立不可续期 UUID 状态并
+-- 幂等写入最小系统审计；AD refresh family 增加可配置完整重新认证时限。
+-- v1.6.69  2026-09-01
+-- v1.6.69：首次改密令牌增加 processing 短租约与 UUID fencing；高成本
+-- Argon2 只允许在数据库 claim 后执行，超时旧请求不得提交或释放新租约。
 -- v1.6.68  2026-09-01
 -- v1.6.68：Outbox 队列白名单增加 realtime-report，为独立报告轮询
 -- worker 建立前向兼容数据库合同；本版本不切换 poll_report 路由。
@@ -222,10 +228,11 @@ CREATE TABLE password_change_token (
     purpose                 VARCHAR(32) NOT NULL CHECK (purpose IN ('initial_password')),
     normalized_login_name   VARCHAR(64) NOT NULL,
     issued_security_version BIGINT      NOT NULL CHECK (issued_security_version > 0),
-    status                  VARCHAR(12) NOT NULL DEFAULT 'available'
-                            CHECK (status IN ('available','consumed','revoked','expired')),
+    status                  VARCHAR(12) NOT NULL DEFAULT 'available',
     expires_at              TIMESTAMPTZ NOT NULL,
     consumed_at             TIMESTAMPTZ,
+    processing_lease_id     UUID,
+    processing_lease_expires_at TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT fk_password_change_identity
       FOREIGN KEY (identity_id,account_id)
@@ -233,10 +240,28 @@ CREATE TABLE password_change_token (
     CONSTRAINT ck_password_change_consumed CHECK (
       (status='consumed' AND consumed_at IS NOT NULL)
       OR (status<>'consumed' AND consumed_at IS NULL)
+    ),
+    CONSTRAINT password_change_token_status_check CHECK (
+      status IN ('available','processing','consumed','revoked','expired')
+    ),
+    CONSTRAINT ck_password_change_processing_lease CHECK (
+      (
+        status='processing'
+        AND processing_lease_id IS NOT NULL
+        AND processing_lease_expires_at IS NOT NULL
+        AND consumed_at IS NULL
+      )
+      OR (
+        status<>'processing'
+        AND processing_lease_id IS NULL
+        AND processing_lease_expires_at IS NULL
+      )
     )
 );
 CREATE INDEX idx_password_change_account_available
     ON password_change_token(account_id,expires_at) WHERE status='available';
+CREATE INDEX idx_password_change_processing_lease
+    ON password_change_token(processing_lease_expires_at) WHERE status='processing';
 
 CREATE TABLE external_role_mapping (
     id             BIGSERIAL PRIMARY KEY,
@@ -1861,6 +1886,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('login_lock_minutes',        '15',    'int',  '账号锁定时长(分钟)'),
 ('login_ip_fail_limit',       '20',    'int',  '同IP5分钟内失败次数上限'),
 ('login_ip_ban_minutes',      '15',    'int',  'IP封禁时长(分钟)'),
+('ad_session_max_age_minutes','480',   'int',  'AD会话完整重新认证时限(分钟,15-10080)'),
 ('callback_timeout_seconds',  '5',     'int',  '回调HTTP超时(秒)'),
 ('callback_retry_schedule',   '60,300,900,3600,3600', 'str', '回调重试间隔(秒,逗号分隔)'),
 ('callback_allow_cidrs',      '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16', 'str', '回调地址内网白名单'),
@@ -2007,6 +2033,9 @@ CREATE UNIQUE INDEX idx_audit_raw_replay_system_epoch
     WHERE action = 'raw_replay'
       AND actor_subject_kind = 'system'
       AND object_type = 'raw_vendor_log';
+CREATE UNIQUE INDEX idx_audit_auth_security_transition
+    ON audit_log(action, object_id)
+    WHERE action IN ('auth_account_locked','auth_ip_banned');
 
 -- 仅 sms_owner 可读；业务角色只提交绑定 txid/session_user 的 HMAC，不能读取 key。
 CREATE TABLE audit_context_signing_key (
@@ -2169,7 +2198,8 @@ BEGIN
     system_allowed := session_user='sms_owner'
       OR (context_domain='api' AND (
           (session_user='sms_auth' AND NEW.actor='auth-system'
-           AND NEW.action='account_source_conflict')
+           AND NEW.action IN (
+             'account_source_conflict','auth_account_locked','auth_ip_banned'))
           OR (session_user='sms_accept' AND (
             (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
               'vendor_test_operation_completed','vendor_test_operation_batch_attached'))

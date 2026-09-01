@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -24,6 +25,8 @@ from app.core.auth.runtime import (
     PasswordChangeRequired,
 )
 from app.core.auth.service import AccountLocked, RedisKeyValue
+from app.core.auth.users import PasswordChangeClaim, PasswordChangeInProgress
+from app.core.bounded_executor import ExecutorBackpressure
 from app.core.errors import ApiError
 
 IP = "10.0.0.8"
@@ -124,6 +127,7 @@ class FakeUserRepository:
         self.refresh_audits: list[tuple[PlatformAccount, str]] = []
         self.logout_audits: list[tuple[PlatformAccount, str]] = []
         self.fail_refresh_audit = False
+        self._next_password_token_id = 1
 
     async def resolve_identity(
         self,
@@ -158,6 +162,7 @@ class FakeUserRepository:
         expires_at: datetime,
     ) -> None:
         self.password_change_tokens[token_hash] = {
+            "id": self._next_password_token_id,
             "account_id": account_id,
             "identity_id": identity_id,
             "provider_code": provider_code,
@@ -166,11 +171,72 @@ class FakeUserRepository:
             "expires_at": expires_at,
             "status": "available",
         }
+        self._next_password_token_id += 1
+
+    async def claim_password_change_token(
+        self,
+        *,
+        token_hash: str,
+        account_id: int,
+        identity_id: int,
+        provider_code: str,
+        login_name: str,
+    ) -> PasswordChangeClaim:
+        token = self.password_change_tokens.get(token_hash)
+        if token is None or token["status"] not in {"available", "processing"}:
+            raise InvalidCredentials("used")
+        if token["status"] == "processing":
+            raise PasswordChangeInProgress("processing")
+        if (
+            token["account_id"] != account_id
+            or token["identity_id"] != identity_id
+            or token["provider_code"] != provider_code
+            or token["login_name"] != login_name
+            or token["security_version"] != self.value.security_version
+        ):
+            raise InvalidCredentials("context mismatch")
+        lease_id = uuid4()
+        lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
+        token["status"] = "processing"
+        token["lease_id"] = lease_id
+        token["lease_expires_at"] = lease_expires_at
+        return PasswordChangeClaim(
+            token_id=int(token["id"]),
+            lease_id=lease_id,
+            lease_expires_at=lease_expires_at,
+            current_password_hash="encoded-current",
+        )
+
+    async def release_password_change_token(
+        self,
+        *,
+        token_id: int,
+        lease_id: UUID,
+    ) -> bool:
+        token = next(
+            (
+                candidate
+                for candidate in self.password_change_tokens.values()
+                if candidate["id"] == token_id
+            ),
+            None,
+        )
+        if (
+            token is None
+            or token["status"] != "processing"
+            or token.get("lease_id") != lease_id
+        ):
+            return False
+        token["status"] = "available"
+        token["lease_id"] = None
+        token["lease_expires_at"] = None
+        return True
 
     async def consume_password_change_and_update(
         self,
         *,
-        token_hash: str,
+        token_id: int,
+        lease_id: UUID,
         account_id: int,
         identity_id: int,
         provider_code: str,
@@ -179,8 +245,19 @@ class FakeUserRepository:
         actor: str,
         ip: str,
     ) -> None:
-        token = self.password_change_tokens.get(token_hash)
-        if token is None or token["status"] != "available":
+        token = next(
+            (
+                candidate
+                for candidate in self.password_change_tokens.values()
+                if candidate["id"] == token_id
+            ),
+            None,
+        )
+        if (
+            token is None
+            or token["status"] != "processing"
+            or token.get("lease_id") != lease_id
+        ):
             raise InvalidCredentials("used")
         if (
             token["account_id"] != account_id
@@ -191,6 +268,8 @@ class FakeUserRepository:
         ):
             raise InvalidCredentials("context mismatch")
         token["status"] = "consumed"
+        token["lease_id"] = None
+        token["lease_expires_at"] = None
         await self.change_local_password(
             account_id=account_id,
             identity_id=identity_id,
@@ -258,6 +337,10 @@ class FakeHasher:
         self.hashed.append(password)
         return f"encoded:{password}"
 
+    def verify(self, encoded: str, password: str) -> bool:
+        self.verified.append((encoded, password))
+        return encoded == "encoded-current" and password == "Current@Password123"
+
     def verify_or_dummy(self, encoded: str | None, password: str) -> bool:
         self.verified.append((encoded, password))
         return encoded == "encoded-current" and password == "Current@Password123"
@@ -316,6 +399,81 @@ async def test_temporary_password_login_requires_one_time_initial_change() -> No
             IP,
         )
     assert reused.value.code == "UNAUTHORIZED"
+
+
+@pytest.mark.asyncio
+async def test_initial_password_change_rejects_current_password_and_releases_claim() -> None:
+    service, users, tokens, hasher = facade(must_change_password=True)
+    result = await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
+    assert isinstance(result, PasswordChangeRequired)
+    digest = tokens.password_change_digest(result.change_token)
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_initial_password(
+            result.change_token,
+            "Current@Password123",
+            IP,
+        )
+
+    assert raised.value.status_code == 422
+    assert raised.value.code == "PASSWORD_POLICY_VIOLATION"
+    assert users.password_change_tokens[digest]["status"] == "available"
+    assert users.changed == []
+    assert hasher.hashed == []
+    assert hasher.verified == [("encoded-current", "Current@Password123")]
+
+
+@pytest.mark.asyncio
+async def test_initial_password_change_rejects_active_claim_before_hashing() -> None:
+    service, users, tokens, hasher = facade(must_change_password=True)
+    result = await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
+    assert isinstance(result, PasswordChangeRequired)
+    digest = tokens.password_change_digest(result.change_token)
+    users.password_change_tokens[digest]["status"] = "processing"
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_initial_password(
+            result.change_token,
+            "Another@Password123",
+            IP,
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.code == "STATE_CONFLICT"
+    assert hasher.verified == []
+    assert hasher.hashed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    ((ExecutorBackpressure("full"), "available"), (TimeoutError("slow"), "processing")),
+)
+async def test_initial_password_change_handles_hash_capacity_without_consuming_token(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    expected_status: str,
+) -> None:
+    async def fail_hash(*_args: object, **_kwargs: object) -> str:
+        raise failure
+
+    service, users, tokens, _ = facade(must_change_password=True)
+    result = await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
+    assert isinstance(result, PasswordChangeRequired)
+    digest = tokens.password_change_digest(result.change_token)
+    monkeypatch.setattr("app.core.auth.runtime.run_bounded", fail_hash)
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_initial_password(
+            result.change_token,
+            "Another@Password123",
+            IP,
+        )
+
+    assert raised.value.status_code == 503
+    assert raised.value.code == "AUTH_PROVIDER_UNAVAILABLE"
+    assert users.password_change_tokens[digest]["status"] == expected_status
+    assert users.changed == []
 
 
 @pytest.mark.asyncio
@@ -623,6 +781,66 @@ async def test_daily_password_change_checks_current_password_and_revokes_session
 
 
 @pytest.mark.asyncio
+async def test_daily_password_change_rejects_same_password_after_reauthentication() -> None:
+    service, users, tokens, hasher = facade(must_change_password=False)
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+    assert isinstance(login, LoginSuccess)
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_password(
+            login.token,
+            "Current@Password123",
+            "Current@Password123",
+            IP,
+        )
+
+    assert raised.value.status_code == 422
+    assert raised.value.code == "PASSWORD_POLICY_VIOLATION"
+    assert service.auth.calls[-1] == ("local", "admin", "Current@Password123", IP)
+    assert users.changed == []
+    assert hasher.hashed == []
+
+
+@pytest.mark.asyncio
+async def test_daily_password_change_rejects_ad_before_password_provider_work() -> None:
+    value = replace(account(must_change_password=False), provider_code="ad")
+    identity = AuthenticatedIdentity(
+        provider_code="ad",
+        login_name="admin",
+        external_subject="ad:admin",
+        display_name="管理员",
+        dept="平台部",
+        groups=(),
+        account=value,
+    )
+    auth = FakeAuthService(identity)
+    users = FakeUserRepository(value)
+    tokens = JwtService(
+        SECRET,
+        FakeKeyValue(),
+        security_session_loader=users.load_security_session,
+    )
+    service = AuthFacade(auth, users, tokens, FakeHasher())
+    pair = await tokens.issue_pair(
+        JwtClaims(8, 18, "ad", "admin", "管理员", "平台部", "admin", 3),
+        TAB_ID,
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_password(
+            pair.token,
+            "Current@Password123",
+            "Another@Password123",
+            IP,
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.code == "STATE_CONFLICT"
+    assert auth.calls == []
+    assert users.changed == []
+
+
+@pytest.mark.asyncio
 async def test_daily_password_change_maps_wrong_password_to_unauthorized() -> None:
     service, _, _, _ = facade(must_change_password=False)
     login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
@@ -878,6 +1096,31 @@ async def test_reauthenticate_current_maps_account_lock_to_explicit_423() -> Non
 async def test_reauthenticate_current_maps_provider_capacity_to_safe_503() -> None:
     service = AuthFacade(
         FakeAuthService(ProviderCapacityUnavailable("busy")),
+        FakeUserRepository(account(must_change_password=False)),
+        JwtService(SECRET, FakeKeyValue()),
+        FakeHasher(),
+    )
+    claims = JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="admin",
+        role="admin",
+        security_version=3,
+        jti="session-1",
+    )
+
+    with pytest.raises(ApiError) as raised:
+        await service.reauthenticate_current(claims, "password", IP)
+
+    assert raised.value.status_code == 503
+    assert raised.value.code == "AUTH_PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_reauthenticate_current_maps_provider_outage_to_safe_503() -> None:
+    service = AuthFacade(
+        FakeAuthService(ProviderUnavailable("directory unavailable")),
         FakeUserRepository(account(must_change_password=False)),
         JwtService(SECRET, FakeKeyValue()),
         FakeHasher(),
