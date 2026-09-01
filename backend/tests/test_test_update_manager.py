@@ -445,6 +445,93 @@ def test_loaded_image_rejects_revision_or_schema_label_drift(
         operations.load_and_validate_images()
 
 
+def test_prepare_diagnostics_reports_only_fixed_safe_booleans(tmp_path: Path) -> None:
+    base = "a" * 40
+    target = "b" * 40
+    image_id = f"sha256:{'c' * 64}"
+    archive = tmp_path / "incoming/api.tar"
+    archive.parent.mkdir()
+    archive.write_bytes(b"image archive")
+    archive.chmod(0o600)
+    image = SimpleNamespace(
+        archive_file="api.tar",
+        archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+        ref=f"sms-platform-test-api:{target}",
+        image_id=image_id,
+    )
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.state_root = tmp_path
+    operations.expected_uid = os.geteuid()
+    operations.host_source_commit = target
+    operations.request = SimpleNamespace(
+        images={"api": image},
+        base_commit=base,
+        commit=target,
+        migration_target="0082_outbox_realtime_report_queue",
+    )
+
+    def command(*arguments: str) -> str:
+        if arguments[-2:] == ("status", "--porcelain"):
+            return ""
+        if arguments[-2:] == ("rev-parse", "HEAD"):
+            return base
+        if arguments[-2:] == ("rev-parse", f"{target}^{{commit}}"):
+            return target
+        if "diff" in arguments:
+            return ""
+        if arguments[0:3] == ("docker", "image", "inspect"):
+            return (
+                f"{image_id}|amd64|{target}|"
+                "0082_outbox_realtime_report_queue"
+            )
+        raise AssertionError(arguments)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    assert operations.prepare_diagnostics() == {
+        "archives_safe": True,
+        "base_commit_matches": True,
+        "host_control_snapshot_matches": True,
+        "images_loaded": True,
+        "target_commit_available": True,
+        "tracked_checkout_clean": True,
+    }
+
+
+def test_prepare_diagnostics_fails_closed_without_exposing_errors(tmp_path: Path) -> None:
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.state_root = tmp_path
+    operations.expected_uid = os.geteuid()
+    operations.host_source_commit = "c" * 40
+    operations.request = SimpleNamespace(
+        images={
+            "api": SimpleNamespace(
+                archive_file="missing.tar",
+                archive_sha256="d" * 64,
+                ref="sms-platform-test-api:missing",
+                image_id=f"sha256:{'e' * 64}",
+            )
+        },
+        base_commit="a" * 40,
+        commit="b" * 40,
+        migration_target="0082_outbox_realtime_report_queue",
+    )
+    operations._command = (  # type: ignore[method-assign]
+        lambda *arguments: (_ for _ in ()).throw(ManagerError(str(arguments)))
+    )
+
+    assert operations.prepare_diagnostics() == {
+        "archives_safe": False,
+        "base_commit_matches": False,
+        "host_control_snapshot_matches": False,
+        "images_loaded": False,
+        "target_commit_available": False,
+        "tracked_checkout_clean": False,
+    }
+
+
 def test_pre_live_high_risk_without_migration_skips_checkpoint() -> None:
     store = FakeStore()
     operations = FakePrepareOperations(mode="pre-live")
