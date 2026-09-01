@@ -15,7 +15,7 @@
 > 离线通道仅保留兼容，不自动回退、不扩展。实施合同见
 > [P0-A 生产控制加固](../docs/security-hardening/p0a-production-control/hardening.md)。
 
-API 容器固定运行两个 Uvicorn worker，以保留强制性能门禁所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
+API 容器固定运行两个 Uvicorn worker，以保留测试环境专项性能基线所需的并发余量。两个 worker 都在 API lifespan 内启动任务心跳服务，但 PostgreSQL 会话级 advisory lock 只允许一个进程执行巡检；领导进程退出或数据库连接中断后锁自动释放，存活进程在下一轮接管。不得把该巡检迁移为 beat 任务，也不得通过降低性能阈值替代容量基线。
 
 `deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更通常先在同版本预生产或隔离环境执行；内部 Registry 尚未建成期间，满足下文“临时离线无迁移整包快速更新”条件且操作者明确接受风险时，预生产不作为硬前置。不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
 

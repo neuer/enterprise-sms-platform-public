@@ -117,7 +117,6 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "frontend": "${{ steps.classify.outputs.frontend }}",
         "security": "${{ steps.classify.outputs.security }}",
         "g2": "${{ steps.classify.outputs.g2 }}",
-        "performance": "${{ steps.classify.outputs.performance }}",
         "release_control": "${{ steps.classify.outputs.release_control }}",
         "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
     }
@@ -243,7 +242,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "scripts/local_test.sh prepare" in g2_commands
     assert "bash scripts/verify_all.sh" in g2_commands
     assert "--mode integration" in g2_commands
-    assert "needs.changes.outputs.performance" in g2_commands
+    assert "include-performance" not in g2_commands
+    assert "needs.changes.outputs.performance" not in g2_commands
     assert "needs.changes.outputs.release_control" in g2_commands
     assert "verify_vendor_live_test.sh" in (ROOT / "scripts/verify_all.sh").read_text(
         encoding="utf-8"
@@ -324,8 +324,7 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert "steps.authoritative-g2.outputs.expected_stages" in summary["run"]
     assert 'GITHUB_STEP_SUMMARY' in summary["run"]
     assert 'expected_stages="5,6,7"' in gate["run"]
-    assert 'expected_stages+=",8"' in gate["run"]
-    assert 'expected_stages+=",10"' in gate["run"]
+    assert 'expected_stages+=",9"' in gate["run"]
 
 
 def test_owner_pr_automation_only_opens_draft_for_independent_review() -> None:

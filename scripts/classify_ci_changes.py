@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 
@@ -26,7 +26,6 @@ class Classification:
     security: bool
     categories: frozenset[str]
     full_fallback: bool = False
-    performance: bool = False
     release_control: bool = False
 
 
@@ -63,15 +62,6 @@ CI_CONTROL_SCRIPTS = {
     "scripts/classify_ci_changes.py",
     "scripts/reuse_pr_ci_evidence.py",
     "scripts/verify_ci_results.py",
-}
-PERFORMANCE_SENSITIVE_EXACT = {
-    "backend/Dockerfile",
-    "backend/pyproject.toml",
-    "backend/uv.lock",
-    "deploy/docker-compose.yml",
-    "scripts/e2e_api.py",
-    "scripts/locustfile.py",
-    "scripts/perf_smoke.py",
 }
 RELEASE_CONTROL_EXACT = {
     ".github/workflows/release-gate.yml",
@@ -156,11 +146,10 @@ def classify_paths(paths: Iterable[str]) -> Classification:
             frozenset({"empty-diff"}),
             True,
             True,
-            True,
         )
 
     backend = frontend = g2 = security = fallback = False
-    performance = release_control = False
+    release_control = False
     categories: set[str] = set()
     for path in path_list:
         pure_path = PurePosixPath(path)
@@ -175,12 +164,6 @@ def classify_paths(paths: Iterable[str]) -> Classification:
         security |= path_security
         fallback |= path_fallback
         categories.add(category)
-        performance |= (
-            path_fallback
-            or protected_change_category(path) in {"vendor-live", "backend-critical"}
-            or path in PERFORMANCE_SENSITIVE_EXACT
-            or path.startswith(("backend/app/", "backend/migrations/"))
-        )
         release_control |= (
             path_fallback
             or path in RELEASE_CONTROL_EXACT
@@ -194,7 +177,6 @@ def classify_paths(paths: Iterable[str]) -> Classification:
         security,
         frozenset(categories),
         fallback,
-        performance and g2,
         release_control and g2,
     )
 
@@ -259,16 +241,7 @@ def _full(reason: str) -> Classification:
         frozenset({reason}),
         True,
         True,
-        True,
     )
-
-
-def _apply_event_policy(event_name: str, result: Classification) -> Classification:
-    """PR 不同步阻塞性能证据；其余失败关闭与路径分类保持不变。"""
-
-    if event_name == "pull_request":
-        return replace(result, performance=False)
-    return result
 
 
 def _classify_event_with_count(
@@ -293,14 +266,13 @@ def _classify_event_with_count(
                     frozenset({"reused-pr-ci-evidence"}),
                     False,
                     False,
-                    False,
                 ),
                 0,
             )
         return _full("untrusted-post-merge"), 0
     if event_name == "pull_request":
         if not base_sha or not head_sha:
-            return _apply_event_policy(event_name, _full("missing-pr-sha")), 0
+            return _full("missing-pr-sha"), 0
         revision_range = f"{base_sha}...{head_sha}"
     elif event_name == "push":
         if not before_sha or before_sha == ZERO_SHA or not head_sha:
@@ -310,7 +282,7 @@ def _classify_event_with_count(
         return _full("unsupported-event"), 0
 
     paths = _git_paths(repo, revision_range)
-    result = _apply_event_policy(event_name, classify_paths(paths))
+    result = classify_paths(paths)
     if event_name == "push" and trusted_pr_evidence:
         result = Classification(
             False,
@@ -318,7 +290,6 @@ def _classify_event_with_count(
             False,
             False,
             frozenset({"reused-pr-ci-evidence"}),
-            False,
             False,
             False,
         )
@@ -351,7 +322,6 @@ def write_github_outputs(path: Path, result: Classification) -> None:
         f"frontend={str(result.frontend).lower()}\n"
         f"g2={str(result.g2).lower()}\n"
         f"security={str(result.security).lower()}\n"
-        f"performance={str(result.performance).lower()}\n"
         f"release_control={str(result.release_control).lower()}\n"
     )
     with path.open("a", encoding="utf-8") as output:

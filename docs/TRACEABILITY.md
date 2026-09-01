@@ -35,7 +35,7 @@
 | FR-20 审计 | T4.6 | audit_log只增 | admin/audit-logs | UAT 04/10/21/22/27+附加 |
 | FR-21 生命周期 | T4.7 | housekeeping + owner DBA流程 | 无 | G2/移交检查 |
 | FR-22/22a 加密/OTP | T1.0/T1.6/T4.2 | services/crypto.py/masking.py | decrypt/export | UAT 21/22/24/25 |
-| NFR-01 性能 | T4.11 | perf_smoke.py三阶段 | — | G2性能门禁 |
+| NFR-01 性能 | T4.11 | perf_smoke.py三阶段 | — | 隔离测试环境专项压测 |
 | NFR-02 冷备 | T4.9a | deploy/failover.md | — | HANDOVER演练 |
 | NFR-03/04 安全合规 | T0.4/T4.6/T4.10 | owner/app、secrets、加密、审计；`scripts/security_acceptance.py` | 全端错误/鉴权 | `docs/ACCEPTANCE.md` + G2 SEC-01–07 |
 | NFR-05 可观测 | T4.8 | Prometheus/job_run/log/usage_projection_drift | dashboard/jobs | UAT 26/27 + 投影漂移与重建 |

@@ -1,12 +1,15 @@
-# 性能门禁与全日 10 万条压测手册
+# 测试环境专项性能压测手册
 
-## 无人值守三阶段冒烟
+性能压测不进入日常 CI、定时 CI、人工 CI 或 G2 门禁。所有负载测试只在隔离测试环境中
+由测试负责人专项执行，结果单独归档，不得用普通 `ci-gate` 绿色状态代替性能证据。
 
-`scripts/perf_smoke.py` 是 G2 的权威有界性能门禁：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<2000ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。完整 G2 会在 E2E 后复用同一组已构建镜像，重建开发卷、等待 ready 并重新 seed，使性能阶段不继承安全验收或 E2E 的持久化事实。
+## 专项三阶段压测
+
+`scripts/perf_smoke.py` 是测试环境的有界三阶段压测：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<2000ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。
 
 阶段 1 的 future scheduled 批次仅用于测量受理延迟。脚本无论成功或中途失败，均必须使用对应应用 API Key 逐批调用正式取消接口，走状态机、配额回补与审计；不得直接更新数据库。结果字段 `cancelled_scheduled_batches` 必须等于阶段 1 已受理的 scheduled 数，任何取消失败均以 `PERF-04` fail-closed，错误只报告失败数量。
 
-G2 使用默认参数，禁止通过 CLI 缩短时间或降低阈值：
+正式专项压测使用默认参数，禁止通过 CLI 缩短时间或降低阈值：
 
 ```bash
 uv run --project backend python scripts/perf_smoke.py \
@@ -15,11 +18,11 @@ uv run --project backend python scripts/perf_smoke.py \
   --keys deploy/secrets/dev-apikeys.txt
 ```
 
-短参数只用于开发诊断，不构成交付证据。独立执行脚本前必须是干净 dev profile、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2；完整 G2 由 `verify_all.sh` 自动完成这项隔离。结果只归档请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
+短参数只用于开发诊断，不构成交付证据。执行脚本前必须由测试负责人确认独占的干净测试环境、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2；`verify_all.sh` 不再准备或执行性能压测。结果只归档请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
 
 ## `[HANDOVER]` 全日 Locust 10 万条
 
-真实运行不在无人值守 G2 内。由性能负责人在隔离预生产执行 `scripts/locustfile.py`；该脚本固定 100000 个单号码请求、24 小时目标速率、2:3:5 类别权重，并在达到总量后停止。必须使用单用户 `-u 1`，增加用户数会按用户倍增吞吐。
+全日运行同样不进入日常 CI/G2。由性能负责人在隔离预生产执行 `scripts/locustfile.py`；该脚本固定 100000 个单号码请求、24 小时目标速率、2:3:5 类别权重，并在达到总量后停止。必须使用单用户 `-u 1`，增加用户数会按用户倍增吞吐。
 
 API Key 文件从 seed-dev 或受控预生产密钥系统生成，只传路径 `PERF_KEYS_FILE`，权限 0600：
 

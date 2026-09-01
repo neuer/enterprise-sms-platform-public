@@ -45,7 +45,6 @@ jobs:
       frontend: ${{ steps.classify.outputs.frontend }}
       security: ${{ steps.classify.outputs.security }}
       g2: ${{ steps.classify.outputs.g2 }}
-      performance: ${{ steps.classify.outputs.performance }}
       release_control: ${{ steps.classify.outputs.release_control }}
       reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
     steps:
@@ -334,7 +333,7 @@ jobs:
   g2:
     name: g2
     # 与静态/组件门禁并行跑整栈运行态阶段，最终由 ci-gate 汇合精确 SHA 证据。
-    # PR 按路径选择发布控制但不阻塞性能；非 PR 保留原路径与失败关闭策略。
+    # 按路径选择整栈与发布控制阶段；性能压测在测试环境专项执行，不进入 CI。
     needs: [changes]
     outputs:
       tested_sha: ${{ steps.bind.outputs.sha }}
@@ -398,13 +397,9 @@ jobs:
         run: |
           g2_args=(--mode integration)
           expected_stages="5,6,7"
-          if [[ "${{ needs.changes.outputs.performance }}" == true ]]; then
-            g2_args+=(--include-performance)
-            expected_stages+=",8"
-          fi
           if [[ "${{ needs.changes.outputs.release_control }}" == true ]]; then
             g2_args+=(--include-release-control)
-            expected_stages+=",10"
+            expected_stages+=",9"
           fi
           echo "expected_stages=$expected_stages" >> "$GITHUB_OUTPUT"
           sudo env \
