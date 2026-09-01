@@ -732,6 +732,31 @@ def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> No
         assert token in entrypoint
 
 
+def test_auth_redis_acl_allows_only_the_login_guard_lua_primitives() -> None:
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    auth_block = entrypoint.split("  auth)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
+
+    for command in (
+        "+get",
+        "+set",
+        "+incr",
+        "+expire",
+        "+pexpire",
+        "+ttl",
+        "+pttl",
+        "+hset",
+        "+hmget",
+        "+time",
+        "+eval",
+        "+evalsha",
+    ):
+        assert command in auth_block
+    for forbidden in ("+keys", "+scan", "+flushall", "+config", "+script|load"):
+        assert forbidden not in auth_block
+
+
 def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> None:
     services = load_compose()["services"]
     migrate = services["migrate"]

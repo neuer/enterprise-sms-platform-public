@@ -355,7 +355,7 @@ def test_g2_runs_security_acceptance_after_seed_and_before_uat() -> None:
         "\n}", maxsplit=1
     )[0]
     security = (
-        'python3 scripts/security_acceptance.py --base "http://localhost:${api_port}" '
+        'python3 scripts/security_acceptance.py --base "http://localhost:${web_port}" '
         "--compose-file deploy/docker-compose.yml --secrets-dir deploy/secrets"
     )
     assert security in all_gate
