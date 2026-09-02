@@ -269,10 +269,12 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "deploy/prometheus.example.yml",
         "deploy/redis-ha.md",
         "deploy/vendor-egress.md",
+        "docs/ACCEPTANCE.md",
         "docs/DECISIONS.md",
         "docs/LOCAL_TESTING.md",
         "docs/PERFORMANCE.md",
         "docs/TEST-MANUAL.md",
+        "docs/TRACEABILITY.md",
         "docs/UAT.md",
         "docs/ui-design.md",
         "docs/api-test-playground.md",
@@ -356,6 +358,9 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "scripts/local_test.sh",
         # 精确 CI 证据核验只在本地 driver / 托管 CI 使用，不进入 api/web 运行镜像。
         "scripts/verify_ci_commit.py",
+        # G2 阶段耗时记录只在本地/托管 CI 使用，不进入 api/web 运行镜像；
+        # 其变更不能阻断同一提交中的正式运行态更新。
+        "scripts/g2_timing.py",
         # 测试环境专项压测脚本不进入 api/web 运行镜像，也不属于日常 CI/G2；
         # 其变更不能阻断同一提交中的正式运行态更新。
         "scripts/perf_smoke.py",
