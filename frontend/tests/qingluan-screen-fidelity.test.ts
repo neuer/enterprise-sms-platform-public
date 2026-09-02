@@ -57,6 +57,9 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("按需解密 · 本次查看已写敏感读审计")
     expect(view).toContain("approval-decide-box")
     expect(list).toContain('class="approval-rows"')
+    // 待审批空态必须带面板框（approval-empty），与其它模块空表格观感一致
+    expect(list).toContain('class="approval-empty"')
+    expect(workspace).toMatch(/\.approval-empty\s*\{[^}]*background:\s*var\(--panel\)[^}]*border:\s*1px solid var\(--hair\)/s)
     expect(list).toContain("approval-cd")
     expect(list).toContain("本人提交 · 按规则回避")
     expect(list).toContain("approval-dest")

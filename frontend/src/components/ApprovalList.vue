@@ -160,7 +160,12 @@ function confirmQuick(item: ApprovalListItem): void {
 
 <template>
   <section class="approval-rows" :class="{ 'is-table': status !== 'pending' }">
-    <ul v-if="status === 'pending'" class="approval-queue-list">
+    <template v-if="status === 'pending'">
+      <!-- 空态沿用队列卡片的边框面板，与其它模块的空表格观感一致 -->
+      <div v-if="!loading && !items.length" class="approval-empty">
+        <EmptyState :title="emptyTitle" description="新的审批申请会出现在这里。" />
+      </div>
+      <ul v-else class="approval-queue-list">
       <li
         v-for="item in items"
         :key="item.id"
@@ -284,8 +289,10 @@ function confirmQuick(item: ApprovalListItem): void {
         </div>
       </li>
     </ul>
+    </template>
 
-    <table v-else class="approval-table">
+    <template v-else>
+    <table class="approval-table">
       <thead>
         <tr>
           <th>批次号 / 申请时间</th>
@@ -347,5 +354,6 @@ function confirmQuick(item: ApprovalListItem): void {
       :title="emptyTitle"
       description="新的审批申请会出现在这里。"
     />
+    </template>
   </section>
 </template>
