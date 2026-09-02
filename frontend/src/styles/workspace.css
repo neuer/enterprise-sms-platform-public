@@ -3182,6 +3182,14 @@ main {
   padding: 0;
 }
 
+/* 待审批空态：与队列卡片同一面板语言（panel 底 + hair 边 + 圆角），避免裸文字悬在页底 */
+.approval-empty {
+  padding: 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
 .approval-queue-list {
   display: grid;
   gap: 10px;
