@@ -367,6 +367,9 @@ _PRODUCTION_RESTART_COMPOSE_FILE = "docker-compose.production-restart.yml"
 _REDIS_TLS_COMPOSE_FILE = "docker-compose.redis-tls.yml"
 _PRODUCTION_OPERATOR_UID = 1000
 _PRODUCTION_OPERATOR_GID = 1000
+_DEFAULT_COMPOSE_PROJECT_NAME = "sms-platform"
+_BEAT_SCHEDULE_VOLUME_LOGICAL_NAME = "beatdata"
+_BEAT_SCHEDULE_DESTINATION = "/var/lib/sms/beat"
 _GIT_SAFE_CONFIG = (
     ("core.fsmonitor", "false"),
     ("core.hooksPath", os.devnull),
@@ -1831,6 +1834,23 @@ class ReleaseManager:
             raise ReleaseManagerError("root env REDIS_HA_MODE is invalid")
         return values[0]
 
+    def _beat_schedule_volume_binding(
+        self,
+        manifest: ReleaseManifest,
+    ) -> tuple[str, str]:
+        """返回当前受控 Compose 项目的 beat 卷名与 Docker data-root 路径。"""
+
+        project_name = _DEFAULT_COMPOSE_PROJECT_NAME
+        if (
+            self.mode == "development"
+            and manifest.evidence["release_gate_kind"] == "release_control_smoke"
+        ):
+            self._validate_release_runtime_context(manifest)
+            project_name = self.release_root.parent.name
+        volume_name = f"{project_name}_{_BEAT_SCHEDULE_VOLUME_LOGICAL_NAME}"
+        source = f"/var/lib/docker/volumes/{volume_name}/_data"
+        return volume_name, source
+
     def _production_topology(self) -> dict[str, object]:
         if self.mode != "production":
             raise ReleaseManagerError("production topology is unavailable in development")
@@ -2668,6 +2688,15 @@ class ReleaseManager:
             or _SMOKE_PARENT_RE.fullmatch(compose_project) is None
         ):
             raise ReleaseManagerError("control smoke context is not fully gated")
+
+    def _validate_release_runtime_context(self, manifest: ReleaseManifest) -> None:
+        """在任何发布运行态读取或写入前重验隔离 control-smoke 身份。"""
+
+        if (
+            self.mode == "development"
+            and manifest.evidence["release_gate_kind"] == "release_control_smoke"
+        ):
+            self._validate_control_smoke_context(manifest)
 
     def _validate_control_smoke_evidence(
         self,
@@ -5759,6 +5788,7 @@ class ReleaseManager:
             manifest = self._stored_manifest(store)
             if manifest.mode != self.mode:
                 raise ReleaseManagerError("stored manifest mode does not match manager mode")
+            self._validate_release_runtime_context(manifest)
             self._current_refs(manifest)
             original = self._read_environment_bytes()
             target = self._render_target_env(original, manifest)
@@ -6015,6 +6045,40 @@ class ReleaseManager:
                 fail("container_hostname", ambiguous=True)
             if service in _WORKER_SERVICES:
                 worker_hostnames[service] = fields[4]
+            if service == "beat":
+                beat_volume_name, beat_volume_source = (
+                    self._beat_schedule_volume_binding(manifest)
+                )
+                mount = self.runner.run(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        '{{range .Mounts}}{{if eq .Destination "'
+                        f'{_BEAT_SCHEDULE_DESTINATION}"}}}}'
+                        "{{.Type}} {{.Name}} {{.Destination}} {{.RW}} {{.Source}}"
+                        "{{end}}{{end}}",
+                        container,
+                    ],
+                    cwd=self.root,
+                )
+                if mount.returncode != 0:
+                    fail("beat_schedule_mount_inspection", ambiguous=True)
+                try:
+                    mount_fields = self._line(
+                        mount,
+                        "beat schedule mount inspection",
+                    ).split()
+                except ReleaseManagerError:
+                    fail("beat_schedule_mount_output", ambiguous=True)
+                if mount_fields != [
+                    "volume",
+                    beat_volume_name,
+                    _BEAT_SCHEDULE_DESTINATION,
+                    "true",
+                    beat_volume_source,
+                ]:
+                    fail("beat_schedule_mount_binding", ambiguous=True)
             verified_container_ids[service] = fields[0]
 
         ping = self.runner.run(
@@ -6954,6 +7018,7 @@ class ReleaseManager:
             raise ReleaseManagerError("release is not prepared for activation")
         self._assert_production_topology(state)
         manifest = self._stored_manifest(store)
+        self._validate_release_runtime_context(manifest)
         if self.mode == "production":
             self._validate_git(manifest)
         self._ensure_not_stopped(
@@ -7033,6 +7098,7 @@ class ReleaseManager:
         if state_value == ReleaseState.FAILED.value:
             raise ReleaseManagerError("failed release cannot be resumed")
         manifest = self._stored_manifest(store)
+        self._validate_release_runtime_context(manifest)
         if self.mode == "production":
             self._validate_git(manifest)
         if state_value == ReleaseState.STAGED.value:
@@ -7123,6 +7189,7 @@ class ReleaseManager:
                 "succeeded release requires a forward rollback candidate"
             )
         manifest = self._stored_manifest(store)
+        self._validate_release_runtime_context(manifest)
         if self.mode == "production":
             self._validate_git(manifest)
         if (

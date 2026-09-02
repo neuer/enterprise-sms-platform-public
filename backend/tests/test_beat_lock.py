@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+from celery import Celery
+from celery.beat import PersistentScheduler
 
 
 def load_beat_module() -> ModuleType:
@@ -142,12 +146,66 @@ def test_lost_lock_terminates_child_and_waits_before_release() -> None:
     assert client.eval_calls[-1][0] == module.RELEASE_SCRIPT
 
 
-def test_beat_schedule_database_uses_writable_tmp_path() -> None:
+def test_beat_schedule_database_uses_persistent_volume_path() -> None:
     module = load_beat_module()
 
     assert "--schedule" in module.BEAT_COMMAND
     schedule_index = module.BEAT_COMMAND.index("--schedule") + 1
-    assert module.BEAT_COMMAND[schedule_index] == "/tmp/celerybeat-schedule"
+    assert module.BEAT_COMMAND[schedule_index] == "/var/lib/sms/beat/celerybeat-schedule"
+
+
+def test_persistent_scheduler_restart_preserves_housekeeping_due_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """23 小时后的进程重启不得把每日任务重新顺延 24 小时。"""
+
+    now = [datetime(2026, 9, 2, tzinfo=UTC)]
+    schedule_path = tmp_path / "celerybeat-schedule"
+
+    def scheduler() -> PersistentScheduler:
+        app = Celery("beat-restart-test", broker="memory://")
+        app.conf.update(
+            timezone="Asia/Shanghai",
+            enable_utc=True,
+            result_expires=None,
+            beat_schedule={
+                "housekeeping": {
+                    "task": "app.tasks.housekeeping",
+                    "schedule": 86400,
+                    "options": {"queue": "bulk"},
+                }
+            },
+        )
+        monkeypatch.setattr(app, "now", lambda: now[0])
+        return PersistentScheduler(
+            app=app,
+            schedule_filename=str(schedule_path),
+            lazy=False,
+        )
+
+    first = scheduler()
+    try:
+        original_last_run_at = first.schedule["housekeeping"].last_run_at
+    finally:
+        first.close()
+
+    original_due_at = original_last_run_at + timedelta(days=1)
+    now[0] += timedelta(hours=23)
+    restarted = scheduler()
+    try:
+        entry = restarted.schedule["housekeeping"]
+        assert entry.last_run_at == original_last_run_at
+
+        before_due = entry.is_due()
+        assert before_due.is_due is False
+        assert before_due.next == pytest.approx(3600)
+        assert now[0] + timedelta(seconds=before_due.next) == original_due_at
+
+        now[0] = original_due_at
+        assert entry.is_due().is_due is True
+    finally:
+        restarted.close()
 
 
 def test_beat_main_loads_database_schedule_before_child_process(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -17,6 +17,8 @@ from app.core.jobtrack import (
     JobTracker,
     SqlJobMonitorLease,
     consecutive_failed_count,
+    job_is_stalled,
+    job_stalled_since,
     tracked_job,
 )
 from app.settings import Settings
@@ -262,6 +264,43 @@ def test_consecutive_failed_count_keeps_running_in_stalled_domain() -> None:
     assert consecutive_failed_count(["running", "success"]) == 0
     assert consecutive_failed_count(["failed", "failed", "success"]) == 2
     assert consecutive_failed_count(["success", "failed"]) == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "threshold_seconds"),
+    (("success", 120), ("failed", 120), ("running", 60)),
+)
+def test_job_stalled_since_uses_strict_threshold_in_utc(
+    status: str,
+    threshold_seconds: int,
+) -> None:
+    now = datetime(2026, 7, 11, 8, 10, tzinfo=UTC)
+    started_at = (now - timedelta(seconds=threshold_seconds)).astimezone(
+        timezone(timedelta(hours=8))
+    )
+    latest = JobRunSnapshot(
+        job_name="poll_report",
+        started_at=started_at,
+        finished_at=None if status == "running" else started_at + timedelta(seconds=1),
+        status=status,
+    )
+    spec = JobSpec("poll_report", 60)
+
+    assert job_stalled_since(latest, spec, now=now) is None
+    assert job_is_stalled(latest, spec, now=now) is False
+
+    expected = started_at.astimezone(UTC) + timedelta(seconds=threshold_seconds)
+    overdue_at = now + timedelta(microseconds=1)
+    assert job_stalled_since(latest, spec, now=overdue_at) == expected
+    assert job_is_stalled(latest, spec, now=overdue_at) is True
+
+
+def test_job_stalled_since_preserves_never_seen_behavior() -> None:
+    now = datetime(2026, 7, 11, 8, 10, tzinfo=UTC)
+    spec = JobSpec("never_seen", 60)
+
+    assert job_stalled_since(None, spec, now=now) is None
+    assert job_is_stalled(None, spec, now=now) is True
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ from app.core.jobtrack import (
     JobRunSnapshot,
     JobSpec,
     consecutive_failed_count,
-    job_is_stalled,
+    job_stalled_since,
 )
 from app.services.outbox import OUTBOX_BACKLOG_ALERT_SECONDS
 from app.services.runtime_policy import RuntimePolicy
@@ -171,7 +171,8 @@ class CurrentAlertService:
         jobs = {fact.job_name: fact for fact in facts.jobs}
         for spec in self.specs:
             fact = jobs.get(spec.job_name, CurrentJobFact(spec.job_name, None, (), None))
-            if job_is_stalled(fact.latest, spec, now=now):
+            stalled_since = job_stalled_since(fact.latest, spec, now=now)
+            if fact.latest is None or stalled_since is not None:
                 items.append(
                     CurrentAlert(
                         f"job_stalled:{spec.job_name}",
@@ -182,7 +183,7 @@ class CurrentAlertService:
                             "job_name": spec.job_name,
                             "expect_interval_s": spec.expect_interval_s,
                         },
-                        fact.latest.started_at if fact.latest is not None else None,
+                        stalled_since,
                         now,
                         "jobs",
                     )

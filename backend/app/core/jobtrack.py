@@ -255,6 +255,23 @@ def consecutive_failed_count(statuses: Iterable[str]) -> int:
     return failures
 
 
+def job_stalled_since(
+    latest: JobRunSnapshot | None,
+    spec: JobSpec,
+    *,
+    now: datetime,
+) -> datetime | None:
+    """返回任务越过心跳阈值的 UTC 时刻；尚未越界或从未运行则为空。"""
+
+    checked_at = _require_aware(now).astimezone(UTC)
+    if latest is None:
+        return None
+    started_at = _require_aware(latest.started_at).astimezone(UTC)
+    interval_multiplier = 1 if latest.status == "running" and latest.finished_at is None else 2
+    threshold = started_at + timedelta(seconds=spec.expect_interval_s * interval_multiplier)
+    return threshold if checked_at > threshold else None
+
+
 def job_is_stalled(
     latest: JobRunSnapshot | None,
     spec: JobSpec,
@@ -263,18 +280,8 @@ def job_is_stalled(
 ) -> bool:
     """按统一心跳规则判断任务是否停摆，供巡检、Ops 与仪表盘共用。"""
 
-    checked_at = _require_aware(now)
-    if latest is None:
-        return True
-    started_at = _require_aware(latest.started_at)
-    age = checked_at - started_at
-    if age > timedelta(seconds=spec.expect_interval_s * 2):
-        return True
-    return (
-        latest.status == "running"
-        and latest.finished_at is None
-        and age > timedelta(seconds=spec.expect_interval_s)
-    )
+    stalled_since = job_stalled_since(latest, spec, now=now)
+    return latest is None or stalled_since is not None
 
 
 class JobTracker:

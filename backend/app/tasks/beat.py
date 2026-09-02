@@ -22,6 +22,7 @@ from app.tasks.scheduler import STARTUP_SCHEDULE_ENV, load_startup_schedule
 LOGGER = logging.getLogger(__name__)
 LOCK_KEY = "lock:celery-beat"
 LOCK_TTL_S = 30
+BEAT_SCHEDULE_PATH = "/var/lib/sms/beat/celerybeat-schedule"
 BEAT_COMMAND = [
     "celery",
     "-A",
@@ -30,7 +31,7 @@ BEAT_COMMAND = [
     "-l",
     "info",
     "--schedule",
-    "/tmp/celerybeat-schedule",
+    BEAT_SCHEDULE_PATH,
 ]
 
 RENEW_SCRIPT = """
