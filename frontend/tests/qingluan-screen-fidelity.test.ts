@@ -14,10 +14,14 @@ describe("青鸾 Console 17 屏结构保真", () => {
     for (const path of paths) expect(router).toContain(`path: "${path}"`)
   })
 
-  it("人工发送使用三类卡并根据预检切换主动作", () => {
+  it("人工发送使用两类卡并根据预检切换主动作", () => {
     const view = source("src/views/SendView.vue")
-    expect(view).toContain('data-testid="category-verify"')
-    expect(view).toMatch(/data-testid="category-verify"[\s\S]*?disabled/)
+    const workspace = source("src/styles/workspace.css")
+    // verify 仅 API 渠道（PRD FR-00），Web 人工发送只展示通知/营销两张可选类别卡
+    expect(view).toContain('data-testid="category-notice"')
+    expect(view).toContain('data-testid="category-market"')
+    expect(view).not.toContain('data-testid="category-verify"')
+    expect(workspace).toMatch(/\.category-switch\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s)
     expect(view).toContain("const submitLabel = computed")
     expect(view).toContain("提交审批")
     expect(view).toContain("立即发送")
