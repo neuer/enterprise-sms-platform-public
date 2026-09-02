@@ -847,9 +847,11 @@ def test_secure_access_operational_docs_are_safe_non_runtime_inputs() -> None:
             "deploy/redis-ha.md",
             "deploy/storage.md",
             "deploy/vendor-egress.md",
+            "docs/ACCEPTANCE.md",
             "docs/DECISIONS.md",
             "docs/LOCAL_TESTING.md",
             "docs/TEST-MANUAL.md",
+            "docs/TRACEABILITY.md",
             "docs/UAT.md",
             "docs/ui-design.md",
             "docs/api-test-playground.md",
@@ -1448,7 +1450,13 @@ def test_historical_rebaseline_exceptions_remain_blocked_for_daily_apply(
 
 
 def test_performance_tooling_is_non_runtime_for_daily_apply() -> None:
-    change = classify_changed_paths(["docs/PERFORMANCE.md", "scripts/perf_smoke.py"])
+    change = classify_changed_paths(
+        [
+            "docs/PERFORMANCE.md",
+            "scripts/g2_timing.py",
+            "scripts/perf_smoke.py",
+        ]
+    )
 
     assert change.components == frozenset()
     assert change.runtime_changed is False
