@@ -59,6 +59,10 @@ OFFLINE_EXPAND_MIGRATIONS = frozenset(
             "0081_sign_adoption_contract",
             "0082_outbox_realtime_report_queue",
         ),
+        (
+            "0082_outbox_realtime_report_queue",
+            "0084_auth_security_and_ad_freshness",
+        ),
     }
 )
 OFFLINE_IMAGE_SOURCE = "production-offline-docker-archive-v1"
