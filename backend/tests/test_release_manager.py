@@ -832,9 +832,16 @@ class FakeRunner:
             for service in RUNTIME_SERVICES
         }
         self.service_hostnames = {service: f"host-{service}" for service in RUNTIME_SERVICES}
+        beat_project = "sms-platform"
+        if (
+            manifest["mode"] == "development"
+            and manifest["evidence"]["release_gate_kind"] == "release_control_smoke"
+        ):
+            beat_project = os.environ.get("COMPOSE_PROJECT_NAME", "sms-platform")
+        beat_volume = f"{beat_project}_beatdata"
         self.beat_schedule_mount = (
-            "volume sms-platform_beatdata /var/lib/sms/beat true "
-            "/var/lib/docker/volumes/sms-platform_beatdata/_data\n"
+            f"volume {beat_volume} /var/lib/sms/beat true "
+            f"/var/lib/docker/volumes/{beat_volume}/_data\n"
         )
         self.fail_beat_schedule_mount_inspection = False
         self.recreate_count = 0
@@ -3408,6 +3415,103 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
         "services": list(RUNTIME_SERVICES),
         "tracked_job_heartbeat": "post_release_operational_check",
     }
+
+
+def test_beat_schedule_mount_uses_isolated_compose_project(
+    tmp_path: Path,
+    smoke_release_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _control_smoke_bundle(tmp_path)
+    project = smoke_release_root.parent.name
+    runtime_root = smoke_release_root.parent / "runtime-secrets"
+    runtime_root.mkdir(mode=0o700)
+    runtime_root.chmod(0o700)
+    monkeypatch.setenv("SMS_RELEASE_SMOKE", "1")
+    monkeypatch.setenv("SMS_RELEASE_ROOT", str(smoke_release_root))
+    monkeypatch.setenv("SMS_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", project)
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    manager = ReleaseManager(
+        root=root,
+        release_root=smoke_release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    manager.prepare(manifest_path)
+    runner.calls.clear()
+
+    manager.activate(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+    assert runner.beat_schedule_mount == (
+        f"volume {project}_beatdata /var/lib/sms/beat true "
+        f"/var/lib/docker/volumes/{project}_beatdata/_data\n"
+    )
+    assert any(
+        command[:3] == ["docker", "inspect", "--format"]
+        and "range .Mounts" in command[-2]
+        and command[-1] == runner.service_container_ids["beat"]
+        for command in runner.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    ("activate", "resume", "rollback", "configure_activation"),
+)
+def test_control_smoke_project_drift_is_rejected_before_runtime_side_effects(
+    tmp_path: Path,
+    smoke_release_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    manifest_path, manifest, current_refs = _control_smoke_bundle(tmp_path)
+    runtime_root = smoke_release_root.parent / "runtime-secrets"
+    runtime_root.mkdir(mode=0o700)
+    runtime_root.chmod(0o700)
+    monkeypatch.setenv("SMS_RELEASE_SMOKE", "1")
+    monkeypatch.setenv("SMS_RELEASE_ROOT", str(smoke_release_root))
+    monkeypatch.setenv("SMS_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", smoke_release_root.parent.name)
+    manager, runner, root, _ = _manager(tmp_path, manifest, current_refs)
+    manager = ReleaseManager(
+        root=root,
+        release_root=smoke_release_root,
+        mode=manifest["mode"],
+        runner=runner,
+        expected_staging_uid=os.geteuid(),
+    )
+    manager.prepare(manifest_path)
+    runner.calls.clear()
+    monkeypatch.setenv(
+        "COMPOSE_PROJECT_NAME",
+        "sms-platform-release-control-deadbeef",
+    )
+
+    with pytest.raises(ReleaseManagerError):
+        getattr(manager, action)(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "prepared"
+    assert runner.calls == []
+
+
+def test_production_beat_volume_ignores_ambient_compose_project_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle(tmp_path, mode="production")
+    monkeypatch.setenv(
+        "COMPOSE_PROJECT_NAME",
+        "sms-platform-release-control-deadbeef",
+    )
+    manager, _, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    assert manager._beat_schedule_volume_binding(load_manifest(manifest_path)) == (
+        "sms-platform_beatdata",
+        "/var/lib/docker/volumes/sms-platform_beatdata/_data",
+    )
 
 
 @pytest.mark.parametrize(
