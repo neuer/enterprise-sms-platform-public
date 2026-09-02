@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
         <div class="compose-strip" aria-label="结果构成">
           <i class="d" :style="{ width: composeWidth(result.summary.delivered) }" :title="`送达 ${result.summary.delivered.toLocaleString()}`"></i><i class="f" :style="{ width: composeWidth(result.summary.failed) }" :title="`失败 ${result.summary.failed.toLocaleString()}`"></i><i class="u" :style="{ width: composeWidth(result.summary.unknown) }" :title="`未知 ${result.summary.unknown.toLocaleString()}`"></i>
         </div>
-        <div class="kpi-kv compose"><span>送达 {{ shareOf(result.summary.delivered) }}</span><span>失败 {{ shareOf(result.summary.failed) }}</span><span>未知 {{ shareOf(result.summary.unknown) }}</span></div>
+        <div class="kpi-kv compose-shares"><span>送达 {{ shareOf(result.summary.delivered) }}</span><span>失败 {{ shareOf(result.summary.failed) }}</span><span>未知 {{ shareOf(result.summary.unknown) }}</span></div>
       </el-card>
     </section>
 

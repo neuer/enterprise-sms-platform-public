@@ -111,6 +111,10 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("长短信主要来自营销类模板")
     expect(workspace).toMatch(/\.report-trend-chart\s*\{[^}]*min-height:\s*170px/s)
     expect(workspace).toMatch(/\.report-kpi strong\s*\{[^}]*font-size:\s*26px/s)
+    // 结果构成图例行不得复用裸类名 compose：批次页 .compose 横条组件（height:5px; overflow:hidden）会把它裁到只剩一条缝
+    expect(view).not.toContain('class="kpi-kv compose"')
+    expect(view).toContain('class="kpi-kv compose-shares"')
+    expect(workspace).toMatch(/\.kpi-kv\.compose-shares\s*\{[^}]*justify-content:\s*space-between/s)
     expect(workspace).toMatch(/\.export-strip\s*\{\s*display:\s*flex;[\s\S]*?border-radius:\s*10px/)
   })
 
