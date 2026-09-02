@@ -212,7 +212,14 @@ async def test_password_mutations_map_hash_pool_exhaustion(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
-    async def saturated(*_args: object, **_kwargs: object) -> str:
+    observed: list[str] = []
+
+    async def saturated(
+        *_args: object,
+        pool: str,
+        **_kwargs: object,
+    ) -> str:
+        observed.append(pool)
         raise ExecutorBackpressure("full")
 
     monkeypatch.setattr("app.services.user_management.run_bounded", saturated)
@@ -239,3 +246,4 @@ async def test_password_mutations_map_hash_pool_exhaustion(
             )
 
     assert repository.calls == []
+    assert observed == ["auth_hash"]

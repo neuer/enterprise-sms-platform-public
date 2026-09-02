@@ -13,6 +13,7 @@ import pytest
 from app.core.auth.accounts import PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
+    AuthenticationPurpose,
     InvalidCredentials,
     ProviderCapacityUnavailable,
     ProviderDisabled,
@@ -56,52 +57,19 @@ class FakeKeyValue:
         return value
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
-        if "auth-admit-v1" in script:
-            assert numkeys == 6
-            ban_key, lock_key, ip_fail_key, bucket_key, window_key, user_fail_key = map(
-                str, args[:6]
-            )
-            values = args[6:]
-            ip_limit = int(values[1])
-            ban_ttl = int(values[2])
-            ban_transition = str(values[3])
-            lock_transition = str(values[4])
-            user_limit = int(values[5])
-            burst = int(values[6])
-            long_limit = int(values[9])
+        if "auth-admit-v2" in script:
+            assert numkeys == 4
+            ban_key, ip_fail_key, bucket_key, window_key = map(str, args[:4])
+            values = args[4:]
+            ban_transition = str(values[0])
+            burst = int(values[1])
+            long_limit = int(values[4])
             ban = self.values.get(ban_key)
             if ban is not None:
                 if ban == "1":
                     ban = ban_transition
                     self.values[ban_key] = ban
-                return [2, "", 0, ban, int(self.values.get(ip_fail_key, 0)), 0, ban_ttl]
-            lock = self.values.get(lock_key)
-            if lock is not None:
-                if lock == "1":
-                    lock = lock_transition
-                    self.values[lock_key] = lock
-                ip_count = int(self.values.get(ip_fail_key, 0)) + 1
-                self.values[ip_fail_key] = ip_count
-                if ip_count >= ip_limit:
-                    self.values.setdefault(ban_key, ban_transition)
-                    return [
-                        2,
-                        lock,
-                        int(self.values.get(user_fail_key, user_limit)),
-                        self.values[ban_key],
-                        ip_count,
-                        900,
-                        ban_ttl,
-                    ]
-                return [
-                    1,
-                    lock,
-                    int(self.values.get(user_fail_key, user_limit)),
-                    "",
-                    ip_count,
-                    900,
-                    0,
-                ]
+                return [2, "", 0, ban, int(self.values.get(ip_fail_key, 0)), 0, 900]
             long_count = int(self.values.get(window_key, 0))
             used = int(self.values.get(bucket_key, 0))
             if long_count >= long_limit or used >= burst:
@@ -135,6 +103,9 @@ class FakeKeyValue:
             self.values[user_fail_key] = user_count
             self.values[ip_fail_key] = ip_count
             lock = self.values.get(lock_key)
+            if lock == "1":
+                lock = lock_transition
+                self.values[lock_key] = lock
             if user_count >= user_limit:
                 self.values.setdefault(lock_key, lock_transition)
                 lock = self.values[lock_key]
@@ -247,10 +218,18 @@ class FakeProviderRepository:
 
 
 class RecordingProviderKind:
-    def __init__(self, provider_code: str, *, fails: bool = False) -> None:
+    def __init__(
+        self,
+        provider_code: str,
+        *,
+        fails: bool = False,
+        valid_password: str | None = None,
+    ) -> None:
         self.provider_code = provider_code
         self.fails = fails
+        self.valid_password = valid_password
         self.calls: list[tuple[str, str]] = []
+        self.purposes: list[AuthenticationPurpose] = []
 
     def auth_flow(self) -> str:
         return "password"
@@ -266,9 +245,12 @@ class RecordingProviderKind:
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose,
     ) -> AuthenticatedIdentity:
         self.calls.append((login_name, password))
-        if self.fails:
+        self.purposes.append(purpose)
+        if self.fails or (self.valid_password is not None and password != self.valid_password):
             raise InvalidCredentials("uniform failure")
         return AuthenticatedIdentity(
             provider_code=record.code,
@@ -286,8 +268,11 @@ class CapacityUnavailableProviderKind(RecordingProviderKind):
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose,
     ) -> AuthenticatedIdentity:
         self.calls.append((login_name, password))
+        self.purposes.append(purpose)
         raise ProviderCapacityUnavailable("capacity unavailable")
 
 
@@ -682,6 +667,16 @@ async def test_registry_supports_local_and_ad_simultaneously_and_rejects_disable
 
     assert (await registry.authenticate("local", "admin", "pw")).provider_code == "local"
     assert (await registry.authenticate("ad", "admin", "pw")).provider_code == "ad"
+    assert (
+        await registry.authenticate(
+            "local",
+            "admin",
+            "pw",
+            purpose="reauthentication",
+        )
+    ).provider_code == "local"
+    assert local.purposes == ["login", "reauthentication"]
+    assert ad.purposes == ["login"]
 
     repository.records["ad"] = provider_record(code="ad", kind="ldap", enabled=False)
     with pytest.raises(ProviderDisabled):
@@ -690,9 +685,9 @@ async def test_registry_supports_local_and_ad_simultaneously_and_rejects_disable
 
 
 @pytest.mark.asyncio
-async def test_shared_guard_locks_account_after_five_failures() -> None:
+async def test_shared_guard_allows_correct_credentials_to_recover_failure_marker() -> None:
     store = FakeKeyValue()
-    local = RecordingProviderKind("local", fails=True)
+    local = RecordingProviderKind("local", valid_password="correct")
     ad = RecordingProviderKind("ad", fails=True)
     registry = AuthProviderRegistry(
         FakeProviderRepository(
@@ -708,51 +703,63 @@ async def test_shared_guard_locks_account_after_five_failures() -> None:
             await service.authenticate("local", " User01 ", "bad", "10.0.0.1")
     with pytest.raises(AccountLocked):
         await service.authenticate("ad", "user01", "bad", "10.0.0.1")
-    with pytest.raises(AccountLocked):
-        await service.authenticate("local", "user01", "correct", "10.0.0.2")
+    identity = await service.authenticate("local", "user01", "correct", "10.0.0.2")
 
+    assert identity.provider_code == "local"
     assert list(store.values).count("auth:lock:user:user01") == 1
+    await service.record_bound_success("user01")
+    assert "auth:lock:user:user01" not in store.values
+    assert "auth:fail:user:user01" not in store.values
 
 
 @pytest.mark.asyncio
-async def test_locked_account_requests_continue_to_ip_ban_without_password_work() -> None:
+async def test_failure_marker_and_ip_ban_transitions_remain_atomic() -> None:
     store = FakeKeyValue()
     events = RecordingSecurityEvents()
-    provider = RecordingProviderKind("local", fails=True)
-    service = AuthService(
-        AuthProviderRegistry(
-            FakeProviderRepository(provider_record(code="local", kind="local")),
-            {"local": provider},
-        ),
-        LoginGuard(store, security_events=events),
-    )
+    guard = LoginGuard(store, security_events=events)
 
     outcomes: list[type[Exception]] = []
     for _ in range(20):
         try:
-            await service.authenticate("local", " User01 ", "bad", "10.0.0.9")
-        except (InvalidCredentials, AccountLocked, RateLimited) as error:
+            await guard.record_failure("user01", "10.0.0.9", "local")
+        except (AccountLocked, RateLimited) as error:
             outcomes.append(type(error))
+        else:
+            outcomes.append(Exception)
 
-    assert outcomes == (
-        [InvalidCredentials] * 4
-        + [AccountLocked] * 15
-        + [RateLimited]
-    )
-    assert provider.calls == [("user01", "bad")] * 5
+    assert outcomes == ([Exception] * 4 + [AccountLocked] * 15 + [RateLimited])
     lock_ids = {
-        item.transition_id
-        for item in events.transitions
-        if item.action == "auth_account_locked"
+        item.transition_id for item in events.transitions if item.action == "auth_account_locked"
     }
-    ban_ids = {
-        item.transition_id
-        for item in events.transitions
-        if item.action == "auth_ip_banned"
-    }
+    ban_ids = {item.transition_id for item in events.transitions if item.action == "auth_ip_banned"}
     assert len(lock_ids) == 1
     assert len(ban_ids) == 1
     assert all(item.provider_code == "local" for item in events.transitions)
+
+
+@pytest.mark.asyncio
+async def test_legacy_failure_marker_is_upgraded_only_after_invalid_credentials() -> None:
+    store = FakeKeyValue()
+    store.values["auth:lock:user:user01"] = "1"
+    store.values["auth:fail:user:user01"] = 4
+    passing = RecordingProviderKind("local", valid_password="correct")
+    service = AuthService(
+        AuthProviderRegistry(
+            FakeProviderRepository(provider_record(code="local", kind="local")),
+            {"local": passing},
+        ),
+        LoginGuard(store),
+    )
+
+    identity = await service.authenticate("local", "user01", "correct", "10.0.0.20")
+    assert identity.provider_code == "local"
+    assert store.values["auth:lock:user:user01"] == "1"
+
+    with pytest.raises(AccountLocked):
+        await service.authenticate("local", "user01", "wrong", "10.0.0.21")
+    assert str(UUID(str(store.values["auth:lock:user:user01"]))) == str(
+        store.values["auth:lock:user:user01"]
+    )
 
 
 @pytest.mark.asyncio
@@ -832,8 +839,7 @@ async def test_shared_guard_bans_ip_after_twenty_failures() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_capacity_failure_is_admitted_before_scheduling_without_user_lock(
-) -> None:
+async def test_provider_capacity_failure_is_admitted_before_scheduling_without_user_lock() -> None:
     store = FakeKeyValue()
     overloaded = CapacityUnavailableProviderKind("ad")
     local = RecordingProviderKind("local")

@@ -94,18 +94,39 @@ async def test_saturated_auth_hash_pool_cannot_consume_default_capacity() -> Non
         loop.call_soon_threadsafe(started.set)
         release.wait(timeout=1)
 
-    running = asyncio.create_task(
-        run_bounded(blocking_hash, timeout_s=1, pool="auth_hash")
-    )
-    queued = asyncio.create_task(
-        run_bounded(blocking_hash, timeout_s=1, pool="auth_hash")
-    )
+    running = asyncio.create_task(run_bounded(blocking_hash, timeout_s=1, pool="auth_hash"))
+    queued = asyncio.create_task(run_bounded(blocking_hash, timeout_s=1, pool="auth_hash"))
     try:
         await asyncio.wait_for(started.wait(), timeout=1)
         await asyncio.sleep(0)
         with pytest.raises(ExecutorBackpressure):
             await run_bounded(lambda: None, timeout_s=1, pool="auth_hash")
+        assert await run_bounded(lambda: 11, timeout_s=0.1, pool="auth_login_hash") == 11
         assert await run_bounded(lambda: 7, timeout_s=0.1) == 7
+    finally:
+        release.set()
+        await asyncio.gather(running, queued, return_exceptions=True)
+        close_bounded_executor()
+
+
+@pytest.mark.asyncio
+async def test_saturated_login_hash_pool_cannot_consume_reauthentication_capacity() -> None:
+    started = asyncio.Event()
+    release = ThreadEvent()
+    loop = asyncio.get_running_loop()
+
+    def blocking_hash() -> None:
+        loop.call_soon_threadsafe(started.set)
+        release.wait(timeout=1)
+
+    running = asyncio.create_task(run_bounded(blocking_hash, timeout_s=1, pool="auth_login_hash"))
+    queued = asyncio.create_task(run_bounded(blocking_hash, timeout_s=1, pool="auth_login_hash"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        with pytest.raises(ExecutorBackpressure):
+            await run_bounded(lambda: None, timeout_s=1, pool="auth_login_hash")
+        assert await run_bounded(lambda: 13, timeout_s=0.1, pool="auth_hash") == 13
     finally:
         release.set()
         await asyncio.gather(running, queued, return_exceptions=True)

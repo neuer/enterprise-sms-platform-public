@@ -127,3 +127,30 @@ async def test_local_provider_maps_executor_backpressure_to_capacity_unavailable
 
     with pytest.raises(ProviderCapacityUnavailable):
         await provider.authenticate("admin", "Valid@Password123")
+
+
+@pytest.mark.asyncio
+async def test_local_provider_routes_login_and_reauthentication_to_separate_pools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+
+    async def record_pool(
+        function: object,
+        *_args: object,
+        timeout_s: float,
+        pool: str,
+        **_kwargs: object,
+    ) -> bool:
+        del function, timeout_s
+        observed.append(pool)
+        return True
+
+    monkeypatch.setattr("app.core.auth.local.run_bounded", record_pool)
+    record = LocalAccountRecord(account(), "$argon2id$v=19$valid")
+    provider = LocalPasswordProvider(FakeLocalRepository(record), RecordingHasher())
+
+    await provider.authenticate("admin", "Valid@Password123")
+    await provider.authenticate("admin", "Valid@Password123", pool="auth_hash")
+
+    assert observed == ["auth_login_hash", "auth_hash"]
