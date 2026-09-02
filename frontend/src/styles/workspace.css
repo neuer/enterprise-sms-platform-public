@@ -1882,7 +1882,8 @@ main {
   background: var(--tx-3);
 }
 
-.kpi-kv.compose {
+/* 类名不得用裸 .compose：批次页的 .compose 横条组件（height:5px; overflow:hidden）会误命中本元素 */
+.kpi-kv.compose-shares {
   justify-content: space-between;
 }
 
