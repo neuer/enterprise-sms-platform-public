@@ -61,6 +61,17 @@ EFI 使用表中按真实 Ubuntu 布局冻结的独立下限。JSON 用 `capacit
 lifecycle systemd service 通过固定 `ReadWritePaths` 使用；不得回退到旧的
 `/var/lib/sms-platform/backups`。
 
+`beatdata` 是唯一不进入上述 bind 表的持久卷：它只保存可重建的 Celery 调度元数据，由固定
+Docker data-root 承载并随 named volume 跨容器重建保留，不进入业务备份。生产 volume 预检
+必须确认它使用 local driver、无 driver options、Compose 项目/卷标签正确，且 mountpoint 精确为
+`/var/lib/docker/volumes/sms-platform_beatdata/_data`。Docker VMDK 丢失时允许从空调度库恢复，
+但不得把它当成任务运行事实；恢复判断仍以 PostgreSQL `job_run` 为准。
+
+该保证建立在 root 管理的 Docker daemon、固定 data-root 和受控 Compose/发布入口仍可信的边界
+上；取得 daemon 或 data-root 写权限等同取得宿主级控制，不属于应用 UID 的权限模型。应用只可
+通过 beat 容器内 `/var/lib/sms/beat` 使用该卷，不得直接访问、复制或修改 Docker `_data`，也不得
+用 bind、手工 volume 创建或 daemon 配置覆盖受控入口生成的 local named volume。
+
 挂载点本身固定为 `root:root`：`/`、`/boot`、`/boot/efi` 是 `0755`，`/var/lib/docker` 全生命周期
 唯一允许 `0710`，其余三个数据挂载点是 `0750`。预检要求上述 owner/mode 精确匹配；
 宽松权限同样失败。当前候选 Docker Engine 29.7.2 会在 daemon 初始化 data-root 时将该目录

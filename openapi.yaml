@@ -3344,7 +3344,9 @@ components:
         level: { type: string, enum: [info, warn, crit] }
         title: { type: string }
         detail: { type: object, additionalProperties: true }
-        since: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        since:
+          description: 当前问题越过告警阈值的时间；无法确定时为 null
+          anyOf: [{ type: string, format: date-time }, { type: 'null' }]
         checked_at: { type: string, format: date-time }
         target: { type: string, enum: [jobs, raw, uncertain, callbacks, queue, outbox] }
 

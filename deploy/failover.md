@@ -306,7 +306,17 @@ receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、
    就绪后只启动一个 `outbox-dispatcher`，观察 pending/dead/最老事件年龄回落。确认队列深度、
    vendor 令牌桶、余额和暂停开关正确；不得手工重投 submitted 或 uncertain chunk。
 7. **恢复唯一调度。** 再次确认旧主 beat 和所有拉取进程已隔离，随后只在备机启动单实例
-   `beat`。观察 job_run 心跳至少两个最短任务周期，确认没有 `job_stalled`。
+   `beat`。`beatdata` 是可重建调度元数据，不属于冷备恢复载荷；Docker VMDK 或 named volume
+   丢失时从空调度库启动，不恢复或手工修改 `celerybeat-schedule` shelve。任务是否已经执行以
+   PostgreSQL `job_run` 为唯一事实；空调度库的相对调度从本次启动重新计算，单个任务到新的
+   调度到期点前至多会再经历一个完整 interval。到期后的实际入队、开始与完成没有该上限，
+   仍受 beat tick、broker、队列和 worker 健康状态影响。观察 `job_run` 心跳至少两个最短任务
+   周期，确认没有 `job_stalled`。
+   `job_run` 看不到已发布但尚未开始的消息，不能单独证明补跑安全。若恢复门禁已经全部通过且
+   `housekeeping` 确认逾期，还必须排除同名任务在 outbox、broker 队列及 worker
+   pending/active/reserved 中在途，并接受仍可能重复执行的剩余风险，才允许管理员通过既有
+   记审计入口 `POST /api/v1/web/admin/jobs/housekeeping/trigger` 触发一次；无法排除时等待受控调度，
+   不得补跑。禁止直接改写 shelve、执行 `celery call` 或绕过该入口向 broker 发布任务。
 8. **开放流量。** 启动 `web`；先用演练 `/etc/hosts` 验证完整登录、受理和查询，再修改 DNS。
    确认解析已指向备机、旧地址无流量后移除维护页。
 9. **核验厂商链路。** 从备出口 IP 调 GetBalance，确认未返回 1010；用受控最小批次验证发送、

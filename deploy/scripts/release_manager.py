@@ -367,6 +367,11 @@ _PRODUCTION_RESTART_COMPOSE_FILE = "docker-compose.production-restart.yml"
 _REDIS_TLS_COMPOSE_FILE = "docker-compose.redis-tls.yml"
 _PRODUCTION_OPERATOR_UID = 1000
 _PRODUCTION_OPERATOR_GID = 1000
+_BEAT_SCHEDULE_VOLUME_NAME = "sms-platform_beatdata"
+_BEAT_SCHEDULE_DESTINATION = "/var/lib/sms/beat"
+_BEAT_SCHEDULE_SOURCE = (
+    f"/var/lib/docker/volumes/{_BEAT_SCHEDULE_VOLUME_NAME}/_data"
+)
 _GIT_SAFE_CONFIG = (
     ("core.fsmonitor", "false"),
     ("core.hooksPath", os.devnull),
@@ -6015,6 +6020,37 @@ class ReleaseManager:
                 fail("container_hostname", ambiguous=True)
             if service in _WORKER_SERVICES:
                 worker_hostnames[service] = fields[4]
+            if service == "beat":
+                mount = self.runner.run(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        '{{range .Mounts}}{{if eq .Destination "'
+                        f'{_BEAT_SCHEDULE_DESTINATION}"}}}}'
+                        "{{.Type}} {{.Name}} {{.Destination}} {{.RW}} {{.Source}}"
+                        "{{end}}{{end}}",
+                        container,
+                    ],
+                    cwd=self.root,
+                )
+                if mount.returncode != 0:
+                    fail("beat_schedule_mount_inspection", ambiguous=True)
+                try:
+                    mount_fields = self._line(
+                        mount,
+                        "beat schedule mount inspection",
+                    ).split()
+                except ReleaseManagerError:
+                    fail("beat_schedule_mount_output", ambiguous=True)
+                if mount_fields != [
+                    "volume",
+                    _BEAT_SCHEDULE_VOLUME_NAME,
+                    _BEAT_SCHEDULE_DESTINATION,
+                    "true",
+                    _BEAT_SCHEDULE_SOURCE,
+                ]:
+                    fail("beat_schedule_mount_binding", ambiguous=True)
             verified_container_ids[service] = fields[0]
 
         ping = self.runner.run(

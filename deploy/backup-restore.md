@@ -24,6 +24,21 @@
 - 三类失败都向 journal 输出固定 `event=lifecycle_alert`、操作名和异常类型，不输出路径、
   命令错误、手机号、密钥或其他 PII；service 以 5 分钟间隔最多重试三次。
 
+`beatdata` 只保存可重建的 Celery PersistentScheduler 调度元数据，不是任务运行事实，也不纳入
+平台业务备份范围、lifecycle snapshot 或冷备恢复载荷。Docker VMDK 或该 named volume 丢失时，
+恢复流程必须让 beat 从空调度库启动，不复制、拼接或恢复 `celerybeat-schedule` shelve；任务是否
+已经执行一律以 PostgreSQL `job_run` 为准。空调度库会从恢复后的启动时点重新计算相对调度，
+单个任务到新的调度到期点前至多会再经历一个完整 interval；到期后的实际入队、开始与完成
+没有该上限，仍受 beat tick、broker、队列和 worker 健康状态影响。
+
+这不改变下文 Phase 0 的生产恢复 No-Go。后续只有在获批 dedicated recovery action 完成全部
+恢复门禁、唯一 beat 与对应 worker 已确认正常后，才可核对 `job_run`。`job_run` 看不到已发布但
+尚未开始的消息，不能单独证明补跑安全；若 `housekeeping` 已逾期，恢复负责人还必须排除同名
+任务在 outbox、broker 队列及 worker pending/active/reserved 中在途，并接受仍可能重复执行的
+剩余风险，才可由管理员使用既有记审计入口
+`POST /api/v1/web/admin/jobs/housekeeping/trigger` 触发一次。无法排除时等待受控调度，不得补跑；
+禁止直接改写 shelve、执行 `celery call` 或绕过该入口向 broker 发布任务。
+
 Phase 0 的生产快照隔离恢复只允许在从预生产资源池按需创建的**一次性、空白、隔离恢复机**
 执行；共享应用预生产只承担候选发布与业务预验收，不得安装生产 recovery bundle、生产备份
 口令或生产 generation ID，也不得承担生产快照恢复演练。恢复前必须确认三只 lifecycle timer

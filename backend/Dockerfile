@@ -35,9 +35,17 @@ LABEL org.opencontainers.image.version="${APP_VERSION}" \
       com.sms-platform.schema-revision="${SCHEMA_REVISION}"
 
 RUN adduser -D -u 10001 sms \
-    && mkdir -p /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill \
+    && mkdir -p \
+      /var/lib/sms/beat \
+      /var/lib/sms/imports \
+      /var/lib/sms/exports \
+      /var/lib/sms/raw-spill \
     && chown -R sms:sms /var/lib/sms \
-    && chmod 0700 /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill
+    && chmod 0700 \
+      /var/lib/sms/beat \
+      /var/lib/sms/imports \
+      /var/lib/sms/exports \
+      /var/lib/sms/raw-spill
 
 WORKDIR /app
 

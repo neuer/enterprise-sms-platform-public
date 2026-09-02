@@ -91,7 +91,7 @@ class CurrentAlertModel(BaseModel):
     level: Literal["info", "warn", "crit"]
     title: str
     detail: dict[str, Any]
-    since: datetime | None
+    since: datetime | None = Field(description="当前问题越过告警阈值的时间；无法确定时为 null")
     checked_at: datetime
     target: Literal["jobs", "raw", "uncertain", "callbacks", "queue", "outbox"]
 

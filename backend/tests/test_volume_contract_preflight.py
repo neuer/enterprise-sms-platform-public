@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "deploy" / "scripts"
@@ -49,7 +50,7 @@ def valid_record(name: str) -> dict[str, object]:
         },
         # Docker may add unrelated top-level observation fields across versions.
         "CreatedAt": "2026-08-24T00:00:00+08:00",
-        "Mountpoint": "/var/lib/docker/volumes/redacted/_data",
+        "Mountpoint": requirement.docker_mountpoint,
     }
 
 
@@ -84,7 +85,25 @@ def test_contract_has_exact_project_names_and_fixed_devices() -> None:
         "sms-platform_importdata": "/var/lib/sms-platform/runtime/imports",
         "sms-platform_exportdata": "/var/lib/sms-platform/runtime/exports",
         "sms-platform_rawspill": "/var/lib/sms-platform/runtime/raw-spill",
+        "sms-platform_beatdata": None,
     }
+
+
+def test_compose_volume_sets_match_the_closed_production_contract() -> None:
+    base = yaml.safe_load((ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8"))
+    overlay = yaml.safe_load(
+        (ROOT / "deploy/docker-compose.production-storage.yml").read_text(encoding="utf-8")
+    )
+    logical_names = {requirement.logical_name for requirement in preflight.VOLUME_REQUIREMENTS}
+    bind_names = {
+        requirement.logical_name
+        for requirement in preflight.VOLUME_REQUIREMENTS
+        if requirement.device is not None
+    }
+
+    assert set(base["volumes"]) == logical_names
+    assert set(overlay["volumes"]) == bind_names
+    assert logical_names - bind_names == {"beatdata"}
 
 
 def test_all_missing_volumes_are_allowed_for_later_compose_creation() -> None:
@@ -107,7 +126,11 @@ def test_all_missing_volumes_are_allowed_for_later_compose_creation() -> None:
 
 
 def test_existing_subset_is_inspected_once_with_safe_fixed_argv() -> None:
-    names = ("sms-platform_pgdata", "sms-platform_redisdata")
+    names = (
+        "sms-platform_beatdata",
+        "sms-platform_pgdata",
+        "sms-platform_redisdata",
+    )
     runner = FakeRunner(
         [
             result(stdout="\n".join(reversed(names)) + "\n"),
@@ -120,6 +143,43 @@ def test_existing_subset_is_inspected_once_with_safe_fixed_argv() -> None:
     assert report.existing == names
     assert runner.calls[1] == ("docker", "volume", "inspect", *names)
     assert all(isinstance(argument, str) for call in runner.calls for argument in call)
+
+
+@pytest.mark.parametrize("options", [None, {}])
+def test_beat_schedule_volume_is_exact_option_free_local_volume(
+    options: object,
+) -> None:
+    name = "sms-platform_beatdata"
+    record = valid_record(name)
+    record["Options"] = options
+
+    validate_inspected_volumes([record], frozenset({name}))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    (
+        ({"Options": {"device": "/tmp"}}, "options_mismatch"),
+        ({"Mountpoint": "/var/lib/docker/volumes/wrong/_data"}, "mountpoint_mismatch"),
+    ),
+)
+def test_beat_schedule_volume_rejects_options_and_mountpoint_drift(
+    mutation: Mapping[str, object],
+    code: str,
+) -> None:
+    name = "sms-platform_beatdata"
+    record = valid_record(name)
+    record.update(mutation)
+
+    assert_error(code, [record], frozenset({name}))
+
+
+def test_beat_schedule_volume_requires_explicit_options_field() -> None:
+    name = "sms-platform_beatdata"
+    record = valid_record(name)
+    record.pop("Options")
+
+    assert_error("invalid_options", [record], frozenset({name}))
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -106,6 +106,64 @@ async def test_current_alerts_are_derived_from_live_facts_and_sorted_by_severity
         "outbox_backlog",
     ]
     assert all(item.checked_at.tzinfo is not None for item in result.items)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "threshold_seconds"),
+    (("success", 120), ("running", 60)),
+)
+async def test_job_stalled_since_starts_at_the_overdue_threshold(
+    status: str,
+    threshold_seconds: int,
+) -> None:
+    started_at = (NOW - timedelta(seconds=threshold_seconds + 1)).astimezone(
+        timezone(timedelta(hours=8))
+    )
+    stalled_job = CurrentJobFact(
+        "poll_report",
+        JobRunSnapshot(
+            "poll_report",
+            started_at,
+            None if status == "running" else started_at + timedelta(seconds=1),
+            status,
+        ),
+        (status,),
+        started_at if status == "success" else None,
+    )
+    facts = database_facts(
+        jobs=tuple(
+            stalled_job if spec.job_name == "poll_report" else healthy_job(spec.job_name)
+            for spec in SPECS
+        )
+    )
+
+    result = await CurrentAlertService(
+        FakeRepository(facts, ControlCurrentFacts(None, None, 0)),
+        SPECS,
+        clock=lambda: NOW,
+    ).get()
+
+    assert [item.key for item in result.items] == ["job_stalled:poll_report"]
+    assert result.items[0].since == started_at.astimezone(UTC) + timedelta(
+        seconds=threshold_seconds
+    )
+
+
+@pytest.mark.asyncio
+async def test_never_seen_job_stays_stalled_with_unknown_start() -> None:
+    facts = database_facts(
+        jobs=tuple(healthy_job(spec.job_name) for spec in SPECS if spec.job_name != "poll_report")
+    )
+
+    result = await CurrentAlertService(
+        FakeRepository(facts, ControlCurrentFacts(None, None, 0)),
+        SPECS,
+        clock=lambda: NOW,
+    ).get()
+
+    assert [item.key for item in result.items] == ["job_stalled:poll_report"]
+    assert result.items[0].since is None
 
 
 @pytest.mark.asyncio

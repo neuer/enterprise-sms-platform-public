@@ -561,17 +561,38 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
         assert "exportdata:/var/lib/sms/exports" not in services[name].get("volumes", [])
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
-    assert "mkdir -p /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill" in dockerfile
-    assert "chown -R sms:sms /var/lib/sms" in dockerfile
-    assert (
-        "chmod 0700 /var/lib/sms/imports /var/lib/sms/exports /var/lib/sms/raw-spill"
-        in dockerfile
-    )
+    assert """RUN adduser -D -u 10001 sms \\
+    && mkdir -p \\
+      /var/lib/sms/beat \\
+      /var/lib/sms/imports \\
+      /var/lib/sms/exports \\
+      /var/lib/sms/raw-spill \\
+    && chown -R sms:sms /var/lib/sms \\
+    && chmod 0700 \\
+      /var/lib/sms/beat \\
+      /var/lib/sms/imports \\
+      /var/lib/sms/exports \\
+      /var/lib/sms/raw-spill
+""" in dockerfile
+    assert "USER sms" in dockerfile
 
 
-def test_production_storage_overlay_binds_all_named_volumes_to_fixed_vmdk_paths() -> None:
+def test_beat_schedule_state_uses_an_exclusive_persistent_volume() -> None:
+    compose = load_compose()
+    services = compose["services"]
+
+    assert services["beat"]["volumes"] == ["beatdata:/var/lib/sms/beat"]
+    assert services["beat"]["user"] == "10001:10001"
+    assert "beatdata" in compose["volumes"]
+    for name, service in services.items():
+        if name != "beat":
+            assert "beatdata:/var/lib/sms/beat" not in service.get("volumes", [])
+
+
+def test_production_storage_overlay_binds_business_data_volumes_to_fixed_paths() -> None:
     overlay = load_deploy_yaml("docker-compose.production-storage.yml")
 
+    assert "beatdata" not in overlay["volumes"]
     assert overlay == {
         "volumes": {
             "pgdata": {

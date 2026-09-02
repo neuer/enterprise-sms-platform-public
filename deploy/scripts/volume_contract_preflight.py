@@ -2,10 +2,11 @@
 """Read-only validation for production Docker named-volume metadata.
 
 The storage layout preflight validates the host mounts and fixed directories.  This
-companion check closes the other half of the boundary: an existing Docker volume
-with the right name must still point at the approved directory and must have been
-created for the ``sms-platform`` Compose project.  Missing volumes are intentionally
-accepted because Compose creates them from the production storage override later.
+companion check closes the other half of the boundary: bind-backed data volumes must
+still point at approved directories, while the rebuildable beat schedule volume must
+remain an option-free local volume under Docker data-root.  Every volume must have
+been created for the ``sms-platform`` Compose project.  Missing volumes are accepted
+because the controlled Compose topology creates them later.
 """
 
 from __future__ import annotations
@@ -26,15 +27,21 @@ COMMAND_TIMEOUT_SECONDS = 20
 @dataclass(frozen=True, slots=True)
 class VolumeRequirement:
     logical_name: str
-    device: str
+    device: str | None
 
     @property
     def name(self) -> str:
         return f"{PROJECT_NAME}_{self.logical_name}"
 
     @property
-    def options(self) -> dict[str, str]:
+    def options(self) -> dict[str, str] | None:
+        if self.device is None:
+            return None
         return {"type": "none", "o": "bind", "device": self.device}
+
+    @property
+    def docker_mountpoint(self) -> str:
+        return f"/var/lib/docker/volumes/{self.name}/_data"
 
 
 VOLUME_REQUIREMENTS = (
@@ -45,6 +52,7 @@ VOLUME_REQUIREMENTS = (
     VolumeRequirement("importdata", "/var/lib/sms-platform/runtime/imports"),
     VolumeRequirement("exportdata", "/var/lib/sms-platform/runtime/exports"),
     VolumeRequirement("rawspill", "/var/lib/sms-platform/runtime/raw-spill"),
+    VolumeRequirement("beatdata", None),
 )
 REQUIREMENTS_BY_NAME = {requirement.name: requirement for requirement in VOLUME_REQUIREMENTS}
 
@@ -222,13 +230,22 @@ def validate_inspected_volumes(
             raise VolumeContractError("driver_mismatch", volume=name)
         if record.get("Scope") != "local":
             raise VolumeContractError("scope_mismatch", volume=name)
-        options = _string_mapping(
-            record.get("Options"),
-            code="invalid_options",
-            volume=name,
-        )
-        if options != requirement.options:
-            raise VolumeContractError("options_mismatch", volume=name)
+        if "Options" not in record:
+            raise VolumeContractError("invalid_options", volume=name)
+        raw_options = record["Options"]
+        if requirement.device is None:
+            if raw_options not in (None, {}):
+                raise VolumeContractError("options_mismatch", volume=name)
+            if record.get("Mountpoint") != requirement.docker_mountpoint:
+                raise VolumeContractError("mountpoint_mismatch", volume=name)
+        else:
+            options = _string_mapping(
+                raw_options,
+                code="invalid_options",
+                volume=name,
+            )
+            if options != requirement.options:
+                raise VolumeContractError("options_mismatch", volume=name)
         _validate_labels(record.get("Labels"), requirement=requirement)
 
 

@@ -381,6 +381,9 @@ services:
       redis: { condition: service_healthy }
       redis-control: { condition: service_healthy }
     command: python -m app.tasks.beat
+    volumes:
+      # PersistentScheduler 必须跨容器重建保留 last_run_at，避免长周期任务反复延期。
+      - beatdata:/var/lib/sms/beat
     deploy:
       replicas: 1
 
@@ -468,6 +471,7 @@ volumes:
   importdata:
   exportdata:
   rawspill:
+  beatdata:
 
 networks:
   default: {}

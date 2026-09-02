@@ -832,6 +832,11 @@ class FakeRunner:
             for service in RUNTIME_SERVICES
         }
         self.service_hostnames = {service: f"host-{service}" for service in RUNTIME_SERVICES}
+        self.beat_schedule_mount = (
+            "volume sms-platform_beatdata /var/lib/sms/beat true "
+            "/var/lib/docker/volumes/sms-platform_beatdata/_data\n"
+        )
+        self.fail_beat_schedule_mount_inspection = False
         self.recreate_count = 0
         self.unhealthy_service: str | None = None
         self.missing_worker_ping: str | None = None
@@ -943,6 +948,10 @@ class FakeRunner:
         if command[:3] == ["docker", "volume", "ls"]:
             return self._result(command, self.volume_inventory)
         if command[:2] == ["docker", "inspect"]:
+            if "range .Mounts" in command[-2]:
+                if self.fail_beat_schedule_mount_inspection:
+                    return subprocess.CompletedProcess(command, 1, "", "injected")
+                return self._result(command, self.beat_schedule_mount)
             container = command[-1]
             service = next(
                 (
@@ -3333,6 +3342,22 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
             and command[-1] == runner.service_container_ids[service]
             for command in runner.calls
         )
+    assert [
+        command
+        for command in runner.calls
+        if command[:3] == ["docker", "inspect", "--format"]
+        and "range .Mounts" in command[-2]
+    ] == [
+        [
+            "docker",
+            "inspect",
+            "--format",
+            '{{range .Mounts}}{{if eq .Destination "/var/lib/sms/beat"}}'
+            "{{.Type}} {{.Name}} {{.Destination}} {{.RW}} {{.Source}}"
+            "{{end}}{{end}}",
+            runner.service_container_ids["beat"],
+        ]
+    ]
     assert (
         compose
         + [
@@ -3383,6 +3408,60 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
         "services": list(RUNTIME_SERVICES),
         "tracked_job_heartbeat": "post_release_operational_check",
     }
+
+
+@pytest.mark.parametrize(
+    ("mount_output", "inspection_failure", "reason"),
+    [
+        ("", False, "beat_schedule_mount_output"),
+        (
+            "volume wrong /var/lib/sms/beat true "
+            "/var/lib/docker/volumes/sms-platform_beatdata/_data\n",
+            False,
+            "beat_schedule_mount_binding",
+        ),
+        (
+            "volume sms-platform_beatdata /var/lib/sms/beat false "
+            "/var/lib/docker/volumes/sms-platform_beatdata/_data\n",
+            False,
+            "beat_schedule_mount_binding",
+        ),
+        (
+            "volume sms-platform_beatdata /var/lib/sms/beat true /wrong/_data\n",
+            False,
+            "beat_schedule_mount_binding",
+        ),
+        (
+            "volume sms-platform_beatdata /var/lib/sms/beat true "
+            "/var/lib/docker/volumes/sms-platform_beatdata/_data\n",
+            True,
+            "beat_schedule_mount_inspection",
+        ),
+    ],
+)
+def test_beat_schedule_mount_drift_requires_manual_recovery(
+    tmp_path: Path,
+    mount_output: str,
+    inspection_failure: bool,
+    reason: str,
+) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
+    manifest["migration"]["target"] = manifest["migration"]["from"]
+    manifest["migration"]["compatibility"] = "none"
+    _write_private_json(manifest_path, manifest)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.beat_schedule_mount = mount_output
+    runner.fail_beat_schedule_mount_inspection = inspection_failure
+
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.activate(manifest["release_id"])
+
+    assert manager.status(manifest["release_id"])["state"] == "recovery_required"
+    events = (manager.release_root / manifest["release_id"] / "events.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert f'"reason":"{reason}"' in events
 
 
 def test_final_web_health_failure_uses_existing_stateless_compensation(
