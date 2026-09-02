@@ -10,14 +10,23 @@ from threading import BoundedSemaphore, Lock
 from typing import Literal, TypeVar
 
 T = TypeVar("T")
-ExecutorPool = Literal["default", "ldap", "archive", "smtp", "auth_hash"]
+ExecutorPool = Literal[
+    "default",
+    "ldap",
+    "archive",
+    "smtp",
+    "auth_login_hash",
+    "auth_hash",
+]
 
 _POOL_BOUNDS: dict[ExecutorPool, tuple[int, int]] = {
     "default": (4, 8),
     "ldap": (4, 8),
     "archive": (4, 8),
     "smtp": (4, 8),
-    # Argon2 每个任务使用 64 MiB；与普通同步工作隔离并限制进程内并发。
+    # Argon2 每个任务使用 64 MiB。交互式登录保留独立容量，避免已认证的
+    # 改密、step-up 或管理员密码维护挤占登录验证池。
+    "auth_login_hash": (1, 2),
     "auth_hash": (1, 2),
 }
 

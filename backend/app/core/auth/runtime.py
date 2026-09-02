@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 from app.core.auth.accounts import AccountNotFound, AccountSourceConflict, PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
+    AuthenticationPurpose,
     InvalidCredentials,
     ProviderCapacityUnavailable,
     ProviderDisabled,
@@ -81,6 +82,8 @@ class AuthenticationService(Protocol):
         login_name: str,
         password: str,
         ip: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity: ...
 
     async def record_bound_success(self, username: str) -> None: ...
@@ -145,9 +148,15 @@ class AuthFacade:
                 claims.login_name,
                 password,
                 ip,
+                purpose="reauthentication",
             )
         except AccountLocked:
-            raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
+            raise ApiError(
+                423,
+                "ACCOUNT_LOCKED",
+                "账号失败次数已达阈值，请使用正确凭据重试",
+                None,
+            ) from None
         except RateLimited as error:
             raise ApiError(429, "RATE_LIMITED", str(error), None) from None
         except ProviderCapacityUnavailable:
@@ -176,11 +185,9 @@ class AuthFacade:
             ProviderDisabled,
         ):
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None) from None
-        same_identity = (
-            identity.provider_code == claims.provider_code
-            and normalize_login_name(identity.login_name)
-            == normalize_login_name(claims.login_name)
-        )
+        same_identity = identity.provider_code == claims.provider_code and normalize_login_name(
+            identity.login_name
+        ) == normalize_login_name(claims.login_name)
         try:
             account = (
                 identity.account
@@ -193,8 +200,7 @@ class AuthFacade:
             account.account_id == claims.account_id
             and account.identity_id == claims.identity_id
             and account.provider_code == claims.provider_code
-            and normalize_login_name(account.login_name)
-            == normalize_login_name(claims.login_name)
+            and normalize_login_name(account.login_name) == normalize_login_name(claims.login_name)
             and account.dept == claims.dept
             and account.role == claims.role
             and account.security_version == claims.security_version
@@ -218,11 +224,17 @@ class AuthFacade:
                 login_name,
                 password,
                 ip,
+                purpose="login",
             )
             user = await self.users.resolve_identity(identity, ip)
             await self._record_bound_success(user)
         except AccountLocked:
-            raise ApiError(423, "ACCOUNT_LOCKED", "账号已临时锁定", None) from None
+            raise ApiError(
+                423,
+                "ACCOUNT_LOCKED",
+                "账号失败次数已达阈值，请使用正确凭据重试",
+                None,
+            ) from None
         except RateLimited as error:
             raise ApiError(429, "RATE_LIMITED", str(error), None) from None
         except LastAdminProtected as error:

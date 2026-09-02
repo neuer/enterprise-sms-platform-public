@@ -77,7 +77,7 @@ deploy/
 28. **成功率口径（v1.4）**：`delivered/(delivered+failed)`，unknown/other 不入分母；唯一实现 services/stats.py，前端不得自行计算
 29. **任务必被追踪（v1.5）**：每个 Celery beat 任务必须以 `@tracked_job("job_name", expect_interval_s=N)` 包装并声明预期间隔；新增任务未包装即缺陷（会成为心跳巡检盲区）；心跳巡检运行在 api 进程内，禁止实现为 beat 任务
 30. **异常检测双条件（v1.5）**：突增告警必须同时满足 倍数阈值 与 绝对量下限（services 端断言），防小基数误报；verify 类异常一律 crit 且文案含处置建议
-31. **账号 Provider 体系（v1.6.1）**：Web 登录必须显式选择 local/AD Provider，禁止失败后自动回退；本地账号与 ldap_real（ldap3）共享规范化身份、锁定/IP 限流/JWT 层，AUTH_MOCK=1 只替换 AD 校验并走 seed-dev 身份，生产必须为 0。登录名使用全局 case-insensitive 唯一空间且先到先得；本地账号仅管理员维护、不开放注册，临时密码首次登录必须修改。AD 非敏感配置仅从系统配置页的版本化草稿读取，bind 密码与 CA 继续走文件边界；Provider 接口预留未来 IAM 扩展，本期不实现 IAM
+31. **账号 Provider 体系（v1.6.1）**：Web 登录必须显式选择 local/AD Provider，禁止失败后自动回退；本地账号与 ldap_real（ldap3）共享规范化身份、可恢复失败阈值/IP 限流/JWT 层，用户名失败标记不得在密码校验前阻断，正确凭据只有在权威身份绑定完成后才能清除失败状态；AUTH_MOCK=1 只替换 AD 校验并走 seed-dev 身份，生产必须为 0。登录名使用全局 case-insensitive 唯一空间且先到先得；本地账号仅管理员维护、不开放注册，临时密码首次登录必须修改。AD 非敏感配置仅从系统配置页的版本化草稿读取，bind 密码与 CA 继续走文件边界；Provider 接口预留未来 IAM 扩展，本期不实现 IAM
 32. **告警 log-sink（v1.6）**：告警渠道配置为空 ⇒ 只落 alert_log+日志，不外呼；所有告警测试断言 alert_log 行，任何测试不得请求企微/SMTP
 33. **令牌桶算法（v1.6）**：单桶容量 vendor_qps、每秒整补；取令牌为 Redis Lua 原子操作，入参 lane∈{realtime,bulk}；bulk 仅当 剩余令牌 > reserved_realtime_qps 时可取，realtime 无此限制；唯一实现 core/ratelimit.py
 34. **beat 调度读取时机（v1.6）**：任务间隔在 beat 启动时读 sys_config（缺省用建表默认值），修改间隔需重启 beat 容器生效（界面提示此点）；禁止实现动态热更调度
@@ -121,7 +121,7 @@ deploy/
 | LAST_ADMIN_PROTECTED | 409 | 禁止停用或降级最后一个有效管理员 |
 | PROVIDER_CONFIG_UNTESTED | 409 | 当前认证源草稿尚未通过连接测试 |
 | PROVIDER_CONFIG_STALE | 409 | 测试期间认证源草稿已发生变化 |
-| ACCOUNT_LOCKED | 423 | 登录账号因连续失败被临时锁定 |
+| ACCOUNT_LOCKED | 423 | 错误凭据达到账号失败阈值；正确凭据完成权威绑定后可恢复 |
 | SENSITIVE_WORD | 422 | 敏感词命中(block) |
 | PASSWORD_POLICY_VIOLATION | 422 | 本地密码不符合长度、字符类别或用户名限制 |
 | INVALID_PROVIDER_CONFIG | 422 | 认证源非敏感配置格式或范围无效 |

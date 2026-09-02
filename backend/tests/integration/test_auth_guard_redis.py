@@ -65,32 +65,51 @@ async def test_real_redis_lock_ban_ttl_and_concurrency_contract() -> None:
     try:
         await first_client.ping()
         outcomes: list[type[Exception]] = []
-        for attempt in range(20):
+        for attempt in range(5):
             guard = first if attempt % 2 == 0 else second
+            ip = f"10.0.0.{41 + attempt}"
             try:
-                await guard.admit("local", "shared-user", "10.0.0.41")
-                await guard.record_failure("shared-user", "10.0.0.41", "local")
-            except (AccountLocked, RateLimited) as error:
+                await guard.admit("local", "shared-user", ip)
+                await guard.record_failure("shared-user", ip, "local")
+            except AccountLocked as error:
                 outcomes.append(type(error))
             else:
                 outcomes.append(Exception)
 
-        assert outcomes == [Exception] * 4 + [AccountLocked] * 15 + [RateLimited]
+        assert outcomes == [Exception] * 4 + [AccountLocked]
         lock_key = first_store._key("auth:lock:user:shared-user")
-        ban_key = first_store._key("auth:ban:ip:10.0.0.41")
         lock_value = await first_client.get(lock_key)
-        ban_value = await first_client.get(ban_key)
         assert str(UUID(str(lock_value))) == lock_value
-        assert str(UUID(str(ban_value))) == ban_value
-        assert int(await first_client.get(first_store._key("auth:fail:ip:10.0.0.41"))) == 20
+        await second.admit("local", "shared-user", "10.0.0.99")
+        assert await first_client.get(lock_key) == lock_value
+        await second.record_bound_success("shared-user")
+        assert await first_client.get(lock_key) is None
+        assert await first_client.get(first_store._key("auth:fail:user:shared-user")) is None
 
-        lock_ttl_before = await first_client.pttl(lock_key)
+        ban_ip = "10.0.0.140"
+        ban_outcomes: list[type[Exception]] = []
+        for attempt in range(20):
+            guard = first if attempt % 2 == 0 else second
+            try:
+                await guard.record_failure(f"ip-target-{attempt}", ban_ip, "local")
+            except RateLimited as error:
+                ban_outcomes.append(type(error))
+            else:
+                ban_outcomes.append(Exception)
+        assert ban_outcomes == [Exception] * 19 + [RateLimited]
+        ban_key = first_store._key(f"auth:ban:ip:{ban_ip}")
+        ban_value = await first_client.get(ban_key)
+        assert str(UUID(str(ban_value))) == ban_value
+        assert int(await first_client.get(first_store._key(f"auth:fail:ip:{ban_ip}"))) == 20
+
+        ban_ttl_before = await first_client.pttl(ban_key)
         with pytest.raises(RateLimited):
-            await second.admit("local", "shared-user", "10.0.0.41")
-        lock_ttl_after = await first_client.pttl(lock_key)
-        assert 0 < lock_ttl_after <= lock_ttl_before
+            await second.admit("local", "shared-user", ban_ip)
+        ban_ttl_after = await first_client.pttl(ban_key)
+        assert 0 < ban_ttl_after <= ban_ttl_before
 
         concurrent_ip = "10.0.0.42"
+
         async def concurrency_policy() -> RuntimePolicy:
             return RuntimePolicy.from_mapping({"login_ip_fail_limit": "1000"})
 
@@ -108,12 +127,8 @@ async def test_real_redis_lock_ban_ttl_and_concurrency_contract() -> None:
             return_exceptions=True,
         )
         assert not any(isinstance(item, SessionStateUnavailable) for item in results)
-        assert int(
-            await first_client.get(first_store._key("auth:fail:user:concurrent-user"))
-        ) == 50
-        concurrent_lock = await first_client.get(
-            first_store._key("auth:lock:user:concurrent-user")
-        )
+        assert int(await first_client.get(first_store._key("auth:fail:user:concurrent-user"))) == 50
+        concurrent_lock = await first_client.get(first_store._key("auth:lock:user:concurrent-user"))
         assert str(UUID(str(concurrent_lock))) == concurrent_lock
     finally:
         keys = first_store.keys | second_store.keys

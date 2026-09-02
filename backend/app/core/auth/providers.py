@@ -6,11 +6,12 @@ from typing import Protocol
 
 from app.core.auth.backends import (
     AuthenticatedIdentity,
+    AuthenticationPurpose,
     ProviderDisabled,
     ProviderUnavailable,
 )
 from app.core.auth.ldap_real import LdapConfig, LdapPasswordProvider
-from app.core.auth.local import LocalAccountReader, LocalPasswordProvider
+from app.core.auth.local import LocalAccountReader, LocalHashPool, LocalPasswordProvider
 from app.core.auth.mock import MockLdapProvider
 from app.core.auth.passwords import LocalPasswordHasher
 from app.services.auth_provider import (
@@ -43,6 +44,8 @@ class ProviderKindHandler(Protocol):
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity: ...
 
 
@@ -85,6 +88,8 @@ class AuthProviderRegistry:
         provider_code: str,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
         try:
             record = await self.repository.get(provider_code)
@@ -95,7 +100,12 @@ class AuthProviderRegistry:
         if record.kind != "local" and record.active_config is None:
             raise ProviderDisabled("认证源未激活")
         handler = self._handler(record.kind)
-        return await handler.authenticate(record, login_name, password)
+        return await handler.authenticate(
+            record,
+            login_name,
+            password,
+            purpose=purpose,
+        )
 
 
 class LocalProviderKind:
@@ -119,9 +129,12 @@ class LocalProviderKind:
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
         del record
-        return await self.provider.authenticate(login_name, password)
+        pool: LocalHashPool = "auth_login_hash" if purpose == "login" else "auth_hash"
+        return await self.provider.authenticate(login_name, password, pool=pool)
 
 
 class LdapProviderKind:
@@ -174,7 +187,10 @@ class LdapProviderKind:
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
+        del purpose
         if record.active_config is None:
             raise ProviderDisabled("认证源未激活")
         try:
@@ -205,11 +221,14 @@ class MockLdapProviderKind:
         record: ProviderRecord,
         login_name: str,
         password: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
+        del purpose
         del record
-        return await MockLdapProvider(
-            self.settings.credential("ldap_bind_password")
-        ).authenticate(login_name, password)
+        return await MockLdapProvider(self.settings.credential("ldap_bind_password")).authenticate(
+            login_name, password
+        )
 
 
 def create_provider_registry(
@@ -228,9 +247,7 @@ def create_provider_registry(
     return AuthProviderRegistry(
         provider_repository,
         {
-            "local": LocalProviderKind(
-                LocalPasswordProvider(local_repository, passwords)
-            ),
+            "local": LocalProviderKind(LocalPasswordProvider(local_repository, passwords)),
             "ldap": ldap,
         },
     )

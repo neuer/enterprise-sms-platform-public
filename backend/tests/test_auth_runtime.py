@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -11,6 +12,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from app.core.auth.accounts import AccountSourceConflict, LocalAccountRecord, PlatformAccount
 from app.core.auth.backends import (
     AuthenticatedIdentity,
+    AuthenticationPurpose,
     InvalidCredentials,
     ProviderCapacityUnavailable,
     ProviderDisabled,
@@ -100,6 +102,7 @@ class FakeAuthService:
     def __init__(self, identity: AuthenticatedIdentity | Exception) -> None:
         self.identity = identity
         self.calls: list[tuple[str, str, str, str]] = []
+        self.purposes: list[AuthenticationPurpose] = []
         self.bound_successes: list[str] = []
 
     async def authenticate(
@@ -108,8 +111,11 @@ class FakeAuthService:
         login_name: str,
         password: str,
         ip: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
         self.calls.append((provider_code, login_name, password, ip))
+        self.purposes.append(purpose)
         if isinstance(self.identity, Exception):
             raise self.identity
         return self.identity
@@ -221,11 +227,7 @@ class FakeUserRepository:
             ),
             None,
         )
-        if (
-            token is None
-            or token["status"] != "processing"
-            or token.get("lease_id") != lease_id
-        ):
+        if token is None or token["status"] != "processing" or token.get("lease_id") != lease_id:
             return False
         token["status"] = "available"
         token["lease_id"] = None
@@ -253,11 +255,7 @@ class FakeUserRepository:
             ),
             None,
         )
-        if (
-            token is None
-            or token["status"] != "processing"
-            or token.get("lease_id") != lease_id
-        ):
+        if token is None or token["status"] != "processing" or token.get("lease_id") != lease_id:
             raise InvalidCredentials("used")
         if (
             token["account_id"] != account_id
@@ -379,6 +377,7 @@ async def test_temporary_password_login_requires_one_time_initial_change() -> No
     result = await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
 
     assert isinstance(result, PasswordChangeRequired)
+    assert service.auth.purposes == ["login"]
     assert result.next_action == "change_password"
     assert result.token is None
     assert result.expires_in == 600
@@ -455,6 +454,7 @@ async def test_initial_password_change_handles_hash_capacity_without_consuming_t
     expected_status: str,
 ) -> None:
     async def fail_hash(*_args: object, **_kwargs: object) -> str:
+        assert _kwargs["pool"] == "auth_hash"
         raise failure
 
     service, users, tokens, _ = facade(must_change_password=True)
@@ -761,7 +761,21 @@ async def test_facade_verify_binds_stable_audit_principal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_daily_password_change_checks_current_password_and_revokes_sessions() -> None:
+async def test_daily_password_change_checks_current_password_and_revokes_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_pools: list[str] = []
+
+    async def inline_hash(
+        function: Callable[..., object],
+        *args: object,
+        pool: str,
+        **_kwargs: object,
+    ) -> object:
+        observed_pools.append(pool)
+        return function(*args)
+
+    monkeypatch.setattr("app.core.auth.runtime.run_bounded", inline_hash)
     service, users, tokens, hasher = facade(must_change_password=False)
     login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
     assert isinstance(login, LoginSuccess)
@@ -775,6 +789,8 @@ async def test_daily_password_change_checks_current_password_and_revokes_session
 
     assert hasher.verified == []
     assert service.auth.calls[-1] == ("local", "admin", "Current@Password123", IP)
+    assert service.auth.purposes[-1] == "reauthentication"
+    assert observed_pools == ["auth_hash"]
     assert users.changed[-1]["password_hash"] == "encoded:Daily@Password456"
     with pytest.raises(InvalidCredentials):
         await tokens.verify(login.token)

@@ -33,6 +33,7 @@ class SessionStateUnavailable(RuntimeError):
 DirectoryUnavailable = ProviderUnavailable
 
 DevelopmentRole = Literal["admin", "approver", "operator", "viewer"]
+AuthenticationPurpose = Literal["login", "reauthentication"]
 
 
 @dataclass(frozen=True, slots=True)

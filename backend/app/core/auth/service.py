@@ -1,4 +1,4 @@
-"""两种认证后端共享的账号锁定与来源 IP 防爆破逻辑。"""
+"""两种认证后端共享的可恢复失败阈值与来源 IP 防爆破逻辑。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from redis.exceptions import RedisError
 
 from app.core.auth.backends import (
     AuthenticatedIdentity,
+    AuthenticationPurpose,
     InvalidCredentials,
     ProviderCapacityUnavailable,
     SessionStateUnavailable,
@@ -36,7 +37,7 @@ _SAFE_PROVIDER_CODE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
 
 class AccountLocked(RuntimeError):
-    """账号已达到失败阈值，对应 ACCOUNT_LOCKED/423。"""
+    """错误凭据已达到账号失败阈值，对应 ACCOUNT_LOCKED/423。"""
 
 
 class RateLimited(RuntimeError):
@@ -106,74 +107,52 @@ class RedisKeyValue:
 
 
 class LoginGuard:
-    """认证模式无关的失败计数、账号锁定与 IP 封禁。"""
+    """认证模式无关的失败计数、可恢复阈值标记与 IP 封禁。"""
 
     _ADMIT_LUA = """
-    -- auth-admit-v1
+    -- auth-admit-v2
     local ban = redis.call('GET', KEYS[1])
     if ban then
       if ban == '1' then
-        redis.call('SET', KEYS[1], ARGV[4], 'XX', 'KEEPTTL')
-        ban = ARGV[4]
+        redis.call('SET', KEYS[1], ARGV[1], 'XX', 'KEEPTTL')
+        ban = ARGV[1]
       end
       return {
-        2, '', 0, ban, tonumber(redis.call('GET', KEYS[3]) or '0'),
+        2, '', 0, ban, tonumber(redis.call('GET', KEYS[2]) or '0'),
         0, redis.call('TTL', KEYS[1])
       }
     end
 
-    local lock = redis.call('GET', KEYS[2])
-    if lock then
-      if lock == '1' then
-        redis.call('SET', KEYS[2], ARGV[5], 'XX', 'KEEPTTL')
-        lock = ARGV[5]
-      end
-      local ip_count = redis.call('INCR', KEYS[3])
-      if ip_count == 1 then redis.call('EXPIRE', KEYS[3], ARGV[1]) end
-      local current_ban = nil
-      if ip_count >= tonumber(ARGV[2]) then
-        redis.call('SET', KEYS[1], ARGV[4], 'NX', 'EX', ARGV[3])
-        current_ban = redis.call('GET', KEYS[1])
-      end
-      if ip_count >= tonumber(ARGV[2]) and current_ban then
-        return {
-          2, lock, tonumber(redis.call('GET', KEYS[6]) or ARGV[6]), current_ban, ip_count,
-          redis.call('TTL', KEYS[2]), redis.call('TTL', KEYS[1])
-        }
-      end
-      return {
-        1, lock, tonumber(redis.call('GET', KEYS[6]) or ARGV[6]), '', ip_count,
-        redis.call('TTL', KEYS[2]), 0
-      }
-    end
+    -- 用户名失败阈值只在凭据校验失败后评估。若在这里按用户名拒绝，
+    -- 远程攻击者只需知道登录名即可阻断正确凭据。
 
-    local long_count = tonumber(redis.call('GET', KEYS[5]) or '0')
-    if long_count >= tonumber(ARGV[10]) then
-      return {3, '', 0, '', long_count, 0, redis.call('TTL', KEYS[5])}
+    local long_count = tonumber(redis.call('GET', KEYS[4]) or '0')
+    if long_count >= tonumber(ARGV[5]) then
+      return {3, '', 0, '', long_count, 0, redis.call('TTL', KEYS[4])}
     end
 
     local now = redis.call('TIME')
     local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
-    local state = redis.call('HMGET', KEYS[4], 'tokens', 'updated_ms')
-    local tokens = tonumber(state[1]) or tonumber(ARGV[7])
+    local state = redis.call('HMGET', KEYS[3], 'tokens', 'updated_ms')
+    local tokens = tonumber(state[1]) or tonumber(ARGV[2])
     local updated_ms = tonumber(state[2]) or now_ms
     if now_ms > updated_ms then
       tokens = math.min(
-        tonumber(ARGV[7]),
-        tokens + ((now_ms - updated_ms) / tonumber(ARGV[8]))
+        tonumber(ARGV[2]),
+        tokens + ((now_ms - updated_ms) / tonumber(ARGV[3]))
       )
     end
     if tokens < 1 then
-      redis.call('HSET', KEYS[4], 'tokens', tokens, 'updated_ms', now_ms)
-      redis.call('PEXPIRE', KEYS[4], ARGV[9])
-      return {3, '', 0, '', long_count, 0, redis.call('PTTL', KEYS[4])}
+      redis.call('HSET', KEYS[3], 'tokens', tokens, 'updated_ms', now_ms)
+      redis.call('PEXPIRE', KEYS[3], ARGV[4])
+      return {3, '', 0, '', long_count, 0, redis.call('PTTL', KEYS[3])}
     end
     tokens = tokens - 1
-    redis.call('HSET', KEYS[4], 'tokens', tokens, 'updated_ms', now_ms)
-    redis.call('PEXPIRE', KEYS[4], ARGV[9])
-    long_count = redis.call('INCR', KEYS[5])
-    if long_count == 1 then redis.call('EXPIRE', KEYS[5], ARGV[11]) end
-    return {0, '', 0, '', long_count, 0, redis.call('TTL', KEYS[5])}
+    redis.call('HSET', KEYS[3], 'tokens', tokens, 'updated_ms', now_ms)
+    redis.call('PEXPIRE', KEYS[3], ARGV[4])
+    long_count = redis.call('INCR', KEYS[4])
+    if long_count == 1 then redis.call('EXPIRE', KEYS[4], ARGV[6]) end
+    return {0, '', 0, '', long_count, 0, redis.call('TTL', KEYS[4])}
     """
 
     _INVALID_LUA = """
@@ -193,6 +172,10 @@ class LoginGuard:
     if ip_count == 1 then redis.call('EXPIRE', KEYS[2], ARGV[2]) end
 
     local lock = redis.call('GET', KEYS[3])
+    if lock == '1' then
+      redis.call('SET', KEYS[3], ARGV[7], 'XX', 'KEEPTTL')
+      lock = ARGV[7]
+    end
     if user_count >= tonumber(ARGV[3]) and not lock then
       redis.call('SET', KEYS[3], ARGV[7], 'NX', 'EX', ARGV[4])
       lock = redis.call('GET', KEYS[3])
@@ -247,24 +230,18 @@ class LoginGuard:
         return f"auth:prehash:{kind}:ip:{ip}"
 
     async def admit(self, provider_code: str, username: str, ip: str) -> None:
-        """在读取密码摘要或连接目录前原子执行封禁、锁定与 IP 准入。"""
+        """在读取密码摘要或连接目录前原子执行封禁与 IP 准入。"""
 
-        policy = await self._policy()
+        # 保留运行策略读取的 fail-closed 边界；错误凭据后的阈值仍使用同一快照源。
+        await self._policy()
         result = await self.store.eval(
             self._ADMIT_LUA,
-            6,
+            4,
             self._ip_key("ban", ip),
-            self._user_key("lock", username),
             self._ip_key("fail", ip),
             self._prehash_key("bucket", ip),
             self._prehash_key("window", ip),
-            self._user_key("fail", username),
-            str(IP_WINDOW_S),
-            str(policy.login_ip_fail_limit),
-            str(policy.login_ip_ban_minutes * 60),
             str(uuid4()),
-            str(uuid4()),
-            str(policy.login_fail_limit),
             str(PREHASH_BURST_CAPACITY),
             str(PREHASH_REFILL_MS),
             str(PREHASH_WINDOW_S * 1000),
@@ -276,9 +253,7 @@ class LoginGuard:
     async def check_provider_capacity(self, provider_code: str) -> None:
         """在调度同步 Provider 工作前拒绝仍处于容量退避期的请求。"""
 
-        if await self.store.get(
-            self._provider_capacity_key(provider_code)
-        ) is not None:
+        if await self.store.get(self._provider_capacity_key(provider_code)) is not None:
             raise ProviderCapacityUnavailable("认证源容量暂不可用")
 
     @staticmethod
@@ -362,7 +337,7 @@ class LoginGuard:
                 ip=ip,
             )
         if code == 1:
-            raise AccountLocked("登录账号已临时锁定")
+            raise AccountLocked("账号失败次数已达阈值，请使用正确凭据重试")
         if code == 2:
             raise RateLimited("登录来源 IP 已临时封禁")
         if code == 3:
@@ -376,7 +351,7 @@ class LoginGuard:
         await self.security_events.ensure_transition(AuthSecurityTransition(**kwargs))
 
     async def record_bound_success(self, username: str) -> None:
-        """仅在权威账号/身份归属确认后清除主体锁定。"""
+        """仅在权威账号/身份归属确认后清除主体失败状态。"""
 
         await self.store.delete(self._user_key("fail", username))
         await self.store.delete(self._user_key("lock", username))
@@ -388,7 +363,7 @@ class LoginGuard:
 
 
 class AuthService:
-    """所有 Provider 共享完全相同的登录防护，且锁键不按来源拆分。"""
+    """所有 Provider 共享失败阈值与 IP 防护，且主体状态不按来源拆分。"""
 
     def __init__(self, providers: AuthProviderRegistry, guard: LoginGuard) -> None:
         self.providers = providers
@@ -400,6 +375,8 @@ class AuthService:
         login_name: str,
         password: str,
         ip: str,
+        *,
+        purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
         normalized = normalize_login_name(login_name)
         await self.guard.admit(provider_code, normalized, ip)
@@ -410,6 +387,7 @@ class AuthService:
                 provider_code,
                 normalized,
                 password,
+                purpose=purpose,
             )
         except InvalidCredentials:
             await self.guard.record_failure(normalized, ip, provider_code)

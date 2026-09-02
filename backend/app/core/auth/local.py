@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.core.auth.accounts import LocalAccountRecord
 from app.core.auth.backends import (
@@ -12,6 +12,8 @@ from app.core.auth.backends import (
 )
 from app.core.auth.identity import normalize_login_name
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
+
+LocalHashPool = Literal["auth_login_hash", "auth_hash"]
 
 
 class LocalAccountReader(Protocol):
@@ -40,6 +42,8 @@ class LocalPasswordProvider:
         self,
         login_name: str,
         password: str,
+        *,
+        pool: LocalHashPool = "auth_login_hash",
     ) -> AuthenticatedIdentity:
         normalized = normalize_login_name(login_name)
         record = await self.repository.find_local_account(normalized)
@@ -50,7 +54,7 @@ class LocalPasswordProvider:
                 password_hash,
                 password,
                 timeout_s=5,
-                pool="auth_hash",
+                pool=pool,
             )
         except (ExecutorBackpressure, TimeoutError):
             raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
