@@ -2241,7 +2241,7 @@ main {
 
 .category-switch {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -2274,17 +2274,8 @@ main {
   background: var(--amber);
 }
 
-.category-switch button.verify::before {
-  background: var(--verdi);
-}
-
 .category-switch button:hover:not(:disabled) {
   border-color: rgba(255, 255, 255, 0.18);
-}
-
-.category-switch button:disabled {
-  opacity: 0.42;
-  cursor: not-allowed;
 }
 
 /* 类别卡选中渐变：rgba(69,116,163)/rgba(216,163,92) 即深色 --slate/--amber，就地令牌化等价。 */
@@ -2313,13 +2304,8 @@ main {
   border-radius: 4px;
 }
 
-/* 类别小徽章：底色按深色 --verdi/--slate/--amber 同值就地令牌化；
+/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；
    notice 文字 #6f9bcf 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
-.cat-tag.verify {
-  color: var(--verdi-l);
-  background: color-mix(in srgb, var(--verdi) 20%, transparent);
-}
-
 .cat-tag.notice {
   color: #6f9bcf;
   background: color-mix(in srgb, var(--slate) 20%, transparent);
@@ -2336,13 +2322,6 @@ main {
   color: var(--tx-3);
   font-size: 10.5px;
   line-height: 1.5;
-}
-
-.cat-why {
-  display: block;
-  margin-top: 5px;
-  color: var(--tx-3);
-  font-size: 10px;
 }
 
 .seg {
