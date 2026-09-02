@@ -614,17 +614,7 @@ onBeforeUnmount(() => {
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
             <small>批量通道 · 08:00–21:00 · 强制退订语<br>≥50 号码需审批 · 同号同应用 1 条/天</small>
           </button>
-          <button
-            type="button"
-            class="verify"
-            data-testid="category-verify"
-            disabled
-            aria-describedby="verify-web-hint"
-          >
-            <b>验证码<span class="cat-tag verify">VERIFY</span></b>
-            <small id="verify-web-hint">仅 API 渠道开放</small>
-            <span class="cat-why">Web 人工发送不可用</span>
-          </button>
+          <!-- verify 仅 API 渠道（PRD FR-00），Web 人工发送不展示验证码类别卡 -->
         </div>
       </section>
 
