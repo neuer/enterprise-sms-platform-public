@@ -91,6 +91,8 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("ops-workbench")
     expect(view).not.toContain("ops-filter-title")
     expect(workspace).toMatch(/\.config-tabs,\s*\.ops-tabs\s*\{[^}]*overflow-x:\s*auto/s)
+    // 告警面板题右侧的 .ops-seg 必须保持横向 flex：.ops-panel-title > div 的网格规则不得把它压成竖排
+    expect(workspace).toMatch(/\.ops-alert-title\s*>\s*\.ops-seg\s*\{[^}]*display:\s*flex/s)
     expect(workspace).toMatch(/\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s)
   })
 

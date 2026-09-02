@@ -5880,6 +5880,8 @@ main {
 .ops-panel-title strong { font-size: 14px; color: var(--tx-hi); }
 .ops-panel-title small { color: var(--muted); font: 10px/1.4 var(--mono); }
 .ops-alert-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+/* .ops-panel-title > div 的网格规则会误伤标题右侧的 .ops-seg 分段组（grid 单列把按钮竖排并被 34px 高度裁剪），这里恢复横向 flex 并去掉 gap。 */
+.ops-alert-title > .ops-seg { display: flex; gap: 0; }
 .ops-current-summary { display: grid; grid-template-columns: repeat(3, minmax(96px, 140px)) 1fr; gap: 1px; margin-bottom: 16px; border: 1px solid var(--line); background: var(--line); }
 .ops-current-summary > div,
 .ops-current-summary > p { margin: 0; padding: 12px 14px; background: var(--surface-soft); }
