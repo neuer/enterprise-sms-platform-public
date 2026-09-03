@@ -37,6 +37,10 @@ OFFLINE_REPORT_EXPAND_MIGRATION = (
     "0081_sign_adoption_contract",
     "0082_outbox_realtime_report_queue",
 )
+OFFLINE_AUTH_EXPAND_MIGRATION = (
+    "0082_outbox_realtime_report_queue",
+    "0084_auth_security_and_ad_freshness",
+)
 DEFAULT_PRODUCTION_ENVIRONMENT_FILE = (
     release_manager_module._PRODUCTION_ENVIRONMENT_FILE
 )
@@ -2163,6 +2167,26 @@ def test_production_offline_report_queue_expand_update_can_activate(
     assert state["state"] == "succeeded"
     assert state["verified_migration_head"] == OFFLINE_REPORT_EXPAND_MIGRATION[1]
     assert runner.migration_head == OFFLINE_REPORT_EXPAND_MIGRATION[1]
+
+
+def test_production_offline_auth_security_expand_update_can_activate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, manifest, current_refs = _offline_bundle(
+        tmp_path,
+        migration_pair=OFFLINE_AUTH_EXPAND_MIGRATION,
+    )
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+
+    manager.prepare(manifest_path)
+    manager.activate(manifest["release_id"])
+
+    state = manager.status(manifest["release_id"])
+    assert state["state"] == "succeeded"
+    assert state["verified_migration_head"] == OFFLINE_AUTH_EXPAND_MIGRATION[1]
+    assert runner.migration_head == OFFLINE_AUTH_EXPAND_MIGRATION[1]
 
 
 def test_succeeded_offline_expand_source_still_rejects_forward_rollback(

@@ -24,6 +24,8 @@ OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
 OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
 OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
 OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"
+OFFLINE_AUTH_EXPAND_FROM = "0082_outbox_realtime_report_queue"
+OFFLINE_AUTH_EXPAND_TARGET = "0084_auth_security_and_ad_freshness"
 
 
 def _manifest(
@@ -280,6 +282,30 @@ def test_offline_v2_accepts_realtime_report_queue_expand(
 
     assert manifest.migration_from == OFFLINE_REPORT_EXPAND_FROM
     assert manifest.migration_target == OFFLINE_REPORT_EXPAND_TARGET
+    assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
+
+
+def test_offline_v2_accepts_auth_security_expand(
+    tmp_path: Path,
+) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+    payload["migration"] = {
+        "from": OFFLINE_AUTH_EXPAND_FROM,
+        "target": OFFLINE_AUTH_EXPAND_TARGET,
+        "compatibility": "expand",
+    }
+    payload["evidence"]["data_images"] = {
+        "file": "data-images.json",
+        "sha256": "2" * 64,
+        "size": 4096,
+    }
+
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+
+    assert manifest.migration_from == OFFLINE_AUTH_EXPAND_FROM
+    assert manifest.migration_target == OFFLINE_AUTH_EXPAND_TARGET
     assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
 
 

@@ -845,8 +845,10 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
   裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
   该临时通道只覆盖首次 bootstrap、同包恢复、Registry 建成前确有必要的无迁移四镜像
   整包更新，以及经明确批准的
-  `0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 与
-  `0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 全四镜像 expand 更新；
+  `0080_security_daily_delivery_generation`→`0081_sign_adoption_contract`、
+  `0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 与
+  `0082_outbox_realtime_report_queue`→`0084_auth_security_and_ad_freshness`
+  （一次整包覆盖中间修订 `0083_password_change_token_lease`）全四镜像 expand 更新；
   不实现选择性归档、其他版本间离线迁移、历史包拼装、离线镜像包缓存复用或自动自愈。
   空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
 
@@ -895,8 +897,8 @@ python3 scripts/create_release_manifest.py \
 
 清单由 `scripts/create_release_manifest.py` 按 `deploy/scripts/release_manifest.py` 的
 exact-field 契约自动生成并用 `0600` 原子落盘。Registry schema v1 可按 changed subset 发布，
-迁移只允许 `none` 或向后兼容 `expand`；临时离线 schema v2 仅允许四镜像全不变的 bootstrap/
-恢复、四镜像全部 changed 的无迁移整包更新，或上述两个精确的相邻版本
+  迁移只允许 `none` 或向后兼容 `expand`；临时离线 schema v2 仅允许四镜像全不变的 bootstrap/
+恢复、四镜像全部 changed 的无迁移整包更新，或上述三个精确的 from/target
 expand 整包更新。其他 from/target、选择性镜像或 destructive 迁移继续失败关闭。
 
 ### 本机状态机命令
@@ -1043,9 +1045,11 @@ Trivy/attestation、实际提供的数据/备份恢复证据、changed subset、
 
 “临时离线无迁移整包快速更新”只适用于 schema v2、四镜像全部 changed、migration
 `from == target`，且提交差异不涉及 PostgreSQL/Redis 镜像定义或固定基础镜像、初始化脚本、
-Compose 存储/拓扑、`schema.sql` 或 Alembic。另有两个精确授权例外：全四镜像
-`0080_security_daily_delivery_generation`→`0081_sign_adoption_contract` 以及
-`0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 可以执行向后兼容
+Compose 存储/拓扑、`schema.sql` 或 Alembic。另有三个精确授权例外：全四镜像
+`0080_security_daily_delivery_generation`→`0081_sign_adoption_contract`、
+`0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 以及
+`0082_outbox_realtime_report_queue`→`0084_auth_security_and_ad_freshness`
+（一次整包覆盖中间修订 `0083_password_change_token_lease`）可以执行向后兼容
 `expand`，但不得扩展到其他 from/target。无迁移全量更新维持原有显式风险例外，可省略
 `data_images`、`backup_restore_change` 和同包预生产；本次 expand 则仍必须执行数据镜像验证并
 绑定 `data_images`，显式风险参数只允许省略已获批准的 `backup_restore_change`。任何已提供证据的

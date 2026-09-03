@@ -913,6 +913,8 @@ def test_temporary_offline_updates_document_narrow_exceptions() -> None:
         "0080_security_daily_delivery_generation",
         "0081_sign_adoption_contract",
         "0082_outbox_realtime_report_queue",
+        "0083_password_change_token_lease",
+        "0084_auth_security_and_ad_freshness",
         "--allow-offline-no-conditional-evidence",
         "不尝试 destructive downgrade",
         "不关闭每日备份",

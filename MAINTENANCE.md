@@ -141,8 +141,10 @@ scripts/test_update.sh promote --ref origin/main
 5. 首次空主机由独立 `release bootstrap --confirm-empty-host` 完成；普通更新才执行
    `release prepare`、`release activate`、`release status`。临时离线更新默认仅允许无迁移四镜像
    整包；已批准例外仅包括 `0080_security_daily_delivery_generation`→
-   `0081_sign_adoption_contract` 与 `0081_sign_adoption_contract`→
-   `0082_outbox_realtime_report_queue` 两个全四镜像 expand，其他离线迁移仍拒绝。无迁移候选若未变更数据镜像
+   `0081_sign_adoption_contract`、`0081_sign_adoption_contract`→
+   `0082_outbox_realtime_report_queue` 与 `0082_outbox_realtime_report_queue`→
+   `0084_auth_security_and_ad_freshness`（一次整包覆盖中间修订
+   `0083_password_change_token_lease`）三个全四镜像 expand，其他离线迁移仍拒绝。无迁移候选若未变更数据镜像
    定义/固定基础镜像、初始化脚本、Compose 存储/拓扑、schema 或 Alembic，可在显式传入
    `--allow-offline-no-conditional-evidence` 时省略本候选专属的数据镜像、备份恢复证据和同包
    预生产。上述 expand 仍必须提供并绑定 `data_images`，显式风险参数只允许省略
