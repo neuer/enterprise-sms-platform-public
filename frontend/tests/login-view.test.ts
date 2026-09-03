@@ -58,7 +58,6 @@ describe("登录页", () => {
     expect(wrapper.text()).toContain("本地账号")
     expect(wrapper.text()).toContain("AD 账号")
     expect(wrapper.text()).toContain("未开通")
-    expect(wrapper.text()).toContain("管理员维护的平台内置账号")
     expect(wrapper.text()).not.toContain("当前唯一可用认证源")
     expect(wrapper.text()).not.toContain("LOCAL")
     expect(wrapper.find(".provider-lane").exists()).toBe(false)
@@ -103,7 +102,6 @@ describe("登录页", () => {
     expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-disabled")).toBe("false")
     expect(wrapper.find(".provider-switch-sep").exists()).toBe(true)
     expect(wrapper.find(".provider-off-note").exists()).toBe(false)
-    expect(wrapper.text()).toContain("管理员维护的平台内置账号")
     expect(wrapper.text()).not.toContain("LOCAL")
     expect(wrapper.text()).not.toContain("未开通")
     await wrapper.get("[data-testid='login-username']").setValue("admin")
@@ -192,7 +190,6 @@ describe("登录页", () => {
     expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
     expect(wrapper.get("[data-testid='provider-local']").attributes("aria-disabled")).toBe("true")
     expect(wrapper.get(".login-field-label").text()).toBe("企业 AD 账号")
-    expect(wrapper.text()).toContain("通过企业目录验证身份")
     await wrapper.get("[data-testid='provider-local']").trigger("click")
     expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
     expect(wrapper.text()).toContain("本地账号尚未开通")
@@ -248,7 +245,6 @@ describe("登录页", () => {
     await wrapper.get("[data-testid='provider-ad']").trigger("click")
     expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
     expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-checked")).toBe("true")
-    expect(wrapper.text()).toContain("通过企业目录验证身份")
     expect(wrapper.get(".login-field-label").text()).toBe("企业 AD 账号")
     expect(wrapper.get("[data-testid='login-username']").attributes("placeholder")).toBe(
       "企业 AD 账号",

@@ -153,25 +153,76 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+/* ===== 品牌身份门（登录/首次改密）：固定典雅蓝满屏背景 + 深璃卡。
+   用固定 VI 色（典雅蓝 #002B69 / 雅致金 #E0CA76）而非主题令牌，亮/暗主题下观感一致。
+   光带与白鹭水印装饰层由 App.vue 的 .public-shell 承载。 */
 .public-shell,
 .login-screen {
   min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.public-shell {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(1000px 620px at 80% -12%, rgba(10, 61, 133, 0.9), transparent 55%),
+    linear-gradient(150deg, #002f72 0%, #002b69 46%, #001233 100%);
+}
+
+.login-flow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.login-flow-mobile {
+  display: none;
+}
+
+.login-wm {
+  position: absolute;
+  top: 65.5%;
+  left: 2.5%;
+  width: 31%;
+  opacity: 0.09;
+  transform: translateY(-50%) rotate(-9deg);
+  pointer-events: none;
 }
 
 .login-screen {
+  position: relative;
+  z-index: 1;
   display: grid;
   padding: clamp(24px, 6vw, 72px);
   place-items: center;
-  background: var(--paper);
 }
 
 .login-card {
-  width: min(100%, 360px);
-  padding: 36px 32px 28px;
-  background: var(--card);
-  border: 1px solid var(--line-2);
-  border-radius: 14px;
+  position: relative;
+  width: min(100%, 400px);
+  padding: 38px 34px 30px;
+  color: #ffffff;
+  background: linear-gradient(168deg, rgba(9, 48, 110, 0.72), rgba(0, 20, 52, 0.78));
+  border: 1px solid rgba(224, 202, 118, 0.3);
+  border-radius: 18px;
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   animation: identity-gate-enter 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 卡顶受光金线 */
+.login-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 26px;
+  left: 26px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(224, 202, 118, 0.55), transparent);
 }
 
 @keyframes identity-gate-enter {
@@ -186,7 +237,7 @@ button:focus-visible {
   }
 }
 
-/* 品牌居中堆叠，即卡片头部；登录模式不再单设可见标题 */
+/* 品牌区：白鹭短信 icon + 衬线平台名 + 金色短分隔线 */
 .login-brand {
   display: grid;
   gap: 13px;
@@ -194,25 +245,28 @@ button:focus-visible {
   margin-bottom: 22px;
 }
 
-.login-seal {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  color: #eef3ef;
-  font-family: var(--serif);
-  font-size: 19px;
-  background: var(--ink);
-  border: 1px solid var(--ink);
-  border-radius: 11px;
+.login-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 15px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
 }
 
-.login-brand strong {
-  display: block;
+.login-brand-name {
+  margin: 0;
+  color: #ffffff;
   font-family: var(--serif);
-  font-size: 17px;
-  letter-spacing: 0.22em;
-  text-indent: 0.22em;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-indent: 0.2em;
+  text-align: center;
+}
+
+.login-goldline {
+  width: 34px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #e0ca76, transparent);
 }
 
 .sr-only {
@@ -227,10 +281,10 @@ button:focus-visible {
   clip: rect(0 0 0 0);
 }
 
-/* 改密等模式的居中标题（登录模式无可见标题，语义标题走 sr-only） */
+/* 改密等模式的居中标题 */
 .mode-title {
-  margin: -14px 0 20px;
-  color: var(--tx-hi);
+  margin: -8px 0 20px;
+  color: #ffffff;
   font-family: var(--serif);
   font-size: 18px;
   font-weight: 600;
@@ -264,7 +318,7 @@ button:focus-visible {
 
 .provider-name {
   padding: 2px 1px 5px;
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.48);
   font-size: 13.5px;
   letter-spacing: 0.04em;
   background: none;
@@ -274,47 +328,46 @@ button:focus-visible {
 }
 
 .provider-name:hover {
-  color: var(--tx);
+  color: rgba(255, 255, 255, 0.8);
 }
 
 .provider-name.on {
-  color: var(--tx-hi);
-  border-bottom-color: var(--verdi);
+  color: #ffffff;
+  border-bottom-color: #e0ca76;
 }
 
 .provider-switch-item.is-off .provider-name,
 .provider-switch-item.is-off .provider-name:hover,
 .provider-switch-item.is-off .provider-name.on {
-  color: var(--tx-3);
-  opacity: 0.42;
+  color: rgba(255, 255, 255, 0.32);
+  opacity: 0.55;
   border-bottom-color: transparent;
   cursor: default;
 }
 
 .provider-off-note {
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.4);
   font-size: 9px;
   letter-spacing: 0.14em;
   line-height: 1;
-  opacity: 0.72;
 }
 
 .provider-switch-sep {
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.25);
   font-size: 13px;
-  opacity: 0.45;
 }
 
+/* 认证源未开通提示：瞬时出现，不常驻 */
 .provider-switch-desc {
   margin: 0;
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 11px;
   line-height: 1.5;
   text-align: center;
 }
 
 .provider-switch-desc.is-hint {
-  color: #a7b3ab;
+  color: #e0ca76;
 }
 
 .login-field {
@@ -324,28 +377,42 @@ button:focus-visible {
 
 .login-field-label {
   margin-left: 2px;
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.45);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
 
 .provider-loading {
   padding: 10px 0;
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 11px;
   text-align: center;
 }
 
 .login-card .el-input__wrapper {
   min-height: 46px;
-  border-radius: 8px;
-  box-shadow: 0 0 0 1px var(--line-2) inset;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16) inset;
 }
 
 .login-card .el-input__wrapper.is-focus {
   box-shadow:
-    0 0 0 1px var(--verdi) inset,
-    0 0 0 3px rgba(14, 122, 99, 0.18);
+    0 0 0 1px #e0ca76 inset,
+    0 0 0 3px rgba(224, 202, 118, 0.16);
+}
+
+.login-card .el-input__inner {
+  color: #ffffff;
+}
+
+.login-card .el-input__inner::placeholder {
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.login-card .el-input__prefix,
+.login-card .el-input__suffix {
+  color: rgba(255, 255, 255, 0.45);
 }
 
 .login-error {
@@ -353,7 +420,7 @@ button:focus-visible {
   gap: 7px;
   align-items: center;
   margin: 2px 0 0;
-  color: var(--el-color-danger);
+  color: #f0a58c;
   font-size: 12px;
 }
 
@@ -362,29 +429,46 @@ button:focus-visible {
   flex: none;
   width: 5px;
   height: 5px;
-  background: var(--el-color-danger);
+  background: #f0a58c;
   border-radius: 50%;
 }
 
 .login-success {
   margin: 4px 0 0;
-  color: var(--verdi-l);
+  color: #8fd0b8;
   font-size: 12px;
 }
 
-.login-submit {
+/* 主按钮：雅致金微渐变（VI 色阶内），蓝字 */
+.login-card .login-submit.el-button {
   width: 100%;
-  min-height: 46px;
+  min-height: 48px;
   margin-top: 8px;
-  border-radius: 8px;
-  font-weight: 600;
-  letter-spacing: 0.2em;
-  text-indent: 0.2em;
+  color: #002b69;
+  font-weight: 700;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  background: linear-gradient(180deg, #edd996 0%, #e0ca76 48%, #d3bb66 100%);
+  border: 0;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(120, 95, 30, 0.25),
+    0 12px 28px rgba(224, 202, 118, 0.2);
+}
+
+.login-card .login-submit.el-button:hover,
+.login-card .login-submit.el-button:focus-visible {
+  background: linear-gradient(180deg, #f2dfa4 0%, #e6d183 48%, #dbc473 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(120, 95, 30, 0.25),
+    0 16px 34px rgba(224, 202, 118, 0.3);
 }
 
 .password-policy {
   margin: 2px 0 0;
-  color: var(--tx-3);
+  color: rgba(255, 255, 255, 0.45);
   font-size: 10.5px;
   line-height: 1.7;
   text-align: center;
@@ -837,51 +921,43 @@ button:focus-visible {
   color: #71c4ad;
 }
 
-/* Console 深色身份门：登录页不依赖业务工作区样式。 */
-.public-shell {
-  background: #0d1511;
-}
+/* 移动端身份门（M2）：弧光只走上半屏，白鹭沉底展翅；卡片顶部对齐，
+   键盘弹出时输入区与登录按钮不被遮挡。 */
+@media (max-width: 760px) {
+  .login-flow-desktop {
+    display: none;
+  }
 
-.login-screen {
-  width: 100%;
-  max-width: none;
-  min-height: 100vh;
-  padding: 24px;
-  background:
-    radial-gradient(900px 520px at 72% -12%, rgba(18, 130, 104, 0.15), transparent 60%),
-    #0d1511;
-}
+  .login-flow-mobile {
+    display: block;
+  }
 
-.login-card {
-  width: min(100%, 360px);
-  padding: 36px 32px 28px;
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: 14px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
-}
+  .login-wm {
+    top: auto;
+    bottom: -4%;
+    left: 50%;
+    width: 96%;
+    opacity: 0.08;
+    transform: translateX(-50%) rotate(-6deg);
+  }
 
-.login-seal {
-  color: #eaf1ed;
-  background: linear-gradient(145deg, #128268, #0a5a49);
-  border: 0;
-  border-radius: 11px;
-}
+  .login-screen {
+    align-items: start;
+    padding: 96px 20px 40px;
+  }
 
-.login-brand strong,
-.mode-title {
-  color: var(--tx-hi);
-}
+  .login-card {
+    padding: 30px 24px 26px;
+  }
 
-.login-card .el-input__wrapper {
-  color: var(--tx);
-  background: var(--sink);
-  box-shadow: 0 0 0 1px var(--hair) inset;
-}
+  .login-mark {
+    width: 56px;
+    height: 56px;
+  }
 
-.login-card .el-input__inner {
-  color: var(--tx);
-  font-family: var(--mono);
+  .login-brand-name {
+    font-size: 17.5px;
+  }
 }
 
 

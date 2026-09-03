@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import PasswordChangeView from "./PasswordChangeView.vue"
+import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 import { useSessionStore } from "../stores/session"
 
 const router = useRouter()
@@ -50,11 +51,6 @@ const catalog = computed(() => {
 const accountLabel = computed(() =>
   providerCode.value === "ad" ? "企业 AD 账号" : "账号",
 )
-const providerDescription = computed(() => {
-  if (providerHint.value) return providerHint.value
-  const current = catalog.value.find((item) => item.code === providerCode.value)
-  return current?.description ?? ""
-})
 
 let hintTimer = 0
 
@@ -160,10 +156,10 @@ function invalidateInitialPasswordChange(message: string): void {
   />
   <main v-else class="login-screen">
     <article class="login-card" aria-labelledby="login-title">
-      <h1 id="login-title" class="sr-only">登录青鸾控制台</h1>
       <div class="login-brand">
-        <span class="login-seal" aria-hidden="true">鸾</span>
-        <strong>青鸾</strong>
+        <img class="login-mark" :src="loginMarkUrl" alt="" width="64" height="64" />
+        <h1 id="login-title" class="login-brand-name">企业短信管理平台</h1>
+        <i class="login-goldline" aria-hidden="true"></i>
       </div>
 
       <form @submit.prevent="submit">
@@ -196,9 +192,7 @@ function invalidateInitialPasswordChange(message: string): void {
                 </div>
               </template>
             </div>
-            <p class="provider-switch-desc" :class="{ 'is-hint': Boolean(providerHint) }">
-              {{ providerDescription }}
-            </p>
+            <p v-if="providerHint" class="provider-switch-desc is-hint">{{ providerHint }}</p>
           </template>
         </div>
 

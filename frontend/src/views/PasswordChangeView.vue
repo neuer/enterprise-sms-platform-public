@@ -7,6 +7,7 @@ import {
   passwordPolicyRequest,
   type PasswordPolicy,
 } from "../api/auth"
+import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 
 const props = defineProps<{ changeToken: string; expiresAt: number }>()
 const emit = defineEmits<{
@@ -89,8 +90,9 @@ async function submit() {
   <main class="login-screen">
     <article class="login-card" aria-labelledby="password-change-title">
       <div class="login-brand">
-        <span class="login-seal" aria-hidden="true">鸾</span>
-        <strong>青鸾</strong>
+        <img class="login-mark" :src="loginMarkUrl" alt="" width="64" height="64" />
+        <strong class="login-brand-name">企业短信管理平台</strong>
+        <i class="login-goldline" aria-hidden="true"></i>
       </div>
 
       <h1 id="password-change-title" class="mode-title">设置新密码</h1>
