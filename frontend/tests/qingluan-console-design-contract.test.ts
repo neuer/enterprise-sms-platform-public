@@ -46,8 +46,11 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     const passwordChange = source("src/views/PasswordChangeView.vue")
 
     expect(app).toContain('class="brand-mark" aria-hidden="true">鸾')
-    expect(login).toContain('class="login-seal" aria-hidden="true">鸾')
-    expect(passwordChange).toContain('class="login-seal" aria-hidden="true">鸾')
+    // 登录门（登录 + 首次改密）使用 VI 品牌：白鹭短信 icon + 平台名
+    expect(login).toContain('class="login-mark"')
+    expect(login).toContain("企业短信管理平台")
+    expect(passwordChange).toContain('class="login-mark"')
+    expect(passwordChange).toContain("企业短信管理平台")
     expect(app).toContain("SMS PLATFORM · XTC")
     expect(app).toContain('{ label: "上行回复", path: "/replies"')
     expect(app).toContain('{ label: "应用管理", path: "/apps"')
