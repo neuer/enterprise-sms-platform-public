@@ -89,7 +89,8 @@ _PUBLIC_CUTOVER_FIELDS = frozenset(
     {"source_commit", "private_merge_base", "pack_file", "pack_sha256"}
 )
 _MIGRATION_FIELDS = frozenset({"from", "target", "compatibility"})
-_COMPONENTS = frozenset({"api", "web"})
+_COMPONENTS = frozenset({"api", "web", "redis"})
+_REBASELINE_COMPONENTS = frozenset({"api", "web"})
 _UPDATE_ID_RE = re.compile(r"test-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -404,10 +405,15 @@ _MAILER_HIGH_RISK_EXACT = frozenset(
         "deploy/scripts/render_security_daily_report.py",
     }
 )
-_INFRA_HIGH_RISK_EXACT = frozenset(
+_REDIS_RUNTIME_EXACT = frozenset(
     {
+        "deploy/redis.Dockerfile",
         "deploy/redis-domain-entrypoint.sh",
         "deploy/redis-domain-healthcheck.sh",
+    }
+)
+_INFRA_HIGH_RISK_EXACT = frozenset(
+    {
         "deploy/scripts/collect_security_daily_evidence.py",
         "deploy/systemd/security-report-collector.service",
         "deploy/systemd/security-report-collector.timer",
@@ -719,7 +725,7 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
             raise TestUpdateContractError("rebaseline requires source_ref origin/main")
         if public_cutover is not None:
             raise TestUpdateContractError("rebaseline must not carry public_cutover")
-        if components != _COMPONENTS:
+        if components != _REBASELINE_COMPONENTS:
             raise TestUpdateContractError("rebaseline requires api and web components")
         if compatibility != "expand":
             raise TestUpdateContractError("rebaseline requires expand migration")
@@ -773,6 +779,7 @@ def _is_high_risk(path: str) -> bool:
         path in _WEB_HIGH_RISK_EXACT
         or path in _MAILER_HIGH_RISK_EXACT
         or path in _INFRA_HIGH_RISK_EXACT
+        or path in _REDIS_RUNTIME_EXACT
         or protected_change_category(path) is not None
     )
 
@@ -798,7 +805,9 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
             components.add("web")
         if _is_high_risk(path):
             high_risk_paths.add(path)
-            if path in _WEB_HIGH_RISK_EXACT:
+            if path in _REDIS_RUNTIME_EXACT:
+                components.add("redis")
+            elif path in _WEB_HIGH_RISK_EXACT:
                 components.add("web")
             elif path in _MAILER_HIGH_RISK_EXACT or path.startswith(
                 ("backend/", "deploy/", "scripts/")
@@ -841,7 +850,7 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
         risk: Literal["none", "web-only", "backend-safe", "high-risk"] = "high-risk"
     elif frozen_components == {"web"}:
         risk = "web-only"
-    elif "api" in frozen_components:
+    elif "api" in frozen_components or "redis" in frozen_components:
         risk = "backend-safe"
     else:
         risk = "none"
@@ -872,6 +881,10 @@ def classify_public_cutover_paths(paths: Iterable[str]) -> ChangedScope:
 
     regular = classify_changed_paths(regular_paths)
     components = set(regular.components)
+    if "redis" in components:
+        # 公开切转自建 Redis 镜像；日常快速更新才把 redis 当作独立组件。
+        components.discard("redis")
+        components.add("api")
     if cutover_high_risk_paths:
         components.add("api")
     high_risk_paths = set(regular.high_risk_paths)

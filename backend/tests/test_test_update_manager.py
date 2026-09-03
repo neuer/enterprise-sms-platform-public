@@ -1353,6 +1353,47 @@ def test_replace_backend_renders_trusted_proxy_before_web_up() -> None:
     ]
 
 
+def test_replace_backend_activates_redis_component_and_recreates_domains() -> None:
+    events: list[object] = []
+
+    class Host:
+        def _run(self, *arguments: str) -> str:
+            events.append(arguments)
+            return ""
+
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.request = SimpleNamespace(  # type: ignore[assignment]
+        components=frozenset({"redis"}),
+        public_cutover=None,
+    )
+    operations.host = Host()  # type: ignore[assignment]
+    operations._prepare_rollback_images = lambda components: events.append(  # type: ignore[method-assign]
+        ("rollback", components)
+    )
+    operations._activate_source_and_image = lambda component: events.append(  # type: ignore[method-assign]
+        ("activate", component)
+    )
+
+    operations.replace_backend_services(BACKEND_SERVICES)
+
+    assert events == [
+        ("rollback", frozenset({"redis"})),
+        ("activate", "redis"),
+        (
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            "--wait",
+            "--wait-timeout",
+            "120",
+            "redis",
+            "redis-auth",
+            "redis-control",
+        ),
+    ]
+
+
 def test_render_trusted_proxy_conf_uses_dotenv_values(tmp_path: Path) -> None:
     calls: list[list[str]] = []
 

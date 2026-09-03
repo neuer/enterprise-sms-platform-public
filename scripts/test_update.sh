@@ -516,6 +516,10 @@ WEB_CHANGED="$(
   python3 -c 'import json,sys; print(int("web" in json.loads(sys.argv[1])["components"]))' \
     "$SCOPE_JSON"
 )"
+REDIS_CHANGED="$(
+  python3 -c 'import json,sys; print(int("redis" in json.loads(sys.argv[1])["components"]))' \
+    "$SCOPE_JSON"
+)"
 CI_REQUIRED=0
 if [[ "$RISK" == high-risk || "$MIGRATION_CHANGED" == 1 ]]; then
   CI_REQUIRED=1
@@ -570,7 +574,7 @@ assert all(character in "0123456789abcdef" for character in value["source_commit
     exit 1
   fi
 fi
-if [[ "$API_CHANGED" == 1 ]]; then
+if [[ "$API_CHANGED" == 1 || "$REDIS_CHANGED" == 1 ]]; then
   UPDATE_KIND="$RISK"
   if [[ "$RISK" != "high-risk" ]]; then
     UPDATE_KIND="backend-safe"
@@ -624,6 +628,7 @@ fi
 PLANNED_COMPONENTS=()
 [[ "$API_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(api)
 [[ "$WEB_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(web)
+[[ "$REDIS_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(redis)
 echo "test-update: action=$COMMAND risk=$RISK components=${PLANNED_COMPONENTS[*]} migration=$MIGRATION_CHANGED compatibility=$MIGRATION_COMPATIBILITY ci_required=$CI_REQUIRED high_risk_paths=$HIGH_RISK_PATHS"
 if [[ "$COMMAND" == plan ]]; then
   exit 0
@@ -654,6 +659,18 @@ if [[ "$WEB_CHANGED" == 1 ]]; then
   docker save --output "$BUNDLE/web.tar" "$WEB_REF"
   COMPONENTS+=(web)
 fi
+if [[ "$REDIS_CHANGED" == 1 ]]; then
+  REDIS_REF="sms-platform-test-redis:$TARGET_COMMIT"
+  docker buildx build --platform linux/amd64 --load \
+    --build-arg "APP_VERSION=$APP_VERSION" \
+    --build-arg "GIT_SHA=$TARGET_COMMIT" \
+    --build-arg "SCHEMA_REVISION=$MIGRATION_TARGET" \
+    -f "$WORKTREE/deploy/redis.Dockerfile" -t "$REDIS_REF" "$WORKTREE"
+  REDIS_ID="$(docker image inspect --format '{{.Id}}' "$REDIS_REF")"
+  [[ "$REDIS_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+  docker save --output "$BUNDLE/redis.tar" "$REDIS_REF"
+  COMPONENTS+=(redis)
+fi
 chmod 0600 "$BUNDLE"/*.tar
 
 UPDATE_ID="test-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_COMMIT:0:12}"
@@ -665,12 +682,16 @@ API_DIGEST_VALUE=""
 WEB_REF_VALUE="${WEB_REF:-}"
 WEB_ID_VALUE="${WEB_ID:-}"
 WEB_DIGEST_VALUE=""
+REDIS_REF_VALUE="${REDIS_REF:-}"
+REDIS_ID_VALUE="${REDIS_ID:-}"
+REDIS_DIGEST_VALUE=""
 [[ "$API_CHANGED" == 0 ]] || API_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/api.tar" | awk '{print $1}')"
 [[ "$WEB_CHANGED" == 0 ]] || WEB_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/web.tar" | awk '{print $1}')"
+[[ "$REDIS_CHANGED" == 0 ]] || REDIS_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/redis.tar" | awk '{print $1}')"
 python3 -c 'import json,sys
 out,update_id,base,commit,ref,environment_mode,operation,source,target,compat,*values=sys.argv[1:]
 images={}; components=[]
-for component,(image_ref,image_id,digest) in zip(("api","web"),(values[:3],values[3:])):
+for component,(image_ref,image_id,digest) in zip(("api","web","redis"),(values[0:3],values[3:6],values[6:9])):
  if image_ref:
   components.append(component); images[component]={"ref":image_ref,"id":image_id,"archive_file":component+".tar","archive_sha256":digest}
 payload={"schema_version":1,"update_id":update_id,"base_commit":base,"commit":commit,"source_ref":ref,"environment_mode":environment_mode,"operation":operation,"components":components,"images":images,"migration":{"from":source,"target":target,"compatibility":compat}}
@@ -679,7 +700,8 @@ path=__import__("pathlib").Path(out); path.write_text(json.dumps(payload,separat
   "$ENVIRONMENT_MODE" "$REQUEST_OPERATION" \
   "$MIGRATION_FROM" "$MIGRATION_TARGET" "$MIGRATION_COMPATIBILITY" \
   "$API_REF_VALUE" "$API_ID_VALUE" "$API_DIGEST_VALUE" \
-  "$WEB_REF_VALUE" "$WEB_ID_VALUE" "$WEB_DIGEST_VALUE"
+  "$WEB_REF_VALUE" "$WEB_ID_VALUE" "$WEB_DIGEST_VALUE" \
+  "$REDIS_REF_VALUE" "$REDIS_ID_VALUE" "$REDIS_DIGEST_VALUE"
 chmod 0600 "$BUNDLE/request.json"
 
 if [[ "$COMMAND" == build ]]; then
@@ -715,6 +737,7 @@ RSYNC_SSH="ssh -p $PORT -o BatchMode=yes -o StrictHostKeyChecking=yes"
 UPLOAD_ARTIFACTS=()
 [[ "$API_CHANGED" == 0 ]] || UPLOAD_ARTIFACTS+=("$BUNDLE/api.tar")
 [[ "$WEB_CHANGED" == 0 ]] || UPLOAD_ARTIFACTS+=("$BUNDLE/web.tar")
+[[ "$REDIS_CHANGED" == 0 ]] || UPLOAD_ARTIFACTS+=("$BUNDLE/redis.tar")
 # request.json 最后发布，确保固定 incoming 永远不会先暴露不完整请求。
 UPLOAD_ARTIFACTS+=("$BUNDLE/request.json")
 
