@@ -176,9 +176,11 @@ def test_driver_binds_both_images_to_target_commit_and_schema_labels() -> None:
     source = DRIVER.read_text(encoding="utf-8")
 
     assert 'APP_VERSION="$(tr -d \'\\n\' <"$WORKTREE/VERSION")"' in source
-    assert source.count('--build-arg "APP_VERSION=$APP_VERSION"') == 2
-    assert source.count('--build-arg "GIT_SHA=$TARGET_COMMIT"') == 2
-    assert source.count('--build-arg "SCHEMA_REVISION=$MIGRATION_TARGET"') == 2
+    assert source.count('--build-arg "APP_VERSION=$APP_VERSION"') == 3
+    assert source.count('--build-arg "GIT_SHA=$TARGET_COMMIT"') == 3
+    assert source.count('--build-arg "SCHEMA_REVISION=$MIGRATION_TARGET"') == 3
+    assert "sms-platform-test-redis:$TARGET_COMMIT" in source
+    assert "deploy/redis.Dockerfile" in source
 
 
 def test_driver_does_not_repeat_backend_or_frontend_ci_commands() -> None:

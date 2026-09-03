@@ -592,7 +592,6 @@ def test_ci_and_test_update_share_frontend_session_security_paths(path: str) -> 
     "path",
     [
         "deploy/postgres.Dockerfile",
-        "deploy/redis.Dockerfile",
         "deploy/initdb/01-create-app-role.sh",
         "deploy/systemd/sms-platform.service",
         "deploy/unknown-runtime.conf",
@@ -635,18 +634,29 @@ def test_classifies_nginx_security_headers_as_high_risk_web(
 
 
 @pytest.mark.parametrize(
-    "classifier",
-    [classify_changed_paths, classify_public_cutover_paths],
+    "path",
+    [
+        "deploy/redis.Dockerfile",
+        "deploy/redis-domain-entrypoint.sh",
+        "deploy/redis-domain-healthcheck.sh",
+    ],
 )
-def test_classifies_redis_domain_runtime_as_high_risk_api(
-    classifier: Any,
-) -> None:
+def test_classifies_redis_runtime_as_high_risk_redis(path: str) -> None:
+    change = classify_changed_paths([path])
+
+    assert change.components == frozenset({"redis"})
+    assert change.runtime_changed is True
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == (path,)
+
+
+def test_public_cutover_keeps_redis_runtime_on_api_not_redis_component() -> None:
     paths = [
         "deploy/redis-domain-entrypoint.sh",
         "deploy/redis-domain-healthcheck.sh",
     ]
 
-    change = classifier(paths)
+    change = classify_public_cutover_paths(paths)
 
     assert change.components == frozenset({"api"})
     assert change.runtime_changed is True

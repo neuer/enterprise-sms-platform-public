@@ -72,7 +72,12 @@ _PUBLIC_CUTOVER_STATE_FIELDS = frozenset(
     }
 )
 _REDIS_IMAGE_ENV_KEY = "SMS_REDIS_IMAGE"
-_IMAGE_ENV_KEYS = {"api": "SMS_API_IMAGE", "web": "SMS_WEB_IMAGE"}
+_IMAGE_ENV_KEYS = {
+    "api": "SMS_API_IMAGE",
+    "web": "SMS_WEB_IMAGE",
+    "redis": _REDIS_IMAGE_ENV_KEY,
+}
+_REDIS_SERVICES = ("redis", "redis-auth", "redis-control")
 _ACTIVATABLE_IMAGE_ENV_KEYS = frozenset(
     {*_IMAGE_ENV_KEYS.values(), _REDIS_IMAGE_ENV_KEY}
 )
@@ -997,7 +1002,7 @@ class TestUpdateManager:
             raise TestUpdateManagerError("update has no supported runtime scope")
         effective_risk = (
             "backend-safe"
-            if "api" in scope.components
+            if "api" in scope.components or "redis" in scope.components
             else "web-only"
         )
 
@@ -2237,19 +2242,28 @@ class HostTestUpdateOperations:
         return self.current_migration_head()
 
     def replace_backend_services(self, services: tuple[str, ...]) -> None:
-        if services != BACKEND_SERVICES or "mock-vendor" in services:
+        if "mock-vendor" in services:
+            raise TestUpdateManagerError("backend service plan is invalid")
+        has_api = "api" in self.request.components
+        has_redis = "redis" in self.request.components
+        if has_api and services != BACKEND_SERVICES:
+            raise TestUpdateManagerError("backend service plan is invalid")
+        if not has_api and not has_redis:
             raise TestUpdateManagerError("backend service plan is invalid")
         self._prepare_rollback_images(self.request.components)
-        self._activate_source_and_image("api")
-        if self.request.public_cutover is not None:
-            self.host.activate_public_cutover_redis()
-        self.host._run(
-            "up",
-            "-d",
-            "--no-deps",
-            "--force-recreate",
-            *services,
-        )
+        if has_api:
+            self._activate_source_and_image("api")
+            if self.request.public_cutover is not None:
+                self.host.activate_public_cutover_redis()
+            self.host._run(
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                *services,
+            )
+        if has_redis:
+            self._replace_redis_services()
         if "web" in self.request.components:
             self._activate_source_and_image("web")
             self._render_trusted_proxy_conf()
@@ -2263,6 +2277,19 @@ class HostTestUpdateOperations:
                 "120",
                 "web",
             )
+
+    def _replace_redis_services(self) -> None:
+        self._activate_source_and_image("redis")
+        self.host._run(
+            "up",
+            "-d",
+            "--no-deps",
+            "--force-recreate",
+            "--wait",
+            "--wait-timeout",
+            "120",
+            *_REDIS_SERVICES,
+        )
 
     def replace_web(self) -> None:
         self._prepare_rollback_images(frozenset({"web"}))
@@ -2381,13 +2408,25 @@ class HostTestUpdateOperations:
                 expected_uid=self.expected_uid,
             )
         if kind == "backend-safe":
-            self.host._run(
-                "up",
-                "-d",
-                "--no-deps",
-                "--force-recreate",
-                *BACKEND_SERVICES,
-            )
+            if "api" in components:
+                self.host._run(
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--force-recreate",
+                    *BACKEND_SERVICES,
+                )
+            if "redis" in components:
+                self.host._run(
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--force-recreate",
+                    "--wait",
+                    "--wait-timeout",
+                    "120",
+                    *_REDIS_SERVICES,
+                )
             if "web" in components:
                 self.host._run(
                     "up",
@@ -2826,6 +2865,10 @@ class HostTestUpdateOperations:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if not set(BACKEND_SERVICES).issubset(running):
             raise TestUpdateManagerError("backend services are not all running")
+        if "redis" in self.request.components and not set(_REDIS_SERVICES).issubset(
+            running
+        ):
+            raise TestUpdateManagerError("redis services are not all running")
         if "web" in self.request.components and "web" not in running:
             raise TestUpdateManagerError("selected web service is not running")
         if self.current_migration_head() != self.request.migration_target:
@@ -2836,29 +2879,31 @@ class HostTestUpdateOperations:
 
         for component in sorted(self.request.components):
             image = self.request.images[component]
-            container_id = self.host._run("ps", "-q", component)
-            if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
-                raise TestUpdateManagerError(
-                    "rebaseline running service is unavailable"
+            names = _REDIS_SERVICES if component == "redis" else (component,)
+            for service in names:
+                container_id = self.host._run("ps", "-q", service)
+                if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
+                    raise TestUpdateManagerError(
+                        "rebaseline running service is unavailable"
+                    )
+                observed = self._command(
+                    "docker",
+                    "inspect",
+                    "--format",
+                    (
+                        "{{.Image}}|"
+                        '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
+                        '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
+                    ),
+                    container_id,
                 )
-            observed = self._command(
-                "docker",
-                "inspect",
-                "--format",
-                (
-                    "{{.Image}}|"
-                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
-                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
-                ),
-                container_id,
-            )
-            if observed != (
-                f"{image.image_id}|{self.request.commit}|"
-                f"{self.request.migration_target}"
-            ):
-                raise TestUpdateManagerError(
-                    "rebaseline running image identity is invalid"
-                )
+                if observed != (
+                    f"{image.image_id}|{self.request.commit}|"
+                    f"{self.request.migration_target}"
+                ):
+                    raise TestUpdateManagerError(
+                        "rebaseline running image identity is invalid"
+                    )
 
     def restore_owned_update_pauses(self, update_id: str) -> None:
         if update_id != self.request.update_id:
@@ -2915,7 +2960,9 @@ def _require_cli_contract(args: argparse.Namespace) -> None:
 
 
 def _kind(request: TestUpdateRequest) -> str:
-    return "backend-safe" if "api" in request.components else "web-only"
+    if "api" in request.components or "redis" in request.components:
+        return "backend-safe"
+    return "web-only"
 
 
 def main(argv: list[str] | None = None) -> int:
