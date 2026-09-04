@@ -2,9 +2,23 @@
 
 ## 生产模式与目标拓扑
 
+**唯一可以称为生产 HA 的拓扑是 `REDIS_HA_MODE=managed`**：三个独立托管高可用端点
+（Sentinel/托管主从/等价受控代理），各自具备选主、防脑裂和客户端重发现合同。
+`isolated-standalone` 只是经风险批准的单 VM 首发形态，**不得描述为高可用**，也不得写成
+`managed`。`standalone` 仅限 development/test。
+
 生产必须显式设置 `REDIS_HA_MODE=managed` 或
-`REDIS_HA_MODE=isolated-standalone`；`standalone` 仅限 development/test。两种生产模式都要求
+`REDIS_HA_MODE=isolated-standalone`。两种生产模式都要求
 broker/auth/control 使用三个不同 host:port 端点、三个独立 ACL 密码和 TLS 主机名校验。
+`sms-compose` 与 `deploy/scripts/redis_ha_preflight.py` 会拒绝把 standalone 标成生产 HA。
+
+### 关键控制事实 fencing
+
+幂等 Claim、queue pause、token bucket 与 admission epoch 必须带单调 generation。
+旧主复活或复制回退不得覆盖更高 generation：token bucket 在 `last_ms` 回退时清零令牌；
+pause 写入递增 `ratelimit:queue:paused:generation`；Claim 值为
+`token:fingerprint:generation`，续租/释放按 token 前缀匹配。usage 投影丢失只能从
+PostgreSQL 重建，缺失不得视为零。
 
 `managed` 只用于三个独立托管高可用端点。禁止把三个 DNS 名解析到同一 Redis 集群；变更
 复核需保存服务端实例/复制组 ID 的无敏感摘要。

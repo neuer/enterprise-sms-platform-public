@@ -10,6 +10,7 @@ from typing import Protocol
 
 from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
+from app.core.auth.observability import auth_observability_snapshot
 from app.core.runtime_telemetry import (
     RuntimeTelemetrySnapshot,
     runtime_telemetry_snapshot,
@@ -426,5 +427,69 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         redis_connections.labels(state="in_use").set(
             snapshot.runtime.resources.redis_in_use
         )
+
+    auth = auth_observability_snapshot()
+    created = Gauge(
+        "auth_transition_created_total",
+        "Auth lock/ban transitions that attempted persistent audit.",
+        ("action",),
+        registry=registry,
+    )
+    success = Gauge(
+        "auth_transition_audit_success_total",
+        "Auth lock/ban transitions whose audit insert succeeded or deduped.",
+        ("action",),
+        registry=registry,
+    )
+    failure = Gauge(
+        "auth_transition_audit_failure_total",
+        "Auth lock/ban transitions whose audit insert failed closed.",
+        ("action",),
+        registry=registry,
+    )
+    for action, value in auth.transition_created:
+        created.labels(action=action).set(value)
+    for action, value in auth.transition_success:
+        success.labels(action=action).set(value)
+    for action, value in auth.transition_failure:
+        failure.labels(action=action).set(value)
+    admit = Gauge(
+        "auth_admit_total",
+        "Login admit outcomes on the Redis-first path.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.admit:
+        admit.labels(outcome=outcome).set(value)
+    policy_hit = Gauge(
+        "auth_policy_cache_hit_total",
+        "Auth guard policy cache hits.",
+        registry=registry,
+    )
+    policy_hit.set(auth.policy_cache_hit)
+    policy_miss = Gauge(
+        "auth_policy_cache_miss_total",
+        "Auth guard policy cache misses.",
+        registry=registry,
+    )
+    policy_miss.set(auth.policy_cache_miss)
+    policy_failure = Gauge(
+        "auth_policy_load_failure_total",
+        "Auth guard policy load failures.",
+        registry=registry,
+    )
+    policy_failure.set(auth.policy_load_failure)
+    policy_age = Gauge(
+        "auth_policy_snapshot_age_seconds",
+        "Age of the last usable auth guard policy snapshot.",
+        registry=registry,
+    )
+    policy_age.set(auth.policy_snapshot_age_seconds)
+    guard_queries = Gauge(
+        "auth_guard_db_queries_total",
+        "PostgreSQL queries issued by the auth guard policy loader.",
+        registry=registry,
+    )
+    guard_queries.set(auth.guard_db_queries)
 
     return generate_latest(registry)

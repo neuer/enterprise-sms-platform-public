@@ -91,7 +91,7 @@ class UserResponse(StrictModel):
 
 class LoginResponse(StrictModel):
     token: str
-    expires_in: Literal[900]
+    expires_in: int = Field(ge=1, le=900)
     refresh_expires_in: int = Field(ge=1, le=604800)
     user: UserResponse
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -791,18 +792,21 @@ def test_auth_redis_acl_allows_only_the_login_guard_lua_primitives() -> None:
 
 
 def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
+    from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
+
     entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
         encoding="utf-8"
     )
     control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
-
-    for command in (
-        "+zadd",
-        "+zcard",
-        "+zrange",
-        "+zremrangebyscore",
-        "+eval",
-    ):
+    required = {
+        f"+{name.lower()}"
+        for name in re.findall(
+            r"redis\.call\('([A-Z]+)'",
+            SLIDING_WINDOW_LUA + WEIGHTED_WINDOW_LUA,
+        )
+    }
+    assert "+hincrby" in required
+    for command in sorted(required | {"+eval"}):
         assert command in control_block
     for forbidden in ("+keys", "+flushall", "+config"):
         assert forbidden not in control_block

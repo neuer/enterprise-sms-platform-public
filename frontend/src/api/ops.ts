@@ -48,7 +48,7 @@ export interface UncertainItem {
   status: "uncertain" | "unknown_terminal"
   resolution_id: number | null
   resolution_action: UncertainResolutionAction | string | null
-  resolution_state: "proposed" | "confirmed" | null
+  resolution_state: string | null
   proposer_account_id: number | null
 }
 export interface UnmatchedItem { id: number; vendor_task_id: string | null; custom_id: string | null; phone_mask: string; report_status: number | null; report_desc: string | null; report_time: string | null; created_at: string }

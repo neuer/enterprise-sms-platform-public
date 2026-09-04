@@ -216,6 +216,22 @@ function resolutionLabel(action: string | null | undefined): string {
   return RESOLUTION_ACTIONS.find((item) => item.action === action)?.label ?? action ?? "—"
 }
 
+function resolutionStateLabel(state: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    proposed: "待确认",
+    approved: "已批准",
+    effect_pending: "待生效",
+    applying: "生效中",
+    effect_applied: "已生效",
+    closed: "已关闭",
+    approval_rejected: "已驳回",
+    retryable_effect_error: "生效失败可重试",
+    manual_intervention_required: "需人工介入",
+    cancelled_before_effect: "已取消",
+  }
+  return (state && labels[state]) || state || "—"
+}
+
 let loadToken = 0
 
 async function load(tab: TabName = activeTab.value): Promise<void> {
@@ -847,7 +863,7 @@ onBeforeUnmount(() => {
   >
     <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>禁止自动重发；保守终态后双人确认处置，重发只建新批次</small></div></header>
     <section class="ops-results">
-      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column><el-table-column label="customId" min-width="160"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="110"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="处置" min-width="220"><template #default="{ row }"><template v-if="row.status === 'unknown_terminal' && !row.resolution_id"><el-button v-for="option in RESOLUTION_ACTIONS" :key="option.action" link type="primary" :data-testid="`uncertain-propose-${option.action}`" @click="proposeResolution(row, option.action)">{{ option.label }}</el-button></template><template v-else-if="row.resolution_state === 'proposed'"><span>待确认 · {{ resolutionLabel(row.resolution_action) }}</span><el-button v-if="session.accountId !== row.proposer_account_id" link type="danger" data-testid="uncertain-confirm" @click="confirmResolution(row)">确认处置</el-button></template><span v-else-if="row.resolution_state === 'confirmed'">已确认 · {{ resolutionLabel(row.resolution_action) }}</span><span v-else>禁止自动重发</span></template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
+      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column><el-table-column label="customId" min-width="160"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="110"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="处置" min-width="220"><template #default="{ row }"><template v-if="row.status === 'unknown_terminal' && !row.resolution_id"><el-button v-for="option in RESOLUTION_ACTIONS" :key="option.action" link type="primary" :data-testid="`uncertain-propose-${option.action}`" @click="proposeResolution(row, option.action)">{{ option.label }}</el-button></template><template v-else-if="row.resolution_state === 'proposed'"><span>待确认 · {{ resolutionLabel(row.resolution_action) }}</span><el-button v-if="session.accountId !== row.proposer_account_id" link type="danger" data-testid="uncertain-confirm" @click="confirmResolution(row)">确认处置</el-button></template><span v-else-if="row.resolution_state">{{ resolutionStateLabel(row.resolution_state) }} · {{ resolutionLabel(row.resolution_action) }}</span><span v-else>禁止自动重发</span></template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
       <div class="ops-mobile-list"><article v-for="item in uncertain" :key="item.chunk_id"><header><strong>{{ item.batch_no }}</strong><StatusTag :status="item.status" /></header><code>{{ item.custom_id }}</code><p>{{ item.phone_count }} 个号码 · {{ duration(item.age_seconds) }}</p><template v-if="item.status === 'unknown_terminal' && !item.resolution_id"><el-button v-for="option in RESOLUTION_ACTIONS" :key="option.action" link type="primary" @click="proposeResolution(item, option.action)">{{ option.label }}</el-button></template><el-button v-else-if="item.resolution_state === 'proposed' && session.accountId !== item.proposer_account_id" link type="danger" @click="confirmResolution(item)">确认处置</el-button></article><EmptyState v-if="!uncertain.length" :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></div>
       <footer class="ops-pagination"><span>共 {{ uncertainTotal }} 项 · 每页 20</span><el-pagination v-model:current-page="uncertainPage" data-testid="ops-uncertain-pagination" :page-size="20" :total="uncertainTotal" layout="prev, pager, next" @current-change="load('uncertain')" /></footer>
     </section>

@@ -48,6 +48,10 @@ ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
 OPERATOR = SecurityPrincipal(2, 20, "operator01", "平台部", "operator")
 
 
+def _claim_owned(current: str | None, token: str) -> bool:
+    return current == token or (current or "").startswith(f"{token}:")
+
+
 def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     sql = IDEMPOTENCY_LIVE_SQL.casefold()
     assert "expires_at > now()" in sql
@@ -84,6 +88,7 @@ class FakeIdempotency:
         self.remembered: list[tuple[IdempotencyScope, str, str]] = []
         self.released: list[str] = []
         self.lookup_calls: list[tuple[IdempotencyScope, str]] = []
+        self.inspect_view: Any = None
 
     async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         self.lookup_calls.append((scope, biz_id))
@@ -114,7 +119,10 @@ class FakeIdempotency:
     ) -> None:
         self.remembered.append((scope, biz_id, batch_no))
 
-    async def claim(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+    async def inspect(self, scope: IdempotencyScope, biz_id: str) -> Any:
+        return self.inspect_view
+
+    async def claim(self, scope: IdempotencyScope, biz_id: str, **_kwargs: object) -> str | None:
         return "claim-token"
 
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
@@ -901,6 +909,107 @@ async def test_new_send_is_rejected_by_admission_before_request_limiter() -> Non
 
 
 @pytest.mark.asyncio
+async def test_active_claim_with_different_fingerprint_conflicts_before_admission() -> None:
+    from app.services.idempotency import IdempotencyClaimView
+
+    class ClosedGuard:
+        async def authorize(self, **_values: object) -> None:
+            raise AssertionError("指纹冲突不得走新发送准入")
+
+    idem = FakeIdempotency()
+    idem.inspect_view = IdempotencyClaimView("owner", "other-fingerprint", 1)
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idem,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        admission_guard=ClosedGuard(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(IdempotencyConflict):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="same-key"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_expired_unlimited_quota_is_rejected_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.pipeline import QuotaExemptionExpired
+
+    monkeypatch.setattr(
+        "app.services.pipeline.get_settings",
+        lambda: SimpleNamespace(environment="production"),
+    )
+    store = FakeStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(QuotaExemptionExpired):
+        await pipeline.accept(
+            ApiAppContext(
+                1,
+                "app",
+                "研发部",
+                frozenset({"notice"}),
+                daily_quota=0,
+                unlimited_quota_exempt_until=datetime.now(UTC) - timedelta(seconds=1),
+            ),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="expired-1"),
+        )
+    assert store.commands == []
+
+
+def test_web_channel_skips_expired_unlimited_quota_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setattr(
+        "app.services.pipeline.get_settings",
+        lambda: SimpleNamespace(environment="production"),
+    )
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    pipeline._enforce_quota_exemption(
+        ApiAppContext(
+            1,
+            "web-resend",
+            "web",
+            frozenset({"notice"}),
+            daily_quota=0,
+            unlimited_quota_exempt_until=datetime.now(UTC) - timedelta(seconds=1),
+        ),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="通知",
+            channel="web",
+            biz_id="web-expired-1",
+        ),
+    )
+
+
+@pytest.mark.asyncio
 async def test_unknown_biz_id_still_hits_send_limiter() -> None:
     class SendFullLimiter:
         async def check(self, **_values: object) -> None:
@@ -1259,13 +1368,13 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         async def eval(self, script: str, _keys: int, key: str, token: str, *args: Any) -> int:
             self._expire(key)
             if script == CLAIM_RENEW_LUA:
-                if self.values.get(key) != token:
+                if not _claim_owned(self.values.get(key), token):
                     return 0
                 self.renewals += 1
                 self.expires_at[key] = self.now + float(args[0])
                 return 1
             assert script == CLAIM_RELEASE_LUA
-            if self.values.get(key) != token:
+            if not _claim_owned(self.values.get(key), token):
                 return 0
             self.values.pop(key, None)
             self.expires_at.pop(key, None)
@@ -1405,9 +1514,9 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
             *_args: Any,
         ) -> int:
             if _script == CLAIM_RENEW_LUA:
-                return int(self.values.get(key) == token)
+                return int(_claim_owned(self.values.get(key), token))
             assert _script == CLAIM_RELEASE_LUA
-            if self.values.get(key) != token:
+            if not _claim_owned(self.values.get(key), token):
                 return 0
             self.values.pop(key, None)
             return 1

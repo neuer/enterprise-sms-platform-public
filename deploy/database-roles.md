@@ -11,7 +11,7 @@ NOREPLICATION`：
 
 | 角色 | 调用方 | 允许范围 |
 |---|---|---|
-| `sms_auth` | API 认证、账号与 Provider 仓储 | 账号、身份、Provider、凭据、角色映射；只读应用 Key |
+| `sms_auth` | API 认证、账号与 Provider 仓储 | 账号、身份、Provider、凭据、角色映射、锁定/封禁审计；只读应用 Key |
 | `sms_accept` | API 消息受理与管理接口 | 批次、导入、审批、模板、签名、策略和受控联调受理 |
 | `sms_send` | realtime/report/bulk worker | 分片、消息、厂商事实、用量账本、发送恢复、统计、异步导入、生命周期清理，以及签名/模板厂商绑定结果更新 |
 | `sms_callback` | callback worker 与回调管理接口 | 回调事件、任务、租约、相关 Outbox 和告警 |
@@ -75,6 +75,11 @@ Compose 启动顺序固定为：
 
 应用 DSN 使用 SQLAlchemy `URL.create`。固定用户名与固定 secret 文件映射由
 `Settings.database_url_for()` 提供，调用方不得传入任意用户名或密码路径。
+
+API 容器的默认 `DB_RUNTIME_ROLE=accept`，但认证子系统必须按子职责显式使用
+`database_url_for("auth")`：锁定/IP 封禁审计与认证阈值快照走 `sms_auth`，
+不得把这些写入扩大到 `sms_accept`。生产缺失 `db_auth_password` 时启动/readyz
+失败关闭。
 
 ## 验证与回滚
 

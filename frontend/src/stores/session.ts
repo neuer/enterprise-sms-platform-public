@@ -234,7 +234,15 @@ export const useSessionStore = defineStore("session", {
       if (!this.token || this.providerCode !== "local") {
         throw new Error("仅已登录的本地账号可修改密码")
       }
-      await passwordChangeRequest(this.token, currentPassword, newPassword)
+      try {
+        await passwordChangeRequest(this.token, currentPassword, newPassword)
+      } catch (error) {
+        if (error instanceof AuthApiError && error.code === "AUTH_CONTEXT_CHANGED") {
+          this.clearAllTabs()
+          window.dispatchEvent(new Event("sms:unauthorized"))
+        }
+        throw error
+      }
       this.clear()
     },
     async logout() {

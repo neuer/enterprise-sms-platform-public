@@ -27,7 +27,13 @@ class IdempotencyScope:
     id: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"app", "account", "resend", "web-legacy"}:
+        if self.kind not in {
+            "app",
+            "account",
+            "resend",
+            "web-legacy",
+            "uncertain-resend",
+        }:
             raise ValueError("idempotency scope kind invalid")
         if not self.id or len(self.id) > 64:
             raise ValueError("idempotency scope id invalid")
@@ -64,15 +70,27 @@ class IdempotencyFingerprint:
 class IdempotencyCoordinationTimeout(RuntimeError):
     """等待中的幂等 owner 持续存活，协调窗口已耗尽。"""
 
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyClaimView:
+    token: str
+    fingerprint: str
+    generation: int
+
+
 CLAIM_RELEASE_LUA = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+if current == ARGV[1] or string.sub(current, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
   return redis.call('DEL', KEYS[1])
 end
 return 0
 """
 
 CLAIM_RENEW_LUA = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+if current == ARGV[1] or string.sub(current, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
   return redis.call('EXPIRE', KEYS[1], ARGV[2])
 end
 return 0
@@ -208,12 +226,33 @@ class IdempotencyCoordinator:
             ex=IDEMPOTENCY_TTL_S,
         )
 
-    async def claim(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+    async def inspect(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> IdempotencyClaimView | None:
+        try:
+            raw = await self.redis.get(self.claim_key(scope, biz_id))
+        except Exception as exc:
+            raise ControlPlaneUnavailable("幂等控制面不可用") from exc
+        if not raw:
+            return None
+        parts = str(raw).split(":", 2)
+        if len(parts) < 3:
+            return IdempotencyClaimView(str(raw), "", 1)
+        return IdempotencyClaimView(parts[0], parts[1], int(parts[2]))
+
+    async def claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        fingerprint: str = "",
+    ) -> str | None:
         token = uuid4().hex
+        payload = f"{token}:{fingerprint}:1" if fingerprint else token
         try:
             acquired = await self.redis.set(
                 self.claim_key(scope, biz_id),
-                token,
+                payload,
                 nx=True,
                 ex=self.claim_ttl_s,
             )

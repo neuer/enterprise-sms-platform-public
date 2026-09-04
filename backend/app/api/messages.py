@@ -41,6 +41,7 @@ from app.services.pipeline import (
     InvalidContent,
     MarketApiBulkForbidden,
     PipelineConfig,
+    QuotaExemptionExpired,
     SendPipeline,
     SendRequest,
     SensitiveWord,
@@ -159,8 +160,12 @@ class SendResponseModel(BaseModel):
         "scheduled",
         "sending",
         "completed",
+        "completed_unknown",
         "cancelled",
         "balance_blocked",
+        "pending_approval",
+        "rejected",
+        "expired",
     ]
     deferred_reason: Literal["market_window"] | None
     scheduled_at: datetime | None
@@ -395,6 +400,8 @@ def _error(error: Exception) -> ApiError:
         return ApiError(403, "CATEGORY_NOT_ALLOWED", str(error), None)
     if isinstance(error, MarketApiBulkForbidden):
         return ApiError(403, "FORBIDDEN", str(error), None)
+    if isinstance(error, QuotaExemptionExpired):
+        return ApiError(403, "FORBIDDEN", str(error), None)
     if isinstance(error, ConsentRequired):
         return ApiError(422, "CONSENT_REQUIRED", str(error), None)
     if isinstance(error, TemplateParamMismatch):
@@ -498,6 +505,7 @@ async def send_message(
         InFlightQueryUnavailable,
         MarketApiBulkForbidden,
         QuotaExceeded,
+        QuotaExemptionExpired,
         SensitiveWord,
         SendAdmissionRejected,
         TemplateParamMismatch,
@@ -635,6 +643,7 @@ async def send_vendor_test_api_uat(
         InFlightQueryUnavailable,
         MarketApiBulkForbidden,
         QuotaExceeded,
+        QuotaExemptionExpired,
         SensitiveWord,
         SendAdmissionRejected,
         TemplateParamMismatch,

@@ -35,6 +35,7 @@ JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
 REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 DEFAULT_AD_SESSION_MAX_AGE_MINUTES = 480
+AD_SESSION_POLICY_KEY = "auth:ad:session-policy"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -97,6 +98,9 @@ class JwtClaims:
     security_version: int
     jti: str
     session_id: str
+    auth_time: float | None
+    reauth_deadline: float | None
+    auth_policy_version: int | None
 
     def __init__(
         self,
@@ -110,6 +114,9 @@ class JwtClaims:
         security_version: int = 1,
         jti: str = "",
         session_id: str = "",
+        auth_time: float | None = None,
+        reauth_deadline: float | None = None,
+        auth_policy_version: int | None = None,
     ) -> None:
         # 旧的四位置参数仅保留给尚未迁移的 API 权限单测；JwtService 拒绝签发。
         if isinstance(account_id, str):
@@ -132,6 +139,9 @@ class JwtClaims:
         object.__setattr__(self, "security_version", security_version)
         object.__setattr__(self, "jti", jti)
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "auth_time", auth_time)
+        object.__setattr__(self, "reauth_deadline", reauth_deadline)
+        object.__setattr__(self, "auth_policy_version", auth_policy_version)
 
     @property
     def username(self) -> str:
@@ -279,7 +289,7 @@ class JwtService:
     ) -> dict[str, Any]:
         self._require_stable(claims)
         now = self.clock()
-        return {
+        payload: dict[str, Any] = {
             "iss": JWT_ISSUER,
             "aud": JWT_AUDIENCE,
             "sub": str(claims.account_id),
@@ -296,14 +306,31 @@ class JwtService:
             "iat": now.timestamp(),
             "exp": int((now + ttl).timestamp()),
         }
+        if claims.provider_code == "ad":
+            if claims.auth_time is None or claims.reauth_deadline is None:
+                raise ReauthenticationRequired("AD 会话已到期，请重新登录")
+            payload["auth_time"] = float(claims.auth_time)
+            payload["reauth_deadline"] = float(claims.reauth_deadline)
+            if claims.auth_policy_version is not None:
+                payload["auth_policy_version"] = int(claims.auth_policy_version)
+        return payload
+
+    def _access_ttl_for(self, claims: JwtClaims) -> timedelta:
+        if claims.provider_code != "ad" or claims.reauth_deadline is None:
+            return self.ttl
+        remaining = float(claims.reauth_deadline) - self.clock().timestamp()
+        if remaining <= 0:
+            raise ReauthenticationRequired("AD 会话已到期，请重新登录")
+        return min(self.ttl, timedelta(seconds=remaining))
 
     def _encode_access(self, claims: JwtClaims, session_id: str) -> str:
+        selected_ttl = self._access_ttl_for(claims)
         return jwt.encode(
             self._common_payload(
                 claims,
                 token_type=ACCESS_TOKEN_TYPE,
                 session_id=session_id,
-                ttl=self.ttl,
+                ttl=selected_ttl,
             ),
             self._signing_key(),
             algorithm="HS256",
@@ -372,6 +399,23 @@ class JwtService:
         payload["family_exp"] = family_expires_at
         payload["exp"] = family_expires_at
         payload["tab_id"] = tab_id
+        if str(predecessor_payload.get("provider_code")) == "ad":
+            try:
+                payload["auth_time"] = float(
+                    predecessor_payload.get("auth_time", predecessor_payload["iat"])
+                )
+                payload["reauth_deadline"] = float(
+                    predecessor_payload.get(
+                        "reauth_deadline",
+                        payload["auth_time"] + DEFAULT_AD_SESSION_MAX_AGE_MINUTES * 60,
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                raise ReauthenticationRequired("AD 会话已到期，请重新登录") from None
+            if predecessor_payload.get("auth_policy_version") is not None:
+                payload["auth_policy_version"] = int(
+                    predecessor_payload["auth_policy_version"]
+                )
         return (
             jwt.encode(
                 payload,
@@ -412,9 +456,102 @@ class JwtService:
             separators=(",", ":"),
         )
 
+    async def publish_ad_session_policy(self, max_age_minutes: int, version: int = 1) -> None:
+        """发布当前 AD 最大年龄；缩短后既有会话按 auth_time 立即受新上限约束。"""
+
+        if max_age_minutes < 1 or version < 1:
+            raise ValueError("AD session policy is invalid")
+        await self.store.set(
+            AD_SESSION_POLICY_KEY,
+            f"{int(version)}:{int(max_age_minutes)}",
+            ex=30 * 86400,
+        )
+
+    async def _published_ad_max_age_minutes(self) -> int | None:
+        raw = await self.store.get(AD_SESSION_POLICY_KEY)
+        if raw is None:
+            return None
+        try:
+            _version, minutes = str(raw).split(":", 1)
+            parsed = int(minutes)
+        except (TypeError, ValueError):
+            raise SessionStateUnavailable("AD session policy unavailable") from None
+        if parsed < 1:
+            raise SessionStateUnavailable("AD session policy unavailable")
+        return parsed
+
+    async def _bind_ad_deadline(self, claims: JwtClaims) -> JwtClaims:
+        if claims.provider_code != "ad":
+            return claims
+        if claims.auth_time is not None and claims.reauth_deadline is not None:
+            return claims
+        try:
+            max_age = (
+                (await self.runtime_policy_loader()).ad_session_max_age_minutes
+                if self.runtime_policy_loader is not None
+                else DEFAULT_AD_SESSION_MAX_AGE_MINUTES
+            )
+            await self.publish_ad_session_policy(max_age, claims.auth_policy_version or 1)
+        except SessionStateUnavailable:
+            raise
+        except Exception:
+            raise SessionStateUnavailable("AD session policy unavailable") from None
+        auth_time = claims.auth_time or self.clock().timestamp()
+        return JwtClaims(
+            account_id=claims.account_id,
+            identity_id=claims.identity_id,
+            provider_code=claims.provider_code,
+            login_name=claims.login_name,
+            display_name=claims.display_name,
+            dept=claims.dept,
+            role=claims.role,
+            security_version=claims.security_version,
+            jti=claims.jti,
+            session_id=claims.session_id,
+            auth_time=auth_time,
+            reauth_deadline=auth_time + max_age * 60,
+            auth_policy_version=1,
+        )
+
+    async def _enforce_ad_access_deadline(
+        self,
+        claims: JwtClaims,
+        payload: dict[str, Any],
+    ) -> None:
+        if claims.provider_code != "ad":
+            return
+        if claims.auth_time is None or claims.reauth_deadline is None:
+            raise ReauthenticationRequired("AD 会话已到期，请重新登录")
+        try:
+            published = await self._published_ad_max_age_minutes()
+        except SessionStateUnavailable:
+            raise
+        except Exception:
+            raise SessionStateUnavailable("AD session revocation unavailable") from None
+        deadline = float(claims.reauth_deadline)
+        if published is not None:
+            deadline = min(deadline, float(claims.auth_time) + published * 60)
+        if self.clock().timestamp() < deadline:
+            return
+        remaining = max(1, int(payload.get("exp", 0)) - int(self.clock().timestamp()))
+        try:
+            await self.store.eval(
+                _REVOKE_SESSION_LUA,
+                3,
+                f"auth:jwt:revoked:{claims.jti}",
+                f"auth:jwt:session-revoked:{claims.session_id}",
+                self._refresh_key(claims.session_id),
+                str(remaining),
+                str(max(1, int(self.ttl.total_seconds()))),
+            )
+        except Exception:
+            raise SessionStateUnavailable("AD session revocation unavailable") from None
+        raise ReauthenticationRequired("AD 会话已到期，请重新登录")
+
     async def issue_pair(self, claims: JwtClaims, tab_id: str) -> IssuedTokenPair:
         if REFRESH_TAB_ID_PATTERN.fullmatch(tab_id) is None:
             raise ValueError("refresh token requires a 32-hex tab binding")
+        claims = await self._bind_ad_deadline(claims)
         session_id = uuid4().hex
         access_token = self._encode_access(claims, session_id)
         family_expires_at = int((self.clock() + self.refresh_ttl).timestamp())
@@ -433,9 +570,11 @@ class JwtService:
             )
         except Exception:
             raise SessionStateUnavailable("refresh token state unavailable") from None
+        access_ttl = self._access_ttl_for(claims)
         return IssuedTokenPair(
             access_token,
             refresh_token,
+            expires_in=max(1, min(900, int(access_ttl.total_seconds()))),
             refresh_expires_in=remaining,
         )
 
@@ -517,7 +656,11 @@ class JwtService:
             expires_at = int(payload["exp"])
         except (TypeError, ValueError):
             raise InvalidCredentials("无效或已吊销的令牌") from None
-        if not allow_expired and expires_at <= int(self.clock().timestamp()):
+        if (
+            not allow_expired
+            and expires_at <= int(self.clock().timestamp())
+            and payload.get("provider_code") != "ad"
+        ):
             raise InvalidCredentials("无效或已吊销的令牌")
         return payload
 
@@ -556,6 +699,24 @@ class JwtService:
         session_id = str(payload["sid"])
         if security_version < 1 or not session_id:
             raise InvalidCredentials("无效或已吊销的令牌")
+        auth_time = None
+        reauth_deadline = None
+        auth_policy_version = None
+        if str(payload["provider_code"]) == "ad":
+            try:
+                auth_time = float(payload["auth_time"])
+                reauth_deadline = float(payload["reauth_deadline"])
+            except (KeyError, TypeError, ValueError):
+                try:
+                    auth_time = float(payload["iat"])
+                    reauth_deadline = auth_time + DEFAULT_AD_SESSION_MAX_AGE_MINUTES * 60
+                except (KeyError, TypeError, ValueError):
+                    raise InvalidCredentials("无效或已吊销的令牌") from None
+            if payload.get("auth_policy_version") is not None:
+                try:
+                    auth_policy_version = int(payload["auth_policy_version"])
+                except (TypeError, ValueError):
+                    raise InvalidCredentials("无效或已吊销的令牌") from None
         return JwtClaims(
             account_id=account_id,
             identity_id=identity_id,
@@ -567,6 +728,9 @@ class JwtService:
             security_version=security_version,
             jti=str(payload["jti"]),
             session_id=session_id,
+            auth_time=auth_time,
+            reauth_deadline=reauth_deadline,
+            auth_policy_version=auth_policy_version,
         )
 
     async def _authoritative(self, claims: JwtClaims) -> JwtClaims:
@@ -605,6 +769,9 @@ class JwtService:
             security_version=current.security_version,
             jti=claims.jti,
             session_id=claims.session_id,
+            auth_time=claims.auth_time,
+            reauth_deadline=claims.reauth_deadline,
+            auth_policy_version=claims.auth_policy_version,
         )
 
     async def _ensure_account_not_revoked(
@@ -657,6 +824,7 @@ class JwtService:
         if payload["token_type"] != ACCESS_TOKEN_TYPE:
             raise InvalidCredentials("无效或已吊销的令牌")
         claims = self._claims(payload)
+        await self._enforce_ad_access_deadline(claims, payload)
         try:
             if await self.store.get(f"auth:jwt:revoked:{claims.jti}") is not None:
                 raise InvalidCredentials("无效或已吊销的令牌")
@@ -804,9 +972,11 @@ class JwtService:
             raise InvalidCredentials("无效或已使用的刷新令牌")
         else:
             raise SessionStateUnavailable("refresh token state unavailable")
+        access_ttl = self._access_ttl_for(claims)
         return IssuedTokenPair(
             new_access,
             selected_refresh,
+            expires_in=max(1, min(900, int(access_ttl.total_seconds()))),
             refresh_expires_in=remaining,
         )
 

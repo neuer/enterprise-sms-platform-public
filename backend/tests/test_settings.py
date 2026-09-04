@@ -98,6 +98,7 @@ def test_unknown_security_related_environment_variable_is_rejected() -> None:
             "EXPORT_AUTH_POSTGRES_DSN": "postgresql://test",
             "SECURITY_SESSION_POSTGRES_DSN": "postgresql://test",
             "OUTBOX_POSTGRES_DSN": "postgresql://test",
+            "AUTH_GUARD_REDIS_URL": "redis://127.0.0.1:6379/0",
             "PATH": "/usr/bin",
         }
     )
@@ -813,6 +814,7 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         "data_aes_key",
         "data_hmac_key",
         "api_key_pepper_key",
+        "api_key_legacy_hmac_pepper",
         "jwt_secret",
         "ldap_bind_password",
     )
@@ -835,6 +837,16 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         assert settings.credential(name) == f"{name}-value"
     with pytest.raises(KeyError):
         settings.credential("unknown")
+    missing_legacy = module.Settings(
+        _env_file=None,
+        environment="test",
+        sms_component="worker",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        api_key_legacy_hmac_pepper_file=tmp_path / "missing-legacy-pepper",
+    )
+    assert missing_legacy.optional_credential("api_key_legacy_hmac_pepper") is None
 
 
 def test_api_component_cannot_read_vendor_credentials(tmp_path: Path) -> None:

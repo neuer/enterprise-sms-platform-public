@@ -83,7 +83,7 @@ Content-Type: application/json
 | `template_params` | string[] | 随模板 | 参数个数与模板一致 | 按 `{1}..{n}` 顺序替换 |
 | `sign_name` | string | 否 | ≤32 字符 | 覆盖默认签名；未传使用应用默认签名 |
 | `scheduled_at` | string | 否 | ISO8601 含时区 | 定时发送；如 `2026-08-05T10:00:00+08:00` |
-| `biz_id` | string | 否 | ≤32 字符 | 业务幂等键（强烈建议使用，见 3.4） |
+| `biz_id` | string | 是 | 1–32 字符，稳定业务主键 | 业务幂等键；同一应用同键同指纹重放返回原批次，同键不同指纹返回 409。见 3.4 |
 
 > ⚠ **发送方式要求**：正式接入必须使用已审核模板（`template_id` + `template_params`）。
 > 直接内容（`content`）提交后会进入服务商的人工审核流程，发送延迟可能从数分钟到数小时；
@@ -143,7 +143,7 @@ Content-Type: application/json
 | `removed_duplicate` / `removed_blacklist` / `removed_freq_limit` | 各环节剔除数 |
 | `est_segments` | 单号码预估计费条 |
 | `quota_cost` | 本批扣减计费条 = `est_segments × accepted` |
-| `status` | `queued`（排队）或 `scheduled`（定时/营销窗外顺延） |
+| `status` | 批次权威状态。首次受理多为 `queued`/`scheduled`；安全重放返回原批次当前状态，包括 `sending`、`completed`、`completed_unknown`、`cancelled`、`balance_blocked`。`completed_unknown` 表示存在未知结果，禁止自动重发 |
 | `deferred_reason` | `market_window` 表示营销时间窗外自动转为次日窗口起点 |
 | `scheduled_at` | 实际计划发送时间（定时或顺延后） |
 
@@ -179,6 +179,31 @@ Content-Type: application/json
   （`pending`/`retrying`），同一 `biz_id` **仍不可复用**；
 - 仅当记录已过期且批次已真正终态（无未知分片、无未完成 callback）时，同键才会
   删除旧记录并创建新批次。
+
+推荐从稳定业务主键生成，例如 `{业务系统}-{业务类型}-{业务单号}-{动作版本}`。
+网络超时、客户端超时和 5xx 重试必须复用原 `biz_id`；只有业务语义变化时才换新键。
+不要把手机号、短信正文写入 `biz_id`，不要只用时间戳，也不要用平台 `batch_no` 反向替代首次请求所需的业务 ID。
+
+正确示例：
+
+```json
+{
+  "biz_id": "order-20260904-000123",
+  "mobiles": ["138****8000"],
+  "content": "您的工单已创建"
+}
+```
+
+错误示例：
+
+1. 缺少 `biz_id`：API 返回 400 `INVALID_PARAM`，错误说明缺少必填业务幂等键；
+2. 使用固定常量（如 `test`）：后续真实业务会互相覆盖或冲突；
+3. 每次重试重新生成随机 UUID：无法命中幂等，可能重复受理；
+4. 同一 `biz_id` 搭配不同手机号、正文、模板参数或定时时间：返回 409 `IDEMPOTENCY_CONFLICT`；
+5. 超过 32 字符或包含不允许的空白控制字符：返回 400/422。
+
+同键同指纹重放返回原批次且 `idempotent: true`；同键不同指纹立即 409，即使首请求仍在处理中。
+首请求处理中的追随请求不消耗新发送额度，等待超时返回 503 与 `Retry-After`，调用方应继续使用原 `biz_id`。
 
 推荐的重试模式：
 

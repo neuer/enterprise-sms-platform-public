@@ -146,8 +146,12 @@ def test_controlled_api_uat_contract_is_single_notice_and_idempotent() -> None:
         "scheduled",
         "sending",
         "completed",
+        "completed_unknown",
         "cancelled",
         "balance_blocked",
+        "pending_approval",
+        "rejected",
+        "expired",
     }
     assert set(response_schema["properties"]["status"]["enum"]) == response_statuses
     ordinary_response = document["paths"]["/api/v1/messages/send"]["post"]["responses"][

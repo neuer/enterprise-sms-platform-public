@@ -154,6 +154,67 @@ class ApiKeyPepperReferenceCheck:
             for row in result:
                 if int(row[0]) not in ring.keys:
                     raise RuntimeError("api key pepper version is unavailable")
+        await self._assert_digest_inventory()
+
+    async def _assert_digest_inventory(self) -> None:
+        from app.core.apikey import (
+            API_KEY_ALGORITHMS,
+            UnknownDigestAlgorithmError,
+            load_legacy_data_hmac_pepper,
+            parse_unclassified_algorithms,
+        )
+
+        engine = database_engine(self.settings.database_url_for("auth"), component="api")
+        async with engine.connect() as target:
+            inventory = await target.execute(
+                text(
+                    """
+                    SELECT
+                      api_key_hash_algorithm AS algorithm,
+                      status
+                    FROM app
+                    UNION ALL
+                    SELECT
+                      api_key_prev_hash_algorithm,
+                      status
+                    FROM app
+                    WHERE api_key_prev_hash IS NOT NULL
+                    """
+                )
+            )
+            unclassified_active = 0
+            needs_legacy = False
+            for row in inventory.mappings():
+                algorithm = row["algorithm"]
+                if algorithm is None:
+                    if int(row["status"]) == 1:
+                        unclassified_active += 1
+                    continue
+                if str(algorithm) not in API_KEY_ALGORITHMS:
+                    raise RuntimeError("api key digest algorithm is unavailable")
+                if str(algorithm) == "legacy_data_hmac_pepper_v1":
+                    needs_legacy = True
+            policy_row = await target.execute(
+                text(
+                    """
+                    SELECT value FROM sys_config
+                    WHERE key='api_key_unclassified_algorithms'
+                    """
+                )
+            )
+            policy_value = policy_row.scalar_one_or_none()
+            try:
+                policy = parse_unclassified_algorithms(
+                    None if policy_value is None else str(policy_value)
+                )
+            except UnknownDigestAlgorithmError as exc:
+                raise RuntimeError("api key digest algorithm is unavailable") from exc
+            if "legacy_data_hmac_pepper_v1" in policy:
+                needs_legacy = True
+            if needs_legacy and load_legacy_data_hmac_pepper(self.settings) is None:
+                raise RuntimeError("api key legacy pepper is unavailable")
+            if unclassified_active and not policy and self.settings.is_production:
+                raise RuntimeError("unclassified api key digests are present")
 
 
 class RedisReadinessCheck:
@@ -174,6 +235,7 @@ def _validate_runtime_secrets(settings: Settings) -> None:
     """读取并解析必要运行密钥；值和派生信息不得离开本函数。"""
 
     _ = settings.database_url
+    _ = settings.database_url_for("auth")
     secrets = {
         name: settings.credential(name)
         for name in (
