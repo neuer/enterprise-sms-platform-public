@@ -221,7 +221,7 @@ def decide(
     previous_state: str | None = None,
     limits: SendAdmissionLimits | None = None,
 ) -> SendAdmissionDecision:
-    """把容量带叠到类别/规模：降级只放行少量 verify/notice。"""
+    """把容量带叠到类别/规模：真实降级只放行少量 verify/notice；recovery_hold 仍拒营销。"""
 
     selected = limits or SendAdmissionLimits()
     state, reason = evaluate_capacity(
@@ -240,7 +240,7 @@ def decide(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if recipient_count > selected.degraded_max_recipients:
+        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
             return SendAdmissionDecision(state, "degraded_volume", False, 30)
     return SendAdmissionDecision(state, reason, True, 0)
 
@@ -266,7 +266,7 @@ def authorize_from_snapshot(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if recipient_count > selected.degraded_max_recipients:
+        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
             return SendAdmissionDecision(state, "degraded_volume", False, 30)
     return SendAdmissionDecision(state, reason, True, 0)
 

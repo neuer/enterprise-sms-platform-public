@@ -2589,3 +2589,236 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
     assert store.verified[0].resolution_id == 4
     assert store.commands[0].principal.actor_name == "system_resend:4"
 
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_existing_without_admission() -> None:
+    class BoomAdmission:
+        async def authorize(self, **_values: object) -> None:
+            raise AssertionError("replay must not authorize new send")
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-1",
+    )
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        admission_guard=BoomAdmission(),  # type: ignore[arg-type]
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    empty = await pipeline.replay_if_present(
+        app,
+        SendRequest("notice", ["13800138000"], content="通知"),
+    )
+    assert empty is None
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert replayed.batch_no == "existing"
+    assert replayed.idempotent is True
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
+    idempotency = FakeIdempotency()
+    idempotency.inspect_view = SimpleNamespace(fingerprint="other-hash")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(IdempotencyConflict):
+        await pipeline.replay_if_present(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                biz_id="replay-conflict",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_waits_for_in_flight_claim() -> None:
+    class WaitIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inspect_view = SimpleNamespace(fingerprint="")
+
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+        async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return "existing"
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-wait",
+    )
+    idempotency = WaitIdempotency()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert replayed.batch_no == "existing"
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_none_when_inspect_empty() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    missing = await pipeline.replay_if_present(
+        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="通知",
+            biz_id="replay-miss",
+        ),
+    )
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_none_when_wait_times_out() -> None:
+    class TimeoutIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inspect_view = SimpleNamespace(fingerprint="")
+
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+        async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=TimeoutIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    missing = await pipeline.replay_if_present(
+        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="通知",
+            biz_id="replay-timeout",
+        ),
+    )
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_consumes_replay_limit_only() -> None:
+    class ReplayLimiter:
+        def __init__(self) -> None:
+            self.checked = 0
+            self.replayed = 0
+
+        async def check(self, **_values: object) -> None:
+            self.checked += 1
+
+        async def check_replay(self, **_values: object) -> None:
+            self.replayed += 1
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-limit",
+    )
+    limiter = ReplayLimiter()
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=limiter,  # type: ignore[arg-type]
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert limiter.replayed == 1
+    assert limiter.checked == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-uat",
+        vendor_test_uat=True,
+    )
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    rewritten = pipeline._with_uat_replay_identity(request)
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        rewritten, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert rewritten.protected_mobiles
+    assert rewritten.mobiles == ()
+
