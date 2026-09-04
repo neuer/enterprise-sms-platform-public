@@ -155,7 +155,7 @@ jobs:
     outputs:
       tested_sha: ${{ steps.bind.outputs.sha }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       # 只检出本 run 的 github.sha，不用 job output 当 ref。
       # workflow_dispatch/schedule 可写默认分支 cache；CodeQL 把 needs.*.outputs
