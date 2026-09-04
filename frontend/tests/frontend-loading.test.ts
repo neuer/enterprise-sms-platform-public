@@ -1,4 +1,5 @@
 import mainSource from "../src/main.ts?raw"
+import workspaceElementSource from "../src/element-workspace.ts?raw"
 import routerSource from "../src/router/index.ts?raw"
 import appSource from "../src/App.vue?raw"
 import { readFileSync } from "node:fs"
@@ -43,8 +44,9 @@ describe("前端加载边界", () => {
   })
 
   it("日期选择器按需加载完整的面板和时间结构样式", () => {
-    expect(mainSource).toContain('import "element-plus/theme-chalk/el-date-picker-panel.css"')
-    expect(mainSource).toContain('import "element-plus/theme-chalk/el-time-picker.css"')
+    // 工作区组件样式随 element-workspace.ts 在首个非公开路由前一次性加载
+    expect(workspaceElementSource).toContain('import "element-plus/theme-chalk/el-date-picker-panel.css"')
+    expect(workspaceElementSource).toContain('import "element-plus/theme-chalk/el-time-picker.css"')
   })
 
   it("Element Plus 组件使用平台统一的简体中文区域配置", () => {

@@ -3,17 +3,21 @@ import "./styles/workspace.css"
 
 import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
-import { computed, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import type { UserRole } from "./api/auth"
 import { getDashboard } from "./api/dashboard"
-import DailyPasswordChangeDialog from "./components/DailyPasswordChangeDialog.vue"
 import { usePolling } from "./composables/usePolling"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { invalidateSessionGeneration } from "./api/sessionGeneration"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
 import egretMarkUrl from "./assets/brand/login-egret-watermark.png"
+
+// 日常改密弹窗只在认证壳内点开：异步加载，登录首屏不背 ElDialog/ElForm 的组件代码。
+const DailyPasswordChangeDialog = defineAsyncComponent(
+  () => import("./components/DailyPasswordChangeDialog.vue"),
+)
 
 const route = useRoute()
 const router = useRouter()
