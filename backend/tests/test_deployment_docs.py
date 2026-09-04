@@ -36,6 +36,9 @@ PRODUCTION_SECRETS = {
     "redis_control_password",
     "redis_tls_server_key",
 }
+CONDITIONAL_PRODUCTION_SECRETS = {
+    "api_key_legacy_hmac_pepper",
+}
 REDIS_SECRET_NAMES = {
     "redis_broker_password",
     "redis_auth_password",
@@ -98,13 +101,16 @@ def test_compose_and_secret_runbook_cover_exact_production_secrets() -> None:
     assert (
         set(compose_secrets)
         == (PRODUCTION_SECRETS - REDIS_SECRET_NAMES)
+        | CONDITIONAL_PRODUCTION_SECRETS
         | COMPOSE_INTERNAL_SECRET_ALIASES
         | COMPOSE_DIRECT_REDIS_SECRETS
     )
-    assert {Path(item["file"]).name for item in compose_secrets.values()} == PRODUCTION_SECRETS
+    assert {Path(item["file"]).name for item in compose_secrets.values()} == (
+        PRODUCTION_SECRETS | CONDITIONAL_PRODUCTION_SECRETS
+    )
 
     runbook = read_required("secrets.md")
-    for name in PRODUCTION_SECRETS:
+    for name in PRODUCTION_SECRETS | CONDITIONAL_PRODUCTION_SECRETS:
         assert f"`{name}`" in runbook
     assert "0600" in runbook
     assert "生产通用 `sms-compose exec` 已失败关闭" in runbook
