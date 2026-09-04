@@ -134,9 +134,16 @@ class Bucket(Protocol):
         vendor_qps: int,
         reserved_realtime_qps: int,
         now_ms: int | None = None,
+        vendor_id: str | None = None,
     ) -> int | None: ...
 
-    async def refund(self, *, vendor_qps: int, lease_epoch: int) -> None: ...
+    async def refund(
+        self,
+        *,
+        vendor_qps: int,
+        lease_epoch: int,
+        vendor_id: str | None = None,
+    ) -> None: ...
 
 
 class ChunkStore(Protocol):
