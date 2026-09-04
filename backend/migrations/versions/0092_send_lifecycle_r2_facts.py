@@ -464,9 +464,17 @@ def upgrade() -> None:
         ON send_runtime_heartbeat TO sms_metrics
         """
     )
+    op.execute(
+        """
+        GRANT SELECT, INSERT, UPDATE ON send_runtime_heartbeat TO sms_scheduler
+        """
+    )
 
 
 def downgrade() -> None:
+    op.execute(
+        "REVOKE SELECT, INSERT, UPDATE ON send_runtime_heartbeat FROM sms_scheduler"
+    )
     op.execute(
         "REVOKE SELECT (component, last_heartbeat_at, last_success_at) "
         "ON send_runtime_heartbeat FROM sms_metrics"

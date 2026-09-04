@@ -856,6 +856,7 @@ def test_send_lifecycle_r2_facts_are_expand_only() -> None:
         assert "send_inflight_balance" in contract
         assert "send_admission_state" in contract
         assert "send_runtime_heartbeat" in contract
+        assert "sms_scheduler" in contract
         assert "apply_uncertain_effect" in contract
         assert "uncertain-unused" in contract
     assert 'revision = "0092_send_lifecycle_r2_facts"' in source

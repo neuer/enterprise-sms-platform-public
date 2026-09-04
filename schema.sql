@@ -2751,9 +2751,10 @@ GRANT USAGE, SELECT ON SEQUENCE
 TO sms_export;
 
 -- beat 与 durable Outbox dispatcher。
-GRANT SELECT ON sys_config, job_run, outbox_event, alert_log TO sms_scheduler;
+GRANT SELECT ON sys_config, job_run, outbox_event, alert_log,
+    send_runtime_heartbeat TO sms_scheduler;
 GRANT INSERT, UPDATE, DELETE ON job_run TO sms_scheduler;
-GRANT INSERT, UPDATE ON outbox_event, alert_log TO sms_scheduler;
+GRANT INSERT, UPDATE ON outbox_event, alert_log, send_runtime_heartbeat TO sms_scheduler;
 GRANT INSERT ON audit_log TO sms_scheduler;
 GRANT USAGE, SELECT ON SEQUENCE
     job_run_id_seq, alert_log_id_seq, audit_log_id_seq
