@@ -674,15 +674,18 @@ class SendWorker:
                         vendor_code=error.code,
                     )
                     return SubmitOutcome.DELAYED
+                hold_like = policy.balance_blocked or policy.pause_queues
                 await self._persist_attempt(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
-                    outcome="rejected",
+                    outcome="paused" if hold_like else "rejected",
                     attempt_id=attempt_id,
                     safe_to_failover=policy.safe_to_failover,
                     vendor_code=error.code,
                 )
+                if hold_like:
+                    return await self._apply_terminal_api_error(chunk, error)
                 attempts.append(
                     VendorAttempt(
                         vendor_id,

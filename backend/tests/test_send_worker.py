@@ -597,11 +597,12 @@ async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call(
 
 @pytest.mark.asyncio
 async def test_balance_error_blocks_batch_and_pauses_both_queues() -> None:
-    store = FakeStore()
+    store = HistoryStore()
     worker = SendWorker(FakeGateway([VendorApiError(999, "balance")]), store, FakeBucket())
     await worker.submit(chunk(), lane="bulk")
     assert ("balance", (2, 3)) in store.events
     assert ("pause", 999) in store.events
+    assert ("attempt", (1, "paused")) in store.events
 
 
 @pytest.mark.asyncio
@@ -959,6 +960,17 @@ class HistoryStore(FakeStore):
     ) -> bool:
         self.events.append(("attempt", (attempt_id, outcome)))
         return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_paused_history_retries_same_vendor_after_resume() -> None:
+    store = HistoryStore([VendorAttempt(PRIMARY_VENDOR_ID, 1, "paused", False, 999)])
+    gateway = FakeGateway(["task-ok"])
+    await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
+    assert store.begun == [(PRIMARY_VENDOR_ID, 2)]
+    assert gateway.calls == 1
+    assert ("attempt", (2, "submitted")) in store.events
 
 
 @pytest.mark.asyncio
