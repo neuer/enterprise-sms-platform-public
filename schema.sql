@@ -1,5 +1,10 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.78  2026-09-04
+-- v1.6.78：人工 uncertain 处置改为可恢复 effect；chunk 级额度补偿、
+--          在途原子预留与跨实例 admission epoch。
+-- v1.6.77  2026-09-04
+-- v1.6.77：API Key 摘要增加显式算法标识；未分类行不得静默当作 SHA-256。
 -- v1.6.76  2026-09-04
 -- v1.6.76：供应商路由与 attempt 账本；uncertain/submitted 禁止自动
 --          切换供应商。sms_metrics 只读 attempt.outcome/created_at。
@@ -407,10 +412,14 @@ CREATE TABLE app (
     dept                 VARCHAR(128) NOT NULL,
     api_key_hash         CHAR(64)     NOT NULL,           -- 当前Key摘要
     api_key_prefix       CHAR(8)      NOT NULL,
-    api_key_hash_version SMALLINT,                        -- NULL=legacy SHA-256
+    api_key_hash_version SMALLINT,                        -- api_pepper 的 pepper 版本
+    api_key_hash_algorithm VARCHAR(32),                   -- NULL=未分类，不得静默当 SHA-256
+    api_key_hash_migrated_at TIMESTAMPTZ,
     api_key_prev_hash    CHAR(64),                        -- 轮换宽限期旧Key
     api_key_prev_prefix  CHAR(8),
     api_key_prev_hash_version SMALLINT,
+    api_key_prev_hash_algorithm VARCHAR(32),
+    api_key_prev_hash_migrated_at TIMESTAMPTZ,
     api_key_prev_expires TIMESTAMPTZ,                     -- 旧Key失效时间
     allowed_categories   VARCHAR(32)  NOT NULL DEFAULT 'notice',
     default_sign         VARCHAR(32),
@@ -439,6 +448,35 @@ CREATE TABLE app (
     CONSTRAINT ck_app_api_key_prev_hash_version
       CHECK (api_key_prev_hash_version IS NULL
              OR api_key_prev_hash_version BETWEEN 1 AND 32767),
+    CONSTRAINT ck_app_api_key_hash_algorithm
+      CHECK (api_key_hash_algorithm IS NULL
+             OR api_key_hash_algorithm IN (
+               'legacy_sha256','legacy_data_hmac_pepper_v1','api_pepper'
+             )),
+    CONSTRAINT ck_app_api_key_prev_hash_algorithm
+      CHECK (api_key_prev_hash_algorithm IS NULL
+             OR api_key_prev_hash_algorithm IN (
+               'legacy_sha256','legacy_data_hmac_pepper_v1','api_pepper'
+             )),
+    CONSTRAINT ck_app_api_key_algorithm_version
+      CHECK (
+        (api_key_hash_algorithm IS NULL AND api_key_hash_version IS NULL)
+        OR (api_key_hash_algorithm='api_pepper'
+            AND api_key_hash_version IS NOT NULL)
+        OR (api_key_hash_algorithm IN (
+              'legacy_sha256','legacy_data_hmac_pepper_v1'
+            ) AND api_key_hash_version IS NULL)
+      ),
+    CONSTRAINT ck_app_api_key_prev_algorithm_version
+      CHECK (
+        (api_key_prev_hash_algorithm IS NULL
+         AND api_key_prev_hash_version IS NULL)
+        OR (api_key_prev_hash_algorithm='api_pepper'
+            AND api_key_prev_hash_version IS NOT NULL)
+        OR (api_key_prev_hash_algorithm IN (
+              'legacy_sha256','legacy_data_hmac_pepper_v1'
+            ) AND api_key_prev_hash_version IS NULL)
+      ),
     CONSTRAINT ck_app_recipient_limit_per_min
       CHECK (recipient_limit_per_min BETWEEN 1 AND 100000000),
     CONSTRAINT ck_app_segment_limit_per_min
@@ -615,22 +653,106 @@ CREATE TABLE sms_uncertain_resolution (
                            'confirm_accepted','confirm_not_accepted',
                            'keep_unknown','resend_new_batch'
                          )),
-    state                VARCHAR(16) NOT NULL DEFAULT 'proposed'
-                         CHECK (state IN ('proposed','confirmed')),
+    state                VARCHAR(32) NOT NULL DEFAULT 'proposed'
+                         CHECK (state IN (
+                           'proposed','approved','effect_pending','applying',
+                           'effect_applied','closed','approval_rejected',
+                           'retryable_effect_error',
+                           'manual_intervention_required',
+                           'cancelled_before_effect'
+                         )),
     proposer_account_id  BIGINT      NOT NULL REFERENCES user_account(id),
     confirmer_account_id BIGINT      REFERENCES user_account(id),
     child_batch_id       BIGINT      REFERENCES sms_batch(id),
+    effect_generation    INTEGER     NOT NULL DEFAULT 1 CHECK (effect_generation >= 1),
+    effect_error         VARCHAR(128),
+    source_app_id        BIGINT      REFERENCES app(id),
+    source_channel       VARCHAR(8),
+    source_category      VARCHAR(16),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     confirmed_at         TIMESTAMPTZ,
+    approved_at          TIMESTAMPTZ,
+    effect_applied_at    TIMESTAMPTZ,
     CONSTRAINT ck_uncertain_resolution_distinct CHECK (
       confirmer_account_id IS NULL
       OR proposer_account_id <> confirmer_account_id
     ),
     CONSTRAINT ck_uncertain_resolution_confirm_pair CHECK (
       (state='proposed' AND confirmer_account_id IS NULL AND confirmed_at IS NULL)
-      OR (state='confirmed' AND confirmer_account_id IS NOT NULL
-          AND confirmed_at IS NOT NULL)
+      OR (
+        state IN (
+          'approved','effect_pending','applying','effect_applied','closed',
+          'retryable_effect_error','manual_intervention_required'
+        )
+        AND confirmer_account_id IS NOT NULL
+        AND confirmed_at IS NOT NULL
+      )
+      OR state IN ('approval_rejected','cancelled_before_effect')
     )
+);
+CREATE TABLE sms_uncertain_child (
+    resolution_id BIGINT PRIMARY KEY
+      REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
+    child_batch_id BIGINT NOT NULL UNIQUE
+      REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE usage_chunk_allocation (
+    chunk_id BIGINT PRIMARY KEY REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    batch_id BIGINT NOT NULL REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    reservation_id UUID REFERENCES usage_reservation(id),
+    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
+    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+    request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    app_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE usage_chunk_release (
+    resolution_id BIGINT PRIMARY KEY
+      REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
+    chunk_id BIGINT NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    reservation_id UUID,
+    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
+    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+    request_count INTEGER NOT NULL CHECK (request_count >= 0),
+    release_event_id VARCHAR(80) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_usage_chunk_release_event CHECK (
+      release_event_id ~ '^resolution[:][1-9][0-9]*[:]not-accepted$'
+    )
+);
+CREATE TABLE send_inflight_balance (
+    app_id BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE RESTRICT,
+    reserved_chunks INTEGER NOT NULL DEFAULT 0 CHECK (reserved_chunks >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE send_inflight_reservation (
+    id BIGSERIAL PRIMARY KEY,
+    app_id BIGINT NOT NULL REFERENCES app(id) ON DELETE RESTRICT,
+    batch_id BIGINT UNIQUE REFERENCES sms_batch(id),
+    reserved_chunks INTEGER NOT NULL CHECK (reserved_chunks >= 1),
+    state VARCHAR(16) NOT NULL DEFAULT 'reserved'
+      CHECK (state IN ('reserved','materialized','released')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    released_at TIMESTAMPTZ
+);
+CREATE TABLE send_admission_state (
+    scope VARCHAR(16) PRIMARY KEY,
+    state VARCHAR(16) NOT NULL CHECK (state IN ('open','degraded','closed')),
+    reason_code VARCHAR(32) NOT NULL,
+    state_epoch BIGINT NOT NULL DEFAULT 1 CHECK (state_epoch >= 1),
+    hold_until TIMESTAMPTZ,
+    valid_until TIMESTAMPTZ NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE send_runtime_heartbeat (
+    component VARCHAR(32) PRIMARY KEY,
+    generation BIGINT NOT NULL DEFAULT 1 CHECK (generation >= 1),
+    last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_success_at TIMESTAMPTZ,
+    lease_until TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX idx_uncertain_resolution_batch
     ON sms_uncertain_resolution(batch_id, created_at DESC);
@@ -1531,7 +1653,8 @@ CREATE TABLE outbox_event (
                      'app.tasks.outbox.compensate_quota',
                      'app.tasks.outbox.deliver_alert',
                      'app.tasks.outbox.release_usage',
-                     'app.tasks.outbox.trigger_job'
+                     'app.tasks.outbox.trigger_job',
+                     'app.tasks.outbox.apply_uncertain_effect'
                    )),
     queue          VARCHAR(16)  NOT NULL
                    CONSTRAINT ck_outbox_queue
@@ -1595,12 +1718,15 @@ CREATE TABLE outbox_event (
           AND jsonb_typeof(args->0)='string'
           AND args->>0 ~ '^[0-9a-f]{32}$'
         )
-        OR (
-          task_name='app.tasks.send.process_chunk'
-          AND jsonb_array_length(args)=1
-          AND jsonb_typeof(args->0)='number'
-          AND args->>0 ~ '^[1-9][0-9]*$'
-        )
+            OR (
+              task_name IN (
+                'app.tasks.send.process_chunk',
+                'app.tasks.outbox.apply_uncertain_effect'
+              )
+              AND jsonb_array_length(args)=1
+              AND jsonb_typeof(args->0)='number'
+              AND args->>0 ~ '^[1-9][0-9]*$'
+            )
         OR (
           task_name='app.tasks.deliver_callback'
           AND jsonb_array_length(args)=1
@@ -1653,7 +1779,8 @@ CREATE TABLE outbox_event (
             'app.tasks.bind_sign',
             'app.tasks.bind_template',
             'app.tasks.adopt_sign',
-            'app.tasks.sync_template'
+            'app.tasks.sync_template',
+            'app.tasks.outbox.apply_uncertain_effect'
           )
           AND aggregate_id ~ '^[1-9][0-9]*$'
         )
@@ -1688,7 +1815,8 @@ CREATE TABLE outbox_event (
         dedup_key !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
         OR dedup_key ~ (
           '^(batch[.]ready[:][0-9a-f]{32}|'
-          || 'chunk[.]ready[:][1-9][0-9]*|'
+              || 'chunk[.]ready[:][1-9][0-9]*|'
+              || 'uncertain[.]effect[:][1-9][0-9]*[:][1-9][0-9]*|'
           || 'scheduled[:][0-9a-f]{32}[:]ready|'
           || 'batch[:][0-9a-f]{32}[:]cancelled|'
           || 'approval[:][1-9][0-9]*[:](approved|rejected|expired)|'
@@ -1760,7 +1888,7 @@ CREATE TABLE usage_reservation (
         ||'[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
         ||'[89ab][0-9a-f]{3}-[0-9a-f]{12}[:]'
         ||'(acceptance-failed|all-filtered|idempotent-reuse|'
-        ||'orphan-recovery|uncertain-retry))$'
+        ||'orphan-recovery|uncertain-retry|uncertain-unused))$'
       )
     )
 );
@@ -2060,7 +2188,9 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('security_daily_config_file_version','1','int','安全日报已发布到 mailer 文件的配置版本'),
 ('security_daily_config_operation_id','','str','安全日报最近一次配置发布操作标识'),
 -- v1.6.40 新增：安全日报配置页允许管理员维护 Resend Key。
-('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）');
+('security_daily_resend_api_key','','str','安全日报 Resend API Key（管理员配置页）'),
+-- v1.6.77 新增
+('api_key_unclassified_algorithms','','str','未分类历史 API Key 摘要允许的候选算法，逗号分隔；空则不得验证未分类行');
 
 -- v1.6.49：API 只持公钥封装，只有 callback worker 持私钥解封。
 ALTER TABLE sys_config ADD CONSTRAINT ck_sys_config_wecom_ciphertext
@@ -2440,6 +2570,11 @@ GRANT SELECT ON
     user_account, auth_provider, auth_identity, local_credential,
     external_role_mapping, password_change_token, sys_config, app
 TO sms_auth;
+GRANT UPDATE (
+    api_key_hash, api_key_hash_version, api_key_hash_algorithm,
+    api_key_hash_migrated_at, api_key_prev_hash, api_key_prev_hash_version,
+    api_key_prev_hash_algorithm, api_key_prev_hash_migrated_at
+) ON app TO sms_auth;
 GRANT INSERT, UPDATE ON
     user_account, auth_provider, auth_identity, local_credential,
     password_change_token
@@ -2466,7 +2601,10 @@ GRANT SELECT ON
     security_daily_recipient,
     vendor_test_daily_usage, vendor_test_send_attempt, vendor_test_recipient,
     vendor_test_recipient_hmac_alias, vendor_test_operation, alembic_version,
-    sms_uncertain_resolution
+    sms_uncertain_resolution, sms_uncertain_child,
+    usage_chunk_allocation, usage_chunk_release,
+    send_inflight_balance, send_inflight_reservation,
+    send_admission_state, send_runtime_heartbeat
 TO sms_accept;
 GRANT INSERT, UPDATE, DELETE ON
     app, dept_quota, sms_batch, idempotency_record, sms_message,
@@ -2476,7 +2614,12 @@ GRANT INSERT, UPDATE, DELETE ON
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
 TO sms_accept;
-GRANT INSERT, UPDATE ON sms_uncertain_resolution TO sms_accept;
+GRANT INSERT, UPDATE ON
+    sms_uncertain_resolution, sms_uncertain_child,
+    usage_chunk_allocation, usage_chunk_release,
+    send_inflight_balance, send_inflight_reservation,
+    send_admission_state, send_runtime_heartbeat
+TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
 GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
 GRANT INSERT, UPDATE ON
@@ -2505,7 +2648,7 @@ GRANT USAGE, SELECT ON SEQUENCE
     vendor_test_send_attempt_id_seq, vendor_test_recipient_id_seq,
     callback_task_id_seq, alert_log_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
-    sms_uncertain_resolution_id_seq
+    sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq
 TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
@@ -2522,7 +2665,10 @@ GRANT SELECT ON
     vendor_test_daily_usage, vendor_test_send_attempt,
     security_daily_recipient,
     vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation,
-    sms_uncertain_resolution, sms_vendor_attempt
+    sms_uncertain_resolution, sms_uncertain_child, sms_vendor_attempt,
+    usage_chunk_allocation, usage_chunk_release,
+    send_inflight_balance, send_inflight_reservation,
+    send_admission_state, send_runtime_heartbeat
 TO sms_send;
 GRANT UPDATE (vendor_template_id,vendor_state,vendor_reject_reason,updated_at)
 ON sms_template TO sms_send;
@@ -2534,7 +2680,10 @@ GRANT INSERT, UPDATE, DELETE ON
     outbox_event, usage_reservation, usage_frequency_subject,
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
     usage_projection, usage_projection_drift, stat_daily,
-    sms_uncertain_resolution
+    sms_uncertain_resolution, sms_uncertain_child,
+    usage_chunk_allocation, usage_chunk_release,
+    send_inflight_balance, send_inflight_reservation,
+    send_admission_state, send_runtime_heartbeat
 TO sms_send;
 GRANT INSERT, UPDATE ON security_daily_report TO sms_send;
 GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send;
@@ -2559,7 +2708,8 @@ GRANT USAGE, SELECT ON SEQUENCE
     worker_lease_event_id_seq, vendor_test_send_attempt_id_seq,
     audit_log_id_seq, callback_task_id_seq, import_phone_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
-    sms_uncertain_resolution_id_seq, sms_vendor_attempt_id_seq
+    sms_uncertain_resolution_id_seq, sms_vendor_attempt_id_seq,
+    send_inflight_reservation_id_seq
 TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。
@@ -2613,6 +2763,10 @@ GRANT SELECT (batch_id, phone_count, submitted_at, vendor_code, status,
               uncertain_since, late_evidence_at)
     ON sms_chunk TO sms_metrics;
 GRANT SELECT (state) ON sms_uncertain_resolution TO sms_metrics;
+GRANT SELECT (state, state_epoch, hold_until, valid_until)
+    ON send_admission_state TO sms_metrics;
+GRANT SELECT (component, last_heartbeat_at, last_success_at)
+    ON send_runtime_heartbeat TO sms_metrics;
 GRANT SELECT (status, lease_id, lease_expires_at)
     ON callback_task TO sms_metrics;
 GRANT SELECT (task_kind, event_type)

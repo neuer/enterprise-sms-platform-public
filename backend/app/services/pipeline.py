@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -36,6 +37,7 @@ from app.services.idempotency import (
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
 from app.services.usage_ledger import FrequencyDecisionItem
+from app.settings import get_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LOGGER = logging.getLogger(__name__)
@@ -94,6 +96,10 @@ class InFlightLimitExceeded(RuntimeError):
 
 class InFlightQueryUnavailable(RuntimeError):
     """在途分片查询失败，必须失败关闭。"""
+
+
+class QuotaExemptionExpired(RuntimeError):
+    """无限额度豁免已到期，不得把 daily_quota=0 继续当作无限。"""
 
 
 class SendAdmissionPort(Protocol):
@@ -297,7 +303,11 @@ class IdempotencyPort(Protocol):
     ) -> None: ...
 
     async def claim(
-        self, scope: IdempotencyScope, biz_id: str
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        fingerprint: str = "",
     ) -> str | None: ...
 
     async def wait(
@@ -682,6 +692,9 @@ class SendPipeline:
     ) -> IdempotencyScope:
         """稳定幂等主体：API=app，Web=稳定账号/身份复合作用域。"""
 
+        if request.biz_id and request.biz_id.startswith("manual-resend:"):
+            resolution_id = request.biz_id.split(":")[1]
+            return IdempotencyScope("uncertain-resend", resolution_id)
         if request.resend_of is not None:
             return IdempotencyScope("resend", request.resend_of)
         if request.channel == "web":
@@ -692,6 +705,21 @@ class SendPipeline:
                 f"{request.actor.account_id}:{request.actor.identity_id}",
             )
         return IdempotencyScope("app", str(app.app_id))
+
+    async def _claim_owner(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        fingerprint: str,
+    ) -> str | None:
+        try:
+            return await self.idempotency.claim(
+                scope,
+                biz_id,
+                fingerprint=fingerprint,
+            )
+        except TypeError:
+            return await self.idempotency.claim(scope, biz_id)
 
     def _validate_schedule(self, request: SendRequest) -> None:
         if request.is_test and request.scheduled_at is not None:
@@ -820,8 +848,37 @@ class SendPipeline:
             segment_limit=app.segment_limit_per_min,
         )
 
-    async def _enforce_in_flight(self, app: ApiAppContext, request: SendRequest) -> None:
+    def _enforce_quota_exemption(self, app: ApiAppContext, request: SendRequest) -> None:
         if request.channel == "web":
+            return
+        if app.daily_quota != 0:
+            return
+        if get_settings().environment != "production":
+            return
+        until = app.unlimited_quota_exempt_until
+        if until is None or until.tzinfo is None or until <= datetime.now(UTC):
+            raise QuotaExemptionExpired("无限额度豁免已到期")
+
+    async def _enforce_in_flight(
+        self,
+        app: ApiAppContext,
+        request: SendRequest,
+        *,
+        recipient_count: int,
+    ) -> None:
+        if request.channel == "web":
+            return
+        estimated = max(1, ceil(recipient_count / 500))
+        reserve = getattr(self.store, "reserve_in_flight_chunks", None)
+        if reserve is not None:
+            try:
+                await reserve(app.app_id, estimated, app.max_in_flight_chunks)
+            except InFlightLimitExceeded:
+                raise
+            except InFlightQueryUnavailable:
+                raise
+            except Exception as exc:
+                raise InFlightQueryUnavailable("在途分片预留不可用") from exc
             return
         counter = getattr(self.store, "count_in_flight_chunks", None)
         if counter is None:
@@ -832,7 +889,7 @@ class SendPipeline:
             raise
         except Exception as exc:
             raise InFlightQueryUnavailable("在途分片查询不可用") from exc
-        if current >= app.max_in_flight_chunks:
+        if current + estimated > app.max_in_flight_chunks:
             raise InFlightLimitExceeded("应用在途分片已达上限")
 
     def _enforce_market_api_bulk(
@@ -907,17 +964,38 @@ class SendPipeline:
             await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
             await self._consume_replay_limit(app)
             return await self.store.response_for(existing)
-        await self._authorize_new_send(request)
-        await self._consume_request_limit(app, request, preauthorization)
-        token = await self.idempotency.claim(idem_scope, biz_id)
-        if token is None:
+        inspect = getattr(self.idempotency, "inspect", None)
+        viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
+        if viewed is not None:
+            if getattr(viewed, "fingerprint", "") not in {"", request_hash}:
+                raise IdempotencyConflict(
+                    "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+                )
+            await self._consume_replay_limit(app)
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
                 await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
                 return await self.store.response_for(existing)
-            token = await self.idempotency.claim(idem_scope, biz_id)
+        token = await self._claim_owner(idem_scope, biz_id, request_hash)
+        if token is None:
+            viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
+            if viewed is not None and getattr(viewed, "fingerprint", "") not in {
+                "",
+                request_hash,
+            }:
+                raise IdempotencyConflict(
+                    "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+                )
+            await self._consume_replay_limit(app)
+            existing = await self.idempotency.wait(idem_scope, biz_id)
+            if existing is not None:
+                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+                return await self.store.response_for(existing)
+            token = await self._claim_owner(idem_scope, biz_id, request_hash)
         if token is None:
             raise RuntimeError("idempotency coordination unavailable")
+        await self._authorize_new_send(request)
+        await self._consume_request_limit(app, request, preauthorization)
         lost = asyncio.Event()
         heartbeat = asyncio.create_task(
             self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
@@ -1045,13 +1123,14 @@ class SendPipeline:
             consent_confirmed=request.consent_confirmed,
             verify_otp_mask=self.config.verify_otp_mask,
         )
+        self._enforce_quota_exemption(app, request)
+        await self._enforce_in_flight(app, request, recipient_count=recipient_count)
         await self._consume_send_cost(
             app,
             request,
             recipient_count=recipient_count,
             segment_count=prepared.segments * recipient_count,
         )
-        await self._enforce_in_flight(app, request)
         if ownership_check is not None:
             await ownership_check()
         hits = await self.store.sensitive_hits(prepared.send_content)

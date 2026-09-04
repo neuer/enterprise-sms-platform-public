@@ -193,6 +193,9 @@ def initialize_worker_resources(**_: object) -> None:
     discard_inherited_runtime_resources()
     configure_runtime_resources(get_settings(), component="worker")
     start_worker_runtime()
+    from app.services.runtime_heartbeat import start_send_worker_heartbeats
+
+    start_send_worker_heartbeats()
 
 
 def register_task_modules() -> None:

@@ -47,6 +47,7 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
         "closed",
         "queues_paused",
     )
+    assert evaluate_capacity(facts(heartbeat_stale=True)) == ("closed", "heartbeat_stale")
 
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
@@ -236,6 +237,7 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
             "outbox_dead": 1,
             "uncertain_overdue": 2,
             "callback_dead": 3,
+            "heartbeat_stale": 0,
         }
     )
     redis = FakeRedis(["999", None, "4"])
@@ -261,6 +263,9 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
     assert "pending" in sql and "dead" in sql
     assert "interval '24 hours'" in sql
     assert "callback_task" in sql
+    assert "send_runtime_heartbeat" in sql
+    assert "send-realtime" in sql
+    assert "outbox-dispatcher" in sql
     for forbidden in ("phone_enc", "phone_hmac", "phone_mask", "secret", "broker"):
         assert forbidden not in sql
     assert redis.keys == [
@@ -277,6 +282,7 @@ async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
             "outbox_dead": 0,
             "uncertain_overdue": 0,
             "callback_dead": 0,
+            "heartbeat_stale": 0,
         }
     )
     repository = SqlSendAdmissionRepository(
@@ -310,3 +316,56 @@ async def test_repository_records_transition_without_pii() -> None:
     assert "phone" not in params["detail"]
     assert "138" not in params["detail"]
     assert "outbox_active" in params["detail"]
+
+
+@pytest.mark.asyncio
+async def test_guard_uses_persisted_state_and_fails_closed_on_persist_error() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    class PersistingFacts(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+            self.fail = False
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "closed",
+                "reason_code": "outbox_backlog",
+                "state_epoch": 4,
+                "hold_until": datetime.now(UTC) + timedelta(seconds=30),
+                "valid_until": datetime.now(UTC) + timedelta(seconds=10),
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            if self.fail:
+                raise RuntimeError("persist failed")
+            self.saved.append(values)
+
+    repo = PersistingFacts()
+    guard = SendAdmissionGuard(repo)
+    snap = await guard.snapshot()
+    assert snap.state in {"closed", "degraded"}
+    assert repo.saved
+    repo.fail = True
+    guard._snapshot = None
+    with pytest.raises(SendAdmissionUnavailable):
+        await guard.snapshot()
+
+
+def test_send_worker_heartbeat_components_follow_queue_flags() -> None:
+    from app.services.runtime_heartbeat import send_worker_heartbeat_components
+
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime")
+    ) == ("send-realtime",)
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "bulk")
+    ) == ("send-bulk",)
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "callback")
+    ) == ()
+    assert send_worker_heartbeat_components(("pytest",)) == (
+        "send-realtime",
+        "send-bulk",
+    )

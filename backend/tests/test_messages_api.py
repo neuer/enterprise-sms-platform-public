@@ -192,6 +192,68 @@ def test_send_api_uses_app_context_and_returns_complete_acceptance(
     assert pipeline.calls[0][0].app_id == 7
 
 
+def test_send_omitting_biz_id_returns_422() -> None:
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+        },
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "INVALID_PARAM"
+    assert "biz_id" in str(body.get("detail"))
+
+
+def test_send_serializes_completed_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnknownPipeline:
+        async def preauthorize(self, _app: ApiAppContext, _category: str) -> object:
+            return object()
+
+        async def accept(
+            self,
+            _app: ApiAppContext,
+            _request: SendRequest,
+            **_kwargs: object,
+        ) -> BatchResponse:
+            return BatchResponse(
+                "batch-unknown",
+                True,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                "completed_unknown",
+                None,
+                None,
+            )
+
+    async def fake_factory(_app: ApiAppContext) -> UnknownPipeline:
+        return UnknownPipeline()
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-unknown",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed_unknown"
+    assert response.json()["idempotent"] is True
+
+
 def test_send_maps_idempotency_conflict_to_409(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

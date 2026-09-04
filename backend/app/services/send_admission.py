@@ -45,6 +45,7 @@ class SendAdmissionFacts:
     realtime_paused: bool
     bulk_paused: bool
     vendor_failures: int
+    heartbeat_stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +112,8 @@ def _raw_capacity(
     """按当前事实落入 CLOSED / DEGRADED / OPEN，不含恢复滞回。"""
 
     age = _age(facts)
+    if facts.heartbeat_stale:
+        return "closed", "heartbeat_stale"
     if facts.realtime_paused and facts.bulk_paused:
         return "closed", "queues_paused"
     if facts.outbox_active >= limits.closed_outbox_active:
@@ -267,15 +270,65 @@ class SendAdmissionGuard:
             try:
                 async with asyncio.timeout(self.load_timeout_s):
                     facts = await self.repository.load()
+                    load_control = getattr(self.repository, "load_control_state", None)
+                    persisted = await load_control() if load_control is not None else None
             except Exception as exc:
                 self._snapshot = None
                 raise SendAdmissionUnavailable() from exc
             previous = None if self._snapshot is None else self._snapshot.state
+            epoch = 1
+            hold_until = None
+            if persisted:
+                from datetime import UTC, datetime
+
+                valid_until = persisted.get("valid_until")
+                hold_until = persisted.get("hold_until")
+                now_utc = datetime.now(UTC)
+                if valid_until is not None and valid_until.tzinfo is None:
+                    raise SendAdmissionUnavailable()
+                if valid_until is not None and valid_until < now_utc:
+                    previous = "closed"
+                else:
+                    loaded_state = persisted.get("state") or previous
+                    if loaded_state in ADMISSION_STATES:
+                        previous = loaded_state
+                if (
+                    hold_until is not None
+                    and getattr(hold_until, "tzinfo", None) is None
+                ):
+                    raise SendAdmissionUnavailable()
+                epoch = int(persisted.get("state_epoch") or 1)
             state, reason = evaluate_capacity(
                 facts,
                 limits=self.limits,
                 previous_state=previous,
             )
+            if (
+                hold_until is not None
+                and previous == "closed"
+                and state == "open"
+            ):
+                from datetime import UTC, datetime
+
+                if hold_until > datetime.now(UTC):
+                    state, reason = "degraded", "recovery_hold"
+            save_control = getattr(self.repository, "save_control_state", None)
+            if save_control is not None:
+                from datetime import UTC, datetime, timedelta
+
+                hold = hold_until
+                if previous == "closed" and state != "closed":
+                    hold = datetime.now(UTC) + timedelta(seconds=60)
+                try:
+                    await save_control(
+                        state=state,
+                        reason=reason,
+                        hold_until=hold,
+                        epoch=epoch,
+                    )
+                except Exception as exc:
+                    self._snapshot = None
+                    raise SendAdmissionUnavailable() from exc
             self._version += 1
             loaded = SendAdmissionSnapshot(
                 self._version,

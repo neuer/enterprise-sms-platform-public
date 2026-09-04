@@ -5,9 +5,11 @@ from typing import Any
 import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.services.outbox import OutboxEventSpec
 from app.services.uncertain_resolution import (
     UncertainResolutionConflict,
     UncertainResolutionService,
+    _apply_not_accepted,
 )
 
 PROPOSER = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
@@ -37,6 +39,9 @@ class FakeResult:
         return self.row
 
     def scalar_one(self) -> object:
+        return self.scalar
+
+    def scalar_one_or_none(self) -> object:
         return self.scalar
 
     def __iter__(self) -> Any:
@@ -83,65 +88,80 @@ def service(
     return item
 
 
+def _resolution(
+    *,
+    state: str = "proposed",
+    action: str = "keep_unknown",
+    confirmer: int | None = None,
+) -> dict[str, object]:
+    return {
+        "id": 4,
+        "chunk_id": 9,
+        "batch_id": 3,
+        "action": action,
+        "state": state,
+        "proposer_account_id": 1,
+        "confirmer_account_id": confirmer,
+        "child_batch_id": None,
+        "effect_generation": 1,
+        "effect_error": None,
+        "app_id": 7,
+        "channel": "api",
+        "category": "notice",
+        "source_app_id": 7,
+        "source_channel": "api",
+        "source_category": "notice",
+    }
+
+
 @pytest.mark.asyncio
 async def test_same_admin_cannot_confirm_own_proposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "id": 4,
-                    "chunk_id": 9,
-                    "batch_id": 3,
-                    "action": "keep_unknown",
-                    "state": "proposed",
-                    "proposer_account_id": 1,
-                    "confirmer_account_id": None,
-                    "child_batch_id": None,
-                }
-            )
-        ]
-    )
+    connection = FakeConnection([FakeResult(_resolution())])
 
     with pytest.raises(UncertainResolutionConflict, match="确认人不能是提案人"):
         await service(monkeypatch, connection).confirm(4, PROPOSER)
 
 
 @pytest.mark.asyncio
-async def test_second_admin_confirms_keep_unknown(
+async def test_second_admin_confirm_only_enqueues_effect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    confirmed = {
-        "id": 4,
-        "chunk_id": 9,
-        "batch_id": 3,
-        "action": "keep_unknown",
-        "state": "confirmed",
-        "proposer_account_id": 1,
-        "confirmer_account_id": 2,
-        "child_batch_id": None,
-    }
+    import app.services.uncertain_resolution as module
+
+    enqueued: list[OutboxEventSpec] = []
+
+    async def fake_enqueue(_connection: object, spec: OutboxEventSpec) -> None:
+        enqueued.append(spec)
+
+    released: list[object] = []
+
+    async def fake_release(*_args: object, **_kwargs: object) -> bool:
+        released.append(_kwargs)
+        return True
+
+    monkeypatch.setattr(module, "enqueue_outbox", fake_enqueue)
+    monkeypatch.setattr(module, "request_usage_release_for_batch", fake_release)
+    pending = {**_resolution(), "state": "effect_pending", "confirmer_account_id": 2}
     connection = FakeConnection(
         [
-            FakeResult(
-                {
-                    **confirmed,
-                    "state": "proposed",
-                    "confirmer_account_id": None,
-                }
-            ),
-            FakeResult(confirmed),
+            FakeResult(_resolution()),
+            FakeResult(pending),
         ]
     )
 
-    item, resend = await service(monkeypatch, connection).confirm(4, CONFIRMER)
+    item = await service(monkeypatch, connection).confirm(4, CONFIRMER)
 
-    assert resend is None
-    assert item.state == "confirmed"
+    assert item.state == "effect_pending"
     assert item.confirmer_account_id == 2
-    assert "proposer_account_id <> confirmer" not in connection.calls[1][0]
-    assert connection.calls[1][1] == {"id": 4, "account_id": 2}
+    assert released == []
+    assert len(enqueued) == 1
+    assert enqueued[0].task_name == "app.tasks.outbox.apply_uncertain_effect"
+    assert enqueued[0].dedup_key == "uncertain.effect:4:1"
+    sql = "\n".join(call[0] for call in connection.calls)
+    assert "effect_pending" in sql
+    assert "SET status='pending'" not in sql
 
 
 @pytest.mark.asyncio
@@ -151,18 +171,7 @@ async def test_propose_requires_unknown_terminal_chunk(
     connection = FakeConnection(
         [
             FakeResult({"id": 9, "batch_id": 3}),
-            FakeResult(
-                {
-                    "id": 1,
-                    "chunk_id": 9,
-                    "batch_id": 3,
-                    "action": "confirm_accepted",
-                    "state": "proposed",
-                    "proposer_account_id": 1,
-                    "confirmer_account_id": None,
-                    "child_batch_id": None,
-                }
-            ),
+            FakeResult(_resolution(action="confirm_accepted")),
         ]
     )
 
@@ -193,20 +202,7 @@ async def test_concurrent_confirm_is_rejected_after_first_wins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "id": 4,
-                    "chunk_id": 9,
-                    "batch_id": 3,
-                    "action": "keep_unknown",
-                    "state": "confirmed",
-                    "proposer_account_id": 1,
-                    "confirmer_account_id": 2,
-                    "child_batch_id": None,
-                }
-            )
-        ]
+        [FakeResult(_resolution(state="effect_pending", confirmer=2))]
     )
 
     with pytest.raises(UncertainResolutionConflict, match="处置单已确认"):
@@ -214,11 +210,24 @@ async def test_concurrent_confirm_is_rejected_after_first_wins(
 
 
 @pytest.mark.asyncio
-async def test_confirm_not_accepted_releases_only_when_batch_unused(
+async def test_not_accepted_release_is_chunk_fact_and_batch_only_when_all_proven(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.services.uncertain_resolution as module
-
+    unused = FakeConnection(
+        [
+            FakeResult(
+                {
+                    "reservation_id": "11111111-1111-1111-1111-111111111111",
+                    "recipient_count": 10,
+                    "segment_count": 10,
+                    "request_count": 1,
+                }
+            ),
+            FakeResult(),
+            FakeResult(scalar=False),
+            FakeResult(scalar="11111111-1111-1111-1111-111111111111"),
+        ]
+    )
     released: list[tuple[int, str]] = []
 
     async def fake_release(
@@ -230,41 +239,46 @@ async def test_confirm_not_accepted_releases_only_when_batch_unused(
         released.append((batch_id, event_id))
         return True
 
+    import app.services.uncertain_resolution as module
+
     monkeypatch.setattr(module, "request_usage_release_for_batch", fake_release)
-    confirmed = {
-        "id": 4,
-        "chunk_id": 9,
-        "batch_id": 3,
-        "action": "confirm_not_accepted",
-        "state": "confirmed",
-        "proposer_account_id": 1,
-        "confirmer_account_id": 2,
-        "child_batch_id": None,
-    }
-    unused = FakeConnection(
+    await _apply_not_accepted(
+        unused,  # type: ignore[arg-type]
+        resolution_id=4,
+        chunk_id=9,
+        batch_id=3,
+    )
+    assert released == [
+        (3, "usage:11111111-1111-1111-1111-111111111111:uncertain-unused")
+    ]
+    assert unused.calls[1][1]["event_id"] == "resolution:4:not-accepted"
+
+    released.clear()
+    leftover = FakeConnection(
         [
-            FakeResult({**confirmed, "state": "proposed", "confirmer_account_id": None}),
-            FakeResult(confirmed),
+            FakeResult(
+                {
+                    "reservation_id": "11111111-1111-1111-1111-111111111111",
+                    "recipient_count": 10,
+                    "segment_count": 10,
+                    "request_count": 0,
+                }
+            ),
+            FakeResult(),
             FakeResult(scalar=True),
         ]
     )
-    await service(monkeypatch, unused).confirm(4, CONFIRMER)
-    assert released == [(3, "uncertain-unused:4")]
-
-    released.clear()
-    used = FakeConnection(
-        [
-            FakeResult({**confirmed, "state": "proposed", "confirmer_account_id": None}),
-            FakeResult(confirmed),
-            FakeResult(scalar=False),
-        ]
+    await _apply_not_accepted(
+        leftover,  # type: ignore[arg-type]
+        resolution_id=5,
+        chunk_id=10,
+        batch_id=3,
     )
-    await service(monkeypatch, used).confirm(4, CONFIRMER)
     assert released == []
 
 
 @pytest.mark.asyncio
-async def test_resend_builds_new_batch_identity_and_never_reopens_old_chunk(
+async def test_resend_builds_resolution_scoped_biz_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCrypto:
@@ -274,20 +288,8 @@ async def test_resend_builds_new_batch_identity_and_never_reopens_old_chunk(
         def decrypt_bound_packed_text(self, *_: object) -> str:
             return "通知内容"
 
-    confirmed = {
-        "id": 4,
-        "chunk_id": 9,
-        "batch_id": 3,
-        "action": "resend_new_batch",
-        "state": "confirmed",
-        "proposer_account_id": 1,
-        "confirmer_account_id": 2,
-        "child_batch_id": None,
-    }
     connection = FakeConnection(
         [
-            FakeResult({**confirmed, "state": "proposed", "confirmer_account_id": None}),
-            FakeResult(confirmed),
             FakeResult(
                 {
                     "batch_no": "BATCH-1",
@@ -310,14 +312,15 @@ async def test_resend_builds_new_batch_identity_and_never_reopens_old_chunk(
         ]
     )
     item = UncertainResolutionService(FakeCrypto())  # type: ignore[arg-type]
-    monkeypatch.setattr(item, "_engine", lambda: FakeEngine(connection))
-
-    resolution, request = await item.confirm(4, CONFIRMER)
-
-    assert resolution.state == "confirmed"
-    assert request is not None
-    assert request.biz_id.startswith("unknown-recipients-v1:")
-    assert request.resend_of == "BATCH-1"
+    request = await item._build_resend(
+        connection,
+        chunk_id=9,
+        resolution_id=4,
+        generation=2,
+        actor=None,
+    )
+    assert request.biz_id == "manual-resend:4:2"
+    assert request.resend_of is None
     assert request.mobiles == ("13800138000",)
     sql = "\n".join(call[0] for call in connection.calls)
     assert "SET status='pending'" not in sql

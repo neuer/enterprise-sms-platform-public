@@ -162,6 +162,13 @@ const sendStatusLabel: Record<SendResult["status"], string> = {
   queued: "排队中",
   scheduled: "已排期",
   pending_approval: "待审批",
+  sending: "发送中",
+  completed: "已完成",
+  completed_unknown: "完成(含未知)",
+  cancelled: "已取消",
+  rejected: "已驳回",
+  expired: "已过期",
+  balance_blocked: "余额阻断",
 }
 
 function deferredReasonText(reason: string): string {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from app.core.apikey import (
     ApiKeyAuthenticator,
     InvalidApiKey,
     SqlApiKeyRepository,
+    derive_legacy_data_hmac_pepper,
     issue_api_key_digest,
 )
 from app.core.health import ApiKeyPepperReferenceCheck
@@ -49,6 +51,7 @@ async def _insert_app(
     digest: str,
     version: int | None,
     name: str,
+    algorithm: str | None = None,
 ) -> int:
     return await repository.create(
         name=name,
@@ -56,6 +59,7 @@ async def _insert_app(
         api_key_hash=digest,
         api_key_prefix=key[:8],
         api_key_hash_version=version,
+        api_key_hash_algorithm=algorithm,
         allowed_categories="notice",
         default_sign=None,
         daily_quota=0,
@@ -161,9 +165,23 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
             digest=hashlib.sha256(legacy_key.encode()).hexdigest(),
             version=None,
             name=f"legacy-{nonce}",
+            algorithm="legacy_sha256",
         )
         app_ids.append(legacy_id)
         assert (await pepper_auth.authenticate(legacy_key)).app_id == legacy_id
+
+        unclassified_key = f"unclass-{nonce}-with-enough-entropy"
+        unclassified_id = await _insert_app(
+            repository,
+            key=unclassified_key,
+            digest=hashlib.sha256(unclassified_key.encode()).hexdigest(),
+            version=None,
+            name=f"unclass-{nonce}",
+            algorithm=None,
+        )
+        app_ids.append(unclassified_id)
+        with pytest.raises(InvalidApiKey):
+            await pepper_auth.authenticate(unclassified_key)
 
         await ApiKeyPepperReferenceCheck(
             _ReferenceSettings(pepper_rotated, database_url)
@@ -179,4 +197,83 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
                     text("DELETE FROM app WHERE name LIKE :prefix"),
                     {"prefix": f"%{nonce}%"},
                 )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unclassified_hmac_digest_requires_deploy_inventory(
+    tmp_path,
+) -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    old_hmac = b64(b"h")
+    settings = settings_with_secrets(
+        tmp_path / "legacy",
+        api_key_pepper_key=b64(b"p"),
+        api_key_legacy_hmac_pepper=old_hmac,
+    )
+    db_settings = cast(
+        Any,
+        SimpleNamespace(
+            database_url=database_url,
+            database_url_for=lambda _role: database_url,
+        ),
+    )
+    engine = create_async_engine(database_url)
+    repository = SqlAppRepository(db_settings)
+    key_repository = SqlApiKeyRepository(db_settings)
+    nonce = uuid4().hex
+    key = f"hmac-{nonce}-with-enough-entropy"
+    digest = hmac.new(
+        derive_legacy_data_hmac_pepper(old_hmac),
+        key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    app_id = await _insert_app(
+        repository,
+        key=key,
+        digest=digest,
+        version=None,
+        name=f"hmac-{nonce}",
+        algorithm=None,
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sys_config
+                       SET value='legacy_data_hmac_pepper_v1'
+                     WHERE key='api_key_unclassified_algorithms'
+                    """
+                )
+            )
+        auth = ApiKeyAuthenticator(key_repository, settings=settings)
+        assert (await auth.authenticate(key)).app_id == app_id
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sys_config
+                       SET value=''
+                     WHERE key='api_key_unclassified_algorithms'
+                    """
+                )
+            )
+        with pytest.raises(InvalidApiKey):
+            await ApiKeyAuthenticator(key_repository, settings=settings).authenticate(key)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM app WHERE id=:app_id"),
+                {"app_id": app_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sys_config
+                       SET value=''
+                     WHERE key='api_key_unclassified_algorithms'
+                    """
+                )
+            )
         await engine.dispose()
