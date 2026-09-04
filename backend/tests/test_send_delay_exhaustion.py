@@ -28,6 +28,9 @@ class FakeResult:
         assert self.row is not None
         return self.row
 
+    def one_or_none(self) -> dict[str, object] | None:
+        return self.row
+
 
 class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
@@ -82,6 +85,7 @@ async def test_exhaustion_finalizes_messages_batch_and_callback(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult(row={"id": 11, "status": "completed"}),
+            FakeResult(),
         ]
     )
     settled: list[tuple[int, str]] = []
