@@ -52,7 +52,13 @@ CANONICAL_SECRET_NAMES = frozenset(
 )
 VENDOR_SECRET_NAMES = frozenset({"vendor_secret_name", "vendor_secret_key"})
 VENDOR_REVOCATION_TOMBSTONE = b"!"
-BACKEND_SECRET_NAMES = CANONICAL_SECRET_NAMES - {
+CONDITIONAL_SECRET_NAMES = frozenset({"api_key_legacy_hmac_pepper"})
+LEGACY_API_KEY_PEPPER_NAME = "api_key_legacy_hmac_pepper"
+LEGACY_API_KEY_PEPPER_TOMBSTONE = VENDOR_REVOCATION_TOMBSTONE
+BACKEND_SECRET_NAMES = (
+    CANONICAL_SECRET_NAMES
+    | CONDITIONAL_SECRET_NAMES
+) - {
     "db_owner_password",
     "redis_tls_server_key",
 }
@@ -224,11 +230,31 @@ def _validate_source_inventory(
         names = {path.name for path in source_dir.iterdir()}
     except OSError as exc:
         raise RuntimeSecretsError("source directory inventory cannot be read") from exc
-    allowed = CANONICAL_SECRET_NAMES if mode == "production" else (
-        CANONICAL_SECRET_NAMES | _DEV_ONLY_NAMES
-    )
+    allowed = CANONICAL_SECRET_NAMES | CONDITIONAL_SECRET_NAMES
+    if mode != "production":
+        allowed = allowed | _DEV_ONLY_NAMES
     if not CANONICAL_SECRET_NAMES.issubset(names) or not names.issubset(allowed):
         raise RuntimeSecretsError("source directory inventory violates policy")
+
+
+def _apply_conditional_source_secrets(
+    source_dir: Path,
+    values: dict[str, bytes],
+    *,
+    expected_owner: tuple[int, int] | None,
+) -> None:
+    """条件性迁移 Secret：源目录有则校验复制，没有则写入 API 专用 tombstone。"""
+
+    names = {path.name for path in source_dir.iterdir()}
+    for name in sorted(CONDITIONAL_SECRET_NAMES):
+        if name in names:
+            values[name] = _read_source_file(
+                source_dir / name,
+                name,
+                expected_owner=expected_owner,
+            )
+            continue
+        values[name] = LEGACY_API_KEY_PEPPER_TOMBSTONE
 
 
 def _validate_source(
@@ -251,6 +277,11 @@ def _validate_source(
         )
         for name in sorted(CANONICAL_SECRET_NAMES)
     }
+    _apply_conditional_source_secrets(
+        source_dir,
+        values,
+        expected_owner=expected_owner,
+    )
     _validate_security_key_material(values)
     if mode == "production":
         _validate_distinct_service_passwords(values)
@@ -848,6 +879,11 @@ def revoke_vendor(
             name: _read_source_file(source_dir / name, name)
             for name in sorted(CANONICAL_SECRET_NAMES - VENDOR_SECRET_NAMES)
         }
+        _apply_conditional_source_secrets(
+            source_dir,
+            values,
+            expected_owner=None,
+        )
         _validate_security_key_material(values)
         for name in VENDOR_SECRET_NAMES:
             values[name] = VENDOR_REVOCATION_TOMBSTONE
