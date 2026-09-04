@@ -8,6 +8,7 @@ import { useRoute, useRouter } from "vue-router"
 import type { UserRole } from "./api/auth"
 import { getDashboard } from "./api/dashboard"
 import DailyPasswordChangeDialog from "./components/DailyPasswordChangeDialog.vue"
+import { usePolling } from "./composables/usePolling"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { invalidateSessionGeneration } from "./api/sessionGeneration"
@@ -32,14 +33,13 @@ function switchTheme(): void {
 }
 const authenticatedShell = computed(() => !publicRoute.value && session.isAuthenticated)
 const dashboardRoute = computed(() => route.path === "/dashboard")
+const approvalRoute = computed(() => route.path === "/approvals")
 const approverRole = computed(() => session.role === "approver" || session.role === "admin")
 const balanceLabel = computed(() =>
   currentBalance.value === null
     ? "厂商余额暂无数据"
     : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
 )
-let balanceRefreshTimer: number | undefined
-
 interface NavigationItem {
   label: string
   path: string
@@ -150,28 +150,16 @@ async function refreshBalance(): Promise<void> {
   }
 }
 
-function stopBalancePolling(): void {
-  if (balanceRefreshTimer !== undefined) window.clearInterval(balanceRefreshTimer)
-  balanceRefreshTimer = undefined
-}
-
-function startBalancePolling(): void {
-  stopBalancePolling()
-  void refreshBalance()
-  balanceRefreshTimer = window.setInterval(() => void refreshBalance(), 60_000)
-}
-
-function syncBalancePolling(): void {
-  stopBalancePolling()
-  if (!authenticatedShell.value) {
-    currentBalance.value = null
-    return
-  }
-  if (!dashboardRoute.value) startBalancePolling()
-}
+/** 顶栏余额轮询：未登录或在仪表盘路由（仪表盘自带 10s 快照）时暂停，恢复时立即补刷一次。 */
+const balancePolling = usePolling(refreshBalance, {
+  intervalMs: 60_000,
+  immediate: true,
+  enabled: computed(() => authenticatedShell.value && !dashboardRoute.value),
+})
 
 function syncApprovalBadgePolling(): void {
-  if (authenticatedShell.value && approverRole.value) {
+  // 审批页有自己的 30s 列表轮询并回写 badge.pending，角标轮询在该路由暂停以避免重复请求。
+  if (authenticatedShell.value && approverRole.value && !approvalRoute.value) {
     approvalBadge.start()
   } else {
     approvalBadge.stop()
@@ -179,8 +167,10 @@ function syncApprovalBadgePolling(): void {
 }
 
 watch(() => route.fullPath, closeNavigation)
-watch([authenticatedShell, dashboardRoute], syncBalancePolling, { immediate: true })
-watch([authenticatedShell, approverRole], syncApprovalBadgePolling, { immediate: true })
+watch(authenticatedShell, (authed) => {
+  if (!authed) currentBalance.value = null
+}, { immediate: true })
+watch([authenticatedShell, approverRole, approvalRoute], syncApprovalBadgePolling, { immediate: true })
 
 onBeforeMount(() => {
   window.addEventListener("sms:dashboard-balance", handleDashboardBalance)
@@ -193,6 +183,7 @@ onMounted(() => {
   window.addEventListener("storage", handleSessionStorageSignal)
   window.addEventListener("pageshow", handlePageShow)
   window.addEventListener("keydown", handleKeydown)
+  balancePolling.start()
 })
 onBeforeUnmount(() => {
   window.removeEventListener("sms:unauthorized", handleUnauthorized)
@@ -202,7 +193,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("pageshow", handlePageShow)
   window.removeEventListener("keydown", handleKeydown)
   window.removeEventListener("sms:dashboard-balance", handleDashboardBalance)
-  stopBalancePolling()
   approvalBadge.stop()
 })
 

@@ -254,6 +254,56 @@ describe("应用骨架", () => {
     vi.unstubAllGlobals()
   })
 
+  it("审批页路由期间暂停角标轮询，离开后立即补刷并恢复周期", async () => {
+    vi.useFakeTimers()
+    const counts = { pending: 5, approved: 0, rejected: 0, expired: 0, pending_urgent: 0 }
+    const fetch = vi.fn(async (_url: string) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ total: 5, counts, items: [] }),
+    }))
+    vi.stubGlobal("fetch", fetch)
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/approvals", component: { template: "<div>审批中心</div>" } },
+        { path: "/batches", component: { template: "<div>批次列表</div>" } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 1,
+      identity_id: 11,
+      provider_code: "local",
+      username: "admin01",
+      display_name: "开发管理员",
+      dept: "平台技术部",
+      role: "admin",
+    })
+    await router.push("/approvals")
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    await flushPromises()
+    const badgeCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url).includes("/web/approvals?")).length
+
+    // 审批页自身轮询会回写角标，全局角标轮询在此路由暂停，不重复请求
+    expect(badgeCalls()).toBe(0)
+    await vi.advanceTimersByTimeAsync(90_000)
+    expect(badgeCalls()).toBe(0)
+
+    await router.push("/batches")
+    await flushPromises()
+    expect(badgeCalls()).toBe(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(badgeCalls()).toBe(2)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("移动导航支持打开、路由后关闭和 Escape 关闭", async () => {
     const router = createRouter({
       history: createMemoryHistory(),

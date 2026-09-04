@@ -260,6 +260,40 @@ describe("统一运维中心", () => {
     vi.unstubAllGlobals()
   })
 
+  it("对账导出轮询超过约 5 分钟未完成时停止并提示超时", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes(`/reports/export/${publicId}`) && !url.endsWith("/download")) {
+        return response({ id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" })
+      }
+      return response(result(url, init?.method || "GET"))
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = await mountOps()
+    await flushPromises()
+
+    await tab(wrapper, "无主报告").trigger("click")
+    await flushPromises()
+    await wrapper.findAll("button").find((item) => item.text().includes("导出对账"))!.trigger("click")
+    await flushPromises()
+
+    const statusCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url).includes(`/reports/export/${publicId}`)).length
+    expect(statusCalls()).toBe(1)
+
+    // 150 次 × 2s ≈ 5 分钟兜底：到达上限后停止轮询并给出中文超时提示
+    await vi.advanceTimersByTimeAsync(298_000)
+    expect(statusCalls()).toBe(150)
+    expect(wrapper.text()).toContain("导出状态查询超时（已超过 5 分钟），请稍后重新发起导出")
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(statusCalls()).toBe(150)
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it("unmatched 手机号格式不合法时查询与导出均被提交前拦截", async () => {
     const warning = vi.spyOn(ElMessage, "warning")
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
