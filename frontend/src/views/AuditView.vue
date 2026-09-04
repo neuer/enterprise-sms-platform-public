@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
 
 import { computed, onMounted, reactive, ref } from "vue"
 

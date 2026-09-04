@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
@@ -19,11 +17,10 @@ import {
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
-import { CATEGORY_LABELS } from "../lib/labels"
-import { formatDateTime, formatHms } from "../lib/time"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 
 const REASON_MAX_LENGTH = 256
 const POLL_INTERVAL_MS = 30_000
@@ -94,11 +91,7 @@ const selectedCountdown = computed(() => {
   if (!selected.value?.expires_at || selected.value.status !== "pending") return null
   const remaining = new Date(selected.value.expires_at).getTime() - now.value
   if (Number.isNaN(remaining) || remaining <= 0) return "已临期截止"
-  const totalSeconds = Math.floor(remaining / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  return [hours, minutes, seconds].map((unit) => String(unit).padStart(2, "0")).join(":")
+  return formatDurationHms(remaining)
 })
 
 function countOf(value: unknown): number {

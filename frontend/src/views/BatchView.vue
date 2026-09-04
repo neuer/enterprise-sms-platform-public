@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref, watch } from "vue"
 import { useRoute } from "vue-router"
@@ -22,7 +20,7 @@ import {
   type BatchItem,
   type BatchMessage,
 } from "../api/queries"
-import { CATEGORY_LABELS } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDateTimeMinute } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
@@ -74,13 +72,6 @@ const statusGroups = [
 ]
 
 const channelLabel: Record<string, string> = { api: "API", web: "Web" }
-const statusLabel: Record<string, string> = {
-  pending_approval: "待审批", rejected: "已驳回", scheduled: "已排期", queued: "排队中",
-  sending: "发送中", completed: "已完成", completed_unknown: "完成(含未知)",
-  cancelled: "已取消", balance_blocked: "余额阻断",
-  expired: "已过期", delivered: "已送达", failed: "失败", unknown: "未知", pending: "待处理",
-  sent: "已提交", other: "其他",
-}
 const detailStatusOptions = [
   { label: "待处理", value: "pending" },
   { label: "已提交", value: "sent" },
@@ -482,7 +473,7 @@ watch(moreOpen, (open) => {
       </el-table-column>
       <el-table-column label="状态" width="112">
         <template #default="{ row }">
-          <StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" />
+          <StatusTag :status="row.status" />
           <small v-if="row.deferred_reason === 'market_window'" class="cell-deferred">窗外转定时</small>
         </template>
       </el-table-column>
@@ -498,7 +489,7 @@ watch(moreOpen, (open) => {
       <article v-for="item in items" :key="item.batch_no">
         <header>
           <code>{{ item.batch_no }}</code>
-          <StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" />
+          <StatusTag :status="item.status" />
         </header>
         <p class="cell-content">{{ item.content }}</p>
         <div class="compose" role="img" :aria-label="composeText(item)">
@@ -527,14 +518,14 @@ watch(moreOpen, (open) => {
         <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
       </div>
       <span>共 {{ total }} 个批次 · 每页 20</span>
-      <el-pagination v-model:current-page="page" :page-size="20" :total="total" layout="prev, pager, next" @current-change="load" />
+      <el-pagination v-model:current-page="page" :page-size="DEFAULT_PAGE_SIZE" :total="total" layout="prev, pager, next" @current-change="load" />
     </footer>
   </div>
 
   <el-drawer v-model="drawer" size="min(560px, 92vw)" :teleported="false" class="batch-drawer">
     <template #header>
       <div v-if="selected" class="batch-drawer-head">
-        <StatusTag :status="selected.status" :label="statusLabel[selected.status] || selected.status" />
+        <StatusTag :status="selected.status" />
         <code>{{ selected.batch_no }}</code>
         <small>创建于 {{ formatDateTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} · {{ selected.dept }}</small>
       </div>
@@ -595,8 +586,8 @@ watch(moreOpen, (open) => {
       </dl>
 
       <div class="batch-detail-head"><h3>号码明细</h3><el-select v-model="detailStatus" data-testid="batch-detail-status" style="width: 128px" placeholder="全部状态" clearable @change="filterDetails"><el-option v-for="option in detailStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></div>
-      <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><PhoneReveal v-if="canDecrypt" :masked="row.phone" :reveal="() => revealPhone(row.id)" :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask v-else :value="row.phone" /></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
-      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="detailPage" :page-size="20" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
+      <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><PhoneReveal v-if="canDecrypt" :masked="row.phone" :reveal="() => revealPhone(row.id)" :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask v-else :value="row.phone" /></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
+      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="detailPage" :page-size="DEFAULT_PAGE_SIZE" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
     </template>
   </el-drawer>
   <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"><el-date-picker v-model="scheduledAt" type="datetime" popper-class="qingluan-date-popper" value-format="YYYY-MM-DDTHH:mm:ss+08:00" placeholder="选择新的发送时间" /><template #footer><el-button @click="rescheduleOpen=false">取消</el-button><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template></el-dialog>

@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, getCurrentInstance, h, onMounted, reactive, ref, watch } from "vue"
-import type { Router } from "vue-router"
+import { computed, h, onMounted, reactive, ref, watch } from "vue"
+import { useRouter } from "vue-router"
 
 import {
   createTemplate,
@@ -38,7 +36,8 @@ interface TrailStep {
 }
 
 const session = useSessionStore()
-const router = getCurrentInstance()?.appContext.config.globalProperties.$router as Router | undefined
+// 测试环境未安装路由时 useRouter 返回 undefined，「用于发送」跳转入口做空值守卫。
+const router = useRouter()
 
 const items = ref<SmsTemplate[]>([])
 const loading = ref(false)

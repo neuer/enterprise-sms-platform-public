@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import type { UploadRequestOptions } from "element-plus"
-import { computed, getCurrentInstance, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
-import type { Router } from "vue-router"
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
+import { useRouter } from "vue-router"
 
 import {
   previewBilling,
@@ -21,10 +19,12 @@ import { listSigns, type SmsSign } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
 import SegmentBar from "../components/SegmentBar.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { copyText } from "../lib/clipboard"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
-const router = getCurrentInstance()?.appContext.config.globalProperties.$router as Router | undefined
+// 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
+const router = useRouter()
 
 const form = reactive({
   category: "notice" as Category,
@@ -534,11 +534,10 @@ async function submit(): Promise<void> {
 
 async function copyBatchNo(): Promise<void> {
   if (!sendResult.value) return
-  try {
-    await navigator.clipboard.writeText(sendResult.value.batch_no)
+  if (await copyText(sendResult.value.batch_no)) {
     copied.value = true
     window.setTimeout(() => { copied.value = false }, 1600)
-  } catch {
+  } else {
     errorMessage.value = "复制失败，请手动选择批次号"
   }
 }

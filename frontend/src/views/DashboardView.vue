@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
 
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 

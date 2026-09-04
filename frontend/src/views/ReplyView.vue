@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
@@ -8,6 +6,7 @@ import { useRouter } from "vue-router"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -280,7 +279,7 @@ onMounted(load)
       <span>共 {{ total }} 条 · 每页 20</span>
       <el-pagination
         v-model:current-page="page"
-        :page-size="20"
+        :page-size="DEFAULT_PAGE_SIZE"
         :total="total"
         layout="prev, pager, next"
         @current-change="load"

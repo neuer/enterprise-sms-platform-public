@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
@@ -21,6 +19,7 @@ import {
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { reportTrendDims } from "../lib/reportTrend"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -46,7 +45,7 @@ const exportError = ref("")
 const decrypted = ref(false)
 const metric = ref<ReportTrendMetric>("total")
 const page = ref(1)
-const pageSize = 20
+const pageSize = DEFAULT_PAGE_SIZE
 /** 最后一次成功查询的条件快照；与当前表单不一致时提示「条件已变更」，不自动重查。 */
 const applied = ref<ReportFilters | null>(null)
 let pollTimer: number | undefined

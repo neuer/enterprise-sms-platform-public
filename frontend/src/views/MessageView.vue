@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { computed, ref } from "vue"
 
 import { ElMessage } from "element-plus"
@@ -19,7 +17,7 @@ import {
   type TimelineEvent,
   type TimelineResult,
 } from "../api/queries"
-import { CATEGORY_LABELS } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { maskPhone, PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -81,14 +79,6 @@ const groupedEvents = computed(() => {
   }))
 })
 
-const statusLabel: Record<string, string> = {
-  delivered: "已送达",
-  failed: "失败",
-  unknown: "未知",
-  sent: "已提交",
-  pending: "待处理",
-  other: "其他",
-}
 const blacklistSourceLabel: Record<string, string> = {
   manual: "人工加入",
   reply_optout: "回复退订",
@@ -330,7 +320,7 @@ async function revealSearched(): Promise<string> {
       </el-table-column>
       <el-table-column label="状态" width="150">
         <template #default="{ row }">
-          <StatusTag :status="row.status" :label="statusLabel[row.status] || row.status" />
+          <StatusTag :status="row.status" />
           <p v-if="showReport(row)" class="report-desc" :title="reportTip(row)">{{ row.report_desc }}</p>
         </template>
       </el-table-column>
@@ -351,7 +341,7 @@ async function revealSearched(): Promise<string> {
         <header>
           <CategoryTag v-if="isCategory(item.category)" :category="item.category" />
           <span v-else>{{ CATEGORY_LABELS[item.category] || item.category }}</span>
-          <StatusTag :status="item.status" :label="statusLabel[item.status] || item.status" />
+          <StatusTag :status="item.status" />
         </header>
         <p>{{ item.content }}</p>
         <p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p>
@@ -371,11 +361,11 @@ async function revealSearched(): Promise<string> {
           <el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />
         </el-select>
       </span>
-      <el-pagination v-model:current-page="page" data-testid="message-pagination" :page-size="20" :total="total" layout="prev, pager, next" @current-change="changePage" />
+      <el-pagination v-model:current-page="page" data-testid="message-pagination" :page-size="DEFAULT_PAGE_SIZE" :total="total" layout="prev, pager, next" @current-change="changePage" />
     </footer>
   </section>
 
-  <section v-else class="timeline-panel" v-loading="loading">
+  <section v-else v-loading="loading" class="timeline-panel">
     <p v-if="timeline?.truncated" class="timeline-truncated">事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</p>
     <EmptyState
       v-if="!timeline?.events.length"
@@ -394,7 +384,7 @@ async function revealSearched(): Promise<string> {
           <CategoryTag v-if="event.direction === 'out' && event.category && isCategory(event.category)" :category="event.category" />
           <span v-else-if="event.direction === 'out'" class="category-mark">{{ CATEGORY_LABELS[event.category || ''] || '平台下行' }}</span>
           <strong v-else>↩ 用户回复</strong>
-          <StatusTag v-if="event.status" :status="event.status" :label="statusLabel[event.status] || event.status" />
+          <StatusTag v-if="event.status" :status="event.status" />
           <time>{{ formatDateTime(event.ts).slice(11) }}</time>
         </header>
         <p>{{ event.content }}</p>
