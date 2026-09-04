@@ -664,7 +664,8 @@ CREATE TABLE sms_uncertain_resolution (
     proposer_account_id  BIGINT      NOT NULL REFERENCES user_account(id),
     confirmer_account_id BIGINT      REFERENCES user_account(id),
     child_batch_id       BIGINT      REFERENCES sms_batch(id),
-    effect_generation    INTEGER     NOT NULL DEFAULT 1 CHECK (effect_generation >= 1),
+    effect_generation    INTEGER     NOT NULL DEFAULT 1,
+    CONSTRAINT ck_uncertain_resolution_effect_generation CHECK (effect_generation >= 1),
     effect_error         VARCHAR(128),
     source_app_id        BIGINT      REFERENCES app(id),
     source_channel       VARCHAR(8),
@@ -697,30 +698,6 @@ CREATE TABLE sms_uncertain_child (
       REFERENCES sms_batch(id) ON DELETE RESTRICT,
     generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE usage_chunk_allocation (
-    chunk_id BIGINT PRIMARY KEY REFERENCES sms_chunk(id) ON DELETE RESTRICT,
-    batch_id BIGINT NOT NULL REFERENCES sms_batch(id) ON DELETE RESTRICT,
-    reservation_id UUID REFERENCES usage_reservation(id),
-    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
-    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
-    request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
-    app_id BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE usage_chunk_release (
-    resolution_id BIGINT PRIMARY KEY
-      REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
-    chunk_id BIGINT NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,
-    reservation_id UUID,
-    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
-    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
-    request_count INTEGER NOT NULL CHECK (request_count >= 0),
-    release_event_id VARCHAR(80) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_usage_chunk_release_event CHECK (
-      release_event_id ~ '^resolution[:][1-9][0-9]*[:]not-accepted$'
-    )
 );
 CREATE TABLE send_inflight_balance (
     app_id BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE RESTRICT,
@@ -1902,6 +1879,31 @@ CREATE INDEX idx_usage_reservation_recovery
     WHERE state IN ('reserved','uncertain','release_requested');
 CREATE INDEX idx_usage_reservation_retention
     ON usage_reservation(usage_date,state);
+
+CREATE TABLE usage_chunk_allocation (
+    chunk_id BIGINT PRIMARY KEY REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    batch_id BIGINT NOT NULL REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    reservation_id UUID REFERENCES usage_reservation(id),
+    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
+    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+    request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    app_id BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE usage_chunk_release (
+    resolution_id BIGINT PRIMARY KEY
+      REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
+    chunk_id BIGINT NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    reservation_id UUID,
+    recipient_count INTEGER NOT NULL CHECK (recipient_count >= 0),
+    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+    request_count INTEGER NOT NULL CHECK (request_count >= 0),
+    release_event_id VARCHAR(80) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_usage_chunk_release_event CHECK (
+      release_event_id ~ '^resolution[:][1-9][0-9]*[:]not-accepted$'
+    )
+);
 
 CREATE TABLE usage_frequency_subject (
     id              UUID PRIMARY KEY,

@@ -128,6 +128,10 @@ def upgrade() -> None:
         """
     )
     op.execute(
+        "ALTER TABLE sms_uncertain_resolution "
+        "DROP CONSTRAINT IF EXISTS ck_uncertain_resolution_effect_generation"
+    )
+    op.execute(
         """
         ALTER TABLE sms_uncertain_resolution
           ADD CONSTRAINT ck_uncertain_resolution_effect_generation
