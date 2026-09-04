@@ -310,6 +310,11 @@ def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() ->
         "\n}", maxsplit=1
     )[0]
 
+    # lint/format 先于组件测试（失败早报错），typecheck 仍只由 build 承载一次
+    assert "npm run lint" in frontend
+    assert "npm run format:check" in frontend
+    assert frontend.index("npm run lint") < frontend.index("npm test")
+    assert frontend.index("npm run format:check") < frontend.index("npm test")
     assert "npm test" in frontend
     assert "npm run build" in frontend
     assert "npm run typecheck" not in frontend
