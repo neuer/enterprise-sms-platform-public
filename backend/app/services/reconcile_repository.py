@@ -76,6 +76,9 @@ class SqlRecoveryRepository:
                         """
                     )
                 )
+                from app.services.send_inflight import reconcile_in_flight_reservations
+
+                await reconcile_in_flight_reservations(connection)
                 return [
                     RecoveryWork("batch", str(row["batch_no"]), None, str(row["category"]))
                     for row in batches.mappings()

@@ -154,6 +154,13 @@ class SqlSchedulingRepository:
                     },
                 )
                 await enqueue_batch_finished(connection, int(row["id"]))
+                from app.services.send_inflight import request_inflight_release_for_batch
+
+                await request_inflight_release_for_batch(
+                    connection,
+                    batch_id=int(row["id"]),
+                    reason="batch-cancelled",
+                )
                 batch = ScheduledBatch(
                     str(row["batch_no"]),
                     str(row["category"]),

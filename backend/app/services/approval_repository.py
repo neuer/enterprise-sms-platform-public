@@ -387,6 +387,13 @@ class SqlApprovalRepository:
                             ),
                         )
                 if action == "reject":
+                    from app.services.send_inflight import request_inflight_release_for_batch
+
+                    await request_inflight_release_for_batch(
+                        connection,
+                        batch_id=int(batch_id),
+                        reason="batch-rejected",
+                    )
                     release_event = f"approval:{approval_id}:rejected"
                     if not await request_usage_release_for_batch(
                         connection,
@@ -469,6 +476,13 @@ class SqlApprovalRepository:
                             {"batch_id": int(row["batch_id"])},
                         )
                         await enqueue_batch_finished(connection, int(row["batch_id"]))
+                        from app.services.send_inflight import request_inflight_release_for_batch
+
+                        await request_inflight_release_for_batch(
+                            connection,
+                            batch_id=int(row["batch_id"]),
+                            reason="batch-expired",
+                        )
                         release_event = f"approval:{case.approval_id}:expired"
                         if not await request_usage_release_for_batch(
                             connection,

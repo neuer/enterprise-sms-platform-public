@@ -149,10 +149,11 @@ class SqlPipelineStore:
         app_id: int,
         estimated: int,
         limit: int,
-    ) -> None:
+    ) -> Any:
         if estimated < 1 or limit < 1:
             raise ValueError("in-flight reservation bounds invalid")
         from app.services.pipeline import InFlightLimitExceeded
+        from app.services.send_inflight import InFlightReservation
 
         async with self._engine().begin() as connection:
             await connection.execute(
@@ -184,6 +185,43 @@ class SqlPipelineStore:
             )
             if updated.scalar_one_or_none() is None:
                 raise InFlightLimitExceeded("应用在途分片已达上限")
+            created = (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO send_inflight_reservation (
+                          app_id, reserved_chunks, state, generation, expires_at
+                        ) VALUES (
+                          :app_id, :estimated, 'reserved', 1,
+                          now() + interval '15 minutes'
+                        )
+                        RETURNING id, generation, reserved_chunks
+                        """
+                    ),
+                    {"app_id": app_id, "estimated": estimated},
+                )
+            ).mappings().one()
+            return InFlightReservation(
+                int(created["id"]),
+                int(created["generation"]),
+                int(created["reserved_chunks"]),
+            )
+
+    async def release_in_flight_reservation(
+        self,
+        reservation_id: int,
+        generation: int,
+        reason: str,
+    ) -> bool:
+        from app.services.send_inflight import release_in_flight_reservation
+
+        async with self._engine().begin() as connection:
+            return await release_in_flight_reservation(
+                connection,
+                reservation_id=reservation_id,
+                generation=generation,
+                reason=reason,
+            )
 
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         if not phone_hmacs:
@@ -427,6 +465,18 @@ class SqlPipelineStore:
                 connection,
                 reservation_id=command.usage_reservation_id,
                 batch_id=batch_id,
+            )
+        if command.inflight_reservation_id is not None:
+            from app.services.send_inflight import bind_in_flight_reservation
+
+            if command.inflight_reservation_generation is None:
+                raise ValueError("in-flight reservation generation missing")
+            await bind_in_flight_reservation(
+                connection,
+                reservation_id=command.inflight_reservation_id,
+                generation=command.inflight_reservation_generation,
+                batch_id=batch_id,
+                app_id=int(command.app_id or 0),
             )
         await connection.execute(
             text(

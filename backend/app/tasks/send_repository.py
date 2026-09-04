@@ -493,6 +493,35 @@ class SqlChunkStore:
                         text("UPDATE sms_batch SET status='sending',updated_at=now() WHERE id=:id"),
                         {"id": batch_id},
                     )
+                    from app.services.send_inflight import materialize_in_flight_reservation
+
+                    actual_chunks = int(
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT count(*) FROM sms_chunk WHERE batch_id=:batch_id"
+                                ),
+                                {"batch_id": batch_id},
+                            )
+                        ).scalar_one()
+                    )
+                    app_limit = 200
+                    if batch["app_id"] is not None:
+                        limit_row = await connection.execute(
+                            text(
+                                "SELECT max_in_flight_chunks FROM app WHERE id=:app_id"
+                            ),
+                            {"app_id": batch["app_id"]},
+                        )
+                        loaded_limit = limit_row.scalar_one_or_none()
+                        if loaded_limit is not None:
+                            app_limit = max(1, int(loaded_limit))
+                    await materialize_in_flight_reservation(
+                        connection,
+                        batch_id=batch_id,
+                        actual_chunks=actual_chunks,
+                        limit=app_limit,
+                    )
                 elif str(batch["status"]) == "queued":
                     await connection.execute(
                         text(
@@ -725,6 +754,13 @@ class SqlChunkStore:
         batch = aggregate.mappings().one()
         if str(batch["status"]) == "completed":
             await enqueue_batch_finished(connection, int(batch["id"]))
+            from app.services.send_inflight import request_inflight_release_for_batch
+
+            await request_inflight_release_for_batch(
+                connection,
+                batch_id=int(batch["id"]),
+                reason="batch-completed",
+            )
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         engine = self._engine()

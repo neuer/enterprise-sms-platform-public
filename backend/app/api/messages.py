@@ -310,6 +310,7 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
             market_approval_threshold=policy.market_approval_threshold,
             approval_expire_hours=policy.approval_expire_hours,
             test_send_max=policy.test_send_max,
+            vendor_batch_size=max(1, int(config.get("vendor_batch_size", "500"))),
         ),
     )
 
