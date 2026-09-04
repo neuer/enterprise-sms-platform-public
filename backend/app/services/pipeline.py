@@ -1199,7 +1199,10 @@ class SendPipeline:
                 if (
                     len(aliases) != len(request.protected_hmac_candidates)
                     or set(aliases) != self.crypto.hmac_versions
-                    or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in aliases.values())
+                    or any(
+                        re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                        for digest in aliases.values()
+                    )
                     or aliases.get(protected_source[0].key_version)
                     != protected_source[0].phone_hmac
                 ):
