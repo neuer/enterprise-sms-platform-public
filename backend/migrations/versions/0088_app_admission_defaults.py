@@ -65,23 +65,37 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE app
-          ADD CONSTRAINT ck_app_recipient_limit_per_min
-          CHECK (recipient_limit_per_min BETWEEN 1 AND 100000000)
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE app
-          ADD CONSTRAINT ck_app_segment_limit_per_min
-          CHECK (segment_limit_per_min BETWEEN 1 AND 100000000)
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE app
-          ADD CONSTRAINT ck_app_max_in_flight_chunks
-          CHECK (max_in_flight_chunks BETWEEN 1 AND 100000)
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='app'::regclass
+              AND conname='ck_app_recipient_limit_per_min'
+          ) THEN
+            ALTER TABLE app
+              ADD CONSTRAINT ck_app_recipient_limit_per_min
+              CHECK (recipient_limit_per_min BETWEEN 1 AND 100000000);
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='app'::regclass
+              AND conname='ck_app_segment_limit_per_min'
+          ) THEN
+            ALTER TABLE app
+              ADD CONSTRAINT ck_app_segment_limit_per_min
+              CHECK (segment_limit_per_min BETWEEN 1 AND 100000000);
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='app'::regclass
+              AND conname='ck_app_max_in_flight_chunks'
+          ) THEN
+            ALTER TABLE app
+              ADD CONSTRAINT ck_app_max_in_flight_chunks
+              CHECK (max_in_flight_chunks BETWEEN 1 AND 100000);
+          END IF;
+        END
+        $$
         """
     )
 

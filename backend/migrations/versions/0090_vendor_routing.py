@@ -33,16 +33,28 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE sms_batch
-          ADD CONSTRAINT ck_sms_batch_selected_vendor
-          CHECK (selected_vendor ~ '^[a-z][a-z0-9_]{0,31}$')
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE sms_batch
-          ADD CONSTRAINT ck_sms_batch_route_policy_version
-          CHECK (route_policy_version >= 1)
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='sms_batch'::regclass
+              AND conname='ck_sms_batch_selected_vendor'
+          ) THEN
+            ALTER TABLE sms_batch
+              ADD CONSTRAINT ck_sms_batch_selected_vendor
+              CHECK (selected_vendor ~ '^[a-z][a-z0-9_]{0,31}$');
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='sms_batch'::regclass
+              AND conname='ck_sms_batch_route_policy_version'
+          ) THEN
+            ALTER TABLE sms_batch
+              ADD CONSTRAINT ck_sms_batch_route_policy_version
+              CHECK (route_policy_version >= 1);
+          END IF;
+        END
+        $$
         """
     )
     op.execute(
@@ -61,16 +73,28 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE sms_chunk
-          ADD CONSTRAINT ck_sms_chunk_selected_vendor
-          CHECK (selected_vendor ~ '^[a-z][a-z0-9_]{0,31}$')
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE sms_chunk
-          ADD CONSTRAINT ck_sms_chunk_route_generation
-          CHECK (route_generation >= 1)
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='sms_chunk'::regclass
+              AND conname='ck_sms_chunk_selected_vendor'
+          ) THEN
+            ALTER TABLE sms_chunk
+              ADD CONSTRAINT ck_sms_chunk_selected_vendor
+              CHECK (selected_vendor ~ '^[a-z][a-z0-9_]{0,31}$');
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='sms_chunk'::regclass
+              AND conname='ck_sms_chunk_route_generation'
+          ) THEN
+            ALTER TABLE sms_chunk
+              ADD CONSTRAINT ck_sms_chunk_route_generation
+              CHECK (route_generation >= 1);
+          END IF;
+        END
+        $$
         """
     )
     op.execute(
@@ -82,9 +106,19 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE raw_vendor_log
-          ADD CONSTRAINT ck_raw_vendor_log_vendor_id
-          CHECK (vendor_id ~ '^[a-z][a-z0-9_]{0,31}$')
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='raw_vendor_log'::regclass
+              AND conname='ck_raw_vendor_log_vendor_id'
+          ) THEN
+            ALTER TABLE raw_vendor_log
+              ADD CONSTRAINT ck_raw_vendor_log_vendor_id
+              CHECK (vendor_id ~ '^[a-z][a-z0-9_]{0,31}$');
+          END IF;
+        END
+        $$
         """
     )
     op.execute(
