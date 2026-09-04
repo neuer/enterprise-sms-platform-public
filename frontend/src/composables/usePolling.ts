@@ -1,4 +1,4 @@
-import { getCurrentInstance, onBeforeUnmount, toValue, watch, type MaybeRefOrGetter } from "vue"
+import { getCurrentScope, onScopeDispose, toValue, watch, type MaybeRefOrGetter } from "vue"
 
 /**
  * 轮询任务：返回 true 表示到达终态，轮询立即停止；
@@ -172,8 +172,8 @@ export function usePolling(task: PollingTask, options: UsePollingOptions): Polli
     },
   )
 
-  if (getCurrentInstance()) {
-    onBeforeUnmount(stop)
+  if (getCurrentScope()) {
+    onScopeDispose(stop)
   }
 
   return { start, stop, restart }
