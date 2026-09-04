@@ -183,6 +183,7 @@ def test_prepare_creates_service_specific_0400_copies(
         "data_aes_key",
         "data_hmac_key",
         "api_key_pepper_key",
+        "api_key_legacy_hmac_pepper",
         "audit_context_key",
         "audit_system_api_context_key",
         "audit_system_realtime_context_key",
@@ -227,11 +228,35 @@ def test_prepare_creates_service_specific_0400_copies(
         "redis_tls_server_key",
     }
     assert not (current / "backend" / "redis_tls_server_key").exists()
+    assert (current / "backend" / "api_key_legacy_hmac_pepper").read_bytes() == (
+        module.LEGACY_API_KEY_PEPPER_TOMBSTONE
+    )
+    assert not (current / "postgres" / "api_key_legacy_hmac_pepper").exists()
+    assert not (current / "migrate" / "api_key_legacy_hmac_pepper").exists()
+    assert not (current / "redis" / "api_key_legacy_hmac_pepper").exists()
     files = [path for path in current.rglob("*") if path.is_file()]
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o400 for path in files)
     expected_owner = (os.getuid(), os.getgid())
     assert all((path.stat().st_uid, path.stat().st_gid) == expected_owner for path in files)
     assert not any(path.is_symlink() for path in files)
+
+
+def test_prepare_copies_legacy_api_key_pepper_to_backend_only(
+    module: ModuleType, tmp_path: Path
+) -> None:
+    source, _ = make_source(tmp_path)
+    legacy = source / "api_key_legacy_hmac_pepper"
+    legacy.write_bytes(b"old-data-hmac-key-raw-text-never-log")
+    legacy.chmod(0o600)
+    runtime = tmp_path / "runtime"
+    prepare_portably(module, source, runtime)
+
+    current = (runtime / "current").resolve(strict=True)
+    copied = (current / "backend" / "api_key_legacy_hmac_pepper").read_bytes()
+    assert copied == b"old-data-hmac-key-raw-text-never-log"
+    assert not (current / "postgres" / "api_key_legacy_hmac_pepper").exists()
+    assert not (current / "migrate" / "api_key_legacy_hmac_pepper").exists()
+    assert not (current / "redis" / "api_key_legacy_hmac_pepper").exists()
 
 
 def test_production_generation_binds_only_public_redis_tls_fingerprints(
