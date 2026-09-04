@@ -68,7 +68,8 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE sms_vendor_attempt
-          DROP CONSTRAINT IF EXISTS sms_vendor_attempt_chunk_id_vendor_id_generation_key
+          RENAME CONSTRAINT sms_vendor_attempt_chunk_id_vendor_id_generation_key
+          TO uk_sms_vendor_attempt_vendor_generation
         """
     )
     op.execute(
@@ -82,19 +83,6 @@ def upgrade() -> None:
         ALTER TABLE sms_vendor_attempt
           ADD CONSTRAINT uk_sms_vendor_attempt_generation
           UNIQUE (chunk_id, generation)
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE sms_vendor_attempt
-          DROP CONSTRAINT IF EXISTS uk_sms_vendor_attempt_vendor_generation
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE sms_vendor_attempt
-          ADD CONSTRAINT uk_sms_vendor_attempt_vendor_generation
-          UNIQUE (chunk_id, vendor_id, generation)
         """
     )
     op.execute("DROP INDEX IF EXISTS uk_sms_vendor_attempt_irreversible")
@@ -126,20 +114,14 @@ def downgrade() -> None:
     op.execute(
         """
         ALTER TABLE sms_vendor_attempt
-          DROP CONSTRAINT IF EXISTS uk_sms_vendor_attempt_vendor_generation
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE sms_vendor_attempt
           DROP CONSTRAINT IF EXISTS uk_sms_vendor_attempt_generation
         """
     )
     op.execute(
         """
         ALTER TABLE sms_vendor_attempt
-          ADD CONSTRAINT sms_vendor_attempt_chunk_id_vendor_id_generation_key
-          UNIQUE (chunk_id, vendor_id, generation)
+          RENAME CONSTRAINT uk_sms_vendor_attempt_vendor_generation
+          TO sms_vendor_attempt_chunk_id_vendor_id_generation_key
         """
     )
     op.execute(
