@@ -8,8 +8,7 @@
     <!-- 防闪烁：样式加载前恢复颜色模式偏好；与 src/lib/theme.ts 的存储键保持一致。 -->
     <script>
       try {
-        document.documentElement.dataset.theme =
-          window.localStorage.getItem("sms-theme") === "light" ? "light" : "dark"
+        document.documentElement.dataset.theme = window.localStorage.getItem("sms-theme") === "light" ? "light" : "dark"
       } catch {
         document.documentElement.dataset.theme = "dark"
       }

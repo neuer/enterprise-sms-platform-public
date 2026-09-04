@@ -253,6 +253,9 @@ def test_frontend_package_exposes_one_canonical_gate_set() -> None:
         "build:g2": "vite build",
         "typecheck": "vue-tsc --noEmit",
         "test": "vitest run",
+        "lint": "eslint .",
+        "lint:fix": "eslint . --fix",
+        "format:check": "prettier --check .",
     }
     assert all("legacy" not in name and "qingluan" not in name for name in scripts)
 

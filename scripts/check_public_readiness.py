@@ -62,6 +62,7 @@ SAFE_PUBLIC_URL_HOSTS: Final = frozenset(
         "127.0.0.1",
         "api.github.com",
         "api.resend.com",
+        "eslint.org",
         "files.pythonhosted.org",
         "github.com",
         "localhost",
