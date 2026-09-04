@@ -790,6 +790,24 @@ def test_auth_redis_acl_allows_only_the_login_guard_lua_primitives() -> None:
         assert forbidden not in auth_block
 
 
+def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
+
+    for command in (
+        "+zadd",
+        "+zcard",
+        "+zrange",
+        "+zremrangebyscore",
+        "+eval",
+    ):
+        assert command in control_block
+    for forbidden in ("+keys", "+flushall", "+config"):
+        assert forbidden not in control_block
+
+
 def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> None:
     services = load_compose()["services"]
     migrate = services["migrate"]

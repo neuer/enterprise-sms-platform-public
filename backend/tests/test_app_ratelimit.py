@@ -8,7 +8,13 @@ from app.services.app_ratelimit import (
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
     ControlPlaneUnavailable,
+    WEIGHTED_WINDOW_LUA,
 )
+
+
+def test_weighted_cost_lua_uses_zrange_for_member_weights() -> None:
+    assert "ZRANGE" in WEIGHTED_WINDOW_LUA
+    assert "ZREMRANGEBYSCORE" in WEIGHTED_WINDOW_LUA
 
 
 class FakeRedis:
