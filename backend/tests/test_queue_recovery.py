@@ -68,6 +68,22 @@ async def test_queue_resume_rejects_low_balance_without_force() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_resume_accepts_generation_fenced_balance_claims() -> None:
+    events: list[str] = []
+    service = QueueRecoveryService(
+        FakeRepository(QueueSnapshot("999:4", "999:4", 20000, 10000), events),
+        FakeSender(events),
+    )
+
+    result = await service.resume(
+        force=False, actor="admin01", ip="10.0.0.8", principal=ADMIN
+    )
+
+    assert result.paused_codes == ("999",)
+    assert events[:2] == ["db:admin01:10.0.0.8:1", "clear"]
+
+
+@pytest.mark.asyncio
 async def test_non_balance_pause_requires_explicit_force() -> None:
     events: list[str] = []
     service = QueueRecoveryService(
