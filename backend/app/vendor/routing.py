@@ -9,7 +9,7 @@ from typing import Literal
 VENDOR_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 PRIMARY_VENDOR_ID = "zhihui"
 ROUTE_POLICY_VERSION = 1
-IRREVERSIBLE_OUTCOMES = frozenset({"submitted", "uncertain"})
+IRREVERSIBLE_OUTCOMES = frozenset({"submitted", "uncertain", "invoking"})
 HOLD_OUTCOMES = frozenset({"retry_scheduled", "delayed"})
 ATTEMPT_OUTCOMES = frozenset(
     {
@@ -22,6 +22,8 @@ ATTEMPT_OUTCOMES = frozenset(
         "delayed",
         "paused",
         "stale",
+        "invoking",
+        "cancelled_before_invoke",
     }
 )
 
@@ -136,11 +138,13 @@ def decide(request: RouteRequest) -> RouteDecision:
     irreversible = [item for item in request.attempts if item.outcome in IRREVERSIBLE_OUTCOMES]
     if irreversible:
         last = irreversible[-1]
-        if last.outcome == "uncertain":
+        if last.outcome in {"uncertain", "invoking"}:
             return RouteDecision(
                 "terminal_uncertain",
                 last.vendor_id,
-                "uncertain_blocks_failover",
+                "uncertain_blocks_failover"
+                if last.outcome == "uncertain"
+                else "invoking_blocks_failover",
                 last.generation,
             )
         return RouteDecision(
@@ -153,7 +157,10 @@ def decide(request: RouteRequest) -> RouteDecision:
     previous = request.attempts[-1] if request.attempts else None
     if previous is not None and previous.outcome in HOLD_OUTCOMES:
         return RouteDecision(
-            "hold", previous.vendor_id, "same_vendor_retry", previous.generation
+            "invoke",
+            previous.vendor_id,
+            "same_vendor_retry",
+            previous.generation + 1,
         )
     if previous is not None and previous.outcome == "rejected" and not previous.safe_to_failover:
         return RouteDecision(

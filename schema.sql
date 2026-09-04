@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.81  2026-09-04
+-- v1.6.81：sms_vendor_attempt 改为每个 generation 一行，invoking 后禁止
+--          自动切换；UNIQUE(chunk_id, generation) 保证跨任务单调。
 -- v1.6.80  2026-09-04
 -- v1.6.80：send_inflight_reservation 补齐 batch_bound/materialize/release
 --          与批次指针，从活跃批次重建在途余额。
@@ -771,18 +774,27 @@ CREATE TABLE sms_vendor_attempt (
                        CHECK (vendor_id ~ '^[a-z][a-z0-9_]{0,31}$'),
     generation         INTEGER     NOT NULL CHECK (generation >= 1),
     outcome            VARCHAR(24) NOT NULL
+                       CONSTRAINT sms_vendor_attempt_outcome_check
                        CHECK (outcome IN (
                          'not_invoked','rejected','submitted','uncertain','failed',
-                         'retry_scheduled','delayed','paused','stale'
+                         'retry_scheduled','delayed','paused','stale',
+                         'invoking','cancelled_before_invoke'
                        )),
+    adapter_id         VARCHAR(32) NOT NULL DEFAULT 'zhihui'
+                       CONSTRAINT ck_sms_vendor_attempt_adapter_id
+                       CHECK (adapter_id ~ '^[a-z][a-z0-9_]{0,31}$'),
+    routing_reason     VARCHAR(64),
     safe_to_failover   BOOLEAN     NOT NULL DEFAULT FALSE,
     vendor_code        INTEGER,
+    invoke_started_at  TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (chunk_id, vendor_id, generation)
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uk_sms_vendor_attempt_generation UNIQUE (chunk_id, generation),
+    CONSTRAINT uk_sms_vendor_attempt_vendor_generation UNIQUE (chunk_id, vendor_id, generation)
 );
 CREATE UNIQUE INDEX uk_sms_vendor_attempt_irreversible
     ON sms_vendor_attempt (chunk_id)
-    WHERE outcome IN ('submitted','uncertain');
+    WHERE outcome IN ('submitted','uncertain','invoking');
 CREATE INDEX idx_sms_vendor_attempt_chunk
     ON sms_vendor_attempt (chunk_id, created_at DESC);
 

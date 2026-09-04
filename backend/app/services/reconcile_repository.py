@@ -22,7 +22,13 @@ class SqlRecoveryRepository:
                 await connection.execute(
                     text(
                         """
-                        WITH stale_chunks AS (
+                        WITH stale_invoking AS (
+                          UPDATE sms_vendor_attempt
+                          SET outcome='uncertain', updated_at=now()
+                          WHERE outcome='invoking'
+                            AND invoke_started_at < now() - interval '15 minutes'
+                          RETURNING chunk_id
+                        ), stale_chunks AS (
                           UPDATE sms_chunk c SET
                             status='uncertain',
                             uncertain_since=COALESCE(c.submitting_since,now()),
@@ -30,8 +36,13 @@ class SqlRecoveryRepository:
                           FROM sms_batch b
                           WHERE b.id=c.batch_id
                             AND b.status IN ('queued','sending')
-                            AND c.status='submitting'
-                            AND c.submitting_since<now()-interval '5 minutes'
+                            AND (
+                              (
+                                c.status='submitting'
+                                AND c.submitting_since<now()-interval '5 minutes'
+                              )
+                              OR c.id IN (SELECT chunk_id FROM stale_invoking)
+                            )
                           RETURNING c.id
                         ), settled AS (
                           UPDATE vendor_test_send_attempt attempt SET

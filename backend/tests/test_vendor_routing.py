@@ -101,7 +101,7 @@ def test_unsafe_reject_does_not_failover() -> None:
     assert decision.reason == "failover_exhausted"
 
 
-def test_same_vendor_retry_holds_without_switching() -> None:
+def test_same_vendor_retry_invokes_new_generation() -> None:
     decision = decide(
         _request(
             attempts=(
@@ -109,9 +109,20 @@ def test_same_vendor_retry_holds_without_switching() -> None:
             )
         )
     )
-    assert decision.action == "hold"
+    assert decision.action == "invoke"
     assert decision.vendor_id == PRIMARY_VENDOR_ID
     assert decision.reason == "same_vendor_retry"
+    assert decision.generation == 2
+
+
+def test_invoking_is_irreversible_uncertain() -> None:
+    decision = decide(
+        _request(
+            attempts=(VendorAttempt(PRIMARY_VENDOR_ID, 1, "invoking", False),)
+        )
+    )
+    assert decision.action == "terminal_uncertain"
+    assert decision.reason == "invoking_blocks_failover"
 
 
 def test_recovery_jitter_does_not_return_to_rejected_primary_on_same_chunk() -> None:
@@ -124,8 +135,9 @@ def test_recovery_jitter_does_not_return_to_rejected_primary_on_same_chunk() -> 
             health=_health((PRIMARY_VENDOR_ID, True), ("secondary", True)),
         )
     )
-    assert decision.action == "hold"
+    assert decision.action == "invoke"
     assert decision.vendor_id == "secondary"
+    assert decision.generation == 3
 
 
 def test_unknown_health_is_not_treated_as_available() -> None:
