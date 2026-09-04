@@ -10,7 +10,7 @@ VENDOR_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 PRIMARY_VENDOR_ID = "zhihui"
 ROUTE_POLICY_VERSION = 1
 IRREVERSIBLE_OUTCOMES = frozenset({"submitted", "uncertain", "invoking"})
-HOLD_OUTCOMES = frozenset({"retry_scheduled", "delayed"})
+HOLD_OUTCOMES = frozenset({"retry_scheduled", "delayed", "paused"})
 ATTEMPT_OUTCOMES = frozenset(
     {
         "not_invoked",

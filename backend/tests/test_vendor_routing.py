@@ -115,6 +115,18 @@ def test_same_vendor_retry_invokes_new_generation() -> None:
     assert decision.generation == 2
 
 
+def test_paused_balance_block_retries_same_vendor_after_resume() -> None:
+    decision = decide(
+        _request(
+            attempts=(VendorAttempt(PRIMARY_VENDOR_ID, 1, "paused", False, 999),)
+        )
+    )
+    assert decision.action == "invoke"
+    assert decision.vendor_id == PRIMARY_VENDOR_ID
+    assert decision.reason == "same_vendor_retry"
+    assert decision.generation == 2
+
+
 def test_invoking_is_irreversible_uncertain() -> None:
     decision = decide(
         _request(
