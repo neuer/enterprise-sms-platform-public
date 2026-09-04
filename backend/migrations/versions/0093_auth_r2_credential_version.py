@@ -52,4 +52,27 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("auth credential_version cannot be downgraded")
+    op.execute(
+        """
+        ALTER TABLE password_change_token
+          DROP CONSTRAINT IF EXISTS ck_password_change_issued_credential_version
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE password_change_token
+          DROP COLUMN IF EXISTS issued_credential_version
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE local_credential
+          DROP CONSTRAINT IF EXISTS ck_local_credential_version_positive
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE local_credential
+          DROP COLUMN IF EXISTS credential_version
+        """
+    )
