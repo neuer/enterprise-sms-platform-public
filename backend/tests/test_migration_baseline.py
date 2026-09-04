@@ -914,6 +914,20 @@ def test_vendor_attempt_generation_machine_is_expand_only() -> None:
     assert "ON CONFLICT DO NOTHING" not in source
 
 
+def test_idempotency_claim_generation_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0096_idempotency_claim_generation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.82：" in schema
+    for contract in (schema, source):
+        assert "idempotency_claim" in contract
+        assert "uk_idempotency_claim_scope" in contract
+    assert 'revision = "0096_idempotency_claim_generation"' in source
+    assert 'down_revision = "0095_vendor_attempt_generation_machine"' in source
+    assert "DELETE FROM" not in source
+
+
 def test_vendor_routing_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0090_vendor_routing.py"

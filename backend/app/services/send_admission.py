@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from time import monotonic
 from typing import Literal, Protocol
@@ -14,6 +15,12 @@ LOGGER = logging.getLogger(__name__)
 
 AdmissionState = Literal["open", "degraded", "closed"]
 ADMISSION_STATES: tuple[AdmissionState, ...] = ("open", "degraded", "closed")
+
+
+def _aware_datetime(value: object) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise SendAdmissionUnavailable()
+    return value
 
 
 class SendAdmissionRejected(RuntimeError):
@@ -31,6 +38,14 @@ class SendAdmissionUnavailable(SendAdmissionRejected):
 
     def __init__(self) -> None:
         super().__init__("closed", "snapshot_unavailable", 5)
+
+
+_STATE_RANK = {"open": 0, "degraded": 1, "closed": 2}
+_CONTROL_CAS_ATTEMPTS = 4
+
+
+def _state_rank(state: str) -> int:
+    return _STATE_RANK.get(state, -1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +221,7 @@ def decide(
     previous_state: str | None = None,
     limits: SendAdmissionLimits | None = None,
 ) -> SendAdmissionDecision:
-    """把容量带叠到类别/规模：降级只放行少量 verify/notice。"""
+    """把容量带叠到类别/规模：真实降级只放行少量 verify/notice；recovery_hold 仍拒营销。"""
 
     selected = limits or SendAdmissionLimits()
     state, reason = evaluate_capacity(
@@ -225,7 +240,33 @@ def decide(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if recipient_count > selected.degraded_max_recipients:
+        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
+            return SendAdmissionDecision(state, "degraded_volume", False, 30)
+    return SendAdmissionDecision(state, reason, True, 0)
+
+
+def authorize_from_snapshot(
+    snapshot: SendAdmissionSnapshot,
+    *,
+    category: str,
+    recipient_count: int,
+    limits: SendAdmissionLimits | None = None,
+) -> SendAdmissionDecision:
+    """只在权威快照上叠加请求级约束，禁止再次评估全局容量。"""
+
+    selected = limits or SendAdmissionLimits()
+    state, reason = snapshot.state, snapshot.reason
+    if state == "closed":
+        return SendAdmissionDecision(state, reason, False, 60)
+    lane = "bulk" if category == "market" else "realtime"
+    if lane == "realtime" and snapshot.facts.realtime_paused:
+        return SendAdmissionDecision("closed", "realtime_paused", False, 60)
+    if lane == "bulk" and snapshot.facts.bulk_paused:
+        return SendAdmissionDecision("closed", "bulk_paused", False, 60)
+    if state == "degraded":
+        if category == "market":
+            return SendAdmissionDecision(state, "degraded_bulk", False, 30)
+        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
             return SendAdmissionDecision(state, "degraded_volume", False, 30)
     return SendAdmissionDecision(state, reason, True, 0)
 
@@ -270,65 +311,16 @@ class SendAdmissionGuard:
             try:
                 async with asyncio.timeout(self.load_timeout_s):
                     facts = await self.repository.load()
-                    load_control = getattr(self.repository, "load_control_state", None)
-                    persisted = await load_control() if load_control is not None else None
             except Exception as exc:
                 self._snapshot = None
                 raise SendAdmissionUnavailable() from exc
-            previous = None if self._snapshot is None else self._snapshot.state
-            epoch = 1
-            hold_until = None
-            if persisted:
-                from datetime import UTC, datetime
-
-                valid_until = persisted.get("valid_until")
-                hold_until = persisted.get("hold_until")
-                now_utc = datetime.now(UTC)
-                if valid_until is not None and valid_until.tzinfo is None:
-                    raise SendAdmissionUnavailable()
-                if valid_until is not None and valid_until < now_utc:
-                    previous = "closed"
-                else:
-                    loaded_state = persisted.get("state") or previous
-                    if loaded_state in ADMISSION_STATES:
-                        previous = loaded_state
-                if (
-                    hold_until is not None
-                    and getattr(hold_until, "tzinfo", None) is None
-                ):
-                    raise SendAdmissionUnavailable()
-                epoch = int(persisted.get("state_epoch") or 1)
-            state, reason = evaluate_capacity(
-                facts,
-                limits=self.limits,
-                previous_state=previous,
-            )
-            if (
-                hold_until is not None
-                and previous == "closed"
-                and state == "open"
-            ):
-                from datetime import UTC, datetime
-
-                if hold_until > datetime.now(UTC):
-                    state, reason = "degraded", "recovery_hold"
+            load_control = getattr(self.repository, "load_control_state", None)
             save_control = getattr(self.repository, "save_control_state", None)
-            if save_control is not None:
-                from datetime import UTC, datetime, timedelta
-
-                hold = hold_until
-                if previous == "closed" and state != "closed":
-                    hold = datetime.now(UTC) + timedelta(seconds=60)
-                try:
-                    await save_control(
-                        state=state,
-                        reason=reason,
-                        hold_until=hold,
-                        epoch=epoch,
-                    )
-                except Exception as exc:
-                    self._snapshot = None
-                    raise SendAdmissionUnavailable() from exc
+            state, reason = await self._persist_control_state(
+                facts,
+                load_control=load_control,
+                save_control=save_control,
+            )
             self._version += 1
             loaded = SendAdmissionSnapshot(
                 self._version,
@@ -360,6 +352,143 @@ class SendAdmissionGuard:
             self._snapshot = loaded
             return loaded
 
+    def _compute_from_persisted(
+        self,
+        facts: SendAdmissionFacts,
+        persisted: dict[str, object] | None,
+    ) -> tuple[AdmissionState, str, int, object]:
+        from datetime import UTC, datetime, timedelta
+
+        previous = None if self._snapshot is None else self._snapshot.state
+        epoch = 1
+        hold_until: datetime | None = None
+        now_utc = datetime.now(UTC)
+        if persisted:
+            raw_db_now = persisted.get("db_now")
+            db_now = _aware_datetime(raw_db_now) if raw_db_now is not None else now_utc
+            raw_valid_until = persisted.get("valid_until")
+            raw_hold_until = persisted.get("hold_until")
+            if raw_valid_until is not None and _aware_datetime(raw_valid_until) < db_now:
+                previous = "closed"
+            else:
+                loaded_state = persisted.get("state") or previous
+                if loaded_state in ADMISSION_STATES:
+                    previous = loaded_state
+            if raw_hold_until is not None:
+                hold_until = _aware_datetime(raw_hold_until)
+            raw_epoch = persisted.get("state_epoch")
+            if raw_epoch is None:
+                epoch = 1
+            elif isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool):
+                epoch = raw_epoch
+            else:
+                raise SendAdmissionUnavailable()
+            now_utc = db_now
+        state, reason = evaluate_capacity(
+            facts,
+            limits=self.limits,
+            previous_state=previous,
+        )
+        if (
+            hold_until is not None
+            and previous == "closed"
+            and state == "open"
+            and hold_until > now_utc
+        ):
+            state, reason = "degraded", "recovery_hold"
+        hold = hold_until
+        if previous == "closed" and state != "closed":
+            hold = now_utc + timedelta(seconds=60)
+        return state, reason, epoch, hold
+
+    @staticmethod
+    def _can_adopt(
+        candidate_state: str,
+        candidate_reason: str,
+        winner: dict[str, object],
+    ) -> bool:
+        from datetime import UTC, datetime
+
+        raw_valid_until = winner.get("valid_until")
+        raw_db_now = winner.get("db_now")
+        if raw_valid_until is None:
+            return False
+        try:
+            valid_until = _aware_datetime(raw_valid_until)
+            db_now = (
+                _aware_datetime(raw_db_now) if raw_db_now is not None else datetime.now(UTC)
+            )
+        except SendAdmissionUnavailable:
+            return False
+        if valid_until < db_now:
+            return False
+        winner_state = str(winner.get("state") or "")
+        winner_reason = str(winner.get("reason_code") or winner.get("reason") or "")
+        if winner_state == candidate_state and winner_reason == candidate_reason:
+            return True
+        return _state_rank(winner_state) >= _state_rank(candidate_state)
+
+    async def _persist_control_state(
+        self,
+        facts: SendAdmissionFacts,
+        *,
+        load_control: Callable[..., Awaitable[object]] | None,
+        save_control: Callable[..., Awaitable[object]] | None,
+    ) -> tuple[AdmissionState, str]:
+        if load_control is None and save_control is None:
+            state, reason = evaluate_capacity(facts, limits=self.limits)
+            return state, reason
+        last_error: Exception | None = None
+        for _ in range(_CONTROL_CAS_ATTEMPTS):
+            try:
+                persisted = await load_control() if load_control is not None else None
+            except Exception as exc:
+                self._snapshot = None
+                raise SendAdmissionUnavailable() from exc
+            if persisted is not None and not isinstance(persisted, dict):
+                self._snapshot = None
+                raise SendAdmissionUnavailable()
+            state, reason, epoch, hold = self._compute_from_persisted(
+                facts,
+                persisted if isinstance(persisted, dict) else None,
+            )
+            if save_control is None:
+                return state, reason
+            try:
+                saved = await save_control(
+                    state=state,
+                    reason=reason,
+                    hold_until=hold,
+                    epoch=epoch,
+                )
+            except Exception as exc:
+                last_error = exc
+                if type(exc).__name__ == "AdmissionControlConflict":
+                    winner = getattr(exc, "winner", None)
+                    if isinstance(winner, dict) and self._can_adopt(state, reason, winner):
+                        adopted = str(winner.get("state") or state)
+                        adopted_reason = str(
+                            winner.get("reason_code") or winner.get("reason") or reason
+                        )
+                        if adopted in ADMISSION_STATES:
+                            return adopted, adopted_reason
+                    continue
+                self._snapshot = None
+                raise SendAdmissionUnavailable() from exc
+            if isinstance(saved, dict):
+                outcome = str(saved.get("outcome") or "saved")
+                saved_state = str(saved.get("state") or state)
+                saved_reason = str(
+                    saved.get("reason_code") or saved.get("reason") or reason
+                )
+                if outcome == "adopted" and not self._can_adopt(state, reason, saved):
+                    continue
+                if saved_state in ADMISSION_STATES:
+                    return saved_state, saved_reason
+            return state, reason
+        self._snapshot = None
+        raise SendAdmissionUnavailable() from last_error
+
     async def authorize(
         self,
         *,
@@ -371,11 +500,10 @@ class SendAdmissionGuard:
 
         del channel
         snap = await self.snapshot()
-        decision = decide(
-            snap.facts,
+        decision = authorize_from_snapshot(
+            snap,
             category=category,
             recipient_count=max(1, int(recipient_count)),
-            previous_state=snap.state,
             limits=self.limits,
         )
         if decision.allowed:

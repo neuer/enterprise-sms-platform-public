@@ -114,6 +114,13 @@ class FakePipeline:
     def __init__(self) -> None:
         self.calls: list[tuple[ApiAppContext, SendRequest]] = []
 
+    async def replay_if_present(
+        self,
+        _app: ApiAppContext,
+        _request: SendRequest,
+    ) -> BatchResponse | None:
+        return None
+
     async def preauthorize(self, app: ApiAppContext, category: str) -> object:
         return object()
 
@@ -988,15 +995,19 @@ def test_controlled_api_uat_hides_recipient_lookup_failures(
     assert "13800138000" not in response.text
 
 
-def test_controlled_api_uat_authorizes_and_limits_before_recipient_lookup(
+def test_controlled_api_uat_replays_before_recipient_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
 
     class RejectingPipeline:
-        async def preauthorize(self, app: ApiAppContext, category: str) -> None:
-            assert app.app_id == 7 and category == "notice"
-            events.append("preauthorize")
+        async def replay_if_present(
+            self,
+            app: ApiAppContext,
+            request: SendRequest,
+        ) -> BatchResponse | None:
+            assert app.app_id == 7 and request.category == "notice"
+            events.append("replay_if_present")
             raise CategoryNotAllowed("应用无权发送该消息类别")
 
         async def accept(self, app: ApiAppContext, request: SendRequest) -> BatchResponse:
@@ -1038,7 +1049,7 @@ def test_controlled_api_uat_authorizes_and_limits_before_recipient_lookup(
 
     assert response.status_code == 403
     assert response.json()["code"] == "CATEGORY_NOT_ALLOWED"
-    assert events == ["preauthorize"]
+    assert events == ["replay_if_present"]
 
 
 @pytest.mark.parametrize(

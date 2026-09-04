@@ -62,7 +62,7 @@ class FakeRedis:
             key = str(args[2])
             token = str(args[3])
             current = self.values.get(key)
-            if current == token or str(current or "").startswith(f"{token}:"):
+            if current == token:
                 self.values.pop(key, None)
                 return 1
             return 0
@@ -70,7 +70,7 @@ class FakeRedis:
             key = str(args[2])
             token = str(args[3])
             current = self.values.get(key)
-            return int(current == token or str(current or "").startswith(f"{token}:"))
+            return int(current == token)
         return self.eval_result
 
 
@@ -94,6 +94,11 @@ class FakeIdemRepository:
         self, scope: IdempotencyScope, biz_id: str
     ) -> None:
         return None
+
+    async def live_idempotency_claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> bool:
+        return False
 
 
 @pytest.mark.asyncio
@@ -171,11 +176,14 @@ async def test_idempotency_claim_wait_and_compare_delete_release_are_bounded() -
         await coordinator.wait(scope, "biz-3")
     assert repo.find_calls == 1
 
+    payload = redis.values["idem:claim:app:7:biz-3"]
+    assert payload.startswith(f"{token}:")
     await coordinator.release(scope, "biz-3", "wrong-token")
-    assert redis.values["idem:claim:app:7:biz-3"] == token
+    assert redis.values["idem:claim:app:7:biz-3"] == payload
     await coordinator.release(scope, "biz-3", token)
     assert "idem:claim:app:7:biz-3" not in redis.values
-    assert "ARGV[1] .. ':'" in CLAIM_RELEASE_LUA
+    assert "ARGV[1] .. ':'" not in CLAIM_RELEASE_LUA
+    assert "current == ARGV[1]" in CLAIM_RELEASE_LUA
     assert coordinator.frequency_result_key(scope, "biz-3") == "idem:freq:app:7:biz-3"
     assert coordinator.quota_result_key(scope, "biz-3", "20260711") == (
         "idem:quota:app:7:biz-3:20260711"
@@ -209,6 +217,26 @@ async def test_idempotency_wait_returns_database_fact_from_claim_owner() -> None
 
 
 @pytest.mark.asyncio
+async def test_wait_does_not_treat_missing_redis_as_unowned_when_pg_claim_live() -> None:
+    redis = FakeRedis()
+    repo = FakeIdemRepository()
+    async def live(_scope: IdempotencyScope, _biz_id: str) -> bool:
+        return True
+
+    repo.live_idempotency_claim = live  # type: ignore[method-assign]
+    coordinator = IdempotencyCoordinator(
+        redis,
+        repo,
+        wait_attempts=2,
+        wait_interval_s=0,
+    )
+    scope = IdempotencyScope("app", "7")
+    with pytest.raises(RuntimeError, match="timed out"):
+        await coordinator.wait(scope, "biz-live")
+    assert repo.find_calls >= 1
+
+
+@pytest.mark.asyncio
 async def test_claim_renew_requires_owner_token_and_default_wait_covers_lease() -> None:
     redis = FakeRedis()
     coordinator = IdempotencyCoordinator(redis, FakeIdemRepository())
@@ -218,10 +246,24 @@ async def test_claim_renew_requires_owner_token_and_default_wait_covers_lease() 
 
     assert await coordinator.renew(scope, "biz-renew", "wrong-token") is False
     assert await coordinator.renew(scope, "biz-renew", token) is True
-    assert "ARGV[1] .. ':'" in CLAIM_RENEW_LUA
+    assert "ARGV[1] .. ':'" not in CLAIM_RENEW_LUA
+    assert "current == ARGV[1]" in CLAIM_RENEW_LUA
     assert coordinator.wait_attempts * coordinator.wait_interval_s >= (
         coordinator.claim_ttl_s + IDEMPOTENCY_WAIT_MARGIN_S
     )
+    viewed = await coordinator.inspect(scope, "biz-renew")
+    assert viewed is not None
+    assert viewed.generation == 1
+    await coordinator.release(scope, "biz-renew", token)
+    token2 = await coordinator.claim(scope, "biz-renew", fingerprint="abc")
+    assert token2 is not None
+    viewed2 = await coordinator.inspect(scope, "biz-renew")
+    assert viewed2 is not None
+    assert viewed2.generation == 2
+    assert viewed2.fingerprint == "abc"
+    stale_payload = f"{token}::{1}"
+    redis.values[coordinator.claim_key(scope, "biz-renew")] = stale_payload
+    assert await coordinator.renew(scope, "biz-renew", token2) is False
 
 
 @pytest.mark.asyncio
