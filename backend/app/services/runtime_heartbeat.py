@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import text
@@ -14,6 +16,12 @@ from app.settings import get_settings
 LOGGER = logging.getLogger(__name__)
 HEARTBEAT_LEASE_SECONDS = 30
 REQUIRED_COMPONENTS = ("send-realtime", "send-bulk", "outbox-dispatcher")
+KNOWN_COMPONENTS = frozenset(REQUIRED_COMPONENTS)
+QUEUE_COMPONENTS = {
+    "realtime": "send-realtime",
+    "bulk": "send-bulk",
+}
+EXPLICIT_NONE = frozenset({"", "none"})
 
 
 async def touch_runtime_heartbeat(
@@ -69,17 +77,73 @@ async def touch_runtime_heartbeat(
             await selected.dispose()
 
 
-def send_worker_heartbeat_components(argv: tuple[str, ...] | None = None) -> tuple[str, ...]:
-    """只给实际消费 realtime/bulk 的 worker 续租发送心跳。"""
+def parse_heartbeat_components(raw: str) -> tuple[str, ...]:
+    """解析显式心跳能力；未知值失败关闭。"""
 
-    selected = " ".join(argv or tuple(sys.argv)).lower()
-    if "-q" in selected or "--queues" in selected:
-        components: list[str] = []
-        if "realtime" in selected:
-            components.append("send-realtime")
-        if "bulk" in selected:
-            components.append("send-bulk")
-        return tuple(components)
+    items = [item.strip() for item in raw.split(",") if item.strip()]
+    if not items or all(item.lower() in EXPLICIT_NONE for item in items):
+        return ()
+    unknown = [item for item in items if item not in KNOWN_COMPONENTS]
+    if unknown:
+        raise ValueError("unknown runtime heartbeat component")
+    return tuple(dict.fromkeys(items))
+
+
+def celery_queue_names(argv: tuple[str, ...]) -> tuple[str, ...] | None:
+    """语法级解析 Celery 队列参数；未声明队列时返回 None。"""
+
+    found = False
+    queues: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item in {"-Q", "--queues"}:
+            found = True
+            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                queues.extend(
+                    part.strip() for part in argv[index + 1].split(",") if part.strip()
+                )
+                index += 2
+                continue
+            index += 1
+            continue
+        if item.startswith("--queues="):
+            found = True
+            queues.extend(
+                part.strip()
+                for part in item.split("=", 1)[1].split(",")
+                if part.strip()
+            )
+        elif item.startswith("-Q") and item != "-Q":
+            found = True
+            queues.extend(part.strip() for part in item[2:].split(",") if part.strip())
+        index += 1
+    if not found:
+        return None
+    return tuple(queues)
+
+
+def send_worker_heartbeat_components(
+    argv: tuple[str, ...] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """按显式能力或精确队列名续租；禁止 realtime-report 子串误认。"""
+
+    selected_env = os.environ if environ is None else environ
+    explicit = selected_env.get("SMS_RUNTIME_HEARTBEAT_COMPONENTS")
+    if explicit is not None:
+        return parse_heartbeat_components(explicit)
+
+    queues = celery_queue_names(argv if argv is not None else tuple(sys.argv))
+    if queues is not None:
+        return tuple(
+            dict.fromkeys(
+                QUEUE_COMPONENTS[name] for name in queues if name in QUEUE_COMPONENTS
+            )
+        )
+    if selected_env.get("ENVIRONMENT") == "production":
+        return ()
     return ("send-realtime", "send-bulk")
 
 

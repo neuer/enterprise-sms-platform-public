@@ -8,7 +8,9 @@ from app.services.send_admission import (
     SendAdmissionFacts,
     SendAdmissionGuard,
     SendAdmissionRejected,
+    SendAdmissionSnapshot,
     SendAdmissionUnavailable,
+    authorize_from_snapshot,
     decide,
     evaluate_capacity,
 )
@@ -388,16 +390,186 @@ async def test_guard_uses_persisted_state_and_fails_closed_on_persist_error() ->
 def test_send_worker_heartbeat_components_follow_queue_flags() -> None:
     from app.services.runtime_heartbeat import send_worker_heartbeat_components
 
+    empty = {"ENVIRONMENT": "test"}
     assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime")
+        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime"),
+        environ=empty,
     ) == ("send-realtime",)
     assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "bulk")
+        ("celery", "-A", "app.tasks", "worker", "-Q", "bulk"),
+        environ=empty,
     ) == ("send-bulk",)
     assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "callback")
+        ("celery", "-A", "app.tasks", "worker", "-Q", "callback"),
+        environ=empty,
     ) == ()
-    assert send_worker_heartbeat_components(("pytest",)) == (
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
+        environ=empty,
+    ) == ()
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "--queues=realtime,callback"),
+        environ=empty,
+    ) == ("send-realtime",)
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "--queues", "bulk-report"),
+        environ=empty,
+    ) == ()
+    assert send_worker_heartbeat_components(("pytest",), environ=empty) == (
         "send-realtime",
         "send-bulk",
     )
+    assert send_worker_heartbeat_components(
+        ("pytest",),
+        environ={"ENVIRONMENT": "production"},
+    ) == ()
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
+        environ={"SMS_RUNTIME_HEARTBEAT_COMPONENTS": "none"},
+    ) == ()
+    assert send_worker_heartbeat_components(
+        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
+        environ={"SMS_RUNTIME_HEARTBEAT_COMPONENTS": "send-realtime"},
+    ) == ("send-realtime",)
+
+
+@pytest.mark.asyncio
+async def test_authorize_keeps_recovery_hold_from_snapshot() -> None:
+    healthy = facts()
+    snap = SendAdmissionSnapshot(1, 0.0, healthy, "degraded", "recovery_hold")
+    notice = authorize_from_snapshot(snap, category="notice", recipient_count=20)
+    assert notice.allowed is True
+    assert notice.state == "degraded"
+    assert notice.reason == "recovery_hold"
+    oversized = authorize_from_snapshot(snap, category="notice", recipient_count=21)
+    assert oversized.allowed is False
+    assert oversized.reason == "degraded_volume"
+    market = authorize_from_snapshot(snap, category="market", recipient_count=1)
+    assert market.allowed is False
+    assert market.reason == "degraded_bulk"
+
+    class RecoveryFacts:
+        async def load(self) -> SendAdmissionFacts:
+            return healthy
+
+        async def load_control_state(self) -> dict[str, object]:
+            from datetime import UTC, datetime, timedelta
+
+            return {
+                "state": "closed",
+                "reason_code": "outbox_backlog",
+                "state_epoch": 3,
+                "hold_until": datetime.now(UTC) + timedelta(seconds=60),
+                "valid_until": datetime.now(UTC) + timedelta(seconds=30),
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved = values
+
+    guard = SendAdmissionGuard(RecoveryFacts())
+    with pytest.raises(SendAdmissionRejected) as rejected:
+        await guard.authorize(category="market", channel="api", recipient_count=1)
+    assert rejected.value.state == "degraded"
+    assert rejected.value.reason == "degraded_bulk"
+
+
+@pytest.mark.asyncio
+async def test_cas_loser_adopts_fresh_equivalent_winner() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.send_admission_repository import AdmissionControlConflict
+
+    now = datetime.now(UTC)
+    winner = {
+        "state": "open",
+        "reason_code": "ok",
+        "state_epoch": 8,
+        "hold_until": None,
+        "valid_until": now + timedelta(seconds=10),
+        "db_now": now,
+        "outcome": "adopted",
+    }
+
+    class RacingFacts(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saves = 0
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "open",
+                "reason_code": "ok",
+                "state_epoch": 7,
+                "hold_until": None,
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> dict[str, object]:
+            self.saves += 1
+            raise AdmissionControlConflict(winner)
+
+    guard = SendAdmissionGuard(RacingFacts())
+    snap = await guard.snapshot()
+    assert snap.state == "open"
+    assert snap.reason == "ok"
+
+
+@pytest.mark.asyncio
+async def test_cas_loser_retries_when_local_candidate_is_stricter() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.send_admission_repository import AdmissionControlConflict
+
+    now = datetime.now(UTC)
+    open_winner = {
+        "state": "open",
+        "reason_code": "ok",
+        "state_epoch": 8,
+        "hold_until": None,
+        "valid_until": now + timedelta(seconds=10),
+        "db_now": now,
+        "outcome": "adopted",
+    }
+
+    class ClosedThenAdopt(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts(heartbeat_stale=True))
+            self.saves = 0
+
+        async def load_control_state(self) -> dict[str, object]:
+            if self.saves == 0:
+                return {
+                    "state": "open",
+                    "reason_code": "ok",
+                    "state_epoch": 7,
+                    "hold_until": None,
+                    "valid_until": now + timedelta(seconds=10),
+                    "db_now": now,
+                }
+            return {
+                "state": "closed",
+                "reason_code": "heartbeat_stale",
+                "state_epoch": 9,
+                "hold_until": None,
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> dict[str, object]:
+            self.saves += 1
+            if self.saves == 1:
+                raise AdmissionControlConflict(open_winner)
+            return {
+                "state": values["state"],
+                "reason_code": values["reason"],
+                "state_epoch": 9,
+                "outcome": "saved",
+            }
+
+    repo = ClosedThenAdopt()
+    guard = SendAdmissionGuard(repo)
+    snap = await guard.snapshot()
+    assert snap.state == "closed"
+    assert snap.reason == "heartbeat_stale"
+    assert repo.saves == 2

@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.82  2026-09-04
+-- v1.6.82：幂等 Claim 以 PostgreSQL generation 为权威围栏，Redis 只保存
+--          token:fingerprint:generation 精确载荷。
 -- v1.6.81  2026-09-04
 -- v1.6.81：sms_vendor_attempt 改为每个 generation 一行，invoking 后禁止
 --          自动切换；UNIQUE(chunk_id, generation) 保证跨任务单调。
@@ -617,6 +620,21 @@ CREATE TABLE idempotency_record (
     )
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
+
+CREATE TABLE idempotency_claim (
+    id           BIGSERIAL PRIMARY KEY,
+    scope_kind   VARCHAR(16)  NOT NULL,
+    scope_id     VARCHAR(64)  NOT NULL,
+    biz_id       VARCHAR(32)  NOT NULL,
+    token        CHAR(32)     NOT NULL,
+    fingerprint  VARCHAR(64)  NOT NULL DEFAULT '',
+    generation   INTEGER      NOT NULL CHECK (generation >= 1),
+    expires_at   TIMESTAMPTZ  NOT NULL,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT uk_idempotency_claim_scope UNIQUE (scope_kind, scope_id, biz_id)
+);
+CREATE INDEX idx_idempotency_claim_expire ON idempotency_claim(expires_at);
 
 CREATE TABLE sms_chunk (
     id             BIGSERIAL PRIMARY KEY,
@@ -2634,7 +2652,8 @@ TO sms_auth;
 
 -- API 消息受理、管理页面与运行控制；账号表写入仍只属于 sms_auth。
 GRANT SELECT ON
-    app, dept_quota, sms_batch, sms_resend_action, idempotency_record, sms_chunk, sms_message,
+    app, dept_quota, sms_batch, sms_resend_action, idempotency_record, idempotency_claim,
+    sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
     sms_sign, blacklist, blacklist_hmac_alias, sensitive_word, callback_report_event, callback_task,
@@ -2653,7 +2672,7 @@ GRANT SELECT ON
     send_admission_state, send_runtime_heartbeat
 TO sms_accept;
 GRANT INSERT, UPDATE, DELETE ON
-    app, dept_quota, sms_batch, idempotency_record, sms_message,
+    app, dept_quota, sms_batch, idempotency_record, idempotency_claim, sms_message,
     import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     blacklist_hmac_alias,
     sensitive_word, usage_reservation, usage_frequency_subject,
@@ -2688,6 +2707,7 @@ GRANT INSERT ON worker_lease_event TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE worker_lease_event_id_seq TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE
     app_id_seq, sms_batch_id_seq, idempotency_record_id_seq,
+    idempotency_claim_id_seq,
     sms_message_id_seq, import_task_id_seq,
     import_phone_id_seq, approval_id_seq, sms_template_id_seq, sms_sign_id_seq,
     sensitive_word_id_seq, audit_log_id_seq,

@@ -8,10 +8,12 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 SLIDING_WINDOW_LUA = """
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
+local t = redis.call('TIME')
+local now_ms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms - 60000)
 local count = redis.call('ZCARD', KEYS[1])
-if count >= tonumber(ARGV[3]) then return 0 end
-redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
+if count >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[1], now_ms, ARGV[2])
 redis.call('EXPIRE', KEYS[1], 60)
 return 1
 """
@@ -21,31 +23,49 @@ COST_BUCKET_TTL_SECONDS = 70
 WEIGHTED_WINDOW_LUA = """
 local rec_key = KEYS[1]
 local seg_key = KEYS[2]
-local now_sec = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local rec_limit = tonumber(ARGV[3])
-local rec_weight = tonumber(ARGV[4])
-local seg_limit = tonumber(ARGV[5])
-local seg_weight = tonumber(ARGV[6])
-local ttl = tonumber(ARGV[7])
-local function window_total(key)
+local rec_limit = tonumber(ARGV[1])
+local rec_weight = tonumber(ARGV[2])
+local seg_limit = tonumber(ARGV[3])
+local seg_weight = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+local t = redis.call('TIME')
+local now_sec = tonumber(t[1])
+local last = tonumber(redis.call('HGET', rec_key, 'last_epoch'))
+if last ~= nil and now_sec < last then
+  now_sec = last
+end
+local function ring_total(key)
   local total = 0
-  for offset = 0, window - 1 do
-    local epoch = now_sec - offset
-    local weight = tonumber(redis.call('HGET', key, tostring(epoch))) or 0
-    total = total + weight
+  local window_start = now_sec - 59
+  for slot = 0, 59 do
+    local epoch = tonumber(redis.call('HGET', key, 'e'..slot))
+    local weight = tonumber(redis.call('HGET', key, 'w'..slot)) or 0
+    if epoch ~= nil and epoch >= window_start and epoch <= now_sec then
+      total = total + weight
+    end
   end
-  redis.call('HDEL', key, tostring(now_sec - window))
   return total
 end
-local recipients = window_total(rec_key)
-local segments = window_total(seg_key)
+local recipients = ring_total(rec_key)
+local segments = ring_total(seg_key)
 if recipients + rec_weight > rec_limit then return 0 end
 if segments + seg_weight > seg_limit then return 0 end
-redis.call('HINCRBY', rec_key, tostring(now_sec), rec_weight)
-redis.call('HINCRBY', seg_key, tostring(now_sec), seg_weight)
-redis.call('EXPIRE', rec_key, ttl)
-redis.call('EXPIRE', seg_key, ttl)
+local slot = now_sec % 60
+local function ring_add(key, weight)
+  local epoch_field = 'e'..slot
+  local weight_field = 'w'..slot
+  local owned = tonumber(redis.call('HGET', key, epoch_field))
+  if owned ~= now_sec then
+    redis.call('HSET', key, epoch_field, now_sec)
+    redis.call('HSET', key, weight_field, weight)
+  else
+    redis.call('HINCRBY', key, weight_field, weight)
+  end
+  redis.call('HSET', key, 'last_epoch', now_sec)
+  redis.call('EXPIRE', key, ttl)
+end
+ring_add(rec_key, rec_weight)
+ring_add(seg_key, seg_weight)
 return 1
 """
 
@@ -110,15 +130,12 @@ class ApplicationRateLimiter:
             or segment_limit < 1
         ):
             raise ValueError("application cost limits must be positive")
-        now_sec = int(self.clock().timestamp())
         try:
             allowed = await self.redis.eval(
                 WEIGHTED_WINDOW_LUA,
                 2,
-                f"ratelimit:app:{app_id}:recipients:buckets",
-                f"ratelimit:app:{app_id}:segments:buckets",
-                str(now_sec),
-                str(COST_WINDOW_SECONDS),
+                f"ratelimit:app:{app_id}:recipients:v2",
+                f"ratelimit:app:{app_id}:segments:v2",
                 str(recipient_limit),
                 str(recipient_count),
                 str(segment_limit),
@@ -133,15 +150,12 @@ class ApplicationRateLimiter:
     async def _consume_requests(self, *, key: str, limit_per_minute: int) -> None:
         if limit_per_minute < 1:
             raise ValueError("application rate limit must be positive")
-        now_ms = int(self.clock().timestamp() * 1000)
         member = self.nonce()
         try:
             allowed = await self.redis.eval(
                 SLIDING_WINDOW_LUA,
                 1,
                 key,
-                str(now_ms),
-                str(now_ms - 60_000),
                 str(limit_per_minute),
                 member,
             )

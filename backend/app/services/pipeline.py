@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any, Literal, Protocol
@@ -21,6 +21,7 @@ from app.core.auth.accounts import (
     ActorPrincipal,
     ApplicationPrincipal,
     SecurityPrincipal,
+    UncertainEffectPrincipal,
 )
 from app.core.bounded_executor import run_bounded
 from app.core.sensitive_text import reject_phone_in_text
@@ -243,6 +244,8 @@ class BatchCommand:
     request_hash_key_version: int | None = None
     inflight_reservation_id: int | None = None
     inflight_reservation_generation: int | None = None
+    idempotency_claim_token: str | None = None
+    idempotency_claim_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -711,10 +714,16 @@ class SendPipeline:
 
         if request.biz_id and request.biz_id.startswith("manual-resend:"):
             resolution_id = request.biz_id.split(":")[1]
+            if isinstance(request.actor, UncertainEffectPrincipal):
+                expected = f"{request.actor.resolution_id}"
+                if resolution_id != expected:
+                    raise ValueError("system resend principal is not forgeable")
             return IdempotencyScope("uncertain-resend", resolution_id)
         if request.resend_of is not None:
             return IdempotencyScope("resend", request.resend_of)
         if request.channel == "web":
+            if isinstance(request.actor, UncertainEffectPrincipal):
+                raise ValueError("system resend principal is not forgeable")
             if not isinstance(request.actor, SecurityPrincipal):
                 raise ValueError("Web 发送必须绑定稳定账号")
             return IdempotencyScope(
@@ -924,6 +933,63 @@ class SendPipeline:
         ):
             raise MarketApiBulkForbidden("营销大批量 API 发送未预授权")
 
+    def _with_uat_replay_identity(self, request: SendRequest) -> SendRequest:
+        """用内存 HMAC 复算 UAT 指纹，不依赖登记号码仍为 active。"""
+
+        if not request.vendor_test_uat or request.protected_mobiles or not request.mobiles:
+            return request
+        phone = request.mobiles[0]
+        protected = self.crypto.protect_phone(
+            phone,
+            table="vendor_test_recipient",
+            column="phone_enc",
+        )
+        return replace(
+            request,
+            mobiles=(),
+            protected_mobiles=(protected,),
+            protected_hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
+        )
+
+    async def replay_if_present(
+        self,
+        app: ApiAppContext,
+        request: SendRequest,
+    ) -> BatchResponse | None:
+        """只读取已存在幂等结果，不消费新发送准入或普通请求额度。"""
+
+        request = self._with_uat_replay_identity(request)
+        biz_id = request.biz_id
+        if not biz_id:
+            return None
+        idem_scope = self._idempotency_scope(request, app)
+        policy = self._resolve_policy(app, request, None)
+        existing = await self.idempotency.lookup(idem_scope, biz_id)
+        if existing is not None:
+            await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+            await self._consume_replay_limit(app)
+            return await self.store.response_for(existing)
+        inspect = getattr(self.idempotency, "inspect", None)
+        viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
+        if viewed is None:
+            return None
+        request_hash = self._request_hash(
+            request,
+            app,
+            policy,
+            key_version=self.crypto.active_version,
+        )
+        if getattr(viewed, "fingerprint", "") not in {"", request_hash}:
+            raise IdempotencyConflict(
+                "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
+            )
+        await self._consume_replay_limit(app)
+        waited = await self.idempotency.wait(idem_scope, biz_id)
+        if waited is None:
+            return None
+        await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+        return await self.store.response_for(waited)
+
     async def preauthorize(
         self,
         app: ApiAppContext,
@@ -1037,13 +1103,20 @@ class SendPipeline:
                 await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
                 return await self.store.response_for(existing)
             await check_ownership()
+            viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
+            fence_token = (
+                f"{viewed.token}:{viewed.fingerprint}:{viewed.generation}"
+                if viewed is not None
+                else token
+            )
             return await self._accept_claimed(
                 app,
                 request,
                 preauthorization=preauthorization,
                 ownership_check=check_ownership,
                 claim_key=self.idempotency.claim_key(idem_scope, biz_id),
-                claim_token=token,
+                claim_token=fence_token,
+                claim_generation=viewed.generation if viewed is not None else 1,
                 frequency_result_key=self.idempotency.frequency_result_key(
                     idem_scope, biz_id
                 ),
@@ -1071,6 +1144,7 @@ class SendPipeline:
         ownership_check: Callable[[], Awaitable[None]] | None = None,
         claim_key: str | None = None,
         claim_token: str | None = None,
+        claim_generation: int | None = None,
         frequency_result_key: str | None = None,
         idem_scope: IdempotencyScope | None = None,
         request_hash: str | None = None,
@@ -1441,15 +1515,28 @@ class SendPipeline:
                     principal = ApplicationPrincipal(app.app_id, app.name, app.dept)
                 if request.channel == "web" and not isinstance(
                     principal,
-                    SecurityPrincipal,
+                    (SecurityPrincipal, UncertainEffectPrincipal),
                 ):
                     raise ValueError("Web 发送必须绑定稳定账号与身份")
+                if isinstance(principal, UncertainEffectPrincipal):
+                    if (
+                        request.biz_id is None
+                        or not request.biz_id.startswith("manual-resend:")
+                    ):
+                        raise ValueError("system resend principal is not forgeable")
+                    verifier = getattr(self.store, "verify_uncertain_effect", None)
+                    if verifier is None:
+                        raise ValueError("system resend principal is not forgeable")
+                    await verifier(principal)
                 if request.import_reservation_id is not None and (
                     request.channel != "web"
                     or not isinstance(principal, SecurityPrincipal)
                 ):
                     raise ValueError("导入包预留只能绑定 Web 稳定主体")
-                if not isinstance(principal, (SecurityPrincipal, ApplicationPrincipal)):
+                if not isinstance(
+                    principal,
+                    (SecurityPrincipal, ApplicationPrincipal, UncertainEffectPrincipal),
+                ):
                     raise ValueError("发送请求必须绑定稳定主体")
                 batch_no = uuid4().hex
                 command = BatchCommand(
@@ -1504,6 +1591,10 @@ class SendPipeline:
                     import_reservation_id=request.import_reservation_id,
                     inflight_reservation_id=getattr(inflight, "id", None),
                     inflight_reservation_generation=getattr(inflight, "generation", None),
+                    idempotency_claim_token=(
+                        claim_token.split(":", 1)[0] if claim_token else None
+                    ),
+                    idempotency_claim_generation=claim_generation,
                     messages=tuple(accepted),
                 )
                 if ownership_check is not None:
@@ -1584,7 +1675,6 @@ class SendPipeline:
                 scheduled_at,
                 expires_at,
             )
-
         finally:
             if not inflight_bound:
                 await release_inflight("acceptance-failed")

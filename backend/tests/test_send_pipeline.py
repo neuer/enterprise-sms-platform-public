@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.core.apikey import ApiAppContext
-from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.category import CategoryNotAllowed, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
@@ -2524,3 +2524,68 @@ async def test_web_channel_skips_application_rate_limiter() -> None:
         ),
     )
     assert result.batch_no == "new-batch"
+
+@pytest.mark.asyncio
+async def test_uncertain_effect_principal_requires_verified_resolution() -> None:
+    class ClosedStore(FakeStore):
+        async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
+            raise ValueError("system resend principal is not forgeable")
+
+    pipeline = SendPipeline(
+        store=ClosedStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(ValueError, match="system resend principal is not forgeable"):
+        await pipeline.accept(
+            ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="维护通知",
+                biz_id="manual-resend:4:2",
+                channel="web",
+                actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
+    class OpenStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.verified: list[UncertainEffectPrincipal] = []
+
+        async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
+            self.verified.append(principal)
+
+    store = OpenStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    result = await pipeline.accept(
+        ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="维护通知",
+            biz_id="manual-resend:4:2",
+            channel="web",
+            actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+        ),
+    )
+    assert result.batch_no == "new-batch"
+    assert store.verified[0].resolution_id == 4
+    assert store.commands[0].principal.actor_name == "system_resend:4"
+
