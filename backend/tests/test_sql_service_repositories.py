@@ -783,6 +783,8 @@ async def test_recovery_repository_selects_only_recoverable_work(
             FakeResult(rowcount=1),
             FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}]),
             FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
+            FakeResult(),
+            FakeResult(),
         ]
     )
     engine = FakeEngine(connection)
@@ -1042,6 +1044,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(scalar="sending"),
             FakeResult(),
         ]
     )
@@ -1062,9 +1065,10 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     # 应用成功后把消息归属日标脏，供窗口外统计补算（#342）。
     assert "stat_dirty_date" in connection.calls[7][0]
     assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[7][0]
-    assert "late_evidence_at" in connection.calls[9][0]
-    assert "unknown_terminal" in connection.calls[9][0]
     assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[8][0]
+    assert "SELECT status FROM sms_batch" in connection.calls[9][0]
+    assert "late_evidence_at" in connection.calls[10][0]
+    assert "unknown_terminal" in connection.calls[10][0]
     assert callback_events == [
         ("batch", 3),
         ("message", (3, 8, report.report_time)),
@@ -1146,9 +1150,11 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
             FakeResult(),
             FakeResult(scalar=1),
             FakeResult(),
+            FakeResult(scalar="sending"),
             FakeResult(),
             FakeResult(scalar=1),
             FakeResult(),
+            FakeResult(scalar="sending"),
         ]
     )
 
@@ -1168,8 +1174,9 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     assert "stat_dirty_date" in connection.calls[2][0]
     assert connection.calls[1][1] == {"batch_id": 2}
     assert connection.calls[2][1] == {"batch_id": 2, "hours": 48}
-    assert "sms_batch" in connection.calls[4][0] and "FOR UPDATE" in connection.calls[4][0]
-    assert "UPDATE sms_message" in connection.calls[5][0]
+    assert "SELECT status FROM sms_batch" in connection.calls[4][0]
+    assert "sms_batch" in connection.calls[5][0] and "FOR UPDATE" in connection.calls[5][0]
+    assert "UPDATE sms_message" in connection.calls[6][0]
 
 
 @pytest.mark.asyncio
@@ -1315,6 +1322,7 @@ async def test_terminalize_unknown_locks_and_enqueues_final_callback(
             FakeResult(
                 rows=[{"id": 8, "status": "completed_unknown", "unknown_cnt": 2}]
             ),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
