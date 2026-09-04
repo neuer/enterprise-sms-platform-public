@@ -1112,6 +1112,45 @@ async def test_in_flight_query_failure_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unbound_inflight_reservation_releases_on_accept_failure() -> None:
+    class TrackingStore(FailingStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.releases: list[tuple[int, int, str]] = []
+
+        async def reserve_in_flight_chunks(
+            self, app_id: int, estimated: int, limit: int
+        ) -> object:
+            assert app_id == 7
+            assert estimated == 1
+            assert limit >= 1
+            return type("Reservation", (), {"id": 41, "generation": 1})()
+
+        async def release_in_flight_reservation(
+            self, reservation_id: int, generation: int, reason: str
+        ) -> bool:
+            self.releases.append((reservation_id, generation, reason))
+            return True
+
+    store = TrackingStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="inflight-1"),
+        )
+    assert store.releases == [(41, 1, "acceptance-failed")]
+
+
+@pytest.mark.asyncio
 async def test_idempotency_same_key_different_hash_conflicts() -> None:
     store = FakeStore()
     pipeline = SendPipeline(

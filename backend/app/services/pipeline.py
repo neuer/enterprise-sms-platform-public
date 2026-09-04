@@ -204,6 +204,7 @@ class PipelineConfig:
     approval_expire_hours: int = 24
     test_send_max: int = 5
     max_schedule_ahead_days: int = 90
+    vendor_batch_size: int = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +241,8 @@ class BatchCommand:
     scope_id: str
     request_hash: str | None = None
     request_hash_key_version: int | None = None
+    inflight_reservation_id: int | None = None
+    inflight_reservation_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +280,20 @@ class PipelineStore(Protocol):
     async def save(self, command: BatchCommand) -> StoredBatch: ...
 
     async def count_in_flight_chunks(self, app_id: int) -> int: ...
+
+    async def reserve_in_flight_chunks(
+        self,
+        app_id: int,
+        estimated: int,
+        limit: int,
+    ) -> object: ...
+
+    async def release_in_flight_reservation(
+        self,
+        reservation_id: int,
+        generation: int,
+        reason: str,
+    ) -> bool: ...
 
 
 class IdempotencyPort(Protocol):
@@ -865,24 +882,24 @@ class SendPipeline:
         request: SendRequest,
         *,
         recipient_count: int,
-    ) -> None:
+    ) -> Any:
         if request.channel == "web":
-            return
-        estimated = max(1, ceil(recipient_count / 500))
+            return None
+        batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
+        estimated = max(1, ceil(recipient_count / batch_size))
         reserve = getattr(self.store, "reserve_in_flight_chunks", None)
         if reserve is not None:
             try:
-                await reserve(app.app_id, estimated, app.max_in_flight_chunks)
+                return await reserve(app.app_id, estimated, app.max_in_flight_chunks)
             except InFlightLimitExceeded:
                 raise
             except InFlightQueryUnavailable:
                 raise
             except Exception as exc:
                 raise InFlightQueryUnavailable("在途分片预留不可用") from exc
-            return
         counter = getattr(self.store, "count_in_flight_chunks", None)
         if counter is None:
-            return
+            return None
         try:
             current = await counter(app.app_id)
         except InFlightQueryUnavailable:
@@ -891,6 +908,7 @@ class SendPipeline:
             raise InFlightQueryUnavailable("在途分片查询不可用") from exc
         if current + estimated > app.max_in_flight_chunks:
             raise InFlightLimitExceeded("应用在途分片已达上限")
+        return None
 
     def _enforce_market_api_bulk(
         self,
@@ -1124,359 +1142,407 @@ class SendPipeline:
             verify_otp_mask=self.config.verify_otp_mask,
         )
         self._enforce_quota_exemption(app, request)
-        await self._enforce_in_flight(app, request, recipient_count=recipient_count)
-        await self._consume_send_cost(
-            app,
-            request,
-            recipient_count=recipient_count,
-            segment_count=prepared.segments * recipient_count,
+        inflight = await self._enforce_in_flight(
+            app, request, recipient_count=recipient_count
         )
-        if ownership_check is not None:
-            await ownership_check()
-        hits = await self.store.sensitive_hits(prepared.send_content)
-        if hits and self.config.sensitive_hit_action == "block":
-            raise SensitiveWord("内容命中敏感词")
-        if hits and self.config.sensitive_hit_action == "audit":
-            await self.store.audit_sensitive_hit(app.app_id, len(hits))
-        unique_phones = list(dict.fromkeys(request.mobiles))
-        removed_duplicate = len(request.mobiles) - len(unique_phones)
-        protected: list[ProtectedPhone] = []
-        candidates_by_active: dict[str, frozenset[str]] = {}
-        frequency_hmac_by_active: dict[str, str] = {}
-        frequency_aliases_by_active: dict[str, dict[int, str]] = {}
-        if has_protected:
-            protected_source = list(request.protected_mobiles)
-            if any(
-                not item.phone_enc
-                or re.fullmatch(r"[0-9a-f]{64}", item.phone_hmac) is None
-                or not item.phone_mask
-                or item.key_version < 1
-                for item in protected_source
-            ):
-                raise ValueError("加密测试号码合同无效")
-            aliases = dict(request.protected_hmac_candidates)
-            if (
-                len(aliases) != len(request.protected_hmac_candidates)
-                or set(aliases) != self.crypto.hmac_versions
-                or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in aliases.values())
-                or aliases.get(protected_source[0].key_version)
-                != protected_source[0].phone_hmac
-            ):
-                raise ValueError("加密测试号码索引合同无效")
-            # 受控测试号码来自 vendor_test_recipient；落入 sms_message 前在内存中
-            # 重新封装，避免跨表复制同一份合法密文。
-            source_phone = self.crypto.decrypt_phone(
-                protected_source[0].phone_enc,
-                protected_source[0].key_version,
-                protected_source[0].phone_hmac,
-                table="vendor_test_recipient",
-            )
-            protected = [self.crypto.protect_phone(source_phone)]
-            stable_hmac = aliases[min(aliases)]
-            frequency_hmac_by_active[protected[0].phone_hmac] = stable_hmac
-            frequency_aliases_by_active[protected[0].phone_hmac] = aliases
-            if policy.blacklist_required:
-                candidates_by_active = {protected[0].phone_hmac: frozenset(aliases.values())}
-        else:
-            (
-                protected,
-                candidates_by_active,
-                frequency_hmac_by_active,
-                frequency_aliases_by_active,
-            ) = await self._protect_plain_phones_batched(
-                unique_phones,
-                blacklist_required=policy.blacklist_required,
-            )
-        blocked_candidates = (
-            await self.store.blacklisted(
-                set().union(*candidates_by_active.values()) if candidates_by_active else set()
-            )
-            if policy.blacklist_required
-            else set()
-        )
-        blocked_active = {
-            active
-            for active, candidates in candidates_by_active.items()
-            if not candidates.isdisjoint(blocked_candidates)
-        }
-        after_blacklist = [item for item in protected if item.phone_hmac not in blocked_active]
-        if not after_blacklist:
-            raise AllFiltered("全部号码已被过滤")
-        limits = FrequencyLimits.from_config(
-            verify_per_minute=self.config.verify_per_minute,
-            verify_per_day=self.config.verify_per_day,
-            market_per_day=self.config.market_per_day,
-            override=app.freq_override,
-        )
-        now = self.clock()
-        date_key, ttl_s = self._quota_clock(now)
-        usage_reservation_id: UUID | None = None
-        usage_reservation_reused = False
-        if self.usage_ledger is not None:
-            request_key = (
-                usage_request_key(idem_scope, request.biz_id, date_key)
-                if request.biz_id and idem_scope is not None
-                else f"acceptance:{uuid4()}"
-            )
-            usage_reservation = await self.usage_ledger.start_reservation(
-                request_key=request_key,
-                app_id=app.app_id,
-                dept=app.dept,
-                category=request.category,
-                now=now,
-            )
-            usage_reservation_id = UUID(str(usage_reservation.reservation_id))
-            usage_reservation_reused = bool(getattr(usage_reservation, "reused", False))
+        inflight_bound = False
 
-        async def release_usage(reason: str) -> None:
-            if self.usage_ledger is None or usage_reservation_id is None:
+        async def release_inflight(reason: str) -> None:
+            releaser = getattr(self.store, "release_in_flight_reservation", None)
+            reservation_id = getattr(inflight, "id", None)
+            generation = getattr(inflight, "generation", None)
+            if releaser is None or reservation_id is None or generation is None:
                 return
             try:
-                await self.usage_ledger.request_unlinked_release(
-                    usage_reservation_id,
-                    event_id=f"usage:{usage_reservation_id}:{reason}",
-                )
+                await releaser(int(reservation_id), int(generation), reason)
             except Exception as exc:
                 LOGGER.error(
-                    "usage reservation release fact unavailable",
+                    "in-flight reservation release unavailable",
                     extra={
                         "app_id": app.app_id,
-                        "reservation_id": str(usage_reservation_id),
+                        "reservation_id": int(reservation_id),
                         "error_type": type(exc).__name__,
                     },
                 )
 
-        accepted: list[ProtectedPhone] = []
         try:
-            if ownership_check is not None:
-                await ownership_check()
-            frequency_batch = 200
-            for offset in range(0, len(after_blacklist), frequency_batch):
-                if ownership_check is not None and offset > 0:
-                    await ownership_check()
-                batch = after_blacklist[offset : offset + frequency_batch]
-                if self.usage_ledger is not None and usage_reservation_id is not None:
-                    decisions = await self.usage_ledger.allow_frequency_many(
-                        usage_reservation_id,
-                        request.category,
-                        app_id=app.app_id,
-                        items=tuple(
-                            FrequencyDecisionItem(
-                                phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
-                            )
-                            for item in batch
-                        ),
-                        limits=limits,
-                        now=now,
-                    )
-                else:
-                    decisions = []
-                    for index, item in enumerate(batch):
-                        if ownership_check is not None and index > 0 and index % 25 == 0:
-                            await ownership_check()
-                        decisions.append(
-                            await self.frequency.allow(
-                                request.category,
-                                app_id=app.app_id,
-                                phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                limits=limits,
-                                claim_key=claim_key,
-                                claim_token=claim_token,
-                                result_key=frequency_result_key,
-                            )
-                        )
-                accepted.extend(
-                    item for item, allowed in zip(batch, decisions, strict=True) if allowed
-                )
-        except Exception:
-            await release_usage("acceptance-failed")
-            raise
-        removed_freq = len(after_blacklist) - len(accepted)
-        if not accepted:
-            await release_usage("all-filtered")
-            raise AllFiltered("全部号码已被过滤")
-        quota_cost = prepared.segments * len(accepted)
-        if request.biz_id and idem_scope is not None:
-            quota_reservation_key = (
-                self.idempotency.quota_result_key(idem_scope, request.biz_id, date_key)
+            await self._consume_send_cost(
+                app,
+                request,
+                recipient_count=recipient_count,
+                segment_count=prepared.segments * recipient_count,
             )
-        else:
-            quota_reservation_key = None
-        try:
             if ownership_check is not None:
                 await ownership_check()
-            if self.usage_ledger is not None and usage_reservation_id is not None:
-                next_day = (now.astimezone(SHANGHAI) + timedelta(days=1)).replace(
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
+            hits = await self.store.sensitive_hits(prepared.send_content)
+            if hits and self.config.sensitive_hit_action == "block":
+                raise SensitiveWord("内容命中敏感词")
+            if hits and self.config.sensitive_hit_action == "audit":
+                await self.store.audit_sensitive_hit(app.app_id, len(hits))
+            unique_phones = list(dict.fromkeys(request.mobiles))
+            removed_duplicate = len(request.mobiles) - len(unique_phones)
+            protected: list[ProtectedPhone] = []
+            candidates_by_active: dict[str, frozenset[str]] = {}
+            frequency_hmac_by_active: dict[str, str] = {}
+            frequency_aliases_by_active: dict[str, dict[int, str]] = {}
+            if has_protected:
+                protected_source = list(request.protected_mobiles)
+                if any(
+                    not item.phone_enc
+                    or re.fullmatch(r"[0-9a-f]{64}", item.phone_hmac) is None
+                    or not item.phone_mask
+                    or item.key_version < 1
+                    for item in protected_source
+                ):
+                    raise ValueError("加密测试号码合同无效")
+                aliases = dict(request.protected_hmac_candidates)
+                if (
+                    len(aliases) != len(request.protected_hmac_candidates)
+                    or set(aliases) != self.crypto.hmac_versions
+                    or any(
+                        re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                        for digest in aliases.values()
+                    )
+                    or aliases.get(protected_source[0].key_version)
+                    != protected_source[0].phone_hmac
+                ):
+                    raise ValueError("加密测试号码索引合同无效")
+                # 受控测试号码来自 vendor_test_recipient；落入 sms_message 前在内存中
+                # 重新封装，避免跨表复制同一份合法密文。
+                source_phone = self.crypto.decrypt_phone(
+                    protected_source[0].phone_enc,
+                    protected_source[0].key_version,
+                    protected_source[0].phone_hmac,
+                    table="vendor_test_recipient",
                 )
-                await self.usage_ledger.reserve_quota(
-                    usage_reservation_id,
-                    app_id=app.app_id,
-                    dept=app.dept,
-                    category=request.category,
-                    date_key=date_key,
-                    cost=quota_cost,
-                    app_limit=app.daily_quota,
-                    dept_limit=self.config.dept_daily_quota,
-                    expires_at=next_day,
-                )
-                reservation_reused = usage_reservation_reused
+                protected = [self.crypto.protect_phone(source_phone)]
+                stable_hmac = aliases[min(aliases)]
+                frequency_hmac_by_active[protected[0].phone_hmac] = stable_hmac
+                frequency_aliases_by_active[protected[0].phone_hmac] = aliases
+                if policy.blacklist_required:
+                    candidates_by_active = {protected[0].phone_hmac: frozenset(aliases.values())}
             else:
-                reservation = await self.quota.reserve(
+                (
+                    protected,
+                    candidates_by_active,
+                    frequency_hmac_by_active,
+                    frequency_aliases_by_active,
+                ) = await self._protect_plain_phones_batched(
+                    unique_phones,
+                    blacklist_required=policy.blacklist_required,
+                )
+            blocked_candidates = (
+                await self.store.blacklisted(
+                    set().union(*candidates_by_active.values()) if candidates_by_active else set()
+                )
+                if policy.blacklist_required
+                else set()
+            )
+            blocked_active = {
+                active
+                for active, candidates in candidates_by_active.items()
+                if not candidates.isdisjoint(blocked_candidates)
+            }
+            after_blacklist = [item for item in protected if item.phone_hmac not in blocked_active]
+            if not after_blacklist:
+                raise AllFiltered("全部号码已被过滤")
+            limits = FrequencyLimits.from_config(
+                verify_per_minute=self.config.verify_per_minute,
+                verify_per_day=self.config.verify_per_day,
+                market_per_day=self.config.market_per_day,
+                override=app.freq_override,
+            )
+            now = self.clock()
+            date_key, ttl_s = self._quota_clock(now)
+            usage_reservation_id: UUID | None = None
+            usage_reservation_reused = False
+            if self.usage_ledger is not None:
+                request_key = (
+                    usage_request_key(idem_scope, request.biz_id, date_key)
+                    if request.biz_id and idem_scope is not None
+                    else f"acceptance:{uuid4()}"
+                )
+                usage_reservation = await self.usage_ledger.start_reservation(
+                    request_key=request_key,
                     app_id=app.app_id,
                     dept=app.dept,
                     category=request.category,
-                    date_key=date_key,
-                    cost=quota_cost,
-                    app_limit=app.daily_quota,
-                    dept_limit=self.config.dept_daily_quota,
-                    ttl_s=ttl_s,
-                    claim_key=claim_key,
-                    claim_token=claim_token,
-                    reservation_key=quota_reservation_key,
+                    now=now,
                 )
-                reservation_reused = bool(getattr(reservation, "reused", False))
-        except Exception:
-            await release_usage("acceptance-failed")
-            raise
+                usage_reservation_id = UUID(str(usage_reservation.reservation_id))
+                usage_reservation_reused = bool(getattr(usage_reservation, "reused", False))
 
-        async def compensate_reservation() -> None:
-            if self.usage_ledger is not None:
-                await release_usage("acceptance-failed")
-                return
+            async def release_usage(reason: str) -> None:
+                if self.usage_ledger is None or usage_reservation_id is None:
+                    return
+                try:
+                    await self.usage_ledger.request_unlinked_release(
+                        usage_reservation_id,
+                        event_id=f"usage:{usage_reservation_id}:{reason}",
+                    )
+                except Exception as exc:
+                    LOGGER.error(
+                        "usage reservation release fact unavailable",
+                        extra={
+                            "app_id": app.app_id,
+                            "reservation_id": str(usage_reservation_id),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+
+            accepted: list[ProtectedPhone] = []
             try:
-                if quota_reservation_key is not None:
-                    await self.quota.refund_reservation(
+                if ownership_check is not None:
+                    await ownership_check()
+                frequency_batch = 200
+                for offset in range(0, len(after_blacklist), frequency_batch):
+                    if ownership_check is not None and offset > 0:
+                        await ownership_check()
+                    batch = after_blacklist[offset : offset + frequency_batch]
+                    if self.usage_ledger is not None and usage_reservation_id is not None:
+                        decisions = await self.usage_ledger.allow_frequency_many(
+                            usage_reservation_id,
+                            request.category,
+                            app_id=app.app_id,
+                            items=tuple(
+                                FrequencyDecisionItem(
+                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                    hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
+                                )
+                                for item in batch
+                            ),
+                            limits=limits,
+                            now=now,
+                        )
+                    else:
+                        decisions = []
+                        for index, item in enumerate(batch):
+                            if ownership_check is not None and index > 0 and index % 25 == 0:
+                                await ownership_check()
+                            decisions.append(
+                                await self.frequency.allow(
+                                    request.category,
+                                    app_id=app.app_id,
+                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                    limits=limits,
+                                    claim_key=claim_key,
+                                    claim_token=claim_token,
+                                    result_key=frequency_result_key,
+                                )
+                            )
+                    accepted.extend(
+                        item for item, allowed in zip(batch, decisions, strict=True) if allowed
+                    )
+            except Exception:
+                await release_usage("acceptance-failed")
+                raise
+            removed_freq = len(after_blacklist) - len(accepted)
+            if not accepted:
+                await release_usage("all-filtered")
+                raise AllFiltered("全部号码已被过滤")
+            quota_cost = prepared.segments * len(accepted)
+            if request.biz_id and idem_scope is not None:
+                quota_reservation_key = (
+                    self.idempotency.quota_result_key(idem_scope, request.biz_id, date_key)
+                )
+            else:
+                quota_reservation_key = None
+            try:
+                if ownership_check is not None:
+                    await ownership_check()
+                if self.usage_ledger is not None and usage_reservation_id is not None:
+                    next_day = (now.astimezone(SHANGHAI) + timedelta(days=1)).replace(
+                        hour=0,
+                        minute=0,
+                        second=0,
+                        microsecond=0,
+                    )
+                    await self.usage_ledger.reserve_quota(
+                        usage_reservation_id,
                         app_id=app.app_id,
                         dept=app.dept,
                         category=request.category,
                         date_key=date_key,
                         cost=quota_cost,
+                        app_limit=app.daily_quota,
+                        dept_limit=self.config.dept_daily_quota,
+                        expires_at=next_day,
+                    )
+                    reservation_reused = usage_reservation_reused
+                else:
+                    reservation = await self.quota.reserve(
+                        app_id=app.app_id,
+                        dept=app.dept,
+                        category=request.category,
+                        date_key=date_key,
+                        cost=quota_cost,
+                        app_limit=app.daily_quota,
+                        dept_limit=self.config.dept_daily_quota,
+                        ttl_s=ttl_s,
+                        claim_key=claim_key,
+                        claim_token=claim_token,
                         reservation_key=quota_reservation_key,
                     )
-                else:
-                    await self.quota.refund(
-                        app_id=app.app_id,
-                        dept=app.dept,
-                        category=request.category,
-                        date_key=date_key,
-                        cost=quota_cost,
-                    )
-            except Exception as exc:
-                LOGGER.error(
-                    "quota reservation compensation unavailable",
-                    extra={"app_id": app.app_id, "error_type": type(exc).__name__},
-                )
+                    reservation_reused = bool(getattr(reservation, "reused", False))
+            except Exception:
+                await release_usage("acceptance-failed")
+                raise
 
-        save_attempted = False
-        try:
-            if ownership_check is not None:
-                await ownership_check()
-            scheduled_status, deferred_reason, scheduled_at = self._schedule(request)
-            status: Literal["queued", "scheduled", "pending_approval"] = scheduled_status
-            if not request.is_test and requires_approval(
-                request.channel,
-                request.category,
-                len(accepted),
-                notice_threshold=self.config.approval_threshold,
-                market_threshold=self.config.market_approval_threshold,
-            ):
-                if not isinstance(request.actor, SecurityPrincipal):
-                    raise ValueError("Web 审批申请人不能为空")
-                status = "pending_approval"
-            approval_threshold = (
-                self.config.market_approval_threshold
-                if status == "pending_approval" and request.category == "market"
-                else self.config.approval_threshold
-                if status == "pending_approval"
-                else None
-            )
-            principal = request.actor
-            if principal is None and request.channel == "api":
-                principal = ApplicationPrincipal(app.app_id, app.name, app.dept)
-            if request.channel == "web" and not isinstance(
-                principal,
-                SecurityPrincipal,
-            ):
-                raise ValueError("Web 发送必须绑定稳定账号与身份")
-            if request.import_reservation_id is not None and (
-                request.channel != "web"
-                or not isinstance(principal, SecurityPrincipal)
-            ):
-                raise ValueError("导入包预留只能绑定 Web 稳定主体")
-            if not isinstance(principal, (SecurityPrincipal, ApplicationPrincipal)):
-                raise ValueError("发送请求必须绑定稳定主体")
-            batch_no = uuid4().hex
-            command = BatchCommand(
-                batch_no=batch_no,
-                app_id=(
-                    app.app_id if request.channel != "web" or request.vendor_test_uat else None
-                ),
-                dept=app.dept,
-                category=request.category,
-                channel=request.channel,
-                display_content_enc=self.crypto.encrypt_bound_packed_text(
-                    prepared.persisted_content,
-                    EncryptionContext(
-                        domain="sms-display-content",
-                        table="sms_batch",
-                        column="display_content_enc",
-                        object_id=batch_no,
-                    ),
-                ),
-                send_content_enc=self.crypto.encrypt_bound_packed_text(
-                    prepared.send_content,
-                    EncryptionContext(
-                        domain="sms-content",
-                        table="sms_batch",
-                        column="send_content_enc",
-                        object_id=batch_no,
-                    ),
-                ),
-                sign_name=sign_name,
-                template_id=request.template_id,
-                biz_id=request.biz_id,
-                scope_kind=idem_scope.kind if idem_scope is not None else "app",
-                scope_id=idem_scope.id if idem_scope is not None else "",
-                segments=prepared.segments,
-                quota_cost=quota_cost,
-                status=status,
-                deferred_reason=deferred_reason,
-                scheduled_at=scheduled_at,
-                request_hash=request_hash,
-                request_hash_key_version=request_hash_key_version,
-                removed_duplicate=removed_duplicate,
-                removed_blacklist=len(blocked_active),
-                removed_freq=removed_freq,
-                principal=principal,
-                approval_expire_hours=self.config.approval_expire_hours,
-                approval_threshold=approval_threshold,
-                is_test=request.is_test,
-                consent_confirmed=request.consent_confirmed,
-                remark=request.remark,
-                resend_of=request.resend_of,
-                usage_reservation_id=usage_reservation_id,
-                import_reservation_id=request.import_reservation_id,
-                messages=tuple(accepted),
-            )
-            if ownership_check is not None:
-                await ownership_check()
-            save_attempted = True
-            stored = await self.store.save(command)
-        except Exception as original:
-            if save_attempted and request.biz_id:
-                assert idem_scope is not None
+            async def compensate_reservation() -> None:
+                if self.usage_ledger is not None:
+                    await release_usage("acceptance-failed")
+                    return
                 try:
-                    existing = await self.idempotency.lookup(idem_scope, request.biz_id)
-                except Exception:
-                    await compensate_reservation()
-                    raise original from None
-                if existing is not None:
+                    if quota_reservation_key is not None:
+                        await self.quota.refund_reservation(
+                            app_id=app.app_id,
+                            dept=app.dept,
+                            category=request.category,
+                            date_key=date_key,
+                            cost=quota_cost,
+                            reservation_key=quota_reservation_key,
+                        )
+                    else:
+                        await self.quota.refund(
+                            app_id=app.app_id,
+                            dept=app.dept,
+                            category=request.category,
+                            date_key=date_key,
+                            cost=quota_cost,
+                        )
+                except Exception as exc:
+                    LOGGER.error(
+                        "quota reservation compensation unavailable",
+                        extra={"app_id": app.app_id, "error_type": type(exc).__name__},
+                    )
+
+            save_attempted = False
+            try:
+                if ownership_check is not None:
+                    await ownership_check()
+                scheduled_status, deferred_reason, scheduled_at = self._schedule(request)
+                status: Literal["queued", "scheduled", "pending_approval"] = scheduled_status
+                if not request.is_test and requires_approval(
+                    request.channel,
+                    request.category,
+                    len(accepted),
+                    notice_threshold=self.config.approval_threshold,
+                    market_threshold=self.config.market_approval_threshold,
+                ):
+                    if not isinstance(request.actor, SecurityPrincipal):
+                        raise ValueError("Web 审批申请人不能为空")
+                    status = "pending_approval"
+                approval_threshold = (
+                    self.config.market_approval_threshold
+                    if status == "pending_approval" and request.category == "market"
+                    else self.config.approval_threshold
+                    if status == "pending_approval"
+                    else None
+                )
+                principal = request.actor
+                if principal is None and request.channel == "api":
+                    principal = ApplicationPrincipal(app.app_id, app.name, app.dept)
+                if request.channel == "web" and not isinstance(
+                    principal,
+                    SecurityPrincipal,
+                ):
+                    raise ValueError("Web 发送必须绑定稳定账号与身份")
+                if request.import_reservation_id is not None and (
+                    request.channel != "web"
+                    or not isinstance(principal, SecurityPrincipal)
+                ):
+                    raise ValueError("导入包预留只能绑定 Web 稳定主体")
+                if not isinstance(principal, (SecurityPrincipal, ApplicationPrincipal)):
+                    raise ValueError("发送请求必须绑定稳定主体")
+                batch_no = uuid4().hex
+                command = BatchCommand(
+                    batch_no=batch_no,
+                    app_id=(
+                        app.app_id if request.channel != "web" or request.vendor_test_uat else None
+                    ),
+                    dept=app.dept,
+                    category=request.category,
+                    channel=request.channel,
+                    display_content_enc=self.crypto.encrypt_bound_packed_text(
+                        prepared.persisted_content,
+                        EncryptionContext(
+                            domain="sms-display-content",
+                            table="sms_batch",
+                            column="display_content_enc",
+                            object_id=batch_no,
+                        ),
+                    ),
+                    send_content_enc=self.crypto.encrypt_bound_packed_text(
+                        prepared.send_content,
+                        EncryptionContext(
+                            domain="sms-content",
+                            table="sms_batch",
+                            column="send_content_enc",
+                            object_id=batch_no,
+                        ),
+                    ),
+                    sign_name=sign_name,
+                    template_id=request.template_id,
+                    biz_id=request.biz_id,
+                    scope_kind=idem_scope.kind if idem_scope is not None else "app",
+                    scope_id=idem_scope.id if idem_scope is not None else "",
+                    segments=prepared.segments,
+                    quota_cost=quota_cost,
+                    status=status,
+                    deferred_reason=deferred_reason,
+                    scheduled_at=scheduled_at,
+                    request_hash=request_hash,
+                    request_hash_key_version=request_hash_key_version,
+                    removed_duplicate=removed_duplicate,
+                    removed_blacklist=len(blocked_active),
+                    removed_freq=removed_freq,
+                    principal=principal,
+                    approval_expire_hours=self.config.approval_expire_hours,
+                    approval_threshold=approval_threshold,
+                    is_test=request.is_test,
+                    consent_confirmed=request.consent_confirmed,
+                    remark=request.remark,
+                    resend_of=request.resend_of,
+                    usage_reservation_id=usage_reservation_id,
+                    import_reservation_id=request.import_reservation_id,
+                    inflight_reservation_id=getattr(inflight, "id", None),
+                    inflight_reservation_generation=getattr(inflight, "generation", None),
+                    messages=tuple(accepted),
+                )
+                if ownership_check is not None:
+                    await ownership_check()
+                save_attempted = True
+                stored = await self.store.save(command)
+            except Exception as original:
+                if save_attempted and request.biz_id:
+                    assert idem_scope is not None
                     try:
+                        existing = await self.idempotency.lookup(idem_scope, request.biz_id)
+                    except Exception:
+                        await compensate_reservation()
+                        raise original from None
+                    if existing is not None:
+                        try:
+                            policy = self._resolve_policy(app, request, preauthorization)
+                            await self._ensure_same_request(
+                                idem_scope,
+                                request.biz_id,
+                                request,
+                                app,
+                                policy,
+                            )
+                        except Exception:
+                            await compensate_reservation()
+                            raise
+                        if not usage_reservation_reused:
+                            await release_usage("idempotent-reuse")
+                        return await self.store.response_for(existing)
+                await compensate_reservation()
+                raise
+            if stored.idempotent:
+                try:
+                    if request.biz_id:
+                        assert idem_scope is not None
                         policy = self._resolve_policy(app, request, preauthorization)
                         await self._ensure_same_request(
                             idem_scope,
@@ -1485,61 +1551,46 @@ class SendPipeline:
                             app,
                             policy,
                         )
-                    except Exception:
+                    return await self.store.response_for(stored.batch_no)
+                finally:
+                    if self.usage_ledger is not None:
+                        if not usage_reservation_reused:
+                            await release_usage("idempotent-reuse")
+                    elif not reservation_reused:
                         await compensate_reservation()
-                        raise
-                    if not usage_reservation_reused:
-                        await release_usage("idempotent-reuse")
-                    return await self.store.response_for(existing)
-            await compensate_reservation()
-            raise
-        if stored.idempotent:
-            try:
-                if request.biz_id:
-                    assert idem_scope is not None
-                    policy = self._resolve_policy(app, request, preauthorization)
-                    await self._ensure_same_request(
-                        idem_scope,
-                        request.biz_id,
-                        request,
-                        app,
-                        policy,
-                    )
-                return await self.store.response_for(stored.batch_no)
-            finally:
-                if self.usage_ledger is not None:
-                    if not usage_reservation_reused:
-                        await release_usage("idempotent-reuse")
-                elif not reservation_reused:
-                    await compensate_reservation()
-        if request.biz_id:
-            assert idem_scope is not None
-            await self.idempotency.remember(idem_scope, request.biz_id, stored.batch_no)
-        if status == "queued" and not stored.outbox_persisted:
-            if ownership_check is not None:
-                await ownership_check()
-            await self.publisher.enqueue(stored.batch_no, policy.queue)
-        expires_at = None
-        if request.biz_id:
-            expires_at = (
-                scheduled_at + timedelta(days=7)
-                if scheduled_at is not None
-                else self.clock() + timedelta(hours=24)
+            inflight_bound = True
+            if request.biz_id:
+                assert idem_scope is not None
+                await self.idempotency.remember(idem_scope, request.biz_id, stored.batch_no)
+            if status == "queued" and not stored.outbox_persisted:
+                if ownership_check is not None:
+                    await ownership_check()
+                await self.publisher.enqueue(stored.batch_no, policy.queue)
+            expires_at = None
+            if request.biz_id:
+                expires_at = (
+                    scheduled_at + timedelta(days=7)
+                    if scheduled_at is not None
+                    else self.clock() + timedelta(hours=24)
+                )
+            return BatchResponse(
+                stored.batch_no,
+                False,
+                len(accepted),
+                removed_duplicate,
+                len(blocked_active),
+                removed_freq,
+                prepared.segments,
+                quota_cost,
+                status,
+                deferred_reason,
+                scheduled_at,
+                expires_at,
             )
-        return BatchResponse(
-            stored.batch_no,
-            False,
-            len(accepted),
-            removed_duplicate,
-            len(blocked_active),
-            removed_freq,
-            prepared.segments,
-            quota_cost,
-            status,
-            deferred_reason,
-            scheduled_at,
-            expires_at,
-        )
+
+        finally:
+            if not inflight_bound:
+                await release_inflight("acceptance-failed")
 
     async def _protect_plain_phones_batched(
         self,

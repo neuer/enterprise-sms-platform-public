@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.80  2026-09-04
+-- v1.6.80：send_inflight_reservation 补齐 batch_bound/materialize/release
+--          与批次指针，从活跃批次重建在途余额。
 -- v1.6.79  2026-09-04
 -- v1.6.79：认证专项第二轮：锁定/封禁审计使用 sms_auth；日常改密增加
 --          单调 credential_version 与安全版本 CAS。
@@ -717,11 +720,27 @@ CREATE TABLE send_inflight_reservation (
     app_id BIGINT NOT NULL REFERENCES app(id) ON DELETE RESTRICT,
     batch_id BIGINT UNIQUE REFERENCES sms_batch(id),
     reserved_chunks INTEGER NOT NULL CHECK (reserved_chunks >= 1),
-    state VARCHAR(16) NOT NULL DEFAULT 'reserved'
-      CHECK (state IN ('reserved','materialized','released')),
+    materialized_chunks INTEGER,
+    state VARCHAR(16) NOT NULL DEFAULT 'reserved',
+    generation INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT send_inflight_reservation_state_check
+      CHECK (state IN ('reserved','batch_bound','materialized','released')),
+    CONSTRAINT ck_send_inflight_reservation_generation CHECK (generation >= 1),
+    CONSTRAINT ck_send_inflight_materialized_chunks
+      CHECK (materialized_chunks IS NULL OR materialized_chunks >= 0),
+    expires_at TIMESTAMPTZ,
+    release_reason VARCHAR(32),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    released_at TIMESTAMPTZ
+    bound_at TIMESTAMPTZ,
+    materialized_at TIMESTAMPTZ,
+    released_at TIMESTAMPTZ,
+    CONSTRAINT ck_inflight_released_pair CHECK (
+      (state = 'released') = (released_at IS NOT NULL AND release_reason IS NOT NULL)
+    )
 );
+CREATE INDEX idx_send_inflight_reservation_active
+    ON send_inflight_reservation(app_id, state, expires_at)
+    WHERE state <> 'released';
 CREATE TABLE send_admission_state (
     scope VARCHAR(16) PRIMARY KEY,
     state VARCHAR(16) NOT NULL CHECK (state IN ('open','degraded','closed')),
@@ -2009,6 +2028,11 @@ ALTER TABLE sms_batch ADD COLUMN usage_reservation_id UUID
 CREATE UNIQUE INDEX uk_sms_batch_usage_reservation
     ON sms_batch(usage_reservation_id)
     WHERE usage_reservation_id IS NOT NULL;
+ALTER TABLE sms_batch ADD COLUMN send_inflight_reservation_id BIGINT
+    REFERENCES send_inflight_reservation(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX uk_sms_batch_send_inflight_reservation
+    ON sms_batch(send_inflight_reservation_id)
+    WHERE send_inflight_reservation_id IS NOT NULL;
 
 -- ─────────────── 统计 ───────────────
 CREATE TABLE stat_daily (

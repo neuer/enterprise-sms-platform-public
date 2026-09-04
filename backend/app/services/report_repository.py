@@ -277,6 +277,24 @@ class SqlReportRepository:
             batch_id,
             source_report_event_key=source_report_event_key,
         )
+        status = (
+            await connection.execute(
+                text("SELECT status FROM sms_batch WHERE id=:batch_id"),
+                {"batch_id": batch_id},
+            )
+        ).scalar_one()
+        if str(status) in {"completed", "completed_unknown"}:
+            from app.services.send_inflight import request_inflight_release_for_batch
+
+            await request_inflight_release_for_batch(
+                connection,
+                batch_id=int(batch_id),
+                reason=(
+                    "batch-completed-unknown"
+                    if str(status) == "completed_unknown"
+                    else "batch-completed"
+                ),
+            )
 
     async def apply_report(
         self,
