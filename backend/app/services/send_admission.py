@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from time import monotonic
 from typing import Literal, Protocol
@@ -14,6 +15,12 @@ LOGGER = logging.getLogger(__name__)
 
 AdmissionState = Literal["open", "degraded", "closed"]
 ADMISSION_STATES: tuple[AdmissionState, ...] = ("open", "degraded", "closed")
+
+
+def _aware_datetime(value: object) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise SendAdmissionUnavailable()
+    return value
 
 
 class SendAdmissionRejected(RuntimeError):
@@ -354,25 +361,29 @@ class SendAdmissionGuard:
 
         previous = None if self._snapshot is None else self._snapshot.state
         epoch = 1
-        hold_until: object = None
+        hold_until: datetime | None = None
         now_utc = datetime.now(UTC)
         if persisted:
-            db_now = persisted.get("db_now") or now_utc
-            valid_until = persisted.get("valid_until")
-            hold_until = persisted.get("hold_until")
-            if valid_until is not None and getattr(valid_until, "tzinfo", None) is None:
-                raise SendAdmissionUnavailable()
-            if valid_until is not None and valid_until < db_now:
+            raw_db_now = persisted.get("db_now")
+            db_now = _aware_datetime(raw_db_now) if raw_db_now is not None else now_utc
+            raw_valid_until = persisted.get("valid_until")
+            raw_hold_until = persisted.get("hold_until")
+            if raw_valid_until is not None and _aware_datetime(raw_valid_until) < db_now:
                 previous = "closed"
             else:
                 loaded_state = persisted.get("state") or previous
                 if loaded_state in ADMISSION_STATES:
                     previous = loaded_state
-            if hold_until is not None and getattr(hold_until, "tzinfo", None) is None:
+            if raw_hold_until is not None:
+                hold_until = _aware_datetime(raw_hold_until)
+            raw_epoch = persisted.get("state_epoch")
+            if raw_epoch is None:
+                epoch = 1
+            elif isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool):
+                epoch = raw_epoch
+            else:
                 raise SendAdmissionUnavailable()
-            epoch = int(persisted.get("state_epoch") or 1)
-            if isinstance(db_now, datetime):
-                now_utc = db_now
+            now_utc = db_now
         state, reason = evaluate_capacity(
             facts,
             limits=self.limits,
@@ -398,9 +409,16 @@ class SendAdmissionGuard:
     ) -> bool:
         from datetime import UTC, datetime
 
-        valid_until = winner.get("valid_until")
-        db_now = winner.get("db_now") or datetime.now(UTC)
-        if valid_until is None or getattr(valid_until, "tzinfo", None) is None:
+        raw_valid_until = winner.get("valid_until")
+        raw_db_now = winner.get("db_now")
+        if raw_valid_until is None:
+            return False
+        try:
+            valid_until = _aware_datetime(raw_valid_until)
+            db_now = (
+                _aware_datetime(raw_db_now) if raw_db_now is not None else datetime.now(UTC)
+            )
+        except SendAdmissionUnavailable:
             return False
         if valid_until < db_now:
             return False
@@ -414,8 +432,8 @@ class SendAdmissionGuard:
         self,
         facts: SendAdmissionFacts,
         *,
-        load_control: Callable[..., object] | None,
-        save_control: Callable[..., object] | None,
+        load_control: Callable[..., Awaitable[object]] | None,
+        save_control: Callable[..., Awaitable[object]] | None,
     ) -> tuple[AdmissionState, str]:
         if load_control is None and save_control is None:
             state, reason = evaluate_capacity(facts, limits=self.limits)

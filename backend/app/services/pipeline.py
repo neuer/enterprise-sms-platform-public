@@ -616,6 +616,7 @@ class SendPipeline:
         """生成版本化请求 HMAC，覆盖会改变真实短信副作用与作用域的字段。"""
 
         actor = request.actor
+        actor_document: dict[str, object] | None
         if isinstance(actor, SecurityPrincipal):
             actor_document = {
                 "kind": "human",
@@ -624,10 +625,16 @@ class SendPipeline:
             }
         elif isinstance(actor, ApplicationPrincipal):
             actor_document = {"kind": "app", "app_id": actor.app_id}
-        elif actor is None:
-            actor_document = None
+        elif isinstance(actor, UncertainEffectPrincipal):
+            actor_document = {
+                "kind": "uncertain-effect",
+                "resolution_id": actor.resolution_id,
+                "proposer_account_id": actor.proposer_account_id,
+                "confirmer_account_id": actor.confirmer_account_id,
+                "effect_generation": actor.effect_generation,
+            }
         else:
-            actor_document = str(actor)
+            actor_document = None
         fingerprint_key_version = self.crypto.active_version if key_version is None else key_version
         protected_aliases = dict(request.protected_hmac_candidates)
         protected_identity: dict[str, object] | None = None
