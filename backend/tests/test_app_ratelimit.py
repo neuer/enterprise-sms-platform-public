@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from app.services.app_ratelimit import (
+    WEIGHTED_WINDOW_LUA,
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
     ControlPlaneUnavailable,
-    WEIGHTED_WINDOW_LUA,
 )
 
 
