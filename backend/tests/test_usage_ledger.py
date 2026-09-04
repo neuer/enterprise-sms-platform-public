@@ -249,7 +249,10 @@ class _RebuildConnection:
         if "pg_advisory_unlock" in str(statement):
             self.unlocked = True
 
-    async def close(self) -> None:
+    async def __aenter__(self) -> _RebuildConnection:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
         self.closed = True
 
 
@@ -257,7 +260,7 @@ class _RebuildEngine:
     def __init__(self, connection: _RebuildConnection) -> None:
         self.connection = connection
 
-    async def connect(self) -> _RebuildConnection:
+    def connect(self) -> _RebuildConnection:
         return self.connection
 
 

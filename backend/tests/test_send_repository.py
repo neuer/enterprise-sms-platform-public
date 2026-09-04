@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -124,6 +126,14 @@ def chunk_store() -> SqlChunkStore:
         ),
         redis=object(),
     )
+
+
+def test_payload_sql_select_list_is_well_formed() -> None:
+    source = inspect.getsource(SqlChunkStore._payload)
+    assert re.search(r",\s*FROM\s+sms_chunk", source) is None
+    assert "t.vendor_template_id" in source
+    assert "selected_vendor" in source
+    assert "route_generation" in source
 
 
 @pytest.mark.asyncio

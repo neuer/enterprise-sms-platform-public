@@ -209,7 +209,7 @@ class SqlChunkStore:
                        COALESCE(c.selected_vendor,'zhihui') selected_vendor,
                        COALESCE(c.route_generation,1) route_generation,
                        trim(b.batch_no) batch_no,b.send_content_enc,b.sign_name,
-                       t.vendor_template_id,
+                       t.vendor_template_id
                 FROM sms_chunk c
                 JOIN sms_batch b ON b.id=c.batch_id
                 LEFT JOIN sms_template t ON t.id=b.template_id

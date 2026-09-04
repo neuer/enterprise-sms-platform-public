@@ -1552,20 +1552,14 @@ class UsageLedgerService:
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
-    async def _claim_rebuild_lock(self, date_key: str) -> Any:
+    async def _claim_rebuild_lock(self, connection: Any, date_key: str) -> None:
         """PostgreSQL advisory lock 是重建 Owner；Redis 键只作 300 秒可见进度。"""
 
-        connection = await self._engine().connect()
-        try:
-            locked = await connection.scalar(
-                text("SELECT pg_try_advisory_lock(hashtextextended(:name, 0))"),
-                {"name": "usage:projection:rebuild"},
-            )
-        except Exception:
-            await connection.close()
-            raise
+        locked = await connection.scalar(
+            text("SELECT pg_try_advisory_lock(hashtextextended(:name, 0))"),
+            {"name": "usage:projection:rebuild"},
+        )
         if not locked:
-            await connection.close()
             raise UsageProjectionUnavailable("usage projection rebuild in progress")
         try:
             owns = await self.redis.set(
@@ -1580,16 +1574,12 @@ class UsageLedgerService:
         if not owns:
             await self._release_rebuild_lock(connection)
             raise UsageProjectionUnavailable("usage projection rebuild in progress")
-        return connection
 
     async def _release_rebuild_lock(self, connection: Any) -> None:
-        try:
-            await connection.execute(
-                text("SELECT pg_advisory_unlock(hashtextextended(:name, 0))"),
-                {"name": "usage:projection:rebuild"},
-            )
-        finally:
-            await connection.close()
+        await connection.execute(
+            text("SELECT pg_advisory_unlock(hashtextextended(:name, 0))"),
+            {"name": "usage:projection:rebuild"},
+        )
 
     async def _has_projection_facts(self, usage_date: date) -> bool:
         async with self._engine().connect() as connection:
@@ -1619,11 +1609,12 @@ class UsageLedgerService:
         if marker is not None:
             return
         if await self._has_projection_facts(usage_date):
-            connection = await self._claim_rebuild_lock(date_key)
-            try:
-                await self.rebuild(actor=RECONCILE_REBUILD_ACTOR)
-            finally:
-                await self._release_rebuild_lock(connection)
+            async with self._engine().connect() as connection:
+                await self._claim_rebuild_lock(connection, date_key)
+                try:
+                    await self.rebuild(actor=RECONCILE_REBUILD_ACTOR)
+                finally:
+                    await self._release_rebuild_lock(connection)
             return
         try:
             await self.redis.set(
