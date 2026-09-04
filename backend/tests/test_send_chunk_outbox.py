@@ -7,7 +7,7 @@ import pytest
 
 from app.services.outbox import OutboxClaim
 from app.tasks import send as send_module
-from app.tasks.send import ChunkPayload, SendQueuePaused
+from app.tasks.send import ChunkPayload, SendQueuePaused, SubmitOutcome
 
 
 class _Gateway:
@@ -140,6 +140,55 @@ async def test_chunk_outbox_pause_fails_closed_and_does_not_complete(
 
     async def components() -> tuple[Any, Any, Any, int]:
         return _Worker([]), Store(), _Gateway(), 500
+
+    monkeypatch.setattr(send_module, "_components", components)
+    monkeypatch.setattr(send_module, "SqlOutboxRepository", lambda: Repository())
+
+    with pytest.raises(SendQueuePaused):
+        await send_module._process_chunk_event(8, str(event_id))
+
+    assert "complete" not in events
+    assert "SendQueuePaused" in events
+
+
+@pytest.mark.asyncio
+async def test_chunk_outbox_submit_paused_fails_closed_and_does_not_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    event_id = uuid4()
+
+    class Store:
+        async def load_chunk(self, chunk_id: int) -> tuple[ChunkPayload, str] | None:
+            return _payload(chunk_id), "realtime"
+
+        async def is_paused(self, lane: str) -> bool:
+            return False
+
+    class PausedWorker:
+        async def submit(self, chunk: object, *, lane: str) -> SubmitOutcome:
+            assert lane == "realtime"
+            return SubmitOutcome.PAUSED
+
+    class Repository:
+        async def claim_execution(self, claimed_id: object, *, lease_seconds: int) -> OutboxClaim:
+            return OutboxClaim(event_id, uuid4(), "chunk.ready", (8,))
+
+        async def heartbeat(self, *_args: object, **_kwargs: object) -> bool:
+            return True
+
+        async def complete(self, *_args: object) -> None:
+            events.append("complete")
+
+        async def fail_execution(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> None:
+            events.append(str(_args[-1]) if _args else "failed")
+
+    async def components() -> tuple[Any, Any, Any, int]:
+        return PausedWorker(), Store(), _Gateway(), 500
 
     monkeypatch.setattr(send_module, "_components", components)
     monkeypatch.setattr(send_module, "SqlOutboxRepository", lambda: Repository())

@@ -718,6 +718,8 @@ async def _run_chunk(
 
 async def _process_chunk(chunk_id: int, *, fail_closed_on_pause: bool = False) -> int:
     result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
+    if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
+        raise SendQueuePaused("send queue is paused")
     return result.processed
 
 

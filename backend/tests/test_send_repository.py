@@ -435,6 +435,7 @@ async def test_prepare_existing_chunks_atomically_moves_queued_batch_to_sending(
             FakeResult({"id": 7, "category": "market", "status": "queued"}),
             FakeResult(scalars=[8]),
             FakeResult(),
+            FakeResult(),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
@@ -461,6 +462,10 @@ async def test_prepare_existing_chunks_atomically_moves_queued_batch_to_sending(
     assert spec.args == (8,)
     assert spec.queue == "bulk"
     assert spec.dedup_key == "chunk.ready:8"
+    rearm_sql, rearm_params = connection.calls[3]
+    assert "state='pending'" in rearm_sql
+    assert "state IN ('completed','dead')" in rearm_sql
+    assert rearm_params == {"dedup_key": "chunk.ready:8"}
 
 
 @pytest.mark.asyncio
@@ -479,6 +484,7 @@ async def test_prepare_chunks_plans_ten_thousand_numbers_without_decrypt(
         results.append(FakeResult(scalar=chunk_id))
         results.append(FakeResult())
     results.append(FakeResult())
+    results.extend(FakeResult() for _ in range(20))
     connection = SequenceConnection(results)
     store = chunk_store()
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))

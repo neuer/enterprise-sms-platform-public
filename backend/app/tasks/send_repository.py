@@ -326,6 +326,7 @@ class SqlChunkStore:
         """在批次事务内登记分片发送事件；同 chunk 重复规划必须合同不变。"""
 
         for chunk_id in chunk_ids:
+            dedup_key = f"chunk.ready:{chunk_id}"
             await enqueue_outbox(
                 connection,
                 OutboxEventSpec(
@@ -335,8 +336,28 @@ class SqlChunkStore:
                     task_name="app.tasks.send.process_chunk",
                     queue=lane,
                     args=(chunk_id,),
-                    dedup_key=f"chunk.ready:{chunk_id}",
+                    dedup_key=dedup_key,
                 ),
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE outbox_event SET
+                      state='pending',
+                      next_attempt_at=now(),
+                      attempts=0,
+                      failure_count=0,
+                      lease_id=NULL,
+                      lease_expires_at=NULL,
+                      last_error=NULL,
+                      completed_at=NULL,
+                      updated_at=now()
+                    WHERE dedup_key=:dedup_key
+                      AND event_type='chunk.ready'
+                      AND state IN ('completed','dead')
+                    """
+                ),
+                {"dedup_key": dedup_key},
             )
 
     async def prepare_chunks(
