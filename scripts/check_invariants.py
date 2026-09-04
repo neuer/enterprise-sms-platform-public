@@ -142,16 +142,17 @@ def check_vendor_live_invariants() -> None:
     worker = require_fragments(
         APP / "tasks/send.py",
         "_guard_chunk(chunk)",
-        "_token(lane)",
+        "_token(lane, vendor_id)",
         "claim_submission(",
-        "_gateway_for(vendor_id).send(",
+        "_gateway_for(vendor_id)",
+        "gateway.send(",
         "enforce_live_test_budget=settings.vendor_live_test",
         "enforce_live_test_recipients=settings.vendor_live_test",
     )
     if worker and not (
         worker.index("_guard_chunk(chunk)")
-        < worker.index("_token(lane)")
-        < worker.index("_gateway_for(vendor_id).send(")
+        < worker.index("_token(lane, vendor_id)")
+        < worker.index("gateway.send(")
     ):
         fail(APP / "tasks/send.py", "worker 必须先复验白名单和额度再调用厂商")
 

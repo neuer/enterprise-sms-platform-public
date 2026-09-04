@@ -10,6 +10,7 @@ from app.services.vendor_control_state import VendorControlStateUnavailable
 from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.tasks.send import ChunkPayload, SendWorker
+from app.vendor.routing import PRIMARY_VENDOR_ID, VendorAttempt, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorProtocolError, VendorTransportError
 
 
@@ -596,11 +597,12 @@ async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call(
 
 @pytest.mark.asyncio
 async def test_balance_error_blocks_batch_and_pauses_both_queues() -> None:
-    store = FakeStore()
+    store = HistoryStore()
     worker = SendWorker(FakeGateway([VendorApiError(999, "balance")]), store, FakeBucket())
     await worker.submit(chunk(), lane="bulk")
     assert ("balance", (2, 3)) in store.events
     assert ("pause", 999) in store.events
+    assert ("attempt", (1, "paused")) in store.events
 
 
 @pytest.mark.asyncio
@@ -924,3 +926,122 @@ async def test_token_wait_aborts_when_lane_pauses_mid_wait() -> None:
     assert gateway.calls == 0
     assert store.events == []
     assert store.checks >= 2
+
+
+class HistoryStore(FakeStore):
+    def __init__(self, attempts: list[VendorAttempt] | None = None) -> None:
+        super().__init__()
+        self.attempts = list(attempts or [])
+        self.begun: list[tuple[str, int]] = []
+
+    async def list_vendor_attempts(self, chunk_id: int) -> tuple[VendorAttempt, ...]:
+        return tuple(self.attempts)
+
+    async def begin_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        vendor_id: str,
+        adapter_id: str,
+        reason: str,
+    ) -> Any:
+        generation = max((item.generation for item in self.attempts), default=0) + 1
+        self.begun.append((vendor_id, generation))
+        self.attempts.append(VendorAttempt(vendor_id, generation, "invoking", False))
+        return type("Row", (), {"id": generation, "generation": generation})()
+
+    async def complete_vendor_attempt(
+        self,
+        attempt_id: int,
+        *,
+        outcome: str,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> bool:
+        self.events.append(("attempt", (attempt_id, outcome)))
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_paused_history_retries_same_vendor_after_resume() -> None:
+    store = HistoryStore([VendorAttempt(PRIMARY_VENDOR_ID, 1, "paused", False, 999)])
+    gateway = FakeGateway(["task-ok"])
+    await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
+    assert store.begun == [(PRIMARY_VENDOR_ID, 2)]
+    assert gateway.calls == 1
+    assert ("attempt", (2, "submitted")) in store.events
+
+
+@pytest.mark.asyncio
+async def test_retry_task_loads_history_and_allocates_new_generation() -> None:
+    store = HistoryStore(
+        [VendorAttempt(PRIMARY_VENDOR_ID, 1, "retry_scheduled", False, 5002)]
+    )
+    gateway = FakeGateway(["task-ok"])
+    await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
+    assert store.begun == [(PRIMARY_VENDOR_ID, 2)]
+    assert gateway.calls == 1
+    assert ("attempt", (2, "submitted")) in store.events
+
+
+@pytest.mark.asyncio
+async def test_invoking_history_does_not_call_vendor() -> None:
+    store = HistoryStore([VendorAttempt(PRIMARY_VENDOR_ID, 1, "invoking", False)])
+    gateway = FakeGateway(["must-not-send"])
+    outcome = await SendWorker(gateway, store, FakeBucket()).submit(
+        chunk(), lane="realtime"
+    )
+    assert outcome.value == "uncertain"
+    assert gateway.calls == 0
+
+
+async def _vendor_health(*pairs: tuple[str, bool]) -> tuple[Any, ...]:
+    from app.vendor.routing import VendorHealth
+
+    return tuple(VendorHealth(vendor_id, available) for vendor_id, available in pairs)
+
+
+@pytest.mark.asyncio
+async def test_unregistered_adapter_is_fail_closed_before_http() -> None:
+    store = HistoryStore()
+    primary = FakeGateway(["must-not-send"])
+
+    async def health() -> tuple[Any, ...]:
+        return await _vendor_health((PRIMARY_VENDOR_ID, False), ("secondary", True))
+
+    outcome = await SendWorker(
+        primary,
+        store,
+        FakeBucket(),
+        router=VendorRouter((PRIMARY_VENDOR_ID, "secondary")),
+        health=health,
+        gateways={PRIMARY_VENDOR_ID: primary},
+    ).submit(chunk(), lane="realtime")
+    assert outcome.value == "failed"
+    assert primary.calls == 0
+    assert store.begun == []
+
+
+@pytest.mark.asyncio
+async def test_safe_failover_does_not_refund_token_after_invoke() -> None:
+    store = HistoryStore()
+    primary = FakeGateway([VendorApiError(1002, "format")])
+    secondary = FakeGateway(["task-b"])
+    bucket = FakeBucket()
+
+    async def health() -> tuple[Any, ...]:
+        return await _vendor_health((PRIMARY_VENDOR_ID, True), ("secondary", True))
+
+    await SendWorker(
+        primary,
+        store,
+        bucket,
+        router=VendorRouter((PRIMARY_VENDOR_ID, "secondary")),
+        health=health,
+        gateways={PRIMARY_VENDOR_ID: primary, "secondary": secondary},
+    ).submit(chunk(), lane="realtime")
+    assert primary.calls == 1
+    assert secondary.calls == 1
+    assert bucket.refunds == 0
+    assert bucket.acquires == 2

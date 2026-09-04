@@ -107,6 +107,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0092_send_lifecycle_r2_facts",
         "0093_auth_r2_credential_version",
         "0094_send_inflight_reservation_lifecycle",
+        "0095_vendor_attempt_generation_machine",
     ]
 
 
