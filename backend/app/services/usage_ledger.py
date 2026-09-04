@@ -40,7 +40,8 @@ RELEASE_EVENT_ID_PATTERN = re.compile(
     rf"batch:[0-9a-f]{{32}}:cancelled"
     rf"|approval:[1-9][0-9]*:(?:rejected|expired)"
     rf"|usage:{UUID_FRAGMENT}:"
-    rf"(?:acceptance-failed|all-filtered|idempotent-reuse|orphan-recovery|uncertain-retry)"
+    rf"(?:acceptance-failed|all-filtered|idempotent-reuse|orphan-recovery|"
+    rf"uncertain-retry|uncertain-unused)"
     rf")$"
 )
 

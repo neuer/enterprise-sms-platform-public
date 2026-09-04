@@ -16,11 +16,15 @@ from app.core.apikey import (
     ApiKeyAuthenticator,
     ApiKeyCandidate,
     InvalidApiKey,
+    UnknownDigestAlgorithmError,
     UnknownPepperVersionError,
     _digest_matches,
+    derive_legacy_data_hmac_pepper,
     hash_api_key,
     issue_api_key_digest,
+    issue_api_key_record,
     load_api_key_pepper_keyring,
+    parse_unclassified_algorithms,
 )
 from app.settings import Settings
 
@@ -74,7 +78,9 @@ def test_data_hmac_keyring_upgrade_must_not_change_api_key_digest(tmp_path: Path
         api_key_pepper_key=pepper,
     )
     assert issue_api_key_digest(key, settings=upgraded) == (digest, version)
-    assert _digest_matches(key, digest, version, settings=upgraded)
+    assert _digest_matches(
+        key, digest, version, algorithm="api_pepper", settings=upgraded
+    )
     assert hash_api_key(key, settings=upgraded) != hashlib.sha256(key.encode()).hexdigest()
     assert first.credential("data_hmac_key") != upgraded.credential("data_hmac_key")
 
@@ -89,11 +95,15 @@ def test_api_key_pepper_rotation_keeps_version_bound_digests(tmp_path: Path) -> 
         tmp_path / "p2",
         api_key_pepper_key=keyring(2, {1: b64(b"p"), 2: b64(b"q")}),
     )
-    assert _digest_matches(key, digest, 1, settings=rotated)
+    assert _digest_matches(
+        key, digest, 1, algorithm="api_pepper", settings=rotated
+    )
     new_digest, new_version = issue_api_key_digest(key, settings=rotated)
     assert new_version == 2
     assert new_digest != digest
-    assert not _digest_matches(key, digest, 2, settings=rotated)
+    assert not _digest_matches(
+        key, digest, 2, algorithm="api_pepper", settings=rotated
+    )
 
 
 @pytest.mark.asyncio
@@ -122,6 +132,8 @@ async def test_current_and_previous_keys_can_use_different_pepper_versions(
                     previous_expires_at=now + timedelta(hours=1),
                     current_hash_version=2,
                     previous_hash_version=1,
+                    current_hash_algorithm="api_pepper",
+                    previous_hash_algorithm="api_pepper",
                 )
             ]
         ),
@@ -138,7 +150,7 @@ def test_unknown_pepper_version_fail_closed_without_leaking_secret(tmp_path: Pat
     key = "current_key_with_enough_entropy_123"
     digest, _version = issue_api_key_digest(key, settings=settings)
     with pytest.raises(UnknownPepperVersionError) as error:
-        _digest_matches(key, digest, 9, settings=settings)
+        _digest_matches(key, digest, 9, algorithm="api_pepper", settings=settings)
     leaked = f"{error.value!r} {load_api_key_pepper_keyring(settings)!r}"
     assert b64(b"p") not in leaked
     assert digest not in leaked
@@ -173,6 +185,7 @@ async def test_authenticate_keeps_working_after_data_hmac_keyring_upgrade(
                     previous_hash=None,
                     previous_expires_at=None,
                     current_hash_version=version,
+                    current_hash_algorithm="api_pepper",
                 )
             ]
         ),
@@ -201,6 +214,7 @@ async def test_unknown_pepper_version_authenticate_is_unauthorized_without_leak(
                     previous_hash=None,
                     previous_expires_at=None,
                     current_hash_version=9,
+                    current_hash_algorithm="api_pepper",
                 )
             ]
         ),
@@ -214,14 +228,89 @@ async def test_unknown_pepper_version_authenticate_is_unauthorized_without_leak(
     assert "app-missing" not in leaked
 
 
-def test_legacy_sha256_digest_still_matches_when_version_is_null(tmp_path: Path) -> None:
+def test_null_algorithm_is_not_silently_treated_as_sha256(tmp_path: Path) -> None:
     settings = settings_with_secrets(tmp_path, api_key_pepper_key=b64(b"p"))
     key = "current_key_with_enough_entropy_123"
     legacy = hashlib.sha256(key.encode()).hexdigest()
-    assert _digest_matches(key, legacy, None, settings=settings)
+    assert not _digest_matches(key, legacy, None, settings=settings)
+    assert _digest_matches(
+        key, legacy, None, algorithm="legacy_sha256", settings=settings
+    )
     modern, version = issue_api_key_digest(key, settings=settings)
     assert version == 1
     assert not _digest_matches(key, modern, None, settings=settings)
+    assert _digest_matches(
+        key, modern, version, algorithm="api_pepper", settings=settings
+    )
+
+
+def test_unclassified_candidates_are_limited_to_deploy_inventory(tmp_path: Path) -> None:
+    settings = settings_with_secrets(tmp_path, api_key_pepper_key=b64(b"p"))
+    key = "current_key_with_enough_entropy_123"
+    legacy = hashlib.sha256(key.encode()).hexdigest()
+    assert parse_unclassified_algorithms("") == ()
+    assert parse_unclassified_algorithms("legacy_sha256") == ("legacy_sha256",)
+    with pytest.raises(UnknownDigestAlgorithmError):
+        parse_unclassified_algorithms("api_pepper")
+    assert _digest_matches(
+        key,
+        legacy,
+        None,
+        unclassified_candidates=("legacy_sha256",),
+        settings=settings,
+    )
+    assert not _digest_matches(
+        key,
+        legacy,
+        None,
+        unclassified_candidates=("legacy_data_hmac_pepper_v1",),
+        settings=settings,
+    )
+
+
+def test_legacy_data_hmac_pepper_uses_independent_credential(tmp_path: Path) -> None:
+    old_hmac = b64(b"h")
+    settings = settings_with_secrets(
+        tmp_path,
+        api_key_pepper_key=b64(b"p"),
+        api_key_legacy_hmac_pepper=old_hmac,
+        data_hmac_key=keyring(2, {1: b64(b"h"), 2: b64(b"H")}),
+    )
+    key = "current_key_with_enough_entropy_123"
+    digest = hmac.new(
+        derive_legacy_data_hmac_pepper(old_hmac),
+        key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    assert _digest_matches(
+        key,
+        digest,
+        None,
+        algorithm="legacy_data_hmac_pepper_v1",
+        settings=settings,
+    )
+    current_json = settings.credential("data_hmac_key")
+    wrong = hmac.new(
+        derive_legacy_data_hmac_pepper(current_json),
+        key.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    assert digest != wrong
+    issued = issue_api_key_record(key, settings=settings)
+    assert issued.algorithm == "api_pepper"
+    assert issued.pepper_version == 1
+
+
+def test_migration_classifies_versioned_rows_without_guessing_sha256() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/versions/0091_api_key_digest_algorithms.py"
+    ).read_text(encoding="utf-8")
+    assert "SET api_key_hash_algorithm='api_pepper'" in source
+    assert "api_key_hash_version IS NOT NULL" in source
+    assert "api_key_hash_algorithm IS NULL" in source
+    assert "legacy_sha256" in source
+    assert "不得" in source or "禁止" in source
 
 
 def test_readiness_parses_pepper_keyring_without_exposing_value(tmp_path: Path) -> None:
@@ -243,9 +332,73 @@ def test_readiness_parses_pepper_keyring_without_exposing_value(tmp_path: Path) 
     assert health._validate_runtime_secrets(settings) is None
 
 
+@pytest.mark.asyncio
+async def test_on_auth_rehash_uses_cas_and_keeps_auth_on_migrate_failure(
+    tmp_path: Path,
+) -> None:
+    settings = settings_with_secrets(tmp_path, api_key_pepper_key=b64(b"p"))
+    key = "current_key_with_enough_entropy_123"
+    repo = _FakeRepo(
+        [
+            ApiKeyCandidate(
+                app_id=11,
+                name="app-legacy",
+                dept="平台部",
+                allowed_categories="notice",
+                current_hash=hashlib.sha256(key.encode()).hexdigest(),
+                previous_hash=None,
+                previous_expires_at=None,
+                current_hash_algorithm="legacy_sha256",
+            )
+        ]
+    )
+    auth = ApiKeyAuthenticator(repo, settings=settings)
+    assert (await auth.authenticate(key)).app_id == 11
+    assert repo.migrations
+    issued = issue_api_key_record(key, settings=settings)
+    assert repo.migrations[0]["issued"].algorithm == "api_pepper"
+    assert repo.migrations[0]["issued"].digest == issued.digest
+
+    failing = _FakeRepo(
+        [
+            ApiKeyCandidate(
+                app_id=12,
+                name="app-fail",
+                dept="平台部",
+                allowed_categories="notice",
+                current_hash=hashlib.sha256(key.encode()).hexdigest(),
+                previous_hash=None,
+                previous_expires_at=None,
+                current_hash_algorithm="legacy_sha256",
+            )
+        ],
+        migrate_error=RuntimeError("cas lost"),
+    )
+    assert (
+        await ApiKeyAuthenticator(failing, settings=settings).authenticate(key)
+    ).app_id == 12
+
+
 class _FakeRepo:
-    def __init__(self, candidates: list[ApiKeyCandidate]) -> None:
+    def __init__(
+        self,
+        candidates: list[ApiKeyCandidate],
+        *,
+        migrate_error: Exception | None = None,
+        unclassified: tuple[str, ...] = (),
+    ) -> None:
         self.candidates = candidates
+        self.migrations: list[dict[str, object]] = []
+        self.migrate_error = migrate_error
+        self.unclassified = unclassified
 
     async def find_candidates(self, prefix: str) -> list[ApiKeyCandidate]:
         return self.candidates
+
+    async def unclassified_algorithms(self) -> tuple[str, ...]:
+        return self.unclassified
+
+    async def migrate_digest(self, **payload: object) -> None:
+        if self.migrate_error is not None:
+            raise self.migrate_error
+        self.migrations.append(payload)

@@ -23,6 +23,7 @@ class WorkerAsyncRuntime:
         self._thread: Thread | None = None
         self._ready = Event()
         self._lock = Lock()
+        self._periodic: list[Future[Any]] = []
 
     def _serve(self) -> None:
         loop = asyncio.new_event_loop()
@@ -66,12 +67,36 @@ class WorkerAsyncRuntime:
                 future.result(timeout=10)
             raise
 
+    def schedule_periodic(
+        self,
+        factory: Any,
+        interval_s: float,
+    ) -> None:
+        """在 worker 常驻 loop 上周期执行；失败不得阻断发送。"""
+
+        self.start()
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            raise RuntimeError("worker async runtime is unavailable")
+
+        async def runner() -> None:
+            while True:
+                with suppress(Exception):
+                    await factory()
+                await asyncio.sleep(interval_s)
+
+        self._periodic.append(asyncio.run_coroutine_threadsafe(runner(), loop))
+
     def close(self) -> None:
         with self._lock:
+            periodic = list(self._periodic)
+            self._periodic.clear()
             thread = self._thread
             loop = self._loop
             self._thread = None
             self._loop = None
+        for item in periodic:
+            item.cancel()
         if thread is None or loop is None:
             return
         close_error: BaseException | None = None
@@ -101,6 +126,10 @@ def run_worker_async[T](coroutine: Coroutine[Any, Any, T]) -> T:
 
 def start_worker_runtime() -> None:
     _WORKER_RUNTIME.start()
+
+
+def schedule_worker_periodic(factory: Any, interval_s: float) -> None:
+    _WORKER_RUNTIME.schedule_periodic(factory, interval_s)
 
 
 def close_worker_runtime() -> None:

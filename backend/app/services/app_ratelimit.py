@@ -16,26 +16,36 @@ redis.call('EXPIRE', KEYS[1], 60)
 return 1
 """
 
+COST_WINDOW_SECONDS = 60
+COST_BUCKET_TTL_SECONDS = 70
 WEIGHTED_WINDOW_LUA = """
-local function weighted_total(key)
-  local members = redis.call('ZRANGE', key, 0, -1)
+local rec_key = KEYS[1]
+local seg_key = KEYS[2]
+local now_sec = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local rec_limit = tonumber(ARGV[3])
+local rec_weight = tonumber(ARGV[4])
+local seg_limit = tonumber(ARGV[5])
+local seg_weight = tonumber(ARGV[6])
+local ttl = tonumber(ARGV[7])
+local function window_total(key)
   local total = 0
-  for i = 1, #members do
-    local prefix = string.match(members[i], '^(%d+):')
-    total = total + tonumber(prefix or '1')
+  for offset = 0, window - 1 do
+    local epoch = now_sec - offset
+    local weight = tonumber(redis.call('HGET', key, tostring(epoch))) or 0
+    total = total + weight
   end
+  redis.call('HDEL', key, tostring(now_sec - window))
   return total
 end
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[2])
-local recipients = weighted_total(KEYS[1])
-local segments = weighted_total(KEYS[2])
-if recipients + tonumber(ARGV[4]) > tonumber(ARGV[3]) then return 0 end
-if segments + tonumber(ARGV[6]) > tonumber(ARGV[5]) then return 0 end
-redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4] .. ':' .. ARGV[7])
-redis.call('ZADD', KEYS[2], ARGV[1], ARGV[6] .. ':' .. ARGV[7])
-redis.call('EXPIRE', KEYS[1], 60)
-redis.call('EXPIRE', KEYS[2], 60)
+local recipients = window_total(rec_key)
+local segments = window_total(seg_key)
+if recipients + rec_weight > rec_limit then return 0 end
+if segments + seg_weight > seg_limit then return 0 end
+redis.call('HINCRBY', rec_key, tostring(now_sec), rec_weight)
+redis.call('HINCRBY', seg_key, tostring(now_sec), seg_weight)
+redis.call('EXPIRE', rec_key, ttl)
+redis.call('EXPIRE', seg_key, ttl)
 return 1
 """
 
@@ -100,20 +110,20 @@ class ApplicationRateLimiter:
             or segment_limit < 1
         ):
             raise ValueError("application cost limits must be positive")
-        now_ms = int(self.clock().timestamp() * 1000)
+        now_sec = int(self.clock().timestamp())
         try:
             allowed = await self.redis.eval(
                 WEIGHTED_WINDOW_LUA,
                 2,
-                f"ratelimit:app:{app_id}:recipients",
-                f"ratelimit:app:{app_id}:segments",
-                str(now_ms),
-                str(now_ms - 60_000),
+                f"ratelimit:app:{app_id}:recipients:buckets",
+                f"ratelimit:app:{app_id}:segments:buckets",
+                str(now_sec),
+                str(COST_WINDOW_SECONDS),
                 str(recipient_limit),
                 str(recipient_count),
                 str(segment_limit),
                 str(segment_count),
-                self.nonce(),
+                str(COST_BUCKET_TTL_SECONDS),
             )
         except Exception as exc:
             raise ControlPlaneUnavailable("应用限流控制面不可用") from exc
@@ -124,6 +134,7 @@ class ApplicationRateLimiter:
         if limit_per_minute < 1:
             raise ValueError("application rate limit must be positive")
         now_ms = int(self.clock().timestamp() * 1000)
+        member = self.nonce()
         try:
             allowed = await self.redis.eval(
                 SLIDING_WINDOW_LUA,
@@ -132,7 +143,7 @@ class ApplicationRateLimiter:
                 str(now_ms),
                 str(now_ms - 60_000),
                 str(limit_per_minute),
-                self.nonce(),
+                member,
             )
         except Exception as exc:
             raise ControlPlaneUnavailable("应用限流控制面不可用") from exc

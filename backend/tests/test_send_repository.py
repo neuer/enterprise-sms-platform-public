@@ -475,13 +475,23 @@ async def test_prepare_chunks_plans_ten_thousand_numbers_without_decrypt(
     created_at = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
     messages = [{"id": index, "created_at": created_at} for index in range(1, 10001)]
     results: list[FakeResult] = [
-        FakeResult({"id": 3, "category": "notice", "status": "queued"}),
+        FakeResult(
+            {
+                "id": 3,
+                "category": "notice",
+                "status": "queued",
+                "app_id": 7,
+                "usage_reservation_id": None,
+                "segments": 1,
+            }
+        ),
         FakeResult(scalars=[]),
         FakeResult(scalar=0),
         FakeResult(rows=messages),
     ]
     for chunk_id in range(101, 121):
         results.append(FakeResult(scalar=chunk_id))
+        results.append(FakeResult())
         results.append(FakeResult())
     results.append(FakeResult())
     results.extend(FakeResult() for _ in range(20))
@@ -888,8 +898,9 @@ async def test_vendor_critical_pause_sets_both_lanes_with_one_eval() -> None:
     assert len(redis.eval_calls) == 1
     script, numkeys, values = redis.eval_calls[0]
     assert numkeys == 2
-    assert "redis.call('set',KEYS[1],ARGV[1])" in script
-    assert "redis.call('set',KEYS[2],ARGV[1])" in script
+    assert "INCR" in script
+    assert "ratelimit:queue:paused:generation" in script
+    assert "KEYS[1]" in script and "KEYS[2]" in script
     assert values == (
         "queue:paused:realtime",
         "queue:paused:bulk",

@@ -12,9 +12,34 @@ from app.services.app_ratelimit import (
 )
 
 
-def test_weighted_cost_lua_uses_zrange_for_member_weights() -> None:
-    assert "ZRANGE" in WEIGHTED_WINDOW_LUA
-    assert "ZREMRANGEBYSCORE" in WEIGHTED_WINDOW_LUA
+def test_weighted_cost_lua_uses_fixed_time_buckets() -> None:
+    assert "ZRANGE" not in WEIGHTED_WINDOW_LUA
+    assert "ZADD" not in WEIGHTED_WINDOW_LUA
+    assert "HGETALL" not in WEIGHTED_WINDOW_LUA
+    assert "HINCRBY" in WEIGHTED_WINDOW_LUA
+    assert "for offset = 0, window - 1" in WEIGHTED_WINDOW_LUA
+    assert "tonumber(ARGV[2])" in WEIGHTED_WINDOW_LUA
+
+
+@pytest.mark.asyncio
+async def test_weighted_cost_keys_stay_under_control_acl_prefix() -> None:
+    redis = FakeRedis(1)
+    limiter = ApplicationRateLimiter(
+        redis,
+        clock=lambda: datetime(2026, 7, 11, 8, 0, 12, tzinfo=UTC),
+    )
+    await limiter.consume_send_cost(
+        app_id=7,
+        recipient_count=3,
+        segment_count=3,
+        recipient_limit=100,
+        segment_limit=100,
+    )
+    keys = redis.calls[0][2:4]
+    assert keys == (
+        "ratelimit:app:7:recipients:buckets",
+        "ratelimit:app:7:segments:buckets",
+    )
 
 
 class FakeRedis:

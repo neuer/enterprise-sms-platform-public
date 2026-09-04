@@ -11,6 +11,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.services.category import queue_for_category
 from app.services.outbox import MANUAL_JOB_TASK_NAMES
+from app.services.queue_pause import parse_queue_pause_claim
 
 T = TypeVar("T")
 AlertLevel = Literal["info", "warn", "crit"]
@@ -274,7 +275,14 @@ class QueueRecoveryService:
         snapshot = await self.repository.queue_snapshot()
         codes = tuple(
             sorted(
-                {code for code in (snapshot.realtime_code, snapshot.bulk_code) if code is not None}
+                {
+                    parsed
+                    for parsed in (
+                        parse_queue_pause_claim(snapshot.realtime_code),
+                        parse_queue_pause_claim(snapshot.bulk_code),
+                    )
+                    if parsed is not None
+                }
             )
         )
         if not force:

@@ -144,6 +144,47 @@ class SqlPipelineStore:
             )
             return int(value or 0)
 
+    async def reserve_in_flight_chunks(
+        self,
+        app_id: int,
+        estimated: int,
+        limit: int,
+    ) -> None:
+        if estimated < 1 or limit < 1:
+            raise ValueError("in-flight reservation bounds invalid")
+        from app.services.pipeline import InFlightLimitExceeded
+
+        async with self._engine().begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO send_inflight_balance(app_id, reserved_chunks)
+                    VALUES (:app_id, 0)
+                    ON CONFLICT (app_id) DO NOTHING
+                    """
+                ),
+                {"app_id": app_id},
+            )
+            updated = await connection.execute(
+                text(
+                    """
+                    UPDATE send_inflight_balance
+                    SET reserved_chunks = reserved_chunks + :estimated,
+                        updated_at = now()
+                    WHERE app_id=:app_id
+                      AND reserved_chunks + :estimated <= :limit
+                    RETURNING reserved_chunks
+                    """
+                ),
+                {
+                    "app_id": app_id,
+                    "estimated": estimated,
+                    "limit": limit,
+                },
+            )
+            if updated.scalar_one_or_none() is None:
+                raise InFlightLimitExceeded("应用在途分片已达上限")
+
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         if not phone_hmacs:
             return set()
