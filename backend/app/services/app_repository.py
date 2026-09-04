@@ -132,7 +132,7 @@ class SqlAppRepository:
                         """
                         INSERT INTO app (
                           name, dept, api_key_hash, api_key_prefix,
-                          api_key_hash_version,
+                          api_key_hash_version, api_key_hash_algorithm,
                           allowed_categories, default_sign, daily_quota,
                           rate_limit_per_min, recipient_limit_per_min,
                           segment_limit_per_min, max_in_flight_chunks,
@@ -143,7 +143,7 @@ class SqlAppRepository:
                           callback_report_enabled, created_by
                         ) VALUES (
                           :name, :dept, :api_key_hash, :api_key_prefix,
-                          :api_key_hash_version,
+                          :api_key_hash_version, :api_key_hash_algorithm,
                           :allowed_categories, :default_sign, :daily_quota,
                           :rate_limit_per_min, :recipient_limit_per_min,
                           :segment_limit_per_min, :max_in_flight_chunks,
@@ -159,6 +159,12 @@ class SqlAppRepository:
                     values
                     | {
                         "api_key_hash_version": values.get("api_key_hash_version"),
+                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                        or (
+                            "api_pepper"
+                            if values.get("api_key_hash_version") is not None
+                            else None
+                        ),
                         "freq_override": (
                             json.dumps(values["freq_override"])
                             if values["freq_override"] is not None
@@ -267,9 +273,11 @@ class SqlAppRepository:
                           api_key_hash=:revoked_hash,
                           api_key_prefix='revoked0',
                           api_key_hash_version=NULL,
+                          api_key_hash_algorithm='legacy_sha256',
                           api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           api_key_prev_hash_version=NULL,
+                          api_key_prev_hash_algorithm=NULL,
                           updated_at=now() WHERE id=:app_id
                         """
                     ),
@@ -301,10 +309,12 @@ class SqlAppRepository:
                           api_key_prev_hash=api_key_hash,
                           api_key_prev_prefix=api_key_prefix,
                           api_key_prev_hash_version=api_key_hash_version,
+                          api_key_prev_hash_algorithm=api_key_hash_algorithm,
                           api_key_prev_expires=:old_key_expires_at,
                           api_key_hash=:api_key_hash,
                           api_key_prefix=:api_key_prefix,
                           api_key_hash_version=:api_key_hash_version,
+                          api_key_hash_algorithm=:api_key_hash_algorithm,
                           updated_at=now()
                         WHERE id=:app_id AND status=1
                         """
@@ -313,6 +323,12 @@ class SqlAppRepository:
                     | {
                         "app_id": app_id,
                         "api_key_hash_version": values.get("api_key_hash_version"),
+                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                        or (
+                            "api_pepper"
+                            if values.get("api_key_hash_version") is not None
+                            else None
+                        ),
                     },
                 )
                 if result.rowcount != 1:
@@ -338,6 +354,7 @@ class SqlAppRepository:
                         UPDATE app SET api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           api_key_prev_hash_version=NULL,
+                          api_key_prev_hash_algorithm=NULL,
                           updated_at=now() WHERE id=:app_id
                         """
                     ),

@@ -177,6 +177,42 @@ describe("统计报表页", () => {
     vi.unstubAllGlobals()
   })
 
+  it("导出任务超过约 5 分钟未完成时停止轮询并提示超时", async () => {
+    vi.useFakeTimers()
+    const pending = { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url) === "/api/v1/web/reports/export" && init?.method === "POST") {
+        return Promise.resolve(response(pending, 202))
+      }
+      if (String(url) === `/api/v1/web/reports/export/${publicId}`) {
+        return Promise.resolve(response(pending))
+      }
+      return Promise.resolve(response(report))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    const statusCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url) === `/api/v1/web/reports/export/${publicId}`).length
+
+    const exportButton = wrapper.findAll("button").find((item) => item.text().includes("导出明细 CSV"))
+    await exportButton!.trigger("click")
+    await flushPromises()
+    expect(statusCalls()).toBe(1)
+
+    // 150 次 × 2s ≈ 5 分钟兜底：到达上限后停止轮询并给出中文超时提示
+    await vi.advanceTimersByTimeAsync(298_000)
+    expect(statusCalls()).toBe(150)
+    expect(wrapper.text()).toContain("导出结果等待超时（已超过 5 分钟），请稍后重新发起导出")
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(statusCalls()).toBe(150)
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
   it("修改筛选条件后提示已变更且不自动重查", async () => {
     const fetch = vi.fn().mockResolvedValue(response(report))
     vi.stubGlobal("fetch", fetch)

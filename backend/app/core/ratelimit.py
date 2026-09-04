@@ -15,6 +15,9 @@ local last_ms = tonumber(redis.call('HGET', KEYS[1], 'last_ms'))
 if tokens == nil or last_ms == nil then
   tokens = capacity
   last_ms = now_ms
+elseif last_ms > now_ms then
+  tokens = 0
+  last_ms = now_ms
 else
   local elapsed_seconds = math.floor((now_ms - last_ms) / 1000)
   if elapsed_seconds > 0 then

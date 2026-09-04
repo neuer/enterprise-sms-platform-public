@@ -57,7 +57,18 @@ class SqlSendAdmissionRepository:
                          AND uncertain_since <= now()-interval '24 hours')
                         uncertain_overdue,
                       (SELECT count(*) FROM callback_task
-                       WHERE status='dead') callback_dead
+                       WHERE status='dead') callback_dead,
+                      (SELECT EXISTS (
+                         SELECT 1 FROM (
+                           VALUES ('send-realtime'),('send-bulk'),
+                                  ('outbox-dispatcher')
+                         ) AS required(component)
+                         WHERE NOT EXISTS (
+                           SELECT 1 FROM send_runtime_heartbeat h
+                           WHERE h.component=required.component
+                             AND h.lease_until >= now()
+                         )
+                       )) heartbeat_stale
                     """
                 )
             )
@@ -85,7 +96,68 @@ class SqlSendAdmissionRepository:
             realtime_paused=bool(values[0]),
             bulk_paused=bool(values[1]),
             vendor_failures=failures,
+            heartbeat_stale=(
+                bool(getattr(self.settings, "is_production", False))
+                and int(row["heartbeat_stale"] or 0) > 0
+            ),
         )
+
+    async def load_control_state(self) -> dict[str, Any] | None:
+        engine = self._engine()
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT state, reason_code, state_epoch, hold_until, valid_until
+                        FROM send_admission_state WHERE scope='send'
+                        """
+                    )
+                )
+            ).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
+    async def save_control_state(
+        self,
+        *,
+        state: str,
+        reason: str,
+        hold_until: Any,
+        epoch: int,
+    ) -> None:
+        engine = self._engine()
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    """
+                    INSERT INTO send_admission_state (
+                      scope, state, reason_code, state_epoch, hold_until,
+                      valid_until, observed_at, updated_at
+                    ) VALUES (
+                      'send', :state, :reason, :epoch, :hold_until,
+                      now() + interval '15 seconds', now(), now()
+                    )
+                    ON CONFLICT (scope) DO UPDATE SET
+                      state=EXCLUDED.state,
+                      reason_code=EXCLUDED.reason_code,
+                      state_epoch=send_admission_state.state_epoch + 1,
+                      hold_until=EXCLUDED.hold_until,
+                      valid_until=EXCLUDED.valid_until,
+                      observed_at=now(),
+                      updated_at=now()
+                    WHERE send_admission_state.state_epoch = :epoch
+                       OR send_admission_state.valid_until < now()
+                    """
+                ),
+                {
+                    "state": state,
+                    "reason": reason,
+                    "epoch": epoch,
+                    "hold_until": hold_until,
+                },
+            )
+            if int(updated.rowcount or 0) < 1:
+                raise RuntimeError("admission epoch fencing lost")
 
     async def record_transition(
         self,

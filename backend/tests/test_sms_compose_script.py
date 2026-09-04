@@ -80,6 +80,7 @@ raise SystemExit(int(os.environ.get("FAKE_PYTHON_EXIT", "0")))
         ("storage_preflight.py", "FAKE_STORAGE_PREFLIGHT_EXIT"),
         ("redis_tls_preflight.py", "FAKE_REDIS_TLS_PREFLIGHT_EXIT"),
         ("volume_contract_preflight.py", "FAKE_VOLUME_PREFLIGHT_EXIT"),
+        ("redis_ha_preflight.py", "FAKE_REDIS_HA_PREFLIGHT_EXIT"),
     ):
         (platform_root / "deploy" / "scripts" / script_name).write_text(
             "from __future__ import annotations\n"
@@ -2123,29 +2124,25 @@ def test_production_infrastructure_preflight_failure_prevents_any_mutation(
     assert command_lines(log) == []
 
 
-def test_phase0_production_rejects_unimplemented_managed_mode_before_tool_call(
+def test_production_accepts_managed_redis_ha_mode(
     fake_environment: tuple[Path, Path, dict[str, str]],
 ) -> None:
-    platform_root, log, environment = fake_environment
+    platform_root, log, _ = fake_environment
     write_non_secret_env(platform_root, redis_ha_mode="managed")
 
     result = run_wrapper(
         fake_environment,
         "up",
         "-d",
-        extra_environment={
-            "SMS_SECRETS_MODE": "production",
-            "FAKE_REDIS_TLS_PREFLIGHT_EXIT": "23",
-        },
+        extra_environment={"SMS_SECRETS_MODE": "production"},
     )
 
-    assert result.returncode != 0
-    assert "REDIS_HA_MODE is invalid" in result.stderr
-    assert command_lines(log) == []
+    assert "REDIS_HA_MODE is invalid" not in result.stderr
+    assert "docker-compose.redis-tls.yml" not in "\n".join(command_lines(log))
 
 
 @pytest.mark.parametrize(
-    "redis_ha_mode", (None, "standalone", "managed", "unknown", " managed")
+    "redis_ha_mode", (None, "standalone", "unknown", " managed")
 )
 def test_production_rejects_missing_or_invalid_redis_topology_before_tool_call(
     fake_environment: tuple[Path, Path, dict[str, str]],

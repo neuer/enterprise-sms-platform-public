@@ -145,7 +145,9 @@ paths:
         活动批次、uncertain/unknown_terminal 分片或未完成 callback 在过期后
         仍不可复用。响应带 Idempotency-Expires-At。biz_id 必须是业务事件稳定
         标识，禁止周期性短序号复用。幂等命中时 status 为该历史批次的当前状态，
-        因此可能已经进入 sending、completed、cancelled 或 balance_blocked。
+        因此可能已经进入 sending、completed、completed_unknown、cancelled 或
+        balance_blocked。completed_unknown 表示批次已结束自动处理但仍有未知结果，
+        禁止自动重发，调用方应继续使用原 biz_id 查询或等待人工处置。
         新发送受 Outbox 积压准入：积压或双队列暂停时返回 503 DEPENDENCY_UNAVAILABLE 与
         Retry-After；降级时仅允许少量 verify/notice。同 biz_id 幂等重放与批次查询不受影响。
         生产当前只注册智慧信息供应商。超时或连接中断后 chunk 进入 uncertain，禁止自动切换
@@ -203,7 +205,7 @@ paths:
                   removed_freq_limit: { type: integer, description: 号码级频控剔除数（v1.2） }
                   est_segments: { type: integer, description: 单条计费条数（含签名与退订语，v1.2） }
                   quota_cost: { type: integer, description: 本批次配额消耗 = accepted × est_segments（v1.2） }
-                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
                   scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                   idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
@@ -294,7 +296,7 @@ paths:
                   removed_freq_limit: { type: integer }
                   est_segments: { type: integer }
                   quota_cost: { type: integer }
-                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
                   scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                   idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
@@ -568,7 +570,7 @@ paths:
           headers:
             Cache-Control: { schema: { type: string }, description: 固定为 no-store }
         '401': { description: 当前密码错误或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '409': { description: STATE_CONFLICT，非本地身份不支持平台改密, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: AUTH_CONTEXT_CHANGED（安全/凭据版本已变化，须重新登录）或 STATE_CONFLICT（非本地身份不支持平台改密）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
@@ -3073,7 +3075,7 @@ components:
       required: [token, expires_in, refresh_expires_in, user]
       properties:
         token: { type: string, description: 15 分钟 Bearer access JWT }
-        expires_in: { type: integer, const: 900 }
+        expires_in: { type: integer, minimum: 1, maximum: 900, description: Access Token 实际剩余秒数，AD 会话会被截断到绝对重新认证截止 }
         refresh_expires_in: { type: integer, minimum: 1, maximum: 604800, description: refresh family 自首次登录起的实际剩余秒数 }
         user: { $ref: '#/components/schemas/AuthUser' }
 
@@ -3478,7 +3480,7 @@ components:
         status: { type: string, enum: [uncertain, unknown_terminal] }
         resolution_id: { anyOf: [{ type: integer }, { type: 'null' }] }
         resolution_action: { anyOf: [{ type: string }, { type: 'null' }] }
-        resolution_state: { anyOf: [{ type: string, enum: [proposed, confirmed] }, { type: 'null' }] }
+        resolution_state: { anyOf: [{ type: string, enum: [proposed, approved, effect_pending, applying, effect_applied, closed, approval_rejected, retryable_effect_error, manual_intervention_required, cancelled_before_effect] }, { type: 'null' }] }
         proposer_account_id: { anyOf: [{ type: integer }, { type: 'null' }] }
 
     UncertainResolutionRequestModel:
@@ -3497,7 +3499,7 @@ components:
         chunk_id: { type: integer }
         batch_id: { type: integer }
         action: { type: string }
-        state: { type: string, enum: [proposed, confirmed] }
+        state: { type: string, enum: [proposed, approved, effect_pending, applying, effect_applied, closed, approval_rejected, retryable_effect_error, manual_intervention_required, cancelled_before_effect] }
         proposer_account_id: { type: integer }
         confirmer_account_id: { anyOf: [{ type: integer }, { type: 'null' }] }
         child_batch_id: { anyOf: [{ type: integer }, { type: 'null' }] }

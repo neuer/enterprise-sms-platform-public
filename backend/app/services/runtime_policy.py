@@ -148,6 +148,7 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "security_daily_config_operation_id": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
+    "api_key_unclassified_algorithms": ConfigSpec("", "str", GROUP_SECURITY),
 }
 
 DEFAULTS: dict[str, str] = {key: spec.default for key, spec in CONFIG_SPECS.items()}

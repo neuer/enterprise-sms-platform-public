@@ -61,14 +61,16 @@ class FakeRedis:
         if args and args[0] == CLAIM_RELEASE_LUA:
             key = str(args[2])
             token = str(args[3])
-            if self.values.get(key) == token:
+            current = self.values.get(key)
+            if current == token or str(current or "").startswith(f"{token}:"):
                 self.values.pop(key, None)
                 return 1
             return 0
         if args and args[0] == CLAIM_RENEW_LUA:
             key = str(args[2])
             token = str(args[3])
-            return int(self.values.get(key) == token)
+            current = self.values.get(key)
+            return int(current == token or str(current or "").startswith(f"{token}:"))
         return self.eval_result
 
 
@@ -173,7 +175,7 @@ async def test_idempotency_claim_wait_and_compare_delete_release_are_bounded() -
     assert redis.values["idem:claim:app:7:biz-3"] == token
     await coordinator.release(scope, "biz-3", token)
     assert "idem:claim:app:7:biz-3" not in redis.values
-    assert "redis.call('GET', KEYS[1]) == ARGV[1]" in CLAIM_RELEASE_LUA
+    assert "ARGV[1] .. ':'" in CLAIM_RELEASE_LUA
     assert coordinator.frequency_result_key(scope, "biz-3") == "idem:freq:app:7:biz-3"
     assert coordinator.quota_result_key(scope, "biz-3", "20260711") == (
         "idem:quota:app:7:biz-3:20260711"
@@ -216,7 +218,7 @@ async def test_claim_renew_requires_owner_token_and_default_wait_covers_lease() 
 
     assert await coordinator.renew(scope, "biz-renew", "wrong-token") is False
     assert await coordinator.renew(scope, "biz-renew", token) is True
-    assert "redis.call('GET', KEYS[1]) == ARGV[1]" in CLAIM_RENEW_LUA
+    assert "ARGV[1] .. ':'" in CLAIM_RENEW_LUA
     assert coordinator.wait_attempts * coordinator.wait_interval_s >= (
         coordinator.claim_ttl_s + IDEMPOTENCY_WAIT_MARGIN_S
     )

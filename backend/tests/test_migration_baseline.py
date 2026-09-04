@@ -827,6 +827,60 @@ def test_send_admission_metrics_grant_is_expand_only() -> None:
     assert "sys_config" not in source
 
 
+def test_api_key_digest_algorithms_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0091_api_key_digest_algorithms.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.77：" in schema
+    for contract in (schema, source):
+        assert "api_key_hash_algorithm" in contract
+        assert "legacy_data_hmac_pepper_v1" in contract
+        assert "ck_app_api_key_algorithm_version" in contract
+        assert "api_key_unclassified_algorithms" in contract
+    assert 'revision = "0091_api_key_digest_algorithms"' in source
+    assert 'down_revision = "0090_vendor_routing"' in source
+    assert "DELETE FROM" not in source
+    assert "NULL 版本静默" in source or "不得静默" in schema
+
+
+def test_send_lifecycle_r2_facts_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0092_send_lifecycle_r2_facts.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.78：" in schema
+    for contract in (schema, source):
+        assert "sms_uncertain_child" in contract
+        assert "usage_chunk_allocation" in contract
+        assert "send_inflight_balance" in contract
+        assert "send_admission_state" in contract
+        assert "send_runtime_heartbeat" in contract
+        assert "sms_scheduler" in contract
+        assert "apply_uncertain_effect" in contract
+        assert "uncertain-unused" in contract
+    assert 'revision = "0092_send_lifecycle_r2_facts"' in source
+    assert 'down_revision = "0091_api_key_digest_algorithms"' in source
+    assert "DELETE FROM" not in source
+
+
+def test_auth_r2_credential_version_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0093_auth_r2_credential_version.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.79：" in schema
+    for contract in (schema, source):
+        assert "credential_version" in contract
+        assert "issued_credential_version" in contract
+        assert "ck_local_credential_version_positive" in contract
+        assert "ck_password_change_issued_credential_version" in contract
+    assert 'revision = "0093_auth_r2_credential_version"' in source
+    assert 'down_revision = "0092_send_lifecycle_r2_facts"' in source
+    assert "DELETE FROM" not in source
+    assert "ADD COLUMN IF NOT EXISTS" in source
+
+
 def test_vendor_routing_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0090_vendor_routing.py"

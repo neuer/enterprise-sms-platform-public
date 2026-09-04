@@ -61,6 +61,7 @@ class SubmitOutcome(StrEnum):
     FAILED = "failed"
     UNCERTAIN = "uncertain"
     SPLIT = "split"
+    NO_OP_ALREADY_TERMINAL = "no_op_already_terminal"
 
 
 SUBMIT_OUTCOME_LABELS = tuple(item.value for item in SubmitOutcome)
@@ -704,36 +705,51 @@ async def _run_chunk(
     try:
         loaded = await store.load_chunk(chunk_id)
         if loaded is None:
-            return ChunkTaskResult(0, None)
+            return ChunkTaskResult(0, SubmitOutcome.NO_OP_ALREADY_TERMINAL)
         chunk, lane = loaded
+        from app.services.runtime_heartbeat import touch_runtime_heartbeat
+
+        await touch_runtime_heartbeat(
+            "send-bulk" if lane == "bulk" else "send-realtime"
+        )
         if await store.is_paused(lane):
             if fail_closed_on_pause:
                 raise SendQueuePaused("send queue is paused")
             return ChunkTaskResult(0, SubmitOutcome.PAUSED)
         outcome = await worker.submit(chunk, lane=lane)
+        if outcome is SubmitOutcome.SUBMITTED:
+            await touch_runtime_heartbeat(
+                "send-bulk" if lane == "bulk" else "send-realtime",
+                success=True,
+            )
         return ChunkTaskResult(1, outcome)
     finally:
         await gateway.aclose()
 
 
-async def _process_chunk(chunk_id: int, *, fail_closed_on_pause: bool = False) -> int:
+async def _process_chunk(
+    chunk_id: int, *, fail_closed_on_pause: bool = False
+) -> ChunkTaskResult:
     result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
     if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
         raise SendQueuePaused("send queue is paused")
-    return result.processed
+    return result
 
 
-async def _process_chunk_event(chunk_id: int, event_id: str) -> int:
-    async def effect(claim: OutboxClaim) -> int:
+async def _process_chunk_event(chunk_id: int, event_id: str) -> ChunkTaskResult:
+    async def effect(claim: OutboxClaim) -> ChunkTaskResult:
         if claim.args != (chunk_id,):
             raise ValueError("chunk outbox args mismatch")
         return await _process_chunk(chunk_id, fail_closed_on_pause=True)
 
-    return await OutboxExecutor(SqlOutboxRepository()).run(
+    raw = await OutboxExecutor(SqlOutboxRepository()).run(
         UUID(event_id),
         expected_type="chunk.ready",
         effect=effect,
     )
+    if isinstance(raw, ChunkTaskResult):
+        return raw
+    return ChunkTaskResult(1, SubmitOutcome.NO_OP_ALREADY_TERMINAL)
 
 
 @celery_app.task(name="app.tasks.send.process_batch")  # type: ignore[untyped-decorator]
@@ -754,5 +770,5 @@ def process_chunk(chunk_id: int, outbox_event_id: str | None = None) -> dict[str
     if outbox_event_id is None:
         result = run_worker_async(_run_chunk(chunk_id))
         return chunk_result_metrics(result)
-    processed = run_worker_async(_process_chunk_event(chunk_id, outbox_event_id))
-    return chunk_result_metrics(ChunkTaskResult(processed, None))
+    result = run_worker_async(_process_chunk_event(chunk_id, outbox_event_id))
+    return chunk_result_metrics(result)

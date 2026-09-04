@@ -70,8 +70,14 @@ async def test_security_transition_is_idempotent_and_contains_no_login_or_secret
 
     bound: list[tuple[str, str]] = []
 
-    async def bind(_connection: object, *, actor_name: str, action: str) -> None:
-        bound.append((actor_name, action))
+    async def bind(
+        _connection: object,
+        *,
+        actor_name: str,
+        action: str,
+        producer_domain: str = "api",
+    ) -> None:
+        bound.append((actor_name, action, producer_domain))
 
     monkeypatch.setattr(security_events, "bind_connection_system_audit", bind)
     connection = FakeConnection()
@@ -80,7 +86,7 @@ async def test_security_transition_is_idempotent_and_contains_no_login_or_secret
 
     await repository.ensure_transition(transition())
 
-    assert bound == [("auth-system", "auth_account_locked")]
+    assert bound == [("auth-system", "auth_account_locked", "api")]
     sql, params = connection.calls[0]
     assert "INSERT INTO audit_log" in sql
     assert "ON CONFLICT" not in sql
@@ -135,6 +141,14 @@ async def test_security_transition_database_failure_fails_closed(
 
     with pytest.raises(SessionStateUnavailable):
         await repository.ensure_transition(transition())
+
+
+def test_security_event_repository_uses_auth_database_role() -> None:
+    import inspect
+
+    source = inspect.getsource(SqlAuthSecurityEventRepository._engine)
+    assert 'database_url_for("auth")' in source
+    assert "database_url)" not in source.replace("database_url_for", "")
 
 
 def test_security_transition_rejects_non_uuid_object_id() -> None:

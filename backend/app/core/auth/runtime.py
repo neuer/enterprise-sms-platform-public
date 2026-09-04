@@ -19,6 +19,7 @@ from app.core.auth.backends import (
     ProviderUnavailable,
     SessionStateUnavailable,
 )
+from app.core.auth.guard_policy import SqlAuthGuardPolicyLoader
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.jwt import (
     IssuedTokenPair,
@@ -42,6 +43,8 @@ from app.core.auth.service import (
     RedisKeyValue,
 )
 from app.core.auth.users import (
+    AuthContextChanged,
+    PasswordChangeAuthorization,
     PasswordChangeClaim,
     PasswordChangeInProgress,
     SqlUserRepository,
@@ -139,7 +142,7 @@ class AuthFacade:
         claims: JwtClaims,
         password: str,
         ip: str,
-    ) -> None:
+    ) -> PasswordChangeAuthorization | None:
         """只用当前显式 Provider 重验密码，并拒绝认证身份切换。"""
 
         try:
@@ -208,6 +211,19 @@ class AuthFacade:
         if not same_identity:
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None)
         await self._record_bound_success(account)
+        if claims.provider_code != "local":
+            return None
+        record = await self.users.find_local_account(account.normalized_login_name)
+        if record is None or record.account.account_id != account.account_id:
+            raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None)
+        return PasswordChangeAuthorization(
+            account_id=account.account_id,
+            identity_id=account.identity_id,
+            provider_code="local",
+            normalized_login_name=account.normalized_login_name,
+            expected_security_version=account.security_version,
+            expected_credential_version=record.credential_version,
+        )
 
     async def login(
         self,
@@ -489,11 +505,15 @@ class AuthFacade:
                 None,
             )
         try:
-            await self.reauthenticate_current(claims, current_password, ip)
+            authorization = await self.reauthenticate_current(
+                claims, current_password, ip
+            )
         except ApiError as error:
             if error.code == "STEP_UP_REQUIRED":
                 raise ApiError(401, "UNAUTHORIZED", "当前密码错误", None) from None
             raise
+        if authorization is None:
+            raise ApiError(409, "STATE_CONFLICT", "仅本地账号支持修改密码", None)
         if secrets.compare_digest(
             current_password.encode("utf-8"),
             new_password.encode("utf-8"),
@@ -527,19 +547,36 @@ class AuthFacade:
                 "认证源容量暂不可用，请稍后重试",
                 None,
             ) from None
-        await self.users.change_local_password(
-            account_id=claims.account_id,
-            identity_id=claims.identity_id,
-            password_hash=password_hash,
-            actor=claims.login_name,
-            ip=ip,
-        )
+        try:
+            await self.users.change_local_password(
+                account_id=authorization.account_id,
+                identity_id=authorization.identity_id,
+                password_hash=password_hash,
+                actor=claims.login_name,
+                ip=ip,
+                expected_security_version=authorization.expected_security_version,
+                expected_credential_version=authorization.expected_credential_version,
+            )
+        except AuthContextChanged:
+            raise ApiError(
+                409,
+                "AUTH_CONTEXT_CHANGED",
+                "账号安全状态已变化，请重新登录后重试",
+                None,
+            ) from None
 
     async def verify(self, token: str) -> JwtClaims:
         try:
             claims = await self.tokens.verify(token)
             bind_audit_principal(claims.principal)
             return claims
+        except ReauthenticationRequired:
+            raise ApiError(
+                401,
+                "AUTH_REAUTH_REQUIRED",
+                "AD 会话已到期，请重新登录",
+                None,
+            ) from None
         except InvalidCredentials:
             raise ApiError(401, "UNAUTHORIZED", "无效或已吊销的令牌", None) from None
         except SessionStateUnavailable:
@@ -668,11 +705,12 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
         local_passwords=passwords,
     )
     policy_loader = SqlRuntimePolicyLoader(settings)
+    guard_policy = SqlAuthGuardPolicyLoader(settings)
     auth = AuthService(
         providers,
         LoginGuard(
             store,
-            policy_loader=policy_loader.load,
+            policy_loader=guard_policy.load,
             security_events=SqlAuthSecurityEventRepository(settings),
         ),
     )

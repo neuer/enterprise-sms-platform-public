@@ -120,7 +120,7 @@
       <p class="hint" id="mobileCount">0 个号码</p>
       <div class="row">
         <div style="flex:1;min-width:220px">
-          <label for="bizId">biz_id（可选，≤32 位；同应用 24h 内同值幂等）</label>
+          <label for="bizId">biz_id（必填，1–32 位稳定业务幂等键）</label>
           <input id="bizId" maxlength="32" autocomplete="off">
         </div>
         <div style="flex:1;min-width:220px">
@@ -347,11 +347,14 @@
       if (invalid.length) { showStatus(`存在 ${invalid.length} 个非法手机号`, "danger"); return; }
       if (list.length > 10000) { showStatus("手机号超过 10000 个", "danger"); return; }
       if (!apiKey()) { showStatus("请先填写 API Key", "warn"); return; }
+      const bizId = $("bizId").value.trim();
+      if (!bizId) { showStatus("请填写必填业务幂等键 biz_id", "warn"); return; }
+      if (bizId.length > 32) { showStatus("biz_id 不能超过 32 位", "danger"); return; }
       const payload = {
         category: $("category").value,
         mobiles: list,
         sign_name: $("signName").value.trim() || null,
-        biz_id: $("bizId").value.trim() || null,
+        biz_id: bizId,
         scheduled_at: isoShanghai($("scheduledAt").value),
       };
       if (contentMode === "content") {

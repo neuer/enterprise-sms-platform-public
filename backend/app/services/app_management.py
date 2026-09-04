@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from app.core.apikey import issue_api_key_digest
+from app.core.apikey import issue_api_key_record
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import (
@@ -312,11 +312,12 @@ class AppManagementService:
     def _key_values(plaintext: str) -> dict[str, Any]:
         if len(plaintext) < 16:
             raise InvalidAppConfig("生成的密钥长度不足")
-        digest, version = issue_api_key_digest(plaintext)
+        issued = issue_api_key_record(plaintext)
         return {
-            "api_key_hash": digest,
+            "api_key_hash": issued.digest,
             "api_key_prefix": plaintext[:8],
-            "api_key_hash_version": version,
+            "api_key_hash_version": issued.pepper_version,
+            "api_key_hash_algorithm": issued.algorithm,
         }
 
     @staticmethod

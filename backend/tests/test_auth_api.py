@@ -537,6 +537,65 @@ def test_ad_reauthentication_required_clears_refresh_cookie() -> None:
     assert "Max-Age=0" in cookie
 
 
+def test_business_api_returns_auth_reauth_required_and_clears_cookie() -> None:
+    class ExpiredAccessFacade(FakeAuthFacade):
+        async def verify(self, token: str) -> object:
+            del token
+            raise ApiError(
+                401,
+                "AUTH_REAUTH_REQUIRED",
+                "AD 会话已到期，请重新登录",
+                None,
+            )
+
+    response_client = client(ExpiredAccessFacade())
+    response_client.cookies.set("sms_refresh_token", "refresh.jwt")
+
+    expired = response_client.get(
+        "/api/v1/web/admin/users",
+        headers={"Authorization": "Bearer expired.jwt"},
+    )
+
+    assert expired.status_code == 401
+    assert expired.json()["code"] == "AUTH_REAUTH_REQUIRED"
+    cookie = expired.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in cookie
+    assert "Max-Age=0" in cookie
+
+
+def test_password_change_auth_context_changed_clears_refresh_cookie() -> None:
+    class ChangedFacade(FakeAuthFacade):
+        async def change_password(
+            self,
+            token: str,
+            current_password: str,
+            new_password: str,
+            ip: str,
+        ) -> None:
+            del token, current_password, new_password, ip
+            raise ApiError(
+                409,
+                "AUTH_CONTEXT_CHANGED",
+                "账号安全状态已变化，请重新登录后重试",
+                None,
+            )
+
+    response_client = client(ChangedFacade())
+    response_client.cookies.set("sms_refresh_token", "refresh.jwt")
+
+    changed = response_client.post(
+        "/api/v1/web/auth/password/change",
+        headers={"Authorization": "Bearer access.jwt"},
+        json={"current_password": "Current@Password123", "new_password": "Daily@Password456"},
+    )
+
+    assert changed.status_code == 409
+    assert changed.json()["code"] == "AUTH_CONTEXT_CHANGED"
+    cookie = changed.headers.get("set-cookie", "")
+    assert "sms_refresh_token=" in cookie
+    assert "Max-Age=0" in cookie
+
+
 def _real_login_facade() -> AuthFacade:
     value = user()
     identity = AuthenticatedIdentity(

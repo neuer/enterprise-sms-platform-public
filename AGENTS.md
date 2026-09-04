@@ -104,7 +104,7 @@ deploy/
 |---|---|---|
 | INVALID_PARAM | 400 | 参数校验失败 |
 | UNAUTHORIZED | 401 | Key/JWT 无效或已吊销 |
-| AUTH_REAUTH_REQUIRED | 401 | AD refresh family 达到完整重新认证时限，必须重新登录 |
+| AUTH_REAUTH_REQUIRED | 401 | AD 完整重新认证绝对截止已到，Access/Refresh 均须重新登录 |
 | STEP_UP_REQUIRED | 401 | 高风险操作缺少有效二次认证 |
 | STEP_UP_EXPIRED | 401 | 二次认证令牌已过期或已使用 |
 | FORBIDDEN | 403 | 角色/数据权限不足 |
@@ -117,6 +117,7 @@ deploy/
 | NOT_FOUND | 404 | 资源不存在 |
 | STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
 | IDEMPOTENCY_CONFLICT | 409 | 同一幂等键已用于不同请求 |
+| AUTH_CONTEXT_CHANGED | 409 | 日常改密 CAS 失败：安全版本或凭据版本已变化，须重新登录 |
 | ACCOUNT_SOURCE_CONFLICT | 409 | 规范化登录名已由其他认证源先占用 |
 | LAST_ADMIN_PROTECTED | 409 | 禁止停用或降级最后一个有效管理员 |
 | PROVIDER_CONFIG_UNTESTED | 409 | 当前认证源草稿尚未通过连接测试 |

@@ -76,12 +76,16 @@ async def test_local_refresh_family_is_not_limited_by_ad_max_age() -> None:
 @pytest.mark.asyncio
 async def test_ad_policy_failure_does_not_rotate_or_revoke_family() -> None:
     store = FakeKeyValue()
+    unavailable = [False]
 
-    async def unavailable() -> RuntimePolicy:
-        raise OSError("database unavailable")
+    async def policy() -> RuntimePolicy:
+        if unavailable[0]:
+            raise OSError("database unavailable")
+        return RuntimePolicy.from_mapping({})
 
-    service = JwtService(SECRET, store, runtime_policy_loader=unavailable)
+    service = JwtService(SECRET, store, runtime_policy_loader=policy)
     first = await service.issue_pair(claims("ad"), TAB_ID)
+    unavailable[0] = True
 
     with pytest.raises(SessionStateUnavailable):
         await service.rotate_refresh(first.refresh_token, TAB_ID)

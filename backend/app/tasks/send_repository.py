@@ -37,10 +37,12 @@ from app.vendor.identifiers import vendor_identifier_pseudonym
 
 LOGGER = logging.getLogger(__name__)
 
-_VENDOR_CRITICAL_PAUSE_SCRIPT = (
-    "redis.call('set',KEYS[1],ARGV[1]); "
-    "redis.call('set',KEYS[2],ARGV[1]); return 1"
-)
+_VENDOR_CRITICAL_PAUSE_SCRIPT = """
+local gen = redis.call('INCR', 'ratelimit:queue:paused:generation')
+redis.call('SET', KEYS[1], ARGV[1] .. ':' .. gen)
+redis.call('SET', KEYS[2], ARGV[1] .. ':' .. gen)
+return 1
+"""
 
 
 class SqlChunkStore:
@@ -374,7 +376,8 @@ class SqlChunkStore:
             async with engine.begin() as connection:
                 batch_result = await connection.execute(
                     text(
-                        "SELECT id, category, status FROM sms_batch "
+                        "SELECT id, category, status, app_id, "
+                        "usage_reservation_id, segments FROM sms_batch "
                         "WHERE batch_no=:batch_no "
                         "AND status IN ('queued','sending') FOR UPDATE"
                     ),
@@ -444,6 +447,32 @@ class SqlChunkStore:
                         )
                         chunk_id = int(inserted.scalar_one())
                         chunk_ids.append(chunk_id)
+                        segment_count = int(batch["segments"] or 0) * len(group)
+                        await connection.execute(
+                            text(
+                                """
+                                INSERT INTO usage_chunk_allocation (
+                                  chunk_id, batch_id, reservation_id,
+                                  recipient_count, segment_count,
+                                  request_count, app_id
+                                ) VALUES (
+                                  :chunk_id, :batch_id, :reservation_id,
+                                  :recipients, :segments,
+                                  :requests, :app_id
+                                )
+                                ON CONFLICT (chunk_id) DO NOTHING
+                                """
+                            ),
+                            {
+                                "chunk_id": chunk_id,
+                                "batch_id": batch_id,
+                                "reservation_id": batch["usage_reservation_id"],
+                                "recipients": len(group),
+                                "segments": segment_count,
+                                "requests": 1 if chunk_no == 1 else 0,
+                                "app_id": batch["app_id"],
+                            },
+                        )
                         await connection.execute(
                             text(
                                 """

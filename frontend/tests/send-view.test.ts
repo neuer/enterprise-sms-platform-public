@@ -562,4 +562,83 @@ describe("人工发送工作台", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
+
+  it("大文本粘贴的号码统计在 300ms 防抖后刷新", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", stubPreviewFetch(basePreview))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string } }
+    const mobiles = Array.from({ length: 300 }, (_, index) => `139${String(index).padStart(8, "0")}`)
+
+    // 300 行约 3,600 字，超过同步解析阈值进入防抖路径
+    vm.form.mobilesText = mobiles.join("\n")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find("[data-testid='phone-stats']").exists()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(299)
+    expect(wrapper.find("[data-testid='phone-stats']").exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const stats = wrapper.get("[data-testid='phone-stats']").text()
+    expect(stats).toContain("300")
+    expect(stats).toContain("格式无效")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it("防抖窗口内提交时强制落盘最新号码解析", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    const sentBodies: Array<{ mobiles?: string[] }> = []
+    const base = stubPreviewFetch(basePreview)
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url)
+      if (target.endsWith("/messages/send")) {
+        sentBodies.push(JSON.parse(String(init?.body)) as { mobiles?: string[] })
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({
+            batch_no: "b-big",
+            status: "queued",
+            accepted: 301,
+            quota_cost: 301,
+            idempotent: false,
+            deferred_reason: null,
+          }),
+        }
+      }
+      return base(url)
+    }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
+    vm.form.content = "维护通知"
+
+    // 先小文本同步解析，按钮处于可提交状态
+    vm.form.mobilesText = "13800138000"
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get("[data-testid='phone-stats']").text()).toMatch(/共\s*1/)
+
+    // 追加大文本进入防抖路径；不等 300ms 防抖直接提交
+    const appended = Array.from({ length: 300 }, (_, index) => `139${String(index).padStart(8, "0")}`)
+    vm.form.mobilesText = ["13800138000", ...appended].join("\n")
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get("[data-testid='phone-stats']").text()).toMatch(/共\s*1/)
+
+    await wrapper.get("[data-testid='send-button']").trigger("click")
+    await flushPromises()
+
+    // 提交路径 flush 待定防抖：payload 必须包含全部 301 个最新号码，而不是窗口前的 1 个
+    expect(sentBodies).toHaveLength(1)
+    expect(sentBodies[0].mobiles).toHaveLength(301)
+    expect(sentBodies[0].mobiles?.at(-1)).toBe("13900000299")
+    expect(wrapper.get("[data-testid='phone-stats']").text()).toMatch(/共\s*301/)
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
 })

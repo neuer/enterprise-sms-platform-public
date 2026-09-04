@@ -33,14 +33,23 @@ class ApiError(RuntimeError):
         self.headers = dict(headers) if headers else None
 
 
-async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
+async def api_error_handler(request: Request, error: ApiError) -> JSONResponse:
     """输出固定 `{code,message,detail}`，不泄露内部异常。"""
 
-    return JSONResponse(
+    response = JSONResponse(
         status_code=error.status_code,
         content={"code": error.code, "message": error.message, "detail": error.detail},
         headers=error.headers,
     )
+    if error.code in {"AUTH_REAUTH_REQUIRED", "AUTH_CONTEXT_CHANGED"}:
+        path = request.url.path
+        if path.startswith("/api/v1/web"):
+            response.headers["Cache-Control"] = "no-store"
+            response.delete_cookie(
+                key="sms_refresh_token",
+                path="/api/v1/web/auth",
+            )
+    return response
 
 
 async def validation_error_handler(_: Request, error: RequestValidationError) -> JSONResponse:

@@ -7,7 +7,12 @@ import pytest
 
 from app.services.outbox import OutboxClaim
 from app.tasks import send as send_module
-from app.tasks.send import ChunkPayload, SendQueuePaused, SubmitOutcome
+from app.tasks.send import (
+    ChunkPayload,
+    ChunkTaskResult,
+    SendQueuePaused,
+    SubmitOutcome,
+)
 
 
 class _Gateway:
@@ -19,8 +24,9 @@ class _Worker:
     def __init__(self, submitted: list[tuple[object, str]]) -> None:
         self.submitted = submitted
 
-    async def submit(self, chunk: object, *, lane: str) -> None:
+    async def submit(self, chunk: object, *, lane: str) -> SubmitOutcome:
         self.submitted.append((chunk, lane))
+        return SubmitOutcome.SUBMITTED
 
 
 def _payload(chunk_id: int = 8) -> ChunkPayload:
@@ -80,7 +86,9 @@ async def test_process_chunk_decrypts_only_current_chunk(
 
     monkeypatch.setattr(send_module, "_components", components)
 
-    assert await send_module._process_chunk(8) == 1
+    assert await send_module._process_chunk(8) == ChunkTaskResult(
+        1, SubmitOutcome.SUBMITTED
+    )
     assert loaded == [8]
     assert submitted == [(payload, "realtime")]
 
@@ -103,8 +111,25 @@ async def test_process_chunk_skips_already_claimed_chunk(
 
     monkeypatch.setattr(send_module, "_components", components)
 
-    assert await send_module._process_chunk(8) == 0
+    assert await send_module._process_chunk(8) == ChunkTaskResult(
+        0, SubmitOutcome.NO_OP_ALREADY_TERMINAL
+    )
     assert submitted == []
+
+
+@pytest.mark.asyncio
+async def test_chunk_outbox_duplicate_claim_returns_no_op_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_id = uuid4()
+
+    class Repository:
+        async def claim_execution(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr(send_module, "SqlOutboxRepository", lambda: Repository())
+    result = await send_module._process_chunk_event(8, str(event_id))
+    assert result == ChunkTaskResult(1, SubmitOutcome.NO_OP_ALREADY_TERMINAL)
 
 
 @pytest.mark.asyncio
@@ -218,5 +243,7 @@ async def test_legacy_process_chunk_still_returns_zero_when_paused(
 
     monkeypatch.setattr(send_module, "_components", components)
 
-    assert await send_module._process_chunk(8) == 0
+    assert await send_module._process_chunk(8) == ChunkTaskResult(
+        0, SubmitOutcome.PAUSED
+    )
     assert submitted == []

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 
 import {
   decideApproval,
@@ -17,6 +17,7 @@ import {
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
+import { usePolling } from "../composables/usePolling"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
@@ -160,8 +161,6 @@ function deciderLabel(item: ApprovalListItem): string | null {
 
 let loadToken = 0
 let detailToken = 0
-let pollTimer: number | undefined
-let tickTimer: number | undefined
 
 async function load(options: { silent?: boolean } = {}): Promise<void> {
   const token = ++loadToken
@@ -310,17 +309,29 @@ function submitDrawerDecision(action: ApprovalAction): void {
   void submitDecision(selected.value.id, action, reason || undefined)
 }
 
-onMounted(() => {
-  void load()
-  pollTimer = window.setInterval(() => void load({ silent: true }), POLL_INTERVAL_MS)
-  tickTimer = window.setInterval(() => {
-    now.value = Date.now()
-  }, TICK_INTERVAL_MS)
+/**
+ * 秒级倒计时 tick 只在存在需要倒计时的待审批行（或抽屉内待审单）时运转，
+ * 已办页签 / 空列表 / 无有效期单据不再每秒重渲染整个列表。
+ */
+const tickActive = computed(() => {
+  if (status.value === "pending" && items.value.some((item) => item.expires_at !== null)) return true
+  return Boolean(
+    selected.value && selected.value.status === "pending" && selected.value.expires_at !== null,
+  )
 })
 
-onBeforeUnmount(() => {
-  if (pollTimer !== undefined) window.clearInterval(pollTimer)
-  if (tickTimer !== undefined) window.clearInterval(tickTimer)
+const listPolling = usePolling(() => load({ silent: true }), { intervalMs: POLL_INTERVAL_MS })
+const tickPolling = usePolling(
+  () => {
+    now.value = Date.now()
+  },
+  { intervalMs: TICK_INTERVAL_MS, immediate: true, enabled: tickActive },
+)
+
+onMounted(() => {
+  void load()
+  listPolling.start()
+  tickPolling.start()
 })
 </script>
 

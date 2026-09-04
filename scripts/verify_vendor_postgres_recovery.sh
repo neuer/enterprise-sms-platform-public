@@ -10,6 +10,7 @@ fi
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/sms-vendor-postgres.XXXXXX")"
 chmod 700 "$tmp_root"
 container="sms-vendor-postgres-${UID}-$$"
+redis_container="sms-vendor-auth-redis-${UID}-$$"
 database="sms_vendor_recovery"
 owner_password_file="$tmp_root/db_owner_password"
 data_aes_key_file="$tmp_root/data_aes_key"
@@ -27,6 +28,7 @@ chmod 0444 "$owner_password_file"
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
+  docker rm -f "$redis_container" >/dev/null 2>&1 || true
   rm -rf "$tmp_root"
 }
 trap cleanup EXIT
@@ -55,6 +57,33 @@ done
   docker logs "$container" >&2 || true
   exit 1
 }
+
+docker run --detach --name "$redis_container" \
+  --publish 127.0.0.1::6379 \
+  redis:7-alpine >/dev/null
+redis_ready=0
+for _ in $(seq 1 30); do
+  if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
+    redis_ready=1
+    break
+  fi
+  sleep 1
+done
+[ "$redis_ready" = "1" ] || {
+  printf '一次性 Redis 未就绪\n' >&2
+  docker logs "$redis_container" >&2 || true
+  exit 1
+}
+redis_port_mapping="$(docker port "$redis_container" 6379/tcp)"
+case "$redis_port_mapping" in
+  127.0.0.1:[0-9]*)
+    redis_port="${redis_port_mapping#127.0.0.1:}"
+    ;;
+  *)
+    printf '%s\n' "一次性 Redis 端口映射不安全" >&2
+    exit 1
+    ;;
+esac
 
 port_mapping="$(docker port "$container" 5432/tcp)"
 case "$port_mapping" in
@@ -148,11 +177,15 @@ SQL
   EXPORT_AUTH_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   SECURITY_SESSION_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   OUTBOX_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
+  AUTH_GUARD_REDIS_URL="redis://127.0.0.1:${redis_port}/0" \
     uv run pytest "${pytest_args[@]}" \
       tests/integration/test_vendor_uat_recovery_postgres.py \
       tests/integration/test_export_authorization_postgres.py \
       tests/integration/test_security_session_postgres.py \
       tests/integration/test_atomic_password_change_postgres.py \
+      tests/integration/test_auth_r2_postgres.py \
+      tests/integration/test_daily_password_cas_postgres.py \
+      tests/integration/test_auth_guard_redis.py \
       tests/integration/test_stable_principal_postgres.py \
       tests/integration/test_outbox_postgres.py \
       tests/integration/test_worker_fencing_postgres.py \

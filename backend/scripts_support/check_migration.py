@@ -1567,6 +1567,8 @@ def run_check() -> None:
                     password_hash="new-audit-probe-hash",
                     actor=principals[0].login_name,
                     ip="127.0.0.1",
+                    expected_security_version=1,
+                    expected_credential_version=1,
                 )
             password_engine = create_async_engine(database_url, hide_parameters=True)
             async with password_engine.connect() as connection:

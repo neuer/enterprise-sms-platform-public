@@ -33,6 +33,7 @@ from app.services.ops import (
     UnmatchedQuery,
     UnmatchedRecord,
 )
+from app.services.queue_pause import parse_queue_pause_claim
 from app.services.raw_lease import (
     CLAIM_LEASE_PREDICATE_SQL,
     CLAIM_LEASE_SET_SQL,
@@ -227,8 +228,8 @@ class SqlOpsRepository:
             "queue:paused:bulk",
         )
         return QueueSnapshot(
-            str(values[0]) if values[0] is not None else None,
-            str(values[1]) if values[1] is not None else None,
+            parse_queue_pause_claim(values[0]),
+            parse_queue_pause_claim(values[1]),
             int(row["balance"]) if row["balance"] is not None else None,
             int(row["threshold"]),
         )

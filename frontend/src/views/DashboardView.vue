@@ -1,6 +1,6 @@
 <script setup lang="ts">
 
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 
 import {
   getDashboard,
@@ -11,6 +11,7 @@ import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
 import TrendChart from "../components/TrendChart.vue"
+import { usePolling } from "../composables/usePolling"
 import { jobDescription } from "../lib/jobDescriptions"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, formatHm, formatHms } from "../lib/time"
@@ -19,7 +20,6 @@ const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
 const lastChannelSuccessAt = ref<string | null>(null)
-let refreshTimer: number | undefined
 
 const totalMessages = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total, 0) ?? 0)
 const totalSegments = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total_segments, 0) ?? 0)
@@ -105,14 +105,9 @@ async function load(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-  refreshTimer = window.setInterval(() => void load(), 10_000)
-})
+const refreshPolling = usePolling(load, { intervalMs: 10_000, immediate: true })
 
-onBeforeUnmount(() => {
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
-})
+onMounted(refreshPolling.start)
 </script>
 
 <template>
