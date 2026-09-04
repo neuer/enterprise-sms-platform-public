@@ -34,6 +34,7 @@ def account_row(**updates: object) -> dict[str, object]:
         "provider_enabled": True,
         "must_change_password": True,
         "password_hash": "$argon2id$v=19$placeholder",
+        "credential_version": 1,
     }
     row.update(updates)
     return row
@@ -111,7 +112,8 @@ class FakeEngine:
 def repository(results: list[FakeResult]) -> tuple[SqlUserRepository, FakeConnection, FakeEngine]:
     connection = FakeConnection(results)
     engine = FakeEngine(connection)
-    value = SqlUserRepository()
+    value = object.__new__(SqlUserRepository)
+    value.settings = None
     value._engine = lambda: engine  # type: ignore[method-assign]
     return value, connection, engine
 
@@ -269,7 +271,9 @@ async def test_security_session_loader_reads_stable_account_and_identity() -> No
 
 @pytest.mark.asyncio
 async def test_password_change_updates_hash_and_version_without_hash_in_audit() -> None:
-    repo, connection, engine = repository([FakeResult(scalar=18), FakeResult(), FakeResult()])
+    repo, connection, engine = repository(
+        [FakeResult(scalar=8), FakeResult(scalar=18), FakeResult(), FakeResult()]
+    )
 
     await repo.change_local_password(
         account_id=8,
@@ -277,15 +281,21 @@ async def test_password_change_updates_hash_and_version_without_hash_in_audit() 
         password_hash="$argon2id$v=19$new-secret-hash",
         actor="admin",
         ip="10.0.0.8",
+        expected_security_version=3,
+        expected_credential_version=1,
     )
 
-    credential_sql, credential_params = connection.calls[0]
+    account_sql, account_params = connection.calls[0]
+    assert "UPDATE user_account" in account_sql
+    assert account_params["expected_security_version"] == 3
+    credential_sql, credential_params = connection.calls[1]
     assert "UPDATE local_credential" in credential_sql
-    assert "must_change_password=FALSE" in credential_sql
+    assert "must_change_password = FALSE" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new-secret-hash"
-    assert "security_version=security_version+1" in connection.calls[1][0]
-    audit_sql, audit_params = connection.calls[2]
-    assert "local_password_change" in audit_sql
+    assert credential_params["expected_credential_version"] == 1
+    audit_sql, audit_params = next(
+        call for call in connection.calls if "local_password_change" in call[0]
+    )
     assert audit_params["account_id"] == 8
     assert audit_params["identity_id"] == 18
     assert "$argon2id" not in str(audit_params)

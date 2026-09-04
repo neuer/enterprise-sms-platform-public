@@ -235,6 +235,7 @@ def _validate_runtime_secrets(settings: Settings) -> None:
     """读取并解析必要运行密钥；值和派生信息不得离开本函数。"""
 
     _ = settings.database_url
+    _ = settings.database_url_for("auth")
     secrets = {
         name: settings.credential(name)
         for name in (

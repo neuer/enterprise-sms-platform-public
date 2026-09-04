@@ -799,6 +799,7 @@ def reject_unknown_runtime_environment(environ: Mapping[str, str]) -> None:
                 "EXPORT_AUTH_POSTGRES_DSN",
                 "SECURITY_SESSION_POSTGRES_DSN",
                 "OUTBOX_POSTGRES_DSN",
+                "AUTH_GUARD_REDIS_URL",
             }
         )
     unknown = sorted(

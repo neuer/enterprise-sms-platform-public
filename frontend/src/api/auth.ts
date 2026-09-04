@@ -41,7 +41,7 @@ export interface PlatformUser {
 
 export interface LoginSuccess {
   token: string
-  expires_in: 900
+  expires_in: number
   refresh_expires_in: number
   user: PlatformUser
 }

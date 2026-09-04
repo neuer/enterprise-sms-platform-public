@@ -56,7 +56,62 @@ class FakeKeyValue:
         self.values[key] = value
         return value
 
+    def _audit_key(self, transition_id: str) -> str:
+        return f"auth:audit:transition:{transition_id}"
+
+    def _now_ms(self) -> int:
+        return int(self.values.get("__now_ms", 0))
+
+    def _claim_write(self, transition_id: str, lease_id: str) -> tuple[str, str]:
+        key = self._audit_key(transition_id)
+        current = self.values.get(key)
+        now = self._now_ms()
+        if isinstance(current, dict) and current.get("state") == "audited":
+            return "", "audited"
+        if isinstance(current, dict) and current.get("state") == "writing":
+            expires = int(current.get("lease_expires_ms", 0))
+            if expires > now:
+                return "", "writing"
+        if isinstance(current, dict) and current.get("state") == "pending":
+            retry_at = int(current.get("next_retry_at_ms", 0))
+            if retry_at > now:
+                return "", "pending"
+        attempts = int(current.get("attempts", 0)) if isinstance(current, dict) else 0
+        self.values[key] = {
+            "state": "writing",
+            "lease_id": lease_id,
+            "attempts": attempts,
+            "lease_expires_ms": now + 5_000,
+        }
+        return lease_id, "writing"
+
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        if "auth-audit-ack-v1" in script:
+            key = str(args[0])
+            lease_id = str(args[1])
+            current = self.values.get(key)
+            if isinstance(current, dict) and current.get("lease_id") == lease_id:
+                current["state"] = "audited"
+                current.pop("lease_id", None)
+                current.pop("lease_expires_ms", None)
+                current.pop("next_retry_at_ms", None)
+                return 1
+            return 0
+        if "auth-audit-fail-v1" in script:
+            key = str(args[0])
+            lease_id = str(args[1])
+            current = self.values.get(key)
+            if isinstance(current, dict) and current.get("lease_id") == lease_id:
+                attempts = int(current.get("attempts", 0)) + 1
+                delays = (1000, 2000, 5000, 10000, 30000)
+                delay = delays[min(attempts, len(delays)) - 1]
+                current["state"] = "pending"
+                current["attempts"] = attempts
+                current["next_retry_at_ms"] = self._now_ms() + delay
+                current.pop("lease_id", None)
+                current.pop("lease_expires_ms", None)
+                return attempts
+            return 0
         if "auth-admit-v2" in script:
             assert numkeys == 4
             ban_key, ip_fail_key, bucket_key, window_key = map(str, args[:4])
@@ -64,19 +119,33 @@ class FakeKeyValue:
             ban_transition = str(values[0])
             burst = int(values[1])
             long_limit = int(values[4])
+            lease_id = str(values[6]) if len(values) > 6 else ban_transition
             ban = self.values.get(ban_key)
             if ban is not None:
                 if ban == "1":
                     ban = ban_transition
                     self.values[ban_key] = ban
-                return [2, "", 0, ban, int(self.values.get(ip_fail_key, 0)), 0, 900]
+                claimed, state = self._claim_write(str(ban), lease_id)
+                return [
+                    2,
+                    "",
+                    0,
+                    ban,
+                    int(self.values.get(ip_fail_key, 0)),
+                    0,
+                    900,
+                    "",
+                    claimed,
+                    "",
+                    state,
+                ]
             long_count = int(self.values.get(window_key, 0))
             used = int(self.values.get(bucket_key, 0))
             if long_count >= long_limit or used >= burst:
-                return [3, "", 0, "", long_count, 0, 300]
+                return [3, "", 0, "", long_count, 0, 300, "", "", "", ""]
             self.values[bucket_key] = used + 1
             self.values[window_key] = long_count + 1
-            return [0, "", 0, "", long_count + 1, 0, 300]
+            return [0, "", 0, "", long_count + 1, 0, 300, "", "", "", ""]
         if "auth-invalid-v1" in script:
             assert numkeys == 4
             user_fail_key, ip_fail_key, lock_key, ban_key = map(str, args[:4])
@@ -87,8 +156,11 @@ class FakeKeyValue:
             ban_ttl = int(values[5])
             lock_transition = str(values[6])
             ban_transition = str(values[7])
+            lock_lease = str(values[8]) if len(values) > 8 else lock_transition
+            ban_lease = str(values[10]) if len(values) > 10 else ban_transition
             existing_ban = self.values.get(ban_key)
             if existing_ban is not None:
+                claimed, state = self._claim_write(str(existing_ban), ban_lease)
                 return [
                     2,
                     "",
@@ -97,6 +169,10 @@ class FakeKeyValue:
                     int(self.values.get(ip_fail_key, 0)),
                     0,
                     ban_ttl,
+                    "",
+                    claimed,
+                    "",
+                    state,
                 ]
             user_count = int(self.values.get(user_fail_key, 0)) + 1
             ip_count = int(self.values.get(ip_fail_key, 0)) + 1
@@ -113,11 +189,41 @@ class FakeKeyValue:
             if ip_count >= ip_limit:
                 self.values.setdefault(ban_key, ban_transition)
                 ban = self.values[ban_key]
+            lock_claimed, lock_state = ("", "")
+            ban_claimed, ban_state = ("", "")
+            if lock:
+                lock_claimed, lock_state = self._claim_write(str(lock), lock_lease)
+            if ban:
+                ban_claimed, ban_state = self._claim_write(str(ban), ban_lease)
             if ban is not None:
-                return [2, lock or "", user_count, ban, ip_count, lock_ttl, ban_ttl]
+                return [
+                    2,
+                    lock or "",
+                    user_count,
+                    ban,
+                    ip_count,
+                    lock_ttl,
+                    ban_ttl,
+                    lock_claimed,
+                    ban_claimed,
+                    lock_state,
+                    ban_state,
+                ]
             if lock is not None:
-                return [1, lock, user_count, "", ip_count, lock_ttl, 0]
-            return [0, "", user_count, "", ip_count, 0, 0]
+                return [
+                    1,
+                    lock,
+                    user_count,
+                    "",
+                    ip_count,
+                    lock_ttl,
+                    0,
+                    lock_claimed,
+                    "",
+                    lock_state,
+                    "",
+                ]
+            return [0, "", user_count, "", ip_count, 0, 0, "", "", "", ""]
         if numkeys == 3:
             revoked_jti, revoked_session, refresh_family, jti_ttl, session_ttl = args
             assert int(jti_ttl) > 0 and int(session_ttl) > 0

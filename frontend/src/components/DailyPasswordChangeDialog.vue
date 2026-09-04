@@ -10,7 +10,7 @@ import {
 } from "element-plus"
 import { computed, ref, watch } from "vue"
 
-import { passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
+import { AuthApiError, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import { useSessionStore } from "../stores/session"
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -83,6 +83,11 @@ async function submit(): Promise<void> {
     ElMessage.success("密码已修改，请重新登录")
     emit("changed")
   } catch (error) {
+    if (error instanceof AuthApiError && error.code === "AUTH_CONTEXT_CHANGED") {
+      clearSensitiveFields()
+      visible.value = false
+      return
+    }
     errorMessage.value = error instanceof Error ? error.message : "密码修改失败"
   } finally {
     submitting.value = false

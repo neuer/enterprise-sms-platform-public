@@ -32,7 +32,7 @@ class ReauthenticationFacade(Protocol):
         claims: JwtClaims,
         password: str,
         ip: str,
-    ) -> None: ...
+    ) -> object | None: ...
 
 
 class StepUpStore(Protocol):

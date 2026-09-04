@@ -98,6 +98,7 @@ def test_unknown_security_related_environment_variable_is_rejected() -> None:
             "EXPORT_AUTH_POSTGRES_DSN": "postgresql://test",
             "SECURITY_SESSION_POSTGRES_DSN": "postgresql://test",
             "OUTBOX_POSTGRES_DSN": "postgresql://test",
+            "AUTH_GUARD_REDIS_URL": "redis://127.0.0.1:6379/0",
             "PATH": "/usr/bin",
         }
     )

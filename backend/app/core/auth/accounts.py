@@ -128,3 +128,4 @@ class LocalAccountRecord:
 
     account: PlatformAccount
     password_hash: str
+    credential_version: int = 1

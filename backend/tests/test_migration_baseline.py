@@ -864,6 +864,23 @@ def test_send_lifecycle_r2_facts_are_expand_only() -> None:
     assert "DELETE FROM" not in source
 
 
+def test_auth_r2_credential_version_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0093_auth_r2_credential_version.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.79：" in schema
+    for contract in (schema, source):
+        assert "credential_version" in contract
+        assert "issued_credential_version" in contract
+        assert "ck_local_credential_version_positive" in contract
+        assert "ck_password_change_issued_credential_version" in contract
+    assert 'revision = "0093_auth_r2_credential_version"' in source
+    assert 'down_revision = "0092_send_lifecycle_r2_facts"' in source
+    assert "DELETE FROM" not in source
+    assert "ADD COLUMN IF NOT EXISTS" in source
+
+
 def test_vendor_routing_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0090_vendor_routing.py"

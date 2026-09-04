@@ -27,7 +27,7 @@ from app.core.auth.runtime import (
     PasswordChangeRequired,
 )
 from app.core.auth.service import AccountLocked, RedisKeyValue
-from app.core.auth.users import PasswordChangeClaim, PasswordChangeInProgress
+from app.core.auth.users import AuthContextChanged, PasswordChangeClaim, PasswordChangeInProgress
 from app.core.bounded_executor import ExecutorBackpressure
 from app.core.errors import ApiError
 
@@ -133,6 +133,7 @@ class FakeUserRepository:
         self.refresh_audits: list[tuple[PlatformAccount, str]] = []
         self.logout_audits: list[tuple[PlatformAccount, str]] = []
         self.fail_refresh_audit = False
+        self.reject_password_cas = False
         self._next_password_token_id = 1
 
     async def resolve_identity(
@@ -274,6 +275,8 @@ class FakeUserRepository:
             password_hash=password_hash,
             actor=actor,
             ip=ip,
+            expected_security_version=self.value.security_version,
+            expected_credential_version=1,
         )
 
     async def change_local_password(
@@ -284,7 +287,11 @@ class FakeUserRepository:
         password_hash: str,
         actor: str,
         ip: str,
+        expected_security_version: int = 1,
+        expected_credential_version: int = 1,
     ) -> None:
+        if self.reject_password_cas:
+            raise AuthContextChanged("账号安全状态已变化")
         self.changed.append(
             {
                 "account_id": account_id,
@@ -292,6 +299,8 @@ class FakeUserRepository:
                 "password_hash": password_hash,
                 "actor": actor,
                 "ip": ip,
+                "expected_security_version": expected_security_version,
+                "expected_credential_version": expected_credential_version,
             }
         )
         self.value = replace(
@@ -794,6 +803,27 @@ async def test_daily_password_change_checks_current_password_and_revokes_session
     assert users.changed[-1]["password_hash"] == "encoded:Daily@Password456"
     with pytest.raises(InvalidCredentials):
         await tokens.verify(login.token)
+
+
+@pytest.mark.asyncio
+async def test_stale_password_change_does_not_write_success_audit() -> None:
+    service, users, tokens, _ = facade(must_change_password=False)
+    users.reject_password_cas = True
+    login = await service.login("local", "admin", "Valid@Password123", IP, TAB_ID)
+    assert isinstance(login, LoginSuccess)
+
+    with pytest.raises(ApiError) as raised:
+        await service.change_password(
+            login.token,
+            "Current@Password123",
+            "Daily@Password456",
+            IP,
+        )
+
+    assert raised.value.status_code == 409
+    assert raised.value.code == "AUTH_CONTEXT_CHANGED"
+    assert raised.value.message == "账号安全状态已变化，请重新登录后重试"
+    assert users.changed == []
 
 
 @pytest.mark.asyncio

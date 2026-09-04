@@ -570,7 +570,7 @@ paths:
           headers:
             Cache-Control: { schema: { type: string }, description: 固定为 no-store }
         '401': { description: 当前密码错误或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '409': { description: STATE_CONFLICT，非本地身份不支持平台改密, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: AUTH_CONTEXT_CHANGED（安全/凭据版本已变化，须重新登录）或 STATE_CONFLICT（非本地身份不支持平台改密）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
@@ -3075,7 +3075,7 @@ components:
       required: [token, expires_in, refresh_expires_in, user]
       properties:
         token: { type: string, description: 15 分钟 Bearer access JWT }
-        expires_in: { type: integer, const: 900 }
+        expires_in: { type: integer, minimum: 1, maximum: 900, description: Access Token 实际剩余秒数，AD 会话会被截断到绝对重新认证截止 }
         refresh_expires_in: { type: integer, minimum: 1, maximum: 604800, description: refresh family 自首次登录起的实际剩余秒数 }
         user: { $ref: '#/components/schemas/AuthUser' }
 
