@@ -891,7 +891,7 @@ class SendPipeline:
         request: SendRequest,
         *,
         recipient_count: int,
-    ) -> object | None:
+    ) -> Any:
         if request.channel == "web":
             return None
         batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
