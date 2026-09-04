@@ -67,9 +67,15 @@ def upgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE sms_vendor_attempt
-          RENAME CONSTRAINT sms_vendor_attempt_chunk_id_vendor_id_generation_key
-          TO uk_sms_vendor_attempt_vendor_generation
+        DO $$
+        BEGIN
+          ALTER TABLE sms_vendor_attempt
+            RENAME CONSTRAINT sms_vendor_attempt_chunk_id_vendor_id_generation_key
+            TO uk_sms_vendor_attempt_vendor_generation;
+        EXCEPTION
+          WHEN undefined_object THEN NULL;
+        END;
+        $$
         """
     )
     op.execute(
@@ -119,9 +125,15 @@ def downgrade() -> None:
     )
     op.execute(
         """
-        ALTER TABLE sms_vendor_attempt
-          RENAME CONSTRAINT uk_sms_vendor_attempt_vendor_generation
-          TO sms_vendor_attempt_chunk_id_vendor_id_generation_key
+        DO $$
+        BEGIN
+          ALTER TABLE sms_vendor_attempt
+            RENAME CONSTRAINT uk_sms_vendor_attempt_vendor_generation
+            TO sms_vendor_attempt_chunk_id_vendor_id_generation_key;
+        EXCEPTION
+          WHEN undefined_object THEN NULL;
+        END;
+        $$
         """
     )
     op.execute(
