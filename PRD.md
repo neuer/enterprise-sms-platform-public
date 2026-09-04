@@ -173,7 +173,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 #### FR-05 批次分片、厂商调用与可靠性
 - 按 vendor_batch_size（默认500）分片；全局令牌桶（realtime 预留）
 - 错误码：5002/5003/429 退避（≤5次）；999/99 → balance_blocked 双队列暂停 + 告警，**管理员"队列恢复"一键操作（v1.2 补接口）**；1006 折半重试一次；1011 延迟30min；参数类不重试
-- **Send 超时 = 结果未知**：chunk 置 uncertain，禁自动重发；reconcile 在 raw_vendor_log 按 customId 比对修复，24h 未决转人工告警
+- **Send 超时 = 结果未知**：chunk 置 uncertain，禁自动重发；reconcile 在 raw_vendor_log 按 customId 比对修复，24h 未决转人工告警；超过 `uncertain_max_lifetime_hours`（默认 72h）仍无证据时，消息置 `unknown`、分片置 `unknown_terminal`、批次在无活跃消息时置 `completed_unknown` 并产生一次幂等最终 Callback；迟到可信回执按单调规则更新明细但不抹除原 Callback；双人确认后才可分类或新建批次重发
 - 对账任务每 5min 兜底重投（submitted/uncertain 不重投）；Redis 故障可恢复
 
 #### FR-05a 失败重发

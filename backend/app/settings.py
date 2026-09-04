@@ -172,6 +172,10 @@ class Settings(BaseSettings):
     vendor_secret_key_file: Path = Path("/run/secrets/vendor_secret_key")
     data_aes_key_file: Path = Path("/run/secrets/data_aes_key")
     data_hmac_key_file: Path = Path("/run/secrets/data_hmac_key")
+    api_key_pepper_key_file: Path = Path("/run/secrets/api_key_pepper_key")
+    api_key_legacy_hmac_pepper_file: Path = Path(
+        "/run/secrets/api_key_legacy_hmac_pepper"
+    )
     audit_context_key_file: Path = Path("/run/secrets/audit_context_key")
     audit_system_api_context_key_file: Path = Path(
         "/run/secrets/audit_system_api_context_key"
@@ -625,6 +629,8 @@ class Settings(BaseSettings):
             "vendor_secret_key": self.vendor_secret_key_file,
             "data_aes_key": self.data_aes_key_file,
             "data_hmac_key": self.data_hmac_key_file,
+            "api_key_pepper_key": self.api_key_pepper_key_file,
+            "api_key_legacy_hmac_pepper": self.api_key_legacy_hmac_pepper_file,
             "audit_context_key": self.audit_context_key_file,
             "audit_system_api_context_key": self.audit_system_api_context_key_file,
             "audit_system_realtime_context_key": self.audit_system_realtime_context_key_file,
@@ -640,6 +646,14 @@ class Settings(BaseSettings):
         except KeyError:
             raise KeyError(f"unknown credential: {name}") from None
         return read_secret_file(secret_file)
+
+    def optional_credential(self, name: str) -> str | None:
+        """读取可选凭据；文件缺失时返回 None，不得把缺失当空字符串。"""
+
+        try:
+            return self.credential(name)
+        except RuntimeError:
+            return None
 
     @property
     def metrics_allowed_networks(self) -> tuple[IPv4Network | IPv6Network, ...]:
@@ -785,6 +799,7 @@ def reject_unknown_runtime_environment(environ: Mapping[str, str]) -> None:
                 "EXPORT_AUTH_POSTGRES_DSN",
                 "SECURITY_SESSION_POSTGRES_DSN",
                 "OUTBOX_POSTGRES_DSN",
+                "AUTH_GUARD_REDIS_URL",
             }
         )
     unknown = sorted(

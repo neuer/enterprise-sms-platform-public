@@ -44,17 +44,17 @@ deploy/
 
 ## 硬性规则
 
-1. **所有运行凭据默认只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入环境变量明文、入日志或入普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。安全日报是明确的产品例外：管理员可在 `/security-daily` 页面配置 Resend Key 和最多 3 个收件人，Key 允许以明文存入专用 `sys_config` 配置并由 API 同步到独立 mailer 的 `resend.json`；不得用于其他平台凭据，审计只记录 configured 状态和数量。另一个例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
+1. **所有运行凭据默认只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、独立 API Key pepper keyring、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入环境变量明文、入日志或入普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。安全日报是明确的产品例外：管理员可在 `/security-daily` 页面配置 Resend Key 和最多 3 个收件人，Key 允许以明文存入专用 `sys_config` 配置并由 API 同步到独立 mailer 的 `resend.json`；不得用于其他平台凭据，审计只记录 configured 状态和数量。另一个例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
 2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`(AES-256-GCM) / `phone_hmac`(HMAC-SHA256 hex) / `phone_mask` / `key_version`；精确查询一律走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许"详情按角色查看"与"授权导出"；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发、UAT 定位，以及退订入黑名单（reply optout：内存解密后经 `protect_phone` 重加密入库，不回写明文）。严禁把明文再次写入任何持久层
-3. 所有厂商调用必须经 `vendor/zhihui.py`；业务代码不得直接 httpx 调厂商；统一超时 10s、连接池、结构化日志
-4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发**；由 reconcile 任务通过 raw_vendor_log.custom_ids 索引定位并受控解密确认后修复；这是防重复下发的生命线
+3. 所有厂商 HTTP 必须经选定 adapter；当前生产 adapter 为 `vendor/zhihui.py`。业务代码不得直接 httpx 调厂商；统一超时 10s、连接池、结构化日志。仅当调用前确定性不可用，或协议明确拒绝且 `safe_to_failover=true` 时允许切换供应商；`uncertain`/`submitted` 后禁止自动切换任何供应商
+4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发或自动换供应商**；由 reconcile 任务通过 raw_vendor_log.custom_ids 索引定位并受控解密确认后修复；这是防重复下发的生命线
 5. **GetReport/GetReply 拉走即消费**：轮询任务必须先把完整响应 AES-GCM 加密落 `raw_vendor_log.payload_enc`，同时只保存不含手机号的 custom_ids 索引元数据；提交事务后再受控解密解析。解析失败保留 processed=false 可重放，raw 表禁止 JSONB 明文手机号
 6. 队列可靠性：PostgreSQL 为唯一事实源，Redis 仅投递通道；beat 单实例（启动抢 Redis 锁，抢不到即退出）；reconcile 每 5min 兜底重投，已 submitted/uncertain 的 chunk 绝不重投
 7. 幂等：`SETNX idem:{scope_kind}:{scope_id}:{biz_id} = batch_no EX 86400`；DB 使用 `idempotency_record` 的 `(scope_kind, scope_id, biz_id)` 唯一约束与 `expires_at` 兜底。`scope_kind='app'` 时 `scope_id` 必须绑定 `app_id`（`app_id IS NOT NULL AND scope_id = app_id::text`）；account/resend/web-legacy 等其它作用域不受该 CHECK 误伤。事务先删除同键过期记录，再创建批次和幂等记录；唯一冲突回查未过期原批次。`sms_batch.biz_id` 不得永久唯一，确保 24h 后可复用
 8. 手机号校验统一 `^1\d{10}$`（11 位）
 9. 状态机：
-   - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→balance_blocked→queued(人工恢复)
-   - chunk: pending→submitting→(submitted|failed|uncertain)；retrying→submitting；uncertain→(submitted|failed)(仅 reconcile 可迁移)
+   - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→completed_unknown(uncertain 保守终态)；sending→balance_blocked→queued(人工恢复)
+   - chunk: pending→submitting→(submitted|failed|uncertain)；retrying→submitting；uncertain→submitted(仅 reconcile 证据)或 unknown_terminal(超过 uncertain_max_lifetime_hours)；禁止自动重发，禁止把旧 uncertain 改回 pending，禁止 uncertain 后自动切换供应商
    - 非法流转抛 409 STATE_CONFLICT
 10. 类别策略集中在 `services/category.py` 单点实现（队列路由/时间窗/黑名单开关/审批阈值/QPS 预留），禁止散落 if-else
 11. **配额/频控事实账本（v1.6.5）**：PostgreSQL `usage_reservation` 与明细表是唯一事实源，状态至少覆盖 reserved/committed/release_requested/released/uncertain；同一稳定请求、释放事件和投影版本必须受唯一约束。Redis 只保存带版本的绝对值投影，可从事实重建；marker 缺失、重建中或 Redis 不可确认时发送入口必须 503 失败关闭，禁止把缺失计数当零。驳回/过期/取消/全量剔除/入库失败/幂等复用统一以事务性 Outbox 请求释放，重复消费不得二次回补；号码频控仅 counted=true 的已接受号码计数，HMAC 轮换通过不可逆 alias 归并同一主体
@@ -104,7 +104,7 @@ deploy/
 |---|---|---|
 | INVALID_PARAM | 400 | 参数校验失败 |
 | UNAUTHORIZED | 401 | Key/JWT 无效或已吊销 |
-| AUTH_REAUTH_REQUIRED | 401 | AD refresh family 达到完整重新认证时限，必须重新登录 |
+| AUTH_REAUTH_REQUIRED | 401 | AD 完整重新认证绝对截止已到，Access/Refresh 均须重新登录 |
 | STEP_UP_REQUIRED | 401 | 高风险操作缺少有效二次认证 |
 | STEP_UP_EXPIRED | 401 | 二次认证令牌已过期或已使用 |
 | FORBIDDEN | 403 | 角色/数据权限不足 |
@@ -117,6 +117,7 @@ deploy/
 | NOT_FOUND | 404 | 资源不存在 |
 | STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
 | IDEMPOTENCY_CONFLICT | 409 | 同一幂等键已用于不同请求 |
+| AUTH_CONTEXT_CHANGED | 409 | 日常改密 CAS 失败：安全版本或凭据版本已变化，须重新登录 |
 | ACCOUNT_SOURCE_CONFLICT | 409 | 规范化登录名已由其他认证源先占用 |
 | LAST_ADMIN_PROTECTED | 409 | 禁止停用或降级最后一个有效管理员 |
 | PROVIDER_CONFIG_UNTESTED | 409 | 当前认证源草稿尚未通过连接测试 |
@@ -130,6 +131,7 @@ deploy/
 | ALL_FILTERED | 422 | 号码全部被去重/黑名单/频控剔除 |
 | QUOTA_EXCEEDED | 429 | 日配额不足 |
 | RATE_LIMITED | 429 | 请求频率超限 / 登录IP封禁 |
+| PAYLOAD_TOO_LARGE | 413 | 请求体超过 Nginx/ASGI 对齐的字节上限 |
 | INTERNAL_ERROR | 500 | 结构化内部错误（禁止裸 500） |
 | VENDOR_ERROR | 502 | 厂商适配透传/测试控制台（附厂商数值 code）；不是通用业务 API 的默认 502 |
 | AUTH_SESSION_UNAVAILABLE | 503 | 数据库权威会话投影或 Redis 吊销/轮换状态不可用 |

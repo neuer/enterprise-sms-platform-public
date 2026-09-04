@@ -9,10 +9,12 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar, cast
 from uuid import UUID
 
 from app.core.correlation import correlation_scope
+
+T = TypeVar("T")
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ UUID_REFERENCE = re.compile(
 STRUCTURED_REFERENCE = re.compile(
     r"^(?:"
     r"batch[.]ready:[0-9a-f]{32}|"
+    r"chunk[.]ready:[1-9][0-9]*|"
     r"scheduled:[0-9a-f]{32}:ready|"
     r"batch:[0-9a-f]{32}:cancelled|"
     r"approval:[1-9][0-9]*:(?:approved|rejected|expired)|"
@@ -33,7 +36,8 @@ STRUCTURED_REFERENCE = re.compile(
     r"alert:[1-9][0-9]*:(?:wecom|smtp)|"
     r"template[.]sync:[1-9][0-9]*:[1-9][0-9]*|"
     r"usage[.]release:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}|"
+    r"uncertain[.]effect:[1-9][0-9]*:[1-9][0-9]*"
     r")$"
 )
 TASK_NAMES = {
@@ -42,11 +46,13 @@ TASK_NAMES = {
     "app.tasks.bind_template",
     "app.tasks.sync_template",
     "app.tasks.send.process_batch",
+    "app.tasks.send.process_chunk",
     "app.tasks.deliver_callback",
     "app.tasks.outbox.compensate_quota",
     "app.tasks.outbox.deliver_alert",
     "app.tasks.outbox.release_usage",
     "app.tasks.outbox.trigger_job",
+    "app.tasks.outbox.apply_uncertain_effect",
 }
 MANUAL_JOB_TASK_NAMES = frozenset(
     {
@@ -215,6 +221,30 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.args == (spec.aggregate_id,)
         and spec.dedup_key == f"usage.release:{spec.aggregate_id}"
     )
+    uncertain_effect_reference = (
+        spec.task_name == "app.tasks.outbox.apply_uncertain_effect"
+        and spec.event_type == "uncertain.effect"
+        and spec.aggregate_type == "sms_uncertain_resolution"
+        and spec.queue == "realtime"
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and spec.args == (int(spec.aggregate_id),)
+        and spec.dedup_key.startswith(f"uncertain.effect:{spec.aggregate_id}:")
+        and spec.dedup_key.rsplit(":", 1)[-1].isdecimal()
+    )
+    chunk_ready_reference = (
+        spec.task_name == "app.tasks.send.process_chunk"
+        and spec.event_type == "chunk.ready"
+        and spec.aggregate_type == "sms_chunk"
+        and spec.queue in {"realtime", "bulk"}
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and len(spec.args) == 1
+        and spec.args[0] == int(spec.aggregate_id)
+        and isinstance(spec.args[0], int)
+        and not isinstance(spec.args[0], bool)
+        and spec.dedup_key == f"chunk.ready:{spec.aggregate_id}"
+    )
     manual_job_reference = (
         spec.task_name == "app.tasks.outbox.trigger_job"
         and spec.event_type == "job.trigger"
@@ -293,6 +323,13 @@ def validate_spec(spec: OutboxEventSpec) -> None:
     )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
+    if spec.task_name == "app.tasks.send.process_chunk" and not chunk_ready_reference:
+        raise ValueError("invalid chunk ready outbox contract")
+    if (
+        spec.task_name == "app.tasks.outbox.apply_uncertain_effect"
+        and not uncertain_effect_reference
+    ):
+        raise ValueError("invalid uncertain effect outbox contract")
     if spec.task_name == "app.tasks.outbox.trigger_job" and not (
         manual_job_reference or exact_sign_sync_reference
     ):
@@ -307,6 +344,8 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         raise ValueError("invalid sign adoption outbox contract")
     if (
         not usage_release_reference
+        and not chunk_ready_reference
+        and not uncertain_effect_reference
         and not manual_job_reference
         and not exact_sign_sync_reference
         and not vendor_binding_reference
@@ -377,6 +416,9 @@ class OutboxDispatcher:
         self.batch_size = batch_size
 
     async def dispatch_once(self) -> int:
+        from app.services.runtime_heartbeat import touch_runtime_heartbeat
+
+        await touch_runtime_heartbeat("outbox-dispatcher")
         leases = await self.repository.lease_due(
             limit=self.batch_size,
             lease_seconds=self.lease_seconds,
@@ -404,6 +446,8 @@ class OutboxDispatcher:
                 continue
             await self.repository.mark_published(event.event_id, event.lease_id)
             published += 1
+        if published:
+            await touch_runtime_heartbeat("outbox-dispatcher", success=True)
         return published
 
 
@@ -426,21 +470,21 @@ class OutboxExecutor:
         event_id: UUID,
         *,
         expected_type: str,
-        effect: Callable[[OutboxClaim], Awaitable[int]],
-    ) -> int:
+        effect: Callable[[OutboxClaim], Awaitable[T]],
+    ) -> T:
         claim = await self.repository.claim_execution(
             event_id,
             lease_seconds=self.lease_seconds,
         )
         if claim is None:
-            return 0
+            return cast(T, 0)
         if claim.event_type != expected_type:
             await self.repository.fail_execution(
                 claim.event_id,
                 claim.lease_id,
                 "OutboxEventTypeMismatch",
             )
-            return 0
+            return cast(T, 0)
         correlation_id = claim.correlation_id or claim.event_id
         heartbeat_stopped = asyncio.Event()
         lease_lost = asyncio.Event()

@@ -10,6 +10,7 @@ from typing import Protocol
 
 from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
+from app.core.auth.observability import auth_observability_snapshot
 from app.core.runtime_telemetry import (
     RuntimeTelemetrySnapshot,
     runtime_telemetry_snapshot,
@@ -19,6 +20,25 @@ from app.vendor.codes import ERROR_POLICIES
 CATEGORIES = ("verify", "notice", "market")
 QUEUES = ("realtime", "bulk")
 RAW_REPLAY_ELIGIBILITIES = ("automatic", "manual", "never")
+UNCERTAIN_LIFECYCLE_STATES = (
+    "active",
+    "overdue",
+    "unknown_terminal",
+    "manual_resolved",
+    "late_evidence",
+)
+SEND_ADMISSION_STATES = ("open", "degraded", "closed")
+SEND_SUBMIT_OUTCOMES = (
+    "submitted",
+    "retry_scheduled",
+    "delayed",
+    "paused",
+    "rejected",
+    "stale",
+    "failed",
+    "uncertain",
+    "split",
+)
 VENDOR_ERROR_LABELS = frozenset(str(code) for code in ERROR_POLICIES)
 LEASE_EVENT_LABELS = frozenset(
     {
@@ -42,6 +62,7 @@ class MetricsFacts:
     callback_failures: tuple[tuple[str, int], ...]
     frequency_filtered: tuple[tuple[str, int], ...]
     poll_lags: tuple[tuple[str, float], ...]
+    uncertain_lifecycle: tuple[tuple[str, int], ...] = ()
     usage_projection_mismatches: tuple[tuple[str, int], ...] = ()
     usage_projection_absolute_delta: tuple[tuple[str, int], ...] = ()
     worker_stalled_leases: tuple[tuple[str, int], ...] = ()
@@ -49,6 +70,9 @@ class MetricsFacts:
     queue_depths: tuple[tuple[str, int], ...] = ()
     raw_replay_eligibility: tuple[tuple[str, int], ...] = ()
     system_replay_audit_pending: int = 0
+    send_admission_state: str = "open"
+    outbox_oldest_age_seconds: float = 0.0
+    send_submit_outcomes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +169,34 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     for queue, value in snapshot.queue_depths:
         queue_depth.labels(queue=queue).set(value)
 
+    admission = Gauge(
+        "sms_send_admission",
+        "Send admission capacity band inferred from Outbox and overdue facts.",
+        ("state",),
+        registry=registry,
+    )
+    current_state = snapshot.facts.send_admission_state
+    if current_state not in SEND_ADMISSION_STATES:
+        current_state = "closed"
+    for state in SEND_ADMISSION_STATES:
+        admission.labels(state=state).set(1.0 if state == current_state else 0.0)
+    oldest_age = Gauge(
+        "sms_outbox_oldest_age_seconds",
+        "Age in seconds of the oldest active Outbox event.",
+        registry=registry,
+    )
+    oldest_age.set(max(0.0, snapshot.facts.outbox_oldest_age_seconds))
+
+    submit_outcomes = Gauge(
+        "sms_send_submit_outcome",
+        "Vendor submit() diagnostic counts by low-cardinality outcome.",
+        ("result",),
+        registry=registry,
+    )
+    outcome_values = _values(snapshot.facts.send_submit_outcomes)
+    for result in SEND_SUBMIT_OUTCOMES:
+        submit_outcomes.labels(result=result).set(outcome_values.get(result, 0.0))
+
     send_rate = Gauge(
         "sms_send_rate_per_second",
         "Recipient messages submitted to vendor per second over five minutes.",
@@ -174,6 +226,16 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     uncertain.set(snapshot.facts.uncertain)
+
+    lifecycle = Gauge(
+        "sms_uncertain_lifecycle_chunks",
+        "Uncertain lifecycle counts by active, overdue, terminal, resolved and late evidence.",
+        ("state",),
+        registry=registry,
+    )
+    lifecycle_values = _values(snapshot.facts.uncertain_lifecycle)
+    for state in UNCERTAIN_LIFECYCLE_STATES:
+        lifecycle.labels(state=state).set(lifecycle_values.get(state, 0.0))
 
     callback_failures = Gauge(
         "sms_callback_failures",
@@ -365,5 +427,69 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         redis_connections.labels(state="in_use").set(
             snapshot.runtime.resources.redis_in_use
         )
+
+    auth = auth_observability_snapshot()
+    created = Gauge(
+        "auth_transition_created_total",
+        "Auth lock/ban transitions that attempted persistent audit.",
+        ("action",),
+        registry=registry,
+    )
+    success = Gauge(
+        "auth_transition_audit_success_total",
+        "Auth lock/ban transitions whose audit insert succeeded or deduped.",
+        ("action",),
+        registry=registry,
+    )
+    failure = Gauge(
+        "auth_transition_audit_failure_total",
+        "Auth lock/ban transitions whose audit insert failed closed.",
+        ("action",),
+        registry=registry,
+    )
+    for action, value in auth.transition_created:
+        created.labels(action=action).set(value)
+    for action, value in auth.transition_success:
+        success.labels(action=action).set(value)
+    for action, value in auth.transition_failure:
+        failure.labels(action=action).set(value)
+    admit = Gauge(
+        "auth_admit_total",
+        "Login admit outcomes on the Redis-first path.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.admit:
+        admit.labels(outcome=outcome).set(value)
+    policy_hit = Gauge(
+        "auth_policy_cache_hit_total",
+        "Auth guard policy cache hits.",
+        registry=registry,
+    )
+    policy_hit.set(auth.policy_cache_hit)
+    policy_miss = Gauge(
+        "auth_policy_cache_miss_total",
+        "Auth guard policy cache misses.",
+        registry=registry,
+    )
+    policy_miss.set(auth.policy_cache_miss)
+    policy_failure = Gauge(
+        "auth_policy_load_failure_total",
+        "Auth guard policy load failures.",
+        registry=registry,
+    )
+    policy_failure.set(auth.policy_load_failure)
+    policy_age = Gauge(
+        "auth_policy_snapshot_age_seconds",
+        "Age of the last usable auth guard policy snapshot.",
+        registry=registry,
+    )
+    policy_age.set(auth.policy_snapshot_age_seconds)
+    guard_queries = Gauge(
+        "auth_guard_db_queries_total",
+        "PostgreSQL queries issued by the auth guard policy loader.",
+        registry=registry,
+    )
+    guard_queries.set(auth.guard_db_queries)
 
     return generate_latest(registry)

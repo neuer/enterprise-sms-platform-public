@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import hashlib
 import json
 import os
 import secrets
@@ -20,6 +19,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
+from app.core.apikey import issue_api_key_record
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.passwords import (
     LocalPasswordHasher,
@@ -558,16 +558,22 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
 
     app_sql = """
         INSERT INTO app (
-          name, dept, api_key_hash, api_key_prefix, allowed_categories,
+          name, dept, api_key_hash, api_key_prefix, api_key_hash_version,
+          api_key_hash_algorithm,
+          allowed_categories,
           rate_limit_per_min, created_by, status
         ) VALUES (
-          :name, :dept, :api_key_hash, :api_key_prefix, :allowed_categories,
+          :name, :dept, :api_key_hash, :api_key_prefix, :api_key_hash_version,
+          :api_key_hash_algorithm,
+          :allowed_categories,
           :rate_limit_per_min, 'seed-dev', 1
         )
         ON CONFLICT (name) DO UPDATE SET
           dept = EXCLUDED.dept,
           api_key_hash = EXCLUDED.api_key_hash,
           api_key_prefix = EXCLUDED.api_key_prefix,
+          api_key_hash_version = EXCLUDED.api_key_hash_version,
+          api_key_hash_algorithm = EXCLUDED.api_key_hash_algorithm,
           allowed_categories = EXCLUDED.allowed_categories,
           rate_limit_per_min = EXCLUDED.rate_limit_per_min,
           status = 1,
@@ -575,14 +581,17 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
     """
     for dev_app in DEV_APPS:
         api_key = validated_api_keys[dev_app.name]
+        issued = issue_api_key_record(api_key)
         commands.append(
             (
                 app_sql,
                 {
                     "name": dev_app.name,
                     "dept": dev_app.dept,
-                    "api_key_hash": hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
+                    "api_key_hash": issued.digest,
                     "api_key_prefix": api_key[:8],
+                    "api_key_hash_version": issued.pepper_version,
+                    "api_key_hash_algorithm": issued.algorithm,
                     "allowed_categories": dev_app.allowed_categories,
                     "rate_limit_per_min": dev_app.rate_limit_per_min,
                 },

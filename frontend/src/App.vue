@@ -102,7 +102,9 @@ function handleUnauthorized(): void {
 }
 
 function handleReauthenticationRequired(): void {
+  session.clearAllTabs()
   ElMessage.warning("AD 会话已到期，请重新登录")
+  if (route.path !== "/login") void router.replace("/login")
 }
 
 function handleSessionStorageSignal(event: StorageEvent): void {

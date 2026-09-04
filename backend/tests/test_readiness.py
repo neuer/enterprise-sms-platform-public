@@ -201,9 +201,11 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
     encoded_key = base64.b64encode(b"k" * 32).decode()
     encoded_system_key = base64.b64encode(b"s" * 32).decode()
     values = {
+        "db_auth_password": "db-auth-password",
         "db_accept_password": "db-password",
         "data_aes_key": encoded_key,
         "data_hmac_key": encoded_key,
+        "api_key_pepper_key": encoded_key,
         "audit_context_key": encoded_key,
         "audit_system_api_context_key": encoded_system_key,
         "alert_credential_public_key": encoded_key,
@@ -222,9 +224,11 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
         auth_mock=True,
         vendor_mock=True,
         vendor_base_url="http://vendor-mock:9028",
+        db_auth_password_file=paths["db_auth_password"],
         db_accept_password_file=paths["db_accept_password"],
         data_aes_key_file=paths["data_aes_key"],
         data_hmac_key_file=paths["data_hmac_key"],
+        api_key_pepper_key_file=paths["api_key_pepper_key"],
         audit_context_key_file=paths["audit_context_key"],
         audit_system_api_context_key_file=paths["audit_system_api_context_key"],
         alert_credential_public_key_file=paths["alert_credential_public_key"],
@@ -233,3 +237,44 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
     )
 
     assert health._validate_runtime_secrets(settings) is None
+
+
+def test_auth_database_secret_missing_fails_production_startup(tmp_path: Path) -> None:
+    encoded_key = base64.b64encode(b"k" * 32).decode()
+    encoded_system_key = base64.b64encode(b"s" * 32).decode()
+    values = {
+        "db_accept_password": "db-password",
+        "data_aes_key": encoded_key,
+        "data_hmac_key": encoded_key,
+        "api_key_pepper_key": encoded_key,
+        "audit_context_key": encoded_key,
+        "audit_system_api_context_key": encoded_system_key,
+        "alert_credential_public_key": encoded_key,
+        "jwt_secret": "jwt-key",
+        "ldap_bind_password": "ldap-password",
+    }
+    paths: dict[str, Path] = {}
+    for name, value in values.items():
+        path = tmp_path / name
+        path.write_text(value, encoding="utf-8")
+        paths[name] = path
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+        vendor_base_url="http://vendor-mock:9028",
+        db_auth_password_file=tmp_path / "missing-db-auth-password",
+        db_accept_password_file=paths["db_accept_password"],
+        data_aes_key_file=paths["data_aes_key"],
+        data_hmac_key_file=paths["data_hmac_key"],
+        api_key_pepper_key_file=paths["api_key_pepper_key"],
+        audit_context_key_file=paths["audit_context_key"],
+        audit_system_api_context_key_file=paths["audit_system_api_context_key"],
+        alert_credential_public_key_file=paths["alert_credential_public_key"],
+        jwt_secret_file=paths["jwt_secret"],
+        ldap_bind_password_file=paths["ldap_bind_password"],
+    )
+    with pytest.raises(RuntimeError):
+        health._validate_runtime_secrets(settings)

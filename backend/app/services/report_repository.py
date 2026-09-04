@@ -42,6 +42,7 @@ from app.services.report_ingest import (
     ReportApplyResult,
 )
 from app.settings import Settings, get_settings
+from app.vendor.routing import report_may_apply
 
 LOGGER = logging.getLogger(__name__)
 
@@ -253,7 +254,11 @@ class SqlReportRepository:
                 """
                 UPDATE sms_batch b SET
                   delivered=s.delivered, failed=s.failed, unknown_cnt=s.unknown_cnt,
-                  status=CASE WHEN s.active=0 THEN 'completed' ELSE b.status END,
+                  status=CASE
+                    WHEN b.status='completed_unknown' THEN 'completed_unknown'
+                    WHEN s.active=0 THEN 'completed'
+                    ELSE b.status
+                  END,
                   updated_at=now()
                 FROM (
                   SELECT batch_id,
@@ -285,7 +290,16 @@ class SqlReportRepository:
                 result = await connection.execute(
                     text(
                         """
-                        SELECT m.id,m.created_at,m.batch_id FROM sms_chunk c
+                        SELECT m.id,m.created_at,m.batch_id,
+                               c.id chunk_id,
+                               COALESCE(c.selected_vendor,'zhihui') selected_vendor,
+                               (
+                                 SELECT coalesce(array_agg(a.vendor_id), '{}')
+                                 FROM sms_vendor_attempt a
+                                 WHERE a.chunk_id=c.id
+                                   AND a.outcome IN ('submitted','uncertain')
+                               ) irreversible_vendors
+                        FROM sms_chunk c
                         JOIN sms_message m ON m.chunk_id=c.id
                         WHERE c.custom_id=:match_custom_id
                           AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
@@ -307,6 +321,14 @@ class SqlReportRepository:
                     )
                     return None
                 row = matches[0]
+                raw_vendors = row.get("irreversible_vendors") or ()
+                irreversible = frozenset(str(item) for item in raw_vendors)
+                if not report_may_apply(
+                    report_vendor_id=getattr(report, "vendor_id", "zhihui"),
+                    selected_vendor=str(row.get("selected_vendor") or "zhihui"),
+                    irreversible_vendors=irreversible,
+                ):
+                    return None
                 batch_id = int(row["batch_id"])
                 await self._lock_batch(connection, batch_id)
                 locked_message = await connection.execute(
@@ -492,6 +514,19 @@ class SqlReportRepository:
                     batch_id,
                     batch_locked=True,
                     source_report_event_key=report.event_key,
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk c
+                        SET late_evidence_at=COALESCE(c.late_evidence_at,now())
+                        FROM sms_message m
+                        WHERE m.id=:id AND m.created_at=:created_at
+                          AND c.id=m.chunk_id
+                          AND c.status='unknown_terminal'
+                        """
+                    ),
+                    {"id": row["id"], "created_at": row["created_at"]},
                 )
                 await enqueue_message_report(
                     connection,

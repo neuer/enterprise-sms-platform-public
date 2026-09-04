@@ -36,6 +36,13 @@ def sample_facts() -> MetricsFacts:
         send_rates=(("verify", 1.5), ("market", 0.25)),
         vendor_errors=(("999", 2), ("5002", 3), ("unbounded-code", 7)),
         uncertain=4,
+        uncertain_lifecycle=(
+            ("active", 1),
+            ("overdue", 3),
+            ("unknown_terminal", 2),
+            ("manual_resolved", 1),
+            ("late_evidence", 1),
+        ),
         callback_failures=(("retrying", 5), ("dead", 6)),
         frequency_filtered=(("verify", 7), ("market", 8)),
         poll_lags=(("report", 12.5),),
@@ -135,6 +142,11 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     ).decode()
 
     assert "# TYPE sms_queue_depth gauge" in body
+    assert 'sms_send_admission{state="open"} 1.0' in body
+    assert 'sms_send_admission{state="closed"} 0.0' in body
+    assert "sms_outbox_oldest_age_seconds 0.0" in body
+    assert 'sms_send_submit_outcome{result="submitted"} 0.0' in body
+    assert 'sms_send_submit_outcome{result="uncertain"} 0.0' in body
     assert "sms_metrics_snapshot_age_seconds 0.0" in body
     assert 'sms_queue_depth{queue="realtime"} 3.0' in body
     assert 'sms_queue_depth{queue="bulk"} 9.0' in body
@@ -144,6 +156,11 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert 'sms_vendor_error_chunks{code="other"} 7.0' in body
     assert "unbounded-code" not in body
     assert "sms_uncertain_chunks 4.0" in body
+    assert 'sms_uncertain_lifecycle_chunks{state="active"} 1.0' in body
+    assert 'sms_uncertain_lifecycle_chunks{state="overdue"} 3.0' in body
+    assert 'sms_uncertain_lifecycle_chunks{state="unknown_terminal"} 2.0' in body
+    assert 'sms_uncertain_lifecycle_chunks{state="manual_resolved"} 1.0' in body
+    assert 'sms_uncertain_lifecycle_chunks{state="late_evidence"} 1.0' in body
     assert 'sms_callback_failures{status="retrying"} 5.0' in body
     assert 'sms_frequency_filtered_messages{category="market"} 8.0' in body
     assert 'sms_frequency_filtered_messages{category="notice"} 0.0' in body

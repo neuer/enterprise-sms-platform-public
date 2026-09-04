@@ -45,6 +45,7 @@ async def test_authenticator_accepts_current_key_and_injects_categories() -> Non
         current_hash=digest(key),
         previous_hash=None,
         previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
     )
     repository = FakeRepository([candidate])
     auth = ApiKeyAuthenticator(repository)
@@ -69,6 +70,8 @@ async def test_previous_key_only_works_during_grace_period() -> None:
             digest("different-current-key"),
             digest(previous),
             expires,
+            current_hash_algorithm="legacy_sha256",
+            previous_hash_algorithm="legacy_sha256",
         )
 
     valid = ApiKeyAuthenticator(
@@ -165,6 +168,7 @@ def test_ip_allowlist_accepts_matching_cidr_and_blocks_other_sources() -> None:
         current_hash=digest(key),
         previous_hash=None,
         previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
         allowed_ips=("203.0.113.0/24", "2001:db8::/32"),
     )
     app = _probe_app([candidate])
@@ -182,6 +186,51 @@ def test_ip_allowlist_accepts_matching_cidr_and_blocks_other_sources() -> None:
     assert response.json()["code"] == "IP_NOT_ALLOWED"
 
 
+def test_production_empty_allowlist_requires_unexpired_exemption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProductionSettings:
+        environment = "production"
+
+    monkeypatch.setattr("app.core.apikey.get_settings", lambda: ProductionSettings())
+    key = "current_key_with_enough_entropy_123"
+    expired = ApiKeyCandidate(
+        app_id=22,
+        name="app-open",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
+        allowed_ips=(),
+    )
+    blocked = TestClient(_probe_app([expired]), client=("192.0.2.7", 12345)).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["code"] == "IP_NOT_ALLOWED"
+
+    exempt = ApiKeyCandidate(
+        app_id=22,
+        name="app-open",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
+        allowed_ips=(),
+        ip_allowlist_exempt_until=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    allowed = TestClient(_probe_app([exempt]), client=("192.0.2.7", 12345)).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert allowed.status_code == 200
+
+
 def test_empty_allowlist_allows_any_source_and_unparsable_client_fails_closed() -> None:
     key = "current_key_with_enough_entropy_123"
     unrestricted = ApiKeyCandidate(
@@ -192,6 +241,7 @@ def test_empty_allowlist_allows_any_source_and_unparsable_client_fails_closed() 
         current_hash=digest(key),
         previous_hash=None,
         previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
         allowed_ips=(),
     )
     assert (
@@ -209,6 +259,7 @@ def test_empty_allowlist_allows_any_source_and_unparsable_client_fails_closed() 
         current_hash=digest(key),
         previous_hash=None,
         previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
         allowed_ips=("10.0.0.0/8",),
     )
     # TestClient 默认 client host 为 "testclient"，不是合法 IP → fail closed。
@@ -230,6 +281,7 @@ def test_corrupt_allowlist_entry_fails_closed_without_plaintext_detail() -> None
         current_hash=digest(key),
         previous_hash=None,
         previous_expires_at=None,
+        current_hash_algorithm="legacy_sha256",
         allowed_ips=("not-a-cidr",),
     )
     response = TestClient(_probe_app([candidate]), client=("10.1.2.3", 12345)).get(

@@ -62,7 +62,7 @@ export interface WebMessagePayload {
 
 export interface SendResult {
   batch_no: string
-  status: "queued" | "scheduled" | "pending_approval"
+  status: "queued" | "scheduled" | "pending_approval" | "completed" | "completed_unknown" | "cancelled" | "rejected" | "expired" | "sending" | "balance_blocked"
   accepted: number
   quota_cost: number
   idempotent: boolean

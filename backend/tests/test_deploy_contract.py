@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -257,6 +258,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
     assert targets("api") == {
         "data_aes_key",
         "data_hmac_key",
+        "api_key_pepper_key",
         "audit_context_key",
         "audit_system_api_context_key",
         "alert_credential_public_key",
@@ -410,6 +412,17 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     assert "client_max_body_size 1k;" in config
     assert "location = /api/v1/web/messages/import" in config
     assert "client_max_body_size 12m;" in config
+    from app.core.request_limits import (
+        API_JSON_BODY_LIMIT,
+        HEALTH_BODY_LIMIT,
+        IMPORT_BODY_LIMIT,
+        IMPORT_PATH,
+    )
+
+    assert API_JSON_BODY_LIMIT == 1 * 1024 * 1024
+    assert IMPORT_BODY_LIMIT == 12 * 1024 * 1024
+    assert HEALTH_BODY_LIMIT == 1024
+    assert IMPORT_PATH == "/api/v1/web/messages/import"
     assert "limit_conn_zone $server_addr zone=sms_api_concurrency:1m;" in config
     assert "limit_conn_zone $server_addr zone=sms_import_concurrency:1m;" in config
     assert (
@@ -776,6 +789,27 @@ def test_auth_redis_acl_allows_only_the_login_guard_lua_primitives() -> None:
         assert command in auth_block
     for forbidden in ("+keys", "+scan", "+flushall", "+config", "+script|load"):
         assert forbidden not in auth_block
+
+
+def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
+    from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
+
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
+    required = {
+        f"+{name.lower()}"
+        for name in re.findall(
+            r"redis\.call\('([A-Z]+)'",
+            SLIDING_WINDOW_LUA + WEIGHTED_WINDOW_LUA,
+        )
+    }
+    assert "+hincrby" in required
+    for command in sorted(required | {"+eval"}):
+        assert command in control_block
+    for forbidden in ("+keys", "+flushall", "+config"):
+        assert forbidden not in control_block
 
 
 def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> None:

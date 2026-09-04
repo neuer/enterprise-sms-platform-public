@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -46,7 +46,8 @@ SELECT
   ai.status AS identity_status,
   ap.enabled AS provider_enabled,
   lc.must_change_password,
-  lc.password_hash
+  lc.password_hash,
+  lc.credential_version
 FROM user_account ua
 JOIN auth_identity ai ON ai.account_id=ua.id
 JOIN auth_provider ap ON ap.id=ai.provider_id
@@ -77,6 +78,22 @@ class PasswordChangeInProgress(RuntimeError):
     """同一首次改密令牌已被另一个未过期租约占用。"""
 
 
+class AuthContextChanged(RuntimeError):
+    """管理员处置或并发改密已使安全/凭据版本失效。"""
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordChangeAuthorization:
+    """日常改密重新认证后可提交的安全快照。"""
+
+    account_id: int
+    identity_id: int
+    provider_code: Literal["local"]
+    normalized_login_name: str
+    expected_security_version: int
+    expected_credential_version: int
+
+
 @dataclass(frozen=True, slots=True)
 class PasswordChangeClaim:
     """首次改密高成本计算前取得的数据库 fencing 租约。"""
@@ -85,6 +102,7 @@ class PasswordChangeClaim:
     lease_id: UUID
     lease_expires_at: datetime
     current_password_hash: str
+    issued_credential_version: int = 1
 
 
 def _security_account(row: Any) -> PlatformAccount:
@@ -122,6 +140,7 @@ def _local_record(row: Any) -> LocalAccountRecord:
             must_change_password=bool(row["must_change_password"]),
         ),
         password_hash=str(row["password_hash"]),
+        credential_version=int(row["credential_version"]),
     )
 
 
@@ -199,6 +218,8 @@ class UserRepository(Protocol):
         password_hash: str,
         actor: str,
         ip: str,
+        expected_security_version: int,
+        expected_credential_version: int,
     ) -> None: ...
 
     async def invalidate_sessions(
@@ -585,13 +606,13 @@ class SqlUserRepository:
                         """
                         INSERT INTO password_change_token(
                           token_hash,account_id,identity_id,provider_code,purpose,
-                          normalized_login_name,issued_security_version,status,
-                          expires_at
+                          normalized_login_name,issued_security_version,
+                          issued_credential_version,status,expires_at
                         )
                         SELECT
                           :token_hash,ua.id,ai.id,ap.code,'initial_password',
-                          ai.normalized_login_name,ua.security_version,'available',
-                          :expires_at
+                          ai.normalized_login_name,ua.security_version,
+                          lc.credential_version,'available',:expires_at
                         FROM user_account ua
                         JOIN auth_identity ai ON ai.account_id=ua.id
                         JOIN auth_provider ap ON ap.id=ai.provider_id
@@ -657,6 +678,7 @@ class SqlUserRepository:
                           AND pct.normalized_login_name=:login_name
                           AND pct.expires_at>now()
                           AND pct.issued_security_version=ua.security_version
+                          AND pct.issued_credential_version=lc.credential_version
                           AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
                           AND ap.code=:provider_code
                           AND ai.normalized_login_name=:login_name
@@ -776,6 +798,7 @@ class SqlUserRepository:
                           AND pct.processing_lease_expires_at>now()
                           AND pct.expires_at>now()
                           AND pct.issued_security_version=ua.security_version
+                          AND pct.issued_credential_version=lc.credential_version
                           AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
                           AND ap.code=:provider_code
                           AND ai.normalized_login_name=:login_name
@@ -801,6 +824,7 @@ class SqlUserRepository:
                         UPDATE local_credential SET
                           password_hash=:password_hash,
                           must_change_password=FALSE,
+                          credential_version=credential_version+1,
                           password_changed_at=now(),updated_at=now()
                         WHERE identity_id=:identity_id
                           AND must_change_password=TRUE
@@ -879,46 +903,73 @@ class SqlUserRepository:
         password_hash: str,
         actor: str,
         ip: str,
+        expected_security_version: int,
+        expected_credential_version: int,
     ) -> None:
-        """更新本地 Argon2id 哈希并递增主体版本；审计绝不包含哈希。"""
+        """短事务 CAS 安全版本与凭据版本；Argon2 不得在本锁内执行。"""
 
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                updated = await connection.execute(
+                cas = await connection.execute(
                     text(
                         """
-                        UPDATE local_credential SET
-                          password_hash=:password_hash,
-                          must_change_password=FALSE,
-                          password_changed_at=now(),updated_at=now()
-                        WHERE identity_id=:identity_id
-                          AND EXISTS(
-                            SELECT 1 FROM auth_identity ai
-                            JOIN auth_provider ap ON ap.id=ai.provider_id
-                            WHERE ai.id=:identity_id
-                              AND ai.account_id=:account_id
-                              AND ap.code='local'
+                        UPDATE user_account ua
+                        SET security_version = ua.security_version + 1,
+                            updated_at = now()
+                        WHERE ua.id = :account_id
+                          AND ua.status = 1
+                          AND ua.security_version = :expected_security_version
+                          AND EXISTS (
+                            SELECT 1
+                            FROM auth_identity ai
+                            JOIN auth_provider ap ON ap.id = ai.provider_id
+                            WHERE ai.id = :identity_id
+                              AND ai.account_id = ua.id
+                              AND ai.status = 1
+                              AND ap.code = 'local'
+                              AND ap.enabled = TRUE
                           )
-                        RETURNING identity_id
+                        RETURNING ua.id
                         """
                     ),
                     {
                         "account_id": account_id,
                         "identity_id": identity_id,
+                        "expected_security_version": expected_security_version,
+                    },
+                )
+                if cas.scalar_one_or_none() is None:
+                    raise AuthContextChanged("账号安全状态已变化")
+                updated = await connection.execute(
+                    text(
+                        """
+                        UPDATE local_credential
+                        SET password_hash = :password_hash,
+                            must_change_password = FALSE,
+                            credential_version = credential_version + 1,
+                            password_changed_at = now(),
+                            updated_at = now()
+                        WHERE identity_id = :identity_id
+                          AND credential_version = :expected_credential_version
+                          AND must_change_password = FALSE
+                        RETURNING identity_id
+                        """
+                    ),
+                    {
+                        "identity_id": identity_id,
                         "password_hash": password_hash,
+                        "expected_credential_version": expected_credential_version,
                     },
                 )
                 if updated.scalar_one_or_none() is None:
-                    raise InvalidCredentials("本地身份不存在")
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE user_account SET security_version=security_version+1,
-                          updated_at=now() WHERE id=:account_id
-                        """
-                    ),
-                    {"account_id": account_id},
+                    raise AuthContextChanged("账号安全状态已变化")
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=actor,
+                    account_id=account_id,
+                    identity_id=identity_id,
                 )
                 await connection.execute(
                     text(

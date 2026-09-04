@@ -743,6 +743,162 @@ def test_auth_security_audit_and_ad_freshness_are_expand_only() -> None:
     assert "DELETE FROM audit_log" not in source
 
 
+def test_api_key_pepper_versions_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0085_api_key_pepper_versions.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.71：" in schema
+    for contract in (schema, source):
+        assert "api_key_hash_version" in contract
+        assert "api_key_prev_hash_version" in contract
+        assert "ck_app_api_key_hash_version" in contract
+    assert 'revision = "0085_api_key_pepper_versions"' in source
+    assert 'down_revision = "0084_auth_security_and_ad_freshness"' in source
+    assert "DELETE FROM" not in source
+
+
+def test_chunk_ready_outbox_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0086_chunk_ready_outbox.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.72：" in schema
+    for contract in (schema, source):
+        assert "'app.tasks.send.process_chunk'" in contract
+        assert "chunk[.]ready[:][1-9][0-9]*" in contract
+    assert 'revision = "0086_chunk_ready_outbox"' in source
+    assert 'down_revision = "0085_api_key_pepper_versions"' in source
+    assert "DELETE FROM" not in source
+
+
+def test_uncertain_conservative_terminal_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0087_uncertain_conservative_terminal.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.73：" in schema
+    for contract in (schema, source):
+        assert "completed_unknown" in contract
+        assert "unknown_terminal" in contract
+        assert "uncertain_max_lifetime_hours" in contract
+        assert "sms_uncertain_resolution" in contract
+        assert "late_evidence_at" in contract
+    assert "GRANT SELECT (state) ON sms_uncertain_resolution TO sms_metrics" in source
+    assert "completed_with_unknown" not in source
+    assert 'revision = "0087_uncertain_conservative_terminal"' in source
+    assert 'down_revision = "0086_chunk_ready_outbox"' in source
+    assert "DELETE FROM" not in source
+    assert "ALTER COLUMN" not in source
+
+
+def test_app_admission_defaults_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0088_app_admission_defaults.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.74：" in schema
+    for contract in (schema, source):
+        assert "recipient_limit_per_min" in contract
+        assert "segment_limit_per_min" in contract
+        assert "max_in_flight_chunks" in contract
+        assert "allow_market_api_bulk" in contract
+        assert "ip_allowlist_exempt_until" in contract
+        assert "unlimited_quota_exempt_until" in contract
+        assert "ck_app_recipient_limit_per_min" in contract
+    assert "DEFAULT 'notice'" in source
+    assert 'revision = "0088_app_admission_defaults"' in source
+    assert 'down_revision = "0087_uncertain_conservative_terminal"' in source
+    assert "DELETE FROM" not in source
+
+
+def test_send_admission_metrics_grant_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0089_send_admission_metrics_grant.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.75：" in schema
+    assert "GRANT SELECT (queue, state, created_at)" in schema
+    assert "GRANT SELECT (created_at)" in source
+    assert "outbox_event TO sms_metrics" in source
+    assert 'revision = "0089_send_admission_metrics_grant"' in source
+    assert 'down_revision = "0088_app_admission_defaults"' in source
+    assert "DELETE FROM" not in source
+    assert "sys_config" not in source
+
+
+def test_api_key_digest_algorithms_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0091_api_key_digest_algorithms.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.77：" in schema
+    for contract in (schema, source):
+        assert "api_key_hash_algorithm" in contract
+        assert "legacy_data_hmac_pepper_v1" in contract
+        assert "ck_app_api_key_algorithm_version" in contract
+        assert "api_key_unclassified_algorithms" in contract
+    assert 'revision = "0091_api_key_digest_algorithms"' in source
+    assert 'down_revision = "0090_vendor_routing"' in source
+    assert "DELETE FROM" not in source
+    assert "NULL 版本静默" in source or "不得静默" in schema
+
+
+def test_send_lifecycle_r2_facts_are_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0092_send_lifecycle_r2_facts.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.78：" in schema
+    for contract in (schema, source):
+        assert "sms_uncertain_child" in contract
+        assert "usage_chunk_allocation" in contract
+        assert "send_inflight_balance" in contract
+        assert "send_admission_state" in contract
+        assert "send_runtime_heartbeat" in contract
+        assert "sms_scheduler" in contract
+        assert "apply_uncertain_effect" in contract
+        assert "uncertain-unused" in contract
+    assert 'revision = "0092_send_lifecycle_r2_facts"' in source
+    assert 'down_revision = "0091_api_key_digest_algorithms"' in source
+    assert "DELETE FROM" not in source
+
+
+def test_auth_r2_credential_version_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0093_auth_r2_credential_version.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.79：" in schema
+    for contract in (schema, source):
+        assert "credential_version" in contract
+        assert "issued_credential_version" in contract
+        assert "ck_local_credential_version_positive" in contract
+        assert "ck_password_change_issued_credential_version" in contract
+    assert 'revision = "0093_auth_r2_credential_version"' in source
+    assert 'down_revision = "0092_send_lifecycle_r2_facts"' in source
+    assert "DELETE FROM" not in source
+    assert "ADD COLUMN IF NOT EXISTS" in source
+
+
+def test_vendor_routing_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0090_vendor_routing.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.76：" in schema
+    for contract in (schema, source):
+        assert "sms_vendor_attempt" in contract
+        assert "selected_vendor" in contract
+        assert "uk_sms_vendor_attempt_irreversible" in contract
+        assert "GRANT SELECT (outcome, created_at)" in contract
+    assert 'revision = "0090_vendor_routing"' in source
+    assert 'down_revision = "0089_send_admission_metrics_grant"' in source
+    assert "DELETE FROM" not in source
+    assert "sys_config" not in source
+    assert "completed_with_unknown" not in source
+
+
 def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0040_background_task_role_matrix.py"

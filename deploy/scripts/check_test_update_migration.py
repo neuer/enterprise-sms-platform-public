@@ -88,6 +88,12 @@ _WIDEN_ALEMBIC_VERSION_RE = re.compile(
     r"TYPE\s+VARCHAR\(64\)",
     re.IGNORECASE,
 )
+_WIDEN_VARCHAR_RE = re.compile(
+    r"ALTER\s+TABLE\s+[A-Za-z_][A-Za-z0-9_]*\s+"
+    r"ALTER\s+COLUMN\s+[A-Za-z_][A-Za-z0-9_]*\s+"
+    r"TYPE\s+VARCHAR\(\d+\)",
+    re.IGNORECASE,
+)
 
 
 def _literal_assignment(tree: ast.Module, name: str, path: Path) -> str | None:
@@ -259,6 +265,9 @@ def _check_raw_sql(
         return
     if _WIDEN_ALEMBIC_VERSION_RE.fullmatch(sql.strip()):
         # Alembic 自建单行控制表加宽版本号列：只扩大容量，允许随迁移一同执行。
+        return
+    if _WIDEN_VARCHAR_RE.fullmatch(sql.strip()):
+        # 无 USING 的 VARCHAR 加宽只扩大容量，不改写既有值。
         return
     if _DESTRUCTIVE_SQL.search(sql):
         if re.search(r"\bDROP\s+TABLE\b", sql, re.IGNORECASE):

@@ -102,9 +102,18 @@ class EncryptionContext:
 
 
 @dataclass(frozen=True, slots=True)
-class _ParsedKeyring:
+class ParsedKeyring:
     active_version: int
     keys: dict[int, bytes]
+
+    def __repr__(self) -> str:
+        return (
+            f"ParsedKeyring(active_version={self.active_version}, "
+            f"versions={sorted(self.keys)})"
+        )
+
+
+_ParsedKeyring = ParsedKeyring
 
 
 def _decode_key(encoded: Any, *, label: str, version: int) -> bytes:
@@ -117,6 +126,12 @@ def _decode_key(encoded: Any, *, label: str, version: int) -> bytes:
     if len(key) != 32:
         raise ValueError(f"{label} key version {version} must decode to 32 bytes")
     return key
+
+
+def parse_secret_keyring(secret: str, *, label: str) -> _ParsedKeyring:
+    """解析裸 v1 key 或同 secret 文件内的版本化 JSON keyring。"""
+
+    return _parse_keyring(secret, label=label)
 
 
 def _parse_keyring(secret: str, *, label: str) -> _ParsedKeyring:

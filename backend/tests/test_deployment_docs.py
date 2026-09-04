@@ -13,6 +13,7 @@ PRODUCTION_SECRETS = {
     "vendor_secret_key",
     "data_aes_key",
     "data_hmac_key",
+    "api_key_pepper_key",
     "audit_context_key",
     "audit_system_api_context_key",
     "audit_system_realtime_context_key",
@@ -67,6 +68,7 @@ METRIC_FAMILIES = {
     "sms_send_rate_per_second",
     "sms_vendor_error_chunks",
     "sms_uncertain_chunks",
+    "sms_uncertain_lifecycle_chunks",
     "sms_callback_failures",
     "sms_frequency_filtered_messages",
     "sms_poll_lag_seconds",
@@ -75,6 +77,9 @@ METRIC_FAMILIES = {
     "sms_worker_stalled_leases",
     "sms_worker_lease_events",
     "sms_metrics_snapshot_age_seconds",
+    "sms_send_admission",
+    "sms_outbox_oldest_age_seconds",
+    "sms_send_submit_outcome",
 }
 
 
@@ -117,7 +122,7 @@ def test_secret_runbook_documents_canonical_and_runtime_copy_boundaries() -> Non
     runbook = read_required("secrets.md")
 
     for token in (
-        "25 个",
+        "26 个",
         "0700",
         "0600",
         "/run/sms-platform/secrets/current",
@@ -687,13 +692,18 @@ def test_phase0_redis_decision_cannot_masquerade_as_current_managed_ha() -> None
         "isolated-standalone",
         "单 VM 共同故障域",
         "No-Go",
-        "第 25 件 canonical secret",
+        "26 件 secret",
         "redis_tls_server_key",
         "不得进入 backend",
         "rediss://",
         "禁止把三个 DNS 名解析到同一 Redis 集群",
         "文档契约测试只证明风险和决策被记录",
         "整台生产 VM 丢失",
+        "SendAdmissionGuard",
+        "pg_try_advisory_lock",
+        "usage:projection:rebuild:{date}",
+        "platform_recovery_elapsed",
+        "禁止 secret、手机号",
     ):
         assert token in runbook
     assert "不得把此单机形态写成 `managed`" in runbook

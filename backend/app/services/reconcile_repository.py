@@ -1,4 +1,4 @@
-"""停滞批次/分片扫描；submitted 与 uncertain 永不进入结果集。"""
+"""停滞批次/分片扫描；submitted、uncertain 与 unknown_terminal 永不进入结果集。"""
 
 from __future__ import annotations
 

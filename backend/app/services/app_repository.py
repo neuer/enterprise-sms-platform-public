@@ -17,8 +17,11 @@ from app.settings import Settings, get_settings
 
 APP_COLUMNS = """
 id, name, dept, allowed_categories, default_sign, daily_quota,
-rate_limit_per_min, blacklist_check, freq_override, callback_url,
-allowed_ips, callback_report_enabled, status, created_at, updated_at,
+rate_limit_per_min, recipient_limit_per_min, segment_limit_per_min,
+max_in_flight_chunks, allow_market_api_bulk, blacklist_check, freq_override,
+callback_url, allowed_ips, ip_allowlist_exempt_until,
+unlimited_quota_exempt_until, admission_exempt_note,
+callback_report_enabled, status, created_at, updated_at,
 api_key_prefix,
 api_key_prev_prefix AS old_key_prefix,
 api_key_prev_expires AS old_key_expires_at,
@@ -129,22 +132,39 @@ class SqlAppRepository:
                         """
                         INSERT INTO app (
                           name, dept, api_key_hash, api_key_prefix,
+                          api_key_hash_version, api_key_hash_algorithm,
                           allowed_categories, default_sign, daily_quota,
-                          rate_limit_per_min, blacklist_check, freq_override,
-                          allowed_ips,
+                          rate_limit_per_min, recipient_limit_per_min,
+                          segment_limit_per_min, max_in_flight_chunks,
+                          allow_market_api_bulk, blacklist_check, freq_override,
+                          allowed_ips, ip_allowlist_exempt_until,
+                          unlimited_quota_exempt_until, admission_exempt_note,
                           callback_url, callback_secret_enc,
                           callback_report_enabled, created_by
                         ) VALUES (
                           :name, :dept, :api_key_hash, :api_key_prefix,
+                          :api_key_hash_version, :api_key_hash_algorithm,
                           :allowed_categories, :default_sign, :daily_quota,
-                          :rate_limit_per_min, :blacklist_check,
-                          CAST(:freq_override AS jsonb), :allowed_ips, :callback_url,
+                          :rate_limit_per_min, :recipient_limit_per_min,
+                          :segment_limit_per_min, :max_in_flight_chunks,
+                          :allow_market_api_bulk, :blacklist_check,
+                          CAST(:freq_override AS jsonb), :allowed_ips,
+                          :ip_allowlist_exempt_until,
+                          :unlimited_quota_exempt_until, :admission_exempt_note,
+                          :callback_url,
                           :callback_secret_enc, :callback_report_enabled, :actor
                         ) RETURNING id
                         """
                     ),
                     values
                     | {
+                        "api_key_hash_version": values.get("api_key_hash_version"),
+                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                        or (
+                            "api_pepper"
+                            if values.get("api_key_hash_version") is not None
+                            else None
+                        ),
                         "freq_override": (
                             json.dumps(values["freq_override"])
                             if values["freq_override"] is not None
@@ -162,7 +182,14 @@ class SqlAppRepository:
                     app_id=app_id,
                     after={
                         "name": values["name"],
+                        "allowed_categories": values["allowed_categories"],
+                        "daily_quota": values["daily_quota"],
                         "allowed_ips": list(values["allowed_ips"]),
+                        "allow_market_api_bulk": values["allow_market_api_bulk"],
+                        "has_ip_exemption": values["ip_allowlist_exempt_until"]
+                        is not None,
+                        "has_quota_exemption": values["unlimited_quota_exempt_until"]
+                        is not None,
                     },
                 )
                 return app_id
@@ -179,11 +206,19 @@ class SqlAppRepository:
                         f"""
                         UPDATE app SET
                           dept=:dept, allowed_categories=:allowed_categories,
-                          default_sign=:default_sign, daily_quota=:daily_quota,
+                          default_sign=:default_sign,
+                          daily_quota=:daily_quota,
                           rate_limit_per_min=:rate_limit_per_min,
+                          recipient_limit_per_min=:recipient_limit_per_min,
+                          segment_limit_per_min=:segment_limit_per_min,
+                          max_in_flight_chunks=:max_in_flight_chunks,
+                          allow_market_api_bulk=:allow_market_api_bulk,
                           blacklist_check=:blacklist_check,
                           freq_override=CAST(:freq_override AS jsonb),
                           allowed_ips=:allowed_ips,
+                          ip_allowlist_exempt_until=:ip_allowlist_exempt_until,
+                          unlimited_quota_exempt_until=:unlimited_quota_exempt_until,
+                          admission_exempt_note=:admission_exempt_note,
                           callback_url=:callback_url,
                           callback_report_enabled=:callback_report_enabled,
                           status=:status, updated_at=now()
@@ -211,7 +246,16 @@ class SqlAppRepository:
                     ip=str(values["ip"]),
                     action="app_update",
                     app_id=app_id,
-                    after={"allowed_ips": list(values["allowed_ips"])},
+                    after={
+                        "allowed_categories": values["allowed_categories"],
+                        "daily_quota": values["daily_quota"],
+                        "allowed_ips": list(values["allowed_ips"]),
+                        "allow_market_api_bulk": values["allow_market_api_bulk"],
+                        "has_ip_exemption": values["ip_allowlist_exempt_until"]
+                        is not None,
+                        "has_quota_exemption": values["unlimited_quota_exempt_until"]
+                        is not None,
+                    },
                 )
                 return _safe_row(row)
         finally:
@@ -228,8 +272,12 @@ class SqlAppRepository:
                         UPDATE app SET status=0,
                           api_key_hash=:revoked_hash,
                           api_key_prefix='revoked0',
+                          api_key_hash_version=NULL,
+                          api_key_hash_algorithm='legacy_sha256',
                           api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
+                          api_key_prev_hash_version=NULL,
+                          api_key_prev_hash_algorithm=NULL,
                           updated_at=now() WHERE id=:app_id
                         """
                     ),
@@ -260,14 +308,28 @@ class SqlAppRepository:
                         UPDATE app SET
                           api_key_prev_hash=api_key_hash,
                           api_key_prev_prefix=api_key_prefix,
+                          api_key_prev_hash_version=api_key_hash_version,
+                          api_key_prev_hash_algorithm=api_key_hash_algorithm,
                           api_key_prev_expires=:old_key_expires_at,
                           api_key_hash=:api_key_hash,
                           api_key_prefix=:api_key_prefix,
+                          api_key_hash_version=:api_key_hash_version,
+                          api_key_hash_algorithm=:api_key_hash_algorithm,
                           updated_at=now()
                         WHERE id=:app_id AND status=1
                         """
                     ),
-                    values | {"app_id": app_id},
+                    values
+                    | {
+                        "app_id": app_id,
+                        "api_key_hash_version": values.get("api_key_hash_version"),
+                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                        or (
+                            "api_pepper"
+                            if values.get("api_key_hash_version") is not None
+                            else None
+                        ),
+                    },
                 )
                 if result.rowcount != 1:
                     raise AppNotFound("应用不存在或已停用")
@@ -291,6 +353,8 @@ class SqlAppRepository:
                         """
                         UPDATE app SET api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
+                          api_key_prev_hash_version=NULL,
+                          api_key_prev_hash_algorithm=NULL,
                           updated_at=now() WHERE id=:app_id
                         """
                     ),

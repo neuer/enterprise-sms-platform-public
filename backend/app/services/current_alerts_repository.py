@@ -18,6 +18,7 @@ from app.services.current_alerts import (
     RawSpillAlertFact,
     UsageDriftFact,
 )
+from app.services.queue_pause import parse_queue_pause_claim
 from app.services.runtime_policy import RuntimePolicy
 from app.settings import Settings, get_settings
 
@@ -220,7 +221,7 @@ class SqlCurrentAlertRepository:
         if failures < 0:
             raise ValueError("vendor failure counter is invalid")
         return ControlCurrentFacts(
-            str(values[0]) if values[0] is not None else None,
-            str(values[1]) if values[1] is not None else None,
+            parse_queue_pause_claim(values[0]),
+            parse_queue_pause_claim(values[1]),
             failures,
         )

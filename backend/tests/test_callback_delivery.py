@@ -222,6 +222,9 @@ async def test_batch_finished_body_is_canonical_and_signed_over_exact_raw_bytes(
     assert parsed["event"] == "batch.finished"
     assert parsed["event_id"] == str(EVENT_ID)
     assert parsed["batch_no"] == "BATCH-1"
+    assert parsed["unknown"] == 0
+    assert parsed["unknown_count"] == 0
+    assert parsed["manual_resolution_required"] is False
     assert call["headers"]["X-Sms-Event-Id"] == str(EVENT_ID)
     assert call["headers"]["X-Sms-Correlation-Id"] == str(CORRELATION_ID)
     timestamp = call["headers"]["X-Sms-Timestamp"]
@@ -231,6 +234,45 @@ async def test_batch_finished_body_is_canonical_and_signed_over_exact_raw_bytes(
         hashlib.sha256,
     ).hexdigest()
     assert call["headers"]["X-Sms-Signature"] == expected
+
+
+@pytest.mark.asyncio
+async def test_completed_unknown_callback_keeps_unknown_count_and_manual_flag() -> None:
+    material = CallbackMaterial(
+        task("batch.finished", "callback-secret"),
+        batch=BatchFinishedData(
+            "BATCH-9",
+            "biz-unknown",
+            "notice",
+            "completed_unknown",
+            3,
+            1,
+            0,
+            2,
+            datetime(2026, 7, 12, 16, 0, tzinfo=UTC),
+            unknown_count=2,
+            manual_resolution_required=True,
+        ),
+    )
+    transport = FakeTransport()
+    delivery = CallbackDelivery(
+        FakeRepository(material),
+        crypto(),
+        FakeValidator(),
+        transport,
+        clock=lambda: datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
+    )
+
+    outcome = await delivery.deliver(9, LEASE_ID)
+
+    assert outcome.success
+    parsed = json.loads(transport.calls[0]["raw_body"])
+    assert parsed["status"] == "completed_unknown"
+    assert parsed["unknown"] == 2
+    assert parsed["unknown_count"] == 2
+    assert parsed["manual_resolution_required"] is True
+    assert parsed["failed"] == 0
+    assert "138" not in transport.calls[0]["raw_body"].decode()
 
 
 @pytest.mark.asyncio

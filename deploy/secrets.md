@@ -1,7 +1,7 @@
 # 生产运行 secrets 手册
 
 > **V1 固定 OS 权威路径（优先于本文后续 checkout 相对路径）：**
-> 生产 25 件权威 secret 的根目录是 `/etc/sms-platform/secrets`，必须由独立
+> 生产 26 件权威 secret 的根目录是 `/etc/sms-platform/secrets`，必须由独立
 > OS 变更预建为 `root:root 0700`，规范清单中的每个普通单链接文件为
 > `root:root 0600`；非密钥平台环境文件固定为
 > `/etc/sms-platform/platform.env` (`root:root 0600`)。同一采用变更还必须预建
@@ -14,7 +14,7 @@
 
 ## 硬性边界
 
-所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 25 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
+所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 26 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
 
 生产根目录 `.env` 必须显式且唯一设置 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，不得通过 shell 或 `.env` 激活任何 `COMPOSE_PROFILES`/`dev` profile。production 的启动与轮换会 fail-closed 校验这些明确的非密钥键。唯一生产 Compose 入口是 `sudo /usr/local/sbin/sms-compose ...`；动作必须是第一个参数，包装器拒绝 `--profile`、额外 `--env-file` 等全局参数作为首参，固定注入项目根 `.env` 与 Compose 文件，禁止绕过包装器直接运行 Compose。production `up` 只允许文档化的安全选项和固定生产服务，拒绝 `mock-vendor`、未知服务、`--scale`、构建、拉取及其他参数；development Mock 路径不受此生产参数白名单限制。
 
@@ -35,7 +35,7 @@
 
 generation 与四个服务目录均只允许 root 遍历。Compose 的 source 可以使用内部别名，但容器内 target 始终保持 `/run/secrets/<权威名称>`；运行态后端绝不能看到 `db_owner_password`，API 绝不能看到 broker 密码，worker-callback 绝不能看到 auth 密码。旧 generation 至少保留到新容器健康确认，只有受控清理才可删除。
 
-## 25 件清单与挂载矩阵
+## 26 件清单与挂载矩阵
 
 | secret 名 | 内容格式与生产来源 | Compose 挂载服务 | 轮换后动作 |
 |---|---|---|---|
@@ -43,6 +43,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `vendor_secret_key` | 厂商 SecretKey 非空文本；禁止进入厂商报备工单 | worker-realtime、worker-report、worker-bulk | 同上；确认旧直连系统已停用后再吊销旧值 |
 | `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
 | `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
+| `api_key_pepper_key` | 独立 32 随机字节的 base64，或 pepper keyring JSON；禁止复用 `data_hmac_key` | 仅 api | 与数据 HMAC 独立轮换；先确认仍被 `api_key_hash_version` 引用的版本仍在 keyring，再切 active_version；就绪检查缺失引用版本即失败关闭 |
 | `audit_context_key` | 稳定 human/api_app 主体专用 32 随机字节 base64；不得复用其他 key | 仅 api、migrate | 与自治事件 key 同窗轮换；先运行 migrate 同步 owner-only 验证表，再重建 api，禁止挂载到 worker/beat/outbox |
 | `audit_system_api_context_key` | API 自治事件专用 32 随机字节 base64 | 仅 api、migrate | 只签 `AUDIT_PRODUCER_DOMAIN=api`，不得复用任何审计 key |
 | `audit_system_realtime_context_key` | realtime worker 自治事件专用 32 随机字节 base64 | 仅 worker-realtime、migrate | 只签 realtime 域；不得挂给其他 worker |
@@ -69,7 +70,7 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 
 | 服务 | 容器内 secrets |
 |---|---|
-| api | AES/HMAC、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
+| api | AES/HMAC、`api_key_pepper_key`、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
 | worker-realtime | 厂商两项、AES/HMAC、`audit_system_realtime_context_key`、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
 | worker-report | 厂商两项、AES/HMAC、`db_send_password`、`redis_broker_password`、`redis_control_password`；不得挂载审计 key、callback DB 密码或 vendor-control UDS |
 | worker-bulk | 厂商两项、AES/HMAC、`audit_system_bulk_context_key`、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |
@@ -88,14 +89,14 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 install -d -m 0700 deploy/secrets
 umask 077
 install -m 0600 /secure/staging/vendor_secret_name deploy/secrets/vendor_secret_name
-# 其余 24 项逐一 install；完成后立即安全删除仓库外暂存副本
+# 其余 25 项逐一 install；完成后立即安全删除仓库外暂存副本
 ```
 
 禁止使用 `echo "$SECRET"`、命令行参数、shell history 或剪贴板落盘。两个数据密钥必须独立生成，禁止复用；八个数据库密码必须全部不同。八个数据库密码和三个 Redis ACL 密码都必须是**无换行单行**，并逐字匹配 `[A-Za-z0-9_+/=-]{32,128}`；禁止空格、引号、反斜杠、控制字符和 shell 片段。运行密钥预处理器会对两个职责组分别执行两两不等校验。
 
 ## 恢复密码学代次与备份口令
 
-备份口令不属于 25 件运行 secrets，固定存放在
+备份口令不属于 26 件运行 secrets，固定存放在
 `/etc/sms-platform/backup-secrets/sms-backup-passphrase`（父目录 `root:root 0700`、文件
 `root:root 0600`）。另有两个**不含 secret 值**、但同样按 `root:root 0600` 防篡改的单行 ID：
 
@@ -108,7 +109,7 @@ recovery-crypto bundle 和备份口令由生产主机之外的受控保管介质
 取回演练。只要 35 天保留期内仍有 snapshot 引用某 ID，就不得销毁该代次；若轮换，旧代次须
 保留到所有引用快照过期并完成销毁读回。灾后恢复只取回 manifest 绑定的上述密码学材料；厂商、
 DB/Redis 密码、JWT、LDAP、metrics 与 Redis TLS 使用恢复时当前获批 generation，禁止复活整套
-已吊销的旧 25 件凭据。旧 JWT 会话一律失效，告警/外部凭据按变更单重新验收。
+已吊销的旧 26 件凭据。旧 JWT 会话一律失效，告警/外部凭据按变更单重新验收。
 
 ## 上线前只读检查
 

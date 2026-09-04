@@ -97,6 +97,15 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0082_outbox_realtime_report_queue",
         "0083_password_change_token_lease",
         "0084_auth_security_and_ad_freshness",
+        "0085_api_key_pepper_versions",
+        "0086_chunk_ready_outbox",
+        "0087_uncertain_conservative_terminal",
+        "0088_app_admission_defaults",
+        "0089_send_admission_metrics_grant",
+        "0090_vendor_routing",
+        "0091_api_key_digest_algorithms",
+        "0092_send_lifecycle_r2_facts",
+        "0093_auth_r2_credential_version",
     ]
 
 
@@ -362,6 +371,31 @@ def test_accepts_alembic_version_widening_raw_sql(tmp_path: Path) -> None:
         "def upgrade():\n"
         "    op.execute('ALTER TABLE alembic_version '\n"
         "               'ALTER COLUMN version_num TYPE VARCHAR(64)')\n"
+        "def downgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    checked = check_expand_only(tmp_path, "0001_base", "0002_widen")
+
+    assert [item.revision for item in checked] == ["0002_widen"]
+
+
+def test_accepts_varchar_capacity_widen_without_using(tmp_path: Path) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\n"
+        "down_revision=None\n"
+        "def upgrade():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_widen.py").write_text(
+        "from alembic import op\n"
+        "revision='0002_widen'\n"
+        "down_revision='0001_base'\n"
+        "def upgrade():\n"
+        "    op.execute('ALTER TABLE sms_uncertain_resolution '\n"
+        "               'ALTER COLUMN state TYPE VARCHAR(32)')\n"
         "def downgrade():\n"
         "    pass\n",
         encoding="utf-8",

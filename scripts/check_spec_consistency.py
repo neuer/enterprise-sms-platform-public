@@ -36,6 +36,7 @@ required_files = [
     "docs/TRACEABILITY.md",
     "docs/UAT.md",
     "docs/runbooks/usage-ledger-recovery.md",
+    "docs/runbooks/api-key-pepper-upgrade.md",
     "docs/ui-design.md",
     "docs/sms-ui-prototype.html",
     "docs/vendor-api.md",
@@ -208,6 +209,67 @@ for script in (
     "deploy/initdb/01-create-app-role.sh",
 ):
     require(os.access(ROOT / script, os.X_OK), f"脚本不可执行: {script}")
+
+api_docs = read("docs/api-integration.md")
+api_test_docs = read("docs/api-test-playground.md")
+require(
+    re.search(
+        r"/api/v1/messages/send[\s\S]{0,2500}required:\s*\[category,\s*mobiles,\s*biz_id\]",
+        openapi,
+    )
+    is not None,
+    "OpenAPI send 必须把 biz_id 列为 required",
+)
+require(
+    "| `biz_id` | string | 是 |" in api_docs,
+    "docs/api-integration.md 字段表必须把 biz_id 标为必填",
+)
+require(
+    "缺少 `biz_id`" in api_docs
+    and "400 `INVALID_PARAM`" in api_docs
+    and "IDEMPOTENCY_CONFLICT" in api_docs,
+    "docs/api-integration.md 必须给出 biz_id 生成规则与错误示例",
+)
+require(
+    "biz_id` **必填**" in api_test_docs or "biz_id **必填**" in api_test_docs,
+    "docs/api-test-playground.md 必须声明 biz_id 必填",
+)
+playground = read("frontend/public/api-test.html")
+require(
+    "biz_id（必填" in playground and "biz_id: bizId" in playground,
+    "api-test.html 必须校验并提交必填 biz_id",
+)
+require(
+    "completed_unknown" in openapi and "completed_unknown" in api_docs,
+    "OpenAPI 与集成文档必须包含 completed_unknown",
+)
+
+BATCH_STATUSES = {
+    "pending_approval",
+    "rejected",
+    "scheduled",
+    "queued",
+    "sending",
+    "completed",
+    "completed_unknown",
+    "cancelled",
+    "balance_blocked",
+    "expired",
+}
+schema_batch = set(
+    re.findall(
+        r"'((?:pending_approval|rejected|scheduled|queued|sending|completed_unknown|completed|cancelled|balance_blocked|expired))'",
+        schema[schema.find("CREATE TABLE sms_batch") : schema.find("CREATE TABLE sms_chunk")],
+    )
+)
+require(schema_batch >= BATCH_STATUSES, "schema.sql 批次状态缺少 completed_unknown 等正式枚举")
+openapi_batch = set(re.findall(r"completed_unknown|pending_approval|balance_blocked", openapi))
+require("completed_unknown" in openapi_batch, "OpenAPI 缺少 completed_unknown")
+frontend_status = read("frontend/src/api/webMessages.ts")
+require(
+    "completed_unknown" in frontend_status,
+    "前端 SendResult 必须包含 completed_unknown",
+)
 
 if (ROOT / ".git").exists():
     for ignored_path in (".env", "deploy/secrets/dev-apikeys.txt"):

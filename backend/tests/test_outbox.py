@@ -475,6 +475,53 @@ def test_outbox_contract_rejects_malformed_usage_release_reference(
         validate_spec(event_spec(**spec))
 
 
+def test_outbox_contract_accepts_phone_shaped_chunk_ready_id() -> None:
+    chunk_id = 13_800_138_000
+    spec = event_spec(
+        event_type="chunk.ready",
+        aggregate_type="sms_chunk",
+        aggregate_id=str(chunk_id),
+        task_name="app.tasks.send.process_chunk",
+        queue="bulk",
+        args=(chunk_id,),
+        dedup_key=f"chunk.ready:{chunk_id}",
+    )
+
+    validate_spec(spec)
+    validate_spec(replace(spec, queue="realtime"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event_type", "batch.ready"),
+        ("aggregate_type", "sms_batch"),
+        ("aggregate_id", "08"),
+        ("args", ("13800138000",)),
+        ("queue", "callback"),
+        ("dedup_key", "chunk.ready:08"),
+    ],
+)
+def test_outbox_contract_rejects_malformed_chunk_ready_reference(
+    field: str,
+    value: object,
+) -> None:
+    chunk_id = 8
+    spec = {
+        "event_type": "chunk.ready",
+        "aggregate_type": "sms_chunk",
+        "aggregate_id": str(chunk_id),
+        "task_name": "app.tasks.send.process_chunk",
+        "queue": "realtime",
+        "args": (chunk_id,),
+        "dedup_key": f"chunk.ready:{chunk_id}",
+    }
+    spec[field] = value
+
+    with pytest.raises(ValueError):
+        validate_spec(event_spec(**spec))
+
+
 def test_outbox_repository_always_uses_process_shared_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

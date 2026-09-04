@@ -124,12 +124,16 @@ function requestWithCurrentAuthorization(
   })
 }
 
-function clearSession(): void {
+function clearSession(broadcast: "unauthorized" | "reauth-required" | "none" = "unauthorized"): void {
   invalidateSessionGeneration()
   cancelSessionRequests()
   clearAccessSession()
   clearRefreshTabBinding()
-  window.dispatchEvent(new Event("sms:unauthorized"))
+  if (broadcast === "unauthorized") {
+    window.dispatchEvent(new Event("sms:unauthorized"))
+  } else if (broadcast === "reauth-required") {
+    window.dispatchEvent(new Event("sms:reauth-required"))
+  }
 }
 
 async function refreshSession(): Promise<RefreshResult> {
@@ -180,11 +184,11 @@ async function refreshSession(): Promise<RefreshResult> {
         return "unauthorized"
       }
       if (error instanceof AuthApiError && error.status === 401) {
-        clearSession()
         if (error.code === "AUTH_REAUTH_REQUIRED") {
-          window.dispatchEvent(new Event("sms:reauth-required"))
+          clearSession("reauth-required")
           return "reauth-required"
         }
+        clearSession()
         return "unauthorized"
       }
       return "unavailable"
@@ -214,6 +218,14 @@ export async function authorizedFetch(
   const response = await requestWithCurrentAuthorization(url, init, timeoutMs)
   const code = await errorCode(response)
   if (response.status === 423 && code === "ACCOUNT_LOCKED") {
+    clearSession()
+    return response
+  }
+  if (response.status === 401 && code === "AUTH_REAUTH_REQUIRED") {
+    clearSession("reauth-required")
+    return response
+  }
+  if (response.status === 409 && code === "AUTH_CONTEXT_CHANGED") {
     clearSession()
     return response
   }

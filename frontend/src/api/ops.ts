@@ -31,7 +31,26 @@ export interface RawLogItem {
   fetched_at: string
   capture_state: RawCaptureState
 }
-export interface UncertainItem { chunk_id: number; batch_no: string; custom_id: string; phone_count: number; vendor_code: number | null; uncertain_since: string; age_seconds: number }
+export type UncertainResolutionAction =
+  | "confirm_accepted"
+  | "confirm_not_accepted"
+  | "keep_unknown"
+  | "resend_new_batch"
+
+export interface UncertainItem {
+  chunk_id: number
+  batch_no: string
+  custom_id: string
+  phone_count: number
+  vendor_code: number | null
+  uncertain_since: string
+  age_seconds: number
+  status: "uncertain" | "unknown_terminal"
+  resolution_id: number | null
+  resolution_action: UncertainResolutionAction | string | null
+  resolution_state: string | null
+  proposer_account_id: number | null
+}
 export interface UnmatchedItem { id: number; vendor_task_id: string | null; custom_id: string | null; phone_mask: string; report_status: number | null; report_desc: string | null; report_time: string | null; created_at: string }
 export interface JobItem { job_name: string; last_run_at: string | null; last_status: "running" | "success" | "failed" | null; last_duration_ms: number | null; last_items: number; success_rate_24h: number; stalled: boolean }
 export interface QueueStatus { realtime_code: string | null; bulk_code: string | null; balance: number | null; threshold: number }
@@ -91,6 +110,32 @@ export const replayRaw = (id: number) => apiRequest<{ processed_items: number }>
 export function listUncertain(query: PageQuery = {}): Promise<OpsPage<UncertainItem>> {
   return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET" })
 }
+
+export interface UncertainResolutionItem {
+  id: number
+  chunk_id: number
+  batch_id: number
+  action: UncertainResolutionAction | string
+  state: "proposed" | "confirmed"
+  proposer_account_id: number
+  confirmer_account_id: number | null
+  child_batch_id: number | null
+}
+
+export const proposeUncertainResolution = (
+  chunkId: number,
+  action: UncertainResolutionAction,
+) =>
+  apiRequest<UncertainResolutionItem>(`/admin/chunks/${chunkId}/resolution`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  })
+
+export const confirmUncertainResolution = (resolutionId: number) =>
+  apiRequest<UncertainResolutionItem>(`/admin/resolutions/${resolutionId}/confirm`, {
+    method: "POST",
+  })
 
 export function listUnmatched(query: UnmatchedQuery = {}): Promise<OpsPage<UnmatchedItem>> {
   // 手机号精确查询条件只在请求体携带：GET query 会把明文写进访问日志（硬性规则 2）。

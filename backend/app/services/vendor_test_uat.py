@@ -23,6 +23,7 @@ from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRender
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaService
 from app.services.runtime_policy import RuntimePolicy
+from app.services.send_admission import get_send_admission_guard
 from app.services.sign import SignResolver
 from app.services.sign_repository import SqlSignRepository
 from app.services.usage_ledger import UsageLedgerService
@@ -337,6 +338,13 @@ class VendorTestUatService:
                         await VendorTestUatReconciler(self.operations).recover(current)
                     )[0]
                 async with self.pipeline_factory(app) as pipeline:
+                    admission_guard = getattr(pipeline, "admission_guard", None)
+                    if admission_guard is not None:
+                        await admission_guard.authorize(
+                            category=category,
+                            channel="web",
+                            recipient_count=1,
+                        )
                     accept_started = True
                     response: BatchResponse = await pipeline.accept(
                         app,
@@ -477,6 +485,7 @@ def build_vendor_test_uat_service() -> VendorTestUatService:
                 vendor_test_console_only=True,
                 acceptance_limiter=ApplicationRateLimiter(redis),
                 usage_ledger=UsageLedgerService(redis, settings),
+                admission_guard=get_send_admission_guard(),
                 config=PipelineConfig(
                     unsubscribe_suffix=policy.unsubscribe_suffix,
                     unsubscribe_auto_append=policy.unsubscribe_auto_append,

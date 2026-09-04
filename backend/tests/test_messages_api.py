@@ -24,6 +24,7 @@ from app.services.pipeline import (
     SendRequest,
     VendorTestConsoleOnly,
 )
+from app.services.send_admission import SendAdmissionRejected
 from app.services.vendor_control_state import VendorControlStateUnavailable
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.services.vendor_test_recipient import (
@@ -184,10 +185,73 @@ def test_send_api_uses_app_context_and_returns_complete_acceptance(
         "est_segments": 1,
         "quota_cost": 1,
         "status": "queued",
-        "deferred_reason": None,
-        "scheduled_at": None,
-    }
+            "deferred_reason": None,
+            "scheduled_at": None,
+            "idempotency_expires_at": None,
+        }
     assert pipeline.calls[0][0].app_id == 7
+
+
+def test_send_omitting_biz_id_returns_422() -> None:
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+        },
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "INVALID_PARAM"
+    assert "biz_id" in str(body.get("detail"))
+
+
+def test_send_serializes_completed_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnknownPipeline:
+        async def preauthorize(self, _app: ApiAppContext, _category: str) -> object:
+            return object()
+
+        async def accept(
+            self,
+            _app: ApiAppContext,
+            _request: SendRequest,
+            **_kwargs: object,
+        ) -> BatchResponse:
+            return BatchResponse(
+                "batch-unknown",
+                True,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                "completed_unknown",
+                None,
+                None,
+            )
+
+    async def fake_factory(_app: ApiAppContext) -> UnknownPipeline:
+        return UnknownPipeline()
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-unknown",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed_unknown"
+    assert response.json()["idempotent"] is True
 
 
 def test_send_maps_idempotency_conflict_to_409(
@@ -272,6 +336,79 @@ def test_send_api_returns_rate_limited_429(
     )
     assert response.status_code == 429
     assert response.json()["code"] == "RATE_LIMITED"
+    assert response.headers["retry-after"] == "60"
+
+
+def test_send_api_exposes_idempotency_expires_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    expires = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
+
+    class ExpiringPipeline:
+        async def accept(self, app: ApiAppContext, request: SendRequest) -> BatchResponse:
+            return BatchResponse(
+                "batch-1",
+                False,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                "queued",
+                None,
+                None,
+                expires,
+            )
+
+    async def fake_factory(app: ApiAppContext) -> ExpiringPipeline:
+        return ExpiringPipeline()
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "测试",
+            "biz_id": "biz-1",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["idempotency-expires-at"] == "2026-09-05T08:00:00Z"
+    assert response.json()["idempotency_expires_at"] == "2026-09-05T08:00:00Z"
+
+
+def test_send_api_maps_admission_closed_to_503_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ClosedPipeline:
+        async def accept(self, app: ApiAppContext, request: SendRequest) -> BatchResponse:
+            raise SendAdmissionRejected("closed", "outbox_backlog", 60)
+
+    async def fake_factory(app: ApiAppContext) -> ClosedPipeline:
+        return ClosedPipeline()
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "测试",
+            "biz_id": "biz-1",
+        },
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert response.json()["detail"]["reason"] == "outbox_backlog"
+    assert "broker" not in response.json()["message"].casefold()
+    assert "worker" not in response.json()["message"].casefold()
+    assert response.headers["retry-after"] == "60"
 
 
 def test_send_api_maps_live_test_recipient_denial_without_sensitive_detail(

@@ -29,6 +29,26 @@ from app.services.template import render_template
 from app.services.usage_ledger import commit_usage_reservation, shanghai_day
 from app.settings import Settings, get_settings
 
+IDEMPOTENCY_LIVE_SQL = """
+(
+  i.expires_at > now()
+  OR b.status IN (
+    'pending_approval','scheduled','queued','sending','balance_blocked'
+  )
+  OR EXISTS (
+    SELECT 1 FROM sms_chunk c
+    WHERE c.batch_id=b.id
+      AND c.status IN (
+        'uncertain','unknown_terminal','submitting','retrying','pending'
+      )
+  )
+  OR EXISTS (
+    SELECT 1 FROM callback_task t
+    WHERE t.batch_id=b.id AND t.status IN ('pending','retrying')
+  )
+)
+"""
+
 
 class SqlPipelineStore:
     """在同一事务创建批次、消息三列、幂等记录与无 PII 审计。"""
@@ -75,10 +95,13 @@ class SqlPipelineStore:
             result = await connection.execute(
                 text(
                     """
-                        SELECT batch_no, total, removed_duplicate, removed_blacklist,
-                               removed_freq, segments, quota_cost, status,
-                               deferred_reason, scheduled_at
-                        FROM sms_batch WHERE batch_no=:batch_no
+                        SELECT b.batch_no, b.total, b.removed_duplicate,
+                               b.removed_blacklist, b.removed_freq, b.segments,
+                               b.quota_cost, b.status, b.deferred_reason,
+                               b.scheduled_at, i.expires_at
+                        FROM sms_batch b
+                        LEFT JOIN idempotency_record i ON i.batch_id=b.id
+                        WHERE b.batch_no=:batch_no
                         """
                 ),
                 {"batch_no": batch_no},
@@ -98,7 +121,69 @@ class SqlPipelineStore:
                     str(row["deferred_reason"]) if row["deferred_reason"] is not None else None
                 ),
                 scheduled_at=cast(Any, row["scheduled_at"]),
+                idempotency_expires_at=cast(Any, row.get("expires_at")),
             )
+
+    async def count_in_flight_chunks(self, app_id: int) -> int:
+        """统计该应用仍占用系统容量的分片：pending/submitting/retrying/uncertain。"""
+
+        async with self._engine().connect() as connection:
+            value = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM sms_chunk AS chunk
+                    JOIN sms_batch AS batch ON batch.id = chunk.batch_id
+                    WHERE batch.app_id = :app_id
+                      AND chunk.status IN (
+                        'pending', 'submitting', 'retrying', 'uncertain'
+                      )
+                    """
+                ),
+                {"app_id": app_id},
+            )
+            return int(value or 0)
+
+    async def reserve_in_flight_chunks(
+        self,
+        app_id: int,
+        estimated: int,
+        limit: int,
+    ) -> None:
+        if estimated < 1 or limit < 1:
+            raise ValueError("in-flight reservation bounds invalid")
+        from app.services.pipeline import InFlightLimitExceeded
+
+        async with self._engine().begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO send_inflight_balance(app_id, reserved_chunks)
+                    VALUES (:app_id, 0)
+                    ON CONFLICT (app_id) DO NOTHING
+                    """
+                ),
+                {"app_id": app_id},
+            )
+            updated = await connection.execute(
+                text(
+                    """
+                    UPDATE send_inflight_balance
+                    SET reserved_chunks = reserved_chunks + :estimated,
+                        updated_at = now()
+                    WHERE app_id=:app_id
+                      AND reserved_chunks + :estimated <= :limit
+                    RETURNING reserved_chunks
+                    """
+                ),
+                {
+                    "app_id": app_id,
+                    "estimated": estimated,
+                    "limit": limit,
+                },
+            )
+            if updated.scalar_one_or_none() is None:
+                raise InFlightLimitExceeded("应用在途分片已达上限")
 
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         if not phone_hmacs:
@@ -163,16 +248,13 @@ class SqlPipelineStore:
                           JOIN sms_batch b ON b.id=i.batch_id
                           WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                             AND i.biz_id=:biz_id
-                            AND (
-                              i.expires_at > now()
-                              OR b.status IN (
-                                'pending_approval','scheduled','queued',
-                                'sending','balance_blocked'
-                              )
-                            )
+                            AND
+                    """
+                    + IDEMPOTENCY_LIVE_SQL
+                    + """
                             AND b.batch_no=:batch_no
                         )
-                        """
+                    """
                 ),
                 {
                     "scope_kind": scope.kind,
@@ -194,14 +276,11 @@ class SqlPipelineStore:
                         JOIN sms_batch b ON b.id=i.batch_id
                         WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                           AND i.biz_id=:biz_id
-                          AND (
-                            i.expires_at > now()
-                            OR b.status IN (
-                              'pending_approval','scheduled','queued',
-                              'sending','balance_blocked'
-                            )
-                          )
-                        """
+                          AND
+                    """
+                    + IDEMPOTENCY_LIVE_SQL
+                    + """
+                    """
                 ),
                 {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
             )
@@ -220,13 +299,10 @@ class SqlPipelineStore:
                     JOIN sms_batch b ON b.id=i.batch_id
                     WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
                       AND i.biz_id=:biz_id
-                      AND (
-                        i.expires_at > now()
-                        OR b.status IN (
-                          'pending_approval','scheduled','queued',
-                          'sending','balance_blocked'
-                        )
-                      )
+                      AND
+                    """
+                    + IDEMPOTENCY_LIVE_SQL
+                    + """
                     """
                 ),
                 {"scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id},
@@ -249,17 +325,15 @@ class SqlPipelineStore:
             await connection.execute(
                 text(
                     """
-                    DELETE FROM idempotency_record
-                    WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                      AND biz_id=:biz_id AND expires_at <= now()
-                      AND NOT EXISTS (
-                        SELECT 1 FROM sms_batch b
-                        WHERE b.id=idempotency_record.batch_id
-                          AND b.status IN (
-                            'pending_approval','scheduled','queued',
-                            'sending','balance_blocked'
-                          )
-                      )
+                    DELETE FROM idempotency_record i
+                    USING sms_batch b
+                    WHERE i.batch_id=b.id
+                      AND i.scope_kind=:scope_kind AND i.scope_id=:scope_id
+                      AND i.biz_id=:biz_id
+                      AND NOT
+                    """
+                    + IDEMPOTENCY_LIVE_SQL
+                    + """
                     """
                 ),
                 {

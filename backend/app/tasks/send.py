@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -27,6 +28,13 @@ from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStat
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.settings import get_settings
 from app.tasks import celery_app
+from app.vendor.routing import (
+    PRIMARY_VENDOR_ID,
+    RouteRequest,
+    VendorAttempt,
+    VendorHealth,
+    VendorRouter,
+)
 from app.vendor.zhihui import (
     VendorApiError,
     VendorProtocolError,
@@ -35,6 +43,58 @@ from app.vendor.zhihui import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+class SendQueuePaused(RuntimeError):
+    """发送队列已暂停；child Outbox 必须失败重试，不得 complete。"""
+
+
+class SubmitOutcome(StrEnum):
+    """单次 submit() 的诊断结果；权威业务量仍以 PostgreSQL 状态为准。"""
+
+    SUBMITTED = "submitted"
+    RETRY_SCHEDULED = "retry_scheduled"
+    DELAYED = "delayed"
+    PAUSED = "paused"
+    REJECTED = "rejected"
+    STALE = "stale"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+    SPLIT = "split"
+    NO_OP_ALREADY_TERMINAL = "no_op_already_terminal"
+
+
+SUBMIT_OUTCOME_LABELS = tuple(item.value for item in SubmitOutcome)
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkTaskResult:
+    """chunk 任务诊断；processed 只表示 Outbox 是否完成这次执行。"""
+
+    processed: int
+    outcome: SubmitOutcome | None
+
+
+def chunk_result_metrics(result: ChunkTaskResult) -> dict[str, int]:
+    """Celery 诊断计数；submitted 仅在 mark_submitted 完成后为 1。"""
+
+    payload = {label: 0 for label in SUBMIT_OUTCOME_LABELS}
+    payload["processed_chunks"] = result.processed
+    payload["planned_chunks"] = 0
+    payload["submitted"] = 1 if result.outcome is SubmitOutcome.SUBMITTED else 0
+    if result.outcome is not None:
+        payload[result.outcome.value] = 1
+    return payload
+
+
+def batch_plan_metrics(planned_chunks: int) -> dict[str, int]:
+    """批次任务只报告规划数，不得把规划数叫成 submitted。"""
+
+    payload = {label: 0 for label in SUBMIT_OUTCOME_LABELS}
+    payload["processed_chunks"] = 0
+    payload["planned_chunks"] = planned_chunks
+    payload["submitted"] = 0
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +110,8 @@ class ChunkPayload:
     sign_name: str
     retry_count: int = 0
     denied_recipient_count: int = 0
+    selected_vendor: str = PRIMARY_VENDOR_ID
+    route_generation: int = 1
 
 
 class Gateway(Protocol):
@@ -174,10 +236,16 @@ class SendWorker:
         vendor_qps: int = 5,
         reserved_realtime_qps: int = 2,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        gateways: Mapping[str, Gateway] | None = None,
+        router: VendorRouter | None = None,
+        health: Callable[[], Awaitable[tuple[VendorHealth, ...]]] | None = None,
     ) -> None:
         self.gateway = gateway
         self.store = store
         self.bucket = bucket
+        self.gateways = dict(gateways or {})
+        self.router = router or VendorRouter()
+        self.health = health
         self.monitor = monitor or NoopVendorAlertMonitor()
         if (
             enforce_live_test_budget
@@ -295,7 +363,7 @@ class SendWorker:
         lane: Literal["realtime", "bulk"],
         retry_index: int,
         lease_epoch: int,
-    ) -> bool:
+    ) -> SubmissionClaimStatus:
         segments = calculate_quota_cost(
             f"{chunk.sign_name}{chunk.content}",
             recipient_count=len(chunk.phones),
@@ -307,14 +375,87 @@ class SendWorker:
             enforce_live_test_budget=self.enforce_live_test_budget,
         )
         if claim.status is SubmissionClaimStatus.CLAIMED:
-            return True
+            return claim.status
         await self._refund_token(lease_epoch)
         if claim.status is SubmissionClaimStatus.DAILY_LIMIT:
             if claim.reset_at is None:
                 raise RuntimeError("daily-limit claim missing reset_at")
             await self.store.defer_daily_limit(chunk.chunk_id, lane, claim.reset_at)
             await self.store.pause_daily_limit(lane, claim.reset_at)
-        return False
+        return claim.status
+
+    def _gateway_for(self, vendor_id: str) -> Gateway:
+        return self.gateways.get(vendor_id, self.gateway)
+
+    async def _health_snapshot(self, *, platform_paused: bool) -> tuple[VendorHealth, ...]:
+        if self.health is not None:
+            snapshot = await self.health()
+        else:
+            snapshot = tuple(
+                VendorHealth(vendor_id, available=True)
+                for vendor_id in self.router.registered_ids()
+            )
+        if not platform_paused:
+            return snapshot
+        return tuple(
+            VendorHealth(
+                item.vendor_id,
+                available=item.available and item.vendor_id != PRIMARY_VENDOR_ID,
+                pause_reason="platform_paused"
+                if item.vendor_id == PRIMARY_VENDOR_ID
+                else item.pause_reason,
+            )
+            for item in snapshot
+        )
+
+    async def _record_attempt(
+        self,
+        chunk: ChunkPayload,
+        *,
+        vendor_id: str,
+        generation: int,
+        outcome: str,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> None:
+        recorder = getattr(self.store, "record_vendor_attempt", None)
+        if recorder is None:
+            return
+        await recorder(
+            chunk.chunk_id,
+            vendor_id=vendor_id,
+            generation=generation,
+            outcome=outcome,
+            safe_to_failover=safe_to_failover,
+            vendor_code=vendor_code,
+        )
+
+    async def _apply_terminal_api_error(
+        self,
+        chunk: ChunkPayload,
+        error: VendorApiError,
+    ) -> SubmitOutcome:
+        policy = error.policy
+        if policy.balance_blocked:
+            await self.store.balance_blocked(chunk.batch_id, chunk.chunk_id)
+            await self.store.pause_queues(error.code)
+            await self._record_failure(chunk, error.code)
+            return SubmitOutcome.PAUSED
+        if policy.delay_s is not None:
+            await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
+            return SubmitOutcome.DELAYED
+        if policy.pause_queues:
+            await self.store.pause_blocked(chunk.chunk_id, error.code)
+            await self.store.pause_queues(error.code)
+            await self._record_failure(chunk, error.code)
+            return SubmitOutcome.PAUSED
+        await self.store.mark_failed(
+            chunk.chunk_id,
+            error.code,
+            error.safe_message,
+        )
+        await self._record_failure(chunk, error.code)
+        return SubmitOutcome.FAILED
 
     async def submit(
         self,
@@ -322,35 +463,61 @@ class SendWorker:
         *,
         lane: Literal["realtime", "bulk"],
         allow_split: bool = True,
-    ) -> None:
+    ) -> SubmitOutcome:
         retry_index = chunk.retry_count
+        vendor_id = chunk.selected_vendor or PRIMARY_VENDOR_ID
+        generation = max(1, chunk.route_generation)
+        attempts: list[VendorAttempt] = []
+        claimed = False
+        lease_epoch: int | None = None
         while True:
-            if await self.store.is_paused(lane):
-                return
-            if not await self._guard_chunk(chunk):
-                return
-            if not await self._control_ready(chunk, claimed=False):
-                return
-            lease_epoch = await self._token(lane)
-            if lease_epoch is None:
-                return
-            if not await self._claim_after_token(
-                chunk,
-                lane,
-                retry_index,
-                lease_epoch,
-            ):
-                return
-            if not await self._control_ready(
-                chunk,
-                claimed=True,
-                lease_epoch=lease_epoch,
-            ):
-                return
+            platform_paused = await self.store.is_paused(lane)
+            health = await self._health_snapshot(platform_paused=platform_paused)
+            decision = self.router.decide(
+                RouteRequest(
+                    registered=self.router.registered_ids(),
+                    attempts=tuple(attempts),
+                    health=health,
+                )
+            )
+            if decision.action == "invoke" and decision.vendor_id is not None:
+                vendor_id = decision.vendor_id
+                generation = decision.generation
+            elif not claimed:
+                if decision.action == "terminal_uncertain":
+                    return SubmitOutcome.UNCERTAIN
+                if platform_paused or decision.action in {"hold", "exhausted"}:
+                    return SubmitOutcome.PAUSED
+                return SubmitOutcome.FAILED
+            if not claimed:
+                if not await self._guard_chunk(chunk):
+                    return SubmitOutcome.REJECTED
+                if not await self._control_ready(chunk, claimed=False):
+                    return SubmitOutcome.PAUSED
+                lease_epoch = await self._token(lane)
+                if lease_epoch is None:
+                    return SubmitOutcome.PAUSED
+                claim_status = await self._claim_after_token(
+                    chunk,
+                    lane,
+                    retry_index,
+                    lease_epoch,
+                )
+                if claim_status is not SubmissionClaimStatus.CLAIMED:
+                    if claim_status is SubmissionClaimStatus.DAILY_LIMIT:
+                        return SubmitOutcome.DELAYED
+                    return SubmitOutcome.STALE
+                claimed = True
+                if not await self._control_ready(
+                    chunk,
+                    claimed=True,
+                    lease_epoch=lease_epoch,
+                ):
+                    return SubmitOutcome.PAUSED
             vendor_invoked = False
             try:
                 vendor_invoked = True
-                task_id = await self.gateway.send(
+                task_id = await self._gateway_for(vendor_id).send(
                     chunk.phones,
                     chunk.content,
                     template_id=chunk.template_id,
@@ -358,8 +525,14 @@ class SendWorker:
                     custom_id=chunk.custom_id,
                 )
             except (VendorTransportError, VendorProtocolError):
+                await self._record_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="uncertain",
+                )
                 await self.store.mark_uncertain(chunk.chunk_id)
-                return
+                return SubmitOutcome.UNCERTAIN
             except VendorApiError as error:
                 policy = error.policy
                 if policy.retry_delays_s and retry_index < len(policy.retry_delays_s):
@@ -370,46 +543,102 @@ class SendWorker:
                         retry_index,
                         delay,
                     ):
-                        return
-                    return
-                if policy.balance_blocked:
-                    await self.store.balance_blocked(chunk.batch_id, chunk.chunk_id)
-                    await self.store.pause_queues(error.code)
-                    await self._record_failure(chunk, error.code)
-                    return
+                        return SubmitOutcome.STALE
+                    await self._record_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="retry_scheduled",
+                        vendor_code=error.code,
+                    )
+                    return SubmitOutcome.RETRY_SCHEDULED
                 if policy.shrink_batch_once and allow_split:
                     children = await self.store.split_once(chunk)
                     if children:
                         for child in children:
                             await self.submit(child, lane=lane, allow_split=False)
-                        return
+                        return SubmitOutcome.SPLIT
                 if policy.delay_s is not None:
                     await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
-                    return
-                if policy.pause_queues:
-                    # 熔断码是账号/配置类可恢复故障（同 999 语义）：暂停双队列，
-                    # 在途 chunk 回退 retrying 等人工恢复后重投，不永久 failed。
-                    await self.store.pause_blocked(chunk.chunk_id, error.code)
-                    await self.store.pause_queues(error.code)
-                    await self._record_failure(chunk, error.code)
-                    return
-                await self.store.mark_failed(
-                    chunk.chunk_id,
-                    error.code,
-                    error.safe_message,
+                    await self._record_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="delayed",
+                        vendor_code=error.code,
+                    )
+                    return SubmitOutcome.DELAYED
+                await self._record_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="rejected",
+                    safe_to_failover=policy.safe_to_failover,
+                    vendor_code=error.code,
                 )
-                await self._record_failure(chunk, error.code)
-                return
+                attempts.append(
+                    VendorAttempt(
+                        vendor_id,
+                        generation,
+                        "rejected",
+                        policy.safe_to_failover,
+                        error.code,
+                    )
+                )
+                if policy.safe_to_failover:
+                    failover = self.router.decide(
+                        RouteRequest(
+                            registered=self.router.registered_ids(),
+                            attempts=tuple(attempts),
+                            health=health,
+                        )
+                    )
+                    if (
+                        failover.action == "invoke"
+                        and failover.vendor_id is not None
+                        and failover.vendor_id != vendor_id
+                    ):
+                        if lease_epoch is not None:
+                            await self._refund_token(lease_epoch)
+                        vendor_id = failover.vendor_id
+                        generation = failover.generation
+                        lease_epoch = await self._token(lane)
+                        if lease_epoch is None:
+                            return await self._apply_terminal_api_error(chunk, error)
+                        continue
+                return await self._apply_terminal_api_error(chunk, error)
             except Exception:
                 if vendor_invoked:
+                    await self._record_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="uncertain",
+                    )
                     await self.store.mark_uncertain(chunk.chunk_id)
                 else:
                     await self.store.release_unsent(chunk.chunk_id)
                 raise
             else:
-                await self.store.mark_submitted(chunk.chunk_id, task_id)
+                try:
+                    await self.store.mark_submitted(chunk.chunk_id, task_id)
+                except Exception:
+                    await self._record_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="uncertain",
+                    )
+                    await self.store.mark_uncertain(chunk.chunk_id)
+                    return SubmitOutcome.UNCERTAIN
+                await self._record_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="submitted",
+                )
                 await self._record_success()
-                return
+                return SubmitOutcome.SUBMITTED
 
 
 async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
@@ -446,18 +675,10 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
 
 
 async def _process_batch(batch_no: str) -> int:
-    worker, store, gateway, batch_size = await _components()
+    _worker, store, gateway, batch_size = await _components()
     try:
-        chunks, lane = await store.prepare_chunks(batch_no, batch_size)
-        if await store.is_paused(lane):
-            return 0
-        submitted = 0
-        for chunk in chunks:
-            if await store.is_paused(lane):
-                break
-            await worker.submit(chunk, lane=lane)
-            submitted += 1
-        return submitted
+        chunk_ids, _lane = await store.prepare_chunks(batch_no, batch_size)
+        return len(chunk_ids)
     finally:
         await gateway.aclose()
 
@@ -475,32 +696,79 @@ async def _process_batch_event(batch_no: str, event_id: str) -> int:
     )
 
 
-async def _process_chunk(chunk_id: int) -> int:
+async def _run_chunk(
+    chunk_id: int,
+    *,
+    fail_closed_on_pause: bool = False,
+) -> ChunkTaskResult:
     worker, store, gateway, _ = await _components()
     try:
         loaded = await store.load_chunk(chunk_id)
         if loaded is None:
-            return 0
+            return ChunkTaskResult(0, SubmitOutcome.NO_OP_ALREADY_TERMINAL)
         chunk, lane = loaded
+        from app.services.runtime_heartbeat import touch_runtime_heartbeat
+
+        await touch_runtime_heartbeat(
+            "send-bulk" if lane == "bulk" else "send-realtime"
+        )
         if await store.is_paused(lane):
-            return 0
-        await worker.submit(chunk, lane=lane)
-        return 1
+            if fail_closed_on_pause:
+                raise SendQueuePaused("send queue is paused")
+            return ChunkTaskResult(0, SubmitOutcome.PAUSED)
+        outcome = await worker.submit(chunk, lane=lane)
+        if outcome is SubmitOutcome.SUBMITTED:
+            await touch_runtime_heartbeat(
+                "send-bulk" if lane == "bulk" else "send-realtime",
+                success=True,
+            )
+        return ChunkTaskResult(1, outcome)
     finally:
         await gateway.aclose()
 
 
+async def _process_chunk(
+    chunk_id: int, *, fail_closed_on_pause: bool = False
+) -> ChunkTaskResult:
+    result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
+    if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
+        raise SendQueuePaused("send queue is paused")
+    return result
+
+
+async def _process_chunk_event(chunk_id: int, event_id: str) -> ChunkTaskResult:
+    async def effect(claim: OutboxClaim) -> ChunkTaskResult:
+        if claim.args != (chunk_id,):
+            raise ValueError("chunk outbox args mismatch")
+        return await _process_chunk(chunk_id, fail_closed_on_pause=True)
+
+    raw = await OutboxExecutor(SqlOutboxRepository()).run(
+        UUID(event_id),
+        expected_type="chunk.ready",
+        effect=effect,
+    )
+    if isinstance(raw, ChunkTaskResult):
+        return raw
+    return ChunkTaskResult(1, SubmitOutcome.NO_OP_ALREADY_TERMINAL)
+
+
 @celery_app.task(name="app.tasks.send.process_batch")  # type: ignore[untyped-decorator]
-def process_batch(batch_no: str, outbox_event_id: str | None = None) -> int:
-    """新任务携带 batch_no+event ID；旧 worker 的单参数合同仍兼容。"""
+def process_batch(batch_no: str, outbox_event_id: str | None = None) -> dict[str, int]:
+    """批次任务返回规划计数；不得把规划数解释为供应商 submitted。"""
 
     if outbox_event_id is None:
-        return run_worker_async(_process_batch(batch_no))
-    return run_worker_async(_process_batch_event(batch_no, outbox_event_id))
+        planned = run_worker_async(_process_batch(batch_no))
+    else:
+        planned = run_worker_async(_process_batch_event(batch_no, outbox_event_id))
+    return batch_plan_metrics(planned)
 
 
 @celery_app.task(name="app.tasks.send.process_chunk")  # type: ignore[untyped-decorator]
-def process_chunk(chunk_id: int) -> int:
-    """延迟重试入口只接收 chunk_id。"""
+def process_chunk(chunk_id: int, outbox_event_id: str | None = None) -> dict[str, int]:
+    """chunk 任务返回诊断计数；Outbox 完成数仍由内部 int 效果决定。"""
 
-    return run_worker_async(_process_chunk(chunk_id))
+    if outbox_event_id is None:
+        result = run_worker_async(_run_chunk(chunk_id))
+        return chunk_result_metrics(result)
+    result = run_worker_async(_process_chunk_event(chunk_id, outbox_event_id))
+    return chunk_result_metrics(result)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -124,6 +126,14 @@ def chunk_store() -> SqlChunkStore:
         ),
         redis=object(),
     )
+
+
+def test_payload_sql_select_list_is_well_formed() -> None:
+    source = inspect.getsource(SqlChunkStore._payload)
+    assert re.search(r",\s*FROM\s+sms_chunk", source) is None
+    assert "t.vendor_template_id" in source
+    assert "selected_vendor" in source
+    assert "route_generation" in source
 
 
 @pytest.mark.asyncio
@@ -425,20 +435,91 @@ async def test_prepare_existing_chunks_atomically_moves_queued_batch_to_sending(
             FakeResult({"id": 7, "category": "market", "status": "queued"}),
             FakeResult(scalars=[8]),
             FakeResult(),
+            FakeResult(),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
-    payload = object()
+    enqueued: list[Any] = []
 
-    async def loaded_payload(*_args: object) -> object:
-        return payload
+    async def unexpected_payload(*_args: object) -> object:
+        raise AssertionError("prepare_chunks 不得在批次锁内解密分片")
 
-    monkeypatch.setattr(store, "_payload", loaded_payload)
+    async def capture(_connection: object, spec: object, **_kwargs: object) -> object:
+        enqueued.append(spec)
+        return None
 
-    assert await store.prepare_chunks("batch-1", 500) == ([payload], "bulk")
+    monkeypatch.setattr(store, "_payload", unexpected_payload)
+    monkeypatch.setattr(send_repository_module, "enqueue_outbox", capture)
+
+    assert await store.prepare_chunks("batch-1", 500) == ([8], "bulk")
     assert "retry_not_before<=now()" in connection.calls[1][0]
     assert "status='sending'" in connection.calls[2][0]
     assert connection.calls[2][1] == {"id": 7}
+    assert len(enqueued) == 1
+    spec = enqueued[0]
+    assert spec.event_type == "chunk.ready"
+    assert spec.aggregate_id == "8"
+    assert spec.args == (8,)
+    assert spec.queue == "bulk"
+    assert spec.dedup_key == "chunk.ready:8"
+    rearm_sql, rearm_params = connection.calls[3]
+    assert "state='pending'" in rearm_sql
+    assert "state IN ('completed','dead')" in rearm_sql
+    assert rearm_params == {"dedup_key": "chunk.ready:8"}
+
+
+@pytest.mark.asyncio
+async def test_prepare_chunks_plans_ten_thousand_numbers_without_decrypt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_at = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    messages = [{"id": index, "created_at": created_at} for index in range(1, 10001)]
+    results: list[FakeResult] = [
+        FakeResult(
+            {
+                "id": 3,
+                "category": "notice",
+                "status": "queued",
+                "app_id": 7,
+                "usage_reservation_id": None,
+                "segments": 1,
+            }
+        ),
+        FakeResult(scalars=[]),
+        FakeResult(scalar=0),
+        FakeResult(rows=messages),
+    ]
+    for chunk_id in range(101, 121):
+        results.append(FakeResult(scalar=chunk_id))
+        results.append(FakeResult())
+        results.append(FakeResult())
+    results.append(FakeResult())
+    results.extend(FakeResult() for _ in range(20))
+    connection = SequenceConnection(results)
+    store = chunk_store()
+    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
+    enqueued: list[Any] = []
+
+    async def unexpected_payload(*_args: object) -> object:
+        raise AssertionError("prepare_chunks 不得解密万级号码")
+
+    async def capture(_connection: object, spec: object, **_kwargs: object) -> object:
+        enqueued.append(spec)
+        return None
+
+    monkeypatch.setattr(store, "_payload", unexpected_payload)
+    monkeypatch.setattr(send_repository_module, "enqueue_outbox", capture)
+
+    chunk_ids, lane = await store.prepare_chunks("a" * 32, 500)
+
+    assert lane == "realtime"
+    assert chunk_ids == list(range(101, 121))
+    assert [spec.aggregate_id for spec in enqueued] == [
+        str(chunk_id) for chunk_id in chunk_ids
+    ]
+    assert all("phone_enc" not in sql for sql, _params in connection.calls)
+    assert all("send_content_enc" not in sql for sql, _params in connection.calls)
+    assert all("phone_hmac" not in sql for sql, _params in connection.calls)
 
 
 class StatusConnection:
@@ -817,8 +898,9 @@ async def test_vendor_critical_pause_sets_both_lanes_with_one_eval() -> None:
     assert len(redis.eval_calls) == 1
     script, numkeys, values = redis.eval_calls[0]
     assert numkeys == 2
-    assert "redis.call('set',KEYS[1],ARGV[1])" in script
-    assert "redis.call('set',KEYS[2],ARGV[1])" in script
+    assert "INCR" in script
+    assert "ratelimit:queue:paused:generation" in script
+    assert "KEYS[1]" in script and "KEYS[2]" in script
     assert values == (
         "queue:paused:realtime",
         "queue:paused:bulk",

@@ -340,9 +340,13 @@ def test_g2_gate_scrapes_required_prometheus_families() -> None:
         "sms_send_rate_per_second",
         "sms_vendor_error_chunks",
         "sms_uncertain_chunks",
+        "sms_uncertain_lifecycle_chunks",
         "sms_callback_failures",
         "sms_frequency_filtered_messages",
         "sms_poll_lag_seconds",
+        "sms_send_admission",
+        "sms_outbox_oldest_age_seconds",
+        "sms_send_submit_outcome",
     )
     assert "http://localhost:${api_port}/metrics" in all_gate
     for family in required:

@@ -137,11 +137,21 @@ paths:
       tags: [messages]
       summary: 发送短信（应用接入，免审批，支持幂等）
       description: |
-        幂等：同一应用相同 biz_id 在幂等记录有效期内重复提交，先按请求指纹比较；
-        完全相同请求返回首次批次号且 idempotent=true，不重复发送；不同请求返回
-        409 IDEMPOTENCY_CONFLICT。幂等记录有效期覆盖定时发送时间后安全窗口，
-        不再固定 24 小时。幂等命中时 status 为该历史批次的当前状态，因此可能已经
-        进入 sending、completed、cancelled 或 balance_blocked。
+        幂等：同一应用相同 biz_id 在保护期内重复提交，先按请求指纹比较；
+        完全相同请求返回首次批次号且 idempotent=true，不重复发送，也不再消耗
+        号码数/预计分段/日配额；该重放只走独立 replay 限流。不同请求返回
+        409 IDEMPOTENCY_CONFLICT。不存在的随机 biz_id 仍计入新发送限流，不能
+        借 replay 绕过。即时发送保护 24 小时，定时发送为 scheduled_at+7 天；
+        活动批次、uncertain/unknown_terminal 分片或未完成 callback 在过期后
+        仍不可复用。响应带 Idempotency-Expires-At。biz_id 必须是业务事件稳定
+        标识，禁止周期性短序号复用。幂等命中时 status 为该历史批次的当前状态，
+        因此可能已经进入 sending、completed、completed_unknown、cancelled 或
+        balance_blocked。completed_unknown 表示批次已结束自动处理但仍有未知结果，
+        禁止自动重发，调用方应继续使用原 biz_id 查询或等待人工处置。
+        新发送受 Outbox 积压准入：积压或双队列暂停时返回 503 DEPENDENCY_UNAVAILABLE 与
+        Retry-After；降级时仅允许少量 verify/notice。同 biz_id 幂等重放与批次查询不受影响。
+        生产当前只注册智慧信息供应商。超时或连接中断后 chunk 进入 uncertain，禁止自动切换
+        任何其他供应商；只有调用前确定性不可用或协议明确拒绝且未受理时才允许安全改路。
         类别策略：verify 不查黑名单走 realtime 队列；notice 走 realtime；market 走 bulk 且受发送时间窗约束，
         窗外提交自动转次日窗口起点定时（响应 status=scheduled，deferred_reason=market_window）。
       security: [{ ApiKeyAuth: [] }]
@@ -195,13 +205,17 @@ paths:
                   removed_freq_limit: { type: integer, description: 号码级频控剔除数（v1.2） }
                   est_segments: { type: integer, description: 单条计费条数（含签名与退订语，v1.2） }
                   quota_cost: { type: integer, description: 本批次配额消耗 = accepted × est_segments（v1.2） }
-                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
                   scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+          headers:
+            Idempotency-Expires-At:
+              schema: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: CATEGORY_NOT_ALLOWED / IP_NOT_ALLOWED / VENDOR_TEST_CONSOLE_ONLY
+          description: CATEGORY_NOT_ALLOWED / IP_NOT_ALLOWED / VENDOR_TEST_CONSOLE_ONLY / FORBIDDEN
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '409':
           description: 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT）
@@ -210,10 +224,16 @@ paths:
           description: 敏感词命中 / 全部号码被剔除
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '429':
-          description: 配额或频率超限
+          description: 配额或频率超限；RATE_LIMITED 带 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: string }
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '503':
-          description: USAGE_PROJECTION_UNAVAILABLE / DEPENDENCY_UNAVAILABLE
+          description: USAGE_PROJECTION_UNAVAILABLE / DEPENDENCY_UNAVAILABLE；积压关闭时带 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: string }
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/messages/uat-send:
@@ -276,9 +296,10 @@ paths:
                   removed_freq_limit: { type: integer }
                   est_segments: { type: integer }
                   quota_cost: { type: integer }
-                  status: { type: string, enum: [queued, scheduled, sending, completed, cancelled, balance_blocked] }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
                   scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -287,10 +308,16 @@ paths:
           description: 敏感词命中或号码被剔除
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '429':
-          description: 配额或频率超限
+          description: 配额或频率超限；RATE_LIMITED 带 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: string }
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '503':
-          description: 真实联调控制、认证会话或配额频控事实投影不可用
+          description: 真实联调控制、认证会话、配额频控投影或发送积压准入不可用；关闭时带 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: string }
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/messages/batches/{batch_no}:
@@ -543,7 +570,7 @@ paths:
           headers:
             Cache-Control: { schema: { type: string }, description: 固定为 no-store }
         '401': { description: 当前密码错误或令牌无效, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '409': { description: STATE_CONFLICT，非本地身份不支持平台改密, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: AUTH_CONTEXT_CHANGED（安全/凭据版本已变化，须重新登录）或 STATE_CONFLICT（非本地身份不支持平台改密）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: PASSWORD_POLICY_VIOLATION, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
@@ -599,7 +626,7 @@ paths:
                 properties:
                   batch_no: { type: string }
                   idempotent: { type: boolean }
-                  status: { type: string, enum: [pending_approval, rejected, scheduled, queued, sending, completed, cancelled, balance_blocked, expired] }
+                  status: { type: string, enum: [pending_approval, rejected, scheduled, queued, sending, completed, completed_unknown, cancelled, balance_blocked, expired] }
                   accepted: { type: integer }
                   removed_duplicate: { type: integer }
                   removed_blacklist: { type: integer }
@@ -614,7 +641,12 @@ paths:
         '409': { description: STATE_CONFLICT 或 IDEMPOTENCY_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: 业务校验失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '429': { description: QUOTA_EXCEEDED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '503': { description: USAGE_PROJECTION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503':
+          description: USAGE_PROJECTION_UNAVAILABLE / DEPENDENCY_UNAVAILABLE；积压关闭时带 Retry-After
+          headers:
+            Retry-After:
+              schema: { type: string }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/web/billing/preview:
     post:
@@ -1285,17 +1317,24 @@ paths:
                 allowed_categories:
                   type: array
                   items: { type: string, enum: [verify, notice, market] }
-                  default: [verify, notice, market]
+                  default: [notice]
                 default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
                 daily_quota: { type: integer, minimum: 0, maximum: 100000000, default: 0 }
                 rate_limit_per_min: { type: integer, minimum: 1, maximum: 60000, default: 60 }
+                recipient_limit_per_min: { type: integer, minimum: 1, maximum: 100000000, default: 10000 }
+                segment_limit_per_min: { type: integer, minimum: 1, maximum: 100000000, default: 10000 }
+                max_in_flight_chunks: { type: integer, minimum: 1, maximum: 100000, default: 200 }
+                allow_market_api_bulk: { type: boolean, default: false }
                 blacklist_check: { type: boolean, default: true, description: notice 类是否查黑名单 }
                 freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }], description: verify/market号码级频控应用覆盖 }
                 allowed_ips:
                   type: array
                   items: { type: string, maxLength: 64 }
                   maxItems: 50
-                  description: 入站来源 IP/CIDR 白名单，空数组=不限
+                  description: 入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免
+                ip_allowlist_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                unlimited_quota_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                admission_exempt_note: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
                 callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: 结果回调地址，须在内网 CIDR 白名单内；production 仅允许 HTTPS }
                 callback_report_enabled: { type: boolean, default: false, description: 是否推送明细级报告 }
       responses:
@@ -1342,13 +1381,20 @@ paths:
                 default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
                 daily_quota: { type: integer, minimum: 0, maximum: 100000000 }
                 rate_limit_per_min: { type: integer, minimum: 1, maximum: 60000 }
+                recipient_limit_per_min: { type: integer, minimum: 1, maximum: 100000000, default: 10000 }
+                segment_limit_per_min: { type: integer, minimum: 1, maximum: 100000000, default: 10000 }
+                max_in_flight_chunks: { type: integer, minimum: 1, maximum: 100000, default: 200 }
+                allow_market_api_bulk: { type: boolean, default: false }
                 blacklist_check: { type: boolean }
                 freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }] }
                 allowed_ips:
                   type: array
                   items: { type: string, maxLength: 64 }
                   maxItems: 50
-                  description: 入站来源 IP/CIDR 白名单，空数组=不限
+                  description: 入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免
+                ip_allowlist_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                unlimited_quota_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                admission_exempt_note: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
                 callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: production 仅允许 HTTPS }
                 callback_report_enabled: { type: boolean, default: false }
                 status: { type: integer, enum: [0, 1], default: 1 }
@@ -2376,6 +2422,40 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /api/v1/web/admin/chunks/{chunk_id}/resolution:
+    post:
+      tags: [admin]
+      summary: 对 unknown_terminal 分片提出双人处置
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: chunk_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UncertainResolutionRequestModel' }
+      responses:
+        '200': { description: 已提出处置, content: { application/json: { schema: { $ref: '#/components/schemas/UncertainResolutionModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: NOT_FOUND, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/resolutions/{resolution_id}/confirm:
+    post:
+      tags: [admin]
+      summary: 另一名管理员确认 uncertain 处置；重发只允许新批次
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: resolution_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: 已确认, content: { application/json: { schema: { $ref: '#/components/schemas/UncertainResolutionModel' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: NOT_FOUND, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: DEPENDENCY_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
   /api/v1/web/admin/unmatched-reports:
     post:
       tags: [admin]
@@ -2756,18 +2836,20 @@ webhooks:
           application/json:
             schema:
               type: object
-              required: [event_id, event, batch_no, biz_id, category, status, total, delivered, failed, unknown, finished_at]
+              required: [event_id, event, batch_no, biz_id, category, status, total, delivered, failed, unknown, unknown_count, manual_resolution_required, finished_at]
               properties:
                 event_id: { type: string, format: uuid }
                 event: { type: string, const: batch.finished }
                 batch_no: { type: string }
                 biz_id: { anyOf: [{ type: string }, { type: 'null' }] }
                 category: { type: string }
-                status: { type: string, enum: [completed, cancelled, expired, rejected] }
+                status: { type: string, enum: [completed, completed_unknown, cancelled, expired, rejected] }
                 total: { type: integer }
                 delivered: { type: integer }
                 failed: { type: integer }
                 unknown: { type: integer }
+                unknown_count: { type: integer, description: 与 unknown 相同的未知数量，供新调用方使用 }
+                manual_resolution_required: { type: boolean, description: completed_unknown 时为 true，不把 unknown 伪装为 failed 或 delivered }
                 finished_at: { type: string, format: date-time }
       responses:
         '200': { description: 应用侧确认接收 }
@@ -2993,7 +3075,7 @@ components:
       required: [token, expires_in, refresh_expires_in, user]
       properties:
         token: { type: string, description: 15 分钟 Bearer access JWT }
-        expires_in: { type: integer, const: 900 }
+        expires_in: { type: integer, minimum: 1, maximum: 900, description: Access Token 实际剩余秒数，AD 会话会被截断到绝对重新认证截止 }
         refresh_expires_in: { type: integer, minimum: 1, maximum: 604800, description: refresh family 自首次登录起的实际剩余秒数 }
         user: { $ref: '#/components/schemas/AuthUser' }
 
@@ -3386,7 +3468,7 @@ components:
 
     UncertainModel:
       type: object
-      required: [chunk_id, batch_no, custom_id, phone_count, vendor_code, uncertain_since, age_seconds]
+      required: [chunk_id, batch_no, custom_id, phone_count, vendor_code, uncertain_since, age_seconds, status, resolution_id, resolution_action, resolution_state, proposer_account_id]
       properties:
         chunk_id: { type: integer }
         batch_no: { type: string }
@@ -3395,6 +3477,32 @@ components:
         vendor_code: { anyOf: [{ type: integer }, { type: 'null' }] }
         uncertain_since: { type: string, format: date-time }
         age_seconds: { type: integer }
+        status: { type: string, enum: [uncertain, unknown_terminal] }
+        resolution_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+        resolution_action: { anyOf: [{ type: string }, { type: 'null' }] }
+        resolution_state: { anyOf: [{ type: string, enum: [proposed, approved, effect_pending, applying, effect_applied, closed, approval_rejected, retryable_effect_error, manual_intervention_required, cancelled_before_effect] }, { type: 'null' }] }
+        proposer_account_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+
+    UncertainResolutionRequestModel:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [confirm_accepted, confirm_not_accepted, keep_unknown, resend_new_batch]
+
+    UncertainResolutionModel:
+      type: object
+      required: [id, chunk_id, batch_id, action, state, proposer_account_id, confirmer_account_id, child_batch_id]
+      properties:
+        id: { type: integer }
+        chunk_id: { type: integer }
+        batch_id: { type: integer }
+        action: { type: string }
+        state: { type: string, enum: [proposed, approved, effect_pending, applying, effect_applied, closed, approval_rejected, retryable_effect_error, manual_intervention_required, cancelled_before_effect] }
+        proposer_account_id: { type: integer }
+        confirmer_account_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+        child_batch_id: { anyOf: [{ type: integer }, { type: 'null' }] }
 
     UncertainPageModel:
       type: object
@@ -3891,7 +3999,7 @@ components:
         content: { type: string }
         status:
           type: string
-          enum: [pending_approval, rejected, scheduled, queued, sending, completed, cancelled, balance_blocked, expired]
+          enum: [pending_approval, rejected, scheduled, queued, sending, completed, completed_unknown, cancelled, balance_blocked, expired]
         deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
         resend_of: { anyOf: [{ type: string }, { type: 'null' }], description: 原批次号（失败重发时） }
         is_test: { type: boolean }
@@ -4042,13 +4150,20 @@ components:
         default_sign: { anyOf: [{ type: string }, { type: 'null' }] }
         daily_quota: { type: integer }
         rate_limit_per_min: { type: integer }
+        recipient_limit_per_min: { type: integer, default: 10000 }
+        segment_limit_per_min: { type: integer, default: 10000 }
+        max_in_flight_chunks: { type: integer, default: 200 }
+        allow_market_api_bulk: { type: boolean, default: false }
         blacklist_check: { type: boolean }
         freq_override: { anyOf: [{ $ref: '#/components/schemas/FrequencyOverride' }, { type: 'null' }] }
         allowed_ips:
           type: array
           items: { type: string, maxLength: 64 }
           maxItems: 50
-          description: 入站来源 IP/CIDR 白名单，空数组=不限
+          description: 入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免
+        ip_allowlist_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        unlimited_quota_exempt_until: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        admission_exempt_note: { anyOf: [{ type: string }, { type: 'null' }] }
         callback_url: { anyOf: [{ type: string }, { type: 'null' }], description: production 仅允许 HTTPS }
         callback_report_enabled: { type: boolean, default: false }
         status: { type: integer, enum: [0, 1] }

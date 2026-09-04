@@ -2,20 +2,34 @@
 
 ## 生产模式与目标拓扑
 
+**唯一可以称为生产 HA 的拓扑是 `REDIS_HA_MODE=managed`**：三个独立托管高可用端点
+（Sentinel/托管主从/等价受控代理），各自具备选主、防脑裂和客户端重发现合同。
+`isolated-standalone` 只是经风险批准的单 VM 首发形态，**不得描述为高可用**，也不得写成
+`managed`。`standalone` 仅限 development/test。
+
 生产必须显式设置 `REDIS_HA_MODE=managed` 或
-`REDIS_HA_MODE=isolated-standalone`；`standalone` 仅限 development/test。两种生产模式都要求
+`REDIS_HA_MODE=isolated-standalone`。两种生产模式都要求
 broker/auth/control 使用三个不同 host:port 端点、三个独立 ACL 密码和 TLS 主机名校验。
+`sms-compose` 与 `deploy/scripts/redis_ha_preflight.py` 会拒绝把 standalone 标成生产 HA。
+
+### 关键控制事实 fencing
+
+幂等 Claim、queue pause、token bucket 与 admission epoch 必须带单调 generation。
+旧主复活或复制回退不得覆盖更高 generation：token bucket 在 `last_ms` 回退时清零令牌；
+pause 写入递增 `ratelimit:queue:paused:generation`；Claim 值为
+`token:fingerprint:generation`，续租/释放按 token 前缀匹配。usage 投影丢失只能从
+PostgreSQL 重建，缺失不得视为零。
 
 `managed` 只用于三个独立托管高可用端点。禁止把三个 DNS 名解析到同一 Redis 集群；变更
 复核需保存服务端实例/复制组 ID 的无敏感摘要。
 
 Phase 0 选择 `isolated-standalone`：在承载 Core 与 PostgreSQL 的同一台生产 VM 内运行三个
 独立非 HA Redis 容器。正式入口
-必须按该模式叠加受控 TLS/持久化 Compose 合同，三个端点不可重复；第 25 件 canonical secret
+必须按该模式叠加受控 TLS/持久化 Compose 合同，三个端点不可重复；canonical secret
 `redis_tls_server_key` 只进入 `current/redis`，不得进入 backend。客户端仍只读取 CA 和三域
 各自密码，使用 `rediss://` 并校验证书链与主机名。
 
-不得把此单机形态写成 `managed`。精确最终 SHA 的 settings 校验、Compose 展开、25 件 secret
+不得把此单机形态写成 `managed`。精确最终 SHA 的 settings 校验、Compose 展开、26 件 secret
 inventory、ACL/TLS/持久化测试、整 VM 故障演练和正式 release evidence 任一缺失，均为发布
 **No-Go**。文档契约测试只证明风险和决策被记录，不证明运行态已经满足该拓扑。
 
@@ -158,3 +172,27 @@ eviction、AOF rewrite/last write 错误、TLS 证书剩余天数和按域认证
 - broker：dispatcher 持续把失败写回 PostgreSQL Outbox 重试状态；恢复后按稳定 event ID 发布。
 - control：暂停需要新配额/频控判断的写路径；恢复后从 PostgreSQL usage ledger 重建并核对 drift。
 - 代码回滚不得合并 Redis 域、重新启用 default 用户或恢复 `REDIS_URL`。若托管端点回滚，仍需三个独立实例和三个独立 secrets。
+
+## 发送链路 control Redis 合同
+
+control Redis 不可用时，发送准入（SendAdmissionGuard）失败关闭，返回 503
+`DEPENDENCY_UNAVAILABLE`；查询与已完成幂等重放不探测 broker，也不得 fail-open。
+broker 故障只由 Outbox 是否排空推断，API 不得持有 broker secret。
+
+投影重建所有权由 PostgreSQL `pg_try_advisory_lock` 持有；Redis
+`usage:projection:rebuild:{date}` 只作 300 秒可见进度。并发实例只有一个 Owner，
+其余返回 `USAGE_PROJECTION_UNAVAILABLE`。ready marker 只在投影完整后发布。
+
+### 分域 RPO/RTO（Phase 0 isolated-standalone）
+
+| 域 | 权威事实 | 业务 RTO | 故障语义 |
+|---|---|---|---|
+| control | PostgreSQL usage ledger | ≤12h | 新发送 fail closed；恢复后重建投影 |
+| auth | PostgreSQL 会话投影 | ≤12h | 登录/JWT/step-up fail closed |
+| broker | PostgreSQL Outbox | ≤12h | 已受理事件不丢，恢复后按稳定 ID 回放 |
+
+### 演练证据包（无 Secret）
+
+必含：时间线、`platform_recovery_elapsed`、RPO 结论、Outbox backlog、
+projection drift、admission state、重建 Owner 数量。禁止 secret、手机号、
+API Key、短信正文。

@@ -216,6 +216,32 @@ def deliver_alert(
     return run_worker_async(_deliver_alert(alert_id, channel, outbox_event_id))
 
 
+async def _apply_uncertain_effect(resolution_id: int, event_id: str) -> int:
+    from app.services.crypto import CryptoService
+    from app.services.uncertain_resolution import UncertainResolutionService
+
+    async def effect(claim: OutboxClaim) -> int:
+        if claim.args != (resolution_id,):
+            raise ValueError("uncertain effect outbox args mismatch")
+        await UncertainResolutionService(
+            CryptoService.from_settings(get_settings())
+        ).apply_effect(resolution_id)
+        return 1
+
+    return await OutboxExecutor(SqlOutboxRepository(get_settings())).run(
+        UUID(event_id),
+        expected_type="uncertain.effect",
+        effect=effect,
+    )
+
+
+@celery_app.task(name="app.tasks.outbox.apply_uncertain_effect")  # type: ignore[untyped-decorator]
+def apply_uncertain_effect(resolution_id: int, outbox_event_id: str) -> int:
+    """只携带 resolution id；重复投递保持幂等。"""
+
+    return run_worker_async(_apply_uncertain_effect(resolution_id, outbox_event_id))
+
+
 @celery_app.task(name="app.tasks.outbox.trigger_job")  # type: ignore[untyped-decorator]
 def trigger_job(
     task_name: str,

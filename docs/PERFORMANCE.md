@@ -1,7 +1,34 @@
 # 测试环境专项性能压测手册
 
-性能压测不进入日常 CI、定时 CI、人工 CI 或 G2 门禁。所有负载测试只在隔离测试环境中
-由测试负责人专项执行，结果单独归档，不得用普通 `ci-gate` 绿色状态代替性能证据。
+完整负载压测不进入日常 CI、定时 CI、人工 CI 或 G2 门禁。日常 CI 只跑确定性复杂度门禁
+（SQL 次数、故障矩阵不变量、报告字段）。万级容量与故障恢复只在隔离测试环境由测试
+负责人专项执行，结果单独归档，不得用普通 `ci-gate` 绿色状态代替性能证据。
+
+## 分层门禁
+
+1. **PR 快速门禁**（pytest）：`backend/tests/test_send_perf_gates.py` 与频控集合化测试
+   检查万级主体解析的 SQL 上界、admission 公平性，以及容量报告不得含手机号/正文。
+2. **候选版本门禁**：在真实 PostgreSQL/Redis/Celery/Nginx 环境采集指标后，用
+   `scripts/perf_capacity.py` 绑定精确 Commit 与镜像摘要。10,000 recipients/request
+   必须设置 `OUTBOX_POSTGRES_DSN` 或 `PERF_ALLOW_10K=1`。超过 P99、`sql_count`、
+   `converge_s` 阈值即失败。
+3. **周期性故障矩阵**：`scripts/perf_fault_matrix.py` 固定半成功、冷投影和 backlog
+   恢复不得自动重发。场景包括 `vendor_success_response_lost`、
+   `vendor_success_mark_submitted_failed`、`submitting_timeout_uncertain`、
+   `redis_flush_projection_rebuild`、`worker_broker_backlog_drain`。
+
+候选容量场景至少覆盖 `recipients_1` / `recipients_100` / `recipients_1000` /
+`recipients_10000`、`frequency_new_subjects`、`frequency_hmac_alias_merge` 与
+`fairness_mixed_apps`。报告字段必须含 RPS、accepted recipients/s、segments/s、
+P50/P95/P99、`sql_count`、锁等待、`pool_occupancy`、`wal_bytes`、`redis_ops`、
+`worker_rss_bytes`、`outbox_oldest_age` 和收敛时间，且禁止手机号或正文。
+
+```bash
+uv run --project backend python scripts/perf_capacity.py \
+  --scenario recipients_10000 \
+  --metrics-json var/perf/recipients_10000.metrics.json \
+  --output var/perf/recipients_10000.report.json
+```
 
 ## 专项三阶段压测
 

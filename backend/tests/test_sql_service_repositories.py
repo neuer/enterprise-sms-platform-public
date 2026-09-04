@@ -819,6 +819,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "submitting" not in enqueue_sql
     assert "submitted" not in enqueue_sql
     assert "uncertain" not in enqueue_sql
+    assert "unknown_terminal" not in enqueue_sql
     assert engine.disposed
 
 
@@ -1041,6 +1042,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
@@ -1060,6 +1062,9 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     # 应用成功后把消息归属日标脏，供窗口外统计补算（#342）。
     assert "stat_dirty_date" in connection.calls[7][0]
     assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[7][0]
+    assert "late_evidence_at" in connection.calls[9][0]
+    assert "unknown_terminal" in connection.calls[9][0]
+    assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[8][0]
     assert callback_events == [
         ("batch", 3),
         ("message", (3, 8, report.report_time)),
@@ -1282,6 +1287,78 @@ async def test_uncertain_overdue_alert_is_log_sink_only(
 
 
 @pytest.mark.asyncio
+async def test_terminalize_unknown_locks_and_enqueues_final_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued: list[int] = []
+    emitted: list[dict[str, object]] = []
+
+    async def enqueue(_connection: object, batch_id: int, **_kwargs: object) -> None:
+        enqueued.append(batch_id)
+
+    class FakeSink:
+        async def emit(self, **values: object) -> None:
+            emitted.append(values)
+
+    monkeypatch.setattr(uncertain_repository_module, "enqueue_batch_finished", enqueue)
+    monkeypatch.setattr(
+        uncertain_repository_module,
+        "SqlAlertService",
+        lambda _settings: FakeSink(),
+    )
+    repository = SqlUncertainRepository()
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[{"chunk_id": 3, "batch_id": 8}]),
+            FakeResult(rowcount=1),
+            FakeResult(),
+            FakeResult(
+                rows=[{"id": 8, "status": "completed_unknown", "unknown_cnt": 2}]
+            ),
+        ]
+    )
+    bind_engine(monkeypatch, repository, connection)
+    await repository.terminalize_unknown(
+        UncertainChunk(3, "custom-3", datetime(2026, 7, 10, 8, 0, tzinfo=UTC))
+    )
+
+    assert "FOR UPDATE OF c, b" in connection.calls[0][0]
+    assert "unknown_terminal" in connection.calls[1][0]
+    assert "status='unknown'" in connection.calls[2][0]
+    assert "completed_unknown" in connection.calls[3][0]
+    assert "phone_enc" not in "".join(sql for sql, _params in connection.calls)
+    assert enqueued == [8]
+    assert emitted[0]["alert_type"] == "uncertain_terminal"
+    assert emitted[0]["detail"] == {
+        "chunk_id": 3,
+        "batch_id": 8,
+        "unknown_count": 2,
+    }
+    assert "request_usage_release" not in "".join(sql for sql, _params in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_terminalize_unknown_is_idempotent_when_chunk_already_left_uncertain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued: list[int] = []
+
+    async def enqueue(_connection: object, batch_id: int, **_kwargs: object) -> None:
+        enqueued.append(batch_id)
+
+    monkeypatch.setattr(uncertain_repository_module, "enqueue_batch_finished", enqueue)
+    repository = SqlUncertainRepository()
+    connection = FakeConnection([FakeResult(rows=[])])
+    bind_engine(monkeypatch, repository, connection)
+    await repository.terminalize_unknown(
+        UncertainChunk(3, "custom-3", datetime(2026, 7, 10, 8, 0, tzinfo=UTC))
+    )
+
+    assert enqueued == []
+    assert len(connection.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1482,12 +1559,14 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
         "status": "queued",
         "deferred_reason": None,
         "scheduled_at": None,
+        "expires_at": None,
     }
     connection = FakeConnection([FakeResult(rows=[response_row])])
     bind_engine(monkeypatch, store, connection)
     response = await store.response_for("batch-1")
     assert response.batch_no == "batch-1"
     assert response.idempotent is True
+    assert response.idempotency_expires_at is None
 
     assert await store.blacklisted(set()) == set()
 

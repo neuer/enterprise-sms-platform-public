@@ -16,6 +16,8 @@ import {
   listRawLogs,
   listUncertain,
   listUnmatched,
+  proposeUncertainResolution,
+  confirmUncertainResolution,
   replayRaw,
   resumeQueue,
   retryOutboxEvent,
@@ -30,6 +32,7 @@ import {
   type QueueStatus,
   type RawLogItem,
   type UncertainItem,
+  type UncertainResolutionAction,
   type UnmatchedItem,
 } from "../api/ops"
 import { jobDescription } from "../lib/jobDescriptions"
@@ -43,7 +46,9 @@ import {
 } from "../api/reports"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
+import StatusTag from "../components/StatusTag.vue"
 import { usePolling } from "../composables/usePolling"
+import { useSessionStore } from "../stores/session"
 import CallbackView from "./CallbackView.vue"
 
 type TabName = "alerts" | "callbacks" | "raw" | "uncertain" | "unmatched" | "jobs" | "queue" | "outbox"
@@ -61,6 +66,13 @@ const OPS_TAB_ITEMS: { name: TabName; label: string }[] = [
 ]
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
+const RESOLUTION_ACTIONS: { action: UncertainResolutionAction; label: string }[] = [
+  { action: "confirm_accepted", label: "确认已受理" },
+  { action: "confirm_not_accepted", label: "确认未受理" },
+  { action: "keep_unknown", label: "保持未知" },
+  { action: "resend_new_batch", label: "新批次重发" },
+]
 
 function tabFromQuery(raw: unknown): TabName | null {
   const value = Array.isArray(raw) ? raw[0] : raw
@@ -210,7 +222,7 @@ const outboxEmpty = computed(() =>
 )
 const UNCERTAIN_EMPTY = {
   title: "当前没有结果未知的分片",
-  description: "uncertain 只读核查，仅 reconcile 可按厂商报文修复，禁止自动重发。",
+  description: "uncertain 禁止自动重发；仅 reconcile 可按厂商报文修复，到期进入保守终态后须双人确认处置。",
 }
 const JOBS_EMPTY = {
   title: "暂无任务心跳记录",
@@ -226,6 +238,26 @@ function duration(seconds: number): string {
   if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
   if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
   return `${Math.max(0, Math.round(seconds / 60))} 分钟`
+}
+
+function resolutionLabel(action: string | null | undefined): string {
+  return RESOLUTION_ACTIONS.find((item) => item.action === action)?.label ?? action ?? "—"
+}
+
+function resolutionStateLabel(state: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    proposed: "待确认",
+    approved: "已批准",
+    effect_pending: "待生效",
+    applying: "生效中",
+    effect_applied: "已生效",
+    closed: "已关闭",
+    approval_rejected: "已驳回",
+    retryable_effect_error: "生效失败可重试",
+    manual_intervention_required: "需人工介入",
+    cancelled_before_effect: "已取消",
+  }
+  return (state && labels[state]) || state || "—"
 }
 
 let loadToken = 0
@@ -438,6 +470,43 @@ async function moveTab(direction: -1 | 1): Promise<void> {
   document.getElementById(`ops-tab-${activeTab.value}`)?.focus()
 }
 
+async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      h("div", { class: "ops-confirm-dialog" }, [
+        h("p", `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`),
+        h("p", { class: "ops-confirm-audit" }, "提出行为与操作人将写入审计日志。"),
+      ]),
+      "确认提出处置",
+      { type: "warning", confirmButtonText: "提出处置", cancelButtonText: "取消", customClass: "ops-confirm-box" },
+    )
+    await proposeUncertainResolution(item.chunk_id, action)
+    ElMessage.success("已提出处置 · 本次操作已记入审计")
+    await load("uncertain")
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "提出处置失败")
+  }
+}
+
+async function confirmResolution(item: UncertainItem): Promise<void> {
+  if (item.resolution_id == null) return
+  try {
+    await ElMessageBox.confirm(
+      h("div", { class: "ops-confirm-dialog" }, [
+        h("p", `确认批次 ${item.batch_no} 的处置「${resolutionLabel(item.resolution_action)}」。提案人不能确认自己的单。`),
+        h("p", { class: "ops-confirm-audit" }, "确认行为与操作人将写入审计日志。"),
+      ]),
+      "确认处置",
+      { type: "warning", confirmButtonText: "确认处置", cancelButtonText: "取消", customClass: "ops-confirm-box" },
+    )
+    await confirmUncertainResolution(item.resolution_id)
+    ElMessage.success("处置已确认 · 本次操作已记入审计")
+    await load("uncertain")
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "确认处置失败")
+  }
+}
+
 async function retryOutbox(item: OutboxEventItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -634,7 +703,7 @@ onMounted(() => {
   </nav>
 
   <aside class="ops-rules" aria-label="运维守卫与数据边界">
-    <div><span>守卫与审计</span><p>重放 / 手动触发 / 死信重推 / 队列恢复均二次确认并写审计；uncertain 只读，仅 reconcile 可迁移，禁止自动重发。</p></div>
+    <div><span>守卫与审计</span><p>重放 / 手动触发 / 死信重推 / 队列恢复均二次确认并写审计；uncertain 禁止自动重发，仅 reconcile 可按厂商报文修复；到期进入保守终态后须双人确认处置，重发只建新批次。</p></div>
     <div><span>PII 边界</span><p>原始报文只展示无 PII 元数据；手机号明文仅经请求体提交、服务端立即转 HMAC 精确查询，不写入日志与存储；明文导出需二次认证。</p></div>
   </aside>
 
@@ -787,10 +856,10 @@ onMounted(() => {
     role="tabpanel"
     aria-labelledby="ops-tab-uncertain"
   >
-    <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>只读核查；仅 reconcile 可迁移状态</small></div></header>
+    <header class="ops-panel-title"><div><strong>结果未知分片</strong><small>禁止自动重发；保守终态后双人确认处置，重发只建新批次</small></div></header>
     <section class="ops-results">
-      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="180" /><el-table-column label="customId" min-width="180"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="120"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="进入时间" width="180"><template #default="{ row }">{{ formatDateTime(row.uncertain_since) }}</template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
-      <div class="ops-mobile-list"><article v-for="item in uncertain" :key="item.chunk_id"><header><strong>{{ item.batch_no }}</strong><el-tag :type="item.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(item.age_seconds) }}</el-tag></header><code>{{ item.custom_id }}</code><p>{{ item.phone_count }} 个号码 · 禁止自动重发</p></article><EmptyState v-if="!uncertain.length" :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></div>
+      <el-table :data="uncertain" class="ops-table"><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column><el-table-column label="customId" min-width="160"><template #default="{ row }"><code class="ops-hash" :title="row.custom_id">{{ row.custom_id }}</code></template></el-table-column><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="110"><template #default="{ row }"><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{ duration(row.age_seconds) }}</el-tag></template></el-table-column><el-table-column label="处置" min-width="220"><template #default="{ row }"><template v-if="row.status === 'unknown_terminal' && !row.resolution_id"><el-button v-for="option in RESOLUTION_ACTIONS" :key="option.action" link type="primary" :data-testid="`uncertain-propose-${option.action}`" @click="proposeResolution(row, option.action)">{{ option.label }}</el-button></template><template v-else-if="row.resolution_state === 'proposed'"><span>待确认 · {{ resolutionLabel(row.resolution_action) }}</span><el-button v-if="session.accountId !== row.proposer_account_id" link type="danger" data-testid="uncertain-confirm" @click="confirmResolution(row)">确认处置</el-button></template><span v-else-if="row.resolution_state">{{ resolutionStateLabel(row.resolution_state) }} · {{ resolutionLabel(row.resolution_action) }}</span><span v-else>禁止自动重发</span></template></el-table-column><template #empty><EmptyState :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></template></el-table>
+      <div class="ops-mobile-list"><article v-for="item in uncertain" :key="item.chunk_id"><header><strong>{{ item.batch_no }}</strong><StatusTag :status="item.status" /></header><code>{{ item.custom_id }}</code><p>{{ item.phone_count }} 个号码 · {{ duration(item.age_seconds) }}</p><template v-if="item.status === 'unknown_terminal' && !item.resolution_id"><el-button v-for="option in RESOLUTION_ACTIONS" :key="option.action" link type="primary" @click="proposeResolution(item, option.action)">{{ option.label }}</el-button></template><el-button v-else-if="item.resolution_state === 'proposed' && session.accountId !== item.proposer_account_id" link type="danger" @click="confirmResolution(item)">确认处置</el-button></article><EmptyState v-if="!uncertain.length" :title="UNCERTAIN_EMPTY.title" :description="UNCERTAIN_EMPTY.description" /></div>
       <footer class="ops-pagination"><span>共 {{ uncertainTotal }} 项 · 每页 20</span><el-pagination v-model:current-page="uncertainPage" data-testid="ops-uncertain-pagination" :page-size="20" :total="uncertainTotal" layout="prev, pager, next" @current-change="load('uncertain')" /></footer>
     </section>
   </section>

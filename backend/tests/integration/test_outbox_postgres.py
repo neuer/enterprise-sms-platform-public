@@ -385,3 +385,76 @@ async def test_outbox_concurrency_fencing_recovery_and_privileges() -> None:
         await cleanup()
         await engine.dispose()
         await close_runtime_resources()
+
+
+@pytest.mark.asyncio
+async def test_chunk_ready_outbox_allows_phone_shaped_chunk_id() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    chunk_id = 13_800_138_000
+    dedup_key = f"chunk.ready:{chunk_id}"
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM outbox_event WHERE dedup_key=:dedup_key"),
+                {"dedup_key": dedup_key},
+            )
+
+    try:
+        await cleanup()
+        async with engine.begin() as connection:
+            event_id = await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="chunk.ready",
+                    aggregate_type="sms_chunk",
+                    aggregate_id=str(chunk_id),
+                    task_name="app.tasks.send.process_chunk",
+                    queue="realtime",
+                    args=(chunk_id,),
+                    dedup_key=dedup_key,
+                ),
+            )
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT task_name, aggregate_id, args
+                        FROM outbox_event
+                        WHERE id=:event_id
+                        """
+                    ),
+                    {"event_id": event_id},
+                )
+            ).mappings().one()
+        assert str(row["task_name"]) == "app.tasks.send.process_chunk"
+        assert str(row["aggregate_id"]) == str(chunk_id)
+        assert list(row["args"]) == [chunk_id]
+
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO outbox_event(
+                          id,dedup_key,event_type,aggregate_type,aggregate_id,
+                          task_name,queue,args
+                        ) VALUES(
+                          :id,:dedup_key,'chunk.ready','sms_chunk',:aggregate_id,
+                          'app.tasks.send.process_chunk','realtime',
+                          CAST(:args AS jsonb)
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "dedup_key": "chunk.ready:13800138001",
+                        "aggregate_id": "13800138001",
+                        "args": '["13800138000"]',
+                    },
+                )
+    finally:
+        await cleanup()
+        await engine.dispose()
+        await close_runtime_resources()

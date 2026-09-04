@@ -75,6 +75,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "fail_rate_min_total": ConfigSpec("50", "int", GROUP_ALERTING, maximum=1_000_000),
     "report_timeout_hours": ConfigSpec("48", "int", GROUP_SCHEDULING, maximum=720),
     "uncertain_alert_hours": ConfigSpec("24", "int", GROUP_ALERTING, maximum=720),
+    "uncertain_max_lifetime_hours": ConfigSpec(
+        "72", "int", GROUP_SCHEDULING, minimum=25, maximum=720
+    ),
     "reconcile_interval_min": ConfigSpec(
         "5", "int", GROUP_SCHEDULING, maximum=60, beat_restart=True
     ),
@@ -145,6 +148,7 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "security_daily_config_operation_id": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
+    "api_key_unclassified_algorithms": ConfigSpec("", "str", GROUP_SECURITY),
 }
 
 DEFAULTS: dict[str, str] = {key: spec.default for key, spec in CONFIG_SPECS.items()}
@@ -273,6 +277,7 @@ class RuntimePolicy:
     import_expire_hours: int
     test_send_max: int
     uncertain_alert_hours: int
+    uncertain_max_lifetime_hours: int
     vendor_qps: int
     reserved_realtime_qps: int
     balance_alert_threshold: int
@@ -343,6 +348,10 @@ class RuntimePolicy:
         reserved_qps = parsed["reserved_realtime_qps"]
         if reserved_qps >= vendor_qps:
             raise InvalidRuntimePolicy("reserved_realtime_qps 必须小于 vendor_qps")
+        if parsed["uncertain_max_lifetime_hours"] <= parsed["uncertain_alert_hours"]:
+            raise InvalidRuntimePolicy(
+                "uncertain_max_lifetime_hours 必须大于 uncertain_alert_hours"
+            )
 
         _validate_mail_list("alert_mail_to", values["alert_mail_to"], allow_empty=True)
         _validate_mail_list(
@@ -363,6 +372,7 @@ class RuntimePolicy:
             import_expire_hours=parsed["import_expire_hours"],
             test_send_max=parsed["test_send_max"],
             uncertain_alert_hours=parsed["uncertain_alert_hours"],
+            uncertain_max_lifetime_hours=parsed["uncertain_max_lifetime_hours"],
             vendor_qps=vendor_qps,
             reserved_realtime_qps=reserved_qps,
             balance_alert_threshold=parsed["balance_alert_threshold"],
