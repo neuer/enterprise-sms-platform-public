@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, h, nextTick, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 
 import {
@@ -47,6 +47,7 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { usePolling } from "../composables/usePolling"
 import { useSessionStore } from "../stores/session"
 import CallbackView from "./CallbackView.vue"
 
@@ -121,8 +122,35 @@ const retryingOutboxId = ref<string | null>(null)
 const selectedAlert = ref<AlertItem | null>(null)
 const alertDetailVisible = ref(false)
 const queueBlocked = computed(() => Boolean(queue.value?.realtime_code || queue.value?.bulk_code))
-let exportPollTimer: number | undefined
-let currentAlertTimer: number | undefined
+
+// 当前告警 60s 轮询：仅在告警页签的「当前」视图运转，页面隐藏自动暂停。
+const currentAlertPolling = usePolling(() => load("alerts"), {
+  intervalMs: 60_000,
+  enabled: computed(() => activeTab.value === "alerts" && alertMode.value === "current"),
+})
+
+// 对账导出状态轮询：2s 间隔、终态自停；150 次（≈5 分钟）仍未完成给出兜底超时提示。
+const EXPORT_POLL_MAX_ATTEMPTS = 150
+
+/** 查询一次导出任务状态；终态或查询失败返回 true 停止轮询。 */
+async function pollExportTask(): Promise<boolean> {
+  if (!exportTask.value) return true
+  try {
+    exportTask.value = await getExportTask(exportTask.value.id)
+  } catch (error) {
+    exportError.value = error instanceof Error ? error.message : "导出状态查询失败"
+    return true
+  }
+  return exportTask.value.status !== "pending" && exportTask.value.status !== "running"
+}
+
+const exportPolling = usePolling(pollExportTask, {
+  intervalMs: 2_000,
+  maxAttempts: EXPORT_POLL_MAX_ATTEMPTS,
+  onTimeout: () => {
+    exportError.value = "导出状态查询超时（已超过 5 分钟），请稍后重新发起导出"
+  },
+})
 
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
 
@@ -553,37 +581,12 @@ async function exportUnmatched(): Promise<void> {
       ...rangeValues(unmatchedRange.value),
     }, exportDecrypted.value)
     ElMessage.success("对账导出任务已创建 · 本次操作已记入审计")
-    await refreshExport()
+    exportPolling.restart()
   } catch (error) {
     exportError.value = error instanceof Error ? error.message : "导出创建失败"
     ElMessage.error(exportError.value)
   } finally {
     exportBusy.value = false
-  }
-}
-
-function stopExportPolling(): void {
-  if (exportPollTimer !== undefined) window.clearTimeout(exportPollTimer)
-  exportPollTimer = undefined
-}
-
-function scheduleExportPolling(): void {
-  stopExportPolling()
-  exportPollTimer = window.setTimeout(() => void refreshExport(), 2_000)
-}
-
-async function refreshExport(): Promise<void> {
-  if (!exportTask.value) return
-  try {
-    exportTask.value = await getExportTask(exportTask.value.id)
-    if (exportTask.value.status === "pending" || exportTask.value.status === "running") {
-      scheduleExportPolling()
-    } else {
-      stopExportPolling()
-    }
-  } catch (error) {
-    exportError.value = error instanceof Error ? error.message : "导出状态查询失败"
-    stopExportPolling()
   }
 }
 
@@ -659,15 +662,7 @@ watch(() => route.query.tab, (raw) => {
 onMounted(() => {
   void load()
   void getQueueStatus().then((result) => { queue.value = result }).catch(() => undefined)
-  currentAlertTimer = window.setInterval(() => {
-    if (document.visibilityState === "visible" && activeTab.value === "alerts" && alertMode.value === "current") {
-      void load("alerts")
-    }
-  }, 60_000)
-})
-onBeforeUnmount(() => {
-  stopExportPolling()
-  if (currentAlertTimer !== undefined) window.clearInterval(currentAlertTimer)
+  currentAlertPolling.start()
 })
 </script>
 

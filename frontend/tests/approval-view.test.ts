@@ -452,4 +452,22 @@ describe("审批中心", () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(listCalls(fetchMock).length).toBe(callsAfterUnmount)
   })
+
+  it("存在待审批倒计时行时秒级 tick 驱动剩余时间逐秒更新", async () => {
+    vi.useFakeTimers()
+    const item = makeItem({ expires_at: new Date(Date.now() + 65_000).toISOString() })
+    stubApprovalsFetch({ list: listBody([item]) })
+
+    const wrapper = mountApproverView()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const countdown = () => wrapper.get(`[data-testid='approval-row-${item.id}'] .approval-cd b`).text()
+    expect(countdown()).toBe("00:01:05")
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(countdown()).toBe("00:01:04")
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(countdown()).toBe("00:01:03")
+    wrapper.unmount()
+  })
 })
