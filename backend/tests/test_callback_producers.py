@@ -320,7 +320,12 @@ async def test_approval_expiry_repository_commits_state_and_callback_only(
         "batch_status": "pending_approval",
     }
     connection = FakeConnection(
-        [FakeResult(scalar_values=[3]), FakeResult(rows=[row]), FakeResult()]
+        [
+            FakeResult(scalar_values=[3]),
+            FakeResult(rows=[row]),
+            FakeResult(),
+            FakeResult(),
+        ]
     )
     repository = SqlApprovalRepository()
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
@@ -509,6 +514,7 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
                     }
                 ]
             ),
+            FakeResult(),
         ]
     )
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
@@ -579,6 +585,7 @@ async def test_scheduled_cancel_enqueues_batch_finished_in_same_transaction(
                     }
                 ]
             ),
+            FakeResult(),
             FakeResult(),
         ]
     )
