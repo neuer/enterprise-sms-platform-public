@@ -18,13 +18,14 @@ describe("前端加载边界", () => {
     }
   })
 
-  it("入口仅加载基础主题且业务样式跟随懒加载页面", () => {
+  it("workspace.css 由 App.vue 全局引入单点承载，视图不再重复 import", () => {
     expect(mainSource).toContain('import "./styles/theme.css"')
     expect(mainSource).not.toContain("workspace.css")
+    expect(appSource).toContain('import "./styles/workspace.css"')
 
     for (const view of lazyViews) {
       const source = readFileSync(resolve(process.cwd(), `src/views/${view}.vue`), "utf8")
-      expect(source).toContain('import "../styles/workspace.css"')
+      expect(source).not.toContain("workspace.css")
     }
   })
 

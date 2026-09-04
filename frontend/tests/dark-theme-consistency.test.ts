@@ -24,12 +24,13 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
       const component = source(path)
       expect(component).toContain('from "../lib/chartTheme"')
       expect(component).toContain("getChartTheme")
-      // canvas 组件监听主题切换事件重建配色
-      expect(component).toContain("THEME_CHANGE_EVENT")
+      // canvas 组件经 useChart 单点装配：内部监听主题切换事件重建配色
+      expect(component).toContain('from "../composables/useChart"')
       for (const lightHex of ["#0e7a63", "#a8650b", "#5b6862", "#d3d8d1", "#e9ece8"]) {
         expect(component).not.toContain(lightHex)
       }
     }
+    expect(source("src/composables/useChart.ts")).toContain("THEME_CHANGE_EVENT")
     // SVG 组件直接以 var() 引用令牌，随主题自动切换
     expect(source("src/components/BalanceChart.vue")).toContain("var(--chart-green)")
   })

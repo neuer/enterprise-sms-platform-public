@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
+import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
 import { useSessionStore } from "../src/stores/session"
@@ -52,15 +53,6 @@ function vnodeText(value: unknown): string {
     return vnodeText(children)
   }
   return String(value)
-}
-
-/** VTU mocks 不写入 appContext.globalProperties，$router 必须以插件方式安装。 */
-function routerPlugin(router: unknown) {
-  return {
-    install(app: { config: { globalProperties: Record<string, unknown> } }) {
-      app.config.globalProperties.$router = router
-    },
-  }
 }
 
 describe("模板管理", () => {
@@ -204,11 +196,20 @@ describe("模板管理", () => {
 
   it("已通过模板可用于发送并可同步厂商状态，但不可编辑或删除", async () => {
     mockList([{ ...template, id: 3, vendor_state: "approved" }])
-    const push = vi.fn()
     const pinia = applyRole("operator")
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/templates", component: TemplateView },
+        { path: "/send", component: { template: "<div />" } },
+      ],
+    })
+    await router.push("/templates")
+    await router.isReady()
+    const push = vi.spyOn(router, "push")
     const wrapper = mount(TemplateView, {
       global: {
-        plugins: [pinia, ElementPlus, routerPlugin({ push, currentRoute: { value: { query: {} } } })],
+        plugins: [pinia, ElementPlus, router],
       },
     })
     await flushPromises()

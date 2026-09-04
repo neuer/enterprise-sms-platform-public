@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import type { VueWrapper } from "@vue/test-utils"
 import ElementPlus from "element-plus"
+import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
 import SegmentBar from "../src/components/SegmentBar.vue"
@@ -106,16 +107,15 @@ describe("人工发送工作台", () => {
       { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
     ]
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
-    // VTU mocks 不写入 appContext.globalProperties，$router 必须以插件方式安装。
-    const routerMock = { currentRoute: { value: { query: { template_id: "7" } } }, push: vi.fn() }
-    const routerPlugin = {
-      install(app: { config: { globalProperties: Record<string, unknown> } }) {
-        app.config.globalProperties.$router = routerMock
-      },
-    }
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/send", component: SendView }],
+    })
+    await router.push({ path: "/send", query: { template_id: "7" } })
+    await router.isReady()
     const wrapper = mount(SendView, {
       global: {
-        plugins: [ElementPlus, routerPlugin],
+        plugins: [ElementPlus, router],
       },
     })
     await flushPromises()
@@ -133,15 +133,15 @@ describe("人工发送工作台", () => {
       { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
     ]
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
-    const routerMock = { currentRoute: { value: { query: { template_id: "8" } } }, push: vi.fn() }
-    const routerPlugin = {
-      install(app: { config: { globalProperties: Record<string, unknown> } }) {
-        app.config.globalProperties.$router = routerMock
-      },
-    }
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/send", component: SendView }],
+    })
+    await router.push({ path: "/send", query: { template_id: "8" } })
+    await router.isReady()
     const wrapper = mount(SendView, {
       global: {
-        plugins: [ElementPlus, routerPlugin],
+        plugins: [ElementPlus, router],
       },
     })
     await flushPromises()

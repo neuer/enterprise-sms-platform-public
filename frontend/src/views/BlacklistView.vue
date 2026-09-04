@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, ref } from "vue"
 
@@ -13,6 +11,7 @@ import {
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
@@ -272,7 +271,7 @@ onMounted(() => void load())
       <el-pagination
         v-model:current-page="page"
         data-testid="blacklist-pagination"
-        :page-size="20"
+        :page-size="DEFAULT_PAGE_SIZE"
         :total="total"
         layout="prev, pager, next"
         @current-change="load"

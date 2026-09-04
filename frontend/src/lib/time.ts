@@ -94,6 +94,15 @@ export function formatHms(value: string | number | Date | null | undefined, empt
   return `${p.hour}:${p.minute}:${p.second}`
 }
 
+/** 剩余毫秒数格式化为倒计时 `HH:MM:SS`（小时可超 24，floor 到秒）；调用方负责非正数/非法值的兜底文案。 */
+export function formatDurationHms(remainingMs: number): string {
+  const totalSeconds = Math.floor(remainingMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  return [hours, minutes, seconds].map((unit) => String(unit).padStart(2, "0")).join(":")
+}
+
 /** Asia/Shanghai 日历日 `YYYY-MM-DD`；与本地浏览器时区无关。 */
 export function shanghaiDateKey(date: Date = new Date()): string {
   return DATE_KEY.format(date)

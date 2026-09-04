@@ -68,7 +68,7 @@ interface MockResponses {
 }
 
 function stubApprovalsFetch(responses: MockResponses) {
-  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     const route = routeOf(url)
     if (route === "decision" && responses.decisionStatus && responses.decisionStatus !== 200) {
       return {

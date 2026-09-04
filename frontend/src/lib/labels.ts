@@ -1,5 +1,5 @@
 /**
- * 跨页面共享文案单点：消息类别、角色、分页默认值、厂商审核状态。
+ * 跨页面共享文案单点：消息类别、角色、分页默认值、状态标签、厂商审核状态。
  * 各视图/组件禁止再维护同名映射，新增取值在此扩展。
  */
 
@@ -17,6 +17,34 @@ export const ROLE_LABELS: Record<string, string> = {
 }
 
 export const DEFAULT_PAGE_SIZE = 20
+
+/**
+ * 批次 / 明细 / 分片状态中文标签唯一事实源（StatusTag 与列表页共用）；
+ * sent/other 为消息明细状态，submitted 为分片状态，dead 为回调终止态。
+ */
+export const STATUS_LABELS: Record<string, string> = {
+  pending: "待处理",
+  pending_approval: "待审批",
+  scheduled: "已排期",
+  queued: "排队中",
+  sending: "发送中",
+  submitted: "已提交",
+  sent: "已提交",
+  completed: "已完成",
+  completed_unknown: "完成(含未知)",
+  delivered: "已送达",
+  approved: "已通过",
+  failed: "失败",
+  rejected: "已驳回",
+  cancelled: "已取消",
+  expired: "已过期",
+  uncertain: "结果未知",
+  unknown_terminal: "未知终态",
+  balance_blocked: "余额阻断",
+  unknown: "未知",
+  dead: "终止重试",
+  other: "其他",
+}
 
 /** 厂商审核状态主标签；draft 为模板特有的平台草稿态（签名无此态）。 */
 export const VENDOR_REVIEW_LABELS: Record<string, string> = {

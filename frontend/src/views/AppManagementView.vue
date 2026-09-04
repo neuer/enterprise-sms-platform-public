@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
@@ -27,7 +25,7 @@ import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
 import { CATEGORY_LABELS } from "../lib/labels"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, shanghaiDateKey } from "../lib/time"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
@@ -505,7 +503,7 @@ async function load(): Promise<void> {
 
 /** 今日用量一次联查（stat_daily 按应用维度），失败只影响用量单元格，不拖垮列表。 */
 async function loadDailyUsage(): Promise<void> {
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date())
+  const today = shanghaiDateKey()
   try {
     const result = await getReport({
       granularity: "day",

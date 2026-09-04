@@ -6,7 +6,7 @@ import CategoryTag from "./CategoryTag.vue"
 import EmptyState from "./EmptyState.vue"
 import StatusTag from "./StatusTag.vue"
 import { CATEGORY_LABELS } from "../lib/labels"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, formatDurationHms } from "../lib/time"
 
 const REASON_MAX_LENGTH = 256
 const URGENT_THRESHOLD_MS = 2 * 3600_000
@@ -66,13 +66,7 @@ function countdownOf(item: ApprovalListItem): Countdown {
   const remaining = new Date(item.expires_at).getTime() - props.now
   if (Number.isNaN(remaining)) return { text: "—", caption: "有效期暂不可用", level: "unknown" }
   if (remaining <= 0) return { text: "已临期截止", caption: "等待服务端过期关闭", level: "expired" }
-  const totalSeconds = Math.floor(remaining / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  const text = [hours, minutes, seconds]
-    .map((unit) => String(unit).padStart(2, "0"))
-    .join(":")
+  const text = formatDurationHms(remaining)
   const level =
     remaining < URGENT_THRESHOLD_MS ? "urgent" : remaining < SOON_THRESHOLD_MS ? "soon" : "normal"
   return { text, caption: "后过期", level }

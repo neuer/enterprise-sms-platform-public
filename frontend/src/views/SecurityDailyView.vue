@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import "../styles/workspace.css"
 
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, nextTick, onMounted, reactive, ref } from "vue"
