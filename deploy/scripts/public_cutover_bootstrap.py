@@ -45,6 +45,7 @@ _NEW_SECRET_NAMES = frozenset(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "api_key_pepper_key",
         "audit_context_key",
         "audit_system_api_context_key",
         "audit_system_realtime_context_key",
@@ -72,6 +73,7 @@ _GENERATED_SECRET_NAMES = _NEW_SECRET_NAMES - _OLD_SECRET_NAMES
 _DEV_SECRET = "dev-apikeys.txt"
 _CRYPTO_KEY_NAMES = frozenset(
     {
+        "api_key_pepper_key",
         "audit_context_key",
         "audit_system_api_context_key",
         "audit_system_realtime_context_key",
@@ -610,6 +612,10 @@ class PublicCutoverBootstrap:
             generated_values.add(value)
             _write_secret(new_secrets / name, value)
         _write_secret(
+            new_secrets / "api_key_pepper_key",
+            base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
+        )
+        _write_secret(
             new_secrets / "audit_context_key",
             base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
         )
@@ -852,7 +858,7 @@ class PublicCutoverBootstrap:
             )
 
     def run(self) -> dict[str, object]:
-        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 18:
+        if not self.confirmed or len(_GENERATED_SECRET_NAMES) != 19:
             raise PublicCutoverBootstrapError(
                 "public cutover bootstrap is not explicitly confirmed"
             )

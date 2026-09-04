@@ -19,7 +19,7 @@
 | 厂商、JWT、加密/HMAC、DB、Redis、LDAP 等 secrets | 生产独立生成，只经受控文件挂载；不进入测试、Git、Registry、日志或命令行 |
 | 发布制品 | 四镜像与 manifest 绑定不可变身份；预生产和生产使用同一候选。内部 Registry 建成前只允许签名的生产离线 Docker image archive 发布包（镜像 OCI-compatible，不是 OCI Image Layout） |
 | PostgreSQL 事实 | RPO≤24h；加密备份保留 35 天并可在隔离环境恢复 |
-| 发送唯一性 | timeout/网络异常保持 uncertain，submitted/uncertain 禁止自动重发 |
+| 发送唯一性 | timeout/网络异常保持 uncertain，submitted/uncertain 禁止自动重发或自动换供应商 |
 | 身份与权限 | VPN 不是身份认证替代；Web 仍显式 Provider、RBAC、step-up 和审计 |
 | 告警 | critical 同时送达企业微信和公司邮件的具名主接收人/替补 |
 
@@ -75,6 +75,14 @@ secret。每个系统只能消费自己服务商的 GetReport/GetReply。
 2. submitted/uncertain 继续按新服务商 customId 对账，禁止在旧系统自动补发。
 3. 只有能够证明从未提交的请求，才由业务生成新的旧系统请求和新的业务幂等标识。
 4. 记录两个系统的时间边界和人工复核，避免“停服积压后补发”演化为重复下发。
+
+### 场景 B2：供应商超时后自动切换第二供应商
+
+1. Provider A 超时或连接中断后，chunk 必须进入 `uncertain`，禁止自动调用 Provider B。
+2. 只有调用前确定性不可用，或 A 协议明确拒绝且 `safe_to_failover=true` 时才允许选 B。
+3. 同一 chunk 在全部供应商 attempt 中最多一次 `submitted`/`uncertain`；回执按 vendor
+   identity 去重，拒绝后的迟到回执不得改写另一供应商结果。
+4. 人工换供应商必须先走 uncertain 双人处置并创建新批次，不得复用旧 chunk。
 
 ### 场景 C：发现生产 secret 来源于测试环境
 

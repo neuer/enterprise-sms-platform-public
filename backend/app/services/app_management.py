@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from app.core.apikey import hash_api_key
+from app.core.apikey import issue_api_key_digest
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import (
@@ -22,10 +22,12 @@ from app.services.runtime_policy import (
 )
 
 VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
+DEFAULT_CATEGORIES = frozenset({"notice"})
 FREQ_OVERRIDE_KEYS = frozenset(
     {"verify_per_minute", "verify_per_day", "market_per_day"}
 )
 MAX_ALLOWED_IPS = 50
+MAX_EXEMPTION_DAYS = 90
 LOGGER = logging.getLogger(__name__)
 
 
@@ -45,13 +47,20 @@ class CallbackValidationUnavailable(RuntimeError):
 class AppCreate:
     name: str
     dept: str
-    allowed_categories: frozenset[str] = VALID_CATEGORIES
+    allowed_categories: frozenset[str] = DEFAULT_CATEGORIES
     default_sign: str | None = None
     daily_quota: int = 0
     rate_limit_per_min: int = 60
+    recipient_limit_per_min: int = 10_000
+    segment_limit_per_min: int = 10_000
+    max_in_flight_chunks: int = 200
+    allow_market_api_bulk: bool = False
     blacklist_check: bool = True
     freq_override: Mapping[str, int] | None = None
     allowed_ips: tuple[str, ...] = ()
+    ip_allowlist_exempt_until: datetime | None = None
+    unlimited_quota_exempt_until: datetime | None = None
+    admission_exempt_note: str | None = None
     callback_url: str | None = None
     callback_report_enabled: bool = False
 
@@ -59,13 +68,20 @@ class AppCreate:
 @dataclass(frozen=True, slots=True)
 class AppUpdate:
     dept: str
-    allowed_categories: frozenset[str] = VALID_CATEGORIES
+    allowed_categories: frozenset[str] = DEFAULT_CATEGORIES
     default_sign: str | None = None
     daily_quota: int = 0
     rate_limit_per_min: int = 60
+    recipient_limit_per_min: int = 10_000
+    segment_limit_per_min: int = 10_000
+    max_in_flight_chunks: int = 200
+    allow_market_api_bulk: bool = False
     blacklist_check: bool = True
     freq_override: Mapping[str, int] | None = None
     allowed_ips: tuple[str, ...] = ()
+    ip_allowlist_exempt_until: datetime | None = None
+    unlimited_quota_exempt_until: datetime | None = None
+    admission_exempt_note: str | None = None
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: int = 1
@@ -228,8 +244,7 @@ class AppManagementService:
         self.clock = clock
         self.key_grace = key_grace
 
-    @staticmethod
-    def _validate(config: AppCreate | AppUpdate) -> None:
+    def _validate(self, config: AppCreate | AppUpdate) -> None:
         if isinstance(config, AppCreate) and (not config.name or len(config.name) > 64):
             raise InvalidAppConfig("应用名称长度无效")
         if not config.dept or len(config.dept) > 128:
@@ -241,8 +256,16 @@ class AppManagementService:
         if (
             not 0 <= config.daily_quota <= 100_000_000
             or not 1 <= config.rate_limit_per_min <= 60_000
+            or not 1 <= config.recipient_limit_per_min <= 100_000_000
+            or not 1 <= config.segment_limit_per_min <= 100_000_000
+            or not 1 <= config.max_in_flight_chunks <= 100_000
         ):
             raise InvalidAppConfig("配额或限流参数无效")
+        if config.admission_exempt_note is not None and len(
+            config.admission_exempt_note
+        ) > 200:
+            raise InvalidAppConfig("豁免原因最长 200 字")
+        self._validate_production_admission(config)
         if config.freq_override is not None and (
             not set(config.freq_override).issubset(FREQ_OVERRIDE_KEYS)
             or any(
@@ -259,13 +282,41 @@ class AppManagementService:
         if isinstance(config, AppUpdate) and config.status not in {0, 1}:
             raise InvalidAppConfig("应用状态无效")
 
+    def _validate_production_admission(self, config: AppCreate | AppUpdate) -> None:
+        """生产保存必须显式配额/来源网段，豁免须未过期且可审计。"""
+
+        from app.settings import get_settings
+
+        if get_settings().environment != "production":
+            return
+        now = self.clock()
+        note = (config.admission_exempt_note or "").strip()
+        if config.daily_quota == 0:
+            until = config.unlimited_quota_exempt_until
+            if until is None or until.tzinfo is None or until <= now:
+                raise InvalidAppConfig("生产应用必须设置非零日配额，或填写未过期豁免")
+            if until > now + timedelta(days=MAX_EXEMPTION_DAYS):
+                raise InvalidAppConfig("无限配额豁免最长 90 天")
+            if not note:
+                raise InvalidAppConfig("无限配额豁免必须填写原因")
+        if not config.allowed_ips:
+            until = config.ip_allowlist_exempt_until
+            if until is None or until.tzinfo is None or until <= now:
+                raise InvalidAppConfig("生产应用必须配置来源 IP 白名单，或填写未过期豁免")
+            if until > now + timedelta(days=MAX_EXEMPTION_DAYS):
+                raise InvalidAppConfig("空白名单豁免最长 90 天")
+            if not note:
+                raise InvalidAppConfig("空白名单豁免必须填写原因")
+
     @staticmethod
-    def _key_values(plaintext: str) -> dict[str, str]:
+    def _key_values(plaintext: str) -> dict[str, Any]:
         if len(plaintext) < 16:
             raise InvalidAppConfig("生成的密钥长度不足")
+        digest, version = issue_api_key_digest(plaintext)
         return {
-            "api_key_hash": hash_api_key(plaintext),
+            "api_key_hash": digest,
             "api_key_prefix": plaintext[:8],
+            "api_key_hash_version": version,
         }
 
     @staticmethod
@@ -312,7 +363,18 @@ class AppManagementService:
             "default_sign": config.default_sign,
             "daily_quota": config.daily_quota,
             "rate_limit_per_min": config.rate_limit_per_min,
+            "recipient_limit_per_min": config.recipient_limit_per_min,
+            "segment_limit_per_min": config.segment_limit_per_min,
+            "max_in_flight_chunks": config.max_in_flight_chunks,
+            "allow_market_api_bulk": config.allow_market_api_bulk,
             "blacklist_check": config.blacklist_check,
+            "ip_allowlist_exempt_until": config.ip_allowlist_exempt_until,
+            "unlimited_quota_exempt_until": config.unlimited_quota_exempt_until,
+            "admission_exempt_note": (
+                config.admission_exempt_note.strip()
+                if config.admission_exempt_note
+                else None
+            ),
             "freq_override": dict(config.freq_override) if config.freq_override else None,
             "allowed_ips": self._normalize_allowed_ips(config.allowed_ips),
             "callback_url": callback_url,

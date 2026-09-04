@@ -65,17 +65,24 @@ def _frequency_values(value: FrequencyOverride | None) -> dict[str, int] | None:
 class AppCreateRequest(BaseModel):
     name: str
     dept: str
-    allowed_categories: list[Category] = ["verify", "notice", "market"]
+    allowed_categories: list[Category] = ["notice"]
     default_sign: str | None = None
     daily_quota: int = Field(default=0, ge=0, le=100_000_000)
     rate_limit_per_min: int = Field(default=60, ge=1, le=60_000)
+    recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
+    segment_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
+    max_in_flight_chunks: int = Field(default=200, ge=1, le=100_000)
+    allow_market_api_bulk: bool = False
     blacklist_check: bool = True
     freq_override: FrequencyOverride | None = None
     allowed_ips: list[IpCidr] = Field(
         default_factory=list,
         max_length=50,
-        description="入站来源 IP/CIDR 白名单，空数组=不限",
+        description="入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免",
     )
+    ip_allowlist_exempt_until: datetime | None = None
+    unlimited_quota_exempt_until: datetime | None = None
+    admission_exempt_note: str | None = Field(default=None, max_length=200)
     callback_url: str | None = None
     callback_report_enabled: bool = False
 
@@ -86,13 +93,20 @@ class AppUpdateRequest(BaseModel):
     default_sign: str | None = None
     daily_quota: int = Field(ge=0, le=100_000_000)
     rate_limit_per_min: int = Field(ge=1, le=60_000)
+    recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
+    segment_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
+    max_in_flight_chunks: int = Field(default=200, ge=1, le=100_000)
+    allow_market_api_bulk: bool = False
     blacklist_check: bool
     freq_override: FrequencyOverride | None = None
     allowed_ips: list[IpCidr] = Field(
         default_factory=list,
         max_length=50,
-        description="入站来源 IP/CIDR 白名单，空数组=不限",
+        description="入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免",
     )
+    ip_allowlist_exempt_until: datetime | None = None
+    unlimited_quota_exempt_until: datetime | None = None
+    admission_exempt_note: str | None = Field(default=None, max_length=200)
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: Literal[0, 1] = 1
@@ -106,13 +120,20 @@ class AppResponse(BaseModel):
     default_sign: str | None = None
     daily_quota: int
     rate_limit_per_min: int
+    recipient_limit_per_min: int = 10_000
+    segment_limit_per_min: int = 10_000
+    max_in_flight_chunks: int = 200
+    allow_market_api_bulk: bool = False
     blacklist_check: bool
     freq_override: FrequencyOverride | None = None
     allowed_ips: list[IpCidr] = Field(
         default_factory=list,
         max_length=50,
-        description="入站来源 IP/CIDR 白名单，空数组=不限",
+        description="入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免",
     )
+    ip_allowlist_exempt_until: datetime | None = None
+    unlimited_quota_exempt_until: datetime | None = None
+    admission_exempt_note: str | None = None
     callback_url: str | None = None
     callback_report_enabled: bool = False
     status: Literal[0, 1]

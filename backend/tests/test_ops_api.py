@@ -317,12 +317,13 @@ def test_ops_lists_return_safe_complete_models() -> None:
     raw = browser.get("/api/v1/web/admin/raw-logs", headers=headers).json()
     assert raw["items"][0]["custom_id_count"] == 1
     assert "payload" not in str(raw).lower()
-    assert (
-        browser.get("/api/v1/web/admin/chunks/uncertain", headers=headers).json()["items"][0][
-            "age_seconds"
-        ]
-        == 3600
-    )
+    uncertain = browser.get(
+        "/api/v1/web/admin/chunks/uncertain", headers=headers
+    ).json()["items"][0]
+    assert uncertain["age_seconds"] == 3600
+    assert uncertain["status"] == "uncertain"
+    assert uncertain["resolution_id"] is None
+    assert uncertain["resolution_state"] is None
     unmatched = browser.post(
         "/api/v1/web/admin/unmatched-reports", headers=headers, json={"page": 1, "page_size": 20}
     ).json()
@@ -375,6 +376,12 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     assert vars(ops_api.reevaluate_raw)["__audited_action__"] == "raw_reevaluate"
     assert vars(ops_api.trigger_job)["__audited_action__"] == "job_trigger"
     assert vars(ops_api.resume_queue)["__audited_action__"] == "queue_resume"
+    assert vars(ops_api.propose_uncertain_resolution)["__audited_action__"] == (
+        "uncertain_resolve_propose"
+    )
+    assert vars(ops_api.confirm_uncertain_resolution)["__audited_action__"] == (
+        "uncertain_resolve_confirm"
+    )
     assert vars(ops_api.create_unmatched_export)["__audited_action__"] == "export_create"
     assert values["queue"].calls[0][0] is True
     assert values["queue"].calls[0][1] == "admin01"

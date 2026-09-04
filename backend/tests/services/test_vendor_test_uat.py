@@ -1249,10 +1249,12 @@ async def test_page_uat_pipeline_uses_shared_application_rate_limiter(
             return {}
 
     redis = FakeRedis()
+    guard = object()
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(redis_control_url="redis://test"))
     monkeypatch.setattr(module.CryptoService, "from_settings", lambda _settings: object())
     monkeypatch.setattr(module.Redis, "from_url", lambda *_args, **_kwargs: redis)
     monkeypatch.setattr(module, "SqlPipelineStore", lambda _settings: FakeStore())
+    monkeypatch.setattr(module, "get_send_admission_guard", lambda: guard)
 
     service = module.build_vendor_test_uat_service()
     app = module.VendorTestUatService._app(await FakeApps().get(7), 7)
@@ -1260,5 +1262,6 @@ async def test_page_uat_pipeline_uses_shared_application_rate_limiter(
     async with service.pipeline_factory(app) as pipeline:
         assert isinstance(pipeline.acceptance_limiter, ApplicationRateLimiter)
         assert pipeline.acceptance_limiter.redis is redis
+        assert pipeline.admission_guard is guard
 
     assert redis.closed is True

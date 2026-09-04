@@ -812,6 +812,7 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "api_key_pepper_key",
         "jwt_secret",
         "ldap_bind_password",
     )

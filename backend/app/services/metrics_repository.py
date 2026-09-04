@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
 from app.services.metrics import MetricsFacts
+from app.services.send_admission import SendAdmissionFacts, evaluate_capacity
 from app.settings import Settings, get_settings
 
 
@@ -69,6 +70,22 @@ class SqlMetricsRepository:
                         SELECT
                           (SELECT count(status) FROM sms_chunk
                            WHERE status='uncertain') uncertain,
+                          (SELECT count(c.status) FROM sms_chunk c
+                           LEFT JOIN sms_batch b ON b.id=c.batch_id
+                           WHERE c.status='uncertain'
+                             AND now()-COALESCE(c.uncertain_since,b.created_at)
+                               < interval '24 hours') uncertain_active,
+                          (SELECT count(c.status) FROM sms_chunk c
+                           LEFT JOIN sms_batch b ON b.id=c.batch_id
+                           WHERE c.status='uncertain'
+                             AND now()-COALESCE(c.uncertain_since,b.created_at)
+                               >= interval '24 hours') uncertain_overdue,
+                          (SELECT count(status) FROM sms_chunk
+                           WHERE status='unknown_terminal') unknown_terminal,
+                          (SELECT count(state) FROM sms_uncertain_resolution
+                           WHERE state='confirmed') manual_resolved,
+                          (SELECT count(late_evidence_at) FROM sms_chunk
+                           WHERE late_evidence_at IS NOT NULL) late_evidence,
                           (SELECT count(status) FROM callback_task
                            WHERE status='retrying') callback_retrying,
                           (SELECT count(status) FROM callback_task
@@ -78,7 +95,18 @@ class SqlMetricsRepository:
                              AND lease_expires_at<=now()) callback_stalled,
                           (SELECT count(lease_id) FROM export_task
                            WHERE lease_id IS NOT NULL
-                             AND lease_expires_at<=now()) export_stalled
+                             AND lease_expires_at<=now()) export_stalled,
+                          (SELECT count(*) FROM outbox_event
+                           WHERE state IN
+                             ('pending','leased','published','processing'))
+                             outbox_active,
+                          (SELECT EXTRACT(EPOCH FROM (now()-min(created_at)))
+                           FROM outbox_event
+                           WHERE state IN
+                             ('pending','leased','published','processing'))
+                             outbox_oldest_age,
+                          (SELECT count(*) FROM outbox_event
+                           WHERE state='dead') outbox_dead
                         """
                     )
                 )
@@ -170,6 +198,22 @@ class SqlMetricsRepository:
                 )
                 drift_rows = list(drift_result.mappings())
 
+                outcome_result = await connection.execute(
+                    text(
+                        """
+                        SELECT outcome,count(outcome) count
+                        FROM sms_vendor_attempt
+                        WHERE created_at>=now()-interval '5 minutes'
+                        GROUP BY outcome
+                        ORDER BY outcome
+                        """
+                    )
+                )
+                send_submit_outcomes = tuple(
+                    (str(row["outcome"]), max(0, int(row["count"])))
+                    for row in outcome_result.mappings()
+                )
+
                 eligibility_result = await connection.execute(
                     text(
                         """
@@ -184,6 +228,20 @@ class SqlMetricsRepository:
                     (str(row["replay_eligibility"]), max(0, int(row["count"])))
                     for row in eligibility_result.mappings()
                 )
+                oldest_age = max(0.0, float(counts.get("outbox_oldest_age") or 0))
+                admission_state, _reason = evaluate_capacity(
+                    SendAdmissionFacts(
+                        outbox_active=max(0, int(counts.get("outbox_active") or 0)),
+                        outbox_oldest_age_s=int(oldest_age),
+                        outbox_dead=max(0, int(counts.get("outbox_dead") or 0)),
+                        uncertain_overdue=max(0, int(counts["uncertain_overdue"])),
+                        callback_dead=max(0, int(counts["callback_dead"])),
+                        realtime_paused=False,
+                        bulk_paused=False,
+                        vendor_failures=0,
+                    )
+                )
+
                 pending_audit = await connection.scalar(
                     text(
                         """
@@ -198,6 +256,19 @@ class SqlMetricsRepository:
                     send_rates=send_rates,
                     vendor_errors=vendor_errors,
                     uncertain=max(0, int(counts["uncertain"])),
+                    uncertain_lifecycle=(
+                        ("active", max(0, int(counts["uncertain_active"]))),
+                        ("overdue", max(0, int(counts["uncertain_overdue"]))),
+                        (
+                            "unknown_terminal",
+                            max(0, int(counts["unknown_terminal"])),
+                        ),
+                        (
+                            "manual_resolved",
+                            max(0, int(counts["manual_resolved"])),
+                        ),
+                        ("late_evidence", max(0, int(counts["late_evidence"]))),
+                    ),
                     callback_failures=(
                         ("retrying", max(0, int(counts["callback_retrying"]))),
                         ("dead", max(0, int(counts["callback_dead"]))),
@@ -226,4 +297,7 @@ class SqlMetricsRepository:
                     queue_depths=queue_depths,
                     raw_replay_eligibility=raw_replay_eligibility,
                     system_replay_audit_pending=max(0, int(pending_audit or 0)),
+                    send_admission_state=admission_state,
+                    outbox_oldest_age_seconds=oldest_age,
+                    send_submit_outcomes=send_submit_outcomes,
                 )

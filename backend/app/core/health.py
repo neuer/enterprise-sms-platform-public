@@ -16,6 +16,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
+from app.core.apikey import require_api_key_pepper_keyring
 from app.core.audit_context import decode_audit_context_key
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import database_engine, redis_client
@@ -128,6 +129,33 @@ class DatabaseReadinessCheck:
                 raise RuntimeError("future partitions are incomplete")
 
 
+class ApiKeyPepperReferenceCheck:
+    """引用中的 pepper 版本必须仍在独立 keyring；缺失即失败关闭。"""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def __call__(self) -> None:
+        ring = require_api_key_pepper_keyring(self.settings)
+        engine = database_engine(self.settings.database_url_for("auth"), component="api")
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT DISTINCT version FROM (
+                      SELECT api_key_hash_version AS version FROM app
+                      UNION ALL
+                      SELECT api_key_prev_hash_version FROM app
+                    ) versions
+                    WHERE version IS NOT NULL
+                    """
+                )
+            )
+            for row in result:
+                if int(row[0]) not in ring.keys:
+                    raise RuntimeError("api key pepper version is unavailable")
+
+
 class RedisReadinessCheck:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -151,6 +179,7 @@ def _validate_runtime_secrets(settings: Settings) -> None:
         for name in (
             "data_aes_key",
             "data_hmac_key",
+            "api_key_pepper_key",
             "audit_context_key",
             "audit_system_api_context_key",
             "alert_credential_public_key",
@@ -162,6 +191,7 @@ def _validate_runtime_secrets(settings: Settings) -> None:
         secrets["data_aes_key"],
         secrets["data_hmac_key"],
     )
+    require_api_key_pepper_keyring(settings)
     principal_audit_key = decode_audit_context_key(secrets["audit_context_key"])
     api_system_audit_key = decode_audit_context_key(
         secrets["audit_system_api_context_key"]
@@ -241,6 +271,7 @@ def create_readiness_probe(
         (
             RuntimeSecretReadinessCheck(settings),
             DatabaseReadinessCheck(settings),
+            ApiKeyPepperReferenceCheck(settings),
             RedisReadinessCheck(settings),
             startup_check,
         ),

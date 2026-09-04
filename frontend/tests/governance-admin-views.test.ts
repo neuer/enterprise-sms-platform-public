@@ -37,9 +37,16 @@ const app = {
   default_sign: "青鸾平台",
   daily_quota: 10000,
   rate_limit_per_min: 60,
+  recipient_limit_per_min: 10000,
+  segment_limit_per_min: 10000,
+  max_in_flight_chunks: 200,
+  allow_market_api_bulk: false,
   blacklist_check: true,
   freq_override: null,
   allowed_ips: [],
+  ip_allowlist_exempt_until: null,
+  unlimited_quota_exempt_until: null,
+  admission_exempt_note: null,
   callback_url: null,
   callback_report_enabled: false,
   status: 1,
@@ -358,6 +365,29 @@ describe("管理员治理页面", () => {
     vi.restoreAllMocks()
   })
 
+  it("新建应用表单默认仅通知并展示最坏发送能力", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return response([{ key: "key_grace_hours", value: "72" }])
+      }
+      if (String(url).includes("/reports/stats")) return response(EMPTY_USAGE)
+      return response([app])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    await wrapper.get("[data-testid='new-app']").trigger("click")
+    await flushPromises()
+    expect(wrapper.get("[data-testid='worst-case-capacity']").text()).toContain("10,000")
+    expect(wrapper.text()).toContain("默认仅通知")
+    expect(wrapper.text()).not.toContain("产品默认")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("取消 API Key 轮换确认不产生写请求", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/admin/configs")) {
@@ -534,9 +564,16 @@ describe("管理员治理页面", () => {
       default_sign: disabledApp.default_sign,
       daily_quota: disabledApp.daily_quota,
       rate_limit_per_min: disabledApp.rate_limit_per_min,
+      recipient_limit_per_min: disabledApp.recipient_limit_per_min,
+      segment_limit_per_min: disabledApp.segment_limit_per_min,
+      max_in_flight_chunks: disabledApp.max_in_flight_chunks,
+      allow_market_api_bulk: disabledApp.allow_market_api_bulk,
       blacklist_check: disabledApp.blacklist_check,
       freq_override: disabledApp.freq_override,
       allowed_ips: disabledApp.allowed_ips,
+      ip_allowlist_exempt_until: disabledApp.ip_allowlist_exempt_until,
+      unlimited_quota_exempt_until: disabledApp.unlimited_quota_exempt_until,
+      admission_exempt_note: disabledApp.admission_exempt_note,
       callback_url: disabledApp.callback_url,
       callback_report_enabled: disabledApp.callback_report_enabled,
       status: 1,

@@ -84,6 +84,30 @@ class VendorTestConsoleOnly(PermissionError):
     """受控真实模式只允许系统配置页的单号码 UAT 入口。"""
 
 
+class MarketApiBulkForbidden(PermissionError):
+    """API 营销大批量未预授权，对应 FORBIDDEN/403。"""
+
+
+class InFlightLimitExceeded(RuntimeError):
+    """单应用在途分片已达上限，对应 RATE_LIMITED/429。"""
+
+
+class InFlightQueryUnavailable(RuntimeError):
+    """在途分片查询失败，必须失败关闭。"""
+
+
+class SendAdmissionPort(Protocol):
+    """新发送积压准入；幂等重放不得调用。"""
+
+    async def authorize(
+        self,
+        *,
+        category: str,
+        channel: str,
+        recipient_count: int,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedContent:
     send_content: str
@@ -232,6 +256,7 @@ class BatchResponse:
     status: str
     deferred_reason: str | None
     scheduled_at: datetime | None
+    idempotency_expires_at: datetime | None = None
 
 
 class PipelineStore(Protocol):
@@ -244,6 +269,8 @@ class PipelineStore(Protocol):
     async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None: ...
 
     async def save(self, command: BatchCommand) -> StoredBatch: ...
+
+    async def count_in_flight_chunks(self, app_id: int) -> int: ...
 
 
 class IdempotencyPort(Protocol):
@@ -456,6 +483,7 @@ class SendPipeline:
         vendor_test_console_only: bool = False,
         acceptance_limiter: ApplicationRateLimiter | None = None,
         usage_ledger: UsageLedgerPort | None = None,
+        admission_guard: SendAdmissionPort | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.store = store
@@ -471,6 +499,7 @@ class SendPipeline:
         self.vendor_test_console_only = vendor_test_console_only
         self.acceptance_limiter = acceptance_limiter
         self.usage_ledger = usage_ledger
+        self.admission_guard = admission_guard
         self.clock = clock
 
     async def response_for(self, batch_no: str) -> BatchResponse:
@@ -732,6 +761,94 @@ class SendPipeline:
         next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return local.strftime("%Y%m%d"), max(1, int((next_day - local).total_seconds()))
 
+    async def _authorize_new_send(self, request: SendRequest) -> None:
+        if self.admission_guard is None:
+            return
+        recipient_count = (
+            len(request.protected_mobiles)
+            if request.protected_mobiles
+            else len(request.mobiles)
+        )
+        await self.admission_guard.authorize(
+            category=request.category,
+            channel=request.channel,
+            recipient_count=max(1, recipient_count),
+        )
+
+    async def _consume_request_limit(
+        self,
+        app: ApiAppContext,
+        request: SendRequest,
+        preauthorization: AcceptancePreauthorization | None,
+    ) -> None:
+        if (
+            request.channel != "web"
+            and preauthorization is None
+            and self.acceptance_limiter is not None
+        ):
+            await self.acceptance_limiter.check(
+                app_id=app.app_id,
+                limit_per_minute=app.rate_limit_per_min,
+            )
+
+    async def _consume_replay_limit(self, app: ApiAppContext) -> None:
+        limiter = self.acceptance_limiter
+        if limiter is None:
+            return
+        replay = getattr(limiter, "check_replay", None)
+        if replay is not None:
+            await replay(app_id=app.app_id, limit_per_minute=app.rate_limit_per_min)
+
+    async def _consume_send_cost(
+        self,
+        app: ApiAppContext,
+        request: SendRequest,
+        *,
+        recipient_count: int,
+        segment_count: int,
+    ) -> None:
+        if request.channel == "web" or self.acceptance_limiter is None:
+            return
+        consume = getattr(self.acceptance_limiter, "consume_send_cost", None)
+        if consume is None:
+            return
+        await consume(
+            app_id=app.app_id,
+            recipient_count=recipient_count,
+            segment_count=segment_count,
+            recipient_limit=app.recipient_limit_per_min,
+            segment_limit=app.segment_limit_per_min,
+        )
+
+    async def _enforce_in_flight(self, app: ApiAppContext, request: SendRequest) -> None:
+        if request.channel == "web":
+            return
+        counter = getattr(self.store, "count_in_flight_chunks", None)
+        if counter is None:
+            return
+        try:
+            current = await counter(app.app_id)
+        except InFlightQueryUnavailable:
+            raise
+        except Exception as exc:
+            raise InFlightQueryUnavailable("在途分片查询不可用") from exc
+        if current >= app.max_in_flight_chunks:
+            raise InFlightLimitExceeded("应用在途分片已达上限")
+
+    def _enforce_market_api_bulk(
+        self,
+        app: ApiAppContext,
+        request: SendRequest,
+        recipient_count: int,
+    ) -> None:
+        if (
+            request.channel == "api"
+            and request.category == "market"
+            and recipient_count >= self.config.market_approval_threshold
+            and not app.allow_market_api_bulk
+        ):
+            raise MarketApiBulkForbidden("营销大批量 API 发送未预授权")
+
     async def preauthorize(
         self,
         app: ApiAppContext,
@@ -739,6 +856,12 @@ class SendPipeline:
     ) -> AcceptancePreauthorization:
         """在受控号码解析前消费应用限流并验证类别权限。"""
 
+        if self.admission_guard is not None:
+            await self.admission_guard.authorize(
+                category=category,
+                channel="api",
+                recipient_count=1,
+            )
         if self.acceptance_limiter is not None:
             await self.acceptance_limiter.check(
                 app_id=app.app_id,
@@ -779,19 +902,13 @@ class SendPipeline:
             policy,
             key_version=request_hash_key_version,
         )
-        if (
-            request.channel != "web"
-            and preauthorization is None
-            and self.acceptance_limiter is not None
-        ):
-            await self.acceptance_limiter.check(
-                app_id=app.app_id,
-                limit_per_minute=app.rate_limit_per_min,
-            )
         existing = await self.idempotency.lookup(idem_scope, biz_id)
         if existing is not None:
             await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+            await self._consume_replay_limit(app)
             return await self.store.response_for(existing)
+        await self._authorize_new_send(request)
+        await self._consume_request_limit(app, request, preauthorization)
         token = await self.idempotency.claim(idem_scope, biz_id)
         if token is None:
             existing = await self.idempotency.wait(idem_scope, biz_id)
@@ -894,12 +1011,15 @@ class SendPipeline:
             raise ValueError("手机号格式无效")
         if request.vendor_test_uat and recipient_count != 1:
             raise ValueError("真实联调 UAT 仅允许一个已登记号码")
+        if not request.biz_id:
+            await self._authorize_new_send(request)
         if has_protected and not request.vendor_test_uat:
             raise ValueError("加密号码只能由真实联调 UAT 使用")
         if request.is_test and recipient_count > self.config.test_send_max:
             raise ValueError(f"测试发送最多{self.config.test_send_max}个号码")
         if self.recipient_guard is not None and has_plain:
             self.recipient_guard.require_allowed(request.mobiles)
+        self._enforce_market_api_bulk(app, request, recipient_count)
         if (
             request.channel != "web"
             and preauthorization is None
@@ -925,6 +1045,13 @@ class SendPipeline:
             consent_confirmed=request.consent_confirmed,
             verify_otp_mask=self.config.verify_otp_mask,
         )
+        await self._consume_send_cost(
+            app,
+            request,
+            recipient_count=recipient_count,
+            segment_count=prepared.segments * recipient_count,
+        )
+        await self._enforce_in_flight(app, request)
         if ownership_check is not None:
             await ownership_check()
         hits = await self.store.sensitive_hits(prepared.send_content)
@@ -1313,6 +1440,13 @@ class SendPipeline:
             if ownership_check is not None:
                 await ownership_check()
             await self.publisher.enqueue(stored.batch_no, policy.queue)
+        expires_at = None
+        if request.biz_id:
+            expires_at = (
+                scheduled_at + timedelta(days=7)
+                if scheduled_at is not None
+                else self.clock() + timedelta(hours=24)
+            )
         return BatchResponse(
             stored.batch_no,
             False,
@@ -1325,6 +1459,7 @@ class SendPipeline:
             status,
             deferred_reason,
             scheduled_at,
+            expires_at,
         )
 
     async def _protect_plain_phones_batched(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import Request
@@ -22,12 +23,14 @@ class ApiError(RuntimeError):
         code: str,
         message: str,
         detail: dict[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.detail = detail
+        self.headers = dict(headers) if headers else None
 
 
 async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
@@ -36,6 +39,7 @@ async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
     return JSONResponse(
         status_code=error.status_code,
         content={"code": error.code, "message": error.message, "detail": error.detail},
+        headers=error.headers,
     )
 
 

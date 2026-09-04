@@ -568,6 +568,7 @@ async def test_uncertain_list_uses_exact_timestamp_without_state_mutation() -> N
                         "vendor_code": None,
                         "uncertain_since": NOW,
                         "age_seconds": 3600,
+                        "status": "uncertain",
                     }
                 ]
             ),
@@ -578,7 +579,12 @@ async def test_uncertain_list_uses_exact_timestamp_without_state_mutation() -> N
     assert page.items[0].age_seconds == 3600
     sql = connection.calls[1][0]
     assert "COALESCE(c.uncertain_since,b.created_at)" in sql
-    assert "UPDATE" not in sql and "status='uncertain'" in sql
+    assert "UPDATE" not in sql
+    assert "uncertain','unknown_terminal'" in sql.replace(" ", "") or (
+        "unknown_terminal" in sql and "uncertain" in sql
+    )
+    assert "LEFT JOIN sms_uncertain_resolution" in sql
+    assert page.items[0].resolution_id is None
 
 
 @pytest.mark.asyncio

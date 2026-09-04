@@ -7,6 +7,7 @@ import { computed, h, onMounted, reactive, ref } from "vue"
 import {
   createApp,
   disableApp,
+  estimateWorstCaseCapacity,
   getApp,
   listApps,
   parseFrequencyOverride,
@@ -72,8 +73,11 @@ const signsUnavailable = ref(false)
 
 const form = reactive({
   name: "", dept: "", allowed_categories: ["notice"] as AppCategory[], default_sign: "",
-  daily_quota: 0, rate_limit_per_min: 60, blacklist_check: true, freq_override: "",
-  allowed_ips: "", callback_url: "", callback_report_enabled: false, status: 1 as 0 | 1,
+  daily_quota: 0, rate_limit_per_min: 60, recipient_limit_per_min: 10000,
+  segment_limit_per_min: 10000, max_in_flight_chunks: 200, allow_market_api_bulk: false,
+  blacklist_check: true, freq_override: "",
+  allowed_ips: "", ip_allowlist_exempt_until: "", unlimited_quota_exempt_until: "",
+  admission_exempt_note: "", callback_url: "", callback_report_enabled: false, status: 1 as 0 | 1,
 })
 
 /** 频控覆盖输入失焦前的内联校验；保存时仍由 payload() 兜底。 */
@@ -90,8 +94,11 @@ const freqOverrideError = computed(() => {
 function resetForm(): void {
   Object.assign(form, {
     name: "", dept: "", allowed_categories: ["notice"], default_sign: "",
-    daily_quota: 0, rate_limit_per_min: 60, blacklist_check: true, freq_override: "",
-    allowed_ips: "", callback_url: "", callback_report_enabled: false, status: 1,
+    daily_quota: 0, rate_limit_per_min: 60, recipient_limit_per_min: 10000,
+    segment_limit_per_min: 10000, max_in_flight_chunks: 200, allow_market_api_bulk: false,
+    blacklist_check: true, freq_override: "",
+    allowed_ips: "", ip_allowlist_exempt_until: "", unlimited_quota_exempt_until: "",
+    admission_exempt_note: "", callback_url: "", callback_report_enabled: false, status: 1,
   })
 }
 
@@ -562,6 +569,9 @@ function openEdit(item: ManagedApp): void {
     ...item,
     default_sign: item.default_sign || "",
     allowed_ips: item.allowed_ips.join("\n"),
+    ip_allowlist_exempt_until: item.ip_allowlist_exempt_until || "",
+    unlimited_quota_exempt_until: item.unlimited_quota_exempt_until || "",
+    admission_exempt_note: item.admission_exempt_note || "",
     callback_url: item.callback_url || "",
     freq_override: item.freq_override ? JSON.stringify(item.freq_override) : "",
   })
@@ -590,12 +600,22 @@ function payload(): AppPayload {
   return {
     dept: form.dept.trim(), allowed_categories: form.allowed_categories,
     default_sign: form.default_sign.trim() || null, daily_quota: form.daily_quota,
-    rate_limit_per_min: form.rate_limit_per_min, blacklist_check: form.blacklist_check,
+    rate_limit_per_min: form.rate_limit_per_min,
+    recipient_limit_per_min: form.recipient_limit_per_min,
+    segment_limit_per_min: form.segment_limit_per_min,
+    max_in_flight_chunks: form.max_in_flight_chunks,
+    allow_market_api_bulk: form.allow_market_api_bulk,
+    blacklist_check: form.blacklist_check,
     freq_override: override, callback_url: form.callback_url.trim() || null,
     allowed_ips: parseAllowedIps(form.allowed_ips),
+    ip_allowlist_exempt_until: form.ip_allowlist_exempt_until.trim() || null,
+    unlimited_quota_exempt_until: form.unlimited_quota_exempt_until.trim() || null,
+    admission_exempt_note: form.admission_exempt_note.trim() || null,
     callback_report_enabled: form.callback_report_enabled, status: form.status,
   }
 }
+
+const worstCase = computed(() => estimateWorstCaseCapacity(form))
 
 function reveal(title: string, value: string, hint = "请立即保存；关闭后平台不会再次展示。") {
   secretTitle.value = title
@@ -783,9 +803,16 @@ async function enable(item: ManagedApp): Promise<void> {
       default_sign: current.default_sign,
       daily_quota: current.daily_quota,
       rate_limit_per_min: current.rate_limit_per_min,
+      recipient_limit_per_min: current.recipient_limit_per_min,
+      segment_limit_per_min: current.segment_limit_per_min,
+      max_in_flight_chunks: current.max_in_flight_chunks,
+      allow_market_api_bulk: current.allow_market_api_bulk,
       blacklist_check: current.blacklist_check,
       freq_override: current.freq_override,
       allowed_ips: current.allowed_ips,
+      ip_allowlist_exempt_until: current.ip_allowlist_exempt_until,
+      unlimited_quota_exempt_until: current.unlimited_quota_exempt_until,
+      admission_exempt_note: current.admission_exempt_note,
       callback_url: current.callback_url,
       callback_report_enabled: current.callback_report_enabled,
       status: 1,
@@ -1052,6 +1079,7 @@ onMounted(() => {
           <div><dt>允许类别</dt><dd>{{ categoriesText(detail) }}</dd></div>
           <div><dt>默认签名</dt><dd>{{ detail.default_sign ? `【${detail.default_sign}】` : "未设置" }}</dd></div>
           <div><dt>黑名单检查</dt><dd>{{ detail.blacklist_check ? "开启" : "关闭" }}</dd></div>
+          <div><dt>营销 API 大批量</dt><dd>{{ detail.allow_market_api_bulk ? "已预授权" : "未预授权" }}</dd></div>
           <div>
             <dt>来源 IP 白名单</dt>
             <dd class="apps-mono">{{ detail.allowed_ips.length ? `${detail.allowed_ips.length} 条 CIDR` : "全网放行" }}</dd>
@@ -1094,7 +1122,7 @@ onMounted(() => {
             <el-checkbox value="notice">通知</el-checkbox>
             <el-checkbox value="market">营销</el-checkbox>
           </el-checkbox-group>
-          <small class="field-rule">至少一个；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED。</small>
+          <small class="field-rule">默认仅通知。验证码/营销须显式勾选；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED。</small>
         </el-form-item>
         <el-form-item label="默认签名">
           <el-select
@@ -1134,11 +1162,34 @@ onMounted(() => {
           </el-form-item>
           <el-form-item label="每分钟限流">
             <el-input-number v-model="form.rate_limit_per_min" :min="1" :max="60000" />
-            <small class="field-rule">1–60,000 次/分钟。</small>
+            <small class="field-rule">1–60,000 次请求/分钟。</small>
           </el-form-item>
         </div>
+        <div class="apps-form-2col">
+          <el-form-item label="每分钟号码上限">
+            <el-input-number v-model="form.recipient_limit_per_min" :min="1" :max="100000000" />
+          </el-form-item>
+          <el-form-item label="每分钟计费条上限">
+            <el-input-number v-model="form.segment_limit_per_min" :min="1" :max="100000000" />
+          </el-form-item>
+        </div>
+        <div class="apps-form-2col">
+          <el-form-item label="在途分片上限">
+            <el-input-number v-model="form.max_in_flight_chunks" :min="1" :max="100000" />
+          </el-form-item>
+          <el-form-item label="营销 API 大批量预授权">
+            <el-switch v-model="form.allow_market_api_bulk" />
+            <small class="field-rule">关闭时，API 营销达到审批阈值将被 403 拒绝，不会转入人工审批。</small>
+          </el-form-item>
+        </div>
+        <div class="apps-form-alert" data-testid="worst-case-capacity">
+          最坏能力：每分钟最多 {{ worstCase.recipientsPerMin.toLocaleString() }} 个号码、
+          {{ worstCase.segmentsPerMin.toLocaleString() }} 计费条；每日
+          {{ worstCase.dailySegments === null ? "不限量（生产须豁免）" : `${worstCase.dailySegments.toLocaleString()} 计费条` }}。
+          单请求最多 10,000 号码，1×10,000 与 100×100 按同一成本计入。
+        </div>
         <div v-if="form.daily_quota === 0" class="apps-form-alert">
-          日配额为 0 表示不限量：该应用当日发送不受平台配额约束，请确认接入方可信。
+          日配额为 0 表示不限量。生产保存必须填写未过期豁免与原因，否则无法保存。
         </div>
         <el-form-item label="黑名单检查">
           <el-switch v-model="form.blacklist_check" />
@@ -1154,10 +1205,15 @@ onMounted(() => {
         <h3>安全与回调</h3>
         <el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，最多 50 条）">
           <div v-if="!form.allowed_ips.trim()" class="apps-form-alert apps-form-alert--verm">
-            白名单为空表示全网放行。Key 泄露后将失去第二道防线，生产环境请填写 CIDR。
+            白名单为空表示全网放行。生产环境必须填写 CIDR，或提供未过期豁免与原因。
           </div>
           <el-input v-model="form.allowed_ips" data-testid="allowed-ips-input" type="textarea" placeholder="203.0.113.0/24" />
-          <small class="field-rule">单 IP 自动归一化为 /32；留空表示不限制来源（产品默认，见 PRD），保存时校验格式。</small>
+          <small class="field-rule">单 IP 自动归一化为 /32；留空仅开发/测试或已登记豁免可用，保存时校验格式。</small>
+        </el-form-item>
+        <el-form-item label="豁免到期（空白名单 / 无限配额）">
+          <el-input v-model="form.ip_allowlist_exempt_until" placeholder="空白名单豁免 ISO8601，如 2026-09-10T08:00:00+08:00" />
+          <el-input v-model="form.unlimited_quota_exempt_until" placeholder="无限配额豁免 ISO8601" style="margin-top: 8px" />
+          <el-input v-model="form.admission_exempt_note" maxlength="200" placeholder="豁免原因（生产必填）" style="margin-top: 8px" />
         </el-form-item>
         <el-form-item label="回调 URL">
           <el-input v-model="form.callback_url" placeholder="https://" />

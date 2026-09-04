@@ -36,7 +36,10 @@ from app.services.pipeline import (
     ConsentRequired,
     IdempotencyClaimLost,
     IdempotencyConflict,
+    InFlightLimitExceeded,
+    InFlightQueryUnavailable,
     InvalidContent,
+    MarketApiBulkForbidden,
     PipelineConfig,
     SendPipeline,
     SendRequest,
@@ -51,6 +54,10 @@ from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
 from app.services.scheduling import SchedulingService
 from app.services.scheduling import StateConflict as SchedulingConflict
 from app.services.scheduling_repository import SqlSchedulingRepository
+from app.services.send_admission import (
+    SendAdmissionRejected,
+    get_send_admission_guard,
+)
 from app.services.sensitive_read_audit import (
     SensitiveReadAuditor,
     get_sensitive_read_auditor,
@@ -80,6 +87,23 @@ from app.services.vendor_test_recipient_repository import (
     SqlVendorTestRecipientRepository,
 )
 from app.settings import get_settings
+
+RATE_LIMITED_RESPONSE = {
+    **ERROR_RESPONSE,
+    "headers": {
+        "Retry-After": {"schema": {"type": "string"}},
+    },
+}
+UNAVAILABLE_RESPONSE = RATE_LIMITED_RESPONSE
+SEND_SUCCESS_RESPONSE: dict[int | str, Any] = {
+    200: {
+        "headers": {
+            "Idempotency-Expires-At": {
+                "schema": {"type": "string", "format": "date-time"},
+            },
+        },
+    },
+}
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
 Category = Literal["verify", "notice", "market"]
@@ -140,6 +164,7 @@ class SendResponseModel(BaseModel):
     ]
     deferred_reason: Literal["market_window"] | None
     scheduled_at: datetime | None
+    idempotency_expires_at: datetime | None = None
 
 
 class VendorTestApiUatRequestModel(BaseModel):
@@ -194,6 +219,7 @@ class BatchModel(BaseModel):
         "queued",
         "sending",
         "completed",
+        "completed_unknown",
         "cancelled",
         "balance_blocked",
         "expired",
@@ -264,6 +290,7 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
         vendor_test_console_only=settings.vendor_live_test,
         acceptance_limiter=ApplicationRateLimiter(redis),
         usage_ledger=UsageLedgerService(redis, settings),
+        admission_guard=get_send_admission_guard(),
         config=PipelineConfig(
             unsubscribe_suffix=policy.unsubscribe_suffix,
             unsubscribe_auto_append=policy.unsubscribe_auto_append,
@@ -366,6 +393,8 @@ def _error(error: Exception) -> ApiError:
         )
     if isinstance(error, CategoryNotAllowed):
         return ApiError(403, "CATEGORY_NOT_ALLOWED", str(error), None)
+    if isinstance(error, MarketApiBulkForbidden):
+        return ApiError(403, "FORBIDDEN", str(error), None)
     if isinstance(error, ConsentRequired):
         return ApiError(422, "CONSENT_REQUIRED", str(error), None)
     if isinstance(error, TemplateParamMismatch):
@@ -376,9 +405,23 @@ def _error(error: Exception) -> ApiError:
         return ApiError(422, "ALL_FILTERED", str(error), None)
     if isinstance(error, QuotaExceeded):
         return ApiError(429, "QUOTA_EXCEEDED", str(error), None)
-    if isinstance(error, ApplicationRateLimitExceeded):
-        return ApiError(429, "RATE_LIMITED", str(error), None)
-    if isinstance(error, ControlPlaneUnavailable):
+    if isinstance(error, (ApplicationRateLimitExceeded, InFlightLimitExceeded)):
+        return ApiError(
+            429,
+            "RATE_LIMITED",
+            str(error),
+            None,
+            headers={"Retry-After": "60"},
+        )
+    if isinstance(error, SendAdmissionRejected):
+        return ApiError(
+            503,
+            "DEPENDENCY_UNAVAILABLE",
+            str(error),
+            {"reason": error.reason},
+            headers={"Retry-After": str(error.retry_after_s)},
+        )
+    if isinstance(error, (ControlPlaneUnavailable, InFlightQueryUnavailable)):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, BlacklistCacheUnavailable):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
@@ -410,23 +453,25 @@ def _error(error: Exception) -> ApiError:
     "/send",
     response_model=SendResponseModel,
     responses={
+        **SEND_SUCCESS_RESPONSE,
         400: ERROR_RESPONSE,
         401: ERROR_RESPONSE,
         403: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
-        429: ERROR_RESPONSE,
-        503: ERROR_RESPONSE,
+        429: RATE_LIMITED_RESPONSE,
+        503: UNAVAILABLE_RESPONSE,
     },
 )
 @audited("message_send")
 async def send_message(
     payload: SendRequestModel,
     app: Annotated[ApiAppContext, Depends(require_api_app)],
+    response: Response,
 ) -> BatchResponse:
     pipeline = await _pipeline(app)
     try:
-        return await pipeline.accept(
+        result = await pipeline.accept(
             app,
             SendRequest(
                 category=payload.category,
@@ -449,8 +494,12 @@ async def send_message(
         InvalidContent,
         ApplicationRateLimitExceeded,
         ControlPlaneUnavailable,
+        InFlightLimitExceeded,
+        InFlightQueryUnavailable,
+        MarketApiBulkForbidden,
         QuotaExceeded,
         SensitiveWord,
+        SendAdmissionRejected,
         TemplateParamMismatch,
         ValueError,
         VendorTestConsoleOnly,
@@ -462,6 +511,11 @@ async def send_message(
         IdempotencyClaimLost,
     ) as error:
         raise _error(error) from None
+    if result.idempotency_expires_at is not None:
+        response.headers["Idempotency-Expires-At"] = (
+            result.idempotency_expires_at.isoformat().replace("+00:00", "Z")
+        )
+    return result
 
 
 async def _require_vendor_test_api_ready() -> None:
@@ -502,8 +556,8 @@ def _vendor_test_api_recipient_service() -> VendorTestRecipientService:
         403: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
-        429: ERROR_RESPONSE,
-        503: ERROR_RESPONSE,
+        429: RATE_LIMITED_RESPONSE,
+        503: UNAVAILABLE_RESPONSE,
     },
 )
 @audited("message_send")
@@ -517,7 +571,12 @@ async def send_vendor_test_api_uat(
             app,
             payload.category,
         )
-    except (CategoryNotAllowed, ApplicationRateLimitExceeded, ValueError) as error:
+    except (
+        CategoryNotAllowed,
+        ApplicationRateLimitExceeded,
+        SendAdmissionRejected,
+        ValueError,
+    ) as error:
         raise _error(error) from None
     await _require_vendor_test_api_ready()
     try:
@@ -572,8 +631,12 @@ async def send_vendor_test_api_uat(
         InvalidContent,
         ApplicationRateLimitExceeded,
         ControlPlaneUnavailable,
+        InFlightLimitExceeded,
+        InFlightQueryUnavailable,
+        MarketApiBulkForbidden,
         QuotaExceeded,
         SensitiveWord,
+        SendAdmissionRejected,
         TemplateParamMismatch,
         ValueError,
         VendorTestConsoleOnly,

@@ -68,6 +68,8 @@ class BatchFinishedData:
     failed: int
     unknown: int
     finished_at: datetime
+    unknown_count: int | None = None
+    manual_resolution_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +315,10 @@ class CallbackDelivery:
     def _body(self, material: CallbackMaterial) -> dict[str, Any]:
         if material.task.event == "batch.finished" and material.batch is not None:
             batch_data = material.batch
+            unknown = batch_data.unknown
+            unknown_count = (
+                unknown if batch_data.unknown_count is None else batch_data.unknown_count
+            )
             return {
                 "event_id": str(material.task.event_id),
                 "event": "batch.finished",
@@ -323,7 +329,12 @@ class CallbackDelivery:
                 "total": batch_data.total,
                 "delivered": batch_data.delivered,
                 "failed": batch_data.failed,
-                "unknown": batch_data.unknown,
+                "unknown": unknown,
+                "unknown_count": unknown_count,
+                "manual_resolution_required": (
+                    batch_data.manual_resolution_required
+                    or batch_data.status == "completed_unknown"
+                ),
                 "finished_at": batch_data.finished_at.isoformat(),
             }
         if material.task.event == "message.report" and material.message_report is not None:

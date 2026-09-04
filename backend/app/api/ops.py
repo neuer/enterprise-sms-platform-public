@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.reports import ExportTaskModel, _response, get_export_service
+from app.core.apikey import ApiAppContext
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -56,6 +57,12 @@ from app.services.reply_ingest import ReplyIngestService
 from app.services.reply_repository import SqlReplyRepository
 from app.services.report_ingest import ReportIngestService
 from app.services.report_repository import SqlReportRepository
+from app.services.uncertain_resolution import (
+    UncertainResolution,
+    UncertainResolutionConflict,
+    UncertainResolutionNotFound,
+    UncertainResolutionService,
+)
 from app.settings import get_settings
 from app.tasks import register_task_modules
 from app.tasks.scheduler import build_beat_schedule
@@ -141,6 +148,31 @@ class UncertainModel(BaseModel):
     vendor_code: int | None
     uncertain_since: datetime
     age_seconds: int
+    status: Literal["uncertain", "unknown_terminal"]
+    resolution_id: int | None
+    resolution_action: str | None
+    resolution_state: Literal["proposed", "confirmed"] | None
+    proposer_account_id: int | None
+
+
+class UncertainResolutionRequestModel(BaseModel):
+    action: Literal[
+        "confirm_accepted",
+        "confirm_not_accepted",
+        "keep_unknown",
+        "resend_new_batch",
+    ]
+
+
+class UncertainResolutionModel(BaseModel):
+    id: int
+    chunk_id: int
+    batch_id: int
+    action: str
+    state: Literal["proposed", "confirmed"]
+    proposer_account_id: int
+    confirmer_account_id: int | None
+    child_batch_id: int | None
 
 
 class UncertainPageModel(PageModel):
@@ -484,6 +516,117 @@ async def list_uncertain(
 ) -> dict[str, object]:
     await _admin(facade, credentials)
     return _page(await repository.list_uncertain(page, page_size), UncertainModel)
+
+
+def _resolution_service() -> UncertainResolutionService:
+    settings = get_settings()
+    return UncertainResolutionService(CryptoService.from_settings(settings), settings)
+
+
+@router.post(
+    "/chunks/{chunk_id}/resolution",
+    response_model=UncertainResolutionModel,
+    responses={
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+    },
+)
+@audited("uncertain_resolve_propose")
+async def propose_uncertain_resolution(
+    chunk_id: int,
+    payload: UncertainResolutionRequestModel,
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> UncertainResolutionModel:
+    claims = await _admin_claims(facade, credentials)
+    try:
+        item = await _resolution_service().propose(
+            chunk_id,
+            payload.action,
+            claims.principal,
+        )
+    except UncertainResolutionNotFound:
+        raise ApiError(404, "NOT_FOUND", "分片不存在或未进入保守终态", None) from None
+    except UncertainResolutionConflict as error:
+        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    return UncertainResolutionModel.model_validate(item, from_attributes=True)
+
+
+@router.post(
+    "/resolutions/{resolution_id}/confirm",
+    response_model=UncertainResolutionModel,
+    responses={
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
+)
+@audited("uncertain_resolve_confirm")
+async def confirm_uncertain_resolution(
+    resolution_id: int,
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> UncertainResolutionModel:
+    claims = await _admin_claims(facade, credentials)
+    service = _resolution_service()
+    try:
+        item, resend_request = await service.confirm(
+            resolution_id,
+            claims.principal,
+            actor=claims.principal,
+        )
+    except UncertainResolutionNotFound:
+        raise ApiError(404, "NOT_FOUND", "处置单不存在", None) from None
+    except UncertainResolutionConflict as error:
+        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    if resend_request is not None:
+        from app.api.messages import _pipeline
+
+        pipeline_app = ApiAppContext(
+            0,
+            "web",
+            resend_request.resend_dept or claims.dept,
+            frozenset({"notice", "market"}),
+            daily_quota=0,
+        )
+        pipeline = await _pipeline(pipeline_app)
+        result = await pipeline.accept(pipeline_app, resend_request)
+        batch_id = await _batch_id(result.batch_no)
+        if batch_id is not None:
+            await service.attach_child_batch(item.id, batch_id)
+            item = UncertainResolution(
+                item.id,
+                item.chunk_id,
+                item.batch_id,
+                item.action,
+                item.state,
+                item.proposer_account_id,
+                item.confirmer_account_id,
+                batch_id,
+            )
+    return UncertainResolutionModel.model_validate(item, from_attributes=True)
+
+
+async def _batch_id(batch_no: str) -> int | None:
+    from sqlalchemy import text
+
+    from app.core.runtime_resources import database_engine
+
+    engine = database_engine(get_settings().database_url)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT id FROM sms_batch WHERE batch_no=:batch_no"),
+                {"batch_no": batch_no},
+            )
+            value = result.scalar_one_or_none()
+            return int(value) if value is not None else None
+    finally:
+        await engine.dispose()
 
 
 @router.post(

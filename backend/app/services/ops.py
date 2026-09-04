@@ -59,6 +59,11 @@ class UncertainRecord:
     vendor_code: int | None
     uncertain_since: datetime
     age_seconds: int
+    status: str = "uncertain"
+    resolution_id: int | None = None
+    resolution_action: str | None = None
+    resolution_state: str | None = None
+    proposer_account_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

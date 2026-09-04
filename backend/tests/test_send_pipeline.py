@@ -13,6 +13,7 @@ import pytest
 
 from app.core.apikey import ApiAppContext
 from app.core.auth.accounts import SecurityPrincipal
+from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.category import CategoryNotAllowed, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyFenceLost
@@ -29,17 +30,32 @@ from app.services.pipeline import (
     BatchResponse,
     ConsentRequired,
     IdempotencyConflict,
+    InFlightLimitExceeded,
+    InFlightQueryUnavailable,
+    MarketApiBulkForbidden,
     PipelineConfig,
     SendPipeline,
     SendRequest,
     StoredBatch,
     VendorTestConsoleOnly,
 )
+from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.quota import QuotaFenceLost
+from app.services.send_admission import SendAdmissionRejected
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
 OPERATOR = SecurityPrincipal(2, 20, "operator01", "平台部", "operator")
+
+
+def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
+    sql = IDEMPOTENCY_LIVE_SQL.casefold()
+    assert "expires_at > now()" in sql
+    assert "uncertain" in sql
+    assert "unknown_terminal" in sql
+    assert "callback_task" in sql
+    assert "pending" in sql and "retrying" in sql
+    assert "phone" not in sql
 
 
 def crypto() -> CryptoService:
@@ -158,6 +174,9 @@ class FakeStore:
     async def save(self, command: Any) -> StoredBatch:
         self.commands.append(command)
         return StoredBatch("new-batch", False)
+
+    async def count_in_flight_chunks(self, app_id: int) -> int:
+        return 0
 
 
 class FailingStore(FakeStore):
@@ -756,10 +775,231 @@ async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
     )
     result = await pipeline.accept(app, request)
     assert result.idempotent is True
-    assert limiter.calls == 1
+    assert limiter.calls == 0
     assert frequency.calls == 0
     assert quota.reservations == []
     assert store.commands == []
+
+
+@pytest.mark.asyncio
+async def test_idempotent_replay_skips_send_limiter_when_bucket_full() -> None:
+    class SendFullLimiter:
+        def __init__(self) -> None:
+            self.checks = 0
+            self.replays = 0
+            self.costs = 0
+
+        async def check(self, **_values: object) -> None:
+            self.checks += 1
+            raise ApplicationRateLimitExceeded("应用请求频率超限")
+
+        async def check_replay(self, **_values: object) -> None:
+            self.replays += 1
+
+        async def consume_send_cost(self, **_values: object) -> None:
+            self.costs += 1
+            raise AssertionError("幂等重放不得消耗发送成本")
+
+    app = ApiAppContext(1, "app", "研发部", frozenset({"verify"}))
+    request = SendRequest("verify", ["13800138000"], content="验证码123456", biz_id="biz-1")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    limiter = SendFullLimiter()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=limiter,  # type: ignore[arg-type]
+    )
+    pipeline.idempotency = FakeIdempotency(
+        "existing",
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
+    )
+    result = await pipeline.accept(app, request)
+    assert result.idempotent is True
+    assert limiter.checks == 0
+    assert limiter.replays == 1
+    assert limiter.costs == 0
+
+
+@pytest.mark.asyncio
+async def test_idempotent_replay_skips_send_admission_guard() -> None:
+    class RecordingGuard:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def authorize(self, **_values: object) -> None:
+            self.calls += 1
+            raise AssertionError("幂等重放不得走积压准入")
+
+    app = ApiAppContext(1, "app", "研发部", frozenset({"verify"}))
+    request = SendRequest("verify", ["13800138000"], content="验证码123456", biz_id="biz-1")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    guard = RecordingGuard()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency("existing"),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        admission_guard=guard,
+    )
+    pipeline.idempotency = FakeIdempotency(
+        "existing",
+        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
+    )
+    result = await pipeline.accept(app, request)
+    assert result.idempotent is True
+    assert guard.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_new_send_is_rejected_by_admission_before_request_limiter() -> None:
+    class ClosedGuard:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def authorize(self, **values: object) -> None:
+            self.calls += 1
+            assert values["category"] == "notice"
+            raise SendAdmissionRejected("closed", "outbox_backlog", 60)
+
+    class CountingLimiter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check(self, **_values: object) -> None:
+            self.calls += 1
+            raise AssertionError("积压关闭不得再消耗请求限流")
+
+    guard = ClosedGuard()
+    limiter = CountingLimiter()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=limiter,  # type: ignore[arg-type]
+        admission_guard=guard,
+    )
+    with pytest.raises(SendAdmissionRejected) as error:
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="new-1"),
+        )
+    assert error.value.reason == "outbox_backlog"
+    assert guard.calls == 1
+    assert limiter.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_biz_id_still_hits_send_limiter() -> None:
+    class SendFullLimiter:
+        async def check(self, **_values: object) -> None:
+            raise ApplicationRateLimitExceeded("应用请求频率超限")
+
+        async def check_replay(self, **_values: object) -> None:
+            raise AssertionError("未知 biz_id 不得走 replay")
+
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=SendFullLimiter(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(ApplicationRateLimitExceeded):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="random-id-1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_market_api_bulk_requires_explicit_preauthorization() -> None:
+    mobiles = [f"1380013{index:04d}" for index in range(50)]
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(market_approval_threshold=50),
+    )
+    with pytest.raises(MarketApiBulkForbidden, match="未预授权"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "平台部", frozenset({"market"})),
+            SendRequest("market", mobiles, content="活动通知回T退订", biz_id="mkt-1"),
+        )
+    allowed = ApiAppContext(
+        7,
+        "app",
+        "平台部",
+        frozenset({"market"}),
+        allow_market_api_bulk=True,
+    )
+    result = await pipeline.accept(
+        allowed,
+        SendRequest("market", mobiles, content="活动通知回T退订", biz_id="mkt-2"),
+    )
+    assert result.accepted == 50
+
+
+@pytest.mark.asyncio
+async def test_in_flight_chunk_cap_blocks_new_acceptance() -> None:
+    class BusyStore(FakeStore):
+        async def count_in_flight_chunks(self, app_id: int) -> int:
+            assert app_id == 7
+            return 200
+
+    pipeline = SendPipeline(
+        store=BusyStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(InFlightLimitExceeded):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="busy-1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_in_flight_query_failure_fails_closed() -> None:
+    class BrokenStore(FakeStore):
+        async def count_in_flight_chunks(self, app_id: int) -> int:
+            raise RuntimeError("database unavailable")
+
+    pipeline = SendPipeline(
+        store=BrokenStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(InFlightQueryUnavailable):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="busy-2"),
+        )
 
 
 @pytest.mark.asyncio

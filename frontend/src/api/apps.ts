@@ -38,9 +38,16 @@ export interface ManagedApp {
   default_sign: string | null
   daily_quota: number
   rate_limit_per_min: number
+  recipient_limit_per_min: number
+  segment_limit_per_min: number
+  max_in_flight_chunks: number
+  allow_market_api_bulk: boolean
   blacklist_check: boolean
   freq_override: FrequencyOverride | null
   allowed_ips: string[]
+  ip_allowlist_exempt_until: string | null
+  unlimited_quota_exempt_until: string | null
+  admission_exempt_note: string | null
   callback_url: string | null
   callback_report_enabled: boolean
   status: 0 | 1
@@ -61,12 +68,37 @@ export interface AppPayload {
   default_sign: string | null
   daily_quota: number
   rate_limit_per_min: number
+  recipient_limit_per_min: number
+  segment_limit_per_min: number
+  max_in_flight_chunks: number
+  allow_market_api_bulk: boolean
   blacklist_check: boolean
   freq_override: FrequencyOverride | null
   allowed_ips: string[]
+  ip_allowlist_exempt_until: string | null
+  unlimited_quota_exempt_until: string | null
+  admission_exempt_note: string | null
   callback_url: string | null
   callback_report_enabled: boolean
   status?: 0 | 1
+}
+
+const MAX_RECIPIENTS_PER_REQUEST = 10_000
+
+export function estimateWorstCaseCapacity(input: {
+  rate_limit_per_min: number
+  recipient_limit_per_min: number
+  segment_limit_per_min: number
+  daily_quota: number
+}): { recipientsPerMin: number; segmentsPerMin: number; dailySegments: number | null } {
+  return {
+    recipientsPerMin: Math.min(
+      input.recipient_limit_per_min,
+      input.rate_limit_per_min * MAX_RECIPIENTS_PER_REQUEST,
+    ),
+    segmentsPerMin: input.segment_limit_per_min,
+    dailySegments: input.daily_quota > 0 ? input.daily_quota : null,
+  }
 }
 
 export const listApps = () => apiRequest<ManagedApp[]>("/admin/apps", { method: "GET" })

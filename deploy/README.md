@@ -22,11 +22,11 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 生产 Runtime VMDK bind 或业务备份；不得改回 `/tmp`，否则容器重建会重置长周期任务的
 `last_run_at` 并使每日任务反复延期。PostgreSQL 仍是任务运行事实源。
 
-`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、25 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更通常先在同版本预生产或隔离环境执行；内部 Registry 尚未建成期间，满足下文“临时离线无迁移整包快速更新”条件且操作者明确接受风险时，预生产不作为硬前置。不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
+`deploy/docker-compose.yml` 是服务名和队列名的基础契约；生产必须由受控入口同时叠加 `docker-compose.production-storage.yml` 和 `docker-compose.production-restart.yml`，`isolated-standalone` 还必须叠加 `docker-compose.redis-tls.yml`。这些文件共同定义 volume、26 件运行 secrets 与生产 `restart: "no"` 合同，禁止操作者自行选择、删减或改序。生产变更通常先在同版本预生产或隔离环境执行；内部 Registry 尚未建成期间，满足下文“临时离线无迁移整包快速更新”条件且操作者明确接受风险时，预生产不作为硬前置。不要在生产主机直接试改 Compose。生产唯一入口为 `sudo /usr/local/sbin/sms-compose ...`：它始终显式读取项目根 `.env`；所有会改变运行态的生产动作先准备运行密钥并执行存储、volume、Redis TLS 与 Compose 失败关闭预检，只读诊断不会暗中创建或修复资源。
 
 ## 权威手册
 
-- [secrets.md](secrets.md)：生产 25 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
+- [secrets.md](secrets.md)：生产 26 件权威源 `0700/0600`、UID 专属 `0400` 运行副本、挂载矩阵与轮换检查。
 - [database-roles.md](database-roles.md)：七个运行职责、显式授权与 fail-closed 回滚。
 - [dba.md](dba.md)：`sms_owner` 边界、审计不可变与分区生命周期。
 - [storage.md](storage.md)：单台 12 vCPU/48 GiB 生产 VM 的五块固定 VMDK、七个 bind-backed named volume、70/80/90 阈值与在线扩容。
@@ -118,7 +118,7 @@ Callback 同样实行双层边界：根 `.env` 的 `CALLBACK_EGRESS_ALLOWED_CIDR
 
 认证、API Key、加密、幂等、短信发送任务、会话面、迁移、部署和 CI workflow 属于安全敏感边界。目录默认由 `deploy/scripts/protected_path_policy.py` 定义，并与 `.github/CODEOWNERS` 一致。这些区域的变更必须经过独立 Code Review；仓库不提供 owner 自动合并 workflow，required reviews 与 ruleset 不得被旁路。
 
-生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 25 件 secret 名或值。
+生产主机必须以 root 安装 host-only 配置、包装器链接与 unit。`/etc/sms-platform/compose.env` 只能包含示例中的六个路径/模式变量：项目根、secrets mode、运行时 secret 根、厂商凭据根、真实联调状态根和控制 socket 根；不得复制项目根 `.env`，也不得出现 26 件 secret 名或值。
 
 下列安装必须在专用生产主机的 Docker 首次启动前完成，并以 [storage.md](storage.md) 的五块
 VMDK、UUID fstab、七个 Compose bind 源目录加独立备份目录（共八个固定子目录）及
@@ -1091,7 +1091,7 @@ bash scripts/verify_data_images.sh
 密码环境变量。脚本通过不替代备份隔离恢复和 RTO 验证。
 
 1. 冻结发布版本，记录 Git commit、镜像 digest、变更单、执行人和回退决策人。
-2. 按 `secrets.md` 从受控密钥系统落盘恰好 25 件权威源，确认目录 `0700`、文件 `0600`；主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key 必须是四个两两独立的 32 字节 base64 key，企微公私钥必须是匹配的 X25519 对，`redis_tls_server_key` 必须与内部 PKI 的三 SAN 服务端证书配对。不得从聊天、工单或 shell 历史复制值。
+2. 按 `secrets.md` 从受控密钥系统落盘恰好 26 件权威源，确认目录 `0700`、文件 `0600`；主体 `audit_context_key` 与 API/realtime/bulk 三个自治审计 key 必须是四个两两独立的 32 字节 base64 key，`api_key_pepper_key` 必须独立于 `data_hmac_key`，企微公私钥必须是匹配的 X25519 对，`redis_tls_server_key` 必须与内部 PKI 的三 SAN 服务端证书配对。不得从聊天、工单或 shell 历史复制值。
 3. 从 `.env.example` 创建根目录 `.env` 并设置 `root:root 0600`；生产必须为 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`、`REDIS_HA_MODE=isolated-standalone` 和固定 `METRICS_ALLOWED_CIDRS=172.31.250.1/32`，且不得设置非空 `COMPOSE_PROFILES` 或启用 `dev` profile。Phase 0 先安装可读的系统 CA 文件但保持 `LDAP_ALLOWED_HOSTS` 为空、AD Provider 禁用；AD 地址、CA、bind secret、连接测试和角色映射齐备后再走独立变更。JWT 密钥可使用版本化 keyring；新签发令牌固定带 `kid/iss/aud`，`JWT_ACCEPT_LEGACY` 只用于非生产的旧无 `kid` 令牌观察窗口，**生产必须为 false，禁止观察窗口**。LDAP 服务、DN、过滤器、属性和超时均在系统配置页维护，不得回填为环境变量；任何不在 `LDAP_ALLOWED_HOSTS` 中的目标在读取或使用 Bind Secret 前失败关闭。可信代理地址由 Compose 固定网络契约管理。内部 Nginx 默认丢弃客户端代理头并覆盖为 `$remote_addr`（`X-Real-IP`/`X-Forwarded-For`），`X-Forwarded-Proto` 仅在 `$sms_trusted_proxy=1`（连接来自精确受信 TLS 终结器）时接受 `http|https`。direct 模式强制 `WEB_BIND_IP` 为回环。外部 TLS 终结拓扑必须设置 `SMS_EXTERNAL_TLS_MODE=1`，并在 `SMS_TRUSTED_PROXY_CIDRS` 中逐个枚举 TLS 终结器（IPv4 `/32`、IPv6 `/128`；禁止 `0.0.0.0/0`、整个云 VPC、客户端可达网段或任何多主机网段）；这些精确地址同时控制 Nginx 明文 listener allowlist，非受信来源在进入页面或 API 前返回 444。`sms-compose up` 启动前由 `deploy/scripts/render_trusted_proxy_conf.py` 渲染 `/usr/local/share/sms-platform/trusted-proxies.conf`（Git 工作树之外，目录 0755、文件 0644），配置缺失、非法或非主机前缀时失败关闭。直连模式（`SMS_EXTERNAL_TLS_MODE=0`）保持代理头信任标志为 0，任何客户端代理头都不会被接受。若调整代理地址，必须在同一提交同步修改 Web 静态 IP（`SMS_WEB_INGRESS_IPV4`）、API 的 `--forwarded-allow-ips`（引用同一变量）和部署契约测试。API 直连来源的 X-Forwarded-For 不会被信任。`.env` 不得包含任何密码、Key 或 token。
 4. 按 `vendor-egress.md` 完成固定主出口 IP 报备，取得 QPS、单次号码上限和生效时间的书面回执。备出口待后续建设并在启用前另行报备、验证，不阻断 Phase 0 首发。
 5. 在预生产使用候选 digest 和预生产自有数据完成加密备份/隔离恢复；此时生产库仍必须为空，
@@ -1103,8 +1103,8 @@ bash scripts/verify_data_images.sh
    API 发布端口固定只绑定宿主 `127.0.0.1`，外部业务流量必须经 Web/Nginx 入口；不得把 API 端口改为全网监听。
 8. bootstrap 后立即手动启动 `sms-backup.service`，确认 `backup-status` 通过；把首份生产密文
    快照经批准的离线通道送到具备独立 PostgreSQL/VMDK 和 preproduction marker 的恢复主机，
-   按 `failover.md` 先停止该主机的平台与 lifecycle timers，再安装完整 25 件 canonical
-   secret：其中 data AES/HMAC 与四个审计 key（确需读历史告警时再含 alert pair）
+   按 `failover.md` 先停止该主机的平台与 lifecycle timers，再安装完整 26 件 canonical
+   secret：其中 data AES/HMAC、独立 `api_key_pepper_key` 与四个审计 key（确需读历史告警时再含 alert pair）
    只能使用离机 escrow 按 manifest 所记 generation ID 原子发放且双人见证的不可变 recovery
    bundle，其余使用当前获批运行凭据；同时安装
    backup passphrase、两个固定 generation ID 和内容精确为
@@ -1157,7 +1157,7 @@ bash scripts/verify_data_images.sh
 重建→可能回切/恢复链；与 `up`、`down` 或 migrate 并发时也会在任何 Python/Docker 操作前
 失败。无论轮换成功或失败都保留旧 generation，因为未重建的 PostgreSQL 仍可能挂载它。只有
 全栈已停止或全部容器已重建，并用固定 `ps --all -q`/容器挂载证据确认无引用后，才允许受控
-清理旧 generation。任何回退都不删除 25 件权威源、数据库卷或旧 generation。若经独立退役
+清理旧 generation。任何回退都不删除 26 件权威源、数据库卷或旧 generation。若经独立退役
 变更彻底撤销 systemd 托管，可执行 `sudo systemctl disable --now sms-platform.service`，但不得把
 后续生产操作切回 raw Compose。
 
@@ -1175,12 +1175,13 @@ Phase 0 的 Prometheus/agent 位于生产 VM 宿主，只从固定 ingress 地�
 宿主内采集不能证明整 VM 存活，必须另有 VMware/宿主外心跳告警。生命周期、存储预检和
 Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链负责送达企业微信与公司邮件；
 两个渠道的真实接收回执才构成闭环。开发测试阶段不执行生产监控/故障切换验收；进入生产
-准备后再按本节留存证据。部署后确认以下十二组 family 均存在：
+准备后再按本节留存证据。部署后确认以下十六组 family 均存在：
 
 - `sms_queue_depth`
 - `sms_send_rate_per_second`
 - `sms_vendor_error_chunks`
 - `sms_uncertain_chunks`
+- `sms_uncertain_lifecycle_chunks`
 - `sms_callback_failures`
 - `sms_frequency_filtered_messages`
 - `sms_poll_lag_seconds`
@@ -1189,6 +1190,9 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 - `sms_worker_stalled_leases`
 - `sms_worker_lease_events`
 - `sms_metrics_snapshot_age_seconds`
+- `sms_send_admission`
+- `sms_outbox_oldest_age_seconds`
+- `sms_send_submit_outcome`
 
 `up == 0`、抓取超时或任一关键 family 消失均视为监控故障，不得用缓存旧值伪装健康。
 
@@ -1202,6 +1206,8 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 
 两个 keyring 的版本集合和 `active_version` 必须一致。先保留旧版本完成历史数据解密/查询验证，再按 DBA 变更单重加密；不得提前删除仍被记录引用的版本。替换文件后需滚动重启 API、workers 与 beat，禁止把 keyring 内容打印到日志或工单。
 
+`api_key_pepper_key` 是独立的第 26 件 secret，只挂 api。首次部署同样是 32 字节随机值的 base64 文本（v1）。轮换格式与数据 keyring 相同，但**禁止**复用 `data_hmac_key` 文件或派生 pepper。`app.api_key_hash_version` / `api_key_prev_hash_version` 记录摘要绑定的 pepper 版本；NULL 表示历史 SHA-256。轮换时必须保留仍被摘要引用的版本，否则 api 就绪检查失败关闭。数据 AES/HMAC 轮换不得改变 API Key 验证结果；API Key pepper 轮换使用独立变更单、审计和恢复路径。
+
 ### Callback HTTPS、私有 CA 与可选 mTLS
 
 生产 callback URL 强制 HTTPS；HTTP 只允许显式 development/test Mock。每次投递都会重新
@@ -1210,7 +1216,7 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 主机已认证的 TLS 连接；连接并发、5 秒总预算、单地址连接预算以及响应头/正文上限由代码
 固定，禁止通过部署参数放宽。
 
-标准生产 25 件 secret 契约不因 callback 默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
+标准生产 26 件 secret 契约不因 callback 默认 HTTPS 改变。私有 CA 或 mTLS 属于可选的独立部署
 变更：只有在安全评审同步扩展凭据清单和 Compose 只读挂载、且私钥仅对
 `worker-callback` 可见后，才可在 `.env` 配置
 `CALLBACK_CA_CERTS_FILE`、`CALLBACK_MTLS_CERT_FILE` 与

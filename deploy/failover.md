@@ -28,7 +28,7 @@
 
 - 生产通过 VPN 访问；VPN、TLS 终结、精确入口网段和主节点固定厂商出口的真实连通证据
   属于 `[HANDOVER]`。配置文本、截图或文档契约测试不能替代网络侧读回。
-- 生产从空库初始化；测试数据库、数据、API Key、25 件 canonical secrets（含 Redis ACL 密码）、备份
+- 生产从空库初始化；测试数据库、数据、API Key、26 件 canonical secrets（含 Redis ACL 密码）、备份
   口令和运行目录不得复制或复用。缺少逐项独立生成和权限复核记录即 No-Go。
 - 每日加密备份必须保留 35 天。生产 bootstrap 后、初始化管理员/API Key/T0 前，必须生成首份
   生产加密快照并在从预生产资源池按需创建的一次性空白隔离恢复机完成 full restore；记录恢复
@@ -142,7 +142,7 @@ sudo systemctl disable --now \
 告警配置时，同一 bundle 还必须提供 `alert_credential_public_key` 与
 `alert_credential_private_key`。其余材料（包括不需读历史告警时的 alert pair）使用恢复
 时**当前获批**的运行凭据。最终必须一次性安装 [secrets.md](secrets.md) 的完整
-25 件 canonical 清单，不得只换 ID、只安装六/八件恢复密钥或复活已吊销的整套旧凭据：
+26 件 canonical 清单，不得只换 ID、只安装六/八件恢复密钥或复活已吊销的整套旧凭据：
 
 generation ID 只是非敏感标签，不是 bundle 内容的摘要、MAC 或密码学绑定；代码与报告只能
 比较 manifest/主机 ID 字符串，无法证明 escrow provenance。Phase 0 上线 No-Go 要求 escrow
@@ -154,6 +154,7 @@ generation ID 只是非敏感标签，不是 bundle 内容的摘要、MAC 或密
 sudo install -d -o root -g root -m 0700 /opt/sms-platform/deploy/secrets
 for secret_name in \
   vendor_secret_name vendor_secret_key data_aes_key data_hmac_key \
+  api_key_pepper_key \
   audit_context_key audit_system_api_context_key \
   audit_system_realtime_context_key audit_system_bulk_context_key \
   alert_credential_public_key alert_credential_private_key jwt_secret \
@@ -350,6 +351,15 @@ customId 落 `unmatched`，不得丢弃。以 raw 的 custom_ids 与平台 chunk
   节点的一个轮询器；旧系统继续只轮询其旧服务商。两者可并行但不得交叉凭据、报告或数据域。
 
 对账结果记录快照时点、缺口范围、raw/unmatched/uncertain 数量、人工处置和复核人，不记录手机号明文、密文或 HMAC 列表。
+
+## 多供应商路由与灾难恢复
+
+当前生产只注册智慧信息。路由账本已能记录 `selected_vendor` 与每次 attempt。灾难恢复时：
+
+- Provider 超时/断连后的 `uncertain` **禁止**自动切换到任何第二供应商；
+- 只有调用前确定性不可用，或协议明确拒绝且 `safe_to_failover=true` 才允许选另一供应商；
+- 人工从 unknown 换供应商必须先完成 conservative terminal / 双人处置，并创建新批次；
+- 第二生产供应商上线前，不得把平台暂停键解释为“已具备多账户高可用”。
 
 ## 失败回退与回切
 

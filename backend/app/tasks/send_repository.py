@@ -16,6 +16,8 @@ from app.core.runtime_resources import database_engine
 from app.services.callback_repository import enqueue_batch_finished
 from app.services.category import queue_for_category
 from app.services.crypto import CryptoService, EncryptionContext
+from app.services.outbox import OutboxEventSpec
+from app.services.outbox_repository import enqueue_outbox
 from app.services.vendor_test_budget import (
     LIVE_TEST_DAILY_SEGMENT_LIMIT,
     SubmissionClaim,
@@ -204,6 +206,8 @@ class SqlChunkStore:
             text(
                 """
                 SELECT c.id chunk_id, c.batch_id, c.custom_id,c.retry_count,
+                       COALESCE(c.selected_vendor,'zhihui') selected_vendor,
+                       COALESCE(c.route_generation,1) route_generation,
                        trim(b.batch_no) batch_no,b.send_content_enc,b.sign_name,
                        t.vendor_template_id
                 FROM sms_chunk c
@@ -276,6 +280,8 @@ class SqlChunkStore:
             sign_name=str(row["sign_name"] or ""),
             retry_count=int(row["retry_count"]),
             denied_recipient_count=denied_recipient_count,
+            selected_vendor=str(row.get("selected_vendor") or "zhihui"),
+            route_generation=max(1, int(row.get("route_generation") or 1)),
         )
 
     async def load_chunk(self, chunk_id: int) -> tuple[ChunkPayload, str] | None:
@@ -311,11 +317,56 @@ class SqlChunkStore:
         finally:
             await engine.dispose()
 
+    async def _enqueue_chunk_ready(
+        self,
+        connection: AsyncConnection,
+        chunk_ids: list[int],
+        lane: str,
+    ) -> None:
+        """在批次事务内登记分片发送事件；同 chunk 重复规划必须合同不变。"""
+
+        for chunk_id in chunk_ids:
+            dedup_key = f"chunk.ready:{chunk_id}"
+            await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="chunk.ready",
+                    aggregate_type="sms_chunk",
+                    aggregate_id=str(chunk_id),
+                    task_name="app.tasks.send.process_chunk",
+                    queue=lane,
+                    args=(chunk_id,),
+                    dedup_key=dedup_key,
+                ),
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE outbox_event SET
+                      state='pending',
+                      next_attempt_at=now(),
+                      attempts=0,
+                      failure_count=0,
+                      lease_id=NULL,
+                      lease_expires_at=NULL,
+                      last_error=NULL,
+                      completed_at=NULL,
+                      updated_at=now()
+                    WHERE dedup_key=:dedup_key
+                      AND event_type='chunk.ready'
+                      AND state IN ('completed','dead')
+                    """
+                ),
+                {"dedup_key": dedup_key},
+            )
+
     async def prepare_chunks(
         self,
         batch_no: str,
         batch_size: int,
-    ) -> tuple[list[ChunkPayload], str]:
+    ) -> tuple[list[int], str]:
+        """规划分片并登记 child Outbox；事务内只处理元数据，不解密手机号。"""
+
         if batch_size < 1:
             raise ValueError("vendor_batch_size must be positive")
         engine = self._engine()
@@ -421,8 +472,9 @@ class SqlChunkStore:
                         ),
                         {"id": batch_id},
                     )
-                payloads = [await self._payload(connection, chunk_id) for chunk_id in chunk_ids]
-                return payloads, self.lane_for(str(batch["category"]))
+                lane = self.lane_for(str(batch["category"]))
+                await self._enqueue_chunk_ready(connection, chunk_ids, lane)
+                return chunk_ids, lane
         finally:
             await engine.dispose()
 
@@ -621,7 +673,11 @@ class SqlChunkStore:
                 """
                 UPDATE sms_batch b SET
                   delivered=s.delivered,failed=s.failed,unknown_cnt=s.unknown_cnt,
-                  status=CASE WHEN s.active=0 THEN 'completed' ELSE b.status END,
+                  status=CASE
+                    WHEN b.status='completed_unknown' THEN 'completed_unknown'
+                    WHEN s.active=0 THEN 'completed'
+                    ELSE b.status
+                  END,
                   updated_at=now()
                 FROM (
                   SELECT batch_id,
@@ -1012,6 +1068,60 @@ class SqlChunkStore:
                     children.append(await self._payload(connection, child_id))
                     next_no += 1
                 return children
+        finally:
+            await engine.dispose()
+
+    async def record_vendor_attempt(
+        self,
+        chunk_id: int,
+        *,
+        vendor_id: str,
+        generation: int,
+        outcome: str,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> None:
+        """记录一次无 PII 的供应商副作用，供路由对账与指标聚合。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO sms_vendor_attempt (
+                          chunk_id, vendor_id, generation, outcome,
+                          safe_to_failover, vendor_code
+                        ) VALUES (
+                          :chunk_id, :vendor_id, :generation, :outcome,
+                          :safe_to_failover, :vendor_code
+                        )
+                        """
+                    ),
+                    {
+                        "chunk_id": chunk_id,
+                        "vendor_id": vendor_id,
+                        "generation": generation,
+                        "outcome": outcome,
+                        "safe_to_failover": safe_to_failover,
+                        "vendor_code": vendor_code,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET
+                          selected_vendor=:vendor_id,
+                          route_generation=:generation
+                        WHERE id=:chunk_id
+                        """
+                    ),
+                    {
+                        "chunk_id": chunk_id,
+                        "vendor_id": vendor_id,
+                        "generation": generation,
+                    },
+                )
         finally:
             await engine.dispose()
 

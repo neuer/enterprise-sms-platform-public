@@ -134,6 +134,8 @@ def test_required_writes_declare_stable_audit_actions() -> None:
         (ops.reevaluate_raw, "raw_reevaluate"),
         (ops.trigger_job, "job_trigger"),
         (ops.resume_queue, "queue_resume"),
+        (ops.propose_uncertain_resolution, "uncertain_resolve_propose"),
+        (ops.confirm_uncertain_resolution, "uncertain_resolve_confirm"),
         (ops.create_unmatched_export, "export_create"),
         (admin.update_configs, "config_update"),
         (vendor_test.step_up, "vendor_test_step_up"),

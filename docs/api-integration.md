@@ -31,7 +31,7 @@
 | 批次（Batch） | 一次发送请求对应的唯一记录，返回 `batch_no` |
 | 消息（Message） | 批次内单个手机号的发送明细 |
 | 计费条（Segment） | 计费单位：最终内容（含签名与退订语）≤70 字为 1 条，超过按 67 字/条向上取整 |
-| `biz_id` | 接入方自有的业务幂等键（24 小时内同应用内唯一） |
+| `biz_id` | 接入方自有的业务幂等键；即时发送默认保护 24 小时，定时为 `scheduled_at+7` 天 |
 
 ## 2. 认证与密钥
 
@@ -163,17 +163,29 @@ Content-Type: application/json
 
 ### 3.4 幂等与重试（重要）
 
-同一应用、同一 `biz_id` 在 24 小时内重复提交：
+`biz_id` 必须是业务事件的稳定不可复用标识（UUID 或业务单号），**禁止**按日/按周期
+循环短序号。作用域是同一应用（API）或同一稳定账号（Web）。
 
-- 返回**同一个** `batch_no`，`idempotent: true`，不重复发送、不重复扣费；
-- 幂等命中不是错误（HTTP 200）。
+保护窗口：
+
+- 即时发送：`idempotency_record.expires_at = now()+24 hours`，Redis 索引 TTL 同样 24 小时；
+- 定时发送：`scheduled_at + 7 days`；
+- 窗口内相同请求返回原 `batch_no` 且 `idempotent: true`，不同请求体返回 409
+  `IDEMPOTENCY_CONFLICT`；
+- 响应头 `Idempotency-Expires-At` 与可选字段 `idempotency_expires_at` 给出截止时间；
+- 过期后若批次仍处于
+  `pending_approval/scheduled/queued/sending/balance_blocked`，或仍有
+  `uncertain` / `unknown_terminal` 分片，或仍有未完成 callback
+  （`pending`/`retrying`），同一 `biz_id` **仍不可复用**；
+- 仅当记录已过期且批次已真正终态（无未知分片、无未完成 callback）时，同键才会
+  删除旧记录并创建新批次。
 
 推荐的重试模式：
 
-1. 每次发送生成唯一 `biz_id`（如业务单号/请求号）；
-2. 网络超时或响应丢失时，**不要直接重发新请求**——平台可能已受理；
+1. 每次真实业务事件生成唯一 `biz_id`；
+2. 网络超时或响应丢失时，**不要更换 `biz_id` 重发**——平台可能已受理；
 3. 用**相同请求体 + 相同 `biz_id`** 重试：已受理则返回原批次，未受理则正常创建新批次；
-4. 24 小时后 `biz_id` 可复用。
+4. 不要把“查询不到旧幂等记录”解释成第一次未受理；先查 `batch_no` 或等待保护期结束。
 
 ### 3.5 定时发送
 

@@ -234,6 +234,87 @@ async def test_redis_unavailable_is_fail_closed_before_reservation() -> None:
         await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
 
 
+class _RebuildConnection:
+    def __init__(self, *, locked: bool) -> None:
+        self.locked = locked
+        self.unlocked = False
+        self.closed = False
+
+    async def scalar(self, statement: object, params: object = None) -> bool:
+        assert "pg_try_advisory_lock" in str(statement)
+        assert params == {"name": "usage:projection:rebuild"}
+        return self.locked
+
+    async def execute(self, statement: object, params: object = None) -> None:
+        if "pg_advisory_unlock" in str(statement):
+            self.unlocked = True
+
+    async def __aenter__(self) -> _RebuildConnection:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.closed = True
+
+
+class _RebuildEngine:
+    def __init__(self, connection: _RebuildConnection) -> None:
+        self.connection = connection
+
+    def connect(self) -> _RebuildConnection:
+        return self.connection
+
+
+@pytest.mark.asyncio
+async def test_projection_rebuild_uses_postgres_owner_and_visible_redis_progress() -> None:
+    redis = ProjectionRedis()
+    service = UsageLedgerService(redis, object())  # type: ignore[arg-type]
+    connection = _RebuildConnection(locked=True)
+    service._engine = lambda: _RebuildEngine(connection)  # type: ignore[method-assign]
+
+    async def has_facts(_usage_date: date) -> bool:
+        return True
+
+    rebuilt: list[str] = []
+
+    async def fake_rebuild(*, actor: str) -> int:
+        rebuilt.append(actor)
+        return 1
+
+    service._has_projection_facts = has_facts  # type: ignore[method-assign]
+    service.rebuild = fake_rebuild  # type: ignore[method-assign]
+
+    await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
+
+    assert rebuilt == ["system:usage-projection-auto"]
+    assert any(
+        key.startswith("usage:projection:rebuild:") for key in redis.values
+    )
+    assert connection.unlocked is True
+    assert connection.closed is True
+
+
+@pytest.mark.asyncio
+async def test_projection_rebuild_second_owner_is_rejected() -> None:
+    redis = ProjectionRedis()
+    redis.values["usage:projection:rebuild:20260726"] = "other-owner"
+    service = UsageLedgerService(redis, object())  # type: ignore[arg-type]
+    connection = _RebuildConnection(locked=True)
+    service._engine = lambda: _RebuildEngine(connection)  # type: ignore[method-assign]
+
+    async def has_facts(_usage_date: date) -> bool:
+        return True
+
+    async def forbidden_rebuild(*, actor: str) -> int:
+        raise AssertionError("second owner must not rebuild")
+
+    service._has_projection_facts = has_facts  # type: ignore[method-assign]
+    service.rebuild = forbidden_rebuild  # type: ignore[method-assign]
+
+    with pytest.raises(UsageProjectionUnavailable, match="rebuild in progress"):
+        await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
+    assert connection.unlocked is True
+
+
 def test_frequency_projection_keys_are_deterministic() -> None:
     digest = "a" * 64
     assert _frequency_projection_keys("verify", 1, digest) == (

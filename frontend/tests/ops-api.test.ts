@@ -7,6 +7,8 @@ import {
   listRawLogs,
   listUncertain,
   listUnmatched,
+  proposeUncertainResolution,
+  confirmUncertainResolution,
 } from "../src/api/ops"
 
 function response(body: unknown) {
@@ -92,5 +94,27 @@ describe("运维查询 API", () => {
       end: "2026-07-20T23:59:59+08:00",
       decrypted: true,
     })
+  })
+
+  it("uncertain 双人处置只走管理员路径且重发不得回写旧分片", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({
+      id: 8,
+      chunk_id: 9,
+      batch_id: 1,
+      action: "resend_new_batch",
+      state: "proposed",
+      proposer_account_id: 1,
+      confirmer_account_id: null,
+      child_batch_id: null,
+    }))
+    vi.stubGlobal("fetch", fetch)
+
+    await proposeUncertainResolution(9, "resend_new_batch")
+    await confirmUncertainResolution(8)
+
+    expect(String(fetch.mock.calls[0][0])).toBe("/api/v1/web/admin/chunks/9/resolution")
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ action: "resend_new_batch" })
+    expect(String(fetch.mock.calls[1][0])).toBe("/api/v1/web/admin/resolutions/8/confirm")
+    expect(fetch.mock.calls[1][1].method).toBe("POST")
   })
 })

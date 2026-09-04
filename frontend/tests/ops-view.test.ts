@@ -38,13 +38,19 @@ function result(url: string, method: string): unknown {
     if (url.includes("/unmatched-reports")) return { items: [{ id: 4, vendor_task_id: "vendor-1", custom_id: "legacy-1", phone_mask: "138****8000", report_status: 1, report_desc: "DELIVRD", report_time: "2026-07-12T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
     if (url.includes("/queue/resume")) return { resumed_batches: 2, paused_codes: ["999"] }
     if (url.includes("/outbox/") && url.endsWith("/retry")) return undefined
+    if (url.includes("/chunks/") && url.includes("/resolution")) {
+      return { id: 8, chunk_id: 9, batch_id: 1, action: "keep_unknown", state: "proposed", proposer_account_id: 1, confirmer_account_id: null, child_batch_id: null }
+    }
+    if (url.includes("/resolutions/") && url.includes("/confirm")) {
+      return { id: 8, chunk_id: 9, batch_id: 1, action: "keep_unknown", state: "confirmed", proposer_account_id: 1, confirmer_account_id: 2, child_batch_id: null }
+    }
     return undefined
   }
   if (url.includes(`/reports/export/${publicId}`) && !url.endsWith("/download")) return { id: publicId, status: "done", decrypted: false, row_count: 45, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }
   if (url.endsWith("/alerts/current")) return { refreshed_at: "2026-07-12T08:00:00+08:00", complete: false, unknown_sources: ["control_redis"], items: [{ key: "job_failed:poll_report", alert_type: "job_failed", level: "crit", title: "任务连续失败", detail: { job_name: "poll_report" }, since: "2026-07-12T07:00:00+08:00", checked_at: "2026-07-12T08:00:00+08:00", target: "jobs" }] }
   if (url.includes("/alerts")) return { items: [{ id: 1, alert_type: "job_failed", level: "crit", title: "任务连续失败", detail: { job_name: "poll_report" }, channels: "log-sink", created_at: "2026-07-12T08:00:00+08:00" }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/raw-logs")) return { items: [{ id: 2, source: "report", item_count: 3, custom_id_count: 2, processed: false, error: "ValueError", fetched_at: "2026-07-12T08:00:00+08:00", capture_state: "complete" }], total: 45, page: 1, page_size: 20 }
-  if (url.includes("/chunks/uncertain")) return { items: [{ chunk_id: 3, batch_no: "BATCH-1", custom_id: "CUSTOM-1", phone_count: 50, vendor_code: null, uncertain_since: "2026-07-12T08:00:00+08:00", age_seconds: 90000 }], total: 45, page: 1, page_size: 20 }
+  if (url.includes("/chunks/uncertain")) return { items: [{ chunk_id: 3, batch_no: "BATCH-1", custom_id: "CUSTOM-1", phone_count: 50, vendor_code: null, uncertain_since: "2026-07-12T08:00:00+08:00", age_seconds: 90000, status: "uncertain", resolution_id: null, resolution_action: null, resolution_state: null, proposer_account_id: null }], total: 45, page: 1, page_size: 20 }
   if (url.includes("/jobs")) return [
     { job_name: "poll_report", last_run_at: "2026-07-12T08:00:00+08:00", last_status: "failed", last_duration_ms: 120, last_items: 0, success_rate_24h: 0.75, stalled: true },
     { job_name: "housekeeping", last_run_at: null, last_status: null, last_duration_ms: null, last_items: 0, success_rate_24h: 0, stalled: false },
@@ -297,7 +303,51 @@ describe("统一运维中心", () => {
     expect(wrapper.text()).toContain("结果未知")
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/chunks/uncertain"))).toBe(true)
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/alerts"))).toBe(false)
+    expect(wrapper.text()).toContain("禁止自动重发")
     wrapper.unmount()
     vi.unstubAllGlobals()
+  })
+
+  it("保守终态分片可提出并确认双人处置，且不把旧分片改回待发送", async () => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes("/chunks/uncertain") && (init?.method || "GET") === "GET") {
+        return response({
+          items: [{
+            chunk_id: 9,
+            batch_no: "BATCH-9",
+            custom_id: "CUSTOM-9",
+            phone_count: 2,
+            vendor_code: null,
+            uncertain_since: "2026-07-12T08:00:00+08:00",
+            age_seconds: 260000,
+            status: "unknown_terminal",
+            resolution_id: null,
+            resolution_action: null,
+            resolution_state: null,
+            proposer_account_id: null,
+          }],
+          total: 1,
+          page: 1,
+          page_size: 20,
+        })
+      }
+      return response(result(url, init?.method || "GET"))
+    })
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = await mountOps({ tab: "uncertain" })
+    await flushPromises()
+    expect(wrapper.text()).toContain("未知终态")
+    expect(wrapper.text()).toContain("新批次重发")
+    await wrapper.get("[data-testid='uncertain-propose-keep_unknown']").trigger("click")
+    await flushPromises()
+    const proposeCall = fetch.mock.calls.find(([url, init]) => String(url).includes("/chunks/9/resolution") && init?.method === "POST")
+    expect(proposeCall).toBeTruthy()
+    expect(JSON.parse(String(proposeCall![1]?.body))).toEqual({ action: "keep_unknown" })
+    expect(vnodeText(vi.mocked(ElMessageBox.confirm).mock.calls[0][0])).toContain("不会把旧分片改回待发送")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 })

@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
-from app.api.messages import BatchModel, _error
+from app.api.messages import UNAVAILABLE_RESPONSE, BatchModel, _error
 from app.core.apikey import ApiAppContext
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
@@ -61,6 +61,7 @@ from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRender
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaService
 from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
+from app.services.send_admission import get_send_admission_guard
 from app.services.sensitive_read_audit import (
     SensitiveReadAuditor,
     get_sensitive_read_auditor,
@@ -176,6 +177,7 @@ class WebSendResponse(BaseModel):
         "queued",
         "sending",
         "completed",
+        "completed_unknown",
         "cancelled",
         "balance_blocked",
         "expired",
@@ -358,6 +360,7 @@ async def _pipeline_for(claims: JwtClaims) -> AsyncIterator[SendPipeline]:
         signs=SignResolver(SqlSignRepository(settings)),
         vendor_test_console_only=settings.vendor_live_test,
         usage_ledger=UsageLedgerService(redis, settings),
+        admission_guard=get_send_admission_guard(),
         config=_config(values),
     )
 
@@ -853,7 +856,7 @@ async def billing_preview(
         409: ERROR_RESPONSE,
         422: ERROR_RESPONSE,
         429: ERROR_RESPONSE,
-        503: ERROR_RESPONSE,
+        503: UNAVAILABLE_RESPONSE,
     },
 )
 @audited("message_send")

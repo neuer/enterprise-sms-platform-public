@@ -144,6 +144,7 @@ ensure_dev_secrets() {
   create_text_secret vendor_secret_key mock
   create_random_secret data_aes_key 32
   create_random_secret data_hmac_key 32
+  create_random_secret api_key_pepper_key 32
   create_random_secret audit_context_key 32
   create_random_secret audit_system_api_context_key 32
   create_random_secret audit_system_realtime_context_key 32
@@ -163,7 +164,7 @@ ensure_dev_secrets() {
   create_random_secret redis_broker_password 32
   create_random_secret redis_auth_password 32
   create_random_secret redis_control_password 32
-  # 开发栈不启用 Redis TLS；仍生成有界占位值以保持 25 件 canonical inventory 一致。
+  # 开发栈不启用 Redis TLS；仍生成有界占位值以保持 26 件 canonical inventory 一致。
   create_random_secret redis_tls_server_key 32
 }
 

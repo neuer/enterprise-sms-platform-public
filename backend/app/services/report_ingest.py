@@ -76,6 +76,7 @@ class ProtectedReport:
     report_desc: str
     report_time: datetime
     phone_hmacs: tuple[str, ...]
+    vendor_id: str = "zhihui"
 
 
 @dataclass(frozen=True, slots=True)
