@@ -20,4 +20,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("downgrade is not supported")
+    op.execute("REVOKE SELECT (created_at) ON outbox_event FROM sms_metrics")

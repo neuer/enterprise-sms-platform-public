@@ -165,4 +165,25 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("downgrade is not supported")
+    op.execute("DROP TABLE IF EXISTS sms_vendor_attempt")
+    op.execute(
+        "ALTER TABLE raw_vendor_log DROP CONSTRAINT IF EXISTS ck_raw_vendor_log_vendor_id"
+    )
+    op.execute("ALTER TABLE raw_vendor_log DROP COLUMN IF EXISTS vendor_id")
+    op.execute(
+        "ALTER TABLE sms_chunk DROP CONSTRAINT IF EXISTS ck_sms_chunk_selected_vendor"
+    )
+    op.execute(
+        "ALTER TABLE sms_chunk DROP CONSTRAINT IF EXISTS ck_sms_chunk_route_generation"
+    )
+    op.execute("ALTER TABLE sms_chunk DROP COLUMN IF EXISTS selected_vendor")
+    op.execute("ALTER TABLE sms_chunk DROP COLUMN IF EXISTS route_generation")
+    op.execute(
+        "ALTER TABLE sms_batch DROP CONSTRAINT IF EXISTS ck_sms_batch_selected_vendor"
+    )
+    op.execute(
+        "ALTER TABLE sms_batch DROP CONSTRAINT IF EXISTS ck_sms_batch_route_policy_version"
+    )
+    op.execute("ALTER TABLE sms_batch DROP COLUMN IF EXISTS selected_vendor")
+    op.execute("ALTER TABLE sms_batch DROP COLUMN IF EXISTS routing_reason")
+    op.execute("ALTER TABLE sms_batch DROP COLUMN IF EXISTS route_policy_version")

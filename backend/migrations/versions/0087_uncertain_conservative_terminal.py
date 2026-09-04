@@ -132,4 +132,43 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("downgrade is not supported")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM sms_batch WHERE status='completed_unknown'
+          ) OR EXISTS (
+            SELECT 1 FROM sms_chunk WHERE status='unknown_terminal'
+          ) THEN
+            RAISE EXCEPTION
+              'cannot remove conservative unknown states while rows still use them';
+          END IF;
+        END
+        $$
+        """
+    )
+    op.execute("DROP TABLE IF EXISTS sms_uncertain_resolution")
+    op.execute("DROP INDEX IF EXISTS idx_chunk_unknown_terminal")
+    op.execute("ALTER TABLE sms_chunk DROP COLUMN IF EXISTS unknown_terminal_at")
+    op.execute("ALTER TABLE sms_chunk DROP COLUMN IF EXISTS late_evidence_at")
+    op.execute("ALTER TABLE sms_batch DROP CONSTRAINT IF EXISTS sms_batch_status_check")
+    op.execute(
+        """
+        ALTER TABLE sms_batch
+          ADD CONSTRAINT sms_batch_status_check CHECK (status IN (
+            'pending_approval','rejected','scheduled','queued',
+            'sending','completed','cancelled',
+            'balance_blocked','expired'
+          ))
+        """
+    )
+    op.execute("ALTER TABLE sms_chunk DROP CONSTRAINT IF EXISTS sms_chunk_status_check")
+    op.execute(
+        """
+        ALTER TABLE sms_chunk
+          ADD CONSTRAINT sms_chunk_status_check CHECK (status IN (
+            'pending','submitting','submitted','failed','retrying','uncertain'
+          ))
+        """
+    )

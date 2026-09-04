@@ -58,4 +58,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("downgrade is not supported")
+    op.execute(
+        "ALTER TABLE app DROP CONSTRAINT IF EXISTS ck_app_api_key_hash_version"
+    )
+    op.execute(
+        "ALTER TABLE app DROP CONSTRAINT IF EXISTS ck_app_api_key_prev_hash_version"
+    )
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS api_key_hash_version")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS api_key_prev_hash_version")

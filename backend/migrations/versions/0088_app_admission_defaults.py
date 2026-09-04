@@ -101,4 +101,25 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("downgrade is not supported")
+    op.execute(
+        "ALTER TABLE app DROP CONSTRAINT IF EXISTS ck_app_recipient_limit_per_min"
+    )
+    op.execute(
+        "ALTER TABLE app DROP CONSTRAINT IF EXISTS ck_app_segment_limit_per_min"
+    )
+    op.execute(
+        "ALTER TABLE app DROP CONSTRAINT IF EXISTS ck_app_max_in_flight_chunks"
+    )
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS recipient_limit_per_min")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS segment_limit_per_min")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS max_in_flight_chunks")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS allow_market_api_bulk")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS ip_allowlist_exempt_until")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS unlimited_quota_exempt_until")
+    op.execute("ALTER TABLE app DROP COLUMN IF EXISTS admission_exempt_note")
+    op.execute(
+        """
+        ALTER TABLE app
+          ALTER COLUMN allowed_categories SET DEFAULT 'verify,notice,market'
+        """
+    )
